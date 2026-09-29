@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | PROPOSED 2026-09-29 |
 
 ---
 
@@ -2866,3 +2867,564 @@ accepting `issue` for these two profiles and still refuses everything else.
 - **#219.** The forge token never reaches the workspace or the agent.
 - **Invariant 9.** The fetch uses the step's own tenant's credential against the
   step's own repository.
+
+---
+
+## 30. `identity.py`: a tenant may list service accounts that resolve to it by exact email
+
+**Status: PROPOSED.** Decided in principle by the owner on 2026-09-28 for #273
+(the red-CI fixer); this entry is the exact change, for the owner to accept or
+amend before anything is applied. Nothing here is applied: `identity.py`,
+`auth.py`, `settings.py`, `variables.tf` and `locals.tf` are unchanged by the
+pull request that adds it. Recorded 2026-09-29. Numbered 30 because 27 and 29
+are taken on open branches (29 twice); if another branch has taken 30 by the
+time this merges, renumber this one.
+
+### What is true today
+
+`.github/workflows/ci-fix.yml` (#273) federates as
+`swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com` and submits a
+one-step `claude-code` workflow with `continues_task` set to the red swarm
+task. `resolve_continuation` (`apps/swarm-api/swarm_api/continuation.py` on
+#273) looks the task up with `store.get_task(tenant_id, requested)` and answers
+"is not a task in your tenant" for another tenant's task exactly as for a
+missing one. The `swarm/` pull requests belong to `eng`, which resolves from
+the Google group `eng@saga.xyz` (`terraform/environments/dev/dev.tfvars`,
+`tenants.eng`, `directory_group = true`).
+
+So the fixer's account has to resolve to `eng`, and today there are exactly
+two ways a caller does:
+
+- **Group membership.** `Authenticator._from_claims` asks Cloud Identity
+  `groups_for(email, tenant_groups)`, puts the answers in `Principal.groups`,
+  and the frozen `resolve_tenant` returns the first registered group the
+  caller is in. Adding the account to `eng@saga.xyz` would work, and the owner
+  rejected it: that group is a company group, and every grant it holds
+  anywhere in saga.xyz -- Drive, other GCP projects, other applications that
+  authorise by it -- would go to a bot whose only job is to comment on pull
+  requests and submit fix steps.
+- **Being the tenant's principal.** A `kind = "user"` tenant whose principal is
+  the account's own email (as `u-sw-c90291` is for `swarm-verify`). That is a
+  tenant of its own, not `eng`, so it owns none of the tasks it must continue.
+
+Without either, the account is also refused before tenant resolution: its
+domain is `saga-agents-staging.iam.gserviceaccount.com`, not `saga.xyz`, so
+`assert_allowed_domain` answers 403 unless it is in `ALLOWED_USERS`. And if it
+were admitted through `ALLOWED_USERS`, `groups_for` would ask Cloud Identity
+about a service-account address on every request, a lookup that can only
+answer "no" and whose failure is fatal by design (503).
+
+### The requested change
+
+**1. Terraform: one new optional field per tenant.** In
+`terraform/infra/variables.tf`, `var.tenants` gains
+
+```hcl
+    # Service accounts that resolve to THIS tenant besides its principal, by an
+    # exact match on the email the caller's verified token carries. For a bot
+    # that must act as the tenant without joining the tenant's group, which
+    # would hand it every grant the group holds across the company (contract
+    # request 30). Bare emails of user-managed accounts in this project; never
+    # a human, never an admin, never under two tenants -- see the validations.
+    service_accounts = optional(list(string), [])
+```
+
+and `dev.tfvars` would set, once #273's account exists:
+
+```hcl
+  eng = {
+    ...
+    service_accounts = ["swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+```
+
+**2. How it reaches swarm-api.** `terraform/infra/locals.tf` renders one new
+environment variable on swarm-api beside `TENANT_GROUPS`:
+
+```hcl
+      # Every listed service account -> its tenant's kind and principal.
+      # Duplicate keys are a plan-time error in a for-expression without `...`,
+      # a second refusal behind the validation on var.tenants.
+      TENANT_SERVICE_ACCOUNTS = jsonencode({
+        for m in flatten([
+          for t, v in var.tenants : [
+            for sa in v.service_accounts :
+            { email = lower(sa), kind = v.kind, principal = lower(v.principal) }
+          ]
+        ]) : m.email => { kind = m.kind, principal = m.principal }
+      })
+```
+
+JSON rather than `_csv`, because each entry carries three values and a
+delimiter scheme invented for it would be a second format to get wrong.
+`directory_group` is deliberately not consulted: a listed account never needs
+a directory lookup, so it resolves to a `kind = "group"` tenant whose group
+cannot be read (as `smoke`'s cannot) exactly as to one whose group can.
+
+`apps/swarm-api/swarm_api/settings.py` gains
+
+```python
+    #: Service accounts a tenant lists besides its principal (contract request
+    #: 30), from TENANT_SERVICE_ACCOUNTS. Refused at startup, not at request
+    #: time, when an entry is not a user-managed service account, sits under
+    #: two tenants, or is also in admin_users, admin_pool_users or
+    #: secret_admin_principals: a revision that would resolve one wrongly
+    #: must not start serving.
+    tenant_service_accounts: tuple[TenantMember, ...] = ()
+```
+
+parsed by a `_tenant_members("TENANT_SERVICE_ACCOUNTS")` helper that
+`json.loads` the value (empty or absent is `()`), lower-cases every key,
+requires `kind` in `{"group", "user"}` and a non-empty `principal`, and raises
+`ValueError` on any of the refusals above. A startup `ValueError` fails the
+new Cloud Run revision's readiness, so the previous revision keeps serving.
+
+**3. How `resolve_tenant` uses it.** The frozen change is the diff below:
+a `TenantMember` type, a `SERVICE_ACCOUNT_EMAIL` expression, a
+`tenant_member_for()` matcher, and a third, defaulted parameter on
+`resolve_tenant`. The match is:
+
+- **exact and case-insensitive**: `email.strip().lower() == member.email.lower()`,
+  and nothing else -- no prefix, no suffix, no glob, no regex over the listed
+  value, no domain;
+- **only on a user-managed service-account address**
+  (`<id>@<project>.iam.gserviceaccount.com`); a listed entry of any other
+  shape never matches even if it got past Terraform and settings;
+- **on the email the token verified**: `_from_claims` passes the `email` claim
+  of a Google ID token that `verify_oauth2_token` accepted with
+  `email_verified` not false, or of an IAP assertion `IapAssertionVerifier`
+  accepted. Nothing the caller sends in a body, a header or a query is read;
+- **before any group lookup**: a match returns the listing tenant's id,
+  derived by `tenant_id_for_group(principal)` or `tenant_id_for_user(principal)`
+  from the tenant's own kind and principal, so the account and the group it
+  stands beside cannot name two different tenants.
+
+With the default `service_accounts=()` every existing caller of
+`resolve_tenant` behaves exactly as today.
+
+**4. `auth.py`, the non-frozen half.** In `Authenticator._from_claims`, as the
+first thing after reading `email` and `subject`:
+
+```python
+        member = tenant_member_for(email, self._settings.tenant_service_accounts)
+        if member is not None:
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            log.info("tenant member %s resolved by listing", email)
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(
+                    principal,
+                    self._settings.tenant_groups,
+                    service_accounts=self._settings.tenant_service_accounts,
+                ),
+                is_admin=False,
+                tenant_principal=member.principal.lower(),
+                admin_unresolved=False,
+                is_pool_admin=False,
+                tenant_member=email,
+            )
+```
+
+That is: the listing **admits** the account (it does not also go in
+`ALLOWED_USERS`, so there is one place that says it may call), it **skips both
+Cloud Identity passes** (no tenant-group lookup and no admin-group lookup, so a
+directory outage cannot 503 it and it can never pick up admin through a group
+it happens to be in), and it is **never an admin or a pool admin**. An
+unlisted service account takes today's path unchanged.
+
+### What `tenant_principal` becomes for such a caller
+
+**The tenant's principal, not the caller's email**: `eng@saga.xyz` for the
+fixer, exactly what a human member of `eng` gets from `_tenant_principal`.
+It has to be. `Service.tenant_for` passes it to `Store.ensure_tenant`, and
+`Service.scope_for` to `Store.assert_tenant_scope`, and both compare it with
+the principal stored on the `eng` tenant document to refuse a caller whose
+tenant id belongs to a different principal. The account's own email there
+would make every request it sends a collision refusal -- and if it were ever
+the first caller to create the document, it would record the bot as `eng`'s
+principal. The `secret_admin_principals` check in `tenant_for` is unaffected,
+because it reads that same tenant principal, and the listing refuses an
+account in `secret_admin_members` separately (below).
+
+The caller's own identity is still `principal.email`, which is what
+`submitted_by` is built from.
+
+### Audit: which member submitted a task
+
+Two records, neither a frozen-type change:
+
+- **`Task.submitted_by` and `Workflow.submitted_by`** are already the verified
+  email (`service.py` sets both from `ctx.email`), so a fixer task already
+  carries `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com`, and the
+  outcome ledger's `submitted_by` grouping separates the bot's tasks from the
+  humans' in `eng` with no further change.
+- **`AuthContext.tenant_member`** (new, in `auth.py`, default `""`) is the
+  listed email when the tenant came from a listing. The `SUBMITTED` event that
+  `Store.create_tasks` writes gains `detail["submitted_by"]` and
+  `detail["tenant_member"]` -- `"service_account"` for a listed caller, absent
+  otherwise -- so the event trail says, per task, not only who submitted it
+  but that the tenant was assigned by a listing rather than by a group. The
+  sign-in log line above records the same per request, with no token material
+  (the email is already what every other `auth.py` log line names).
+
+### Validation
+
+Every rule is enforced at plan time in `terraform/infra/variables.tf`, and again
+at swarm-api startup in `settings.py` for anything Terraform cannot see (an
+environment variable set by hand). The variable already requires Terraform
+`>= 1.9.0` (`versions.tf`), which is what lets a validation on `var.tenants`
+read `var.admin_users`; `secret_admin_members` already validates against
+`var.tenants` the same way.
+
+1. **Only a user-managed service account in this project, never a human.**
+
+   ```hcl
+   validation {
+     condition = alltrue(flatten([
+       for t, v in var.tenants : [
+         for sa in v.service_accounts :
+         can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", sa))
+         && endswith(sa, "@${var.project_id}.iam.gserviceaccount.com")
+       ]
+     ]))
+     error_message = "tenants.*.service_accounts takes bare, lower-case emails of user-managed service accounts in this project (<id>@<project>.iam.gserviceaccount.com): never a person, a group, a domain, a pattern, a serviceAccount: member or a Google-managed account."
+   }
+   ```
+
+   The expression is the one #273's `ci_fix_service_account` validation
+   already uses. It refuses a human (no Workspace domain ends in
+   `.iam.gserviceaccount.com`), a `serviceAccount:` member, a wildcard, and
+   the Google-managed accounts every workload in a project can run as
+   (`<number>-compute@developer.gserviceaccount.com`,
+   `<project>@appspot.gserviceaccount.com`). The project pin is this entry's
+   addition, and one the owner must accept: who can mint a token for an
+   account is decided by IAM in that account's project, and only this
+   project's IAM is reviewed here.
+
+2. **Under one tenant only.**
+
+   ```hcl
+   validation {
+     condition = length(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])) == length(distinct(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])))
+     error_message = "a service account may be listed under ONE tenant: it decides the account's secrets, GCS prefix and namespace, and two listings would make that depend on rendering order."
+   }
+   ```
+
+   The same rule is enforced three more times: the `for` expression in
+   `locals.tf` errors on a duplicate key, `settings.py` refuses one at
+   startup, and `tenant_member_for` raises `AuthError` rather than pick one.
+
+3. **Never an admin, in any admin list.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset(concat(
+         [for u in var.admin_users : lower(u)],
+         [for u in var.admin_pool_users : lower(u)],
+         [for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]
+       ))
+     )) == 0
+     error_message = "a tenant's service account may not also be in admin_users, admin_pool_users or secret_admin_members: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's."
+   }
+   ```
+
+   `admin_groups` cannot be checked here, because whether a group contains the
+   account is a fact in the directory, not in Terraform. That is why
+   `auth.py` skips the admin-group pass for a listed caller and sets
+   `is_admin=False` unconditionally: membership of an admin group does not
+   make a listed account an admin, by construction rather than by validation.
+
+4. **Never a tenant's own principal.**
+
+   ```hcl
+   validation {
+     condition = length(setintersection(
+       toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+       toset([for t, v in var.tenants : lower(v.principal)])
+     )) == 0
+     error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
+   }
+   ```
+
+   This is what stops `swarm-verify` (principal of `u-sw-c90291`) being listed
+   under `eng`.
+
+Every refusal happens at `terraform plan`, before anything is applied, and
+`tests/terraform` asserts each one (below).
+
+### Isolation analysis (invariant 9)
+
+**A listed account gets exactly its tenant's rights, and nothing else.** It
+resolves to one `tenant_id` and one `tenant_principal`, the same pair a human
+member of that tenant gets, so every tenant-scoped check downstream --
+`get_task(tenant_id, ...)`, `assert_tenant_scope`, the tenant's GSA, secrets,
+GCS prefix and namespace -- applies to it unchanged. It gets no admin (the flag
+is forced false and the lists refuse it), no pool admin, no second tenant (one
+listing, never a principal), and no personal tenant (a listed account never
+falls through to `u-...`). The change grants it **no GCP IAM at all**: it does
+not touch the tenant's GSA, its secrets or its bucket, and the account's own
+roles stay exactly what #273's `ci_fix.tf` and `frontend_iap_members` give it.
+Compared with the rejected alternative, it gets none of `eng@saga.xyz`'s grants
+outside this platform.
+
+**What an attacker who steals its token gets.** Everything any member of `eng`
+can do through swarm-api, for as long as the token lives -- an ID token or IAP
+assertion expires in at most an hour, and an access token minted by federation
+the same:
+
+- submit tasks and workflows as `eng`: spend `eng`'s capacity (`max_active`
+  10), its provider subscription through the runners, and its forge token
+  through `direct-pr` pushes to the repositories that token reaches;
+- continue any `eng` task, which pushes to that task's pull-request branch;
+- read `eng`'s tasks, events, results and artifacts, and cancel its work.
+
+Stated rather than minimised: that is the whole `eng` tenant through the API,
+including pushing agent-written commits to `eng`'s branches. It is not other
+tenants, not the admin surface, not the provider key or forge token as
+material (#219 keeps both out of the workspace), and not saga.xyz outside this
+platform. Every task it submits says so in `submitted_by` and in its
+`SUBMITTED` event, so what it did is enumerable afterwards.
+
+**Why the WIF binding limits who can mint it.** #273's
+`terraform/bootstrap/ci_fix.tf` binds `roles/iam.workloadIdentityUser` on the
+account to exactly one principalSet,
+`attribute.job_workflow_ref/bogdan-alexandrescu/SwarmCloud/.github/workflows/ci-fix.yml@refs/heads/main`.
+GitHub sets `job_workflow_ref` from the workflow file the job actually runs,
+so another workflow -- in this repository on main, on another branch, or in a
+fork -- presents a different value and is refused; the pool provider's
+`attribute_condition` separately refuses any other repository and any ref
+outside `github_allowed_refs`, and never `refs/pull/*`. The effect is that a
+token can be minted only by `ci-fix.yml` as it stands on `main`, so minting a
+token for an attacker's purpose means getting a change to that file merged to
+`main`. `workflow_run` runs the default branch's copy, so a pull request cannot
+change the file it runs under.
+
+That limit holds **only if these also hold**, which the owner must confirm:
+
+- the account has **no user-managed keys** (`gcloud iam service-accounts keys
+  list --iam-account=swarm-ci-fix@...` lists only system-managed ones), since a
+  key mints tokens with no workflow involved;
+- **no other principal holds** `roles/iam.serviceAccountTokenCreator`,
+  `roles/iam.serviceAccountUser` or `roles/iam.workloadIdentityUser` on it, and
+  the deployer in particular does not (#273 removed that hop);
+- `ci-fix.yml` never runs pull-request code in a step that can read the
+  federated credential. On #273's head it checks out `main` only ("NOT the
+  branch being fixed: its code runs in the fix step's container, never here")
+  and runs only when the head repository is this one. That has to stay true,
+  because a `workflow_run` job that executes the head's code with the token
+  present hands the token to whoever wrote the pull request.
+
+### The diff proposed for `identity.py`
+
+Not applied. Generated against `main` at `d4a2352`.
+
+```diff
+--- a/apps/common/swarm_common/identity.py
++++ b/apps/common/swarm_common/identity.py
+@@ -8,12 +8,20 @@
+ A TENANT IS A GOOGLE GROUP. `eng@saga.xyz` is one tenant whose members share a
+ quota budget, provider keys and artifacts. A user in no mapped group falls back
+ to a personal tenant so nobody is ever hard-blocked from the platform.
++
++A TENANT MAY ALSO LIST SERVICE ACCOUNTS (contract request 30). A service
++account is not a Workspace principal, and making it a member of the tenant's
++group would hand it every grant that group holds across the company. So a
++listed account resolves to its tenant by an EXACT, case-insensitive match on
++the email its verified token carries, before any group is consulted -- never
++by a pattern, a prefix or a domain.
+ """
+ 
+ from __future__ import annotations
+ 
+ import hashlib
+ import re
++from collections.abc import Iterable
+ from dataclasses import dataclass
+ 
+ 
+@@ -29,6 +37,54 @@
+     groups: tuple[str, ...] = ()
+ 
+ 
++#: A user-managed service account: `<account id>@<project id>.iam.gserviceaccount.com`,
++#: both halves 6-30 characters as GCP names them. Google-managed accounts
++#: (`<number>-compute@developer.gserviceaccount.com`, `<project>@appspot...`)
++#: do NOT match on purpose: every workload in a project can run as those, so
++#: listing one would put the whole project in the tenant. A human address
++#: cannot match either -- no Workspace domain ends in `.iam.gserviceaccount.com`.
++#: terraform/infra/variables.tf validates `tenants.*.service_accounts` with the
++#: same expression, and scripts/lib/check-contract-parity.sh holds the two equal.
++SERVICE_ACCOUNT_EMAIL = re.compile(
++    r"^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\.iam\.gserviceaccount\.com$"
++)
++
++
++@dataclass(frozen=True)
++class TenantMember:
++    """A service account a tenant lists besides its group or user principal.
++
++    `kind` and `principal` are the TENANT's, not the account's: the tenant id
++    is derived from them by the same function that derives it for a human
++    member, so a listed account and the group it stands beside can never name
++    two different tenants.
++    """
++
++    email: str       # swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com
++    kind: str        # "group" | "user" -- the tenant's kind
++    principal: str   # eng@saga.xyz -- the tenant's principal
++
++
++def tenant_member_for(email: str, members: Iterable[TenantMember]) -> TenantMember | None:
++    """The listed member whose email IS `email`, or None.
++
++    Exact equality after lower-casing, nothing else. An entry that is not a
++    user-managed service-account address is never matched even when listed, so
++    a misconfiguration that names a human cannot route that human around
++    their group. An address listed under two tenants is refused rather than
++    resolved by order: the tenant decides which secrets and which GCS prefix a
++    caller gets, and "whichever was rendered first" is not a decision.
++    """
++    wanted = email.strip().lower()
++    if not SERVICE_ACCOUNT_EMAIL.match(wanted):
++        return None
++    found = [m for m in members if m.email.strip().lower() == wanted]
++    tenants = {(m.kind, m.principal.strip().lower()) for m in found}
++    if len(tenants) > 1:
++        raise AuthError("a service account is listed under more than one tenant")
++    return found[0] if found else None
++
++
+ _TENANT_SAFE = re.compile(r"[^a-z0-9-]+")
+ 
+ 
+@@ -98,14 +154,30 @@
+     return domain
+ 
+ 
+-def resolve_tenant(principal: Principal, group_priority: tuple[str, ...]) -> str:
++def resolve_tenant(
++    principal: Principal,
++    group_priority: tuple[str, ...],
++    service_accounts: tuple[TenantMember, ...] = (),
++) -> str:
+     """Pick the caller's tenant.
+ 
+-    `group_priority` is the admin-ordered list of group emails that map to
+-    tenants. First match wins, so a user in several mapped groups lands
++    A caller whose verified email is a listed service account resolves to the
++    tenant that lists it, FIRST and regardless of `principal.groups`: the
++    listing is an admin's explicit statement about this one identity, and a
++    group membership (which a service account can hold) must not be able to
++    move it somewhere else.
++
++    Otherwise `group_priority` is the admin-ordered list of group emails that
++    map to tenants. First match wins, so a user in several mapped groups lands
+     deterministically in the same tenant on every request -- which matters
+     because the tenant determines which secrets and which GCS prefix they get.
+     """
++    member = tenant_member_for(principal.email, service_accounts)
++    if member is not None:
++        if member.kind == "group":
++            return tenant_id_for_group(member.principal)
++        return tenant_id_for_user(member.principal)
++
+     member_of = {g.lower() for g in principal.groups}
+     for group in group_priority:
+         if group.lower() in member_of:
+```
+
+### What it would break if accepted
+
+Nothing that exists. `resolve_tenant`'s new parameter is keyword-defaulted to
+`()`, so `auth.py`'s current call, `test_group_resolution.py` and any other
+caller behave exactly as today until `TENANT_SERVICE_ACCOUNTS` is non-empty.
+No stored document changes shape: `Task`, `Workflow`, `Tenant` and `TaskEvent`
+are untouched (the audit fields are `detail` keys and an `AuthContext` field
+outside the contract). `docs/ci.md` on #273 says the fixer's account must be
+"admitted (`allowed_users`) and a member of that tenant's Google group"; that
+sentence changes to naming `tenants.eng.service_accounts`.
+
+### If it is declined
+
+The fixer's account can resolve to `eng` only by joining `eng@saga.xyz`, which
+the owner has rejected, or not at all, in which case #273's continuation is
+refused with "is not a task in your tenant" on every red pull request and the
+fixer can only comment.
+
+### The tests that would prove it
+
+Unit, no credentials and no emulator:
+
+- `tests/unit/control_plane/test_group_resolution.py` (`resolve_tenant`):
+  - a listed account resolves to `eng` with `groups=()`, and to
+    `tenant_id_for_user(principal)` when the listing tenant is `kind="user"`;
+  - `SWARM-CI-FIX@SAGA-AGENTS-STAGING.IAM.GSERVICEACCOUNT.COM` resolves the
+    same (case-insensitive);
+  - the listing wins over groups: the same account with
+    `groups=("other@saga.xyz",)` and `other@saga.xyz` first in priority still
+    resolves to `eng`;
+  - no pattern and no domain: `swarm-ci-fix2@...`, `x-swarm-ci-fix@...`,
+    `swarm-ci-fix@other-project.iam.gserviceaccount.com` and
+    `swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com.evil.example`
+    each fall through to today's rule;
+  - a human address listed as a member (`bogdan@saga.xyz`) never matches;
+  - an account listed under two tenants raises `AuthError`; listed twice
+    under the same tenant resolves;
+  - with `service_accounts` omitted, every existing case in the file gives
+    today's answer (the file's current cases, unchanged, are this test).
+- a new `tests/unit/control_plane/test_tenant_service_accounts.py`
+  (`Authenticator` with `StaticTokenVerifier`):
+  - a listed account gets `tenant_id="eng"`, `tenant_principal="eng@saga.xyz"`,
+    `is_admin=False`, `is_pool_admin=False`, `admin_unresolved=False`,
+    `tenant_member=<its email>`;
+  - it is admitted with `allowed_domains=("saga.xyz",)` and empty
+    `ALLOWED_USERS`, and an unlisted service account is still 403;
+  - the `MembershipResolver` is a fake that raises `GroupLookupError` on any
+    call, and `admin_groups` is non-empty: the listed account still
+    authenticates (no lookup made, no 503), and is still not an admin;
+  - `email_verified: False` is still 401;
+  - the IAP path yields the same `AuthContext` as the bearer path;
+  - `continues_task` naming an `eng` task is accepted, naming a `u-bogdan`
+    task is refused "is not a task in your tenant";
+  - the created task's `submitted_by` is the account's email and its
+    `SUBMITTED` event carries `tenant_member="service_account"`.
+- settings: `TENANT_SERVICE_ACCOUNTS` parses; `ApiSettings.from_env` raises
+  `ValueError` for a human address, a Google-managed account, a duplicate, a
+  `kind` outside `{group, user}`, and an entry also in `ADMIN_USERS`,
+  `ADMIN_POOL_USERS` or `SECRET_ADMIN_PRINCIPALS`; absent or `{}` is `()`.
+
+Terraform, `tests/terraform/tenancy.tftest.hcl`, each refusal a `run` with
+`expect_failures = [var.tenants]`: an account under two tenants; a human
+address; `serviceAccount:`-prefixed; a Google-managed compute account; an
+account in another project; one in `admin_users`, in `admin_pool_users`, in
+`secret_admin_members`; one that is another tenant's principal. And one
+passing `run` asserting the rendered `TENANT_SERVICE_ACCOUNTS` equals
+`{"swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com":{"kind":"group","principal":"eng@saga.xyz"}}`,
+and `{}` when no tenant lists one.
+
+Parity: `scripts/lib/check-contract-parity.sh` gains a check that the
+expression in the `variables.tf` validation equals
+`identity.SERVICE_ACCOUNT_EMAIL.pattern`, so the plan-time rule and the
+runtime rule cannot drift apart.
+
+Each test is proved red first in CI, per CLAUDE.md: the tests land alone on
+the implementing branch and must fail there before the change lands on
+`<branch>-fix`.
+
+### Invariants
+
+- **Invariant 9.** Analysed above: a listed account is one more member of one
+  tenant, with that tenant's GSA, secrets, prefix and namespace and nothing
+  else.
+- **Invariant 10.** Unaffected: the listing is operator configuration in
+  Terraform; nothing a caller sends chooses a tenant.
+- **CONTRACT.md "Tenant = Google group".** Refined, not reversed: a tenant is
+  still a group (or a user), and its listed accounts are members by
+  declaration rather than by directory.
