@@ -14,26 +14,23 @@
 locals {
   owner_marker = "managed-by=${lookup(var.labels, "managed-by", "swarm-terraform")}"
 
-  platform_accounts = {
-    "swarm-api" = {
-      display_name = "Swarm API"
-      description  = "Authenticates callers, resolves tenants, writes tasks. Creates no infrastructure."
-    }
-    "swarm-scheduler" = {
-      display_name = "Swarm Scheduler"
-      description  = "Admits work and dispatches executions. Cannot delete infrastructure."
-    }
-    "swarm-quota-broker" = {
-      display_name = "Swarm Quota Broker"
-      description  = "Owns provider quota state. Control-plane data only."
-    }
-    "swarm-reconciler" = {
-      display_name = "Swarm Reconciler"
-      description  = "The only identity permitted to delete executions and garbage-collect Job resources."
-    }
-  }
+  # Listed in modules/service_account_ids, which terraform/bootstrap reads too:
+  # it grants the release deployer roles/iam.serviceAccountAdmin on each of
+  # these accounts and on no other (#334).
+  platform_accounts = module.service_account_ids.platform
 }
 
+module "service_account_ids" {
+  source = "../service_account_ids"
+}
+
+# NO create_ignore_already_exists, here or on swarm-tick (#334 security
+# review). These accounts are in state already, and a release that met a 409
+# on one of them should fail rather than adopt an account somebody else made
+# under the name -- with that somebody's IAM policy and keys. A NEW platform
+# account is created by the release, which then 403s setting its IAM until the
+# owner applies bootstrap's per-account grant; re-run the release after
+# (docs/ci.md, "A new account exists before the release that adds it").
 resource "google_service_account" "platform" {
   for_each = local.platform_accounts
 
@@ -50,7 +47,7 @@ resource "google_service_account" "platform" {
 # nothing else.
 resource "google_service_account" "tick" {
   project      = var.project_id
-  account_id   = "swarm-tick"
+  account_id   = module.service_account_ids.tick_id
   display_name = "Swarm Tick Invoker"
   description  = "${local.owner_marker}; OIDC identity for Cloud Scheduler and Pub/Sub push. No project roles."
 }

@@ -19,10 +19,16 @@
 # the same grant through modules/tenancy's dispatcher_members (main.tf), so a new
 # tenant is covered the day it is created.
 #
-# The deployer grants these to itself: it already holds roles/iam.serviceAccountAdmin
-# (terraform/bootstrap), which includes setIamPolicy on service accounts. That is
-# stated here rather than hidden -- it is why scoping individual roles is only as
-# strong as the conditioning of the IAM-admin roles themselves.
+# The deployer grants these to itself: it holds roles/iam.serviceAccountAdmin,
+# which includes setIamPolicy, ON EACH OF THESE ACCOUNTS -- since 2026-09-29
+# (#334) no longer on the project. terraform/bootstrap/deployer_service_accounts.tf
+# grants it per account, on the list modules/service_account_ids spells for both
+# roots plus the tenants dev.tfvars names, so every account in
+# local.deployer_acts_as below, and every tenant worker, is covered; an account
+# that is not on that list cannot get this binding, and its apply 403s. That is
+# stated here rather than hidden -- admin on an account is still enough to act
+# as it, which is why scoping individual roles is only as strong as the scoping
+# of the IAM-admin roles themselves.
 #
 # FIRST APPLY. A service update in the same apply as its new binding can race IAM
 # propagation and fail once; re-running the failed release jobs clears it. A

@@ -25,10 +25,12 @@ the process at start rather than degrading quietly:
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass
 
 from swarm_common.config import Settings
+from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
 
 
 def _csv(name: str, default: str = "") -> tuple[str, ...]:
@@ -51,6 +53,91 @@ def _bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+_MEMBER_KEYS = ("email", "kind", "principal", "uid")
+
+
+def _tenant_members(
+    project_id: str, *, admin_lists: dict[str, tuple[str, ...]]
+) -> tuple[TenantMember, ...]:
+    """TENANT_SERVICE_ACCOUNTS -> the listed accounts (contract request 30).
+
+    Terraform renders a JSON LIST of `{email, kind, principal, uid}`
+    (terraform/infra/locals.tf). Everything wrong with it is refused HERE, at
+    startup, with a ValueError -- never at request time, where the same
+    mistake would be a 401 for one caller and a working deployment for
+    everyone else, and nobody would look.
+
+    Refused: a value that is not a list; an entry missing a key; a `kind`
+    other than group/user; an empty principal or uid; an email that is not a
+    user-managed service account (`identity.SERVICE_ACCOUNT_EMAIL`) IN THIS
+    PROJECT -- the frozen regex cannot pin the project, it has no project id,
+    so the `endswith` below is that pin; the same email listed twice, under the
+    same tenant or another (checked explicitly, never left to a dict or set to
+    collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS or
+    SECRET_ADMIN_PRINCIPALS, since a listing grants one tenant's rights and an
+    admin entry would add every tenant's.
+    """
+    raw = os.environ.get("TENANT_SERVICE_ACCOUNTS", "").strip()
+    if not raw:
+        return ()
+    try:
+        entries = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"TENANT_SERVICE_ACCOUNTS is not valid JSON: {exc.msg}") from None
+    if not isinstance(entries, list):
+        raise ValueError(
+            "TENANT_SERVICE_ACCOUNTS must be a JSON list of "
+            "{email, kind, principal, uid} objects"
+        )
+
+    suffix = f"@{project_id.strip().lower()}.iam.gserviceaccount.com"
+    admins = {
+        name: {value.strip().lower() for value in values}
+        for name, values in admin_lists.items()
+    }
+    result: list[TenantMember] = []
+    for index, entry in enumerate(entries):
+        where = f"TENANT_SERVICE_ACCOUNTS[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{where} must be an object")
+        missing = [key for key in _MEMBER_KEYS if key not in entry]
+        if missing:
+            raise ValueError(f"{where} is missing {', '.join(missing)}")
+        if not all(isinstance(entry[key], str) for key in _MEMBER_KEYS):
+            raise ValueError(f"{where}: every field must be a string")
+        email = entry["email"].strip().lower()
+        kind = entry["kind"].strip().lower()
+        principal = entry["principal"].strip().lower()
+        uid = entry["uid"].strip()
+        if kind not in {"group", "user"}:
+            raise ValueError(f"{where}: kind must be group or user, got {kind!r}")
+        if not principal:
+            raise ValueError(f"{where}: principal is empty")
+        if not uid:
+            raise ValueError(
+                f"{where}: uid is empty; the account's unique id is pinned beside its "
+                "email so a recreated account does not inherit the tenant"
+            )
+        if not SERVICE_ACCOUNT_EMAIL.fullmatch(email) or not email.endswith(suffix):
+            raise ValueError(
+                f"{where}: {email!r} is not a user-managed service account in project "
+                f"{project_id!r}; only <id>{suffix} may be listed"
+            )
+        if any(member.email == email for member in result):
+            raise ValueError(
+                f"{where}: {email!r} is listed more than once; a service account may be "
+                "listed under one tenant, once"
+            )
+        for name, values in admins.items():
+            if email in values:
+                raise ValueError(
+                    f"{where}: {email!r} is also in {name}; a listing grants exactly one "
+                    "tenant's rights and may not be combined with an admin entry"
+                )
+        result.append(TenantMember(email=email, kind=kind, principal=principal, uid=uid))
+    return tuple(result)
 
 
 @dataclass(frozen=True)
@@ -152,6 +239,13 @@ class ApiSettings:
     #: and output all flow through it. So the runtime enforces what terraform
     #: enforces, on the path terraform cannot see.
     secret_admin_principals: tuple[str, ...] = ()
+    #: Service accounts a tenant lists besides its principal (contract
+    #: request 30), from TENANT_SERVICE_ACCOUNTS. Refused at startup, not at
+    #: request time, when an entry is not a user-managed service account in
+    #: THIS project, is listed more than once, sits under two tenants, is
+    #: missing its unique id, or is also in admin_users, admin_pool_users or
+    #: secret_admin_principals. See `_tenant_members`.
+    tenant_service_accounts: tuple[TenantMember, ...] = ()
     #: The Workspace user this service account acts AS when reading groups.
     #:
     #: Cloud Identity's Groups API does not authorize through GCP IAM -- a
@@ -272,8 +366,19 @@ class ApiSettings:
                 "tenant from a verified Google ID token, and without one there is no "
                 "tenant to attribute work to. Remove the variable."
             )
+        admin_users = _csv("ADMIN_USERS")
+        admin_pool_users = _csv("ADMIN_POOL_USERS")
+        secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")
         return cls(
             core=core,
+            tenant_service_accounts=_tenant_members(
+                core.project_id,
+                admin_lists={
+                    "ADMIN_USERS": admin_users,
+                    "ADMIN_POOL_USERS": admin_pool_users,
+                    "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
+                },
+            ),
             # One per backend service fronting this platform. Terraform sets
             # it; without it the IAP path is OFF rather than unpinned, because
             # an unpinned audience accepts an assertion minted by IAP for any
@@ -281,10 +386,10 @@ class ApiSettings:
             iap_audiences=_csv("IAP_AUDIENCES"),
             tenant_groups=_csv("TENANT_GROUPS"),
             admin_groups=_csv("ADMIN_GROUPS"),
-            admin_users=_csv("ADMIN_USERS"),
-            admin_pool_users=_csv("ADMIN_POOL_USERS"),
+            admin_users=admin_users,
+            admin_pool_users=admin_pool_users,
             allowed_users=_csv("ALLOWED_USERS"),
-            secret_admin_principals=_csv("SECRET_ADMIN_PRINCIPALS"),
+            secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
