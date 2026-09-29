@@ -12232,3 +12232,160 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .ol-row { grid-template-columns: minmax(96px, 120px) minmax(40px, 1fr) 40px; }
 }
+
+/* diff viewer (#310)
+   ------------------------------------------------------------------
+   `src/diff/DiffView.tsx`. Every rule here is new and scoped to `.diff*`,
+   so nothing above this comment changes.
+
+   THE ADDED AND REMOVED PAIR IS A TINT OF --ok AND --bad, so it follows the
+   theme without a light-mode block of its own: each tint is mixed from the
+   token the theme already tuned. The tint is not the only channel -- a line's
+   `+` / `-` sign stays in its own column in the matching ink, so the two read
+   apart in greyscale and in a pasted screenshot as well.
+
+   A ROW'S HEIGHT IS NOT SET HERE. The viewer windows its rows by offset and
+   draws each one with its height inline (rows.ts), so a rule in this sheet
+   cannot push a row away from where the window thinks it is. Lines never
+   wrap: `white-space: pre` and a sideways scroll keep the text exactly as
+   given, and `--diff-ch` (the widest line, set inline) keeps every row's text
+   column the same width so split halves stay aligned. */
+:root {
+  --diff-add-bg: color-mix(in srgb, var(--ok) 14%, transparent);
+  --diff-del-bg: color-mix(in srgb, var(--bad) 14%, transparent);
+  --diff-match-bg: color-mix(in srgb, var(--warn) 35%, transparent);
+  /* The widest line in characters. DiffView sets it inline on the scroller;
+     this is the value outside one, so every var() in the sheet resolves. */
+  --diff-ch: 0;
+}
+.diff { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.diff-bar { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.diff-find {
+  min-width: 16ch;
+  padding: 2px var(--ctl-s2);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.diff-count { min-width: 8ch; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--mono); }
+.diff-note { color: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--font); }
+.diff-btn {
+  padding: 2px var(--ctl-s2);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  color: var(--text);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.diff-btn:disabled { color: var(--text-faint); cursor: default; }
+.diff-btn[aria-pressed='true'] { box-shadow: inset 0 -2px 0 var(--text); font-weight: 600; }
+.diff-btn:focus-visible,
+.diff-toggle:focus-visible,
+.diff-files button:focus-visible,
+.diff-find:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.diff-seg { display: inline-flex; gap: var(--ctl-s1); }
+.diff-files ol {
+  display: flex;
+  flex-direction: column;
+  max-height: 12rem;
+  margin: 0;
+  padding: 0;
+  overflow: auto;
+  list-style: none;
+}
+.diff-files button {
+  display: flex;
+  gap: var(--ctl-s2);
+  width: 100%;
+  padding: 2px var(--ctl-s1);
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  text-align: left;
+  cursor: pointer;
+}
+.diff-path { white-space: pre; }
+.diff-counts { white-space: nowrap; }
+.diff-plus { color: var(--ok-ink); }
+.diff-minus { color: var(--bad-ink); }
+.diff-scroll {
+  max-height: 70vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.diff-rows { width: max-content; min-width: 100%; }
+.diff-row {
+  box-sizing: border-box;
+  overflow: hidden;
+  white-space: pre;
+  tab-size: 4;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+}
+.diff-row.is-file {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: 0 var(--ctl-s2);
+  border-top: 1px solid var(--line-soft);
+  background: var(--surface-2);
+  color: var(--text);
+  font-weight: 600;
+}
+.diff-row.is-hunk { padding: 0 var(--ctl-s2); background: var(--surface-2); color: var(--text-dim); }
+.diff-row.is-gap,
+.diff-row.is-note {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: 0 var(--ctl-s2);
+  color: var(--text-faint);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+}
+.diff-toggle { padding: 0 var(--ctl-s1); border: 0; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.diff-badge {
+  padding: 0 var(--ctl-s1);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  color: var(--text-dim);
+  font: 400 var(--t-micro)/var(--lh-micro) var(--font);
+}
+.diff-line {
+  display: grid;
+  grid-template-columns: 6ch 6ch 2ch minmax(calc(var(--diff-ch) * 1ch + 2ch), 1fr);
+  align-items: center;
+}
+.diff-pair { display: grid; grid-template-columns: 1fr 1fr; }
+.diff-half {
+  display: grid;
+  grid-template-columns: 6ch 2ch minmax(calc(var(--diff-ch) * 1ch + 2ch), 1fr);
+  align-items: center;
+  overflow: hidden;
+}
+.diff-half + .diff-half { border-left: 1px solid var(--line-soft); }
+.diff-line.is-add,
+.diff-half.is-add { background: var(--diff-add-bg); }
+.diff-line.is-del,
+.diff-half.is-del { background: var(--diff-del-bg); }
+.diff-half.is-empty { background: var(--surface-2); }
+.diff-no { padding-right: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
+.diff-sign { text-align: center; user-select: none; }
+.is-add > .diff-sign { color: var(--ok-ink); }
+.is-del > .diff-sign { color: var(--bad-ink); }
+.diff-text mark { border-radius: 2px; background: var(--diff-match-bg); color: var(--text); }
+.diff-text mark.is-current { outline: 2px solid var(--info); outline-offset: 0; }
+.diff-cr { margin-left: 1ch; color: var(--text-faint); user-select: none; }
+.diff-nonl { margin-left: 2ch; color: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--font); user-select: none; }
+.diff-error {
+  margin: 0;
+  padding: var(--ctl-s2) var(--ctl-s3);
+  border-left: 3px solid var(--bad);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.diff-empty { margin: 0; color: var(--text-dim); font: var(--t-body)/var(--lh-body) var(--font); }
