@@ -149,6 +149,69 @@ def test_a_provider_token_shape_is_masked_even_when_the_tail_is_plain_letters(to
     assert count == 2
 
 
+#: A word that itself contains "sk-" ("task", "risk", "desk") placed BEFORE
+#: the real prefix, so the leftmost `sk-` a naive scan finds is the fake one,
+#: two characters short of the real one.
+@pytest.mark.parametrize("prefix", ["task", "risk", "desk"])
+def test_the_real_prefix_past_a_fake_mid_word_one_is_not_swallowed(prefix):
+    """SWALLOW (the #227 review, third round): a boundary check applied to the
+    match `re.sub` happens to find first cannot make the engine retry inside
+    the span it already consumed. `task-sk-proj-<key>.md` matches first at
+    `ta[sk-]proj-<key>` -- the embedded `sk-` inside "task", reaching across
+    the separator to swallow the REAL `sk-` two characters later -- so a
+    boundary check that rejects that match, as `_mask_anchored` did, never
+    gets a second attempt starting at the real prefix. The fix bakes the
+    boundary into the pattern itself (`_NAME_SK`), so the engine skips the
+    illegal start on its own and finds the real one.
+    """
+    name = f"{prefix}-{FAKE_SK}.md"
+    masking = _masking({"input_from": {"task_up": name}, "expected_outputs": [name]})
+
+    value, count = masking.metadata_value()
+
+    assert FAKE_SK not in json.dumps(value)
+    assert MASK in value["input_from"]["task_up"]
+    assert value["input_from"]["task_up"].endswith(".md")
+    assert value["expected_outputs"] == [value["input_from"]["task_up"]]
+    assert count == 2
+
+
+#: Specific-shape credentials glued directly onto a preceding letter or
+#: digit, with no separator at all.
+GLUED_TOKENS = [
+    "notesAKIAIOSFODNN7EXAMPLE",
+    "7AKIAIOSFODNN7EXAMPLE",
+    "fooASIAIOSFODNN7EXAMPLE",
+    "xghp_0123456789abcdefgh",
+    "mygithub_pat_0123456789abcdefgh",
+    "keyAIzaSy0123456789012345678901",
+    "slackxoxb-0123456789abcdef",
+]
+
+
+@pytest.mark.parametrize("token", GLUED_TOKENS)
+def test_a_specific_shape_glued_to_a_preceding_word_is_still_masked(token):
+    """GLUED (the #227 review, third round): these prefixes (`AKIA`/`ASIA`,
+    `ghp_`, `github_pat_`, `AIza`, `xox?-`) are distinctive enough that a
+    filename does not produce one by accident, so gluing one onto a preceding
+    letter or digit is a real credential, not a false positive. Anchoring
+    THESE families -- as the second cut of this fix did, uniformly -- served
+    them in clear the moment they were glued. Only `sk-` and the JWT family
+    keep a boundary; every other family, including these, runs exactly as
+    `RULES` applies it elsewhere.
+    """
+    name = f"{token}.md"
+    masking = _masking({"input_from": {"task_up": name}, "expected_outputs": [name]})
+
+    value, count = masking.metadata_value()
+
+    assert token not in json.dumps(value)
+    assert MASK in value["input_from"]["task_up"]
+    assert value["input_from"]["task_up"].endswith(".md")
+    assert value["expected_outputs"] == [value["input_from"]["task_up"]]
+    assert count == 2
+
+
 def test_a_literal_named_in_the_callers_metadata_is_masked_in_a_name():
     masking = _masking(
         {"deploy_secret": SECRET, "expected_outputs": [f"{SECRET}.md"]},
