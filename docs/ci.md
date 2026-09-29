@@ -480,6 +480,21 @@ merge. An IAM change decides who can do what in that shared project, and that
 is the kind of change the owner wants to read before it lands. Ungating dev
 (2026-09-24) was a decision about routine releases, not about grants.
 
+**What this gate stops, and what it does not.** `dev-iam` catches an operator
+mistake — a plan that changes who can do what in a shared project, applied
+without anyone reading it — the same way `approval (prod)` does for prod. It
+is not a boundary against an attacker who can merge to `main`: as measured
+above for `approval (prod)`, `GCP_DEPLOY_SA` and `GCP_WIF_PROVIDER` are
+repository variables, not environment ones, and the workload identity pool
+does not pin the minted token's `sub` to the environment a job named
+(`terraform/bootstrap/wif.tf`). `infrastructure-iam` authenticates with
+exactly the same service account, through exactly the same provider, as
+`terraform apply (dev)` and `terraform apply (prod)` — naming `dev-iam` asks a
+human to look at the plan, but grants the job asking no identity that a plan
+merged straight past the review could not already reach. Whether this gate
+should also be a real identity boundary — for example, an attribute condition
+on the WIF binding scoped to the environment — is the owner's to decide.
+
 **What counts as an IAM change.** A resource change whose type is one of
 
 * `google_project_iam_custom_role`

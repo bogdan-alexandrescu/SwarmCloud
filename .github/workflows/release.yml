@@ -621,9 +621,20 @@ jobs:
     name: terraform apply, IAM (dev-iam)
     runs-on: ubuntu-24.04
     needs: [infrastructure]
-    # No status function: every job upstream must have succeeded, and a
-    # cancel stops it.
-    if: github.event.inputs.environment != 'prod' && needs.infrastructure.result == 'success' && needs.infrastructure.outputs.iam == 'true'
+    # !cancelled(), NOT the default (bare success()). success() is not scoped
+    # to `needs: [infrastructure]` -- it is false when ANY job upstream,
+    # transitively, is not a plain success, and on a `skip_build` dispatch
+    # `build` and `promote` (both upstream of `infrastructure`) are skipped.
+    # `infrastructure`'s own `if:` already runs past that skip explicitly, but
+    # a bare `needs.infrastructure.result == 'success'` here does not stop
+    # GitHub inserting success() in front of it: this job used to skip anyway,
+    # every time, on a skip_build dev dispatch -- the IAM plan held but never
+    # applied, and the run still ended green (tests/unit/scripts/
+    # test_release_dev_iam_gate.py, test_a_skip_build_dev_release_with_an_iam_
+    # plan_still_reaches_dev_iam). `needs.infrastructure.result == 'success'`
+    # stays: `needs.*` reads only a job's direct result, which success() does
+    # not give us once a status function is spelled out.
+    if: ${{ !cancelled() && github.event.inputs.environment != 'prod' && needs.infrastructure.result == 'success' && needs.infrastructure.outputs.iam == 'true' }}
     environment: dev-iam
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
