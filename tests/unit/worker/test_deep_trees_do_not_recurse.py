@@ -7,8 +7,9 @@ worker walks is in the agent's reach, so an agent that made
 check (`Workspace.disk_bytes`), the output scan (`standalone_outputs.scan`) and
 the restore's file count (`CheckpointManager.restore`). The checkpoint archive
 walk was already iterative, but it holds one open descriptor per level, so its
-depth has to be bounded too, and past the bound it refuses rather than
-running out of descriptors or archiving a tree missing its deepest part.
+depth has to be bounded too: past the bound it archives the top of the tree
+and logs how many folders it left out (owner decision, 2026-09-28), rather
+than run out of descriptors or refuse the checkpoint.
 
 WHAT IS PINNED. Each of the four walks finishes on a 1,100-deep tree, and
 none follows a link: a link halfway down points at a folder holding a large
@@ -16,8 +17,8 @@ file, and that file is never counted, listed or archived.
 
 MUTATION. Put `os.walk(..., followlinks=False)` back in `disk_bytes` or
 `scan`, or `rglob` back in `restore`: that test raises `RecursionError` on
-3.11. Drop the depth check in `_add_entry`: the checkpoint test no longer
-sees a `CheckpointError`.
+3.11. Drop the depth check in `_add_entry`: the checkpoint test sees no
+`folders_not_archived` count and an archive deeper than the bound.
 """
 
 from __future__ import annotations
@@ -28,11 +29,8 @@ import os
 import tarfile
 from pathlib import Path
 
-import pytest
-
 from agent_worker import standalone_outputs, workspace as workspace_mod
 from agent_worker.checkpoint import CHECKPOINT_MAX_DEPTH, CheckpointManager, CheckpointRecord
-from agent_worker.errors import CheckpointError
 from agent_worker.logs import build_logger
 
 from conftest import TENANT
@@ -127,17 +125,33 @@ def test_the_output_scan_lists_a_deep_file_and_only_names_the_link(tmp_path):
     assert link in found.symlinks, found.symlinks
 
 
-def test_a_checkpoint_of_a_tree_past_the_bound_is_refused_not_exhausted(
+def test_a_checkpoint_of_a_tree_past_the_bound_archives_the_top_and_says_what_it_left(
     store, tmp_path, log_stream
 ):
+    """Owner decision, 2026-09-28: never refuse the checkpoint. The folders
+    down to the bound are archived, the ones below are counted in the log, and
+    the checkpoint restores."""
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     _deep_tree(ws.work, _outside(tmp_path))
+    (ws.work / "top.txt").write_text("near the top\n")
     manager = _manager(store, _logger(log_stream))
 
-    with pytest.raises(CheckpointError, match="folders deep"):
-        manager.create(ws, label="periodic")
-    keys = [k for k in store.list_keys(f"tenants/{TENANT}/tasks/task_1/") if "/checkpoints/" in k]
-    assert keys == [], keys
+    record = manager.create(ws, label="periodic")
+
+    assert record is not None
+    # A folder at depth k is added while k-1 ancestors and the root are open;
+    # depth CHECKPOINT_MAX_DEPTH and every one below it are left out.
+    left_out = DEPTH - (CHECKPOINT_MAX_DEPTH - 1)
+    assert f'"folders_not_archived": {left_out}' in log_stream.getvalue()
+    with tarfile.open(fileobj=io.BytesIO(store.download_bytes(record.archive_key)), mode="r:gz") as tar:
+        names = tar.getnames()
+    deepest = max(name.count("/") + 1 for name in names if name.startswith("d"))
+    assert deepest == CHECKPOINT_MAX_DEPTH - 1, deepest
+    assert not any(name.endswith("bottom.txt") for name in names)
+
+    fresh = workspace_mod.create(tmp_path / "ws2", "att_2")
+    assert manager.restore(record, fresh) == 1  # top.txt
+    assert (fresh.work / "top.txt").read_text() == "near the top\n"
 
 
 def test_a_checkpoint_just_inside_the_bound_is_written(store, tmp_path, log_stream):

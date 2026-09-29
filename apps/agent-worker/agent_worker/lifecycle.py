@@ -305,13 +305,6 @@ PR_BODY_MAX_BYTES = 60 * 1024
 #: How much of either file is read at all. Past this the text is cut anyway.
 PR_READ_LIMIT_BYTES = 256 * 1024
 
-#: The first sentence of a step's prompt, for the platform's generated pull
-#: request title (owner rule, 2026-09-28, below): split on the first
-#: `.`, `!` or `?` followed by whitespace or the end of the string, so
-#: "Mr. Fox jumps." still splits after the period that ends the sentence
-#: rather than the one in the title.
-_PROMPT_SENTENCE_RE = re.compile(r"[.!?](?:\s|$)")
-
 #: The retired generated title's shape, `[swarm] task_...`, in any case. A
 #: title that matches is treated as carrying the task id even when the id in
 #: it is not this task's (an agent that copied another task's old title).
@@ -2337,8 +2330,20 @@ class Worker:
                 "later steps will stage these artifacts from this task",
                 expected_outputs=list(declared.names),
             )
-        self._expected_outputs = declared.names
-        return declared.names
+        names = declared.names
+        if PR_TITLE_FILE not in names and self._title_owed(task):
+            # REQUIRED, NOT INVENTED (owner decision, 2026-09-28): a pull
+            # request this attempt opens is titled by the agent. Owed as an
+            # expected output, a CLI runner tells the agent to write it, and a
+            # clean finish without it fails the attempt retryably (#149's
+            # path) instead of opening an untitled pull request.
+            names = (*names, PR_TITLE_FILE)
+            self.log.info(
+                "this attempt opens a pull request; the agent must write its title",
+                file=PR_TITLE_FILE,
+            )
+        self._expected_outputs = names
+        return names
 
     def _report_missing_outputs(
         self, summary: dict[str, Any], *, fails_the_attempt: bool
@@ -4347,6 +4352,21 @@ class Worker:
         }
         if refused:
             out["pull_request_text_refused"] = refused
+        if title is None:
+            # NO TITLE IS INVENTED (owner decision, 2026-09-28). The branch is
+            # pushed; the pull request waits for a title the agent writes.
+            # An attempt with retries left never gets here without the file:
+            # `_title_owed` made `pr-title.txt` an expected output, so its
+            # absence failed the attempt retryably before the publish.
+            out["published"] = True
+            out["publish_reason"] = (
+                f"the branch was pushed; no pull request was opened because the "
+                f"agent wrote no usable {PR_TITLE_FILE}. Write a one-line title "
+                f"to $SWARM_ARTIFACTS_DIR/{PR_TITLE_FILE} (no task id, no "
+                f"mentions) and retry"
+            )
+            self.log.warning("no pull request opened: no usable agent title", refused=refused)
+            return out
         try:
             pr = open_pull_request(
                 access=access,
@@ -4598,29 +4618,35 @@ class Worker:
             return True
         return _RETIRED_TITLE_RE.search(title) is not None
 
-    def _generated_pull_request_title(self) -> str:
-        """The platform's own pull request title, when the agent wrote none.
+    def _generated_pull_request_title(self) -> str | None:
+        """The platform's own pull request title when the agent wrote none, or None.
 
-        NEVER THE TASK ID (owner rule, 2026-09-28). A caller reads this title
-        in a list of pull requests spanning many tasks, where a task id says
-        nothing about what changed -- `f"[swarm] {cfg.task_id}"` was the
-        fallback this replaces. In order, the first of these that produces
-        something is used:
-
-        1. the step's `issue` runner input (#265, landing separately --
-           `_title_from_issue_input` reads it defensively because its shape
-           was not fixed yet when this was written);
-        2. the first sentence of the step's prompt, caller text scrubbed and
-           capped exactly as the agent's own title is;
-        3. failing both, a fixed sentence naming the workflow step rather
-           than the task.
+        NEVER THE TASK ID, AND NEVER INVENTED (owner decisions, 2026-09-28).
+        The only title the platform writes is the one the step's `issue`
+        input names (`_title_from_issue_input`). Without it the agent's
+        `pr-title.txt` is REQUIRED: a title made up from the prompt's first
+        sentence or the runner profile described the request, not the change,
+        and `f"[swarm] {task_id}"` described nothing. None here means no pull
+        request is opened (`_publish_git`), and `_title_owed` makes a missing
+        `pr-title.txt` a retryable failure of the attempt before that.
         """
-        task = self._task or {}
-        return (
-            self._title_from_issue_input(task)
-            or self._title_from_prompt(task)
-            or self._title_last_resort(task)
+        return self._title_from_issue_input(self._task or {})
+
+    def _title_owed(self, task: dict[str, Any]) -> bool:
+        """True when this attempt will open a pull request that only the agent
+        can title: it may publish, its strategy opens one (`direct-pr`, or
+        `integrate` as the integrator), it has a repository, and its `issue`
+        input names no issue to title it from.
+        """
+        if not self.cfg.git_publish_enabled:
+            return False
+        if not (self.cfg.repository_url or task.get("repository_url")):
+            return False
+        strategy = self._dispatch_strategy()
+        opens = strategy == "direct-pr" or (
+            strategy == "integrate" and self._dispatch_role() == "integrator"
         )
+        return opens and self._title_from_issue_input(task) is None
 
     def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
         """"<issue title> (#N)", or "Fixes #N" with no title to hand.
@@ -4651,48 +4677,10 @@ class Worker:
             number = _as_issue_number(issue)
         if number is None:
             return None
-        text = f"{title} (#{number})" if title else f"Fixes #{number}"
+        # An issue's title is anyone's text: a mention in it would page that
+        # person or team from a title the platform wrote, so the `@` goes.
+        text = f"{_unmention(title)} (#{number})" if title else f"Fixes #{number}"
         return self._scrub_and_cap_title(text)
-
-    def _title_from_prompt(self, task: dict[str, Any]) -> str | None:
-        """The first sentence of the step's prompt.
-
-        THIS IS CALLER TEXT, exactly as untrusted as the prompt quoted in the
-        generated body used to be (`_pull_request_body`'s docstring): scrubbed
-        of every registered secret before it is capped, never after -- a title
-        cut to length first could still carry a secret's undamaged prefix.
-        """
-        payload = task.get("input")
-        prompt = payload.get("prompt") if isinstance(payload, dict) else None
-        if not isinstance(prompt, str):
-            return None
-        collapsed = " ".join(prompt.split())
-        if not collapsed:
-            return None
-        match = _PROMPT_SENTENCE_RE.search(collapsed)
-        sentence = collapsed[: match.start() + 1] if match else collapsed
-        return self._scrub_and_cap_title(sentence)
-
-    def _title_last_resort(self, task: dict[str, Any]) -> str:
-        """"SwarmCloud: work from workflow <label or step_id>" -- the last
-        resort, when nothing else named anything: still not the task id. A
-        step's `metadata.label` wins when a caller set one; the workflow
-        step id is next; the runner profile is what is left when this task is
-        not even part of a workflow.
-        """
-        label: str | None = None
-        metadata = task.get("metadata")
-        if isinstance(metadata, dict):
-            candidate = metadata.get("label")
-            if isinstance(candidate, str) and candidate.strip():
-                label = candidate.strip()
-        if label is None:
-            step_id = task.get("step_id")
-            if isinstance(step_id, str) and step_id.strip():
-                label = step_id.strip()
-        if label is None:
-            label = self.cfg.runner_profile
-        return f"SwarmCloud: work from workflow {label}"
 
     def _read_agent_text(self, name: str, refused: list[str]) -> str | None:
         """`artifacts/<name>` as text, read with no link followed; None if absent or refused."""
@@ -5308,8 +5296,30 @@ def _carries_attribution(text: str) -> bool:
 _MENTION_RE = re.compile(r"(?<![\w.`/@-])@[A-Za-z0-9][A-Za-z0-9-]*(?:/[A-Za-z0-9][\w.-]*)?")
 
 
+#: A fenced code block (``` or ~~~, closed by a fence of the same character
+#: at least as long, or by the end of the text) and an inline code span (a
+#: run of backticks closed by a run of the same length). GitHub notifies no
+#: one for a mention inside either (owner decision, 2026-09-28), so
+#: `@pytest.fixture` in a code block does not refuse a body.
+_FENCED_RE = re.compile(
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})[^\n]*\n.*?(?:^[ \t]{0,3}(?P=fence)[`~]*[ \t]*$|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+_CODE_SPAN_RE = re.compile(r"(?P<ticks>`+)(?!`).+?(?<!`)(?P=ticks)(?!`)", re.DOTALL)
+
+
+def _without_code(text: str) -> str:
+    return _CODE_SPAN_RE.sub(" ", _FENCED_RE.sub("\n", text))
+
+
 def _carries_mention(text: str) -> bool:
-    return _MENTION_RE.search(text) is not None
+    """A mention GitHub would notify for: in prose, not in code."""
+    return _MENTION_RE.search(_without_code(text)) is not None
+
+
+def _unmention(text: str) -> str:
+    """`text` with the `@` taken off every mention, so it names and pings no one."""
+    return _MENTION_RE.sub(lambda match: match.group(0)[1:], text)
 
 
 #: A trailer line as git reads one: `Token: value`, the token letters, digits

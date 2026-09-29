@@ -53,10 +53,11 @@ from .workspace import Workspace, walk_tree
 #: open descriptor per level (it opens each child relative to its parent so
 #: that no link is followed, #227), so an unbounded depth is an unbounded
 #: number of descriptors: a tree 1,000 levels deep met a 1,024-descriptor
-#: limit before it met anything else. Deeper than this, the checkpoint is
-#: REFUSED rather than archived without the deep part -- a resume that
-#: silently restored a tree missing files would be worse than resuming from
-#: the last checkpoint that was whole, which a refusal leaves the newest.
+#: limit before it met anything else. A folder this deep is NOT archived, nor
+#: anything below it, and the checkpoint is still written (owner decision,
+#: 2026-09-28): invariant 8 says checkpointing is mandatory, and a refusal
+#: would fail every checkpoint for the rest of the attempt. How many folders
+#: were left out is logged, so the loss is never silent.
 CHECKPOINT_MAX_DEPTH = 512
 
 ARCHIVE_NAME = "archive.tar.gz"
@@ -324,8 +325,8 @@ class CheckpointManager:
 
         An explicit stack, not recursion: open descriptors are bounded by the
         tree's depth, and a deep tree cannot raise `RecursionError` here. The
-        depth itself is bounded by `CHECKPOINT_MAX_DEPTH`, past which the
-        checkpoint is refused rather than run out of descriptors.
+        depth itself is bounded by `CHECKPOINT_MAX_DEPTH`: below it nothing is
+        archived, the count left out is logged, and the checkpoint is written.
         """
         try:
             root_fd = os.open(source, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -336,6 +337,7 @@ class CheckpointManager:
                 f"points at"
             ) from exc
         count = 0
+        too_deep: list[str] = []
         stack: list[tuple[int, str, list[str]]] = []
         try:
             stack.append((root_fd, "", sorted(os.listdir(root_fd), reverse=True)))
@@ -355,7 +357,7 @@ class CheckpointManager:
                     if rel in skip:
                         continue
                     try:
-                        count += self._add_entry(tar, stack, dir_fd, name, rel)
+                        count += self._add_entry(tar, stack, dir_fd, name, rel, too_deep)
                     except (FileNotFoundError, NotADirectoryError):
                         continue  # gone, or no longer a directory
                     except OSError as exc:
@@ -365,6 +367,20 @@ class CheckpointManager:
         finally:
             for dir_fd, _, _ in stack:
                 os.close(dir_fd)
+        if too_deep:
+            # Counted by path, with no descriptor held (`walk_tree`), and no
+            # link followed: a count, not an archive, so a race here costs a
+            # wrong number in a log line and nothing else.
+            folders = 0
+            for rel in too_deep:
+                for _ in walk_tree(source / rel):
+                    folders += 1
+            self._log.warning(
+                "the working tree is deeper than a checkpoint archives; the "
+                "folders below the bound were not archived",
+                max_depth=CHECKPOINT_MAX_DEPTH,
+                folders_not_archived=folders,
+            )
         return count
 
     @staticmethod
@@ -374,10 +390,13 @@ class CheckpointManager:
         dir_fd: int,
         name: str,
         rel: str,
+        too_deep: list[str],
     ) -> int:
         """Add one entry of the directory open as `dir_fd`; 1 when it counts.
 
-        A directory is pushed onto `stack` open, for the walk to descend into.
+        A directory is pushed onto `stack` open, for the walk to descend into
+        -- unless it is `CHECKPOINT_MAX_DEPTH` levels down, when it is named in
+        `too_deep` and neither archived nor entered.
         """
         st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
         if stat.S_ISLNK(st.st_mode):
@@ -389,11 +408,8 @@ class CheckpointManager:
             # `stack` holds the root and every open ancestor: its length is
             # this directory's depth. See `CHECKPOINT_MAX_DEPTH`.
             if len(stack) >= CHECKPOINT_MAX_DEPTH:
-                raise CheckpointError(
-                    f"refusing to checkpoint: the working tree is more than "
-                    f"{CHECKPOINT_MAX_DEPTH} folders deep, and a checkpoint "
-                    f"without its deepest part would restore a tree missing files"
-                )
+                too_deep.append(rel)
+                return 0
             child = os.open(name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=dir_fd)
             try:
                 info = _tarinfo(rel, os.fstat(child), tarfile.DIRTYPE)

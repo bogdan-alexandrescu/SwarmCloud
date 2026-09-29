@@ -192,6 +192,20 @@ def _merge(repo, remote, branches, tmp_path, **kw):
 
 
 @pytest.fixture(autouse=True)
+def _the_agent_titles_its_pull_request(monkeypatch):
+    """Since 2026-09-28 the platform invents no pull request title: the agent
+    writes `pr-title.txt`, or the step's `issue` input names one, or no pull
+    request is opened (`test_pull_request_text.py` pins that). These tests are
+    about strategy, pushing and credentials, not titles, so every attempt here
+    stands in for an agent that wrote one."""
+    from agent_worker import lifecycle
+
+    monkeypatch.setattr(
+        lifecycle.Worker, "_generated_pull_request_title", lambda self: "The agent's title"
+    )
+
+
+@pytest.fixture(autouse=True)
 def _logs_dir(tmp_path):
     (tmp_path / "logs").mkdir(exist_ok=True)
     (tmp_path / "private").mkdir(exist_ok=True)
