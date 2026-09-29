@@ -62,7 +62,7 @@ masked in one is masked in the other -- and served with its own
 
 THE KEYS THE PLATFORM WRITES STAY READABLE, and they are told apart by the one
 fact that proves who wrote them: `validation.RESERVED_METADATA_KEYS`
-(`dispatch`, `input_from`, `expected_outputs`) are REFUSED at submission from
+(`dispatch`, `input_from`, `expected_outputs`, `startup_refunds`) are REFUSED at submission from
 every caller (`check_reserved_metadata`), so a value under one of them was
 written by `SubmissionService` and nobody else. They are served exactly as
 stored and never counted: the worker, the UI's workflow joins and
