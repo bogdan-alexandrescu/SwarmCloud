@@ -892,6 +892,16 @@ describe('#105: the cause of a failure', () => {
     expect(failureCause('   \n')).toBeNull()
   })
 
+  it('scrubs a quoted value that lands before the first ": ", so two such failures still group', () => {
+    // failureCause splits on the first ": " and only scrubs the part BEFORE
+    // it -- the head. Every other fixture here quotes AFTER that colon, so
+    // this is the only assertion that exercises the scrub on the head itself.
+    const a = failureCause("input collision 'a.txt' vs 'b.txt': step x")
+    const b = failureCause("input collision 'c.txt' vs 'd.txt': step y")
+    expect(a).toBe('input collision … vs …')
+    expect(a).toBe(b)
+  })
+
   it('groups a workflow’s failed steps by cause, largest first', () => {
     const tasks = new Map<string, Task>()
     const steps: WorkflowStep[] = []
@@ -963,6 +973,29 @@ describe('#106: stepWhy', () => {
     // And a step with no task yet under a failed parent says so too.
     tasks.set('t_ship', task('t_ship', 'FAILED', { last_error: 'boom' }))
     expect(stepWhy(steps[3]!, { kind: 'unstarted' }, steps, tasks, null)!.text).toBe('blocked: ship failed')
+  })
+
+  it('upgrades a still-waiting step (READY, PARKED or QUEUED) to the cascade copy when a parent failed, over its own state’s words', () => {
+    // These three all fall into stepWhy's `default:` switch arm. Each one
+    // carries its OWN reason to show (a pool block, a park reason, or
+    // nothing but WAITING_WORDS) -- proving the cascade line wins only if
+    // that reason is demonstrably different from "blocked: plan failed".
+    const failedPlan = task('t_plan', 'FAILED', { completed_at: iso(-300), last_error: 'boom' })
+    const tasks = new Map([['t_plan', failedPlan]])
+
+    const queuedBuild = task('t_build', 'QUEUED')
+    tasks.set('t_build', queuedBuild)
+    expect(stepWhy(steps[1]!, joined(queuedBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
+
+    const readyBuild = task('t_build', 'READY', {
+      blocked_by: [{ pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 0, active: 0 }],
+    })
+    tasks.set('t_build', readyBuild)
+    expect(stepWhy(steps[1]!, joined(readyBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
+
+    const parkedBuild = task('t_build', 'PARKED', { park_reason: 'QUOTA_EXHAUSTED' })
+    tasks.set('t_build', parkedBuild)
+    expect(stepWhy(steps[1]!, joined(parkedBuild), steps, tasks, null)!.text).toBe('blocked: plan failed')
   })
 
   it('gives a failure its first line, the whole error underneath, and nothing for a running or finished step', () => {

@@ -1238,7 +1238,6 @@ export function failureCause(lastError: string | null | undefined): string | nul
   if (line === '') return null
   const head = line.split(/:\s/, 1)[0]!.trim()
   const cause = (head === '' ? line : head)
-    .replace(/`[^`]*`|'[^']*'|"[^"]*"/g, '…')
     .replace(/\b(?:tsk|task|wf|att|lease)_[A-Za-z0-9_-]+/g, '…')
     .replace(/\b[0-9a-f]{8,}\b/gi, '…')
     .replace(/\s+/g, ' ')
@@ -1399,7 +1398,6 @@ export function stepWhy(
       return why(whyAgent(task, units), false)
     default: {
       const warn = whyNeedsAction(task, units)
-      if (failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
       const agent = whyAgent(task, units)
       if (agent !== '') return why(agent, warn)
       const blocked = whyNotRunning(task)
