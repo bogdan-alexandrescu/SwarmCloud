@@ -510,7 +510,7 @@ def test_the_worker_retitles_by_the_task_id_rule(
 # code or not, so nothing the agent writes can page anyone and no body or
 # title is refused for a mention.
 
-ZWJ = "‍"
+ZWJ = "\u200d"
 
 
 @pytest.mark.parametrize(

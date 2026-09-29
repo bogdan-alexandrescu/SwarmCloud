@@ -54,8 +54,11 @@ pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not 
 
 
 def _git(repo: Path, *args: str) -> str:
+    """git in the agent's clone, as the agent. `commit-tree` and
+    `replace --graft` write commits, and CI has no git identity of its own."""
+    ident = ["-c", "user.name=Agent", "-c", "user.email=agent@example.invalid"]
     return subprocess.run(
-        ["git", *args], cwd=str(repo), check=True, capture_output=True, text=True,
+        ["git", *ident, *args], cwd=str(repo), check=True, capture_output=True, text=True,
     ).stdout.strip()
 
 
