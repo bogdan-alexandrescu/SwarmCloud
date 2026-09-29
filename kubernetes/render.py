@@ -631,6 +631,146 @@ def render_files(files: tuple[str, ...], values: dict[str, str]) -> str:
     return "\n---\n".join(documents) + "\n"
 
 
+# ---------------------------------------------------------------------------
+# The step-spec public keys, for GKE pods (contract request 34, #342).
+#
+# Owner decision, 2026-09-29 (#353): a browser pod's manifest is rendered per
+# task by the scheduler, so the `{version: PEM}` map is NOT inlined into its
+# `env:` -- one template placeholder away from a copy a task shapes. It lives
+# in a ConfigMap in the tenant's namespace instead, which the pod mounts
+# read-only at /etc/swarm/spec-verify-keys (one file per key, read by
+# `agent_worker.specverify.read_mount`). No Kubernetes provider in Terraform:
+# terraform/infra OUTPUTS the data (`spec_verify_keys_configmap`), this renders
+# it, and kubernetes/apply.sh applies it with the rest of the namespace, in
+# the release.
+#
+# NOT a template with placeholders: the values are multi-line PEMs, which
+# `substitute()` and `_VALUE_PATTERNS` are not built for. Every value is
+# validated here instead, as strictly -- a PEM carrying `---` would be a second
+# YAML document in the manifest apply.sh sends to the cluster -- and emitted as
+# a JSON string, which is a valid YAML double-quoted scalar.
+# ---------------------------------------------------------------------------
+
+#: The ConfigMap #353's GKE template and dispatcher mount.
+SPEC_VERIFY_KEYS_CONFIG_MAP = "swarm-spec-verify-keys"
+
+#: The keys terraform/infra's `spec_verify_keys_configmap` output may carry.
+#: SPEC_VERIFY_KEYS and SPEC_SIGNING_KEY are what the worker reads from the
+#: mount; the rollout pair travels beside them so a GKE pod's copy of the
+#: platform's settings is the whole of what a Cloud Run Job carries.
+SPEC_CONFIG_MAP_KEYS = (
+    "SPEC_VERIFY_KEYS",
+    "SPEC_SIGNING_KEY",
+    "SPEC_SIGNATURE_MODE",
+    "SPEC_LEGACY_CUTOVER",
+)
+SPEC_CONFIG_MAP_REQUIRED = ("SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY")
+
+_PEM_PUBLIC_KEY = re.compile(
+    r"-----BEGIN PUBLIC KEY-----\n(?:[A-Za-z0-9+/=]{1,76}\n)+-----END PUBLIC KEY-----\n?"
+)
+_KMS_NAME_SEGMENT = r"[A-Za-z0-9_-]{1,63}"
+_CUTOVER = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})"
+)
+
+
+def spec_verify_keys_data(path: str, project: str) -> dict[str, str]:
+    """The ConfigMap's data, from `terraform output -json spec_verify_keys_configmap`.
+
+    Refuses, before anything is rendered, anything the worker would refuse or
+    that could carry YAML: an unknown key, a key version outside the signing
+    key, a signing key in another project, a value that is not a PEM public key.
+    """
+    import json
+
+    try:
+        payload = json.loads(Path(path).read_text())
+    except (OSError, ValueError) as exc:
+        raise RenderError(f"render: --spec-verify-keys-file {path!r} is not readable JSON: {exc}")
+    if not isinstance(payload, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in payload.items()
+    ):
+        raise RenderError(
+            "render: --spec-verify-keys-file must hold terraform/infra's "
+            "spec_verify_keys_configmap output, a JSON object of strings"
+        )
+    unknown = sorted(set(payload) - set(SPEC_CONFIG_MAP_KEYS))
+    missing = [k for k in SPEC_CONFIG_MAP_REQUIRED if not payload.get(k)]
+    if unknown or missing:
+        raise RenderError(
+            f"render: --spec-verify-keys-file: unknown keys {unknown}, missing {missing}; "
+            f"expected {list(SPEC_CONFIG_MAP_KEYS)}"
+        )
+
+    signing_key = payload["SPEC_SIGNING_KEY"]
+    key_pattern = re.compile(
+        rf"projects/{re.escape(project)}/locations/[a-z0-9-]{{1,63}}"
+        rf"/keyRings/{_KMS_NAME_SEGMENT}/cryptoKeys/{_KMS_NAME_SEGMENT}"
+    )
+    if not key_pattern.fullmatch(signing_key):
+        raise RenderError(
+            f"render: SPEC_SIGNING_KEY {signing_key!r} is not a Cloud KMS crypto key in "
+            f"project {project!r}"
+        )
+
+    try:
+        keys = json.loads(payload["SPEC_VERIFY_KEYS"])
+    except ValueError as exc:
+        raise RenderError(f"render: SPEC_VERIFY_KEYS is not valid JSON: {exc}")
+    if not isinstance(keys, dict) or not keys:
+        raise RenderError(
+            "render: SPEC_VERIFY_KEYS must be a non-empty JSON object of version name -> PEM; "
+            "an empty one verifies nothing, and every signed task would fail CANNOT_START"
+        )
+    version_pattern = re.compile(rf"{re.escape(signing_key)}/cryptoKeyVersions/[0-9]+")
+    for version, pem in keys.items():
+        if not isinstance(version, str) or not version_pattern.fullmatch(version):
+            raise RenderError(
+                f"render: SPEC_VERIFY_KEYS names {version!r}, which is not a version of "
+                f"{signing_key}; the worker would refuse every task it signed"
+            )
+        if not isinstance(pem, str) or not _PEM_PUBLIC_KEY.fullmatch(pem):
+            raise RenderError(f"render: SPEC_VERIFY_KEYS[{version!r}] is not a PEM public key")
+
+    mode = payload.get("SPEC_SIGNATURE_MODE", "")
+    if mode and mode not in ("enforce", "legacy"):
+        raise RenderError(f"render: SPEC_SIGNATURE_MODE must be enforce or legacy, got {mode!r}")
+    cutover = payload.get("SPEC_LEGACY_CUTOVER", "")
+    if cutover and not _CUTOVER.fullmatch(cutover):
+        raise RenderError(
+            f"render: SPEC_LEGACY_CUTOVER {cutover!r} is not an RFC 3339 time with a zone"
+        )
+    return {k: payload[k] for k in SPEC_CONFIG_MAP_KEYS if payload.get(k)}
+
+
+def render_spec_verify_keys(data: dict[str, str], values: dict[str, str]) -> str:
+    """The `swarm-spec-verify-keys` ConfigMap document, in the tenant's namespace."""
+    import json
+
+    names = check_values({k: values[k] for k in ("NAMESPACE", "TENANT_ID")})
+    lines = [
+        "apiVersion: v1",
+        "kind: ConfigMap",
+        "metadata:",
+        f"  name: {SPEC_VERIFY_KEYS_CONFIG_MAP}",
+        f"  namespace: {names['NAMESPACE']}",
+        "  labels:",
+        "    managed-by: swarm-terraform",
+        f"    swarm-tenant: {names['TENANT_ID']}",
+        "    app.kubernetes.io/part-of: swarm",
+        "  annotations:",
+        "    swarm.saga.xyz/rationale: >-",
+        "      The step-spec public keys (contract request 34), from terraform/infra's",
+        "      spec_verify_keys_configmap output. Mounted read-only by worker pods;",
+        "      written only by kubernetes/apply.sh with the deployer's credentials.",
+        "      No Role in this namespace may write a ConfigMap.",
+        "data:",
+    ]
+    lines += [f"  {key}: {json.dumps(value)}" for key, value in data.items()]
+    return "\n".join(lines) + "\n"
+
+
 def render_job(args: argparse.Namespace) -> str:
     profile = RUNNER_PROFILES[args.profile]
     rc = RESOURCE_CLASSES[profile.resource_class]
@@ -844,6 +984,17 @@ def add_tenant_arguments(parser: argparse.ArgumentParser) -> None:
             "`operator-supplied` when the values are given by hand."
         ),
     )
+    parser.add_argument(
+        "--spec-verify-keys-file",
+        default="",
+        help=(
+            "a file holding `terraform output -json spec_verify_keys_configmap` "
+            "from terraform/infra: renders the swarm-spec-verify-keys ConfigMap "
+            "(contract request 34) into the tenant's namespace. kubernetes/apply.sh "
+            "passes it as --spec-verify-keys; omitted, no ConfigMap is rendered and "
+            "any existing one is left as it is."
+        ),
+    )
     parser.add_argument("--quota-pods", type=int, default=8)
     parser.add_argument("--quota-jobs", type=int, default=32)
     parser.add_argument("--quota-cpu", type=int, default=64)
@@ -952,7 +1103,16 @@ def main(argv: list[str] | None = None) -> int:
                 "values from the cluster.",
                 file=sys.stderr,
             )
-        sys.stdout.write(render_files(tenant_files(bound_ksas(args)), values))
+        # Validated BEFORE anything is written, so a bad output renders nothing.
+        spec_data = (
+            spec_verify_keys_data(args.spec_verify_keys_file, args.project)
+            if args.spec_verify_keys_file
+            else None
+        )
+        manifest = render_files(tenant_files(bound_ksas(args)), values)
+        if spec_data is not None:
+            manifest += "---\n" + render_spec_verify_keys(spec_data, values)
+        sys.stdout.write(manifest)
     elif args.command == "identity":
         values = check_values(tenant_values(args))
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")

@@ -329,6 +329,32 @@ secret_admin_members = [
   "user:admin@saga.xyz",
 ]
 
+# --- step-spec signing (contract request 34, #342) --------------------------
+# LEGACY FIRST (owner decision 2026-09-29 on #353): unsigned tasks created
+# before the cutover are admitted and logged -- a WARNING and a RUNNING event
+# with phase verify_spec -- because every task parked when the verifying
+# worker ships is unsigned. Inert until #353 is released: today's worker and
+# swarm-api read none of these.
+#
+# THE CUTOVER PLAN (docs/runbooks/spec-signing-rollout.md):
+#   1. this change: legacy, with the cutover at the end of the legacy window,
+#      2026-10-20T00:00:00Z -- the same instant as the worker's hard-coded
+#      SPEC_LEGACY_UNTIL. Until step 3 every unsigned task is admitted, so the
+#      release that starts signing (#353) cannot fail a single parked task.
+#   2. #353 is released: swarm-api signs every new task, workers verify.
+#   3. a PR sets spec_legacy_cutover to the moment the signing swarm-api
+#      revision took all traffic (`gcloud run services describe swarm-api
+#      --region us-central1 --format='value(status.traffic)'` and that
+#      revision's creation time). From then on a task created after that
+#      moment with its signature stripped is refused, not admitted.
+#   4. once no non-terminal unsigned task is left, a PR sets
+#      spec_signature_mode = "enforce" -- before 2026-10-20, after which the
+#      worker enforces regardless.
+spec_signature_mode = "legacy"
+spec_legacy_cutover = "2026-10-20T00:00:00Z"
+# Version 1 is the one Cloud KMS creates with the key (terraform/bootstrap).
+spec_signing_key_version = 1
+
 # --- observability ---------------------------------------------------------
 create_alerts = true
 alert_emails  = []

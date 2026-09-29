@@ -17,7 +17,11 @@
 # the CLI as `--model`. A caller's `input.model` is refused (invariant 10).
 # Changing the model is a change to that local, and a release.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id  = "saga-agents-staging"

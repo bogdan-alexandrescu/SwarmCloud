@@ -7,7 +7,11 @@
 # into an empty project. A `for_each` or `count` derived from a value that does
 # not exist yet fails here rather than on day one.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id  = "saga-agents-staging"

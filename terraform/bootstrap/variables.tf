@@ -80,10 +80,15 @@ variable "prerequisite_services" {
   description = <<-EOT
     The APIs terraform itself needs before terraform/infra can plan anything.
     The full 18 are enabled by terraform/infra; these are the ones without which
-    that root cannot even authenticate or read the project.
+    that root cannot even authenticate or read the project -- plus the APIs
+    this root's own resources need (Cloud KMS, for the step-spec key).
   EOT
   type        = list(string)
   default = [
+    # The step-spec signing key (spec_signing.tf, contract request 34) is
+    # created by THIS root, so its API is enabled here rather than by
+    # terraform/infra, which only reads the key.
+    "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",

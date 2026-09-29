@@ -5,7 +5,7 @@ output "dashboard_id" {
 output "log_metric_names" {
   value = sort(concat(
     [for m in google_logging_metric.events : m.name],
-    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name],
+    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name],
   ))
 }
 
@@ -14,8 +14,9 @@ output "log_metric_filters" {
   value = merge(
     { for k, m in google_logging_metric.events : m.name => m.filter },
     {
-      (google_logging_metric.peak_rss.name)      = google_logging_metric.peak_rss.filter
-      (google_logging_metric.oom_near_miss.name) = google_logging_metric.oom_near_miss.filter
+      (google_logging_metric.peak_rss.name)               = google_logging_metric.peak_rss.filter
+      (google_logging_metric.oom_near_miss.name)          = google_logging_metric.oom_near_miss.filter
+      (google_logging_metric.spec_signature_invalid.name) = google_logging_metric.spec_signature_invalid.filter
     },
   )
 }
@@ -47,5 +48,6 @@ output "alert_policy_names" {
     google_monitoring_alert_policy.dead_letter_backlog[*].display_name,
     google_monitoring_alert_policy.wake_backlog[*].display_name,
     google_monitoring_alert_policy.tasks_dead_lettered[*].display_name,
+    google_monitoring_alert_policy.spec_signature_invalid[*].display_name,
   )
 }
