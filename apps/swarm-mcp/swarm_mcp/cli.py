@@ -20,7 +20,6 @@ id (wf_...) stands for every step of that workflow.
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import sys
@@ -345,18 +344,7 @@ TAIL_EVENT_PAGE = 50
 
 
 def _event_key(event: dict[str, Any]) -> str:
-    """What `tail` remembers an event by: its `event_id`, else its content.
-
-    AN EVENT WITHOUT AN ID IS KEYED BY ALL OF IT (#227). Keyed by `at` and
-    `type`, two events of one type stored in the same second -- two
-    checkpoints, say -- shared a key and the second was dropped as already
-    printed. A hash of the event's canonical JSON (sorted keys) is the same
-    only for a true duplicate, however its keys were ordered.
-    """
-    if event.get("event_id"):
-        return str(event["event_id"])
-    canonical = json.dumps(event, sort_keys=True, separators=(",", ":"), default=str)
-    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
+    return str(event.get("event_id") or f"{event.get('at')}{event.get('type')}")
 
 
 def _unseen_events(
