@@ -25,6 +25,7 @@ from fastapi.testclient import TestClient
 from swarm_common.identity import TenantMember
 from swarm_common.states import EventType
 
+import swarm_api.auth as auth_module
 from swarm_api.auth import (
     Authenticator,
     IapAssertionVerifier,
@@ -206,6 +207,65 @@ def test_a_duplicate_listing_is_a_401_not_a_500_on_both_paths(monkeypatch):
         auth.authenticate(_bearer("t"))
     with pytest.raises(Unauthenticated):
         auth.authenticate(None, "assertion")
+
+
+# ---------------------------------------------------------------------------
+# A whitespace-bearing email claim (contract request 30, owner decision
+# 2026-09-29, replacing the deleted `test_a_trailing_newline_is_not_a_match`)
+#
+# Entry 30's prose credited `tenant_member_for`'s `re.fullmatch` with refusing
+# a trailing newline, but the ACCEPTED diff normalises with `.strip().lower()`
+# BEFORE that `fullmatch` runs, so the frozen function itself accepts one (see
+# tests/unit/control_plane/test_group_resolution.py, where the old test was
+# removed with the reason recorded in place). `identity.py` is frozen and is
+# not changed here. Instead `_from_claims` (auth.py, not frozen) now refuses a
+# token whose email claim is not exactly its own `.strip()`, BEFORE the
+# listing lookup or anything else runs -- restoring the property the entry's
+# text describes, at the layer that is allowed to change.
+# ---------------------------------------------------------------------------
+
+def test_a_trailing_newline_or_leading_space_email_never_reaches_the_listing(monkeypatch):
+    calls: list[str] = []
+    real = auth_module.tenant_member_for
+
+    def _tracking(email: str, subject: str, members: Any) -> Any:
+        calls.append(email)
+        return real(email, subject, members)
+
+    monkeypatch.setattr(auth_module, "tenant_member_for", _tracking)
+
+    auth = _authenticator(
+        {
+            "trailing": _claims(FIXER + "\n"),
+            "leading": _claims(" " + FIXER),
+            "clean": _claims(FIXER),
+        }
+    )
+
+    with pytest.raises(Unauthenticated):
+        auth.authenticate(_bearer("trailing"))
+    with pytest.raises(Unauthenticated):
+        auth.authenticate(_bearer("leading"))
+
+    # The control: a clean email is unaffected, resolves as before, and IS the
+    # one call that reaches the listing -- proving the refusal above is about
+    # the whitespace, not a false positive that would also block a real caller.
+    ctx = auth.authenticate(_bearer("clean"))
+    assert ctx.tenant_id == "eng"
+    assert ctx.member_scope == "continuation"
+
+    assert calls == [FIXER], (
+        f"tenant_member_for was reached for a whitespace-bearing email claim: {calls}"
+    )
+
+
+def test_a_trailing_newline_email_is_refused_on_the_iap_path_too(monkeypatch):
+    iap = _real_iap(
+        monkeypatch,
+        {"email": FIXER + "\n", "sub": f"accounts.google.com:{FIXER_UID}"},
+    )
+    with pytest.raises(Unauthenticated):
+        _authenticator({}, iap=iap).authenticate(None, "assertion")
 
 
 # ---------------------------------------------------------------------------
