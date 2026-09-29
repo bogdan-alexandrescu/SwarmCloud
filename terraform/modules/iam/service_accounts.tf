@@ -14,26 +14,20 @@
 locals {
   owner_marker = "managed-by=${lookup(var.labels, "managed-by", "swarm-terraform")}"
 
-  platform_accounts = {
-    "swarm-api" = {
-      display_name = "Swarm API"
-      description  = "Authenticates callers, resolves tenants, writes tasks. Creates no infrastructure."
-    }
-    "swarm-scheduler" = {
-      display_name = "Swarm Scheduler"
-      description  = "Admits work and dispatches executions. Cannot delete infrastructure."
-    }
-    "swarm-quota-broker" = {
-      display_name = "Swarm Quota Broker"
-      description  = "Owns provider quota state. Control-plane data only."
-    }
-    "swarm-reconciler" = {
-      display_name = "Swarm Reconciler"
-      description  = "The only identity permitted to delete executions and garbage-collect Job resources."
-    }
-  }
+  # Listed in modules/service_account_ids, which terraform/bootstrap reads too:
+  # it grants the release deployer roles/iam.serviceAccountAdmin on each of
+  # these accounts and on no other (#334).
+  platform_accounts = module.service_account_ids.platform
 }
 
+module "service_account_ids" {
+  source = "../service_account_ids"
+}
+
+# create_ignore_already_exists: an account made ahead of the release -- the
+# step that has to come before bootstrap can grant the deployer on it
+# (docs/ci.md, "The deployer's service-account grants") -- is adopted, not
+# refused with a 409.
 resource "google_service_account" "platform" {
   for_each = local.platform_accounts
 
@@ -41,6 +35,8 @@ resource "google_service_account" "platform" {
   account_id   = each.key
   display_name = each.value.display_name
   description  = "${local.owner_marker}; ${each.value.description}"
+
+  create_ignore_already_exists = true
 }
 
 # Cloud Scheduler and Pub/Sub push present this identity when they call the
@@ -50,7 +46,9 @@ resource "google_service_account" "platform" {
 # nothing else.
 resource "google_service_account" "tick" {
   project      = var.project_id
-  account_id   = "swarm-tick"
+  account_id   = module.service_account_ids.tick_id
   display_name = "Swarm Tick Invoker"
   description  = "${local.owner_marker}; OIDC identity for Cloud Scheduler and Pub/Sub push. No project roles."
+
+  create_ignore_already_exists = true
 }

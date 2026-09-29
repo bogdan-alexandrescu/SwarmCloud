@@ -59,6 +59,17 @@ secret, and only after that adds the provider to `credentials`. The secret has
 to be labelled as this tenant's key for this provider and hold an enabled
 version before anything is granted. Add `DRY_RUN=1` to see what it would do.
 
+**A tenant terraform will manage needs the owner's bootstrap step before its
+release** (#334). The release deployer holds `roles/iam.serviceAccountAdmin`
+on each account `terraform/infra` manages, not on the project, and the release
+sets the new worker account's IAM in the same apply that adds the tenant. So:
+register the tenant (which creates `swarm-agent-worker-<tenant>`), add it to
+`terraform/environments/dev/dev.tfvars` on the pull request's branch, have the
+owner run the targeted bootstrap apply the script prints, and only then merge.
+Skipping the apply fails the release with a 403 on that account.
+[docs/ci.md](ci.md#a-new-account-exists-before-the-release-that-adds-it) has
+the commands and why.
+
 `register-tenant.sh` creates the service account, the IAM conditions, the
 Firestore documents *and* the whole GKE namespace — it calls
 `kubernetes/apply.sh` for the namespace, so the NetworkPolicy, ResourceQuota,

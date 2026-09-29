@@ -28,6 +28,14 @@
 # `--add-provider`, which makes the two changes adding one needs and nothing
 # else -- see section A below.
 #
+# ORDER, FOR A TENANT TERRAFORM WILL MANAGE (#334). This script creates the
+# worker account first; the owner then applies terraform/bootstrap's grant of
+# roles/iam.serviceAccountAdmin on it to the release deployer; only then does a
+# release that adds the tenant to terraform/environments/dev/dev.tfvars run.
+# The release sets the account's IAM in the same apply, and the deployer holds
+# that role per account, never on the project. Section 2b checks the grant and
+# prints the targeted apply.
+#
 # NAMING. The identity created here is `swarm-agent-worker-<tenant>`, which is
 # what terraform/modules/tenancy creates, what terraform/modules/cloud_run_jobs
 # binds to each (tenant, profile) Job, and what kubernetes/render.py defaults to.
@@ -718,6 +726,43 @@ else
   ok "created ${GSA_EMAIL}"
 fi
 
+# --- 2b. the release deployer's grant on this account --------------------------
+#
+# THE BOOTSTRAP STEP COMES BEFORE THE RELEASE (#334, owner decision 2026-09-29).
+# The release deployer holds roles/iam.serviceAccountAdmin on each account
+# terraform/infra manages, granted one account at a time by
+# terraform/bootstrap/deployer_service_accounts.tf -- no longer on the project.
+# The release sets this account's IAM policy (actAs, Workload Identity) in the
+# same apply that adds the tenant, and without that grant it 403s. The grant
+# cannot be made before the account exists, which is why the account is created
+# above, here, rather than by the release; terraform's
+# create_ignore_already_exists adopts it.
+#
+# Checked, not applied: bootstrap is the owner's root and runs as the owner.
+# The check reads the account's own policy, which this operator can read.
+step "Release deployer grant"
+DEPLOYER_SA="${DEPLOYER_SERVICE_ACCOUNT:-swarm-tf-deployer@${PROJECT_ID}.iam.gserviceaccount.com}"
+BOOTSTRAP_TARGET="google_service_account_iam_member.deployer_admin[\"${GSA_ID}\"]"
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+  dim "  would check ${DEPLOYER_SA} holds roles/iam.serviceAccountAdmin on ${GSA_EMAIL}"
+else
+  GSA_POLICY_FILE="$(mktemp)"
+  if gcloud iam service-accounts get-iam-policy "${GSA_EMAIL}" \
+       --project "${PROJECT_ID}" --format=json >"${GSA_POLICY_FILE}" 2>/dev/null \
+     && jq -e --arg m "serviceAccount:${DEPLOYER_SA}" \
+          '[.bindings[]? | select(.role == "roles/iam.serviceAccountAdmin" and (.condition == null)) | .members[]?] | index($m) != null' \
+          "${GSA_POLICY_FILE}" >/dev/null; then
+    ok "${DEPLOYER_SA} holds roles/iam.serviceAccountAdmin on ${GSA_EMAIL}"
+  else
+    warn "the release deployer does not hold roles/iam.serviceAccountAdmin on ${GSA_EMAIL} yet"
+    warn "a release that adds tenant '${TENANT_ID}' to terraform/environments/dev/dev.tfvars will 403 until it does. In this order:"
+    warn "  1. add '${TENANT_ID}' to the tenants block of terraform/environments/dev/dev.tfvars (on the pull request's branch)"
+    warn "  2. as the owner: terraform -chdir=terraform/bootstrap apply -target='${BOOTSTRAP_TARGET}'"
+    warn "  3. then merge; the release adopts this account and sets its IAM"
+  fi
+  rm -f "${GSA_POLICY_FILE}"
+fi
+
 # --- 3. IAM -------------------------------------------------------------------
 step "IAM"
 
@@ -1308,6 +1353,9 @@ ok "tenant ${TENANT_ID} registered"
 cat >&2 <<EOF
 
 Next:
+  terraform-managed?    add '${TENANT_ID}' to terraform/environments/dev/dev.tfvars, then BEFORE merging
+                        terraform -chdir=terraform/bootstrap apply -target='${BOOTSTRAP_TARGET}'
+                        (the owner; the release 403s on this account's IAM without it -- docs/ci.md)
   store a provider key  scripts/create-secrets.sh --tenant ${TENANT_ID} --provider anthropic --stdin
   then add it           scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider anthropic
   check it              scripts/status.sh --tenant ${TENANT_ID}

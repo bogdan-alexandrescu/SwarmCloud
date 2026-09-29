@@ -15,7 +15,10 @@ locals {
 
   tenant_ids = keys(var.tenants)
 
-  sa_account_id = { for t, _ in var.tenants : t => "swarm-agent-worker-${t}" }
+  # The prefix is spelled in modules/service_account_ids, which
+  # terraform/bootstrap reads to grant the release deployer
+  # roles/iam.serviceAccountAdmin on each worker account (#334).
+  sa_account_id = { for t, _ in var.tenants : t => "${module.service_account_ids.tenant_worker_prefix}${t}" }
 
   namespace = { for t, _ in var.tenants : t => "${var.namespace_prefix}${t}" }
 
@@ -61,6 +64,19 @@ locals {
   wi_tenants = var.workload_identity_pool == "" ? {} : var.tenants
 }
 
+module "service_account_ids" {
+  source = "../service_account_ids"
+}
+
+# A NEW TENANT'S ACCOUNT MUST EXIST BEFORE THE RELEASE THAT ADDS IT (#334).
+# The release sets this account's IAM policy in the same apply that creates it
+# (act_as and workload_identity below), and the deployer may do that only
+# through a per-account roles/iam.serviceAccountAdmin grant terraform/bootstrap
+# makes -- which cannot be made on an account that does not exist yet. So
+# scripts/register-tenant.sh creates the account first, the owner applies
+# bootstrap's grant on it, and only then does the release run;
+# create_ignore_already_exists adopts that account here instead of failing on a
+# 409. docs/ci.md, "The deployer's service-account grants", has the order.
 resource "google_service_account" "worker" {
   for_each = var.tenants
 
@@ -68,6 +84,8 @@ resource "google_service_account" "worker" {
   account_id   = local.sa_account_id[each.key]
   display_name = "Swarm agent worker (${each.key})"
   description  = "${local.owner_marker}; tenant ${each.key} (${each.value.principal}). No infrastructure-creation permissions."
+
+  create_ignore_already_exists = true
 }
 
 # --------------------------------------------------------------------------

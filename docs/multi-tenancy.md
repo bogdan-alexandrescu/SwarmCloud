@@ -75,6 +75,15 @@ document can only be fetched by an id already known, and ids are
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
+For a tenant that `terraform/environments/dev/dev.tfvars` will also name, the
+order matters (#334): the script creates the worker account, the owner applies
+terraform/bootstrap's per-account `serviceAccountAdmin` grant on it to the
+release deployer (the script checks for it and prints the targeted apply), and
+only then does the release that adds the tenant run. The release sets the
+account's IAM in the same apply, and without the grant it 403s.
+[docs/ci.md](ci.md#a-new-account-exists-before-the-release-that-adds-it) says
+why.
+
 Re-running updates limits and wiring and fills in whatever is missing — by
 writing the whole record, so `--providers` **replaces** the tenant's
 credentials and any limit not typed again goes back to its default. To add one

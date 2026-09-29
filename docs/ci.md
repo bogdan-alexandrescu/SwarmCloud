@@ -616,19 +616,19 @@ exercised, and this is what was found, not proof that there is nothing else.
 |---|---|---|
 | 1 | The deployer holds `roles/iam.serviceAccountUser` on `209012342332-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
 | 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (#79, owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed once applied:** open until the owner's bootstrap apply destroys the live binding ([runbook](runbooks/custom-roles-to-bootstrap.md), step 2). |
-| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **no** |
+| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
 | 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closes with the owner's bootstrap apply in [the runbook](runbooks/custom-roles-to-bootstrap.md). |
 
-What bounds routes 1, 3 and 4 today is the ref pin, not IAM: only a workflow
+What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
 on `refs/heads/main` can mint the deployer's token, so each route has to be
-merged to `main` first. The same held for 2, 5 and 6 until each is applied.
-Closing 1 means building as an account without `roles/editor`; 3 means taking
-`roles/iam.serviceAccountAdmin` off the deployer or replacing it with
-resource-level grants on `swarm-*` accounts; 4 means moving sink management
-out of CI. Each changes what CI can do, none is made here, and which to make is
-the owner's decision. Route 2 was closed by the owner's decision on #79: no
+merged to `main` first. The same held for 2, 3, 5 and 6 until each is applied.
+Closing 1 means building as an account without `roles/editor`; 4 means moving
+sink management out of CI. Each changes what CI can do, none is made here,
+and which to make is the owner's decision. Route 3 was closed by the owner's
+decision on #334: `roles/iam.serviceAccountAdmin` is granted on each
+`terraform/infra` account instead of the project. Route 2 was closed by the owner's decision on #79: no
 resource-level grant exists for `roleAdmin` to be narrowed to (a role carries
 no allow policy of its own; the project's testable permissions include no
 `iam.roles.setIamPolicy`, read 2026-09-25), so it came off the deployer and the
@@ -653,7 +653,7 @@ unscopable one stays wide are recorded there, with what sat in its reach.
 | `roles/compute.securityAdmin` | scopable in part |
 | `roles/container.admin` | scopable |
 | `roles/datastore.owner` | scopable |
-| `roles/iam.serviceAccountAdmin` | **unscopable by a condition**, see below |
+| `roles/iam.serviceAccountCreator` | unscopable: creating is checked on the project; create, get and list only |
 | `roles/logging.configWriter` | scopable in part |
 | `roles/monitoring.editor` | unscopable |
 | `roles/pubsub.admin` | unscopable |
@@ -673,22 +673,77 @@ deployer itself, from outside the WIF ref pin, or to the other team's
 `github-actions` pool. Pools and providers are made in
 [`wif.tf`](../terraform/bootstrap/wif.tf), which the owner applies.
 
-**Why `roles/iam.serviceAccountAdmin` is still project-wide.** The same review
-asked for it to be conditioned to the service accounts `terraform/infra`
-manages, excluding `swarm-ci-fix` and `swarm-tf-deployer`. IAM does not
-evaluate a resource name for its own resources: *"the condition
-`resource.name.endsWith == devResource` never grants access to any IAM
-resource because IAM resources don't provide the resource name"*
+**`roles/iam.serviceAccountAdmin` is also off the project** since 2026-09-29
+(owner decision on #334), and a validation refuses it in `deployer_roles`. See
+the next section.
+
+## The deployer's service-account grants
+
+Project-wide, `roles/iam.serviceAccountAdmin` let CI set the IAM policy of
+every service account in `saga-agents-staging` — the other team's eleven
+(`promptlab-runner` among them), `swarm-ci-fix`, and `swarm-tf-deployer`
+itself — and so grant itself `serviceAccountTokenCreator` on any of them and
+act as it. That was route 3 above, and the way out of the WIF pin the review of
+contract request 30 (#314) found.
+
+**A condition could not narrow it.** IAM does not evaluate a resource name for
+its own resources: *"the condition `resource.name.endsWith == devResource`
+never grants access to any IAM resource because IAM resources don't provide
+the resource name"*
 ([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference),
 read 2026-09-28), and `iam.googleapis.com` is absent from the resource-service
 table in
 [conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
-A `resource.name` condition on this role would therefore revoke it rather than
-narrow it, and the release's first service-account change would fail with a
-403. What can narrow it is a resource-level grant on each account
-`terraform/infra` manages plus a project-level create role, which is a
-different change and not made here. Until then route 3 above stays open, bounded
-only by the ref pin.
+A `resource.name` condition would have revoked the role, not narrowed it.
+
+**So it is granted per account.** The role can be granted on a single service
+account ([role reference](https://docs.cloud.google.com/iam/docs/roles-permissions/iam):
+"Lowest-level resources where you can grant this role: Service Account").
+[`deployer_service_accounts.tf`](../terraform/bootstrap/deployer_service_accounts.tf)
+grants it on each account `terraform/infra` manages and on nothing else, and
+the deployer holds `roles/iam.serviceAccountCreator` on the project instead —
+create, get and list, because creating is checked on the project, where the
+new account does not exist yet.
+
+| accounts the deployer administers | where the list comes from |
+|---|---|
+| `swarm-api`, `swarm-scheduler`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-tick`, `swarm-verify` | [`terraform/modules/service_account_ids`](../terraform/modules/service_account_ids/main.tf), which `modules/iam`, `terraform/infra/verify.tf` and bootstrap all read |
+| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of [`dev.tfvars`](../terraform/environments/dev/dev.tfvars), read by bootstrap from the file (`infra_tenants_tfvars`) |
+| never `swarm-ci-fix` or `swarm-tf-deployer` | subtracted, and a precondition fails the plan if infra ever manages either |
+
+Nothing restates the list, so an account infra starts managing is an account
+bootstrap grants on at its next apply. The deployer's grant of `actAs` to itself
+([`terraform/infra/deployer.tf`](../terraform/infra/deployer.tf)) still works:
+every account in it is on the list. What admin on a listed account still
+allows — acting as `swarm-api`, say — is authority CI already had by deploying
+as it. Route 3 is closed once the owner applies this, because neither account
+it named (the compute account, `209012342332@cloudbuild`) is on the list, and
+no listed account reads logs.
+
+### A new account exists before the release that adds it
+
+The release sets a new account's IAM policy in the same apply that creates it:
+`modules/tenancy`'s `act_as` and `workload_identity`, and `deployer.tf`'s
+`actAs`, are `setIamPolicy` calls on the account. With the role per account,
+those need bootstrap's grant on it, and bootstrap cannot grant on an account
+that does not exist yet. So for a **new tenant**:
+
+1. `scripts/register-tenant.sh --group <group>` creates `swarm-agent-worker-<tenant>`
+   (and checks the grant, step 2b).
+2. Add the tenant to the `tenants` block of `terraform/environments/dev/dev.tfvars`
+   on the pull request's branch.
+3. The owner, from that branch:
+   `terraform -chdir=terraform/bootstrap apply -target='google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]'`
+4. Merge. The release adopts the existing account (`create_ignore_already_exists`)
+   and sets its IAM.
+
+A **new platform account** is the same with the account created by hand
+(`gcloud iam service-accounts create`) and added to
+`modules/service_account_ids`. If step 3 is skipped the release fails on a
+403 on that account's `setIamPolicy`, after creating nothing else it cannot
+set; apply step 3 and re-run the failed release job. Removing a tenant is the
+reverse: the release destroys the account first, then bootstrap's next apply
+drops its grant.
 
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 
