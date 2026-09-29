@@ -3011,6 +3011,23 @@ another `eng` member submitted and assert 404, so a route added to the
 allow-list later without its filter wired through fails on the day it is
 added.
 
+**2026-09-29, implementation correction: the "is not a task in your tenant"
+wording throughout item 5 and its tests was wrong.** Checked directly against
+`apps/swarm-api/swarm_api/store.py` on `main` while implementing this entry
+(`part of #273`): `Store.get_task` today raises `NotFound(f"task {task_id!r}
+not found")` for BOTH a genuinely missing task and another tenant's task --
+never "is not a task in your tenant". That phrase belongs to a DIFFERENT code
+path: #273's own `resolve_continuation` wraps its `continues_task` lookup in
+a `DispatchOptionError` carrying that exact sentence, but it never touches
+`Store.get_task`'s own message. Every place below that quoted "is not a task
+in your tenant" as `Store.get_task`'s (and therefore the new `submitted_by`
+filter's) refusal text has been corrected to the words the store actually
+uses, "task 'X' not found" -- the invariant this entry cares about (SAME
+words for "not yours" as for "not found" and "cross-tenant", so the filter is
+not a new enumeration oracle) is unaffected; only the literal quoted string
+was wrong. Every place describing #273's own `continues_task` message is
+unchanged and was already correct.
+
 ### What is true today
 
 `.github/workflows/ci-fix.yml` (#273) federates as
@@ -3520,11 +3537,17 @@ error at type-check, before it ever reaches a test:
 def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
     task = ...  # unchanged lookup and tenant check
     if submitted_by is not None and task.submitted_by != submitted_by:
-        # SAME words as the existing cross-tenant refusal -- not a new
-        # enumeration oracle. A continuation-scoped caller cannot distinguish
+        # SAME words as the existing cross-tenant refusal, corrected 2026-09-29:
+        # `Store.get_task` today (main, checked directly) raises
+        # `NotFound(f"task {task_id!r} not found")` for BOTH a genuinely
+        # missing task and another tenant's task -- NOT "is not a task in
+        # your tenant", which is #273's own `resolve_continuation` wrapper
+        # message for `continues_task` specifically, a different code path.
+        # An earlier draft of this entry quoted the wrong one. Not a new
+        # enumeration oracle: a continuation-scoped caller cannot distinguish
         # "not yours" from "not in your tenant" from "does not exist" any
         # more than a cross-tenant caller can today.
-        raise NotFound(f"{task_id} is not a task in your tenant")
+        raise NotFound(f"task {task_id!r} not found")
     return task
 ```
 
@@ -4192,7 +4215,9 @@ Unit, no credentials and no emulator:
         whose path names a `{task_id}` or `{workflow_id}`, the fixture creates
         ONE task/workflow submitted by a different `eng` member and drives
         that route at it with the listed caller's credentials -- every one
-        404s ("is not a task in your tenant"). This is the assertion that
+        404s ("task 'X' not found", the existing cross-tenant wording --
+        corrected 2026-09-29, see item 5's `Store.get_task` snippet). This is
+        the assertion that
         catches a missed `submitted_by` thread-through directly, rather than
         relying on someone naming the right route by hand: it walks
         `CONTINUATION_ROUTES` itself, so a route added to the allow-list
@@ -4217,7 +4242,8 @@ Unit, no credentials and no emulator:
     own check, since being in `CONTINUATION_ROUTES` only opens the route, not
     every request to it;
   - **`GET /v1/tasks/{id}` for a task `eng`'s human member submitted** 404s
-    ("is not a task in your tenant") for the listed caller, and **the same
+    ("task 'X' not found", the existing cross-tenant wording) for the listed
+    caller, and **the same
     call for a task the listed caller itself submitted** succeeds -- proving
     the `submitted_by` filter is per-caller, not per-tenant. Also covered by
     the sweep's ownership assertion above; kept as its own named case because
