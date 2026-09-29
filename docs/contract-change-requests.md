@@ -710,37 +710,6 @@ whoever wires it up. Everything else keeps working by convention, re-parsed in
 three places, with the frozen contract silent about a four-field block that
 decides whether a workflow opens one pull request or five.
 
-### A fifth field, 2026-09-28 (#263): `continues`
-
-The CI fixer needed a step to push to an EXISTING swarm branch rather than its
-own, and it was added the way this entry's "if it is declined" path allows:
-inside the block, with no change to `apps/common/swarm_common/`. So the block
-now has five fields, and this request covers all five.
-
-* **What it is.** A task id. swarm-api writes it only on the one step of a
-  `direct-pr` workflow submitted with `continues_task`, after checking the task
-  is the caller's own, was itself `direct-pr`, and is in the same repository,
-  and after resolving a chain of continuations to its root
-  (`swarm_api/continuation.py`). The worker derives `<prefix><id>` from it,
-  clones that branch and pushes onto it (`agent_worker/continuation.py`).
-* **Why not a typed field.** The same reason as the other four, and the same
-  rollout trap in its mildest form: a worker older than the API ignores the
-  key, pushes `swarm/<its own id>` and opens a second pull request. That is
-  wrong but not unsafe -- no branch is overwritten, and `push_branch` never
-  forces either way.
-* **The parity it relies on** is a test, as for the others:
-  `tests/unit/worker/test_continue_swarm_branch.py` builds the block with
-  swarm-api's own `DispatchOptions(continues=new_id("task")).to_metadata()`
-  and asserts the worker derives the branch from it, and that the worker's
-  task-id pattern accepts every id `new_id("task")` mints. The pattern is
-  restated in both components because neither can import the other;
-  `swarm_common.models` exporting it beside `new_id` is the frozen-contract
-  change that would remove the copy. **Requested, not made.**
-
-`codec.dispatch_of` does not serve `continues`: the workflow create response
-echoes it as `dispatch.continues_task`, and adding it to every task's
-`dispatch` would change a response shape several clients hold exactly.
-
 ---
 
 ## 7. The workflow rollup has no shared home, so only one service can own it
@@ -2859,3 +2828,41 @@ figures are not dated, and a limit is never attributed to the kernel.
   is stated once in the worker (`metrics.CPU_LIMIT_SOURCES`) and read by the
   UI's `limitSource`; compare request #20.
 
+
+## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
+
+**Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), to
+be applied by the #265 change. Recorded 2026-09-28 from #265. If another
+branch has taken 28 by the time this merges, renumber this one.
+
+### What is true today
+
+A runner profile declares the inputs a caller may send (#213, contract
+request 25). `claude-code` and `codex` declare none, so a caller can only put
+an issue's text into the prompt itself. Every brief in the 2026-09-27/28 wave
+restated its issue by hand, and #247's brief lost the two screens its issue
+named as the reproduction.
+
+### The requested change
+
+`claude-code` and `codex` declare one input, `issue`: a positive integer
+naming an issue in the step's own `repo`. No other key is added and no type
+changes. The worker fetches that issue's title, body and comments read-only
+with the tenant's forge credential, writes them to the workspace as
+`issue.md`, and names the file in the prompt. The fetch is the worker's; the
+declared input is only the number.
+
+### What it would break if accepted
+
+Nothing that exists: no profile declares an input today, so every current
+submission stays valid. The API's declared-inputs check (#213) starts
+accepting `issue` for these two profiles and still refuses everything else.
+
+### Invariants
+
+- **Invariant 10.** The number is data, and the issue text the worker fetches is
+  data for the agent, never an image, a command, a resource spec or a backend
+  parameter.
+- **#219.** The forge token never reaches the workspace or the agent.
+- **Invariant 9.** The fetch uses the step's own tenant's credential against the
+  step's own repository.

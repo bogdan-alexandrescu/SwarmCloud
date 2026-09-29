@@ -150,12 +150,56 @@ def validate_resource_class_override(profile: RunnerProfile, requested: str | No
     return requested
 
 
+def firestore_size(payload: Any) -> int:
+    """The bytes `payload` costs as a Firestore value, by Firestore's own rule.
+
+    A string is its UTF-8 bytes + 1, an integer or a float 8, a boolean or null
+    1, an array the sum of its values, a map the sum of each key (sized as a
+    string) and its value. A value of any other type is sized as its `str()`,
+    which is what `json.dumps(default=str)` made of it here before.
+
+    Walked with a stack, not recursion, for the reason `validate_storable` is.
+    """
+    total = 0
+    stack: list[Any] = [payload]
+    while stack:
+        value = stack.pop()
+        if value is None or isinstance(value, bool):
+            total += 1
+        elif isinstance(value, (int, float)):
+            total += 8
+        elif isinstance(value, str):
+            total += len(value.encode("utf-8")) + 1
+        elif isinstance(value, Mapping):
+            for key, item in value.items():
+                total += len(str(key).encode("utf-8")) + 1
+                stack.append(item)
+        elif isinstance(value, (list, tuple)):
+            stack.extend(value)
+        else:
+            total += len(str(value).encode("utf-8")) + 1
+    return total
+
+
 def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -> int:
+    """Refuse `payload` if it costs more than `max_bytes` AS FIRESTORE STORES IT.
+
+    WHY NOT THE JSON TEXT (#232 review, epic #227). The limit is there to keep
+    a task document under Firestore's 1 MiB, and the worker's manifest budget
+    (`agent_worker.artifact_manifest`) counts the input at `max_input_bytes`
+    Firestore bytes. This measured `json.dumps` bytes, and Firestore stores an
+    integer in 8 bytes whatever its digits: `0, ` is 3 bytes of JSON, so a list
+    of small integers measured at 256 KiB took about 680 KiB once stored. Text
+    costs about the same either way, so an ordinary prompt measures as before.
+
+    Still serialised first, so a value JSON cannot carry (a reference cycle) is
+    refused as such rather than walked.
+    """
     try:
-        encoded = json.dumps(payload, default=str).encode("utf-8")
+        json.dumps(payload, default=str)
     except (TypeError, ValueError) as exc:
         raise ValidationFailed(f"{label} is not JSON-serialisable: {exc}") from None
-    size = len(encoded)
+    size = firestore_size(payload)
     if size > max_bytes:
         raise ValidationFailed(
             f"{label} is {size} bytes, over the {max_bytes} byte limit",
@@ -383,9 +427,19 @@ _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 #
 #   * `https://` -- ANY userinfo. A forge token is as often the user name
 #     (`https://ghp_...@github.com/o/r`) as the password.
-#   * `ssh://`  -- a password (`user:pass@`). A bare user name is the ssh
-#     login (`ssh://git@github.com/o/r`) and is not a credential.
-#   * `git@host:path` -- the scp form. Its user is the fixed `git` login.
+#   * `ssh://` and the scp form `git@host:path` -- any userinfo but exactly
+#     `SSH_LOGIN`. The first version of this rule let any BARE ssh user name
+#     through as "the login", so `ssh://<token>@host/o/r` and
+#     `git@<token>@host:o/r` were accepted and stored whole (wave 2026-09-27,
+#     epic #227). A token goes in the user position as easily as in the
+#     password's, and a forge's ssh endpoint logs in as `git` and nothing else,
+#     so no other user name is something a caller needs to send.
+#
+# The refusal names no part of the value: the part that would identify the
+# problem is the credential.
+
+#: The one ssh user that is a login and not a credential.
+SSH_LOGIN = "git"
 
 #: What the refusal tells a caller to do instead.
 REPOSITORY_CREDENTIAL_PATH = (
@@ -400,19 +454,45 @@ def repository_userinfo(url: str) -> tuple[int, int] | None:
     """Where the credential-bearing userinfo of `url` is, as `(start, end)`; else None.
 
     `end` is the index of the `@` that closes it. None for a URL with no
-    userinfo, an ssh login name, and the scp form.
+    userinfo, and for an ssh or scp-form URL whose user is exactly `SSH_LOGIN`.
+
+    SCP VERSUS URL IS DECIDED BY PREFIX, NOT BY WHETHER `://` APPEARS
+    ANYWHERE. An scp-form path can itself contain `://`
+    (`git@tok@host:o/r://x`), and a repository path never does otherwise, so
+    scanning the whole string for `://` sent that URL to the URL branch below
+    and skipped its userinfo entirely. Only a literal `git@` prefix (an scp
+    URL always starts with `{SSH_LOGIN}@`, the one prefix `check_repository_url`
+    allows besides `https://` and `ssh://`) or a total absence of `://` is
+    scp form; everything else is `scheme://...`.
+
+    THE SCP FORM HAS NO AUTHORITY DELIMITER a token cannot also contain: its
+    host ends at the first `:`, and `git@tok:pw@host:path` puts a `:` inside
+    the userinfo. So its userinfo runs to the LAST `@` in the whole URL. That
+    refuses an scp-form path containing `@`, which no forge's repository path
+    does, and masks every credential that shape can hold.
+
+    For `ssh://`, the authority ends at the first `/` ONLY -- git's own
+    `parse_connect_url` cuts an ssh host the same way, so a `?` or `#` inside
+    the userinfo (`ssh://tok#@host/o/r`, `ssh://tok?@host/o/r`) does not end
+    it early the way it does for https.
     """
+    if url.startswith(f"{SSH_LOGIN}@") or "://" not in url:
+        at = url.rfind("@")
+        if at < 0 or url[:at] == SSH_LOGIN:
+            return None
+        return 0, at
     scheme, sep, rest = url.partition("://")
-    if not sep:
-        return None
     start = len(scheme) + len(sep)
-    ends = [at for at in (rest.find("/"), rest.find("?"), rest.find("#")) if at >= 0]
-    authority = rest[: min(ends)] if ends else rest
+    if scheme.lower() == "ssh":
+        slash = rest.find("/")
+        authority = rest[:slash] if slash >= 0 else rest
+    else:
+        ends = [at for at in (rest.find("/"), rest.find("?"), rest.find("#")) if at >= 0]
+        authority = rest[: min(ends)] if ends else rest
     at = authority.rfind("@")
     if at < 0:
         return None
-    userinfo = authority[:at]
-    if scheme.lower() == "ssh" and ":" not in userinfo:
+    if scheme.lower() == "ssh" and authority[:at] == SSH_LOGIN:
         return None
     return start, start + at
 
@@ -427,9 +507,11 @@ def check_repository_url(value: str | None) -> str | None:
     if not value.startswith(("https://", "git@", "ssh://")):
         raise ValueError("repository_url must be an https://, ssh:// or git@ URL")
     if repository_userinfo(value) is not None:
+        # Constants only: see the section header.
         raise ValueError(
             "repository_url must not carry a credential (a user name or token before "
-            "'@'); " + REPOSITORY_CREDENTIAL_PATH
+            f"'@'); an ssh URL may name only the {SSH_LOGIN!r} user; "
+            + REPOSITORY_CREDENTIAL_PATH
         )
     return value
 
@@ -463,13 +545,6 @@ class DispatchOptions:
     #: integrator c never names a -- and walking the DAG in the worker would be
     #: a second implementation of the ordering this module already computed.
     integrates: tuple[str, ...] = ()
-    #: The task whose `swarm/<task-id>` branch this dispatch clones and pushes
-    #: to, instead of a branch of its own (#263). Set only on a one-step
-    #: `direct-pr` workflow, by `continuation.resolve_continuation`, which has
-    #: checked it is the caller's own task and resolved it to the ROOT of any
-    #: chain of continuations. A task id, never a branch name: the worker
-    #: derives the branch with the prefix it pushed under.
-    continues: str | None = None
 
     @property
     def needs_repository(self) -> bool:
@@ -489,7 +564,6 @@ class DispatchOptions:
             carrier=self.carrier,
             role=role,
             integrates=tuple(integrates),
-            continues=self.continues,
         )
 
     def to_metadata(self) -> dict[str, Any]:
@@ -499,8 +573,6 @@ class DispatchOptions:
             block["role"] = self.role
         if self.integrates:
             block["integrates"] = list(self.integrates)
-        if self.continues:
-            block["continues"] = self.continues
         return block
 
 
@@ -721,7 +793,8 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
       4. every `depends_on` names a step IN THIS WORKFLOW
       5. every `input_from` source is also an upstream dependency
       6. every `input_from` filename is a relative path inside the workspace,
-         and no two parents of one step stage the same one
+         within the worker's name bound, and no two parents of one step stage
+         the same one, or one a directory of the other
       7. the graph is acyclic
 
     Returns a topological order, which the caller uses to create tasks parent
@@ -793,6 +866,9 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
 # (`agent_worker/inputs.py`: `declared_inputs`, `_assert_distinct_destinations`,
 # `destination_for`), and it keeps doing so. That is defence in depth: the
 # worker reads a free-form dict, and it alone knows the reserved names.
+# Two rules have no single check there, only a failure: a filename that is a
+# directory of another (#71) fails the step while staging, and one over the
+# name bound was, before #232's exemption for declared names, never uploaded.
 #
 # A step's `input_from` is the ONLY door a declaration has. A caller cannot
 # send `metadata.input_from` at all -- on a plain task, a batch or a workflow's
@@ -834,6 +910,24 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
 #: produce an artifact named ...".
 _UNSAFE_SEGMENTS = ("", ".", "..")
 
+#: The longest `input_from` filename, in UTF-8 bytes. It is the worker's
+#: `agent_worker.artifact_manifest.MAX_NAME_BYTES`, restated because swarm-api
+#: cannot import `agent_worker`; tests/unit/control_plane/
+#: test_input_from_submission.py holds the two equal.
+#:
+#: WHY THE MANIFEST'S BOUND (wave 2026-09-27, epic #227). An `input_from`
+#: filename is also the name the upstream step's artifact is uploaded under, and
+#: the manifest's worst-case arithmetic -- what keeps the upstream task's
+#: document under 1 MiB -- is done for names of at most this many bytes. The
+#: worker exempts a DECLARED name from the bound (#232 review) so that a name
+#: nothing refused at submission does not fail every attempt; that exemption is
+#: the backstop, and this is the refusal, where the caller can still fix it.
+MAX_INPUT_FROM_NAME_BYTES = 256
+
+#: The longest single path segment, in UTF-8 bytes: Linux's NAME_MAX. A longer
+#: segment is a file neither the upstream agent can write nor the worker stage.
+MAX_SEGMENT_BYTES = 255
+
 
 def _filename_problem(filename: str) -> str | None:
     """Why `filename` cannot be staged into a workspace, or None if it can.
@@ -849,7 +943,37 @@ def _filename_problem(filename: str) -> str | None:
     for segment in filename.split("/"):
         if segment in _UNSAFE_SEGMENTS:
             return f"contains the path segment {segment!r}"
+    size = len(filename.encode("utf-8"))
+    if size > MAX_INPUT_FROM_NAME_BYTES:
+        return (
+            f"is {size} bytes of UTF-8, over the {MAX_INPUT_FROM_NAME_BYTES}-byte "
+            "bound the worker holds an artifact's name to"
+        )
+    for segment in filename.split("/"):
+        if len(segment.encode("utf-8")) > MAX_SEGMENT_BYTES:
+            return (
+                f"has a path segment over the {MAX_SEGMENT_BYTES} bytes Linux allows "
+                "one file name"
+            )
     return None
+
+
+#: How much of an over-bound or otherwise malformed `input_from` filename to
+#: echo back verbatim. `raw` is caller-controlled and unbounded -- that is
+#: exactly the shape `_filename_problem` refuses -- so the refusal shows a
+#: short prefix plus the true byte length rather than the whole string.
+_ECHO_PREFIX_BYTES = 80
+
+
+def _short_echo(raw: object) -> str:
+    """A safe-to-echo stand-in for a filename too big (or wrong-shaped) to quote whole."""
+    quoted = repr(raw)
+    text = raw if isinstance(raw, str) else quoted
+    encoded = text.encode("utf-8", errors="replace")
+    if len(encoded) <= _ECHO_PREFIX_BYTES:
+        return quoted
+    prefix = encoded[:_ECHO_PREFIX_BYTES].decode("utf-8", errors="ignore")
+    return f"{prefix!r}... ({len(encoded)} bytes)"
 
 
 def _distinct_name(source: str, filename: str) -> str:
@@ -868,17 +992,26 @@ def validate_staged_filenames(step: StepSpec) -> None:
     * two or more parents staging the SAME filename. `input_from` names the
       artifact in the upstream's prefix AND the path it lands at here, so there
       is no way to say "take both": one would overwrite the other. The fix is
-      on the upstream side: each parent writes its own filename.
+      on the upstream side: each parent writes its own filename;
+    * one parent's filename a DIRECTORY of another's, `out` and `out/notes.md`
+      (#71): `out` would have to be a file and a directory at once, so one of
+      the two can never be staged, and the worker failed the step as a crash
+      after both parents had run. Compared by whole segments, so `out` and
+      `outline.md` are two siblings. The worker's `_assert_distinct_destinations`
+      compares names only; it stays the backstop for the same-name case.
 
     Filenames are compared after `.strip()`, which is what the worker compares.
+    The problems with one filename are reported first, then a same-name clash,
+    then a directory clash.
     """
     landing: dict[str, list[str]] = {}
     for source, raw in step.input_from.items():
         filename = raw.strip() if isinstance(raw, str) else ""
         problem = _filename_problem(filename)
         if problem is not None:
+            echoed = _short_echo(raw)
             raise DagError(
-                f"step {step.step_id!r} stages input from {source!r} as {raw!r}, which "
+                f"step {step.step_id!r} stages input from {source!r} as {echoed}, which "
                 f"{problem}. An input_from filename is where the artifact lands in "
                 "this step's workspace, so it must be a relative path inside it, "
                 "such as 'notes.md' or 'reports/notes.md', with no empty, '.' or "
@@ -887,7 +1020,7 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 detail={
                     "step_id": step.step_id,
                     "input_from": source,
-                    "filename": raw,
+                    "filename": echoed,
                     "problem": problem,
                 },
             )
@@ -913,6 +1046,37 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 "colliding_upstream_steps": parents,
             },
         )
+
+    # Every name is distinct by now, so each has exactly one parent. Sorted, so
+    # the same request is always refused over the same pair.
+    for inner in sorted(landing):
+        segments = inner.split("/")
+        for depth in range(1, len(segments)):
+            outer = "/".join(segments[:depth])
+            if outer not in landing:
+                continue
+            outer_source, inner_source = landing[outer][0], landing[inner][0]
+            suggestion = " and ".join(
+                repr(_distinct_name(source, name))
+                for source, name in ((outer_source, outer), (inner_source, inner))
+            )
+            raise DagError(
+                f"step {step.step_id!r} stages {outer!r} from {outer_source!r} and "
+                f"{inner!r} from {inner_source!r}, so {outer!r} would have to be a "
+                "file and a directory at once, and one of the two can never be "
+                "staged. An input_from filename is both the artifact's name in the "
+                "upstream step and the path it lands at in this step's workspace. "
+                "The worker fails such a step at run time, after both upstream "
+                "steps have already run. Give each parent a distinct artifact "
+                "filename that is not a directory of the other (have each upstream "
+                f"step write its own, e.g. {suggestion}) and stage those instead.",
+                detail={
+                    "step_id": step.step_id,
+                    "filename": outer,
+                    "nested_filename": inner,
+                    "colliding_upstream_steps": sorted({outer_source, inner_source}),
+                },
+            )
 
 
 def find_cycle(steps: Iterable[StepSpec]) -> list[str] | None:

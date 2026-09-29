@@ -31,7 +31,7 @@ later, and the scheduler's credential sweep re-readies it.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Sequence
 
@@ -49,7 +49,6 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from .auth import AuthContext
 from .codec import quota_to_api
-from .continuation import resolve_continuation
 from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
@@ -340,20 +339,12 @@ class SubmissionService:
             # `validate_dag` ever sees (#151).
             reject_reserved_metadata(spec.metadata)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
-            # Before the dispatch options, because a continuation supplies the
-            # repository they require (#263, see continuation.py).
-            continuation = resolve_continuation(self._store, tenant.tenant_id, spec)
-            repository_url = (
-                continuation.repository_url if continuation else spec.repository_url
-            )
             dispatch = resolve_dispatch_options(
                 strategy=spec.strategy,
                 carrier=spec.carrier,
                 scale="workflow",
-                repository_url=repository_url,
+                repository_url=spec.repository_url,
             )
-            if continuation:
-                dispatch = replace(dispatch, continues=continuation.root_task_id)
             if dispatch.strategy == "integrate":
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
@@ -406,7 +397,7 @@ class SubmissionService:
                 depends_on=parent_task_ids,
                 resource_class_override=source.resource_class,
                 priority=spec.priority,
-                repository_url=repository_url,
+                repository_url=spec.repository_url,
                 repository_ref=spec.repository_ref,
             )
             # The one place `metadata.input_from` is written. After `_build_task`,

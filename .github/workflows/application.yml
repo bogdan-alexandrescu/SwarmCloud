@@ -52,9 +52,10 @@ on:
       # request is the only place it is linted (actionlint below) and held to
       # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
       - ".github/workflows/iam-refusal-probe.yml"
-      # The CI fixer runs only after a red CI on a swarm branch, so a PR is the
-      # only place it is linted and held to its shape (test_ci_fix.py).
-      - ".github/workflows/ci-fix.yml"
+      # auto-merge.yml runs only on pull_request_target, from main's copy, so
+      # a pull request changing it never runs it: this is the one place it is
+      # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
+      - ".github/workflows/auto-merge.yml"
   workflow_dispatch:
 
 permissions:
@@ -226,12 +227,15 @@ jobs:
     # iam-refusal-probe.yml is linted here for the same reason as release.yml,
     # more so: it runs only when the owner dispatches it, once, so a broken
     # expression in its revert gate would otherwise first show on that run.
+    # auto-merge.yml likewise: a pull request that changes it runs main's
+    # copy, not its own, so a broken expression would first show on the first
+    # `ready` label after it merged.
     env:
       ACTIONLINT_VERSION: "1.7.7"
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml and ci-fix.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml and auto-merge.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -240,7 +244,7 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
-            .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml
+            .github/workflows/iam-refusal-probe.yml .github/workflows/auto-merge.yml
 
   python:
     name: format / unit tests
