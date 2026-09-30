@@ -39,7 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
-| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342; amendment proposed 2026-09-30 (#364) |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `restore_on_retry` (part of #295) | PROPOSED 2026-09-29 |
@@ -6122,6 +6122,58 @@ reach it. They are listed there as rejected, not as fallbacks.
 - **#219.** The credential is read only by the merge worker, only at merge
   time. It is never in the workspace, a file, an environment variable, argv or
   a log, and it is revoked in a `finally`.
+
+### Amendment (proposed 2026-09-30, #364)
+
+**Status: PROPOSED 2026-09-30, pending the owner's acceptance.** Found by the
+security review of #351 (CR 35/36), filed as issue #364. This amendment does
+not touch this request's frozen-contract surface (`profiles.py`/`models.py`
+are unchanged by it); it closes a gap in how the design it names is *built*,
+so it is recorded here rather than as a separate numbered request. It leaves
+the Status line above as is — that line is about the `profiles.py`/`models.py`
+shape, which is still accepted as designed.
+
+`git-merge` must never end up bound to the tenant's ordinary worker service
+account, and the same is true of `git-review` (contract request 35, revised
+on #351). Nothing enforces that yet outside `register-tenant.sh`
+(merge-step.md §10 item 5):
+
+* The API credential routes accept whatever the catalogue lists as a
+  provider — `POST /me/credentials` (`routes/tenants.py`) and the admin
+  route (`routes/admin.py`) — so once `git-merge`/`git-review` are catalogue
+  providers, a tenant (or an operator, on the admin route) can register one
+  against the worker account through the ordinary credential path, with
+  nothing in that path aware that these two providers are different.
+* `terraform/modules/secret_manager` has no per-provider accessor override.
+  Its `iam_binding` is authoritative and today reads `members=[cfg.accessor]`
+  (`main.tf:17-28,109-116`), always the tenant's worker account
+  (`terraform/infra/main.tf:236-237`). Left as is, the next `terraform apply`
+  after `git-merge`/`git-review` join the catalogue both binds the worker
+  account to the secret and **removes** a separately-granted merge or review
+  service account, since `iam_binding` (not `iam_member`) replaces the whole
+  membership list.
+
+The build of contract request 33 (and of `post-verdict`/`claude-code-review`,
+merge-step.md §10 items 2–3) is gated on all of the following, in addition to
+what merge-step.md §10 already lists:
+
+1. The API credential routes (`routes/tenants.py`'s `POST /me/credentials`,
+   and `routes/admin.py`'s admin route) refuse to register or bind
+   `git-merge` or `git-review` to a tenant's worker account, the same way
+   `register-tenant.sh` refuses (merge-step.md §10 item 5).
+2. `terraform/modules/secret_manager` gains a per-provider accessor
+   override, so that for `git-merge` and `git-review` the merge or review
+   service account is the **sole** `secretAccessor` member — not an addition
+   to `cfg.accessor`, a replacement of it for those two providers — closing
+   the removal hazard in `main.tf:17-28,109-116` above.
+3. Both providers are excluded from `refresh_secrets` and from the
+   refresher's own grants (its `versionAdder` role and its `-refresh` twin
+   secret), so the subscription-refresh path never touches either
+   credential.
+
+See merge-step.md §10 item 5's own note on this (added 2026-09-30, #364) and
+issue #364 for the full finding.
+
 ---
 
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker

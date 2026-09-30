@@ -402,11 +402,16 @@ its own change, listed in §10):
   2026-09-29; do not conflate with the rejected bullet immediately below).**
   Its Job's service account, `swarm-<tenant>-review`, is the only identity
   with write access to the review-only-writable prefix (§4.3) where
-  `review.json` lands. This is safe for exactly the reason the App-key
-  version was not: a scoped GCS write grant is not a portable secret an agent
-  can exfiltrate and reuse outside its own container, so the review agent
-  running there — reading attacker-controlled diffs — gains no new attack
-  surface by running as this identity instead of the ordinary tenant one;
+  `review.json` lands. **Corrected (2026-09-30, #364): this is not the "no
+  portable secret" case it was first written as.** A prompt-injected review
+  agent (T11) does not need to exfiltrate anything — it can mint
+  `swarm-<tenant>-review`'s own token from the metadata server (§0) while it
+  runs, and use that token, while it is valid, against the `objectCreator`
+  grant the account already holds on the whole `tenants/<t>/verdicts/`
+  subtree, to write a fabricated verdict at another workflow's path within
+  the same tenant's subtree. This is exactly the residual §7 T3b / **R8**
+  records, and the owner has accepted R8 as open, not closed by running
+  `review` on its own profile;
 * **a `claude-code-review`/`claude-code-proof` profile *for holding an App
   key* is NOT the fix, and this design does not propose that — a second
   review corrected this (2026-09-29).** A dedicated profile only changes
@@ -1817,7 +1822,18 @@ dependency order.
    tenant's old, unconditioned-on-`verdicts/` binding in place forever.**
    The check needs to distinguish the old binding's shape from the new
    split and actively replace the old one, not treat any existing
-   `objectUser` grant as already-done.
+   `objectUser` grant as already-done. **`register-tenant.sh`'s refusal is
+   not the only place that binds these providers (found 2026-09-30, #364):
+   the API credential routes (`POST /me/credentials`, `routes/tenants.py`;
+   the admin route, `routes/admin.py`) accept whatever `known_providers()`
+   lists, and `terraform/modules/secret_manager`'s `iam_binding` writes
+   `members=[cfg.accessor]` — the tenant's ordinary worker account — for
+   every listed provider, authoritatively, so it would also strip a
+   separately-granted merge or review account on the next apply. Both need
+   the same refusal as the script: the routes reject `git-merge`/`git-review`
+   from a tenant-facing credential call, and `secret_manager` gains a
+   per-provider accessor override so the merge/review account is the sole
+   `secretAccessor` member. See contract request 33's amendment.**
 6. **swarm-api (Track A):** the `single-pr` strategy, `pr_role`, the
    `merges` block, the submission refusals in §3 (including the
    `post-verdict` placement and the ordering-only `depends_on` edges it and
