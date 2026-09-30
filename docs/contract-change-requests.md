@@ -37,6 +37,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | ACCEPTED 2026-09-28 by the owner on #245, applied in PR #245 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
@@ -2829,6 +2830,48 @@ figures are not dated, and a limit is never attributed to the kernel.
 * The source is a bare string, as this entry said it would be. Its vocabulary
   is stated once in the worker (`metrics.CPU_LIMIT_SOURCES`) and read by the
   UI's `limitSource`; compare request #20.
+
+
+## 27. `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists
+
+**Status: ACCEPTED, accepted by the owner 2026-09-28 on #245 and applied in
+PR #245.** Recorded 2026-09-28 by the #176 lane.
+
+### What is true today
+
+`apps/common/swarm_common/identity.py`, `_slug`'s docstring, LENGTH bullet:
+"A long group name yields an id no GCP service account can be named for,
+because `swarm-t-<id>` must fit in 30 characters." The code under it is right:
+`_MAX_TENANT_ID` is computed from `_GSA_PREFIX = "swarm-agent-worker-"`, and the
+comment on `_GSA_PREFIX` itself says the `swarm-t-` prefix "no longer exists".
+So the frozen module contradicts itself about which identity the cap is for.
+
+That contradiction is how #176 survived: the quota broker's comment said
+register-tenant.sh writes `swarm-t-<tenant>`, and accepted it as a worker
+identity, long after nothing created one. The broker no longer accepts it; this
+docstring is the one live statement left in the repository that `swarm-t-<id>`
+is the name a tenant's worker must fit.
+
+### The requested change
+
+Docstring only: `swarm-t-<id>` becomes `swarm-agent-worker-<id>` in that
+sentence. No code, no value, no type.
+
+### What it would break if accepted
+
+Nothing. No code reads a docstring, and `check-contract-parity.sh` compares
+`_GSA_PREFIX`, not prose.
+
+### If it is declined
+
+The frozen module keeps telling its reader that tenant ids are sized for an
+identity nothing creates, and the next restatement copied from that sentence
+reintroduces #176.
+
+### Applied, 2026-09-28 (PR #245)
+
+`_slug`'s LENGTH docstring bullet now reads `swarm-agent-worker-<id>` in place
+of `swarm-t-<id>`, matching `_GSA_PREFIX` and the comment already on it.
 
 
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
