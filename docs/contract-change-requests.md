@@ -42,7 +42,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342; amendment proposed 2026-09-30 (#364) |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
-| 36 | `profiles.py`: the `claude-code-review` profile, and a typed `restore_on_retry` (part of #295) | PROPOSED 2026-09-29 |
+| 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | PROPOSED 2026-09-29 |
 
 ---
 
@@ -7504,7 +7504,7 @@ merge step cannot be enabled for any tenant without this.
 
 ---
 
-## 36. `profiles.py`: the `claude-code-review` profile, and a typed `restore_on_retry`
+## 36. `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint`
 
 **Status: PROPOSED, 2026-09-29.** Part of #295. Recorded from
 [merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
@@ -7546,29 +7546,25 @@ In `profiles.py`, add one field to `RunnerProfile`:
 @dataclass(frozen=True)
 class RunnerProfile:
     ...
-    #: When False, the lifecycle never restores a checkpoint for this
-    #: profile, on any attempt, not only the first. True (the default)
+    #: When True, the lifecycle never restores a checkpoint for this
+    #: profile, on any attempt, not only the first. False (the default)
     #: preserves today's behaviour for every existing profile. `review`
     #: must never resume an agent inside a workspace a previous attempt
     #: left behind -- its whole judgement depends on seeing the checked-out
     #: head honestly (merge-step.md's own threat model, S0).
-    restore_on_retry: bool = True
+    never_restore_checkpoint: bool = False
 ```
 
-**The name is worth reading carefully: it does not mean "restore normally on
-attempt 1, skip only on later attempts."** It means never restore, on any
-attempt, for this profile — attempt 1 has nothing to restore regardless, so
-the field's effect is only ever visible starting attempt 2, but nothing about
-the name limits its scope to retries; a reader should take "never restores a
-checkpoint for this profile" (above) as the operative sentence, not the field
-name. A clearer name — `never_restore_checkpoint`, say — would say this
-without needing the docstring; kept as `restore_on_retry` here since that is
-the name proposed for the field, and renaming it is the owner's call, not a
-change made in this pass.
+**The name was chosen by the owner on 2026-09-30** over the originally
+proposed `restore_on_retry=False`, which read as "restore normally on attempt
+1, skip only on retries". The field means never restore, on any attempt, for
+this profile. Attempt 1 has nothing to restore regardless, so its effect is
+only ever visible from attempt 2, but the name does not limit it to retries.
+The unusual value, `True`, is the one a reader sees set.
 
 **A retry that finds `review.json` already written at its own path must
 refuse the attempt, never adopt the existing object as this attempt's own
-output.** Because `restore_on_retry=False` skips workspace restore but says
+output.** Because `never_restore_checkpoint=True` skips workspace restore but says
 nothing about the review step's GCS write, and because the platform's own
 retry of a failed attempt reuses the *same* path — `f(workflow_id, review
 task id)`, stable across attempts of one task (merge-step.md §7's R8
@@ -7578,11 +7574,11 @@ than treating a pre-existing object as the refusal it is. The `review`
 worker's write must be create-only (`objectCreator`, no update, no delete;
 merge-step.md §4.3) and a create failure on an existing object must end the
 attempt in refusal, not success — this is a requirement on the worker
-alongside `restore_on_retry`, not a consequence the field produces by itself,
+alongside `never_restore_checkpoint`, not a consequence the field produces by itself,
 and does not by itself close R8 (merge-step.md §7), which stays OPEN.
 
 A catalogue entry, identical to `claude-code`'s except its name (and so its
-Job and service account) and `restore_on_retry`:
+Job and service account) and `never_restore_checkpoint`:
 
 ```python
 "claude-code-review": RunnerProfile(
@@ -7596,17 +7592,17 @@ Job and service account) and `restore_on_retry`:
     secrets_any_of=True,
     timeout_seconds=7200,
     inputs=_CLI_AGENT_INPUTS,
-    restore_on_retry=False,
+    never_restore_checkpoint=True,
 ),
 ```
 
 ### What it would break if accepted
 
-* **Nothing stored.** `restore_on_retry` defaults to `True`, so every
+* **Nothing stored.** `never_restore_checkpoint` defaults to `False`, so every
   existing profile keeps today's restore behaviour unchanged.
 * **The lifecycle's restore path** (`agent_worker.lifecycle`, wherever it
   currently restores unconditionally on a retried attempt) must read
-  `profile.restore_on_retry` before restoring, the same way it already
+  `profile.never_restore_checkpoint` before restoring, the same way it already
   branches on `worker_action` before building an argv (request 33).
 * **Terraform** needs a per-tenant `review` service account and Job, holding
   `roles/storage.objectCreator` on `tenants/<t>/verdicts/` alone (no
@@ -7653,7 +7649,7 @@ cannot be enabled for any tenant without this either.
 - **Invariants 1–3, 5, 10.** Unchanged: `claude-code-review` is an ordinary
   agent-running task like `claude-code`, admitted, fenced and named the same
   way.
-- **Invariant 8.** Checkpointing stays on; `restore_on_retry=False` is the
+- **Invariant 8.** Checkpointing stays on; `never_restore_checkpoint=True` is the
   point of this request, not a violation of it — checkpointing and
   restoring are separate steps, and mandatory periodic checkpointing is
   unaffected. What is skipped is resuming a workspace a previous attempt
