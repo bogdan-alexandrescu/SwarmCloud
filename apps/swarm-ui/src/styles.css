@@ -12643,23 +12643,3 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: var(--t-body)/var(--lh-body) var(--font);
 }
 .diff-empty { margin: 0; color: var(--text-dim); font: var(--t-body)/var(--lh-body) var(--font); }
-
-/* ---- Timeline: a card read when it scrolls into view (#377) ---- */
-/* `.ol-lazy` is the box the observer watches: a grid item of `.ol-cards` in
-   the card's place, and a grid of one, so the card inside stretches to the
-   row exactly as it did when it was the item itself. */
-.ol-lazy { display: grid; min-width: 0; }
-/* The skeleton's bars sit on real `.ol-line`s, so it is as tall as the card
-   it stands in for and nothing moves when the data lands. The moving surface
-   is `.ctl-pending`'s; under `prefers-reduced-motion` the card draws
-   `.is-static` instead -- the same fill, not moving. */
-.ol-skel-bar {
-  display: inline-block;
-  max-width: 100%;
-  height: 1em;
-  vertical-align: middle;
-}
-.ol-skel-bar.is-static {
-  border-radius: var(--ctl-radius-sm);
-  background-color: var(--surface-2);
-}
