@@ -219,39 +219,154 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # digest-addressed registry, just without one available for a single bundled
 # module. The build then proves the swap two ways: a direct call through the
 # same named `expand` export minimatch uses, and an end-to-end run of `npm
-# pack --dry-run`, which walks a `files` glob through npm's own bundled
-# minimatch/glob -- the actual codepath a mismatched API would break -- so a
-# bad swap fails the build rather than shipping quietly.
+# pack`, which walks a `files` glob through npm's own bundled minimatch/glob
+# and writes a real tarball -- the actual codepath a mismatched API would
+# break -- so a bad swap fails the build rather than shipping quietly.
+#
+# undici, tar and ip-address are patched the same way, in this same RUN step
+# rather than a second one, and for the same reason as brace-expansion: each
+# is bundled inside npm's own node_modules, not installed via apt, so
+# `apt-get upgrade` never reaches it, and each was checked against npm's
+# actual bundled tree (npm@11.19.0, per the Node/npm version chain above),
+# not assumed:
+#
+# undici 6.27.0 (node_modules/npm/node_modules/undici) has CVE-2026-19534
+# (HIGH: DoS via unrequested WebSocket subprotocol, fixed in 6.28.1/7.29.1/
+# 8.10.2) -- caught on 2026-09-30's dev release after brace-expansion's fix
+# (#371) merged and cleared that finding. The sole consumer inside npm's tree
+# is bundled node-gyp (checked by extracting the real npm@11.19.0 tarball and
+# grepping every .js file for `require('undici')`): node-gyp's
+# lib/download.js does `const { Agent, EnvHttpProxyAgent, RetryAgent, fetch }
+# = require('undici')`, and node-gyp's own package.json pins
+# `"undici": "^6.25.0"` -- so this stays on major 6, at 6.29.0 (the newest
+# 6.x release, dist-tag `six`, which folds in 6.28.1's fix plus several
+# npm-registry-published moderate/low undici advisories also fixed by
+# <6.28.1/<6.29.0 that trivy hadn't flagged yet). undici has zero
+# dependencies at both 6.27.0 and 6.29.0 (checked each version's
+# package.json), and 6.29.0's index.js still exports Agent,
+# EnvHttpProxyAgent, RetryAgent and fetch the same way -- same-API patch.
+#
+# tar and ip-address were not in trivy's failing set, but the npm registry's
+# own bulk security-advisory endpoint
+# (POST /-/npm/v1/security/advisories/bulk), queried against every
+# package+version actually bundled in npm@11.19.0 (141 packages, walked from
+# the real tarball's node_modules), returned two more HIGH advisories with a
+# published fix:
+#
+#   - tar 7.5.19 (node_modules/npm/node_modules/tar): uncontrolled recursion
+#     in mapHas/filesFilter, an uncatchable stack-overflow DoS from a crafted
+#     long-path tar with member selection (GHSA-r292-9mhp-454m, fixed
+#     >7.5.20). Bumped to 7.5.22 (latest). tar's own "dependencies" are
+#     identical at 7.5.19 and 7.5.22 (chownr ^3.0.0, yallist ^5.0.0, minipass
+#     ^7.1.2, minizlib ^3.1.0, @isaacs/fs-minipass ^4.0.0), so npm's
+#     already-bundled copies of those satisfy the upgrade with nothing new
+#     vendored.
+#   - ip-address 10.2.0 (node_modules/npm/node_modules/ip-address): the worst
+#     of eight advisories on this bundled version is HIGH
+#     (GHSA-mwp4-54f8-5fhr, leading-zero octet decoding lets Address4 admit
+#     addresses resolvers read as octal -- an SSRF/trust-boundary bypass,
+#     fixed >10.3.0); the rest are moderate SSRF/DoS variants, all fixed by
+#     <=10.7.2. Bumped to 10.7.2 (latest). ip-address has zero dependencies
+#     at either version, and the sole consumer inside npm's tree, bundled
+#     `socks` (required by @npmcli/agent's socks-proxy-agent, for SOCKS proxy
+#     support), pins `"ip-address": "^10.1.1"`, which 10.7.2 satisfies; its
+#     `require('ip-address')` call sites (socks/build/common/helpers.js,
+#     socks/build/client/socksclient.js) use the same `Address4`/`Address6`
+#     exports both versions carry.
+#
+# Neither trivy's own scan output nor this npm-registry query is assumed
+# complete going forward -- this is what was true for npm@11.19.0 on
+# 2026-09-30, checked directly against the registry, not carried over from
+# the last release.
 ARG BRACE_EXPANSION_VERSION=5.0.12
 ARG BRACE_EXPANSION_SHA512=628bd0debce168b308ac38cd0cc90d4b4d6d79af77aa11211b9c72f1febe47497e770dca8bee6c0a822823de368ae2d94c75a881692d830543854d3d88d12299
+ARG UNDICI_VERSION=6.29.0
+ARG UNDICI_SHA512=47e44e0c1aa9ea2da93df94676afb120e52497e44d7c6807c288a779c2aefc90ae7f6b8ed3a70e2a80db2363fb0e7e8a72cc1d2b0adccdb53a21827a2bc5fec2
+ARG TAR_VERSION=7.5.22
+ARG TAR_SHA512=3053bf433bed00e9896e484e6824ef6c670537d2fd6fe26e9c8b03c1a2a58d239d70b31e6b7349d64f54b33feb8dd7d25d3ab875fcdf792ed6e29e1838000778
+ARG IP_ADDRESS_VERSION=10.7.2
+ARG IP_ADDRESS_SHA512=ec7ff68054888adc5cd211b79ce2358254bc40ba3f10704514b93cbc45235d8ff1bb401d2fc8d9f54d48cced8f526d1dd83fe87d070089f6f483a38192df14ef
 RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
+ && UNDICI_DIR=/usr/local/lib/node_modules/npm/node_modules/undici \
+ && TAR_DIR=/usr/local/lib/node_modules/npm/node_modules/tar \
+ && IPADDR_DIR=/usr/local/lib/node_modules/npm/node_modules/ip-address \
  && BE_TGZ="/tmp/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
+ && UNDICI_TGZ="/tmp/undici-${UNDICI_VERSION}.tgz" \
+ && TAR_TGZ="/tmp/tar-${TAR_VERSION}.tgz" \
+ && IPADDR_TGZ="/tmp/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && curl -fsSL -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
+ && curl -fsSL -o "${UNDICI_TGZ}" \
+      "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz" \
+ && curl -fsSL -o "${TAR_TGZ}" \
+      "https://registry.npmjs.org/tar/-/tar-${TAR_VERSION}.tgz" \
+ && curl -fsSL -o "${IPADDR_TGZ}" \
+      "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
- && rm -rf "${BE_DIR}" \
- && mkdir -p "${BE_DIR}" \
+ && echo "${UNDICI_SHA512}  ${UNDICI_TGZ}" | sha512sum -c - \
+ && echo "${TAR_SHA512}  ${TAR_TGZ}" | sha512sum -c - \
+ && echo "${IP_ADDRESS_SHA512}  ${IPADDR_TGZ}" | sha512sum -c - \
+ && rm -rf "${BE_DIR}" "${UNDICI_DIR}" "${TAR_DIR}" "${IPADDR_DIR}" \
+ && mkdir -p "${BE_DIR}" "${UNDICI_DIR}" "${TAR_DIR}" "${IPADDR_DIR}" \
  && tar -xzf "${BE_TGZ}" -C "${BE_DIR}" --strip-components=1 \
- && rm -f "${BE_TGZ}" \
+ && tar -xzf "${UNDICI_TGZ}" -C "${UNDICI_DIR}" --strip-components=1 \
+ && tar -xzf "${TAR_TGZ}" -C "${TAR_DIR}" --strip-components=1 \
+ && tar -xzf "${IPADDR_TGZ}" -C "${IPADDR_DIR}" --strip-components=1 \
+ && rm -f "${BE_TGZ}" "${UNDICI_TGZ}" "${TAR_TGZ}" "${IPADDR_TGZ}" \
  && node -e "\
-const pkg = require('${BE_DIR}/package.json'); \
-if (pkg.version !== '${BRACE_EXPANSION_VERSION}') { throw new Error('brace-expansion landed ' + pkg.version + ', expected ${BRACE_EXPANSION_VERSION}'); } \
+const assertVersion = (dir, want) => { \
+  const pkg = require(dir + '/package.json'); \
+  if (pkg.version !== want) { throw new Error(dir + ' landed ' + pkg.version + ', expected ' + want); } \
+  return pkg.version; \
+}; \
+const beV = assertVersion('${BE_DIR}', '${BRACE_EXPANSION_VERSION}'); \
 const { expand } = require('${BE_DIR}'); \
 if (typeof expand !== 'function') { throw new Error('brace-expansion has no expand() export -- minimatch calls brace_expansion_1.expand()'); } \
-const out = expand('a{{1,2},{3,4}}b'); \
-const want = ['a1b','a2b','a3b','a4b']; \
-if (JSON.stringify(out) !== JSON.stringify(want)) { throw new Error('brace-expansion regressed: ' + JSON.stringify(out)); } \
-console.log('brace-expansion', pkg.version, 'ok');" \
+const beOut = expand('a{{1,2},{3,4}}b'); \
+const beWant = ['a1b','a2b','a3b','a4b']; \
+if (JSON.stringify(beOut) !== JSON.stringify(beWant)) { throw new Error('brace-expansion regressed: ' + JSON.stringify(beOut)); } \
+console.log('brace-expansion', beV, 'ok'); \
+const undiciV = assertVersion('${UNDICI_DIR}', '${UNDICI_VERSION}'); \
+const { Agent, EnvHttpProxyAgent, RetryAgent, fetch } = require('${UNDICI_DIR}'); \
+for (const [name, sym] of [['Agent', Agent], ['EnvHttpProxyAgent', EnvHttpProxyAgent], ['RetryAgent', RetryAgent], ['fetch', fetch]]) { \
+  if (typeof sym !== 'function') { throw new Error('undici has no ' + name + '() export -- node-gyp download.js destructures it'); } \
+} \
+const probeAgent = new Agent(); \
+probeAgent.close().catch(() => {}); \
+console.log('undici', undiciV, 'ok'); \
+const tarV = assertVersion('${TAR_DIR}', '${TAR_VERSION}'); \
+const tarLib = require('${TAR_DIR}'); \
+for (const name of ['c', 'x', 'create', 'extract']) { \
+  if (typeof tarLib[name] !== 'function') { throw new Error('tar has no ' + name + '() export'); } \
+} \
+console.log('tar', tarV, 'ok'); \
+const ipV = assertVersion('${IPADDR_DIR}', '${IP_ADDRESS_VERSION}'); \
+const { Address4, Address6, AddressError } = require('${IPADDR_DIR}'); \
+const a4 = new Address4('192.168.1.1'); \
+if (a4.correctForm() !== '192.168.1.1' || !a4.isPrivate()) { throw new Error('ip-address Address4 regressed on a valid literal'); } \
+const a6 = new Address6('::1'); \
+if (a6.correctForm() !== '::1' || !a6.isLoopback()) { throw new Error('ip-address Address6 regressed on a valid literal'); } \
+let rejected = false; \
+try { new Address4('999.999.999.999'); } catch (e) { rejected = e instanceof AddressError; } \
+if (!rejected) { throw new Error('ip-address Address4 accepted an invalid literal'); } \
+console.log('ip-address', ipV, 'ok');" \
  && export HOME=/tmp \
- && rm -rf /tmp/npm-brace-expansion-smoke \
- && mkdir -p /tmp/npm-brace-expansion-smoke \
- && cd /tmp/npm-brace-expansion-smoke \
+ && rm -rf /tmp/npm-patch-smoke \
+ && mkdir -p /tmp/npm-patch-smoke \
+ && cd /tmp/npm-patch-smoke \
  && npm --version \
  && npm init -y >/dev/null \
- && npm pack --dry-run >/dev/null \
+ && echo "console.log('ok')" > index.js \
+ && npm pack >/dev/null \
+ && test -f npm-patch-smoke-1.0.0.tgz \
+ && node -e "\
+const tarLib = require('${TAR_DIR}'); \
+tarLib.x({ file: 'npm-patch-smoke-1.0.0.tgz', sync: true, C: '/tmp/npm-patch-smoke' }); \
+console.log('npm pack + tar round-trip ok');" \
+ && test -f package/index.js \
  && cd / \
- && rm -rf /tmp/npm-brace-expansion-smoke \
- && echo "npm pack (minimatch/glob brace-expansion path) ok"
+ && rm -rf /tmp/npm-patch-smoke \
+ && echo "npm pack (minimatch/glob/tar path) ok"
 
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
