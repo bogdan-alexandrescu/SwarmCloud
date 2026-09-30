@@ -4332,7 +4332,7 @@ Applied by #343 (accepted by the owner 2026-09-29).
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
-**Applied by #345**, `part of #218` (see `docs/DEPLOY_STATE.md` or the linked
+**Applied by #345** (accepted by the owner 2026-09-29), `part of #218` (see `docs/DEPLOY_STATE.md` or the linked
 PR for its state — this entry itself does not track a moving target). It
 answers #218,
 which contract request 25 left open: which inputs `browser` and `generic`
