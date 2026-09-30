@@ -17,6 +17,17 @@
 #
 # The versions come from override_data, so "enabled only" is a statement about
 # a list holding a DISABLED version, not about an empty one.
+#
+# NONE OF THESE THREE CARRY public_key. Verified against the provider's own
+# source (v6.50.0, google/services/kms/data_source_google_kms_crypto_key_versions.go,
+# flattenKMSCryptoKeyVersionsList): a `google_kms_crypto_key_versions` list
+# entry is never given a `public_key` -- that field is set exactly once, as
+# the data source's OWN top-level attribute, for versions[0] only. Giving
+# every mocked entry here a public_key (as this file did before) made the
+# test lie: it could not have caught #354's apply-time discovery that
+# local.spec_verify_keys comes back empty in real CI. Each ENABLED version's
+# key now comes from its own google_kms_crypto_key_version, mocked below by
+# the address the module opens it at.
 
 mock_provider "google" {}
 
@@ -32,7 +43,7 @@ override_data {
         state            = "ENABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-ONE" }]
+        public_key       = []
       },
       {
         id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
@@ -42,7 +53,7 @@ override_data {
         state            = "DISABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-TWO-REVOKED" }]
+        public_key       = []
       },
       {
         id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
@@ -52,9 +63,29 @@ override_data {
         state            = "ENABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-THREE" }]
+        public_key       = []
       },
     ]
+  }
+}
+
+# The per-version reads the fix adds (terraform/modules/spec_signing_key):
+# only the two ENABLED versions get one, keyed by version number.
+override_data {
+  target = module.spec_signing_key.data.google_kms_crypto_key_version.enabled["1"]
+  values = {
+    version    = 1
+    state      = "ENABLED"
+    public_key = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-ONE" }]
+  }
+}
+
+override_data {
+  target = module.spec_signing_key.data.google_kms_crypto_key_version.enabled["3"]
+  values = {
+    version    = 3
+    state      = "ENABLED"
+    public_key = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-THREE" }]
   }
 }
 
@@ -236,4 +267,45 @@ run "an_unknown_mode_is_refused" {
   }
 
   expect_failures = [var.spec_signature_mode]
+}
+
+# An untrusted signing version ships workers that refuse every task after
+# #353 (agent_worker.specverify: foreign_key_version). check
+# "spec_signing_version_is_trusted" only warns, in every environment; dev
+# additionally blocks the plan, because dev is where this gets caught before
+# the same mistake reaches prod.
+run "dev_blocks_the_plan_on_an_untrusted_signing_version" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment              = "dev"
+    spec_signing_key_version = 2 # DISABLED: not a key in local.spec_verify_keys
+  }
+
+  expect_failures = [output.spec_verify_keys_configmap]
+}
+
+run "prod_only_warns_on_the_same_untrusted_version" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment              = "prod"
+    spec_signing_key_version = 2 # DISABLED, same as above
+  }
+
+  # No expect_failures: prod's plan must still succeed. check
+  # "spec_signing_version_is_trusted" still fires (a WARNING, not a failure);
+  # only dev's output precondition blocks.
+  assert {
+    condition     = !contains(keys(output.spec_verify_keys), output.spec_signing_key_version)
+    error_message = "the control for this run: version 2 must actually be untrusted, or the run above proves nothing"
+  }
 }
