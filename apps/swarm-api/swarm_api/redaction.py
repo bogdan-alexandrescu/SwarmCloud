@@ -106,9 +106,18 @@ from swarm_redaction.rules import (  # noqa: F401 - re-exported
 #: credentials' names.
 _CREDENTIAL_WORD = r"api[-_]?key|passw(?:or)?d|secret|token|credential|private[-_]?key|authorization"
 _CREDENTIAL_KEY = re.compile(_CREDENTIAL_WORD, re.IGNORECASE)
-#: The keyword ENDS the key: `password`, `DB_PASSWORD`, `github_token`. The key
-#: part of the key/value rule, with `api-key` and `private_key` added.
-_CREDENTIAL_KEY_AT_END = re.compile(r"(?:" + _CREDENTIAL_WORD + r")\Z", re.IGNORECASE)
+#: The keyword ENDS the key -- `password`, `DB_PASSWORD`, `github_token` -- or
+#: is followed only by a key suffix: `SECRET_KEY`, `PASSWORD_HASH`,
+#: `AWS_SECRET_ACCESS_KEY`. The key part of the key/value rule, with `api-key`
+#: and `private_key` added, and its `keysuffix` group (#260,
+#: `swarm_redaction.rules.KEY_VALUE`): a name ending `_key`, `_access_key` or
+#: `_hash` names a credential exactly as a singular one does, digits and all,
+#: so a number under it is masked on `/input`, `/logs` and an artifact alike
+#: (the PR #378 review; owner decision 2026-09-30). A bare plural (`secrets`,
+#: `max_tokens`) is still a count.
+_CREDENTIAL_KEY_AT_END = re.compile(
+    r"(?:" + _CREDENTIAL_WORD + r")(?:s?[-_](?:access[-_]?key|key|hash))?\Z", re.IGNORECASE
+)
 
 #: At most this many literals are carried from one place in a document to the
 #: others. Each is looked for in every string, so the work is this bound times
@@ -161,9 +170,11 @@ def _masks_whole(key: str, value: Any) -> bool:
       * a list or an object holding such a string, masked as one leaf, so a
         token split into lines, or `{"value": "..."}`, is not served piece by
         piece under a count that says it was masked;
-      * a NUMBER only when the credential word ENDS the key: a PIN under
-        `password` is one, `input_tokens: 10` and `credential_revoked_times: 2`
-        -- keys this platform's own mock runner takes -- are counts;
+      * a NUMBER only when the credential word ENDS the key, or is followed
+        only by `_key`, `_access_key` or `_hash` (`_CREDENTIAL_KEY_AT_END`): a
+        PIN under `password` or `SECRET_KEY` is one, `input_tokens: 10` and
+        `credential_revoked_times: 2` -- keys this platform's own mock runner
+        takes -- are counts;
       * never `null`, `true`/`false`, `[]` or `{}`: none of them can be a
         credential, and each counted one on the screen.
     """
@@ -438,6 +449,8 @@ class JsonMasker:
                 '"' + re.escape(f"{_STAND_IN_OPEN}{self._tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
             )
             text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
+        # A lone surrogate (decoded from a `\\ud800` escape) cannot be written as UTF-8: escape it again (PR #378).
+        text = re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", text)
         return Redacted(text=text, count=total)
 
     def value(self, value: Any) -> tuple[Any, int]:

@@ -57,6 +57,7 @@ from swarm_common.models import Attempt, Task, utcnow
 
 from . import agent_streams as agent_streams_mod
 from .errors import NotFound, UpstreamUnavailable, ValidationFailed
+from .json_masking import context_before, redact_json_window
 from .objects import (
     ObjectAbsent,
     ObjectInfo,
@@ -1181,13 +1182,32 @@ class InspectionService:
         )
         withheld = withheld or key_withheld
         text, undecodable = _decode_window(raw)
-        # As `/logs` masks a window: a JSON line by its structure, the rest by
-        # the rules, and the task's literals in both (the PR #229 review). The
-        # agent's stream-json stdout is also one of its artifacts.
-        scrubbed = redact_lines(
-            text, inside_key=inside_key, literals=masking_for(task).literals
-        )
         complete = end >= chunk.total_bytes
+        # A JSON artifact is masked by its tokens, so it is still JSON when
+        # served (#327): the worker writes `claude-transcript.json`
+        # pretty-printed, no line of it is a document, and the text rules
+        # over its raw JSON text broke quotes, values and structure -- and
+        # never found a learned literal JSON had escaped. Anything that is not
+        # JSON is masked as `/logs` masks a window, as before (the PR #229
+        # review): a JSON line by its structure, the rest by the rules, the
+        # task's literals in both. A window that starts and ends on a line
+        # boundary may be a page of a JSON document; the look-back already
+        # read is its context, so a value the page before opened is known.
+        at = start - chunk.offset
+        on_line = start == 0 or chunk.data[at - 1 : at] == b"\n"
+        fragment = on_line and (complete or raw.endswith(b"\n"))
+        context = ""
+        if fragment and at > 0:
+            context, _ = _decode_window(
+                context_before(chunk.data[:at], starts_on_line=chunk.offset == 0)
+            )
+        scrubbed = redact_json_window(
+            text,
+            inside_key=inside_key,
+            literals=masking_for(task).literals,
+            fragment=fragment,
+            context=context,
+        )
         row.update(
             status="ok",
             content=scrubbed.text,
