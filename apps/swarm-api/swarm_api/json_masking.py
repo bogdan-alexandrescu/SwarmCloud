@@ -34,22 +34,38 @@ WHAT THIS DOES INSTEAD. A window that is JSON is masked by its TOKENS:
     string `"********"` -- a string, a number, a list or an object alike, by
     `redaction._masks_whole`, the rule `JsonMasker` uses, so a list or an
     object is one mask and one count, never served element by element;
-  * a private key written as a LIST of strings is masked from the element
-    holding its BEGIN marker through the one holding its END, as
-    `JsonMasker` does (`redaction._key_run_end`, restated here as a running
-    state because a window is not a decoded list);
+  * a NUMBER that holds one of the learned literals -- the number itself,
+    inside a longer one, `N.0`, `Ne0` -- is replaced by `"********"` (the
+    PR #378 review): a PIN the task named, echoed by the agent as a number,
+    was served in clear because only strings were compared;
+  * a private key split over several strings is masked from the string
+    holding its BEGIN marker through the one holding its END, WHATEVER
+    containers those strings sit in -- a flat list, an object's values, a
+    list with a number in it, nested lists, a list of objects (the PR #378
+    review) -- when the END is within `PEM_BLOCK_MAX_CHARS` of string
+    content, as the text path masks a block. With no END in reach, a key
+    written as a flat LIST of strings is masked to the end of that run of
+    strings, as `JsonMasker` does (`redaction._key_run_end`, restated here
+    as a running state because a window is not a decoded list);
   * everything between tokens -- whitespace, commas, brackets -- is copied as
     stored. The text is still the stored document's layout.
 
 `null`, `true` and `false` UNDER A CREDENTIAL'S NAME ARE SERVED AS THEY ARE.
 None of them can be a credential, `_masks_whole` has always said so for a
 decoded document, and masking one to `"********"` would tell a reader to
-rotate a key nobody sent. `redact_lines` ran the text rules over such a line
-as a "safety pass" (the PR #229 review), which is exactly what turned
-`"api_key":null` into `********`. That pass is not run here: every place a
-free-text credential can sit in JSON is a string, and every string is masked
-decoded; a number is masked under a name the credential word ends, as the
-text rule masks it. The pass could only ever add a mask to a literal.
+rotate a key nobody sent (owner decision, 2026-09-30). `redact_lines` ran
+the text rules over such a line as a "safety pass" (the PR #229 review),
+which is exactly what turned `"api_key":null` into `********`. That pass is
+not run here, and what it caught is caught instead by the tokens: every
+place a free-text credential can sit in JSON is a string, and every string
+is masked decoded; a number is masked under a name the credential word
+ends or is followed only by `_key`, `_access_key` or `_hash` (`SECRET_KEY`,
+`PASSWORD_HASH` -- `_masks_whole`, widened for every route at once rather
+than here alone); and a number holding a learned literal is masked as
+above. The PR #378 review found the last two missing, which is what the
+pass had been catching besides literals; an earlier version of this
+paragraph said the pass could only ever add a mask to a literal, and was
+wrong.
 
 WHICH WINDOWS COUNT AS JSON.
 
@@ -61,6 +77,13 @@ WHICH WINDOWS COUNT AS JSON.
     line breaks is cut between tokens, and a page of a pretty-printed
     transcript tokenises cleanly although it does not parse. This is what
     lets `swarm artifact` concatenate 512 KiB pages into a file that parses.
+
+A FRAGMENT'S GRAMMAR IS CHECKED, not only its tokens (the PR #378 review). A
+string is a key only where a key may stand -- right after `{` or `,` inside
+an object, or, in a fragment, at the top level where the object that holds
+it opened before the window -- and it must be followed by `:`; a `:`
+anywhere else is not JSON. Without that, `"password": "<v>": 1` read `<v>`
+as a key and served it. Such a window goes to `redact_lines`.
 
 Anything else -- plain text, a Markdown file, a window cut mid-line, a window
 whose tokens do not scan, one over `JSON_WINDOW_MAX_CHARS` -- goes through
@@ -76,17 +99,25 @@ route already reads for `_enter_key`, and the raw download's previous
 window), walks that too, and so knows it begins INSIDE such a value: it
 serves nothing of it up to its close, masks the rest of a key's lines, and
 learns the literals the text before it named. The two pages' edges agree, so
-their concatenation is still JSON. A value that opened further back than the
-context reaches (`PEM_BLOCK_MAX_CHARS`) is not known about; its strings are
-still masked by every rule, as they were before.
+their concatenation is still JSON. EACH page counts what it hid: a page
+that serves nothing of a value its context opened reports it masked, once,
+rather than `redacted: false` over text it withheld (the PR #378 review),
+so the pages' counts sum to more than a whole read's. A value that opened
+further back than the context reaches (`PEM_BLOCK_MAX_CHARS`) is not known
+about; its strings are still masked by every rule, as they were before.
 
 `inside_key`: the paged route's look-back found an open private key before
 the window. Its first strings are masked as that key's lines, up to its END,
 and when the window does not scan the text path masks it as it always has.
 
+A LONE SURROGATE (`\\ud800` written escaped in the stored text) decodes to a
+code point UTF-8 cannot encode. A string that held one and was masked is
+re-encoded with it escaped again, never raw, so serving it cannot raise.
+
 IMPORTS. `JsonMasker`, `Redacted`, `redact_lines`, `MASK` and
 `PEM_BLOCK_MAX_CHARS` are public names of `redaction.py`. `_masks_whole`,
-`_open_key`, `_CREDENTIAL_KEY` and `_PEM_END` are private ones, imported
+`_mask_literals`, `_open_key`, `_CREDENTIAL_KEY`, `_PEM_END` and `_PEM_HINT` are private
+ones, imported
 rather than restated: the decision "is this value a credential" must be the
 one `/input` and `/logs` make, and a second copy of it is how the two would
 drift (the PR description says so too).
@@ -106,6 +137,8 @@ from .redaction import (
     Redacted,
     _CREDENTIAL_KEY,
     _PEM_END,
+    _PEM_HINT,
+    _mask_literals,
     _masks_whole,
     _open_key,
     redact_lines,
@@ -135,6 +168,9 @@ _NUMBER = re.compile(r"-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][-+]?[0-9]+)?")
 _WORDS = (("true", True), ("false", False), ("null", None))
 #: What may follow a number or a literal: `12ab` or `nullx` is not JSON.
 _AFTER_SCALAR = frozenset(" \t\r\n,:]}")
+#: A surrogate code point: a lone one decodes out of a `\\ud800` escape and
+#: cannot be written as UTF-8, so a re-encoded string escapes it again.
+_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 class _NotJson(Exception):
@@ -209,7 +245,7 @@ class _Scanner:
 class _Frame:
     """One open container while scanning: `root` for the window's top level."""
 
-    __slots__ = ("kind", "key", "has_str", "has_num", "watch", "run", "run_size")
+    __slots__ = ("kind", "key", "has_str", "has_num", "watch", "run", "run_size", "run_open")
 
     def __init__(self, kind: str) -> None:
         self.kind = kind
@@ -224,19 +260,48 @@ class _Frame:
         #: Inside a private key written as a list of strings (`_key_run_end`).
         self.run = False
         self.run_size = 0
+        #: Where the string that opened `run` starts (-1: before the window).
+        self.run_open = -1
 
 
-def _structure(text: str, *, strict: bool) -> dict[int, tuple[bool, bool, int]]:
-    """Every container under a credential's name: its start to `(has_str, has_num, end)`.
+#: What `_structure` finds: every container under a credential's name, its
+#: start to `(has_str, has_num, end)`; and every string that opens a private
+#: key whose END another string holds within reach, its start to that
+#: string's start.
+_Spans = dict[int, tuple[bool, bool, int]]
+_Runs = dict[int, int]
 
-    Also checks the brackets pair up. `strict`: the window must be whole
-    documents -- nothing closed that was not opened in it, nothing left open.
-    A fragment may close what the text before it opened and leave open what
-    the text after it closes; a container left open has no entry.
+
+def _structure(text: str, *, strict: bool) -> tuple[_Spans, _Runs]:
+    """The containers under a credential's name, and the private keys split over strings.
+
+    Also checks the window is JSON: the brackets pair up, and a string is a
+    key only where a key may stand -- right after `{` or `,` in an object,
+    or, in a fragment, at the top level, where an object may have opened
+    before the window -- and is then followed by `:`, and a `:` follows
+    nothing else (the PR #378 review: `"password": "<v>": 1` read `<v>` as a
+    key and served it). `strict`: the window must be whole documents --
+    nothing closed that was not opened in it, nothing left open, no key at
+    the top level. A fragment may close what the text before it opened and
+    leave open what the text after it closes; a container left open has no
+    entry.
+
+    A KEY SPLIT OVER STRINGS (the PR #378 review). A string VALUE that
+    leaves a private key open (`_open_key`) runs to the next string value
+    holding an END marker, in whatever container either sits -- `{"l1":
+    BEGIN, "l2": body}`, `[BEGIN, 1, body, END]`, `[[BEGIN], [body]]`,
+    `[{"line": BEGIN}, ...]` -- when the string content between them is
+    within `PEM_BLOCK_MAX_CHARS`, the reach the text path gives a block. One
+    pass: every open waits in `pending` for the next END, so the work is
+    linear however many BEGIN markers a window holds.
     """
-    spans: dict[int, tuple[bool, bool, int]] = {}
+    spans: _Spans = {}
+    runs: _Runs = {}
+    pending: list[tuple[int, int]] = []  # (the open string's start, `size` after it)
+    size = 0  # string VALUE content read so far, each plus one, as `_key_run_end` counts
     scanner = _Scanner(text)
     stack = [_Frame("root")]
+    before: str | None = None  # the previous token's kind; `k` for a key
     while True:
         token = scanner.next()
         if token is None:
@@ -256,30 +321,50 @@ def _structure(text: str, *, strict: bool) -> dict[int, tuple[bool, bool, int]]:
             if len(stack) == 1:
                 if strict:
                     raise _NotJson("a close with no open")
-                continue
-            if frame.kind != ("{" if kind == "}" else "["):
-                raise _NotJson("brackets that do not pair")
-            stack.pop()
-            if frame.watch >= 0:
-                spans[frame.watch] = (frame.has_str, frame.has_num, end)
-            parent = stack[-1]
-            parent.has_str = parent.has_str or frame.has_str
-            parent.has_num = parent.has_num or frame.has_num
+            else:
+                if frame.kind != ("{" if kind == "}" else "["):
+                    raise _NotJson("brackets that do not pair")
+                stack.pop()
+                if frame.watch >= 0:
+                    spans[frame.watch] = (frame.has_str, frame.has_num, end)
+                parent = stack[-1]
+                parent.has_str = parent.has_str or frame.has_str
+                parent.has_num = parent.has_num or frame.has_num
+        elif kind == ":":
+            if before != "k":
+                raise _NotJson("a colon after something that is not a key")
         elif kind == "s":
-            if scanner.is_key():
+            follows = scanner.is_key()
+            member = frame.kind == "{" or (frame.kind == "root" and not strict)
+            where_a_key_stands = member and before in ("{", ",", None)
+            if follows and not where_a_key_stands:
+                raise _NotJson("a value followed by a colon")
+            if frame.kind == "{" and before in ("{", ",") and not follows:
+                raise _NotJson("an object member with no key")
+            if follows:
                 frame.key = value
+                kind = "k"
             else:
                 frame.key = None
                 if value.strip():
                     frame.has_str = True
+                if pending and _PEM_HINT in value and _PEM_END.search(value) is not None:
+                    for opened, after in pending:
+                        if size - after <= PEM_BLOCK_MAX_CHARS:
+                            runs[opened] = start
+                    pending = []
+                size += len(value) + 1
+                if _open_key(value):
+                    pending.append((start, size))
         elif kind == "n":
             frame.key = None
             frame.has_num = True
         elif kind == "l":
             frame.key = None
+        before = kind
     if strict and len(stack) > 1:
         raise _NotJson("a container left open")
-    return spans
+    return spans, runs
 
 
 def _leaves(text: str, start: int, stop: int) -> list[Any]:
@@ -297,12 +382,20 @@ def _leaves(text: str, start: int, stop: int) -> list[Any]:
 
 
 def _encode(value: str) -> str:
-    return json.dumps(value, ensure_ascii=False)
+    """`value` as a JSON string, non-ASCII kept as stored, a lone surrogate escaped.
+
+    `ensure_ascii=False` writes a lone surrogate (decoded from a `\\ud800`
+    escape) raw, and no route can encode that as UTF-8: the content route
+    answered 500 (the PR #378 review). It is written as the escape it was.
+    """
+    encoded = json.dumps(value, ensure_ascii=False)
+    return _SURROGATE.sub(lambda m: f"\\u{ord(m.group(0)):04x}", encoded)
 
 
 def _walk(
     text: str,
-    spans: dict[int, tuple[bool, bool, int]],
+    spans: _Spans,
+    runs: _Runs,
     masker: JsonMasker | None,
     *,
     emit_from: int,
@@ -323,8 +416,14 @@ def _walk(
     pieces: list[str] = []
     at = emit_from
     count = 0
+    # The key split over strings being masked (`runs`): through the string
+    # starting at `run_stop`, opened by the one starting at `run_open`.
+    run_stop = -1
+    run_open = -1
+    # Values opened before the window that this page has already counted.
+    charged: set[int] = set()
 
-    def put(start: int, end: int, new: str, counted: int) -> None:
+    def put(start: int, end: int, new: str, counted: int, opened: int | None = None) -> None:
         nonlocal at, count
         if end <= emit_from:
             return  # all of it is context
@@ -332,11 +431,35 @@ def _walk(
             pieces.append(text[at:start])
             pieces.append(new)
             count += counted
+            if not counted and opened is not None and opened < emit_from and opened not in charged:
+                # Key material of a key opened before the window (or, at -1,
+                # before the look-back): the page that showed its BEGIN
+                # counted it there, and THIS page, which masks its lines, says
+                # so too rather than `redacted: false` (the PR #378 review).
+                charged.add(opened)
+                count += 1
         else:
             # A value the context opened: the page before this one served
-            # its mask and counted it; nothing of it is served here.
+            # its mask and counted it. Nothing of it is served here, and this
+            # page counts it too: it withheld text (the PR #378 review).
             pieces.append(text[at:emit_from])
+            count += counted
         at = end
+
+    def open_run(value: str, start: int, frame: _Frame) -> None:
+        """A string value that leaves a private key open starts a run."""
+        nonlocal run_stop, run_open
+        if not _open_key(value):
+            return
+        stop = runs.get(start)
+        if stop is not None:
+            run_stop, run_open = stop, start
+        elif frame.kind != "{":
+            # No END in reach: a key written as a flat list runs to the end
+            # of its run of strings, as `JsonMasker` masks it.
+            frame.run = True
+            frame.run_size = 0
+            frame.run_open = start
 
     while True:
         token = scanner.next()
@@ -365,6 +488,14 @@ def _walk(
             continue
 
         key, frame.key = frame.key, None
+        if kind == "s" and start <= run_stop:
+            # Key material of the key a string above opened, in whatever
+            # container: its one mask was counted where its BEGIN was.
+            if masker is None:
+                learned.append(value)
+            else:
+                put(start, end, _MASKED, 0, run_open)
+            continue
         if frame.run:
             if kind != "s":
                 frame.run = False
@@ -378,7 +509,7 @@ def _walk(
                 if masker is None:
                     learned.append(value)
                 else:
-                    put(start, end, _MASKED, 0)
+                    put(start, end, _MASKED, 0, frame.run_open)
                 continue
 
         if kind in ("{", "["):
@@ -409,6 +540,8 @@ def _walk(
                 learned.append({key: value})
             else:
                 put(start, end, _MASKED, 1)
+            if kind == "s":
+                open_run(value, start, frame)
             continue
         if kind == "s":
             if masker is None:
@@ -417,9 +550,15 @@ def _walk(
                 masked = masker.text(value)
                 if masked.count:
                     put(start, end, _encode(masked.text), masked.count)
-            if frame.kind != "{" and _open_key(value):
-                frame.run = True
-                frame.run_size = 0
+            open_run(value, start, frame)
+        elif kind == "n" and masker is not None:
+            # A learned literal made of digits, written as a NUMBER -- as
+            # itself, inside a longer number, `N.0`, `Ne0` -- is masked as a
+            # string is (the PR #378 review); the number becomes the JSON
+            # string `"********"`, as a number under a credential's name does.
+            _, found = _mask_literals(text[start:end], masker.literals)
+            if found:
+                put(start, end, _MASKED, found)
 
     if masker is None:
         return learned
@@ -452,10 +591,10 @@ def _token_mask(
     for prefix in (context, "") if context else ("",):
         whole = prefix + text
         try:
-            spans = _structure(whole, strict=strict and not prefix)
-            learned = _walk(whole, spans, None, emit_from=len(prefix), run_at_start=inside_key)
+            spans, runs = _structure(whole, strict=strict and not prefix)
+            learned = _walk(whole, spans, runs, None, emit_from=len(prefix), run_at_start=inside_key)
             masker = JsonMasker(learned, literals=literals)
-            return _walk(whole, spans, masker, emit_from=len(prefix), run_at_start=inside_key)
+            return _walk(whole, spans, runs, masker, emit_from=len(prefix), run_at_start=inside_key)
         except (_NotJson, RecursionError):
             # A context that does not scan is dropped, and the window tried
             # alone; a window that does not scan is the text path's.
