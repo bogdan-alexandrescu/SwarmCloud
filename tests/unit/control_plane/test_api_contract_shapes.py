@@ -229,11 +229,12 @@ CODECS: tuple[Codec, ...] = (
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
         # PR #229 review, are what the task collected about itself and the
-        # userinfo of its repository URL.
+        # userinfo of its repository URL. `waiting_for` (#362) is a live read
+        # of a READY task's pools by `swarm_api.waiting`, never stored.
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
-            "repository_url_redaction_count",
+            "repository_url_redaction_count", "waiting_for",
         ),
     ),
     Codec(
