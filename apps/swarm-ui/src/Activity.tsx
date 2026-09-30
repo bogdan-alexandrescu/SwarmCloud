@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
   loadMe,
   loadOutcomes,
@@ -8,6 +8,7 @@ import {
   loadTenants,
 } from './api'
 import { IDLE_POLL_MS } from './Agents'
+import { CardFailed, CardSkeleton } from './CardSkeleton'
 import { OutcomeLedger } from './charts/OutcomeLedger'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { helpAnchor, type TopicId } from './help'
@@ -57,6 +58,7 @@ import {
 } from './outcomes'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
+import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -239,6 +241,20 @@ export function ActivityScreen({
   // cadence while the page stays open and visible; the card prints the age
   // of the read it shows. Between reads the last counts stay drawn rather
   // than blanking to "reading" on every tick.
+  //
+  // AND IT IS READ ONLY IN VIEW (#377). It is the one card with content of
+  // its own; the other seven are drawn from the ledger's payload, which is
+  // what decides the page and stays eager. The card reads when it comes
+  // within `CARD_ROOT_MARGIN` of the viewport, and an open, a refresh, a
+  // filter change or a poll tick that lands while it is off-screen is read
+  // when it scrolls back. A read still in flight when the card leaves is
+  // dropped (its answer is ignored, so it cannot draw a late failure) and is
+  // asked again on return. Without IntersectionObserver the card is always
+  // "in view", so it reads on open as it always did.
+  const [openRef, openInView] = useInView<HTMLDivElement>()
+  const [openRetry, setOpenRetry] = useState(0)
+  /** The ask whose reads both landed while the card was in view. */
+  const openAnswered = useRef<string | null>(null)
   const [open, setOpen] = useState<OpenWork>({ stats: null, parked: null })
   const [openTick, setOpenTick] = useState(0)
   useEffect(() => {
@@ -247,10 +263,19 @@ export function ActivityScreen({
     }, IDLE_POLL_MS)
     return () => clearInterval(timer)
   }, [])
+  /** What the card is asked to show: every reason it re-reads, as one value. */
+  const openAsk = `${key}\n${nonce}\n${openTick}\n${openRetry}`
   useEffect(() => {
+    if (!openInView || openAnswered.current === openAsk) return
     let live = true
+    let landed = 0
+    const land = () => {
+      landed += 1
+      if (landed === 2) openAnswered.current = openAsk
+    }
     loadStats().then((r) => {
       if (!live) return
+      land()
       setOpen((o) => ({
         ...o,
         stats:
@@ -261,6 +286,7 @@ export function ActivityScreen({
     })
     loadTasksInState('PARKED').then((r) => {
       if (!live) return
+      land()
       setOpen((o) => ({
         ...o,
         parked:
@@ -274,7 +300,16 @@ export function ActivityScreen({
     return () => {
       live = false
     }
-  }, [key, nonce, openTick])
+  }, [openInView, openAsk])
+  const retryOpen = () => {
+    // Back to the skeleton, not the failure, while the retry is in flight.
+    setOpen({ stats: null, parked: null })
+    setOpenRetry((n) => n + 1)
+  }
+  const openFailures = [
+    open.stats?.status === 'error' ? `The live state counts could not be read: ${open.stats.message}` : null,
+    open.parked?.status === 'error' ? `The parked list could not be read: ${open.parked.message}` : null,
+  ].filter((f): f is string => f !== null)
 
   const [picked, setPicked] = useState<string | null>(null)
   const refresh = () => setNonce((n) => n + 1)
@@ -343,7 +378,29 @@ export function ActivityScreen({
             />
             <WorkflowsFailedCard data={data} spanLabel={view.span ?? 'this range'} />
             <CostCard data={data} picked={picked} />
-            <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
+            {/* The observed box. A grid of one, so the card inside stretches
+                to the row as it did when it was the grid's own item. */}
+            <div ref={openRef} className="ol-lazy">
+              {openFailures.length > 0 ? (
+                <CardFailed
+                  title="Not finished yet"
+                  note="span not applied"
+                  className="ol-open"
+                  failures={openFailures}
+                  onRetry={retryOpen}
+                />
+              ) : open.stats === null ? (
+                <CardSkeleton
+                  title="Not finished yet"
+                  note="span not applied"
+                  className="ol-open"
+                  say="The live state counts are still being read."
+                  lines={OPEN_SKELETON}
+                />
+              ) : (
+                <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
+              )}
+            </div>
             <CancelCausesCard data={data} picked={picked} />
           </div>
           <Provenance data={data} />
@@ -354,6 +411,12 @@ export function ActivityScreen({
     </>
   )
 }
+
+/**
+ * The loaded "Not finished yet" card's lines -- counts, the parks that need a
+ * person, the ones that clear themselves, the link -- as skeleton widths.
+ */
+const OPEN_SKELETON = [78, 56, 64, 30] as const
 
 /** `Sep 12, 00:00 → now`, in the zone the server bucketed in. */
 function rangeWords(d: Outcomes): string {
