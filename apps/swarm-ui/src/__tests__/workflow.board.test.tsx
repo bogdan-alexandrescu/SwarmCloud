@@ -663,19 +663,34 @@ describe('the expanded canvas', () => {
     const w = fanOut()
     const steps = w.steps.map((s, i) => (i === 1 ? { ...s, task_id: 'task_scan_a' } : s))
     const tasks = new Map([['task_scan_a', task('task_scan_a', 'RUNNING')]])
-    const { container } = render(
-      <WorkflowCard
-        workflow={{ ...w, steps }}
-        taskById={tasks}
-        expanded
-        usage={{ kind: 'ready', usage: null }}
-        onToggle={noop}
-        openStages={{}}
-        onToggleStage={noop}
-        loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
-        reload={noop}
-      />,
-    )
+    // A REAL STAGE STORE, NOT A FROZEN ONE. Picking `scan-a` opens the
+    // inspector beside the canvas (#330 item 5), which narrows the column the
+    // five scans have to fit; beside that narrower column even Names cannot
+    // draw all five on one row, so the stage the pick landed in folds into a
+    // band. WF-10's own effect in `WorkflowCard` opens it straight back up by
+    // calling `onToggleStage` -- but only if something is listening. A frozen
+    // `openStages={{}}` with a no-op handler can never observe that call, so
+    // the band would stay closed and `scan-a` would vanish from the canvas
+    // the moment it was picked -- not what this case is about. `card()`'s own
+    // `CardHarness` is exactly this store; it is inlined here because this
+    // case also needs `loadAttempts`, which `card()` does not take.
+    function Harness() {
+      const [stages, setStages] = useState<Record<string, boolean>>({})
+      return (
+        <WorkflowCard
+          workflow={{ ...w, steps }}
+          taskById={tasks}
+          expanded
+          usage={{ kind: 'ready', usage: null }}
+          onToggle={noop}
+          openStages={stages}
+          onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
+          loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+          reload={noop}
+        />
+      )
+    }
+    const { container } = render(<Harness />)
     // Drawn at the `details` tier rather than collapsed -- see the first case in
     // this block.
     expect(container.querySelectorAll('.node')).toHaveLength(7)
@@ -3293,6 +3308,13 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(nodeHeightAt('names')).toBeLessThan(Math.ceil(10 + 42 + 2 + 14 * 1.5 + 12 * 1.45 + 4))
     const { w, tasks } = fan(18)
     const { container } = card(w, tasks, true, 'names')
+    // EIGHTEEN SHARDS DO NOT FIT ONE ROW EVEN AT NAMES (a level never wraps,
+    // owner decision 2026-09-30), so the stage is a band, closed, until it is
+    // opened -- exactly like `wideStage`'s bands elsewhere in this file. This
+    // case is about the CSS a Names-tier card resolves to, not about banding,
+    // so open it the same way `openEveryBand` does before reading a card off
+    // the canvas.
+    expect(openEveryBand(container)).toBe(1)
     const node = nodeNamed(container, 'shard-01')
     expect(node.classList.contains('zoom-names')).toBe(true)
     expect(cascade(STYLES, node, 'padding', { width: 1440 }).winner?.value).toBe('6px 12px 34px')
