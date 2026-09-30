@@ -157,6 +157,33 @@ def test_every_entry_script_is_executable(script):
     assert os.access(script, os.X_OK), f"{script} is not executable; verify-remote.sh runs it directly"
 
 
+@pytest.mark.parametrize("script", _scripts(), ids=lambda p: str(p.relative_to(ROOT)))
+def test_no_script_defaults_a_jq_argument_to_the_escaped_brace_literal(script):
+    """`"${1:-{\\}}"` is what PR #358's first live run hit: inside double
+    quotes, bash 3.2 (macOS, the version these scripts must support) does not
+    strip the backslash, so the "default empty object" is the literal,
+    invalid JSON text `{\\}` rather than `{}`. jq then refuses it with
+    "invalid JSON text passed to --argjson", the caller's argument silently
+    turns into nothing, and the API 422s with "Field required". Every
+    default must instead come from a variable (`local empty='{}'` then
+    `"${1:-$empty}"`) or an explicit `[ -n "$1" ] || set -- '{}'`.
+    """
+    text = script.read_text()
+    assert ":-{\\" not in text, f"{script}: bash 3.2 will not strip the backslash in \"${{1:-{{\\}}}}\" -- use a variable default instead"
+
+
+@pytest.mark.parametrize("script", _scripts(), ids=lambda p: str(p.relative_to(ROOT)))
+def test_every_acceptance_script_is_syntactically_valid_bash(script):
+    result = subprocess.run(
+        ["bash", "-n", str(script)],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, f"{script}: bash -n failed:\n{result.stderr}"
+
+
 @pytest.mark.skipif(shutil.which("shellcheck") is None, reason="shellcheck is not installed here")
 def test_the_acceptance_scripts_are_shellcheck_clean():
     result = subprocess.run(
