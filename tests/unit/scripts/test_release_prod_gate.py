@@ -563,12 +563,22 @@ def _expected(ctx: dict) -> list[str]:
 DEV_IAM_ENVIRONMENT = "dev-iam"
 
 
+# Jobs that exist for dev only and dispatch into it: the acceptance suite
+# (owner decision, 2026-09-29), which spends subscription quota and opens real
+# pull requests, so a prod release is not expected to reach it.
+# test_release_acceptance_job.py holds it to never starting on prod.
+DEV_ONLY_JOBS = ("acceptance",)
+
+
 def _reachable_holders(jobs: dict, ctx: dict, what: str) -> list[str]:
     """The jobs holding a `what` step that a release under `ctx` must be able
-    to reach: all of them, except the dev-iam job on a prod release."""
+    to reach: all of them, except the dev-iam job and the dev-only jobs on a
+    prod release."""
     prod = ctx["github.event.inputs.environment"] == "prod"
     return [
-        j for j in sorted(_holders(jobs, what)) if not (prod and _environment(jobs[j], ctx) == DEV_IAM_ENVIRONMENT)
+        j
+        for j in sorted(_holders(jobs, what))
+        if not (prod and (_environment(jobs[j], ctx) == DEV_IAM_ENVIRONMENT or j in DEV_ONLY_JOBS))
     ]
 
 
