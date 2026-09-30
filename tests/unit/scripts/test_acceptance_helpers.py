@@ -20,9 +20,11 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import shlex
 import struct
 import subprocess
 import sys
+import tempfile
 import zlib
 from pathlib import Path
 
@@ -31,6 +33,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[3]
 PNGCHECK = ROOT / "scripts" / "acceptance" / "pngcheck.py"
 PARSERS = ROOT / "scripts" / "acceptance" / "parsers.sh"
+LIB = ROOT / "scripts" / "acceptance" / "lib.sh"
 
 _spec = importlib.util.spec_from_file_location("acceptance_pngcheck", PNGCHECK)
 assert _spec is not None and _spec.loader is not None
@@ -400,3 +403,124 @@ def test_title_is_fact(title, ok):
 def test_merged_branches_are_read_from_an_integration_body():
     body = "Integrates 2 contributor branch(es):\n- merged: `swarm/task_aaa1`\n- merged: `swarm/task_bbb2`\n- conflicted: `swarm/task_ccc3`\n"
     assert _bash("acc_merged_branches", stdin=body).stdout.split() == ["swarm/task_aaa1", "swarm/task_bbb2"]
+
+
+# ---------------------------------------------------------------------------
+# lib.sh: acc_assert_eq's missing-task argument, and the runner-output paths
+# (found in PR #358's first live run against dev, 2026-09-30)
+# ---------------------------------------------------------------------------
+#
+# lib.sh itself needs REPO_ROOT (to source parsers.sh) and, through
+# acc_pass/acc_fail/acc_output/acc_runner_field, the platform helpers
+# scripts/lib/testlib.sh defines (t_pass, t_fail, t_case, t_skip, task_field).
+# Sourcing the whole platform stack for this would need a live deployment --
+# task_field ultimately reads Firestore. What is under test here is lib.sh's
+# OWN logic, not testlib.sh's, so those five are stubbed to the minimum that
+# makes lib.sh's real code path run: t_pass/t_fail/t_skip print what they were
+# given, t_case does nothing, and task_field reads a fixed task document from
+# $TASK_DOC instead of a live task, exactly as the real one reads a live one
+# and pipes it to the same `jq -r`.
+
+
+def _bash_lib(function: str, *args: str, task_doc: str = "{}") -> subprocess.CompletedProcess:
+    script = f"""#!/usr/bin/env bash
+set -euo pipefail
+REPO_ROOT={shlex.quote(str(ROOT))}
+t_pass() {{ printf 'PASS %s\\n' "$*"; }}
+t_fail() {{ printf 'FAIL %s\\n' "$*"; }}
+t_case() {{ :; }}
+t_skip() {{ printf 'SKIP %s\\n' "$*"; }}
+task_field() {{ printf '%s' "${{TASK_DOC}}" | jq -r "$2"; }}
+source {shlex.quote(str(LIB))}
+{shlex.quote(function)} "$@"
+"""
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env["TASK_DOC"] = task_doc
+    with tempfile.NamedTemporaryFile("w", suffix=".sh", delete=False) as handle:
+        handle.write(script)
+        path = handle.name
+    try:
+        return subprocess.run(
+            ["bash", path, *args],
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+            env=env,
+        )
+    finally:
+        os.unlink(path)
+
+
+def test_acc_assert_eq_pass_branch_does_not_crash_when_the_task_argument_is_omitted():
+    # Exactly the shape of mock.sh's and browser.sh's "at the door" checks:
+    # WANT GOT WHAT with no fourth argument, because no task was ever created.
+    # Before the fix, lib.sh referenced "$4" directly and bash 3.2's `set -u`
+    # made this a fatal "$4: unbound variable" that killed the whole suite.
+    result = _bash_lib("acc_assert_eq", "422 invalid_input", "422 invalid_input", "at the door")
+    assert result.returncode == 0, result.stderr
+    assert "PASS" in result.stdout
+    assert "at the door: 422 invalid_input" in result.stdout
+
+
+def test_acc_assert_eq_fail_branch_also_tolerates_a_missing_task():
+    result = _bash_lib("acc_assert_eq", "want", "got", "at the door")
+    assert result.returncode == 0, result.stderr
+    assert "FAIL" in result.stdout
+    assert "expected 'want', got 'got'" in result.stdout
+
+
+#: The shape apps/agent-worker/agent_worker/lifecycle.py's `_finalise` writes:
+#: summary["runner"] = {"status", "summary", "output", "usage", "metrics"},
+#: where `output` is the runner's OWN returned dict with `summary` and
+#: `metrics` already popped off it by the shared harness
+#: (apps/agent-worker/agent_worker/runners/base.py's `run_runner`).
+_MOCK_TASK_DOC = json.dumps(
+    {
+        "result_summary": {
+            "runner": {
+                "status": "succeeded",
+                "summary": "mock runner completed 2/2 steps",
+                "output": {"completed_steps": 2, "requested_steps": 2},
+                "metrics": {"cpu_burn_seconds": 20},
+            }
+        }
+    }
+)
+
+
+def test_acc_output_reads_fields_the_runner_actually_left_inside_output():
+    result = _bash_lib("acc_output", "task_1", ".completed_steps", task_doc=_MOCK_TASK_DOC)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "2"
+
+
+def test_acc_output_cannot_see_summary_or_metrics_the_worker_writes_as_siblings():
+    # The exact defect PR #358's first live run found: mock.sh read the
+    # summary at result_summary.runner.output.summary, which the worker never
+    # writes -- acc_output only ever sees inside .output, and .summary is a
+    # sibling of it, one level up, at result_summary.runner.summary.
+    result = _bash_lib("acc_output", "task_1", '.summary // "MISSING"', task_doc=_MOCK_TASK_DOC)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "MISSING"
+
+
+def test_acc_runner_field_reads_summary_and_metrics_where_the_worker_writes_them():
+    result = _bash_lib("acc_runner_field", "task_1", ".summary", task_doc=_MOCK_TASK_DOC)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "mock runner completed 2/2 steps"
+
+    result = _bash_lib("acc_runner_field", "task_1", ".metrics.cpu_burn_seconds", task_doc=_MOCK_TASK_DOC)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "20"
+
+
+def test_mock_sh_reads_summary_and_cpu_burn_through_acc_runner_field_not_acc_output():
+    # A regression lock on the call sites themselves, not just the helpers:
+    # this is the exact pattern that was wrong (acc_output ... '.summary' /
+    # '.metrics...'), so a future edit that reintroduces it fails here even if
+    # it does not change lib.sh.
+    text = (ROOT / "scripts" / "acceptance" / "groups" / "mock.sh").read_text()
+    for needle in ('acc_output "${task}" \'.summary', 'acc_output "${task}" \'.metrics'):
+        assert needle not in text, f"mock.sh: {needle!r} reads the wrong path -- see acc_output's note in lib.sh"

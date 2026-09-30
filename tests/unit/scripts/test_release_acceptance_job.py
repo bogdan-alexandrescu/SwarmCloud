@@ -138,6 +138,32 @@ def test_an_unknown_group_is_refused():
     assert "unknown group" in result.stderr
 
 
+def test_a_mid_run_crash_still_exits_nonzero_and_reports_how_far_it_got():
+    """PR #358's first live run against dev crashed on an unbound variable
+    mid-suite and still exited 0: acc_cleanup (cancel_all + rm -rf), which the
+    EXIT trap ran on the way out, itself succeeded, and nothing captured the
+    crash's own exit status before that -- so the trap's LAST command's status
+    (0) became the whole script's. `--only _selftest_crash` runs a group that
+    exists for exactly this: it deliberately references an unset, required
+    variable (`${var:?...}`) after recording one check, and does no platform
+    work, so this needs no deployment and no credentials.
+    """
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("API_", "SWARM_"))}
+    env["NO_COLOR"] = "1"
+    result = subprocess.run(
+        ["bash", str(ACCEPTANCE / "run.sh"), "--only", "_selftest_crash"],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode != 0, "a crashed run must not exit 0: " + result.stderr
+    assert "did not finish" in result.stderr, result.stderr
+    assert "1 of 1 checks visited" in result.stderr, result.stderr
+
+
 def _scripts() -> list[Path]:
     return sorted(ACCEPTANCE.glob("*.sh")) + sorted((ACCEPTANCE / "groups").glob("*.sh"))
 
