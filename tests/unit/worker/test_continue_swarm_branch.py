@@ -31,6 +31,20 @@ ROOT = "task_0123456789abcdef0123"
 FIX = "task_fedcba9876543210fedc"
 
 
+@pytest.fixture(autouse=True)
+def _the_agent_titles_its_pull_request(monkeypatch):
+    """Since 2026-09-28 the platform invents no pull request title: the agent
+    writes `pr-title.txt`, or the step's `issue` input names one, or no pull
+    request is opened (`test_pull_request_text.py` pins that). This file is
+    about the continuation path -- which branch is cloned and pushed, and
+    that the push lands as a fast-forward -- not titles, so every attempt
+    here stands in for an agent that wrote one (mirrors the fixture of the
+    same name in `test_strategy_end_to_end.py`)."""
+    monkeypatch.setattr(
+        lifecycle.Worker, "_generated_pull_request_title", lambda self: "The agent's title"
+    )
+
+
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
