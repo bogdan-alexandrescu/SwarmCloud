@@ -16,7 +16,8 @@
 # shell and jq copies in scripts/lib/common.sh (sections 1-4), and the copies
 # apps/swarm-ui/src/types.ts has to keep because a browser cannot import
 # Python (section 5). The TypeScript side reads the .ts as text and needs no
-# node toolchain, here or in CI.
+# node toolchain, here or in CI. Section 12 holds the shell redaction filter to
+# the API's, over one fixture file both are run on.
 #
 # Run by `make test` and by the `shell` job in .github/workflows/application.yml.
 # It needs no cloud credentials and no emulator.
@@ -1204,10 +1205,10 @@ verdict("worker GSA prefix", GSA,
                "python default"))),
         5, GSA_COST, normalise=lambda value: value.rstrip("-"))
 
-# The broker accepts a SET of prefixes, so the check is containment again. It is
-# reported rather than asserted equal because the second entry is a deliberate
-# migration allowance, and narrowing an accepted identity is a separate change
-# from keeping the copies in step.
+# The broker's allow-list must be EXACTLY the frozen module's prefix. It is an
+# authentication list, so an extra entry is not harmless slack: it is a
+# service-account name that authenticates as a tenant although no provisioning
+# path creates it. `swarm-t` sat here for that reason until #176.
 BROKER = TEXT["apps/quota-broker/quota_broker/main.py"]
 accepted = re.search(r"^WORKER_SA_PREFIXES\s*=\s*\(([^)]*)\)", BROKER, re.M)
 if not accepted:
@@ -1215,10 +1216,14 @@ if not accepted:
          "no `WORKER_SA_PREFIXES = (...)` in the quota broker; the restatement moved")
 else:
     values = set(re.findall(r"\"([^\"]+)\"", accepted.group(1)))
-    if GSA in values:
+    if values == {GSA}:
         emit("OK", "WORKER_SA_PREFIXES",
-             "accepts %s, which is what the frozen module derives (also accepts %s)"
-             % (GSA, " ".join(sorted(values - {GSA})) or "nothing else"))
+             "accepts only %s, which is what the frozen module derives" % GSA)
+    elif GSA in values:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s as well as %s; no provisioning path creates those, so "
+             "an account made by hand under that name authenticates as a tenant"
+             % (" ".join(sorted(values - {GSA})), GSA))
     else:
         emit("DRIFT", "WORKER_SA_PREFIXES",
              "accepts %s and NOT %s, so every worker token is refused and no "
@@ -1783,6 +1788,123 @@ else
   if [[ "${MIRROR_SEEN}" -eq 0 ]]; then
     err "the mirrored-value probe printed no assertions at all; nothing was checked"
     FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 12. THE REDACTION FILTER, stated twice: `redact()` in common.sh and
+#     `swarm_api.redaction.redact`.
+# --------------------------------------------------------------------------
+# Not the frozen contract, and restated for the same reason everything above
+# is: sed cannot import Python. The terminal and the browser are meant to show
+# an operator the same masked line, and the two have drifted every time they
+# were compared -- #206 (the shell masked a plain-text private key's BEGIN
+# line and printed its body), #224 (both served `AWS_SECRET_ACCESS_KEY=`), and
+# `X-API-KEY:`, masked by the API and printed by the terminal (epic #227).
+#
+# ONE FIXTURE SET DRIVES BOTH: tests/fixtures/redaction-parity.json, which the
+# unit suite (tests/unit/control_plane/test_log_redaction.py) reads too. Every
+# case goes through both filters here and each must give the fixture's
+# `expected` exactly, with none of its `never` substrings left. Counted and
+# printed, for the reason section 6 gives.
+step "Redaction-filter parity"
+
+REDACT_FIXTURE="${REPO_ROOT}/tests/fixtures/redaction-parity.json"
+if [[ ! -s "${REDACT_FIXTURE}" ]]; then
+  err "the redaction parity fixture is missing: ${REDACT_FIXTURE}"
+  FAILED=1
+else
+  REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
+
+  # The shell half: redact() as this file sourced it from common.sh.
+  REDACT_SEEN=0
+  REDACT_DRIFT=0
+  REDACT_AT=0
+  while [[ "${REDACT_AT}" -lt "${REDACT_CASES}" ]]; do
+    R_NAME="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].name' "${REDACT_FIXTURE}")"
+    R_TEXT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].text' "${REDACT_FIXTURE}")"
+    R_WANT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].expected' "${REDACT_FIXTURE}")"
+    R_GOT="$(printf '%s\n' "${R_TEXT}" | redact)"
+    R_LEFT=""
+    while IFS= read -r R_NEVER; do
+      [[ -n "${R_NEVER}" ]] || continue
+      [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
+    done < <(jq -r --argjson i "${REDACT_AT}" '.cases[$i].never[]' "${REDACT_FIXTURE}")
+    if [[ -n "${R_LEFT}" ]]; then
+      err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ "${R_GOT}" != "${R_WANT}" ]]; then
+      err "redact() in common.sh has DRIFTED on case '${R_NAME}':"
+      err "    expected : ${R_WANT}"
+      err "    got      : ${R_GOT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    fi
+    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
+    REDACT_AT=$(( REDACT_AT + 1 ))
+  done
+  if [[ "${REDACT_SEEN}" -eq 0 ]]; then
+    err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
+    err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
+    FAILED=1
+  else
+    ok "redact() in common.sh gives the fixture's output on all ${REDACT_SEEN} cases"
+  fi
+
+  # The Python half: the API's filter, over the same file.
+  if ! REDACT_PY="$(python3 - "${REPO_ROOT}" "${REDACT_FIXTURE}" 2>&1 <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "swarm-api"))
+# swarm_api.redaction re-exports the rules from swarm_redaction (#259).
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "redaction"))
+from swarm_api.redaction import redact
+
+for case in json.loads(Path(sys.argv[2]).read_text())["cases"]:
+    got = redact(case["text"])
+    left = [n for n in case["never"] if n in got.text]
+    if left:
+        print("DRIFT|%s|served what it must never show: %s" % (case["name"], left[0]))
+    elif got.text != case["expected"] or got.count != case["count"]:
+        print("DRIFT|%s|expected %r (count %d), got %r (count %d)" % (
+            case["name"], case["expected"], case["count"], got.text, got.count))
+    else:
+        print("OK|%s|" % case["name"])
+PY
+)"; then
+    err "the Python half of the redaction parity check failed to run:"
+    printf '%s\n' "${REDACT_PY}" | sed 's/^/     /' >&2
+    FAILED=1
+  else
+    PY_SEEN=0
+    PY_DRIFT=0
+    while IFS='|' read -r P_STATUS P_NAME P_DETAIL; do
+      [[ -n "${P_STATUS}" ]] || continue
+      PY_SEEN=$(( PY_SEEN + 1 ))
+      case "${P_STATUS}" in
+        OK) ;;
+        DRIFT)
+          err "swarm_api.redaction has DRIFTED on case '${P_NAME}': ${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+        *)
+          err "unexpected redaction parity output: ${P_STATUS}|${P_NAME}|${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+      esac
+    done <<<"${REDACT_PY}"
+    if [[ "${PY_SEEN}" -ne "${REDACT_CASES}" ]]; then
+      err "the Python half reported ${PY_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
+      FAILED=1
+    elif [[ "${PY_DRIFT}" -gt 0 ]]; then
+      err "${PY_DRIFT} of ${PY_SEEN} redaction cases differ in swarm_api.redaction"
+      FAILED=1
+    else
+      ok "swarm_api.redaction gives the fixture's output on all ${PY_SEEN} cases"
+    fi
   fi
 fi
 

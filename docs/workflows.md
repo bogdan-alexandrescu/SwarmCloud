@@ -50,6 +50,8 @@ costs nothing while it waits.
 | `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
 | `resource_class` | optional named class, no larger than the profile's own. |
 | `timeout_seconds` | optional; may only shorten the profile's own default. |
+| `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
+| `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -355,6 +357,148 @@ monopolise a pass.
 would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, but
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
+
+## Review before publishing: implement, review, fix-if-needed
+
+**A step's patch can be reviewed inside the workflow, and fixed, before
+anything opens a pull request** (#264). Until this existed every SwarmCloud PR
+was reviewed by an agent on the operator's machine after it had opened. On
+2026-09-27/28 two of seven came back NOT YET (#247 fixed the wrong layer, #256
+left an ssh-user bypass), and each then needed a local fixer.
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "strategy": "integrate",
+  "repository_url": "https://github.com/acme/widgets.git",
+  "steps": [
+    {"step_id": "implement",
+     "runner_profile": "claude-code",
+     "input": {"prompt": "Implement the change described in the issue."}},
+
+    {"step_id": "review",
+     "runner_profile": "claude-code",
+     "depends_on": ["implement"],
+     "builds_on": "implement",
+     "input_from": {"implement": "swarm-work.patch"},
+     "input": {"prompt": "Review swarm-work.patch against the repository. Do not edit files. Write verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", \"findings\": [\"one blocker per entry\"]}."}},
+
+    {"step_id": "fix",
+     "runner_profile": "claude-code",
+     "depends_on": ["review"],
+     "builds_on": "implement",
+     "input_from": {"review": "verdict.json"},
+     "when": {"step": "review", "verdict_in": ["NOT_YET"]},
+     "input": {"prompt": "Fix every finding in verdict.json. Change nothing else."}}
+  ]
+}'
+```
+
+What each step does, and why each field is there:
+
+| step | what it gets | what it does | what it publishes |
+|---|---|---|---|
+| `implement` | the default branch | the change | pushes `swarm/<task>`, opens no PR (an `integrate` contributor) |
+| `review` | the implementer's branch (`builds_on`), and its patch (`input_from`) | writes `verdict.json` to `$SWARM_ARTIFACTS_DIR` | nothing it is merged for; see below |
+| `fix` | the implementer's branch (`builds_on`), and the verdict (`input_from`) | on NOT_YET its agent fixes the findings; on MERGE **no agent runs** | the ONE pull request, carrying the verdict |
+
+* **The patch is a named artifact already.** `swarm-work.patch` is the diff
+  the worker harvests from every attempt with a repository and uploads under
+  that name, so `input_from` stages it like any file. The implementer is not
+  told to write it: it is the platform's (see "Artifacts pass by reference").
+  An implementer that changes nothing writes no patch, so it fails for the
+  missing output, retryably, like any step that did not write what a later
+  step stages.
+* **The verdict is a file the review writes**, `{"verdict": "MERGE" |
+  "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
+  `summary`, `title` or `message` is one. The verdict is read whatever its case
+  and surrounding spaces. The file name is yours: the gate reads whatever the
+  gated step stages from `when.step`.
+* **`when` gates the AGENT, not the step.** The gated step runs whatever the
+  verdict, because it is the step that publishes: if it were skipped on
+  MERGE, the reviewed work would never reach a pull request. When the verdict
+  is not in `verdict_in`, the worker stages the verdict, checks its fencing
+  generation as it would before an agent, starts no agent, and ends the
+  attempt through the same path a clean agent exit takes: final checkpoint,
+  uploads, publish, lease release. The task is SUCCEEDED, and
+  `result_summary.verdict_gate` says `agent_ran: false`. The step holds a
+  lease for that short publish; it is real work, and it counts like any
+  other (invariants 1 and 3).
+* **The gate is read by the worker, not the scheduler.** The scheduler reads
+  no artifact, so it would need a GCS read on its drain path to learn the
+  verdict, and skipping the step there would skip the pull request.
+* **`builds_on` is how the fix sees the implementer's code.** Without it every
+  step clones the default branch, and the fix agent would edit code that does
+  not contain the change it is fixing. The worker clones
+  `swarm/<implement task id>`, derived from the task id with its own branch
+  prefix and never read as a ref name, exactly as the integrator's
+  contributor branches are. The branch exists because the implementer pushed
+  it as a contributor, so `builds_on` needs a strategy that pushes every step:
+  `integrate` or `direct-pr`. A base whose branch was never pushed (a
+  read-only token, a failed push) fails the clone, naming the task and the
+  branch. The review builds on the implementer too, so it reviews the change
+  in its tree rather than the patch alone.
+* **Only the final step opens a pull request.** Under `integrate` the
+  contributors push branches and open nothing; the fix is the integrator,
+  merges the implementer's branch (already in its history, so the merge is a
+  no-op, not a conflict) and opens the one PR. Its body carries the verdict,
+  whether the fix ran, and the findings, inside a fenced block with every
+  run of three backticks broken, because they are an agent's untrusted text
+  on a page anyone with read access sees.
+* **The review's own branch is not merged.** swarm-api leaves the step a
+  gated integrator reads its verdict from out of that integrator's
+  `integrates`. A review edits nothing, so it pushes no branch, and the
+  integrator would otherwise report it "not found" on the PR as an incomplete
+  integration. If it did edit the repository, those edits are unreviewed
+  work, which is what the gate keeps out.
+
+### What is refused at submission
+
+Every refusal is a 422 before anything is created, naming the step.
+
+| declaration | answer | why |
+|---|---|---|
+| `when.step` that this step stages no file from | `invalid_dag` | the verdict is read from that file; add `input_from` (and `depends_on`) |
+| `when.verdict_in` empty, repeated, or outside `MERGE`, `NOT_YET` | `invalid_dag`, `detail.accepted_verdicts` | a review following the convention could never write it |
+| `when` under `direct-pr` | `invalid_dispatch` | every step opens its own PR there, the implementer's included, before the review |
+| `when` under `integrate` on a step that is not the integrator | `invalid_dispatch`, `detail.integrator_step_id` | the integrator's PR is where the verdict is shown |
+| a gated step that another step's `input_from` stages from | `invalid_dag`, `detail.staged_by` | when its agent does not run it writes nothing, so that step would fail |
+| `builds_on` naming a step that is not upstream, or itself | `invalid_dag` | its branch may not exist yet |
+| `builds_on` under `collect` | `invalid_dispatch` | `collect` pushes no branch to start from |
+
+`when` under `collect` is accepted: nothing publishes, and the gate only
+decides whether an agent runs.
+
+### What the worker refuses
+
+A gate or a verdict file that cannot be read fails the attempt with
+`INPUTS_UNAVAILABLE`, naming the upstream task and the file, and the agent is
+never started. That covers a file that is not JSON, is not an object, has no
+`verdict` or one outside the two, or is over 256 KiB, and a gate whose task
+this step stages nothing from. **An unreadable review is not a MERGE**: read
+as one, it would publish unreviewed work; read as NOT_YET, it would run a
+fixer against findings that are not there. The review step has already
+SUCCEEDED by then, so under `fail_workflow` the workflow ends with nothing
+published, which is the safe outcome, and the review has to be run again.
+
+### Where it is recorded
+
+The two fields travel in `task.metadata.dispatch`, which is already reserved,
+keyed by upstream task id as `integrates` is: `builds_on: <task id>` and
+`verdict_gate: {"task_id", "verdict_in"}`. `GET /v1/tasks/{id}` returns them in
+`dispatch` on the steps that have them. The workflow document's steps do NOT
+carry them: `WorkflowStep` is frozen, so typing them there is contract request
+29 in [contract-change-requests.md](contract-change-requests.md).
+
+### What this does not do
+
+* **It does not review the fix.** One review, one conditional fix. A second
+  review of the fixed branch is another review step and another gated step,
+  but under `integrate` only the integrator may be gated, so that chain needs
+  a gate on a non-integrator whose verdict the PR also carries, which is not
+  built.
+* **It does not check the verdict where it is written.** A malformed verdict
+  is found by the gated step, after the review has SUCCEEDED, not by the
+  review's own end-of-attempt check, which would retry it.
 
 ## `metadata.input_from` belongs to the service, not the caller
 

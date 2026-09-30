@@ -130,13 +130,20 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     """
     raw = task.metadata.get(DISPATCH_METADATA_KEY)
     block = raw if isinstance(raw, dict) else {}
-    return {
+    out = {
         "strategy": block.get("strategy") or DEFAULT_STRATEGY,
         "carrier": block.get("carrier") or DEFAULT_CARRIER,
         # None on everything but an `integrate` workflow's steps.
         "role": block.get("role"),
         "integrates": list(block.get("integrates") or ()),
     }
+    # A step's base and verdict gate (#264), only on a step that has them, so
+    # every other task reads back exactly as it did before they existed.
+    if block.get("builds_on"):
+        out["builds_on"] = block["builds_on"]
+    if isinstance(block.get("verdict_gate"), dict):
+        out["verdict_gate"] = dict(block["verdict_gate"])
+    return out
 
 
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:

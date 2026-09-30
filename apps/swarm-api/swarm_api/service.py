@@ -71,6 +71,7 @@ from .validation import (
     validate_resource_class_override,
     validate_runner_input,
     validate_runner_profile,
+    validate_step_routing,
     validate_storable,
     validate_timeout,
 )
@@ -338,6 +339,9 @@ class SubmissionService:
                 # refuses two parents staging one filename, and a filename that
                 # is absolute or traverses, before anything is created (#64).
                 input_from=dict(s.input_from),
+                when_step=s.when.step if s.when else None,
+                when_verdicts=tuple(s.when.verdict_in) if s.when else (),
+                builds_on=s.builds_on,
             )
             for s in spec.steps
         ]
@@ -374,6 +378,13 @@ class SubmissionService:
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
+            # A verdict gate and a `builds_on` (#264), once the integrator is
+            # known: under `integrate` only the integrator may be gated.
+            validate_step_routing(
+                step_specs,
+                strategy=dispatch.strategy,
+                integrator_step_id=integrator_step_id,
+            )
             # Every step's profile and input, before any task is built and
             # inside this try, so a refused step is counted like every other
             # refusal. The size first, as `_build_task` orders them, which
@@ -391,6 +402,15 @@ class SubmissionService:
             raise
 
         by_id = {s.step_id: s for s in spec.steps}
+        # The review a gated integrator reads its verdict from is not one of
+        # the branches it merges (#264). A review's deliverable is its verdict
+        # file; it changes no files, so it pushes no branch, and the integrator
+        # would report it "not found" on the pull request -- and if it did edit
+        # the repository, those edits are exactly the unreviewed work the gate
+        # exists to keep out.
+        not_integrated: frozenset[str] = frozenset()
+        if integrator_step_id is not None and by_id[integrator_step_id].when is not None:
+            not_integrated = frozenset({by_id[integrator_step_id].when.step})
         now = self._now()
         workflow_id = new_id("wf")
 
@@ -419,6 +439,13 @@ class SubmissionService:
                     integrator_step_id=integrator_step_id,
                     order=order,
                     step_task_id=step_task_id,
+                    not_integrated=not_integrated,
+                ).with_routing(
+                    # Both name upstream steps, so topological order has
+                    # already minted their task ids.
+                    builds_on=step_task_id[source.builds_on] if source.builds_on else None,
+                    gate_task_id=step_task_id[source.when.step] if source.when else None,
+                    gate_verdicts=source.when.verdict_in if source.when else (),
                 ),
                 workflow_id=workflow_id,
                 step_id=step_id,
@@ -494,6 +521,7 @@ class SubmissionService:
         integrator_step_id: str | None,
         order: Sequence[str],
         step_task_id: dict[str, str],
+        not_integrated: frozenset[str] = frozenset(),
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -506,13 +534,16 @@ class SubmissionService:
         this one" is what makes the ids already known: the loop assigns task ids
         as it walks `order`, and a step that comes after the integrator would not
         have one yet. `resolve_integrator_step` guarantees the integrator is the
-        graph's only sink, so that prefix is in fact every other step.
+        graph's only sink, so that prefix is in fact every other step -- less
+        `not_integrated`, the review a gated integrator reads (#264).
         """
         if integrator_step_id is None:
             return dispatch
         if step_id != integrator_step_id:
             return dispatch.with_role("contributor")
-        upstream = list(order[: list(order).index(step_id)])
+        upstream = [
+            sid for sid in order[: list(order).index(step_id)] if sid not in not_integrated
+        ]
         return dispatch.with_role(
             "integrator", integrates=[step_task_id[sid] for sid in upstream]
         )

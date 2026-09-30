@@ -23,13 +23,16 @@ below are the same families, in the same order, with the same `\\1********`
 shape, so an operator reading a redacted log in the terminal and a user reading
 one in the browser see the same thing.
 
-They are deliberately NOT identical: `KEY_VALUE` here accepts a prefix on the
-key name, so `ANTHROPIC_API_KEY=...` and `GH_TOKEN=...` are caught where the
-shell rule -- which anchors the name to the bare word -- lets them through. The
-relation this module promises is a SUPERSET: everything the shell filter
-redacts, this redacts, and possibly more. `tests/unit/control_plane/
-test_log_redaction.py` pins both halves, including a drift check that fails
-when a rule is added to the shell filter and not here.
+THEY GIVE THE SAME OUTPUT, held by ONE FIXTURE SET (wave 2026-09-27):
+`tests/fixtures/redaction-parity.json` is run through both filters by
+`tests/unit/control_plane/test_log_redaction.py` and by section 12 of
+`scripts/lib/check-contract-parity.sh`, and each must give every case's
+`expected` text exactly. This used to be described as a SUPERSET -- this
+module masking everything the shell's did "and possibly more" -- and the gap
+it allowed was measured three times: a plain-text private key the terminal
+printed after its BEGIN line (#206), `X-API-KEY:` (#227), and names like
+`AWS_SECRET_ACCESS_KEY=` that both let through (#224). The drift check that
+fails when a rule is added to the shell filter and not here stays too.
 
 THE KEY/VALUE RULE IS ONE RULE IN BOTH PLACES FOR JSON TEXT (#221, owner
 decision 2026-09-26). A quote inside a JSON string is written `\\"`, so a
@@ -107,7 +110,8 @@ def _rule(name: str, shell_marker: str, expression: str, flags: int = 0) -> Rule
 #
 # THE HOLE THIS CLOSES (#188 review). The shell filter's rule masks the BEGIN
 # marker's line from the marker on, and sed is line-at-a-time, so nothing
-# after that line. On a raw NDJSON line that is the whole key: JSON writes the
+# after that line (#206; the shell filter now masks the same blocks, with an
+# awk stage that holds lines back -- `redact` in scripts/lib/common.sh). On a raw NDJSON line that is the whole key: JSON writes the
 # key's newlines as the two characters `\n`, so the key IS one line. Once
 # DECODED they are real newlines, and the same rule masked the BEGIN line and
 # served the base64 body in clear: `/transcript` and `/answer`, which redact
@@ -258,7 +262,15 @@ def _start_of_line(text: str, at: int, floor: int) -> int | None:
 
 
 def _tail_start(text: str, marker_start: int, floor: int) -> int:
-    """(c): the first character of the key material above an END marker with no BEGIN."""
+    """(c): the first character of the key material above an END marker with no BEGIN.
+
+    Lines above are taken no further than `PEM_BLOCK_MAX_CHARS` from the
+    marker, the reach a BEGIN has to find its END (wave 2026-09-27): a key's
+    body is under 13 KB, so base64 further up is not that key's. The bound is
+    also what lets the shell filter (`redact` in scripts/lib/common.sh),
+    which streams, hold the lines an END may yet claim -- it cannot hold an
+    unbounded run -- and the two filters agree only because both keep it.
+    """
     at = marker_start
     while at > floor and text[at - 1] in _PEM_INLINE_BODY:
         at -= 1
@@ -269,6 +281,8 @@ def _tail_start(text: str, marker_start: int, floor: int) -> int:
     while line_end >= floor:
         above = _start_of_line(text, line_end, floor)
         if above is None or _body_line(text[above:line_end], headers_allowed=False) != "base64":
+            break
+        if marker_start - above > PEM_BLOCK_MAX_CHARS:
             break
         at = above
         line_end = above - 1
@@ -370,20 +384,31 @@ def _private_key_rule() -> Rule:
     )
 
 
-#: THE ENVIRONMENT-DUMP RULE, and the one that is deliberately wider than the
-#: shell's. `[A-Za-z0-9_.-]*` in front of the name is what turns `api_key=`
-#: into `ANTHROPIC_API_KEY=`, `GH_TOKEN=` and `db.password:`, and `api[-_]?key`
-#: is what catches `x-api-key:` (the shell rule's `api_?key` does not take a
-#: hyphen, so its filter lets that header through; the superset relation this
-#: module promises still holds). An agent that prints its own environment is
-#: the single most likely way a credential reaches a log object, and the shell
-#: rule as written does not catch the shape `env` actually produces.
+#: THE ENVIRONMENT-DUMP RULE. `[A-Za-z0-9_.-]*` in front of the name is what
+#: turns `api_key=` into `ANTHROPIC_API_KEY=`, `GH_TOKEN=` and `db.password:`,
+#: and `api[-_]?key` is what catches `x-api-key:`. An agent that prints its own
+#: environment is the single most likely way a credential reaches a log object.
+#: The shell filter reaches the same names by not anchoring at all, and since
+#: wave 2026-09-27 takes `api[-_]?key` too: it spelled it `api_?key`, so it
+#: printed `X-API-KEY: <v>` and `api-key=<v>` that this rule masked (#227).
 #:
-#: WHAT IT STILL DOES NOT CATCH, because the keyword must END the name:
-#: `AWS_SECRET_ACCESS_KEY=`, `private_key:`, `password_hash:` and plurals such
-#: as `secrets:`. A JSON document's keys are read by `JsonMasker`, which knows
-#: where a key ends and matches the keyword anywhere in it; in free text the
-#: rule would need a boundary it cannot see.
+#: NAMES THE KEYWORD DOES NOT END (#224). The rule served `AWS_SECRET_ACCESS_KEY=`,
+#: `private_key:`, `password_hash:` and plural names such as `secrets:` in clear,
+#: because the keyword had to END the name. In free text the name's end IS
+#: visible -- it is the separator -- but "the keyword anywhere in the name"
+#: would take `secret_name:`, `token_count=` and `password_file:` too, so the
+#: rule names what may FOLLOW the keyword instead: `private[-_]?key` joins the
+#: keywords, and after any keyword may come a plural `s` and one of the
+#: suffixes `key`, `access_key` and `hash` (group `wide`). That is
+#: `SECRET_KEY`, `AWS_SECRET_ACCESS_KEY`, `password_hash`, `api_keys`, `tokens`.
+#:
+#: A COUNT UNDER A WIDER NAME IS A COUNT. `max_tokens=4096`, `"input_tokens":
+#: 10` and `"output_tokens":5}` are usage figures in every agent's stream-json
+#: log. So under a `wide` name the value must hold a character that is not a
+#: digit, a `.` or a closing bracket; under a name the keyword ENDS
+#: (`password: 12345678`) a number is still masked. That is the line
+#: `JsonMasker` draws for a JSON key (`_masks_whole`: a number only when the
+#: credential word ends the key), drawn in text.
 #:
 #: ANCHORED TO THE START OF THE NAME (PR #210 re-review). Unanchored, the name
 #: prefix was rescanned from every position of a long run of name characters:
@@ -439,14 +464,50 @@ def _private_key_rule() -> Rule:
 #: expressions -- the escaped form, then the plain one -- because sed has no
 #: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
 #: over the same lines and holds their output equal.
+#:
+#: A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (#260). The
+#: wide group used to be one alternative, `s` or `s?[-_](access-key|key|hash)`,
+#: and both took the same lenient value class -- a run of digits alone is a
+#: count, not a credential (`max_tokens=4096`, `"output_tokens":5}`), so it was
+#: left alone. That is right for a bare plural (`tokens`, `secrets`, `keys`
+#: counted): `secrets: 3` and `max_tokens=4096` must stay counts. It is wrong
+#: for a name that ends in `_key`, `_access_key` or `_hash` -- `SECRET_KEY`,
+#: `API_ACCESS_KEY`, `PASSWORD_HASH` -- which name a credential exactly as a
+#: singular one does, digits and all: `SECRET_KEY=1234567` is a leak. `plural`
+#: and `keysuffix` are now two named groups, not one; a key-suffixed name falls
+#: through to the same (always-mask) branch a singular name already used.
+#:
+#: A PLURAL OR WIDE NAME FOLLOWED BY `: ` DOES NOT TAKE A CAPITALISED ENGLISH
+#: WORD OR A STATUS WORD AS ITS VALUE (#260). gcloud's `...your current auth
+#: tokens: Reauthentication required.` masked `Reauthentication` -- a wide name
+#: happened to precede an ordinary sentence, not a credential -- and `Found 3
+#: secrets: none leaked` masked `none`. Before a value is taken under a wide
+#: name reached by `: ` (never `=`, where a capitalised word is at least as
+#: likely to be a real credential), a negative lookahead refuses a status word
+#: (`not set`, `unset`, `set`, `none`, `(none)`, `missing`) or a capitalised
+#: word (`[A-Z][a-z]+`) that runs to a boundary. Singular names are untouched:
+#: the shell filter alone passes a status word through for those (see above),
+#: and that gap is unaffected here.
+_STATUS_OR_CAPITALISED_WORD = (
+    r"(?:not set|unset|missing|\(none\)|none|set|[A-Z][a-z]+)(?=[\"\\,\s]|$)"
+)
 KEY_VALUE = _rule(
     "key_value_assignment",
-    "api_?key",
+    "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
     r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
-    r"(?:api[-_]?key|apikey|password|passwd|secret|token|credential|authorization)"
-    r"(?:\\*\")?[ \t]*[:=][ \t]*(?:\[[ \t]*)?(?:(\\+\")|\"?))"
-    r"(?(2)[^\"\\,\s]+|(?:\\+[^\",\s\\]|[^\",\s\\])[^\",\s]*)",
+    r"(?:api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)"
+    r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
+    r"(?:\\*\")?[ \t]*(?:(?P<colon>:)|=)[ \t]*(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?(esc)"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s][^\"\\,\s]*|[^\"\\,\s]+)"
+    r"|"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\]))"
+    r"[^\",\s]*)",
     re.IGNORECASE,
 )
 
@@ -454,10 +515,12 @@ KEY_VALUE = _rule(
 #: rule runs before the broad key/value rule, so `api_key=sk-live-...` is
 #: reduced by the `sk-` rule first and the survivor is masked by the second.
 #:
-#: ONE EXCEPTION: the private-key block runs FIRST here. A key's base64 body
-#: is full of runs other rules match by chance (`ey` and eight more characters
-#: is a JWT to the JWT rule), and masking pieces of a body before the block
-#: rule sees it only adds counts for one leak.
+#: The private-key block runs FIRST, in both filters (the shell's is an awk
+#: stage in front of its sed, since #206). A key's base64 body is full of
+#: runs other rules match by chance (`ey` and eight more characters is a JWT
+#: to the JWT rule), and masking pieces of a body before the block rule sees
+#: it only adds counts for one leak -- and, in the shell, would change the
+#: body lines the block is recognised by.
 #:
 #: `.` never matches a newline in any pattern here (no re.DOTALL).
 RULES: tuple[Rule, ...] = (
@@ -479,6 +542,35 @@ RULES: tuple[Rule, ...] = (
         "http_authorization",
         "[Bb]earer",
         r"((?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/-]{12,}=*",
+    ),
+    # `Authorization: token <x>` -- GitHub's own scheme word -- served <x> in
+    # both filters (epic #227): the rule above knows only `Bearer` and `Basic`,
+    # and the key/value rule masks the first word after `Authorization:`,
+    # which is the scheme. So after a header NAMED `authorization`, the value
+    # after a known scheme word is masked, whatever its length. Only after
+    # that name: `token` followed by a word is ordinary prose anywhere else.
+    # A value that starts with `*` is one the rule above already masked. The
+    # key/value rule then masks the scheme word, as it always has `Bearer`.
+    #
+    # THE PROVIDER PREFIX SURVIVES, IN BOTH FILTERS (#260). `Authorization:
+    # Bearer ya29.a0...` already has its value masked to `ya29.********` by
+    # `google_oauth_access_token` above -- this rule ran anyway, took the
+    # WHOLE masked value (its class does not exclude `*`) and served a second,
+    # provider-blind `********`; the key/value rule then masked the scheme
+    # word too, and the line read `Authorization: ******** ********`, not the
+    # house style's `Authorization: ******** ya29.********`. A value already
+    # holding `********` is left alone: a negative lookahead refuses to take
+    # this rule's value at all when the mask marker is somewhere in the run
+    # ahead, so the scheme word is still masked by the key/value rule and the
+    # provider-tagged value it left behind is not touched a second time.
+    _rule(
+        "http_authorization_scheme",
+        "(token|bearer|basic|digest",
+        r"(authorization(?:\\*\")?[ \t]*[:=][ \t]*(?:\\*\")?"
+        r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[ \t]+)"
+        r"(?![^\"\\,\s]*\*\*\*\*\*\*\*\*)"
+        r"[^*\"\\,\s][^\"\\,\s]*",
+        re.IGNORECASE,
     ),
     KEY_VALUE,
 )
