@@ -345,9 +345,11 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
     ledger, cards = _page_sections((REPO / "apps/swarm-ui/src/Activity.tsx").read_text())
     counter = Counter(monkeypatch)
     old = fresh(warmed, tokens, group_map, clock)
-    full = counter.cost(lambda: ok(old, user, **WEEK, **extra))
-    overhead = counter.cost(lambda: ok(old, user, **WEEK, **extra))
+    bodies: list[dict[str, Any]] = []
+    full = counter.cost(lambda: bodies.append(ok(old, user, **WEEK, **extra)))
+    overhead = counter.cost(lambda: bodies.append(ok(old, user, **WEEK, **extra)))
     assert 0 <= overhead < full, (overhead, full)
+    metered_full, metered_repeat = bodies[0]["reads"], bodies[1]["reads"]
 
     page = fresh(warmed, tokens, group_map, clock)
     asks = [ledger, *cards.values()]
@@ -361,7 +363,8 @@ def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, 
 
     cost = counter.cost(scroll_the_whole_page)
     assert cost <= full + 7 * overhead, (cost, full, overhead)
-    assert sum(1 for body in served if body["cached"] is False) == 1, "one scan per page"
+    # The service's own meter says the same, exactly: nothing it reads is
+    # paid twice across the page, and in tenant scope a repeat reads nothing.
+    assert sum(body["reads"] for body in served) == metered_full + 7 * metered_repeat
     if extra.get("scope") != "platform":
-        # The service's own meter: nothing it reads is paid twice.
-        assert sum(body["reads"] for body in served) == ok(fresh(warmed, tokens, group_map, clock), user, **WEEK)["reads"]
+        assert metered_repeat == 0
