@@ -451,10 +451,14 @@ def test_the_fakes_artifact_shape_matches_the_production_read_path():
         }
 
     store = Store.__new__(Store)
-    store.get_task = lambda tenant_id, task_id: _Task()  # type: ignore[method-assign]
+    store.get_task = lambda tenant_id, task_id, *, submitted_by: _Task()  # type: ignore[method-assign]
     served = Store.list_artifacts(store, "eng", "task_1")
 
-    assert set(served) == {"artifacts", "artifacts_skipped", "artifact_bytes", "complete"}
+    assert set(served) == {
+        "artifacts", "artifacts_skipped", "artifact_bytes", "artifacts_over_cap", "complete",
+    }
     assert served["complete"] is True
+    # Nothing was dropped by the 500-file cap, so the count says so (#227 box, #281).
+    assert served["artifacts_over_cap"] == 0
     assert served["artifacts"][0]["name"] == "finding.md"
     assert "signed_url" not in served["artifacts"][0]

@@ -34,7 +34,15 @@ from swarm_common.states import (
     can_transition,
 )
 
-from .model import AttemptView, ControlSnapshot, LeaseView, TaskView
+from .model import (
+    STARTUP_REFUNDS_KEY,
+    AttemptView,
+    ControlSnapshot,
+    LeaseView,
+    TaskView,
+    count_startup_end,
+    startup_refunds_used,
+)
 from .model import as_datetime as _as_datetime
 
 
@@ -60,6 +68,16 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
     return FieldFilter(field, op, value)
 
 
+#: What a malformed TASK document raises out of `TaskView.from_doc` -- a bad
+#: type, a value `int()`/`TaskState()` refuses, or (before #290's fix to
+#: `_startup_refunds_int`) an `OverflowError` from `int(float("inf"))`.
+#: Mirrors `quota_broker.accountstore._MALFORMED`: these four-plus-one are
+#: what a bad DOCUMENT produces, not a bare `except Exception`, which would
+#: also swallow a Firestore outage or a decoder bug and turn "the store is
+#: down" into "every task is malformed".
+_MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
+
+
 class ControlStore:
     def __init__(
         self,
@@ -83,7 +101,22 @@ class ControlStore:
             filter=self._filter("state", "in", active_states)
         )
         for doc in tasks_query.stream():
-            snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            try:
+                snapshot.tasks[doc.id] = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            except _MALFORMED_TASK_DOC as exc:
+                # One malformed task must not abort the pass for every other
+                # task of every other tenant (security review, PR #290) --
+                # the same reasoning as `quota_broker.accountstore.list`
+                # skipping a malformed account (#180). Recorded in
+                # `unreadable_tasks` too: an execution that names this task id
+                # must not be read as an orphan just because the document
+                # could not be decoded this pass (see `detect.py`).
+                self._log.warning(
+                    "a task document is malformed and cannot be read; skipping it",
+                    task_id=doc.id,
+                    error=type(exc).__name__,
+                )
+                snapshot.unreadable_tasks.add(doc.id)
 
         leases_query = self._db.collection("leases").where(
             filter=self._filter("released_at", "==", None)
@@ -144,6 +177,20 @@ class ControlStore:
         -- which is every task outside the four concurrency states, finished
         ones included. A READ THAT FAILS raises: "this task does not exist" and
         "I could not look" must never lead to the same termination.
+        """
+        snap = self._db.collection("tasks").document(task_id).get()
+        return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
+    def task_for_lease(self, task_id: str) -> TaskView | None:
+        """The task an unreleased lease names, whatever its state (#332).
+
+        The same document read as `task_by_id`, kept a separate method because
+        it is a separate input. `task_by_id` feeds the eviction rules and is
+        switched off with them (`RECONCILER_ENABLE_GKE_EVICTION=false`); this
+        feeds the orphan-lease rule, which runs whatever that switch says, and
+        without it a lease admitted between the snapshot's two queries is
+        released as naming "a task that no longer exists". A READ THAT FAILS
+        raises, as `task_by_id` does.
         """
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
@@ -244,6 +291,7 @@ class ControlStore:
         expected_generation: int,
         *,
         only_from: tuple[TaskState, ...] | None = None,
+        unless_holding_lease: str | None = None,
     ) -> int | None:
         """Bump `current_generation`, fencing any worker still running.
 
@@ -258,6 +306,13 @@ class ControlStore:
         `only_from`, when given, is the states the finding was about, re-read
         here: a task that has left them since the snapshot is not fenced. The
         ended-at-startup rule passes DISPATCHED and STARTING (#198).
+
+        `unless_holding_lease`, when given, is the lease an ORPHAN-LEASE finding
+        is about, and the fence is refused while the task re-read here still
+        holds it: in a concurrency state, with `current_lease_id` naming it.
+        Such a task is not an orphan's task, it is the lease's rightful owner
+        (#332). The generation needs no second check: `expected_generation` is
+        the lease's, and a task fenced past it is already refused below.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -274,6 +329,19 @@ class ControlStore:
                 return None          # nothing left to fence
             if only_from is not None and state not in only_from:
                 return None          # moved on since the snapshot
+            if (
+                unless_holding_lease is not None
+                and state in CONCURRENCY_STATES
+                and (data.get("current_lease_id") or None) == unless_holding_lease
+            ):
+                self._log.warning(
+                    "refusing to fence a task that still holds the lease the finding "
+                    "called orphaned",
+                    task_id=task_id,
+                    lease_id=unless_holding_lease,
+                    state=state.value,
+                )
+                return None
             current = int(data.get("current_generation", 0))
             if current != expected_generation:
                 return None
@@ -289,13 +357,71 @@ class ControlStore:
 
         return self._txn.run(_apply)
 
-    def release_lease(self, lease_id: str, reason: str) -> bool:
+    def release_lease(
+        self,
+        lease_id: str,
+        reason: str,
+        *,
+        refuse_while_task_holds_it: bool = False,
+    ) -> bool:
+        """Return the lease's capacity through the frozen release. Idempotent.
+
+        `refuse_while_task_holds_it` is for an ORPHAN-LEASE finding (#332). The
+        lease and its task are re-read here, before the frozen function's own
+        reads (every read precedes every write, as Firestore requires), and the
+        release is refused while the task is in a concurrency state, names this
+        lease in `current_lease_id` and is at the lease's generation. That is a
+        task holding its lease, however the snapshot came to miss it.
+
+        The generation is part of the test on purpose. A task fenced past the
+        lease's generation by an interrupted earlier repair still names the
+        lease, and holding THAT lease would leak its slots for ever
+        (test_orphan_lease_after_partial_repair.py).
+
+        A concurrency state, not merely a non-terminal one: a QUEUED, READY or
+        PARKED task holds no capacity (invariant 1), so a lease still naming
+        one is the orphan `detect_orphan_leases` reports as "should hold no
+        capacity", and refusing it would leak its slots.
+        """
+
         def _apply(txn: Any) -> bool:
+            if refuse_while_task_holds_it and self._task_holds_lease(txn, lease_id):
+                return False
             return release_lease_in_transaction(
                 txn, db=self._db, lease_id=lease_id, reason=reason
             )
 
         return bool(self._txn.run(_apply))
+
+    def _task_holds_lease(self, txn: Any, lease_id: str) -> bool:
+        lease_snap = _snapshot(txn.get(self._db.collection("leases").document(lease_id)))
+        if not lease_snap.exists:
+            return False
+        lease = lease_snap.to_dict() or {}
+        task_id = lease.get("task_id")
+        if not task_id:
+            return False
+        task_snap = _snapshot(txn.get(self._db.collection("tasks").document(task_id)))
+        if not task_snap.exists:
+            return False
+        task = task_snap.to_dict() or {}
+        try:
+            state = TaskState(task.get("state"))
+        except (ValueError, TypeError):
+            return False
+        holds = (
+            state in CONCURRENCY_STATES
+            and (task.get("current_lease_id") or None) == lease_id
+            and int(task.get("current_generation", 0)) == int(lease.get("generation", 0))
+        )
+        if holds:
+            self._log.warning(
+                "refusing to release a lease its task still holds",
+                lease_id=lease_id,
+                task_id=task_id,
+                state=state.value,
+            )
+        return holds
 
     def repair_task_state(
         self,
@@ -307,6 +433,8 @@ class ControlStore:
         next_eligible_at: datetime | None = None,
         only_from: tuple[TaskState, ...] | None = None,
         failed_cause: EndCause = EndCause.LOST_WORKER,
+        startup_refund_limit: int | None = None,
+        fenced_generation: int | None = None,
     ) -> TaskState | None:
         """Move a task out of a concurrency state it can no longer justify.
 
@@ -340,6 +468,17 @@ class ControlStore:
         states, as `invalidate_generation` does. A worker that parked its task
         between the snapshot and now has decided how it resumes, and READY
         would overrule it (#198).
+
+        `startup_refund_limit`, when given, is the ended-at-startup rule's
+        requeue (#67): an attempt that ended before its runner started is
+        counted by `count_startup_end`, IN THIS TRANSACTION and BEFORE the
+        spent-attempts check, so a refunded attempt requeues rather than
+        fails. The refund is written only when the task is still at
+        `fenced_generation`, the generation this pass's own fence wrote: a
+        task fenced again since (or never fenced by this pass) belongs to
+        somebody else's decision, and its attempt is counted as before
+        (invariant 5). `error` then gets the counting's tail appended, so
+        `last_error` says what this transaction decided, not the snapshot.
         """
         task_ref = self._db.collection("tasks").document(task_id)
 
@@ -383,7 +522,31 @@ class ControlStore:
                 # hours on 2026-09-24. FAILED, from a worker that could not
                 # start, would record a task somebody stopped as having failed.
                 target = TaskState.CANCELLED
-            if target is TaskState.READY:
+            counting: dict[str, Any] = {}
+            message = error
+            if target is TaskState.READY and startup_refund_limit is not None:
+                # The ended-at-startup requeue: refund first, then decide
+                # whether the attempts are spent, from the same re-read (#67).
+                metadata = data.get("metadata")
+                fenced_here = fenced_generation is not None and int(
+                    data.get("current_generation", 0)
+                ) == int(fenced_generation)
+                counted = count_startup_end(
+                    int(data.get("attempt_count", 0)),
+                    int(data.get("max_attempts", 3)),
+                    startup_refunds_used(metadata),
+                    max(0, int(startup_refund_limit)) if fenced_here else 0,
+                )
+                if counted.refunded:
+                    counting["attempt_count"] = counted.attempt_count
+                    counting["metadata"] = {
+                        **(metadata if isinstance(metadata, dict) else {}),
+                        STARTUP_REFUNDS_KEY: counted.refunds_used,
+                    }
+                if counted.exhausted:
+                    target = TaskState.FAILED
+                message = f"{error}; {counted.tail}" if error else counted.tail
+            elif target is TaskState.READY:
                 # ONLY a READY target is ever downgraded. A CANCELLED target is
                 # the user's decision and survives exhausted attempts: recording
                 # a task someone stopped as FAILED would misreport why it ended,
@@ -413,9 +576,10 @@ class ControlStore:
                 "state": target.value,
                 "updated_at": utcnow(),
                 "current_lease_id": None,
+                **counting,
             }
-            if error:
-                payload["last_error"] = error[:2000]
+            if message:
+                payload["last_error"] = message[:2000]
             if next_eligible_at is not None and target is not TaskState.CANCELLED:
                 # A retry time means nothing on a task that will never run again.
                 payload["next_eligible_at"] = next_eligible_at

@@ -472,7 +472,7 @@ def list_leases(
         if lease.task_id in errors:
             continue
         try:
-            task = ctx.store.get_task(lease.tenant_id, lease.task_id)
+            task = ctx.store.get_task(lease.tenant_id, lease.task_id, submitted_by=None)
             # Masked by the task's own masker, as every task route serves it
             # (the PR #229 review): this row crosses tenants, and `last_error`
             # can be the agent's stderr tail.

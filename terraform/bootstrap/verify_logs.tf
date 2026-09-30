@@ -156,19 +156,28 @@
 #      which carries logging.logEntries.list. A build step, or a Cloud Run job
 #      (run.admin), running `gcloud logging read` as that account reads
 #      everything.
-#   2. roles/iam.roleAdmin (UNSCOPABLE, variables.tf) carries iam.roles.update.
+#   2. roles/iam.roleAdmin (UNSCOPABLE) carries iam.roles.update.
 #      CI can add logging.logEntries.list to a custom role it holds:
 #      swarmSecretProvisioner, whose scoped form's type guard still admits
 #      every non-secret resource; swarmDeployerProjectBuckets, whose binding in
-#      wif.tf is never conditioned (in this root, not yet applied); or one of
-#      terraform/infra's six custom roles, which the SCOPED projectIamAdmin
-#      still lets it grant itself (deployer_grantable_project_roles).
+#      wif.tf is never conditioned; or one of the custom roles the SCOPED
+#      projectIamAdmin still lets it grant itself
+#      (deployer_grantable_project_roles). CLOSED IN CODE 2026-09-25 (#79):
+#      roleAdmin is off deployer_roles, and every custom role is defined in
+#      this root (platform_roles.tf), so CI can change no role's permissions.
+#      Open until the owner's bootstrap apply destroys the live binding.
 #   3. roles/iam.serviceAccountAdmin (UNSCOPABLE) carries
 #      iam.serviceAccounts.setIamPolicy. CI can grant itself
 #      roles/iam.serviceAccountTokenCreator on any account that reads logs --
 #      the compute account above, or 209012342332@cloudbuild, which holds
 #      roles/cloudbuild.builds.builder (logging.logEntries.list and
-#      logging.views.access) -- and act as it.
+#      logging.views.access) -- and act as it. CLOSED IN CODE 2026-09-29
+#      (#334): the role is granted only on the accounts terraform/infra
+#      manages (deployer_service_accounts.tf), neither of those two is one of
+#      them, and none of them holds a log-reading role (terraform/infra and
+#      terraform/modules grant no logging.viewer, privateLogViewer or
+#      viewAccessor, read 2026-09-28). Open until the owner's bootstrap apply
+#      destroys the project-wide binding.
 #   4. roles/logging.configWriter's sinks and exclusions stay project-wide when
 #      the role is scoped (deployer_conditions.tf says so). A sink can route
 #      every log in the project to a destination CI administers: a swarm-
@@ -187,11 +196,12 @@
 # What bounds all six today is the ref pin, not IAM: only a workflow on
 # refs/heads/main (terraform.tfvars, github_allowed_refs) can mint the
 # deployer's token, so each route has to be merged to main first. Closing 1
-# means building as an account without roles/editor; 2 and 3 mean taking
-# roles/iam.roleAdmin and roles/iam.serviceAccountAdmin off the deployer, or
-# replacing them with resource-level grants on swarm-* roles and accounts;
-# 4 means moving sink management out of CI. Each is a change to what CI can
-# do, and none is made here.
+# means building as an account without roles/editor; 3 means taking
+# roles/iam.serviceAccountAdmin off the deployer, or replacing it with
+# resource-level grants on swarm-* accounts; 4 means moving sink management out
+# of CI. Each is a change to what CI can do, and none is made here. 2 was closed
+# by taking roles/iam.roleAdmin off the deployer (#79), in platform_roles.tf and
+# variables.tf.
 #
 # ---------------------------------------------------------------------------
 #
@@ -246,9 +256,10 @@ locals {
   # `terraform test` included.
   #
   # "Reviewed" means the role does not READ a log itself. It does not mean it
-  # cannot be used to GET one: roles/iam.roleAdmin and
-  # roles/iam.serviceAccountAdmin are here, and WHAT THIS DOES NOT BOUND says
-  # how each can.
+  # cannot be used to GET one: roles/iam.serviceAccountAdmin is here, and WHAT
+  # THIS DOES NOT BOUND says how. roles/iam.roleAdmin was here too and was
+  # taken off on 2026-09-25 (#79; the owner decision is on variables.tf's
+  # deployer_roles), which is what closes route 2 below once applied.
   deployer_roles_reviewed = [
     "roles/artifactregistry.admin",
     "roles/cloudbuild.builds.editor",
@@ -257,9 +268,14 @@ locals {
     "roles/compute.securityAdmin",
     "roles/container.admin",
     "roles/datastore.owner",
-    "roles/iam.roleAdmin",
-    "roles/iam.serviceAccountAdmin",
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.serviceAccountAdmin was here until 2026-09-29 (#334): it is
+    # granted per account now (deployer_service_accounts.tf), never through
+    # deployer_roles. Its replacement on the project, reviewed 2026-09-28
+    # against docs.cloud.google.com/iam/docs/roles-permissions/iam: create,
+    # get and list service accounts, get and list projects -- no log read.
+    "roles/iam.serviceAccountCreator",
+    # roles/iam.workloadIdentityPoolAdmin was here until 2026-09-29 (#314):
+    # off deployer_roles, and off this list so it is refused twice.
     "roles/logging.configWriter",
     "roles/monitoring.editor",
     "roles/pubsub.admin",

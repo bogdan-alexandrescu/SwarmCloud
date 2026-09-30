@@ -348,6 +348,11 @@ locals {
         # there. Absent, not empty, on a profile with none: the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
+        # The step-spec verification settings (contract request 34,
+        # spec_signing.tf): the public keys, the key, the rollout mode. On the
+        # Job, where only the platform writes; never in the dispatcher's
+        # per-execution overrides, which a task shapes.
+        local.spec_worker_env,
       )
     }
   }
@@ -398,6 +403,13 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
+      # SPEC_SIGNING_KEY_VERSION (contract request 34) is NOT set here yet, on
+      # purpose: scripts/lib/check-env-parity.sh refuses a variable no code
+      # reads, and today's swarm-api reads none. #353 adds
+      # `SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version` here in
+      # the same change as the code that reads it (owner decision 2026-09-29),
+      # so the hardened swarm-api never ships without it.
+
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
       # fell through to the personal `u-<email>` tenant.
@@ -437,6 +449,21 @@ locals {
       # tenant's -- see the variable's description.
       TENANT_GROUPS = join(",", sort([
         for t, v in var.tenants : v.principal if v.kind == "group" && v.directory_group
+      ]))
+      # Every listed service account -> its tenant's kind and principal, and
+      # its own unique id (contract request 30). A JSON LIST, not an object
+      # keyed by email (a duplicate key in an object would silently collapse;
+      # a list carries duplicates through to settings.py's own explicit
+      # refusal). "[]" when no tenant lists one, which settings.py reads as ().
+      TENANT_SERVICE_ACCOUNTS = jsonencode(flatten([
+        for t, v in var.tenants : [
+          for sa in v.service_accounts : {
+            email     = lower(sa)
+            kind      = v.kind
+            principal = lower(v.principal)
+            uid       = data.google_service_account.listed[lower(sa)].unique_id
+          }
+        ]
       ]))
       # ADMIN_USERS and ADMIN_POOL_USERS are taken from the environment's
       # tfvars AS IS, and the verification identity is deliberately NOT
@@ -507,7 +534,13 @@ locals {
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
-    "swarm-scheduler" = merge(local.common_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
+      # local.spec_worker_env, merged in above: the four step-spec settings
+      # (contract request 34), which the scheduler passes VERBATIM onto every
+      # Cloud Run Job it creates itself (#353, scheduler.dispatch.spec_job_env),
+      # so those workers verify against the same keys as the Jobs this root
+      # creates. Never into worker_env, which a task shapes.
+      #
       # See the swarm-api block: the reader has always been DISPATCH_TOPIC.
       DISPATCH_TOPIC = local.wake_topic
 
@@ -654,4 +687,35 @@ locals {
       GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
     })
   }
+}
+
+# ---------------------------------------------------------------------------
+# Service accounts a tenant lists (contract request 30).
+# ---------------------------------------------------------------------------
+
+locals {
+  listed_service_accounts = toset(flatten([
+    for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]
+  ]))
+}
+
+# The account's unique id (`sub` on the token it presents), pinned beside its
+# email so a service account deleted and recreated under the same address --
+# which GCP permits -- does not inherit the old one's tenant. Read, never
+# managed: the account is created and owned elsewhere (#273's
+# terraform/bootstrap/ci_fix.tf for swarm-ci-fix), and a data source carries
+# no labels to set.
+#
+# THE PIN HOLDS ONLY BETWEEN APPLIES. The uid is read at plan and rendered into
+# swarm-api's environment at apply. An account deleted and recreated under the
+# same address keeps resolving by the OLD uid until the next apply re-reads it:
+# the new account is refused (its uid does not match), but an ID token the OLD
+# account minted before it was deleted still carries the listed uid and is
+# accepted until it expires (Google ID tokens live an hour). Deleting a listed
+# account is therefore not a revocation until both the token lifetime has
+# passed and the next apply has re-read the listing.
+data "google_service_account" "listed" {
+  for_each   = local.listed_service_accounts
+  project    = var.project_id
+  account_id = split("@", each.value)[0]
 }

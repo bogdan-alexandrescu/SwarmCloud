@@ -147,7 +147,9 @@ class AgentOutputService:
         self._chunk = max(1, chunk_bytes)
 
     # -- 1. the listing --------------------------------------------------------
-    def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int) -> dict[str, Any]:
+    def list_artifacts(
+        self, tenant_id: str, task_id: str, *, limit: int, submitted_by: str | None
+    ) -> dict[str, Any]:
         """The manifest, each entry with its attempt, kind, content type and role.
 
         No object is read: everything here is the manifest the worker wrote
@@ -160,7 +162,7 @@ class AgentOutputService:
         Only the FINAL attempt's artifacts are listed: the manifest is written
         once, at terminal state, for the attempt that ended the task.
         """
-        task, _prefix = self._ins._scoped(tenant_id, task_id)
+        task, _prefix = self._ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
         manifest = self._ins._store.artifact_manifest(task)
         declared = agent_streams_mod.declared_streams(task.result_summary)
         roles = {
@@ -189,6 +191,9 @@ class AgentOutputService:
             "task_id": task.id,
             "artifacts": rows,
             "artifacts_skipped": manifest.skipped,
+            # Files past the 500-file cap, counted not named (#227): without
+            # it a capped run lists 500 files as if they were all of them.
+            "artifacts_over_cap": manifest.over_cap,
             "artifact_bytes": manifest.artifact_bytes,
             "complete": manifest.complete,
             "attempt_id": manifest_attempt(task),
@@ -200,13 +205,19 @@ class AgentOutputService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         name: str,
         offset: int = 0,
         limit_bytes: int | None = None,
     ) -> dict[str, Any]:
         """`InspectionService.read_artifact`, plus the listing's `kind` and `content_type`."""
         row = self._ins.read_artifact(
-            tenant_id, task_id, name=name, offset=offset, limit_bytes=limit_bytes
+            tenant_id,
+            task_id,
+            name=name,
+            offset=offset,
+            limit_bytes=limit_bytes,
+            submitted_by=submitted_by,
         )
         kind, content_type = artifact_kind(name)
         row["kind"] = kind
@@ -219,6 +230,7 @@ class AgentOutputService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         name: str,
         disposition: str | None = None,
     ) -> RawArtifact:
@@ -263,7 +275,7 @@ class AgentOutputService:
                 "disposition must be inline or attachment",
                 detail={"disposition": disposition},
             )
-        task, _prefix = self._ins._scoped(tenant_id, task_id)
+        task, _prefix = self._ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
         entry, attempt_id, key, reader = self._ins._resolve_artifact(task, name)
         try:
             first = reader.read_range(key, offset=0, length=self._chunk)
@@ -408,6 +420,7 @@ class AgentOutputService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         attempt_id: str | None = None,
         source: str = "auto",
         offset: int = 0,
@@ -442,7 +455,7 @@ class AgentOutputService:
         `complete` false and says why in `stream.detail`.
         """
         ins = self._ins
-        task, _prefix = ins._scoped(tenant_id, task_id)
+        task, _prefix = ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
         # The task's own masker (the PR #229 fix-up): a value only its input
         # or metadata named as secret is masked wherever the agent echoes it
         # in this transcript too, the same literals `/input` masks it with.
@@ -584,7 +597,12 @@ class AgentOutputService:
 
     # -- 5. the answer -----------------------------------------------------------
     def read_answer(
-        self, tenant_id: str, task_id: str, *, attempt_id: str | None = None
+        self,
+        tenant_id: str,
+        task_id: str,
+        *,
+        attempt_id: str | None = None,
+        submitted_by: str | None,
     ) -> dict[str, Any]:
         """The agent's final answer: the LAST `result` event's `result`, redacted.
 
@@ -615,7 +633,7 @@ class AgentOutputService:
         their raw line would be (see `swarm_api.transcript`).
         """
         ins = self._ins
-        task, _prefix = ins._scoped(tenant_id, task_id)
+        task, _prefix = ins._scoped(tenant_id, task_id, submitted_by=submitted_by)
         # The task's own masker (the PR #229 fix-up): the result event's
         # content is masked with the same literals `/input` masks the task's
         # input and metadata with, not the rules alone.

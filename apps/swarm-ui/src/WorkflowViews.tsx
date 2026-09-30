@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
 
 import { loadAttempts } from './api'
-import { DECLARED_WORDS, NEVER_STARTED_WORD, type ResultUsage, type StepInputs, type StrayInput } from './dag'
+import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import { Id } from './Shell'
@@ -12,14 +12,17 @@ import {
   attemptFacts,
   attemptPhase,
   attemptsInOrder,
+  drawnSpan,
   nextSort,
   pctOf,
   sortRows,
+  CLAMP_PERCENTILE,
   type Fact,
   type SortFacts,
   type SortKey,
   type SortSpec,
   type StepTimes,
+  type StepWhy,
   type TimelineAxis,
   type WorkflowView,
 } from './stepviews'
@@ -81,6 +84,9 @@ export interface StepRowModel {
   /** The attempt read has not landed: the cost and token cells are placeholders, not absences. */
   readonly pending: boolean
   readonly inputs: StepInputs
+  /** Why the step is not running, or why it failed (#105, #106); null when
+   *  there is nothing to explain. `stepWhy`. */
+  readonly why: StepWhy | null
   readonly sort: SortFacts
 }
 
@@ -291,7 +297,7 @@ export function WorkflowTimeline({
             className="wf-tl-track"
             data-step={r.step.step_id}
             role="img"
-            aria-label={`${r.step.step_id}: ${r.times.sentence}`}
+            aria-label={`${r.step.step_id}: ${r.times.sentence}${axis === null ? '' : cutSentence(r.times, axis)}`}
           >
             {axis !== null && <Spans row={r} axis={axis} />}
             {r.times.mark !== null && <TrackMark times={r.times} axis={axis} />}
@@ -327,17 +333,42 @@ function Ticks({ axis }: { axis: TimelineAxis }) {
           <span className="wf-tl-tick-label">{t.label}</span>
         </span>
       ))}
+      {/* THE SCALE SAYS IT IS BROKEN (#107), where each break took time out. */}
+      {axis.breaks.map((b) => (
+        <i key={`break-${b.from}`} className="wf-tl-scale-break" style={{ left: `${pctOf(axis, b.from)}%` }}>
+          ⫽
+        </i>
+      ))}
     </>
   )
 }
 
-/** One row's spans. */
+/**
+ * What the track's name adds when one of its waits is drawn cut short (#107),
+ * so the length the bar no longer shows is still said.
+ */
+function cutSentence(times: StepTimes, axis: TimelineAxis): string {
+  const cut = times.spans.map((s) => drawnSpan(axis, s)).find((d) => d.clampedMs !== null)
+  if (cut === undefined || cut.clampedMs === null || axis.clampMs === null) return ''
+  return ` Its wait is drawn cut short: it lasted ${durationText(cut.clampedMs)}, beyond the ${durationText(axis.clampMs)} that ${CLAMP_PERCENTILE}% of this workflow's spans stay within.`
+}
+
+/**
+ * One row's spans.
+ *
+ * AN OUTLIER WAIT IS DRAWN CUT SHORT (#107): `axisOf` took the part of it no
+ * other span covers out of the axis, so the bar spans the break. The
+ * broken-axis mark stands where the time was taken out and the wait's real
+ * length is written just after it, inside the track. The bar is not to scale
+ * and says so; the number is.
+ */
 function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
   return (
     <>
       {row.times.spans.map((s, i) => {
-        const left = pctOf(axis, s.from)
-        const width = pctOf(axis, s.to) - left
+        const d = drawnSpan(axis, s)
+        const left = pctOf(axis, d.from)
+        const width = pctOf(axis, d.to) - left
         // ONLY A FAILURE OR LIVE WORK IS COLOURED (WF-11, the #122 hue
         // ruling). A wait is an outline in every state, because waiting is not
         // the step's verdict; a finished run is one grey whether it succeeded
@@ -346,12 +377,21 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
         // and a run in flight carries `is-running` on its own kind. The row's
         // state dot still says every state.
         const bad = s.kind === 'ran' && row.look.tone === 'bad' ? ' is-bad' : ''
+        const cut = d.clampedMs !== null ? ' is-clamped' : ''
         return (
-          <i
-            key={i}
-            className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}`}
-            style={{ left: `${left}%`, width: `${width}%` }}
-          />
+          <Fragment key={i}>
+            <i
+              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${cut}`}
+              style={{ left: `${left}%`, width: `${width}%` }}
+            />
+            {d.clampedMs !== null &&
+              d.breaks.map((b, k) => (
+                <span key={b} className="wf-tl-cut" style={{ left: `${pctOf(axis, b)}%` }} aria-hidden>
+                  <i className="wf-tl-break">⫽</i>
+                  {k === 0 && durationText(d.clampedMs!)}
+                </span>
+              ))}
+          </Fragment>
         )
       })}
     </>
@@ -445,6 +485,9 @@ function AttemptsView({ cell, over }: { cell: Cell; over: number }) {
 const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null; num: boolean }> = [
   { col: 'step', label: 'step', sort: 'step', num: false },
   { col: 'state', label: 'state', sort: 'state', num: false },
+  // WHY IT IS NOT RUNNING, OR WHY IT FAILED (#106). Beside the state it
+  // explains; read rather than ranked, as the Agents table's column is.
+  { col: 'why', label: 'why', sort: null, num: false },
   { col: 'runner', label: 'runner', sort: null, num: false },
   { col: 'waited', label: 'waited', sort: 'waited', num: true },
   { col: 'ran', label: 'ran', sort: 'ran', num: true },
@@ -454,22 +497,58 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'inputs', label: 'inputs', sort: null, num: false },
 ]
 
+/**
+ * The `waited` cell: the QUEUE, from the last parent's finish to the start
+ * (#107), with the time spent on the parents in its note. A step still waiting
+ * on a parent has not queued yet: it prints a word, not a figure, because it
+ * has no queue time -- and its sort value (`waitedMs`) is null, so it ranks
+ * with the other rows that have no figure. The time on its parents is in the
+ * note.
+ */
 function waitedCell(t: StepTimes): Cell {
+  if (t.waitedMs === null && t.parentsMs !== null) {
+    return {
+      kind: 'absent',
+      text: 'on parents',
+      note: `Still waiting on a parent step, for ${durationText(t.parentsMs)} so far: it cannot queue until every parent has finished, so there is no queue time yet.`,
+    }
+  }
   if (t.waitedMs === null) {
     return t.mark !== null
       ? { kind: 'absent', text: t.mark.text, note: t.mark.note }
       : { kind: 'absent', text: 'not recorded', note: 'No submission time was recorded, so the wait cannot be computed.' }
   }
   const text = `${durationText(t.waitedMs)}${t.waitedOpen ? ' so far' : ''}`
+  // Where the figure is counted from: the last parent's finish when the wait
+  // was split (#107), the submission otherwise.
+  const split = t.parentsMs !== null && t.parentsMs > 0
+  const parents = split
+    ? `Queued from its last parent’s finish; before that it waited ${durationText(t.parentsMs!)} on its parents, which is not in this figure. `
+    : ''
+  const from = split ? 'Last parent’s finish' : 'Submission'
   return {
     kind: 'measured',
     text,
-    note: t.waitedOpen
+    note: parents + (t.waitedOpen
       ? 'Still waiting. Time queued, parked or being dispatched -- never time run.'
       : t.attempts !== null
-        ? 'Submission to the latest start. This task retried, so the earlier attempts are inside this figure.'
-        : 'Submission to start: time queued, parked or being dispatched -- never time run.',
+        ? `${from} to the latest start. This task retried, so the earlier attempts are inside this figure.`
+        : `${from} to start: time queued, parked or being dispatched -- never time run.`),
   }
+}
+
+/**
+ * The `why` cell (#106): one line, the whole of it in the title, in warn ink
+ * only when it asks a person to act (`whyNeedsAction`). Empty for a step with
+ * nothing to explain.
+ */
+function WhyCell({ why }: { why: StepWhy | null }) {
+  if (why === null) return null
+  return (
+    <span className={`wf-why${why.warn ? ' is-warn' : ''}`} title={why.full}>
+      {why.text}
+    </span>
+  )
 }
 
 /**
@@ -571,7 +650,7 @@ export function WorkflowTable({
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
   return (
-    // `is-scroll` (CH-13): nine columns compared across rows is a DATA table,
+    // `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
     // so below 900px it scrolls with the step column held in view rather than
     // stacking (design-system.md §7.3).
     <div className="ctl-table wf-table is-scroll">
@@ -614,6 +693,9 @@ export function WorkflowTable({
                   <i className={r.look.dot} aria-hidden />
                   {r.look.word}
                 </span>
+              </td>
+              <td data-col="why">
+                <WhyCell why={r.why} />
               </td>
               <td data-col="runner">{r.step.runner_profile}</td>
               <td data-col="waited" className="is-num">
@@ -795,6 +877,7 @@ export function StepInspector({
   taskState,
   siblings,
   siblingIndex,
+  shape,
   onSibling,
   focus,
   onFocused,
@@ -814,6 +897,13 @@ export function StepInspector({
   taskState: TaskState | null
   siblings: readonly SiblingRef[]
   siblingIndex: number
+  /**
+   * This workflow's shape (#112). The same-step scrubber only walks workflows
+   * of this shape, so the shape is printed beside the position: "workflow 2
+   * of 3" is two of three `1 → 5 → 1` workflows, not of every workflow on the
+   * board that has a step with this id.
+   */
+  shape: DagShape
   onSibling: (delta: -1 | 1) => void
   focus: ScrubFocus
   onFocused: () => void
@@ -959,7 +1049,7 @@ export function StepInspector({
       <div
         className="wf-scrub"
         role="group"
-        aria-label="The same step in other workflows on this board, newest first"
+        aria-label="The same step in other workflows of the same shape on this board, newest first"
         aria-keyshortcuts="ArrowLeft ArrowRight"
         data-scrub="workflow"
         onKeyDown={scrubKeys(hasNewer ? () => onSibling(-1) : null, hasOlder ? () => onSibling(1) : null)}
@@ -973,6 +1063,9 @@ export function StepInspector({
         />
         <span className="wf-scrub-pos">
           workflow {siblingIndex + 1} of {siblings.length}
+        </span>
+        <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
+          {shape.text} · {shape.steps} step{shape.steps === 1 ? '' : 's'}
         </span>
         <ScrubButton
           buttonRef={olderRef}

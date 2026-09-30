@@ -240,6 +240,52 @@ export function pressedInside(target: unknown, inside: ReadonlyArray<Container |
   return inside.some((el) => el !== null && el.contains(target as Node))
 }
 
+/**
+ * How long an outside press may take to become its click before the swallow
+ * below gives up. A tap's click follows its pointerdown by the length of the
+ * press -- well under this for any tap -- and a press that becomes a scroll or
+ * a drag is cancelled and never clicks at all; without a limit that press would
+ * leave the listener armed to eat the reader's next, unrelated click.
+ */
+const SWALLOW_CLICK_MS = 750
+
+/**
+ * THE TAP THAT DISMISSES A CARD DOES NOTHING ELSE (#137).
+ *
+ * On a phone the only "outside" left to tap is whatever the card is lying on,
+ * and more often than not that is a button. The capturing `pointerdown` below
+ * closes the card, but the `click` the same tap produces then lands on the
+ * control underneath and presses it: the reader asked to shut a tooltip and
+ * submitted a form. So an outside press that dismisses arms ONE capturing
+ * `click` listener on the document, which cancels that click before anything
+ * in the tree sees it and removes itself -- on that click, on the next press
+ * (which means this one was cancelled and will never click), or after
+ * `SWALLOW_CLICK_MS` if neither comes.
+ *
+ * Module-level, not in the effect: the card's close unregisters the effect's
+ * listeners in the same render, and this has to outlive that.
+ */
+function swallowNextClick(doc: Document): void {
+  let timer: ReturnType<typeof setTimeout> | null = null
+  const disarm = () => {
+    doc.removeEventListener('click', onClick, true)
+    doc.removeEventListener('pointerdown', disarm, true)
+    if (timer !== null) clearTimeout(timer)
+    timer = null
+  }
+  const onClick = (e: Event) => {
+    e.preventDefault()
+    e.stopPropagation()
+    disarm()
+  }
+  doc.addEventListener('click', onClick, true)
+  // Added while the dismissing pointerdown is being dispatched, so that press
+  // does not reach it: the DOM runs the listener list as it stood when the
+  // event arrived at the document.
+  doc.addEventListener('pointerdown', disarm, true)
+  timer = setTimeout(disarm, SWALLOW_CLICK_MS)
+}
+
 export function useHelpDisclosure(delayMs: number = HOVER_DELAY_MS) {
   const [state, dispatch] = useReducer(helpTransition, HELP_CLOSED)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -295,6 +341,10 @@ export function useHelpDisclosure(delayMs: number = HOVER_DELAY_MS) {
     // not shut it. A press on the card or its trigger is theirs to handle.
     const onDown = (e: Event) => {
       if (pressedInside(e.target, [cardRef.current, triggerRef.current])) return
+      // Only a press that DISMISSES arms the swallow; one inside the card or
+      // on its `?` returned above, so its click still reaches the link or
+      // the trigger (AH-6).
+      swallowNextClick(document)
       dispatch({ kind: 'outside-click' })
     }
     document.addEventListener('keydown', onKey)
@@ -450,6 +500,8 @@ export function useCardBridge(
   }
 
   return {
+    /** Close the card and hand focus back to the `?`: the phone close control. */
+    close: dismissToTrigger,
     /** Spread onto the `?` AFTER the disclosure's own trigger props. */
     trigger: {
       onFocus: () => {
@@ -641,6 +693,29 @@ const CARD: CSSProperties = {
   textAlign: 'left',
   lineHeight: 1.5,
   cursor: 'auto',
+}
+
+/**
+ * THE WAY OUT OF A PINNED CARD ON A PHONE (#137). There is no Escape key on a
+ * phone and no hover to leave, and tapping away lands on whatever the card is
+ * covering. So a pinned card at phone width carries a close control at §7.2's
+ * 44px -- a fingertip, not a glyph -- in its top corner, floated so the title
+ * wraps beside it rather than under it. The negative margins pull it into the
+ * card's padding, so the target is 44px without the card growing by as much.
+ * Drawn only when pinned: a card opened by hover or focus closes itself.
+ */
+const CLOSE: CSSProperties = {
+  float: 'right',
+  width: '44px',
+  height: '44px',
+  margin: 'calc(-1 * var(--ctl-s3)) calc(-1 * var(--ctl-s3)) 0 var(--ctl-s2)',
+  padding: 0,
+  border: 0,
+  background: 'none',
+  color: 'var(--text-dim)',
+  fontSize: 'var(--t-body)',
+  lineHeight: 1,
+  cursor: 'pointer',
 }
 
 /**
@@ -923,6 +998,11 @@ export function HelpCardView({
       style={{ ...CARD, ...placement }}
       ref={cardRef}
     >
+      {state.pinned && phone && (
+        <button type="button" aria-label="Close help" style={CLOSE} onClick={bridge.close} {...bridge.stop}>
+          <span aria-hidden="true">&times;</span>
+        </button>
+      )}
       <strong style={CARD_TITLE}>{t.title}</strong>
       <span style={CARD_BODY}>{t.short}</span>
       {values.length > 0 && (

@@ -486,6 +486,24 @@ def test_a_url_that_is_not_a_forge_repository_parses_to_none():
     assert parse_repo("") is None
 
 
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://github.com:8443/acme/widgets.git",
+        "https://git.corp.example:8443/acme/widgets.git",
+        "https://github.com:443/acme/widgets.git",
+        "ssh://git@git.corp.example:2222/acme/widgets.git",
+    ],
+)
+def test_a_url_naming_an_explicit_port_parses_to_none(url):
+    """`api_base` derives its URL from `host` alone; a port here would be
+    silently dropped and every request would go to the wrong endpoint (or, on
+    a host that happens to equal "github.com", to the real api.github.com
+    when the repository is not actually served on the standard port there).
+    Refused, same as any other URL this module does not understand."""
+    assert parse_repo(url) is None
+
+
 def test_github_enterprise_uses_the_api_v3_path_not_the_api_subdomain():
     """`api.<host>` does not exist for GitHub Enterprise Server. A probe sent
     there fails DNS, which would read as "the forge is down" rather than "the

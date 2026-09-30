@@ -353,7 +353,7 @@ def test_the_written_value_and_the_derived_value_agree_after_a_normal_run(db):
     rollups = WorkflowRollups(store=Store(db))
 
     first = rollups.for_workflow_from_tasks(
-        workflow, [Store(db).get_task("eng", tid) for tid in ("t1", "t2")]
+        workflow, [Store(db).get_task("eng", tid, submitted_by=None) for tid in ("t1", "t2")]
     )
     assert first.drift["agrees"] is False
     assert first.written is True
@@ -361,9 +361,9 @@ def test_the_written_value_and_the_derived_value_agree_after_a_normal_run(db):
 
     # Read again with what Firestore now holds: the two records agree and the
     # second pass writes nothing, so the steady state costs no Firestore writes.
-    reread = Store(db).get_workflow("eng", "wf_test")
+    reread = Store(db).get_workflow("eng", "wf_test", submitted_by=None)
     second = rollups.for_workflow_from_tasks(
-        reread, [Store(db).get_task("eng", tid) for tid in ("t1", "t2")]
+        reread, [Store(db).get_task("eng", tid, submitted_by=None) for tid in ("t1", "t2")]
     )
     assert second.drift["agrees"] is True
     assert second.written is False
@@ -397,7 +397,7 @@ def test_an_unknown_state_is_never_written(db):
     assert result.written is False
     assert db.docs["workflows/wf_test"]["state"] == "QUEUED"
     # And the document is still decodable, which is the thing that would break.
-    assert Store(db).get_workflow("eng", "wf_test").state is TaskState.QUEUED
+    assert Store(db).get_workflow("eng", "wf_test", submitted_by=None).state is TaskState.QUEUED
 
 
 def test_an_incomplete_rollup_is_refused_even_if_the_drift_verdict_says_write(db):

@@ -27,7 +27,14 @@ from swarm_common.states import TaskState
 from ..agent_output import AgentOutputService
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
-from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..deps import (
+    AppContext,
+    current_auth,
+    get_context,
+    paged_limit,
+    submission_scope,
+    tenant_scope,
+)
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -102,6 +109,7 @@ def list_tasks(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     parsed_state: TaskState | None = None
@@ -120,6 +128,7 @@ def list_tasks(
         runner_profile=runner_profile,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
+        submitted_by=submitted_by,
     )
     return {
         "tasks": [task_to_api(task) for task in page.items],
@@ -132,9 +141,10 @@ def list_tasks(
 def get_task(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"task": task_to_api(ctx.store.get_task(tenant_id, task_id))}
+    return {"task": task_to_api(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))}
 
 
 @router.post("/{task_id}/cancel")
@@ -147,7 +157,9 @@ def cancel_task(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.request_cancel(tenant_id, task_id, by=auth.email)
+    task = ctx.store.request_cancel(
+        tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
+    )
     return {
         "task": task_to_api(task),
         # A task holding capacity stays in its state until the worker or the
@@ -164,6 +176,7 @@ def list_events(
     page_token: str | None = Query(default=None),
     order: Literal["asc", "desc"] = Query(default="asc"),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """One page of a task's events, and the token for the next.
@@ -183,7 +196,7 @@ def list_events(
     Each `detail` is masked by the task's masker, so the task is read first --
     which `Store.list_events` does anyway for its tenant check.
     """
-    masking = masking_for(ctx.store.get_task(tenant_id, task_id))
+    masking = masking_for(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))
     page = ctx.store.list_events(
         tenant_id,
         task_id,
@@ -203,6 +216,7 @@ def list_attempts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Every attempt for one task, newest first.
@@ -233,7 +247,7 @@ def list_attempts(
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran". Its
     # masker masks each attempt's `error` (the PR #229 review).
-    masking = masking_for(ctx.store.get_task(tenant_id, task_id))
+    masking = masking_for(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
@@ -251,6 +265,7 @@ def list_artifacts(
     task_id: str,
     limit: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
@@ -260,7 +275,9 @@ def list_artifacts(
     is false until the task reaches a terminal state and the worker writes its
     result summary, so "no artifacts yet" and "this task produced none" are
     distinguishable. `artifacts_skipped` names the files the worker dropped at
-    the size cap, for the same reason.
+    the size cap, for the same reason, and `artifacts_over_cap` counts the files
+    past the 500-file cap (#227): null until `complete`, 0 when none were.
+    `complete` alone does not mean nothing was left out.
 
     No download URL is minted here. The `uri` is a `gs://` reference, and the
     bytes are read through `/artifacts/content` and `/artifacts/raw`, which
@@ -273,7 +290,9 @@ def list_artifacts(
     convention for an attempt made before it existed). Top level: the
     manifest's `attempt_id`. No object is read.
     """
-    return service.list_artifacts(tenant_id, task_id, limit=paged_limit(ctx, limit))
+    return service.list_artifacts(
+        tenant_id, task_id, limit=paged_limit(ctx, limit), submitted_by=submitted_by
+    )
 
 
 @router.get("/{task_id}/artifacts/content")
@@ -283,6 +302,7 @@ def read_artifact(
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
     """ONE artifact's content, resolved by the server from the task's manifest.
@@ -320,6 +340,7 @@ def read_artifact(
     return service.read_artifact(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         name=name,
         offset=offset,
         limit_bytes=limit_bytes,
@@ -332,6 +353,7 @@ def read_artifact_raw(
     name: str = Query(..., min_length=1, max_length=512),
     disposition: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> StreamingResponse:
     """ONE artifact's BYTES: for an `<img>`, an "open full", and a download (#184).
@@ -355,7 +377,9 @@ def read_artifact_raw(
     `X-Artifact-Bytes` carrying the stored size instead of a Content-Length.
     Staged inputs are read the same way, from the upstream task.
     """
-    raw = service.raw_artifact(tenant_id, task_id, name=name, disposition=disposition)
+    raw = service.raw_artifact(
+        tenant_id, task_id, name=name, disposition=disposition, submitted_by=submitted_by
+    )
     return StreamingResponse(raw.chunks, media_type=raw.media_type, headers=raw.headers)
 
 
@@ -366,6 +390,7 @@ def list_checkpoints(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Every checkpoint this task has written, across every attempt.
@@ -398,6 +423,7 @@ def list_checkpoints(
     return ctx.inspection.list_checkpoints(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         attempt_id=attempt_id,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
@@ -415,6 +441,7 @@ def read_logs(
     offset: int = Query(default=0, ge=0),
     limit_bytes: int | None = Query(default=None, ge=1),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """An attempt's captured stdout and stderr, redacted at read time.
@@ -461,6 +488,7 @@ def read_logs(
     return ctx.inspection.read_logs(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         attempt_id=attempt_id,
         stream=stream,
         source=source,
@@ -478,6 +506,7 @@ def read_transcript(
     limit_bytes: int | None = Query(default=None, ge=1),
     include_raw: bool = Query(default=False),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
     """The agent's own stdout, parsed into steps: text, thinking, tool calls, results (#184).
@@ -494,6 +523,7 @@ def read_transcript(
     return service.read_transcript(
         tenant_id,
         task_id,
+        submitted_by=submitted_by,
         attempt_id=attempt_id,
         source=source,
         offset=offset,
@@ -507,6 +537,7 @@ def read_answer(
     task_id: str,
     attempt_id: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     service: AgentOutputService = Depends(agent_output_service),
 ) -> dict:
     """The agent's final answer, as Markdown, redacted (#184).
@@ -517,13 +548,16 @@ def read_answer(
     be. `status` is `ok`, `not_yet` (still running), `absent` (ended with
     neither) or `unreadable` (a read failed; nothing further down is tried).
     """
-    return service.read_answer(tenant_id, task_id, attempt_id=attempt_id)
+    return service.read_answer(
+        tenant_id, task_id, attempt_id=attempt_id, submitted_by=submitted_by
+    )
 
 
 @router.get("/{task_id}/input")
 def read_input(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The task's input as a screen may draw it: masked at read time, counted (#184).
@@ -536,5 +570,5 @@ def read_input(
     the metadata as objects (owner decision, 2026-09-26: masked everywhere).
     See `swarm_api.task_input`.
     """
-    task = ctx.store.get_task(tenant_id, task_id)
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     return input_copy(task, read_at=ctx.now())

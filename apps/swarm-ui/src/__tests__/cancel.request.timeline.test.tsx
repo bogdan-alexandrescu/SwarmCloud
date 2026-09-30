@@ -46,11 +46,16 @@ function cancelledRun(events: TaskEvent[]): AgentRun {
   }
 }
 
-async function timelineNote(events: TaskEvent[]): Promise<{ text: string; rows: string[] }> {
+/**
+ * The Timeline toolbar's note, and the event Details' compact timeline names
+ * as the last (#101: the full list lives on the Attempts pane). `last` is the
+ * row the list would have ended on, named the same way.
+ */
+async function timelineNote(events: TaskEvent[]): Promise<{ text: string; last: string }> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={cancelledRun(events)} />)
-  await waitFor(() => expect(container.querySelector('ol.timeline')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.ev-last')).not.toBeNull())
   // Several panels on this page carry an `.is-end` note; the timeline's is the
   // one in the toolbar under the "Timeline" heading.
   const heading = Array.from(container.querySelectorAll('.ctl-toolbar h2')).find((h) =>
@@ -58,10 +63,8 @@ async function timelineNote(events: TaskEvent[]): Promise<{ text: string; rows: 
   )
   const note = heading?.parentElement?.querySelector('.is-end') ?? null
   expect(note, 'the timeline toolbar note is not rendered').not.toBeNull()
-  const rows = Array.from(container.querySelectorAll('.timeline .ev-type')).map(
-    (el) => el.textContent ?? '',
-  )
-  return { text: note!.textContent ?? '', rows }
+  const last = container.querySelector('.ev-last .ev-type')?.textContent ?? ''
+  return { text: note!.textContent ?? '', last }
 }
 
 const REQUESTED_BY = { requested_by: 'alice@saga.xyz', from_state: 'DISPATCHED' }
@@ -69,39 +72,39 @@ const REQUESTED_BY = { requested_by: 'alice@saga.xyz', from_state: 'DISPATCHED' 
 describe('a cancel request on the timeline', () => {
   it('does not count a stored legacy request as the end of a cancelled task', async () => {
     // check-2 of wf_ebb3ab2d65664707a559, as an older API serves it.
-    const { text, rows } = await timelineNote([
+    const { text, last } = await timelineNote([
       ev('submitted', at(0), null),
       ev('cancelled', at(10), null, { ...REQUESTED_BY, phase: 'cancel_requested' }),
     ])
     expect(text, 'a cancel REQUEST was read as the terminal event').toContain('ends at')
-    expect(rows).toEqual(['submitted', 'cancel_requested'])
+    expect(last).toBe('cancel_requested')
   })
 
   it('does not count a cancel_requested event as the end either', async () => {
-    const { text, rows } = await timelineNote([
+    const { text, last } = await timelineNote([
       ev('submitted', at(0), null),
       ev('cancel_requested', at(10), null, { ...REQUESTED_BY, phase: 'cancel_requested' }),
     ])
     expect(text).toContain('ends at cancel_requested')
-    expect(rows).toEqual(['submitted', 'cancel_requested'])
+    expect(last).toBe('cancel_requested')
   })
 
   it('reads the real cancel that follows the request as the end', async () => {
-    const { text, rows } = await timelineNote([
+    const { text, last } = await timelineNote([
       ev('submitted', at(0), null),
       ev('cancel_requested', at(10), null, { ...REQUESTED_BY, phase: 'cancel_requested' }),
       ev('cancelled', at(90), null, { source: 'reconciler', phase: 'cancelled' }),
     ])
     expect(text).not.toContain('ends at')
-    expect(rows).toEqual(['submitted', 'cancel_requested', 'cancelled'])
+    expect(last).toBe('cancelled')
   })
 
   it("still reads the scheduler's cascade cancel, which carries no phase, as the end", async () => {
-    const { text, rows } = await timelineNote([
+    const { text, last } = await timelineNote([
       ev('submitted', at(0), null),
       ev('cancelled', at(5), null, { reason: 'an upstream workflow step did not succeed' }),
     ])
     expect(text).not.toContain('ends at')
-    expect(rows).toEqual(['submitted', 'cancelled'])
+    expect(last).toBe('cancelled')
   })
 })

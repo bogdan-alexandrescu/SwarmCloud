@@ -204,7 +204,10 @@ module "tenancy" {
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
   # The deployer is here because it DEPLOYS the tenant jobs that run as these
   # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
-  # tenant gets the grant in the same apply that creates its account.
+  # tenant gets the grant in the same apply that creates its account -- which
+  # works only once the account exists and terraform/bootstrap's per-account
+  # serviceAccountAdmin grant on it is applied, since this binding is a
+  # setIamPolicy on the account (#334; modules/tenancy/main.tf has the order).
   dispatcher_members = merge(
     {
       scheduler  = module.iam.service_account_members["swarm-scheduler"]
