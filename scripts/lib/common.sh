@@ -1483,6 +1483,39 @@ fs_field_filter() {
     '{fieldFilter:{field:{fieldPath:$f},op:$o,value:$v}}'
 }
 
+#: curl_retry_no_answer OUT CURL_ARGS...
+#:
+#: Run `curl CURL_ARGS...` with its stdout and stderr written to OUT, and when
+#: it got NO ANSWER AT ALL -- curl exit 28 (timed out) or 7 (could not
+#: connect) -- wait SWARM_NO_ANSWER_RETRY_DELAY seconds (5) and run it once
+#: more, OUT rewritten. Returns the exit code of the last attempt.
+#:
+#: ONLY THOSE TWO EXITS. Owner decision, 2026-09-30: a network call is retried
+#: once when nothing answered, never on an HTTP status. A 403, a 404 or a 503
+#: is the server answering; asking again gets the same answer and costs only
+#: time, and a retried 403 is a refusal reported late. Other curl failures
+#: (6, could not resolve; 35, TLS) are as often configuration as a blip, and
+#: were not what failed. Without `-f` an HTTP error status exits 0 anyway, so
+#: it never reaches this test; with `-f` it exits 22, which is not retried.
+#:
+#: OUT is rewritten per attempt rather than appended to, so a caller reading a
+#: response body after a retried success reads that body alone and not the
+#: first attempt's `curl: (28)` line in front of it.
+curl_retry_no_answer() {
+  local out="$1" rc=0
+  shift
+  curl "$@" >"${out}" 2>&1 || rc=$?
+  case "${rc}" in
+    7|28) ;;
+    *) return "${rc}" ;;
+  esac
+  warn "no answer (curl exit ${rc}); asking once more in ${SWARM_NO_ANSWER_RETRY_DELAY:-5}s"
+  sleep "${SWARM_NO_ANSWER_RETRY_DELAY:-5}"
+  rc=0
+  curl "$@" >"${out}" 2>&1 || rc=$?
+  return "${rc}"
+}
+
 #: Whether the Firestore database exists.
 #:
 #: THREE ANSWERS, NOT TWO. The exit code is the answer:
@@ -1520,10 +1553,14 @@ fs_database_exists() {
   # names, in code written to fix a different instance of it.
   local token
   token="$(access_token)" || return 2
-  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+  # Through curl_retry_no_answer: on 2026-09-30 the release's acceptance
+  # pre-flight died here on one `curl: (28) Connection timed out` against a
+  # database that was there. Only no answer at all is asked again; a 403 or a
+  # 404 is Firestore answering, and is read below exactly as before.
+  curl_retry_no_answer "${out}" -sS --max-time "${HTTP_TIMEOUT:-30}" \
     -H "Authorization: Bearer ${token}" \
     "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}" \
-    >"${out}" 2>&1 || rc=$?
+    || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     err "could not ask whether Firestore database ${FIRESTORE_DATABASE} exists:"
     redact <"${out}" | head -n 3 | sed 's/^/     /' >&2
