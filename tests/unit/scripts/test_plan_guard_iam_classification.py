@@ -308,6 +308,7 @@ def test_the_self_test_covers_the_classification():
     proc = subprocess.run([str(GUARD), "--self-test"], capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
     assert "forgotten custom role" in proc.stderr, proc.stderr
+    assert "image digest" in proc.stderr, proc.stderr
 
 
 def test_two_concurrent_classifications_do_not_corrupt_each_others_output(tmp_path):
@@ -356,4 +357,3 @@ def test_two_concurrent_classifications_do_not_corrupt_each_others_output(tmp_pa
         assert classified_false["rows"] == [], (i, classified_false)
         # Neither invocation's file carries the other plan's resource.
         assert "job_dispatcher" not in json.dumps(classified_false), (i, classified_false)
-    assert "image digest" in proc.stderr, proc.stderr
