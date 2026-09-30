@@ -332,6 +332,16 @@ PR_BODY_MAX_BYTES = 60 * 1024
 #: How much of either file is read at all. Past this the text is cut anyway.
 PR_READ_LIMIT_BYTES = 256 * 1024
 
+#: The subjects of the worker's own commits -- the one holding what the agent
+#: left uncommitted, and the one a fold makes -- when the agent wrote no usable
+#: `pr-title.txt`. With one, that title is the subject instead
+#: (`Worker._worker_commit_message`). NEVER THE TASK ID (#361): the subject is
+#: the line a reviewer and `git log --oneline` read, and the owner's rule for
+#: pull request titles (2026-09-28) holds for it too. The task id goes in the
+#: body, where the provenance belongs.
+UNCOMMITTED_COMMIT_SUBJECT = "Commit the changes the agent left uncommitted"
+FOLDED_COMMIT_SUBJECT = "Everything the agent changed, as one commit"
+
 #: The retired generated title's shape, `[swarm] task_...`, in any case. A
 #: title that matches is treated as carrying the task id even when the id in
 #: it is not this task's (an agent that copied another task's old title).
@@ -1211,6 +1221,7 @@ class Worker:
             self._child_ended()
             self._checkpoint("cancellation")
             summary = self._upload_outputs()
+            self._add_runner_block(summary)
             self._export_metrics()
             self.control.finish(
                 state=TaskState.CANCELLED,
@@ -1459,25 +1470,7 @@ class Worker:
             summary["verdict_gate"] = dict(self._verdict)
         self._export_metrics()
 
-        runner_result = _read_json(ws.result_path)
-        if runner_result:
-            # The SAME figure `_record_spend` wrote onto the attempt (it ran
-            # inside `_upload_outputs` above): the attempt's total across every
-            # runner it started, so the summary a human reads and the typed
-            # fields a query reads cannot disagree after an in-place retry.
-            usage_summary = dict(self._spend)
-            summary["runner"] = self._scrub(
-                {
-                    "status": runner_result.get("status"),
-                    "summary": str(runner_result.get("summary", ""))[:4000],
-                    "output": _truncate_json(runner_result.get("output"), 8000),
-                    # Extracted BEFORE the line above discards it. See
-                    # _usage_summary: the truncation dropped token counts on
-                    # precisely the most expensive runs.
-                    "usage": usage_summary,
-                    "metrics": runner_result.get("metrics") or {},
-                }
-            )
+        runner_result = self._add_runner_block(summary)
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -1539,6 +1532,41 @@ class Worker:
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _add_runner_block(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        """Put the runner's own report into `summary["runner"]`; the result file, or None.
+
+        ON EVERY TERMINAL PATH WHERE THE RUNNER WROTE ITS RESULT FILE (#361):
+        the runner's end (`_finalise`), a requested cancel
+        (`_apply_control_signals`) and the crash path (`_safe_finish`). The
+        cancel path used to skip it, so a cancelled task's summary lost the
+        steps the runner reported and its spend -- the one record of how far
+        a stopped run got. Called after `_upload_outputs`, which records the
+        spend this block quotes.
+        """
+        ws = self.ws
+        if ws is None:
+            return None
+        runner_result = _read_json(ws.result_path)
+        if runner_result:
+            # The SAME figure `_record_spend` wrote onto the attempt (it ran
+            # inside `_upload_outputs`): the attempt's total across every
+            # runner it started, so the summary a human reads and the typed
+            # fields a query reads cannot disagree after an in-place retry.
+            usage_summary = dict(self._spend)
+            summary["runner"] = self._scrub(
+                {
+                    "status": runner_result.get("status"),
+                    "summary": str(runner_result.get("summary", ""))[:4000],
+                    "output": _truncate_json(runner_result.get("output"), 8000),
+                    # Extracted BEFORE the line above discards it. See
+                    # _usage_summary: the truncation dropped token counts on
+                    # precisely the most expensive runs.
+                    "usage": usage_summary,
+                    "metrics": runner_result.get("metrics") or {},
+                }
+            )
+        return runner_result
 
     # ------------------------------------------------------------------
     # pieces
@@ -4858,11 +4886,11 @@ class Worker:
                 publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
             new_sha = commit_dirty(
                 repo=publish_repo,
-                message=(
-                    f"swarm: uncommitted changes from {cfg.task_id}\n\n"
+                message=self._worker_commit_message(
+                    UNCOMMITTED_COMMIT_SUBJECT,
                     "Staged by the worker at the end of the attempt so that work "
                     "the agent edited but did not commit is not lost between the "
-                    "workspace and this branch."
+                    "workspace and this branch.",
                 ),
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
@@ -4906,12 +4934,12 @@ class Worker:
                     repo=publish_repo,
                     base=self._publish_base,
                     keep=new_sha,
-                    message=(
-                        f"swarm: work from {cfg.task_id}\n\n"
+                    message=self._worker_commit_message(
+                        FOLDED_COMMIT_SUBJECT,
                         "Everything the agent changed in this attempt, committed or "
                         "not, as one commit made by the worker. The worker writes "
                         "every commit it pushes, so no author, trailer or footer "
-                        "added inside the agent's container reaches this branch."
+                        "added inside the agent's container reaches this branch.",
                     ),
                     author_name=cfg.git_author_name,
                     author_email=cfg.git_author_email,
@@ -5254,6 +5282,20 @@ class Worker:
             lines += verdict_mod.pull_request_lines(self._verdict)
 
         return "\n".join(lines)
+
+    def _worker_commit_message(self, fallback_subject: str, explanation: str) -> str:
+        """The message of a commit the worker makes on the published branch.
+
+        The subject is the agent's `pr-title.txt` when it wrote a usable one --
+        the file, and the checks, `_agent_title` applies for the pull request,
+        so the branch's own commit and its pull request say the same thing --
+        and otherwise `fallback_subject`, which names no task (#361). The task
+        id is in the body: a commit on the branch still says which task made
+        it, on a line nobody reads as the change's title.
+        """
+        subject = self._agent_title([]) or fallback_subject
+        # Prose, not a `Key: value` line, so nothing reads it as a trailer.
+        return f"{subject}\n\n{explanation}\n\nMade by the worker for task {self.cfg.task_id}."
 
     def _agent_pull_request_text(self) -> tuple[str | None, str | None, list[str]]:
         """The agent's pull request title and body, each usable or None (#214).
@@ -6026,6 +6068,7 @@ class Worker:
         """
         try:
             summary = self._upload_outputs()
+            self._add_runner_block(summary)
             self._export_metrics()
             self.control.finish(
                 state=state,
@@ -6843,7 +6886,7 @@ def replay_agent_commits(
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
             text = message.replace("\x00", "").strip()
-            text = text or f"swarm: uncommitted changes from {task_id}"
+            text = text or UNCOMMITTED_COMMIT_SUBJECT
         else:
             kept += 1
             text = clean_commit_message(

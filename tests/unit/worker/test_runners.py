@@ -398,13 +398,19 @@ def test_the_browser_runner_has_no_evaluate_javascript_action():
 def test_the_mock_runner_resumes_from_state_left_by_a_previous_attempt(tmp_path):
     from agent_worker.runners import mock
 
-    ctx = make_ctx(tmp_path, {"steps": 4, "sleep_seconds": 0.0, "prompt": "hi"})
+    ctx = make_ctx(
+        tmp_path, {"steps": 4, "sleep_seconds": 0.0, "prompt": "hi", "attempt_id": "att_1"}
+    )
     first = mock.body(ctx)
     assert first["completed_steps"] == 4
     assert first["was_resumed"] is False
 
-    # A resumed attempt finds the state file the checkpoint carried over.
-    again = mock.body(make_ctx(tmp_path, {"steps": 4, "sleep_seconds": 0.0}))
+    # A resumed attempt -- another attempt's id -- finds the state file the
+    # checkpoint carried over. The same attempt restarted in place is not a
+    # resume (#361, test_mock_step_accounting.py).
+    again = mock.body(
+        make_ctx(tmp_path, {"steps": 4, "sleep_seconds": 0.0, "attempt_id": "att_2"})
+    )
     assert again["was_resumed"] is True
     assert again["completed_steps"] == 4
 
