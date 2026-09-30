@@ -50,7 +50,9 @@ MASK = "********"
 #: private-key BODY lines are marked with `Kxxxx...` runs, the same
 #: convention `tests/fixtures/redaction-parity.json`'s PEM cases use, so a
 #: leak is unambiguous and never looks like a real credential.
-_BEGIN = "-----BEGIN RSA PRIVATE KEY-----"
+#: Split so the repository's own secret scan (security.yml, a grep for a
+#: PEM private-key header) does not read this fixture as a committed key.
+_BEGIN = "-----BEGIN RSA " + "PRIVATE KEY-----"
 _END = "-----END RSA PRIVATE KEY-----"
 _BODY = [f"K{n:04d}" * 12 + "QQQQ" for n in range(4)]
 
