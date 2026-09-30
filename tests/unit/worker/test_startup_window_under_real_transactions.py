@@ -247,7 +247,7 @@ def test_a_sigterm_while_a_transaction_reads_exits_143_even_when_the_rollback_fa
 
 @pytest.mark.parametrize("budgeted", [False, True], ids=["library-defaults", "startup-budget"])
 @pytest.mark.parametrize(
-    "phase", ["advance_to_running", "restore_checkpoint", "revalidate_generation", "quota_preflight"]
+    "phase", ["advance_to_running", "verify_spec", "revalidate_generation", "quota_preflight"]
 )
 def test_a_control_plane_outage_before_the_runner_leaves_the_task_for_the_reconciler(
     store, tmp_path, log_stream, monkeypatch, phase, budgeted
@@ -326,7 +326,7 @@ def test_a_server_error_of_any_kind_before_the_runner_is_left_to_the_reconciler(
     mark: dict[str, Any] = {}
 
     def failed(ref: Any, transactional: bool) -> None:
-        if not transactional and ref.path == TASK and worker.phases.current == "restore_checkpoint":
+        if not transactional and ref.path == TASK and worker.phases.current == "verify_spec":
             _mark(db, mark)
             raise getattr(core, kind)(text)
 
@@ -334,7 +334,7 @@ def test_a_server_error_of_any_kind_before_the_runner_is_left_to_the_reconciler(
 
     exit_code = worker.run()
 
-    assert mark, "Firestore never failed in restore_checkpoint"
+    assert mark, "Firestore never failed in verify_spec"
     assert exit_code == UNAVAILABLE, _records(log_stream)[-4:]
     _assert_left_alone(db, mark)
     assert db.doc(TASK)["state"] != TaskState.FAILED.value
@@ -359,7 +359,7 @@ def test_a_refusal_before_the_runner_still_fails_the_attempt(
     monkeypatch.setattr(lifecycle, "ChildProcess", ExplodingChildProcess)
 
     def refused(ref: Any, transactional: bool) -> None:
-        if not transactional and ref.path == TASK and worker.phases.current == "restore_checkpoint":
+        if not transactional and ref.path == TASK and worker.phases.current == "verify_spec":
             raise core.PermissionDenied("Missing or insufficient permissions.")
 
     db.on_read = refused

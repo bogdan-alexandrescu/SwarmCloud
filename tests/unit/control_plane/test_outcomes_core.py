@@ -300,7 +300,9 @@ def test_the_vocabulary_order_is_fixed():
     # outputs_missing, after_cancel after after_failure, classifier version 2.
     assert [c["key"] for c in VOCAB["failure_classes"]] == [
         "runner_error", "timeout", "lost_worker", "could_not_start",
-        "inputs_unavailable", "outputs_missing", "dispatch_failed", "other", "no_reason",
+        "inputs_unavailable", "outputs_missing", "dispatch_failed",
+        "spec_signature_invalid",  # contract request 34
+        "other", "no_reason",
     ]
     assert [c["key"] for c in VOCAB["cancel_causes"]] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "other",

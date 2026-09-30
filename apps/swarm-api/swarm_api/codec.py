@@ -115,7 +115,17 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         result_summary=data.get("result_summary"),
         latest_checkpoint=data.get("latest_checkpoint"),
         end_cause=_end_cause(data.get("end_cause")),
+        # Contract request 34. Read back so a task this service decodes and
+        # writes again keeps the signature swarm-api put on it at submission.
+        spec_signature=data.get("spec_signature") or None,
+        spec_key_version=data.get("spec_key_version") or None,
+        spec_format=_spec_format(data.get("spec_format")),
     )
+
+
+def _spec_format(value: Any) -> int | None:
+    # `bool` is an `int`; a stored True is not format 1.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def dispatch_of(task: Task) -> dict[str, Any]:

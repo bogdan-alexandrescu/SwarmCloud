@@ -20,10 +20,14 @@ class DocumentMissing(KeyError):
 
 
 class FakeSnapshot:
-    def __init__(self, path: str, data: dict[str, Any] | None) -> None:
+    def __init__(self, path: str, data: dict[str, Any] | None, create_time: Any = None) -> None:
         self.reference_path = path
         self.id = path.rsplit("/", 1)[-1]
         self._data = data
+        #: Firestore's own `create_time`, which no client can write. The
+        #: worker's legacy-window rule reads it (contract request 34, section
+        #: 6); a test sets it through `FakeFirestore.create_times`.
+        self.create_time = create_time if data is not None else None
 
     @property
     def exists(self) -> bool:
@@ -43,7 +47,9 @@ class FakeDocumentRef:
         self.id = path.rsplit("/", 1)[-1]
 
     def get(self, *_args: Any, **_kwargs: Any) -> FakeSnapshot:
-        return FakeSnapshot(self.path, self._db.documents.get(self.path))
+        return FakeSnapshot(
+            self.path, self._db.documents.get(self.path), self._db.create_times.get(self.path)
+        )
 
     def set(self, data: dict[str, Any], merge: bool = False, **_call_options: Any) -> None:
         # `retry` and `timeout` are accepted and ignored, as `get` already
@@ -199,6 +205,8 @@ class FakeFirestore:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, str, dict[str, Any]]] = []
+        #: path -> the snapshot's `create_time`. Unset reads as None.
+        self.create_times: dict[str, Any] = {}
         self._auto = 0
 
     def collection(self, name: str) -> FakeCollectionRef:

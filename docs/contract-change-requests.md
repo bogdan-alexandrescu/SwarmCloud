@@ -42,7 +42,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
-| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
 
 ---
 
@@ -6253,6 +6253,9 @@ reach it. They are listed there as rejected, not as fallbacks.
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Applied by #353 (accepted by the owner 2026-09-29): `swarm_common/specsign.py`
+and the three signature fields and `EndCause.SPEC_SIGNATURE_INVALID` in
+`swarm_common/models.py`; the Terraform half by #354.
 Recorded from #342 (S0), which the round-3 security re-review of #316
 (contract request 33, the merge step) found the same day. This entry went
 through three rounds of joint review with contract request 33 on 2026-09-29 --
@@ -7384,3 +7387,42 @@ cost.
 10. **`SOFTWARE` or `HSM` protection.** Recommended: `SOFTWARE`. The private
     key never leaves Cloud KMS either way, and the threat here is who may call
     `AsymmetricSign`, which IAM decides, not extraction of the key.
+
+### Addendum 2026-09-29: corrections after acceptance
+
+The accepted text above is left as the owner accepted it. Three statements in
+it were found wrong while building it (#353, #354), and one decision was added:
+
+1. **The GKE Job name is derived from the task, not the tenant and profile.**
+   Requested change item 5 says the worker compares its identity against "the
+   Job name the scheduler derived from `tenant_id` and `runner_profile` (one
+   Job per tenant per profile)". That is Cloud Run's rule
+   (`swarm-job-<tenant>-<profile>`). `GkeJobDispatcher` creates one Job per
+   attempt, named `sanitize_name("swarm", <task id without "task_">,
+   <generation>)`, that is `swarm-<hex>-<gen>`
+   (`apps/scheduler/scheduler/dispatch.py`), and the worker checks
+   `RUNNER_JOB_NAME` against `specverify.gke_job_name(task_id, generation)`.
+   The weaker-claim paragraph about GKE still holds: the name and the
+   environment come from one render.
+2. **`cloudkms.googleapis.com` is enabled in bootstrap, not in
+   `terraform/infra/main.tf`.** The key ring and key live in
+   `terraform/bootstrap/spec_signing.tf` (#354), which enables the API and adds
+   it to `prerequisite_services`; `terraform/infra` only reads the key's
+   versions. Section 3's first bullet names the wrong root.
+3. **A GKE worker reads the signature mode and the legacy cutover from the
+   ConfigMap mount too** (owner decision, 2026-09-29). The text above has the
+   GKE mount carrying only `SPEC_VERIFY_KEYS` and `SPEC_SIGNING_KEY`, which
+   left a GKE worker in `enforce` from its first day while Cloud Run ran
+   `legacy`. The `swarm-spec-verify-keys` ConfigMap rendered by
+   `kubernetes/render.py` (#354) carries `SPEC_SIGNATURE_MODE` and
+   `SPEC_LEGACY_CUTOVER` as files beside the keys, and the worker reads each
+   of the four from its environment first and from
+   `/etc/swarm/spec-verify-keys` where the environment has none. GKE therefore
+   follows the legacy window exactly as Cloud Run does, including
+   `SPEC_LEGACY_UNTIL`.
+4. **A worker with no keys at all is CANNOT_START for every task, signed or
+   not.** The key check now runs before the legacy rule, so a GKE pod whose
+   namespace has no ConfigMap (the volume is `optional`) can neither admit an
+   unsigned task through a mode it could not read nor refuse a tenant's task
+   as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
+   loudly.

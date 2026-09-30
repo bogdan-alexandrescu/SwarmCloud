@@ -621,6 +621,10 @@ def test_no_broker_configured_refuses_rather_than_accepting_anything(db, tokens)
         groups=StaticGroups({"alice@saga.xyz": ("eng@saga.xyz",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
+        # No step-spec signer: this test is about the broker audience, and a
+        # deployed environment otherwise refuses to start first without
+        # SPEC_SIGNING_KEY_VERSION (contract request 34).
+        signer=None,
     )
     local = TestClient(create_app(ctx), raise_server_exceptions=False)
 
@@ -917,6 +921,10 @@ def test_a_deployed_environment_with_no_audience_is_a_503_naming_the_variable(
         groups=StaticGroups({"alice@saga.xyz": ("eng@saga.xyz",)}),
         credentials=InMemoryCredentials(),
         waker=NullWaker(),
+        # No step-spec signer: this test is about the broker audience, and a
+        # deployed environment otherwise refuses to start first without
+        # SPEC_SIGNING_KEY_VERSION (contract request 34).
+        signer=None,
     )
     local = TestClient(create_app(ctx), raise_server_exceptions=False)
 

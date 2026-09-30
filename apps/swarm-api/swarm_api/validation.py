@@ -194,12 +194,29 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
 
     Still serialised first, so a value JSON cannot carry (a reference cycle) is
     refused as such rather than walked.
+
+    A STRING HOLDING A LONE SURROGATE HAS NO FIRESTORE SIZE EITHER. `json.dumps`
+    above does not catch it -- its default `ensure_ascii=True` escapes a lone
+    surrogate like any other codepoint -- so `firestore_size`'s own
+    `str.encode("utf-8")` raised `UnicodeEncodeError` UNCAUGHT here: a 500 at
+    submission instead of the 422 `invalid_input` every other non-canonical
+    value gets at signing (`specsigning.sign_task_specs`), for a case
+    `specsigning` never got the chance to see because this call always runs
+    first (contract request 34, PR #353 review). Caught here, at the same
+    layer as the JSON-serialisability check above, so the message never
+    echoes the string itself -- only that one held no canonical form.
     """
     try:
         json.dumps(payload, default=str)
     except (TypeError, ValueError) as exc:
         raise ValidationFailed(f"{label} is not JSON-serialisable: {exc}") from None
-    size = firestore_size(payload)
+    try:
+        size = firestore_size(payload)
+    except UnicodeEncodeError:
+        raise InvalidInput(
+            f"{label} holds a string with no canonical form (a lone surrogate) and "
+            "cannot be signed or stored"
+        ) from None
     if size > max_bytes:
         raise ValidationFailed(
             f"{label} is {size} bytes, over the {max_bytes} byte limit",

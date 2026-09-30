@@ -56,6 +56,7 @@ test creates it empty, as the kubelet does, and reads what the worker left in it
 from __future__ import annotations
 
 import ipaddress
+import json
 import logging
 import os
 import socket
@@ -71,6 +72,7 @@ import agent_worker.__main__ as entrypoint  # noqa: E402
 import agent_worker.control as control_mod  # noqa: E402
 import agent_worker.startup as startup_mod  # noqa: E402
 from conftest import seed_attempt  # noqa: E402
+import spec_keys  # noqa: E402
 from fakes import (  # noqa: E402
     FakeCollectionRef,
     FakeDocumentRef,
@@ -278,6 +280,12 @@ def main(scenario: str) -> int:
     else:
         db = FakeFirestore() if healthy else StuckFirestore()
     seed_attempt(db, task_input=dict(LONG_RUN if scenario == "runs-long" else QUICK_RUN))
+    # Signed as swarm-api signs at submission, and the key it was signed with
+    # is the one this process trusts, as terraform puts it on every Job
+    # (contract request 34). The scenarios here are about startup, not specs.
+    spec_keys.sign_document(db.documents["tasks/task_1"], "task_1")
+    os.environ["SPEC_SIGNING_KEY"] = spec_keys.SIGNING_KEY
+    os.environ["SPEC_VERIFY_KEYS"] = json.dumps(spec_keys.VERIFY_KEYS)
     control_mod.FirestoreTransactionRunner = FakeTransactionRunner  # type: ignore[misc]
     entrypoint._firestore_client = _client_for(db)  # type: ignore[assignment]
     termination_log = os.environ.get("HARNESS_TERMINATION_LOG", "").strip()

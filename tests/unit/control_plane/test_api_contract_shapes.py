@@ -225,6 +225,14 @@ CODECS: tuple[Codec, ...] = (
             # cause here as well is a public shape change nobody has asked
             # for, and would be a second answer to "why" beside that one.
             "end_cause": "classified and served by GET /v1/outcomes; the task says why in last_error",
+            # Contract request 34. The signature is swarm-api's own attestation
+            # for the worker, which reads the document directly; a caller can
+            # neither use nor check it (the public key is not served), and
+            # serving it would add a public shape nobody asked for. The format
+            # and key version go with it: they only describe the signature.
+            "spec_signature": "worker-only attestation; the worker reads the document itself",
+            "spec_key_version": "describes spec_signature, which is not served",
+            "spec_format": "describes spec_signature, which is not served",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
