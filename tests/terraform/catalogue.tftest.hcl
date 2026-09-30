@@ -17,7 +17,11 @@
 #   whose symptom in production is a Job resource sized for a profile the worker
 #   is not running, which is exactly the class of bug nobody finds by reading.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id  = "saga-agents-staging"

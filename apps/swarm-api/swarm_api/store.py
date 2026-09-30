@@ -109,6 +109,20 @@ CONTROL_DOC = "dispatch"
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
 _BATCH_CHUNK = 200
 
+
+def _with_tenant_member(detail: dict[str, Any], tenant_member: str) -> dict[str, Any]:
+    """`detail`, plus `tenant_member="service_account"` when the acting
+    caller's tenant came from a service-account listing (contract request 30).
+
+    ABSENT otherwise, not null: an event trail that grew a null key on every
+    existing event would say something about every human's submission too.
+    The value names the mechanism, not the account -- the account's email is
+    already `submitted_by` / `requested_by` beside it.
+    """
+    if tenant_member:
+        detail["tenant_member"] = "service_account"
+    return detail
+
 #: Step-task point reads one list request may spend deriving workflow states.
 #: A page of `max_page_size` workflows at `max_workflow_steps` each would be
 #: 10,000 documents, which is not a cost a list route may incur on a caller's
@@ -693,13 +707,18 @@ class Store:
 
     # -- tasks ------------------------------------------------------------
 
-    def create_tasks(self, tasks: Sequence[Task]) -> list[Task]:
+    def create_tasks(self, tasks: Sequence[Task], *, tenant_member: str = "") -> list[Task]:
         """Write tasks and their `submitted` events.
 
         Batched so a partially written submission cannot leave a task document
         with no event trail. Ordering within the batch matters for workflows:
         callers pass tasks in topological order so a child is never written
         before its parent.
+
+        `tenant_member` is `AuthContext.tenant_member`: non-empty when the
+        submitter's tenant came from a service-account listing (contract
+        request 30), and then the event says so -- `detail["tenant_member"]`
+        is `"service_account"`, and ABSENT, not null, for everyone else.
         """
         now = self._now()
         for chunk in self._chunks(list(tasks), _BATCH_CHUNK):
@@ -713,19 +732,32 @@ class Store:
                     tenant_id=task.tenant_id,
                     type=EventType.SUBMITTED,
                     at=now,
-                    detail={
-                        "runner_profile": task.runner_profile,
-                        "resource_class": task.resource_class,
-                        "state": task.state.value,
-                        "workflow_id": task.workflow_id,
-                    },
+                    detail=_with_tenant_member(
+                        {
+                            "runner_profile": task.runner_profile,
+                            "resource_class": task.resource_class,
+                            "state": task.state.value,
+                            "workflow_id": task.workflow_id,
+                            "submitted_by": task.submitted_by,
+                        },
+                        tenant_member,
+                    ),
                 )
                 batch.set(ref.collection(EVENTS).document(event.event_id),
                           event_to_firestore(event))
             batch.commit()
         return list(tasks)
 
-    def get_task(self, tenant_id: str, task_id: str) -> Task:
+    def get_task(self, tenant_id: str, task_id: str, *, submitted_by: str | None) -> Task:
+        """One task of this tenant.
+
+        `submitted_by` is REQUIRED, with no default (contract request 30):
+        `None` is the unfiltered read every full member and internal caller
+        makes, stated at the call; an email narrows the read to that
+        submitter's own tasks, which is what a continuation-scoped caller gets
+        from `deps.submission_scope`. Without a default, a layer that never
+        learned about the filter is a TypeError, not a silent unfiltered read.
+        """
         snap = self._db.collection(TASKS).document(task_id).get()
         if not snap.exists:
             raise NotFound(f"task {task_id!r} not found")
@@ -735,7 +767,12 @@ class Store:
             # different status here would confirm the id exists in another
             # tenant, which is an enumeration oracle.
             raise NotFound(f"task {task_id!r} not found")
-        return task_from_dict(data)
+        task = task_from_dict(data)
+        if submitted_by is not None and task.submitted_by != submitted_by:
+            # The same words again, for the same reason: "not yours" must not
+            # be distinguishable from "not in your tenant" or "no such task".
+            raise NotFound(f"task {task_id!r} not found")
+        return task
 
     def tasks_by_id(self, tenant_id: str, task_ids: Iterable[str]) -> dict[str, Task]:
         """This tenant's tasks among `task_ids`, by id, in batched reads.
@@ -771,7 +808,16 @@ class Store:
         runner_profile: str | None = None,
         limit: int = 50,
         page_token: str | None = None,
+        submitted_by: str | None,
     ) -> Page:
+        """One page of this tenant's tasks, newest first.
+
+        `submitted_by` is required, as on `get_task`. When it names a
+        submitter, rows that are not theirs are dropped from the page AFTER the
+        cursor is taken from the unfiltered page, so paging stays correct (a
+        page may be short) and no composite index is needed for a filter only
+        continuation-scoped callers use.
+        """
         query = self._db.collection(TASKS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
@@ -793,9 +839,13 @@ class Store:
         if len(rows) > limit:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
+        if submitted_by is not None:
+            rows = [t for t in rows if t.submitted_by == submitted_by]
         return Page(items=rows, next_page_token=next_token)
 
-    def request_cancel(self, tenant_id: str, task_id: str, *, by: str) -> Task:
+    def request_cancel(
+        self, tenant_id: str, task_id: str, *, by: str, tenant_member: str = ""
+    ) -> Task:
         """Flag the task for cancellation, terminating it immediately if idle.
 
         A task that holds no capacity (SUBMITTED / QUEUED / READY / PARKED) goes
@@ -882,15 +932,22 @@ class Store:
                 # cancelled for over an hour (contract request 17).
                 type=EventType.CANCELLED if immediate else EventType.CANCEL_REQUESTED,
                 at=now,
-                detail={
-                    "requested_by": by,
-                    "from_state": task.state.value,
-                    # Kept although the type now says the same thing: a reader
-                    # written against the old discriminator keeps working, and
-                    # a stored legacy request that `event_from_dict` serves as
-                    # CANCEL_REQUESTED is then the same shape as a new one.
-                    "phase": "cancelled" if immediate else "cancel_requested",
-                },
+                # `tenant_member` under the same rule as `create_tasks`: the
+                # canceller's tenant came from a service-account listing, or
+                # the key is absent (contract request 30).
+                detail=_with_tenant_member(
+                    {
+                        "requested_by": by,
+                        "from_state": task.state.value,
+                        # Kept although the type now says the same thing: a
+                        # reader written against the old discriminator keeps
+                        # working, and a stored legacy request that
+                        # `event_from_dict` serves as CANCEL_REQUESTED is then
+                        # the same shape as a new one.
+                        "phase": "cancelled" if immediate else "cancel_requested",
+                    },
+                    tenant_member,
+                ),
             )
             txn.set(
                 ref.collection(EVENTS).document(event.event_id),
@@ -958,7 +1015,7 @@ class Store:
 
         `descending` is the end of the run in one request.
         """
-        self.get_task(tenant_id, task_id)         # tenant check before any read
+        self.get_task(tenant_id, task_id, submitted_by=None)  # tenant check before any read
         order = "desc" if descending else "asc"
         # Bound to the task: a token from another task's history would be a
         # timestamp that means nothing here, served as though it did.
@@ -1048,7 +1105,7 @@ class Store:
         yet, so `artifacts` is empty and `complete` is false -- which is a
         different statement from "this task produced nothing".
         """
-        manifest = self.artifact_manifest(self.get_task(tenant_id, task_id))
+        manifest = self.artifact_manifest(self.get_task(tenant_id, task_id, submitted_by=None))
         return {
             "artifacts": manifest.artifacts[:limit],
             "artifacts_skipped": manifest.skipped,
@@ -1070,8 +1127,10 @@ class Store:
 
     # -- workflows --------------------------------------------------------
 
-    def create_workflow(self, workflow: Workflow, tasks: Sequence[Task]) -> Workflow:
-        self.create_tasks(tasks)
+    def create_workflow(
+        self, workflow: Workflow, tasks: Sequence[Task], *, tenant_member: str = ""
+    ) -> Workflow:
+        self.create_tasks(tasks, tenant_member=tenant_member)
         (
             self._db.collection(WORKFLOWS)
             .document(workflow.workflow_id)
@@ -1079,14 +1138,20 @@ class Store:
         )
         return workflow
 
-    def get_workflow(self, tenant_id: str, workflow_id: str) -> Workflow:
+    def get_workflow(
+        self, tenant_id: str, workflow_id: str, *, submitted_by: str | None
+    ) -> Workflow:
+        """One workflow of this tenant; `submitted_by` exactly as on `get_task`."""
         snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
         if not snap.exists:
             raise NotFound(f"workflow {workflow_id!r} not found")
         data = snap.to_dict()
         if data.get("tenant_id") != tenant_id:
             raise NotFound(f"workflow {workflow_id!r} not found")
-        return workflow_from_dict(data)
+        workflow = workflow_from_dict(data)
+        if submitted_by is not None and workflow.submitted_by != submitted_by:
+            raise NotFound(f"workflow {workflow_id!r} not found")
+        return workflow
 
     def list_workflows(
         self,
@@ -1094,7 +1159,10 @@ class Store:
         *,
         limit: int = 50,
         page_token: str | None = None,
+        submitted_by: str | None,
     ) -> Page:
+        """One page of this tenant's workflows; `submitted_by` exactly as on
+        `list_tasks` (filtered after the cursor is taken)."""
         query = self._db.collection(WORKFLOWS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
@@ -1109,6 +1177,8 @@ class Store:
         if len(rows) > limit:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
+        if submitted_by is not None:
+            rows = [w for w in rows if w.submitted_by == submitted_by]
         return Page(items=rows, next_page_token=next_token)
 
     def workflow_step_states(
@@ -1190,8 +1260,13 @@ class Store:
             .update({"state": state.value, "updated_at": self._now()})
         )
 
-    def cancel_workflow(self, tenant_id: str, workflow_id: str, *, by: str) -> dict[str, Any]:
-        workflow = self.get_workflow(tenant_id, workflow_id)
+    def cancel_workflow(
+        self, tenant_id: str, workflow_id: str, *, by: str, tenant_member: str = ""
+    ) -> dict[str, Any]:
+        # Unfiltered: cancel is not in CONTINUATION_ROUTES, so only a full
+        # member reaches this, and a full member may cancel any of its
+        # tenant's workflows.
+        workflow = self.get_workflow(tenant_id, workflow_id, submitted_by=None)
         (
             self._db.collection(WORKFLOWS)
             .document(workflow_id)
@@ -1202,7 +1277,9 @@ class Store:
             if not step.task_id:
                 continue
             try:
-                self.request_cancel(tenant_id, step.task_id, by=by)
+                self.request_cancel(
+                    tenant_id, step.task_id, by=by, tenant_member=tenant_member
+                )
                 cancelled.append(step.task_id)
             except Conflict:
                 already_terminal.append(step.task_id)

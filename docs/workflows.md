@@ -45,11 +45,11 @@ costs nothing while it waits.
 |---|---|
 | `step_id` | unique within the workflow; `^[A-Za-z0-9][A-Za-z0-9_\-.]*$` |
 | `runner_profile` | a **name** from the frozen catalogue — never an image or command |
-| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below) |
-| `depends_on` | upstream `step_id`s, up to 50 |
-| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace |
-| `resource_class` | optional named class, no larger than the profile's own |
-| `timeout_seconds` | may only **shorten** the profile's timeout |
+| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below). |
+| `depends_on` | upstream `step_id`s, up to 50. |
+| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
+| `resource_class` | optional named class, no larger than the profile's own. |
+| `timeout_seconds` | optional; may only shorten the profile's own default. |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -68,12 +68,13 @@ and each step here.
 | the profile | what `input` may carry |
 |---|---|
 | `mock` | `prompt`, and its declared test knobs, in the table below |
+| `browser` | `prompt`, and what the browser runner reads: a `url`, `actions` in eight fixed shapes, timeouts, the viewport, in the table below |
+| `generic` | `prompt`, and a **required** `command` from the runner's own catalogue, plus the paths, target, directory and limits in the table below |
 | `claude-code`, `codex` | `prompt`, and `issue`, in the tables below |
-| `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
 
-What the mock declares, with each key's kind and bounds. This table is
-generated from the catalogue, not written: a bound stated anywhere else in
-this file would be a copy nothing compares, so none is.
+What each declaring profile takes, with each key's kind and bounds. These
+tables are generated from the catalogue, not written: a bound stated anywhere
+else in this file would be a copy nothing compares, so none is.
 
 <!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the mock runner does with it |
@@ -89,6 +90,41 @@ this file would be a copy nothing compares, so none is.
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
+
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
 
 What `claude-code` and `codex` declare (contract request 28, #265):
 
@@ -128,7 +164,7 @@ them. Python reads a JSON integer at any length and Firestore stores 64 bits,
 so an unbounded number passed every check and failed at the task write with a
 500. The API also refuses, with 422, an integer anywhere in an input or a
 task's metadata that Firestore could not store, which is the only number check
-a profile not declared yet gets.
+a task's metadata gets.
 
 A key the profile does not declare, or a declared one outside its bounds, is
 refused with 422 `invalid_input`. The detail names the key (`key`, and every
@@ -140,16 +176,24 @@ them from JSON, and every comparison with `NaN` is false, so a bound alone
 would let them through. `swarm_profiles` and `swarm profiles` list each
 profile's inputs.
 
-`browser` and `generic` are the exception because their work IS their input.
-The browser runner cannot start without `url` or `actions`, and the generic
-runner cannot start without the name of a command in its own catalogue, so an
-empty declaration would refuse every task they run. Which keys they declare,
-with which bounds, is an open question recorded under request 25 in
-[contract-change-requests.md](contract-change-requests.md) and tracked as #218.
-Request 29 in that file proposes an answer: every key each runner reads, with
-its kind and bounds, and the list, object and URL kinds they need. It is not
-applied, so until the owner decides, these two profiles are still bounded by
-size alone.
+`browser` and `generic` declare every key their runners read (contract
+request 32, #218, accepted by the owner on 2026-09-29). Until then both were
+bounded by size alone, so a `generic` task with no `command`, an action with
+no `selector`, or a browser `goto` to a private address was admitted, leased
+and started, and failed inside the pod. Each is a 422 at the door now.
+
+* A browser `url`, and every `goto` action's, must be http or https, carry no
+  `user:password@`, and name a public host: the metadata server, private and
+  cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
+  single-label host and any host that is not plain ASCII letters, digits, dots
+  and hyphens are refused (`url_refusal` in the frozen catalogue). That check
+  is **not** the SSRF control -- it sees the URL typed, never a redirect, a
+  page's subresources or what a name resolves to in the pod. The worker's
+  NetworkPolicy is the control.
+* A browser task still needs `url` or at least one action. Neither is required
+  on its own, so a task with neither is refused by the runner, not the API.
+* A `generic` task's four limits may only lower the platform's own: each
+  declared ceiling is what the worker exports by default.
 
 `{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
 and no other. The attempt is counted by the task's own `attempt_count`, which
@@ -523,6 +567,204 @@ If steps do not exchange artifacts and do not depend on each other, submit a
 **batch** (`POST /v1/tasks/batch`, up to `max_batch_size`). Independent tasks
 interleave across tenants under round-robin; a workflow adds dependency
 bookkeeping you are not using.
+
+## PROPOSED: a chain that merges its own pull request
+
+**Proposed on 2026-09-29 for #295 and not built. Revised four times,
+2026-09-29,** against a security review's two blockers and five majors, then
+a re-review that found the first B1 revision insufficient, then a third
+round that found B1 still open against a different attack and decided three
+more owner questions, then a fourth, joint review with CR 34 (#344, signed
+step specs) that found `post-verdict`'s own read of `review.json` was still
+routed through a tenant-writable pointer, corrected the real GCS bucket
+layout, and found the cross-workflow forgery claim was not actually closed;
+[merge-step.md](merge-step.md)'s own revision note lists what changed each
+time. The API refuses this spec today. `single-pr`, `pr_role`, the `merge`
+profile, and the `post-verdict` and `claude-code-review` profiles below, do
+not exist yet. The `merge` profile needs contract request 33 in
+[contract-change-requests.md](contract-change-requests.md); `post-verdict`
+and `claude-code-review` each need their own, not-yet-filed request
+([merge-step.md](merge-step.md) §1.3, §4.3, §10). `post-verdict` is a
+worker-action profile structured exactly like `merge`: its own Job, its own
+service account, and **no agent ever runs on it** — that is why it exists
+rather than holding the review App's key on a dedicated profile for the
+`review` step itself, which a re-review found insufficient (a dedicated
+profile only changes which Job an agent runs on, and the review agent, which
+reads attacker-controlled diffs, would still share a container with the App
+key regardless of profile). `claude-code-review`, by contrast, **is** a
+dedicated profile for the `review` step — safe for a narrower reason: it
+holds no App key, only a GCS write grant scoped to one prefix, which is not
+a portable secret an agent could exfiltrate and reuse. **This design also
+depends on S0 issue #342 (signed step specs), which is not a
+`profiles.py`/`models.py` request and is not built either** — without it, an
+earlier step's agent can rewrite a later step's own `prompt` before that
+step starts, which nothing else in this design touches (see below). The
+design, and the reason for each rule below, is
+[merge-step.md](merge-step.md).
+
+The owner's chain is **implement → review → post-verdict → fix → proof →
+merge**. It produces **one** pull request and ends with the **worker**
+squash-merging it. The merge runs under a service account no agent ever runs
+as, with a credential no agent can read — and so does `post-verdict`, one
+step earlier, for the review credential.
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "on_step_failure": "fail_workflow",
+  "repository_url": "https://github.com/bogdan-alexandrescu/SwarmCloud",
+  "repository_ref": "main",
+  "strategy": "single-pr",
+  "steps": [
+    {"step_id": "implement",
+     "runner_profile": "claude-code",
+     "pr_role": "author",
+     "input": {"prompt": "Implement issue #295. Write a fact-style pull request title to pr-title.txt."}},
+
+    {"step_id": "review",
+     "runner_profile": "claude-code-review",
+     "pr_role": "reader",
+     "depends_on": ["implement"],
+     "input": {"prompt": "Review the checked-out head against issue #295. Write review.json: {\"verdict\": \"MERGE\" or \"CHANGES\", \"sha\": the checked-out HEAD, \"title\": the pull request title you reviewed, \"summary\": your findings}."}},
+
+    {"step_id": "post-verdict",
+     "runner_profile": "post-verdict",
+     "depends_on": ["review"],
+     "input": {}},
+
+    {"step_id": "fix",
+     "runner_profile": "claude-code",
+     "pr_role": "amender",
+     "depends_on": ["post-verdict"],
+     "input_from": {"review": "review.json"},
+     "input": {"prompt": "If review.json says MERGE, change nothing and exit. Otherwise fix every finding in it."}},
+
+    {"step_id": "proof",
+     "runner_profile": "claude-code",
+     "pr_role": "reader",
+     "depends_on": ["fix"],
+     "input": {"prompt": "Prove the change works at the checked-out head. Write proof.json: {\"outcome\": \"PROVED\" or \"NOT_PROVED\", \"sha\": the checked-out HEAD, \"evidence\": what you ran and saw}."}},
+
+    {"step_id": "merge",
+     "runner_profile": "merge",
+     "depends_on": ["post-verdict", "proof"],
+     "input_from": {"proof": "proof.json"},
+     "input": {}}
+  ]
+}'
+```
+
+`fix` depends on `post-verdict`, not on `review` directly, even though `fix`'s
+own `input_from` still reads `review.json` from the `review` task (staged
+artifacts are named by the task that wrote them, not the task that gates
+starting). That substitution is the point: `fix`'s agent cannot start, and so
+cannot race to overwrite `review.json`, until `post-verdict` has already read
+it and posted an immutable GitHub review ([merge-step.md](merge-step.md)
+§4.3). `merge` depends on `post-verdict` the same ordering-only way, and on
+`proof` for its `input_from`; it does **not** depend on `review` directly any
+more, since `post-verdict` is now the thing that stands between them.
+`validate_dag` allows a `depends_on` entry with no matching `input_from`
+source for exactly this reason.
+
+**`post-verdict` declares no `input_from` at all — corrected, joint review
+with CR 34, 2026-09-29.** An earlier draft of this spec gave it
+`"input_from": {"review": "review.json"}`, the ordinary staging mechanism.
+That mechanism resolves an artifact's location through the upstream task's
+`result_summary`, a Firestore field the tenant identity writes — exactly the
+kind of attacker-writable pointer this whole design exists to route around
+for the one read the verdict anchor depends on. `post-verdict` instead
+computes the object's path itself — `gs://<bucket>/tenants/<tenant>/verdicts/<workflow_id>/<review task id>/review.json`
+— from `workflow_id` and the review task id named in its **own signed spec**
+(#342), and reads that exact path directly, never through the generic
+resolver ([merge-step.md](merge-step.md) §4.1, §4.3, §6a). The
+`"depends_on": ["review"]` edge above still orders it correctly; it is just
+not also the channel `post-verdict` uses to find the file.
+
+What each step does:
+
+| step | clones | publishes | writes |
+|---|---|---|---|
+| implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
+| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review`, to a prefix the tenant's ordinary worker account cannot write | `review.json` |
+| post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
+| fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
+| proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
+| merge (profile `merge`) | nothing, and it runs no agent | `PUT .../pulls/{n}/merge`, squash, `sha` pinned, to `api.github.com` only, no redirect followed | the squash commit, and a comment naming the task that merged it |
+
+The merge happens only if **all** of these hold. Otherwise the step ends
+`MERGE_REFUSED` and `result_summary.merge.refusal` says which one failed:
+
+* `post-verdict`'s review is `APPROVED` at the pinned head — not merely
+  `review.json.verdict == "MERGE"`, which is now a descriptive claim, not the
+  trust anchor (owner decision B1, 2026-09-29, corrected the same day: this
+  replaces both the original scheduler attestation and a first, insufficient
+  B1 revision that would have run the review agent and the App key in the
+  same container);
+* `proof.json.outcome` is exactly `PROVED` — a plain staged-artifact check,
+  not an App-anchored one. **A proof that executes the pull request's own
+  code anchors only that the code ran and produced that outcome — never that
+  the change is safe** (owner decision, 2026-09-29; [merge-step.md](merge-step.md)
+  §4.3, §11 Q6);
+* the review and the proof ran on the same head, the fix pushed nothing after
+  the review, and that head is still the pull request's live head. A fix
+  that changed anything therefore ends this workflow's merge with
+  `review_not_at_head`, because nobody reviewed the fix;
+* every required check on `main` is completed `success` or `skipped` at that
+  head, pinned to GitHub Actions — and any required check with **no** pinned
+  `app_id` is refused rather than accepted through a legacy commit status
+  (owner decision M5) — and no other check that ran there is failing or still
+  running. **Pending is not green, and the step does not wait for it**;
+* GitHub reports the pull request cleanly mergeable. The branch is never
+  updated from `main`, and its `base.ref` is re-checked immediately before and
+  again immediately after the merge call, so a retargeted base is caught
+  rather than silently merged;
+* the title is the one the review saw, and not the `[swarm] task_` placeholder;
+* the pull request does not touch a protected path — `.github/**`,
+  `scripts/**`, `terraform/**`, `kubernetes/**`, `images/**`, `Makefile`,
+  `pyproject.toml`, `uv.lock`, or any `**/conftest.py` (broadened from
+  `.github/workflows/` alone, owner decision M4: merging to `main` is code
+  execution as the deployer, since `release.yml` grants `id-token: write` at
+  workflow level and its verify job runs the merged tests). Such a pull
+  request lands only through a human's `ready`.
+
+`owner`/`repo` and the forge host come from a record no tenant identity can
+write, never from the task document (owner decision B2). **Decided,
+round-3 re-review: that record is Terraform-rendered environment on the
+`post-verdict` and `merge` Jobs, not Secret Manager and not Firestore**
+([merge-step.md](merge-step.md) §2.1b) — the open question this section
+used to carry is resolved.
+
+A person's `ready` label on the same pull request still works — and so, in
+principle, does an agent's: the owner has kept `-git`'s PAT for agent pushes
+(owner decision M3), so `ready` is not exclusively a human action any more,
+though the label stays bound to the exact head it was set on. `auto-merge.yml`
+stays authoritative for labelled pull requests, and whichever merge lands
+first, the other finds it merged at the same pinned head.
+
+**None of the above closes B1 by itself.** Every mechanism in this section —
+`post-verdict`'s isolation, the review-only-writable prefix, the pinned
+host — protects an artifact's integrity once it exists. Signed step specs
+(#342) protect something none of them touch: the `prompt` a step is handed
+*before* it runs. Without #342, an `implement` agent can rewrite `review`'s
+still-`PARKED` task document, and the review agent would honestly follow
+corrupted instructions to a genuine, unforced `MERGE` verdict about a change
+it was never actually asked to judge. `post-verdict` and `merge` must verify
+the signed spec of every upstream step they depend on, not only stage its
+output ([merge-step.md](merge-step.md) §0 consequence 4, §7 T14). **The
+merge step must not be enabled for any tenant until #342 ships** — a
+precondition independent of, and in addition to, `main-protection` (M1). By
+contrast, moving `release.yml`'s `id-token: write` to job level is
+recommended but, per the owner's round-3 decision, is **not** a
+precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
+**Separately, and NOT closed by anything above (named residual R8, joint
+review with CR 34, 2026-09-29):** the review-only-writable prefix stops the
+ordinary tenant account from writing there, but `swarm-<tenant>-review` is
+one identity shared by every `single-pr` workflow of the tenant, and its
+write grant covers every workflow's verdict path at once. A review agent of
+one workflow, compromised by prompt injection, can still write a fabricated
+verdict at a *different* workflow's path if it is told (or can derive) that
+workflow's identifiers. Write-once (`ifGenerationMatch=0`) makes the losing
+side of that race fail loudly instead of being silently overwritten; it does
+not decide who wins ([merge-step.md](merge-step.md) §4.3, §7 T3/R8).
 
 ---
 

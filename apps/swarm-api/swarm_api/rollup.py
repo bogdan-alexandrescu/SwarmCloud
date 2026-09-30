@@ -588,7 +588,7 @@ class WorkflowRollups:
         would make the sweep's cost grow with the tenant's entire history rather
         than with its live work.
         """
-        page = self._store.list_workflows(tenant_id, limit=limit)
+        page = self._store.list_workflows(tenant_id, limit=limit, submitted_by=None)
         live = [w for w in page.items if w.state not in TERMINAL_STATES]
         results, report = self.for_workflows(tenant_id, live, persist=True)
         report.truncated = page.next_page_token is not None

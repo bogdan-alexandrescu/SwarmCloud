@@ -75,14 +75,15 @@ from .client import SwarmError
 # declares nothing takes nothing, and a key a profile does not declare is
 # refused by name -- never dropped, never passed through.
 #
-# A PROFILE WHOSE INPUTS ARE NOT DECLARED YET (`inputs is None`: `browser`,
-# `generic`, open with the owner on #218) is bounded by size alone at the API:
-# the shared rule hands its input back unchecked, and it decides that in one
-# place. THE BRIDGE SENDS IT NONE, and that is not a second answer to the
-# rule's question but the bridge's own send policy: it sends a key only when a
-# declaration names it, which gives `--input` a kind to type the value by, and
-# neither profile has one. Letting `swarm_dispatch` send a browser task's
-# `actions` would be a new plugin capability, #218's third question.
+# EVERY PROFILE DECLARES. Until contract request 32 (#218, accepted by the
+# owner on 2026-09-29) `browser` and `generic` were `inputs=None`, bounded by
+# size alone at the API, and this bridge sent them nothing -- so every browser
+# task dispatched through the plugin failed after it started, for want of a
+# `url` (#220). They declare every key their runners read now, and the bridge
+# keeps its send policy unchanged: it sends a key only when a declaration
+# names it, which gives `--input` a kind to type the value by and lets a bad
+# value be refused here, before it travels. A browser task's `url` and
+# `actions`, and a generic task's `command`, travel because they are declared.
 #
 # tests/unit/mcp/test_runner_inputs.py holds the bridge to the catalogue, every
 # declared key to a `payload` read in the runner's source, and every exit code
@@ -113,7 +114,9 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     """
     prefix = f"{where}: " if where else ""
     if raw is None:
-        return {}
+        # Nothing asked for is still asked of the rule: `generic` REQUIRES
+        # `command`, and a dispatch with no `inputs` must not slip past that.
+        raw = {}
     if not isinstance(raw, dict):
         raise SwarmError(
             f"{prefix}`inputs` must be an object of the inputs {name} declares, not "
@@ -123,23 +126,18 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
     declared = declared_inputs(name)
     if raw and not declared:
         # The bridge's send policy (see the header): only what a declaration
-        # names travels. The wording tells "takes only a prompt" from "has not
-        # declared yet", because the second is an open question, not a rule.
-        not_yet = (
-            " yet (which keys it takes is open with the owner on #218), and the "
-            "bridge sends only what a declaration names"
-            if profile.inputs is None
-            else ""
-        )
+        # names travels, and this profile's declaration is empty.
         raise SwarmError(
-            f"{prefix}runner profile {name!r} declares no inputs{not_yet}, so none can "
+            f"{prefix}runner profile {name!r} declares no inputs, so none can "
             f"be sent ({sorted(raw)} were given). Only these profiles declare any: "
             f"{_declaring()} -- see `swarm_profiles`. A step's instructions go in `prompt`."
         )
     try:
         return check_inputs_by_declaration(profile, raw)
     except InputRefused as refused:
-        if refused.expected is not None:
+        # A declared key out of its bounds, or a required key not sent: the
+        # rule's own message names the key and says which.
+        if refused.expected is not None or set(refused.keys) <= set(declared):
             raise SwarmError(f"{prefix}{refused}") from None
         offered = ", ".join(f"{key} ({spec.describe()})" for key, spec in sorted(declared.items()))
         raise SwarmError(
@@ -153,10 +151,12 @@ def check_inputs(name: str, raw: Any, *, where: str = "") -> dict[str, Any]:
 def parse_input_flags(name: str, flags: list[str] | None, *, where: str = "") -> dict[str, Any]:
     """`swarm dispatch --input KEY=VALUE ...`, typed by what `name` declares.
 
-    A string input keeps its text as typed -- `fail_message=123` is the message
-    "123" -- and every other kind is read as JSON (`120`, `2.5`, `true`), so
-    the value is typed by the DECLARATION rather than by whatever JSON happens
-    to make of the text. The result goes through `check_inputs`.
+    A text input keeps its text as typed -- `fail_message=123` is the message
+    "123", and `target=123` the make target "123" (a `url` and an `argument`
+    are text too, contract request 32, Question 3) -- and every other kind is
+    read as JSON (`120`, `2.5`, `true`, `[{"type": "screenshot"}]`), so the
+    value is typed by the DECLARATION rather than by whatever JSON happens to
+    make of the text. The result goes through `check_inputs`.
     """
     prefix = f"{where}: " if where else ""
     declared = declared_inputs(name)
@@ -167,7 +167,7 @@ def parse_input_flags(name: str, flags: list[str] | None, *, where: str = "") ->
         if not sep or not key:
             raise SwarmError(f"{prefix}--input takes KEY=VALUE, not {flag!r}")
         spec = declared.get(key)
-        if spec is None or spec.kind in ("string", "filename"):
+        if spec is None or spec.kind in ("string", "filename", "url", "argument", "header"):
             raw[key] = text
             continue
         try:

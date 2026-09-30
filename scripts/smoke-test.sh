@@ -451,8 +451,10 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
   # profile_input, not a generic {message, run_id}: the browser runner refuses
   # an input with neither url nor actions, so this row -- the only GKE one --
   # failed at the runner even when dispatch worked. See testlib.sh.
-  if ! B_TASK_ID="$(submit_task "${BPROFILE}" "$(profile_input "${BPROFILE}" "${B_RUN_ID}")" \
-      '{"priority":10,"metadata":{"source":"smoke-test-backend"}}')"; then
+  # profile_extra: what the profile's task carries beside its input (the
+  # generic fixture's clone; nothing for the others). See testlib.sh.
+  B_EXTRA="$(profile_extra "${BPROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"smoke-test-backend"}}')"
+  if ! B_TASK_ID="$(submit_task "${BPROFILE}" "$(profile_input "${BPROFILE}" "${B_RUN_ID}")" "${B_EXTRA}")"; then
     t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
     continue
   fi
@@ -514,8 +516,9 @@ elif row_is_paused "${PROFILE}" "${MAIN_CLASS}"; then
   exit 1
 fi
 RUN_ID="$(test_run_id)"
-TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" \
-  '{"priority":10,"metadata":{"source":"smoke-test"}}')" || die "submission failed"
+# profile_extra: the generic fixture's clone, nothing for the other profiles.
+MAIN_EXTRA="$(profile_extra "${PROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"smoke-test"}}')"
+TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" "${MAIN_EXTRA}")" || die "submission failed"
 t_info "task ${TASK_ID}"
 
 if final="$(wait_for_state "${TASK_ID}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${TIMEOUT}")"; then
@@ -524,6 +527,15 @@ else
   t_fail "task did not reach a terminal state within ${TIMEOUT}s (stuck at ${final})"
   t_info "blocked_by: $(task_field "${TASK_ID}" '.blocked_by // [] | tostring')"
   t_info "park_reason: $(task_field "${TASK_ID}" '.park_reason // "none"')"
+fi
+
+if [[ "${PROFILE}" == "generic" ]]; then
+  # SUCCEEDED is the worker's reading of the runner; this is the runner's own
+  # record of what it ran. pytest over tests/smoke/generic, one test, exit 0
+  # -- not 5, "no tests collected", which is all an empty workspace can give.
+  t_case "The generic runner ran pytest on the smoke fixture, and it passed"
+  assert_eq "pytest" "$(task_field "${TASK_ID}" '.result_summary.runner.output.command // empty')" "catalogue command"
+  assert_eq "0" "$(task_field "${TASK_ID}" '.result_summary.runner.output.exit_code // empty')" "pytest exit code"
 fi
 
 # ---------------------------------------------------------------------------
