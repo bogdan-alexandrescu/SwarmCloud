@@ -299,14 +299,28 @@ def test_metadata_with_an_integer_firestore_cannot_store_is_refused(client, db):
     assert not _tasks(db)
 
 
-@pytest.mark.parametrize("value", [2**63 - 1, -(2**63)], ids=["int64-max", "int64-min"])
-def test_the_edges_of_the_signed_64_bit_range_are_storable(client, value):
-    """The refusal is Firestore's range, not a guess at it: both ends are kept."""
+@pytest.mark.parametrize("value", [2**53 - 1, -(2**53 - 1)], ids=["max-safe", "min-safe"])
+def test_the_edges_of_the_signable_range_are_storable(client, value):
+    """Contract request 34 narrows what a task may carry to what its canonical
+    form (RFC 8785 / I-JSON) can sign: +/-(2**53 - 1). Both ends are kept."""
     response = client.post(
         "/v1/tasks", headers=auth_header("alice"),
         json={"runner_profile": "browser", "input": {"url": "https://example.com", "n": value}},
     )
     assert response.status_code == 201, response.text
+
+
+@pytest.mark.parametrize("value", [2**53, 2**63 - 1, -(2**63)], ids=["past-safe", "int64-max", "int64-min"])
+def test_an_integer_firestore_can_store_but_no_signature_can_cover_is_refused(client, db, value):
+    """Past +/-(2**53 - 1) Firestore still stores it, but swarm-api cannot sign
+    it canonically (contract request 34), so it is a 422, never an unsigned task."""
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"),
+        json={"runner_profile": "browser", "input": {"url": "https://example.com", "n": value}},
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_input", response.text
+    assert not _tasks(db)
 
 
 # -- what is accepted -----------------------------------------------------------------

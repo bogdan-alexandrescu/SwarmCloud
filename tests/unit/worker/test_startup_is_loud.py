@@ -299,6 +299,7 @@ def test_every_startup_phase_is_announced_in_order(spawn):
         "record_attempt_start",
         "advance_to_running",
         "workspace",
+        "verify_spec",  # contract request 34
         "restore_checkpoint",
         "clone",
         "stage_inputs",

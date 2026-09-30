@@ -282,6 +282,7 @@ def test_the_lifecycle_announces_each_phase_once_and_in_order(db, worker_factory
         "record_attempt_start",
         "advance_to_running",
         "workspace",
+        "verify_spec",  # contract request 34
         "restore_checkpoint",
         "clone",
         "stage_inputs",

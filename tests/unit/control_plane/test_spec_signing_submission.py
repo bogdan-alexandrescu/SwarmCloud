@@ -195,8 +195,17 @@ def test_a_signing_failure_is_503_and_nothing_is_stored(db, tokens, group_map):
     "value", [2**53, -(2**53), "\ud800"], ids=["past-2^53", "below--2^53", "lone-surrogate"]
 )
 def test_a_value_with_no_canonical_form_is_422_and_never_signed(signed_client, db, signer, value):
+    import json
+
     body = {"runner_profile": "generic", "input": {"prompt": "x", "planted": value}}
-    response = signed_client.post("/v1/tasks", headers=auth_header("alice"), json=body)
+    # Sent as JSON text with the surrogate ESCAPED (json.dumps' default
+    # ensure_ascii), which is valid JSON a client can send; httpx's own `json=`
+    # encodes to UTF-8 and cannot carry a lone surrogate at all.
+    response = signed_client.post(
+        "/v1/tasks",
+        headers={**auth_header("alice"), "content-type": "application/json"},
+        content=json.dumps(body),
+    )
     assert response.status_code == 422, response.text
     assert response.json()["code"] == "invalid_input", response.json()
     assert signer.signed == [], "KMS was called for a spec with no canonical form"
