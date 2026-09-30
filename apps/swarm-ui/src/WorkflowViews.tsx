@@ -873,6 +873,7 @@ function scrubKeys(prev: (() => void) | null, next: (() => void) | null) {
  */
 export function StepInspector({
   workflowId,
+  workflowLabel = null,
   row,
   taskState,
   siblings,
@@ -886,6 +887,12 @@ export function StepInspector({
   load = loadAttempts,
 }: {
   workflowId: string
+  /**
+   * The workflow spec's label, or null (#330). The head names the workflow by
+   * it, as the row does, with the id on the line under it. OPTIONAL: a caller
+   * with no label draws the id alone.
+   */
+  workflowLabel?: string | null
   row: StepRowModel
   /**
    * The step's task's state, or null when the task was not in the read. With
@@ -975,6 +982,16 @@ export function StepInspector({
   return (
     <section className="wf-inspect" aria-label={`Step ${row.step.step_id} of ${workflowId}`}>
       <div className="wf-inspect-head">
+        {/* WHICH WORKFLOW, BY NAME (#330): the label the row leads with, and
+            the id one line down; the id alone when the spec gave no label. */}
+        <span className={`wf-inspect-wf${workflowLabel !== null ? ' has-label' : ''}`}>
+          {workflowLabel !== null && (
+            <span className="wf-inspect-label" title={workflowLabel}>
+              {workflowLabel}
+            </span>
+          )}
+          <Id title={workflowId}>{workflowId}</Id>
+        </span>
         <i className={row.look.dot} aria-hidden />
         <span className="wf-inspect-id">{row.step.step_id}</span>
         <span className="wf-inspect-state" title={row.look.title}>

@@ -39,6 +39,9 @@ import {
   stateRankOf,
   stepTimes,
   stepWhy,
+  isChain,
+  workflowLabel,
+  workflowPullRequest,
   type SortFacts,
   type TimelineAxis,
 } from '../stepviews'
@@ -1023,5 +1026,76 @@ describe('#105/#106: a node that carries a cause or a why line is measured for i
     expect(h(noted, 'b')).toBe(h(plain, 'b') + line)
     expect(h(noted, 'a')).toBe(h(plain, 'a'))
     expect(noted.height).toBe(plain.height + line)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #330: the row's label, its pull request, and which rows are chains
+// ---------------------------------------------------------------------------
+
+describe('#330: workflowLabel', () => {
+  const w = wf('wf_x', iso(-600), [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
+
+  it('reads the spec label off the step tasks’ metadata.unit', () => {
+    const tasks = new Map([
+      ['t_a', task('t_a', 'SUCCEEDED', { metadata: { origin: 'swarm-mcp' } })],
+      ['t_b', task('t_b', 'RUNNING', { metadata: { unit: '  workflows-board ' } })],
+    ])
+    expect(workflowLabel(w, tasks)).toBe('workflows-board')
+  })
+
+  it('is null with no task read, no unit, a blank one or a non-string one', () => {
+    expect(workflowLabel(w, null)).toBeNull()
+    expect(workflowLabel(w, new Map())).toBeNull()
+    const of = (unit: unknown) => workflowLabel(w, new Map([['t_a', task('t_a', 'RUNNING', { metadata: { unit } })]]))
+    expect(of(undefined)).toBeNull()
+    expect(of('   ')).toBeNull()
+    expect(of(42)).toBeNull()
+  })
+})
+
+describe('#330: workflowPullRequest', () => {
+  const w = wf('wf_x', iso(-600), [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
+  const pr = (url: unknown, number: unknown = 12) => ({ git: { pull_request: { number, url, state: 'open', created: true } } })
+  const d = (strategy: 'collect' | 'direct-pr' | 'integrate', role: 'contributor' | 'integrator' | null) => ({
+    strategy,
+    carrier: 'checkpoints' as const,
+    role,
+    integrates: [],
+  })
+
+  it('takes the integrator’s over a direct-pr step’s, and links only http(s)', () => {
+    const tasks = new Map([
+      ['t_a', task('t_a', 'SUCCEEDED', { dispatch: d('direct-pr', null), result_summary: pr('https://x/pull/3', 3) })],
+      ['t_b', task('t_b', 'SUCCEEDED', { dispatch: d('integrate', 'integrator'), result_summary: pr('HTTPS://x/pull/9', 9) })],
+    ])
+    expect(workflowPullRequest(w, tasks)).toEqual({ number: 9, href: 'HTTPS://x/pull/9', stepId: 'b' })
+    const ftp = new Map([['t_a', task('t_a', 'SUCCEEDED', { dispatch: d('direct-pr', null), result_summary: pr('ftp://x/3', 3) })]])
+    expect(workflowPullRequest(w, ftp)).toEqual({ number: 3, href: null, stepId: 'a' })
+  })
+
+  it('reads the role off the result when the task carries no dispatch', () => {
+    const tasks = new Map([
+      ['t_a', task('t_a', 'SUCCEEDED', { result_summary: { git: { role: 'integrator', ...pr('https://x/pull/5', 5).git } } })],
+    ])
+    expect(workflowPullRequest(w, tasks)?.number).toBe(5)
+  })
+
+  it('is null for a contributor, a collect step, a malformed record or no read', () => {
+    expect(workflowPullRequest(w, null)).toBeNull()
+    const one = (t: Partial<Task>) => workflowPullRequest(w, new Map([['t_a', task('t_a', 'SUCCEEDED', t)]]))
+    expect(one({ dispatch: d('integrate', 'contributor'), result_summary: pr('https://x/1') })).toBeNull()
+    expect(one({ dispatch: d('collect', null), result_summary: pr('https://x/1') })).toBeNull()
+    expect(one({ dispatch: d('direct-pr', null), result_summary: pr(null) })).toBeNull()
+    expect(one({ dispatch: d('direct-pr', null), result_summary: pr('https://x/1', '12') })).toBeNull()
+    expect(one({ dispatch: d('direct-pr', null), result_summary: pr('https://x/1', 0) })).toBeNull()
+    expect(one({ dispatch: d('direct-pr', null), result_summary: null })).toBeNull()
+  })
+})
+
+describe('#330: isChain', () => {
+  it('is a workflow of more than one step', () => {
+    expect(isChain(wf('wf_1', iso(0), [step('only', [])]))).toBe(false)
+    expect(isChain(wf('wf_2', iso(0), [step('a', []), step('b', ['a'])]))).toBe(true)
   })
 })

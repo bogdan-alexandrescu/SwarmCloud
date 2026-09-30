@@ -30,15 +30,18 @@ import { useState } from 'react'
 import { WorkflowCard, WorkflowsScreen } from '../Workflows'
 import {
   CANVAS_COLUMN,
+  CANVAS_HEIGHT,
   LEVEL_GAP,
   MONO_ADVANCE_EM,
   NODE_CHROME_W,
   NODE_W,
   PAD,
+  PANEL_COLUMN,
   SIB_GAP,
   STAGE_FITS,
   autoTier,
   depUnits,
+  edgeKinds,
   edgePath,
   foldMix,
   heightOf,
@@ -53,6 +56,7 @@ import {
   stageCensus,
   stageFitsAt,
   stepDuration,
+  WRAP_GAP,
   type DagLayout,
   type ZoomTier,
 } from '../dag'
@@ -799,6 +803,18 @@ function wideStage(
   return { w: workflow('wf_wide', steps), tasks }
 }
 
+/**
+ * `wideStage` without its joining `report` step: `plan` and the fan, TWO
+ * levels. Figures cards are 246px tall, so three levels of them are 870px --
+ * taller than `CANVAS_HEIGHT`, and `autoTier` zooms a three-level graph out
+ * for its height (#330 item 4). A case about what the full tier's WIDTH holds
+ * is asked on two levels, which fit the height at every tier.
+ */
+function fanOnly(n: number): { w: Workflow; tasks: Map<string, Task> } {
+  const { w, tasks } = wideStage(n)
+  return { w: workflow('wf_wide', w.steps.filter((s) => s.step_id !== 'report')), tasks }
+}
+
 /** Every bucket the band drew, in the order it drew them. */
 function bandCounts(band: Element): string[] {
   return [...band.querySelectorAll('.wf-band-count')].map((c) => c.textContent ?? '')
@@ -961,14 +977,19 @@ describe('a stage too wide to draw', () => {
   })
 
   it('leaves a stage that fits the FULL tier alone, and keeps every field on it', () => {
-    const fits = wideStage(STAGE_FITS)
+    const fits = fanOnly(STAGE_FITS)
     const a = card(fits.w, fits.tasks, true)
     expect(a.container.querySelector('.wf-band')).toBeNull()
-    expect(a.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 2)
+    expect(a.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 1)
     // Nothing was traded for it: `STAGE_FITS` is by definition what the full
     // tier holds, so the figures are still on every card.
     expect(autoTier(fits.w.steps)).toBe('figures')
-    expect(a.container.querySelectorAll('.node-nums')).toHaveLength(STAGE_FITS + 2)
+    expect(a.container.querySelectorAll('.node-nums')).toHaveLength(STAGE_FITS + 1)
+    // THE SAME STAGE UNDER A THIRD LEVEL IS ZOOMED OUT FOR ITS HEIGHT, not its
+    // width (#330 item 4): three levels of Figures cards do not fit one screen.
+    const deep = wideStage(STAGE_FITS)
+    expect(layoutOf(deep.w.steps, undefined, 'figures').height).toBeGreaterThan(CANVAS_HEIGHT)
+    expect(autoTier(deep.w.steps)).toBe('details')
 
     // ONE MORE STEP AND THE FULL TIER DOES NOT HOLD IT -- and this is where
     // semantic zoom replaced collapsing. It used to be a band and two nodes.
@@ -1152,17 +1173,17 @@ describe('semantic zoom', () => {
     // perfect and `.node-slot` can still be given `NODE_W`, which is what it
     // was given before this pass -- a `details` node 111px wider than its slot,
     // overlapping the sibling beside it. So the DOM is read back.
-    const cases: ReadonlyArray<readonly [number, ZoomTier]> = [
-      [STAGE_FITS, 'figures'],
-      [6, 'details'],
+    const cases: ReadonlyArray<readonly [number, ZoomTier, typeof wideStage]> = [
+      [STAGE_FITS, 'figures', fanOnly],
+      [6, 'details', wideStage],
     ]
-    for (const [n, tier] of cases) {
-      const { w, tasks } = wideStage(n)
+    for (const [n, tier, make] of cases) {
+      const { w, tasks } = make(n)
       expect(autoTier(w.steps), `${n} steps should land at ${tier}`).toBe(tier)
       const { container, unmount } = card(w, tasks, true)
       const expectedW = nodeWidthAt(tier, w.steps)
       const slots = [...container.querySelectorAll<HTMLElement>('.node-slot')]
-      expect(slots).toHaveLength(n + 2)
+      expect(slots).toHaveLength(w.steps.length)
       for (const slot of slots) {
         expect(Number.parseFloat(slot.style.width), `${slot.textContent?.slice(0, 12)}`).toBe(
           expectedW,
@@ -1208,25 +1229,42 @@ describe('semantic zoom', () => {
     expect(a.container.querySelector('.wf-band')).toBeNull()
     expect(a.container.querySelectorAll('.node')).toHaveLength(8)
 
-    // Seven: no tier holds it, so the zoom STAYS AT `figures` and the band does
-    // the work. Zooming out here would cost every node in the workflow its
-    // figures and still collapse the stage -- paying twice for nothing.
-    expect(autoTier(seven.w.steps)).toBe('figures')
+    // Seven: no tier holds it ON ONE ROW, so it WRAPS at `names` (#330 item
+    // 4): two rows of cards that each still say step, state and cause, where
+    // it used to be a band and two nodes. The trade is stated on the canvas.
+    expect(autoTier(seven.w.steps)).toBe('names')
     const b = card(seven.w, seven.tasks, true)
-    expect(b.container.querySelector('.wf-band')).toBeTruthy()
-    expect(b.container.querySelectorAll('.node')).toHaveLength(2)
-    expect(b.container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
+    expect(b.container.querySelector('.wf-band')).toBeNull()
+    expect(b.container.querySelectorAll('.node')).toHaveLength(9)
+    expect(b.container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
+      'profile, duration and figures not drawn',
+    )
 
-    // And thirteen -- the measured run's widest stage -- is a band at every
-    // tier, which is the claim stage collapsing exists for and which semantic
-    // zoom does not replace.
-    for (const tier of ['figures', 'details', 'names'] as const) {
+    // Thirteen -- the measured run's widest stage -- is a band at the two
+    // tiers that cannot wrap, and three rows of cards at the one that can.
+    for (const tier of ['figures', 'details'] as const) {
       const { w, tasks } = wideStage(13)
       const c = card(w, tasks, true, tier)
       expect(c.container.querySelector('.wf-band'), tier).toBeTruthy()
       expect(c.container.querySelectorAll('.node'), tier).toHaveLength(2)
       c.unmount()
     }
+    const thirteen = wideStage(13)
+    const c = card(thirteen.w, thirteen.tasks, true, 'names')
+    expect(c.container.querySelector('.wf-band')).toBeNull()
+    expect(c.container.querySelectorAll('.node')).toHaveLength(15)
+    c.unmount()
+
+    // AND THE BAND STILL DOES ITS JOB PAST ONE SCREEN. Forty steps wrap into
+    // seven rows at `names`, which is taller than `CANVAS_HEIGHT`, so the zoom
+    // stays at `figures` and the stage is one band -- the claim stage
+    // collapsing exists for, which wrapping does not replace.
+    const forty = wideStage(40)
+    expect(layoutOf(forty.w.steps, undefined, 'names').height).toBeGreaterThan(CANVAS_HEIGHT)
+    expect(autoTier(forty.w.steps)).toBe('figures')
+    const d = card(forty.w, forty.tasks, true)
+    expect(d.container.querySelector('.wf-band')).toBeTruthy()
+    expect(d.container.querySelectorAll('.node')).toHaveLength(2)
   })
 
   it('drops the FIELD and never the value, and says on the canvas that it did', () => {
@@ -1234,7 +1272,7 @@ describe('semantic zoom', () => {
     // an ABSENCE -- the case that must not become a blank or a zero.
     const { w, tasks } = wideStage(5)
 
-    const full = card(wideStage(STAGE_FITS).w, wideStage(STAGE_FITS).tasks, true)
+    const full = card(fanOnly(STAGE_FITS).w, fanOnly(STAGE_FITS).tasks, true)
     // Silent at the full tier. A mark saying "nothing is hidden" on every canvas
     // that fits is the noise §8.4 took off this screen twice.
     expect(full.container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
@@ -2949,5 +2987,418 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     // Without the task read there is no cause to group, and the count stands alone.
     const bare = card(w, null, false)
     expect(bare.container.querySelector<HTMLElement>('.wf-progress-text')!.textContent).toBe('9/15 done · 6 failed')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// #330: the row's name, its pull request, and the graph's details panel
+// ---------------------------------------------------------------------------
+
+/** A two-step chain whose step tasks carry the spec's label as `metadata.unit`. */
+function labelled(label: string | null): { w: Workflow; tasks: Map<string, Task> } {
+  const w = workflow('wf_5e5ad3b6f7da4299a839', [
+    step('implement', [], { task_id: 't_impl' }),
+    step('review', ['implement'], { task_id: 't_rev' }),
+  ])
+  const metadata = label === null ? { origin: 'swarm-mcp' } : { origin: 'swarm-mcp', unit: label }
+  const tasks = new Map<string, Task>([
+    ['t_impl', task('t_impl', 'SUCCEEDED', { started_at: iso(-300_000), completed_at: iso(-200_000), metadata })],
+    ['t_rev', task('t_rev', 'RUNNING', { started_at: iso(-100_000), metadata })],
+  ])
+  return { w, tasks }
+}
+
+/** A result summary whose git outcome names a pull request. */
+function withPr(url: string, number = 412): Record<string, unknown> {
+  return { git: { pull_request: { number, url, state: 'open', created: true } } }
+}
+
+const dispatchAs = (strategy: TaskDispatch['strategy'], role: TaskDispatch['role']): TaskDispatch => ({
+  strategy,
+  carrier: 'checkpoints',
+  role,
+  integrates: [],
+})
+
+describe('#330: the row leads with the label', () => {
+  pinTheClock()
+
+  it('leads with the spec label and puts the wf_ id on a second line', () => {
+    const { w, tasks } = labelled('workflows-board')
+    const { container } = card(w, tasks)
+    const bar = container.querySelector<HTMLElement>('.wf-bar')!
+    const name = bar.querySelector<HTMLElement>('.wf-name')
+    expect(name, 'the row has no name cell').toBeTruthy()
+    const lines = [...name!.children] as HTMLElement[]
+    expect(lines.map((l) => l.textContent)).toEqual(['workflows-board', 'wf_5e5ad3b6f7da4299a839'])
+    // The label leads; the id is still the `.id`, whole in its title.
+    expect(lines[0]!.className).toContain('wf-label')
+    expect(lines[1]!.className).toBe('id')
+    expect(lines[1]!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(bar.querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+  })
+
+  it('falls back to the id alone when there is no label, or no task was read', () => {
+    for (const [what, tasks] of [
+      ['no unit in the metadata', labelled(null).tasks],
+      ['a blank unit', labelled('   ').tasks],
+      ['no task read', null],
+    ] as const) {
+      const { container, unmount } = card(labelled(null).w, tasks)
+      const name = container.querySelector<HTMLElement>('.wf-bar .wf-name')!
+      expect(name.querySelector('.wf-label'), what).toBeNull()
+      expect(name.textContent, what).toBe('wf_5e5ad3b6f7da4299a839')
+      unmount()
+    }
+  })
+
+  it('names the workflow by its label in the inspector head too', () => {
+    const { w, tasks } = labelled('workflows-board')
+    const { container } = render(
+      <WorkflowCard
+        workflow={w}
+        taskById={tasks}
+        expanded
+        usage={{ kind: 'ready', usage: null }}
+        onToggle={noop}
+        openStages={{}}
+        onToggleStage={noop}
+        loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+        reload={noop}
+      />,
+    )
+    fireEvent.click(nodeNamed(container, 'review'))
+    const head = container.querySelector<HTMLElement>('.wf-inspect-head')!
+    const wf = head.querySelector<HTMLElement>('.wf-inspect-wf')
+    expect(wf, 'the inspector head does not name the workflow').toBeTruthy()
+    expect([...wf!.children].map((c) => c.textContent)).toEqual(['workflows-board', 'wf_5e5ad3b6f7da4299a839'])
+    // Without a label the head carries the id alone.
+    const bare = render(
+      <WorkflowCard
+        workflow={w}
+        taskById={labelled(null).tasks}
+        expanded
+        usage={{ kind: 'ready', usage: null }}
+        onToggle={noop}
+        openStages={{}}
+        onToggleStage={noop}
+        loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+        reload={noop}
+      />,
+    )
+    fireEvent.click(nodeNamed(bare.container, 'review'))
+    const bareWf = bare.container.querySelector<HTMLElement>('.wf-inspect-head .wf-inspect-wf')!
+    expect(bareWf.querySelector('.wf-inspect-label')).toBeNull()
+    expect(bareWf.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+  })
+})
+
+describe('#330: the row links the pull request the run opened', () => {
+  pinTheClock()
+
+  const run = (over: Partial<Task>, other: Partial<Task> = {}) => {
+    const w = workflow('wf_pr', [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
+    const tasks = new Map<string, Task>([
+      ['t_a', task('t_a', 'SUCCEEDED', other)],
+      ['t_b', task('t_b', 'SUCCEEDED', over)],
+    ])
+    return card(w, tasks)
+  }
+
+  it('shows PR #N on the row, linked, for the integrator’s pull request', () => {
+    const { container } = run({
+      dispatch: dispatchAs('integrate', 'integrator'),
+      result_summary: withPr('https://github.com/o/r/pull/412'),
+    })
+    const pr = container.querySelector<HTMLAnchorElement>('.wf-h a.wf-pr')
+    expect(pr, 'the row does not link the pull request').toBeTruthy()
+    expect(pr!.textContent).toBe('PR #412')
+    expect(pr!.getAttribute('href')).toBe('https://github.com/o/r/pull/412')
+    expect(pr!.getAttribute('rel')).toContain('noreferrer')
+    // NOT INSIDE THE BUTTON: an anchor in a button is invalid and would toggle the card.
+    expect(pr!.closest('button')).toBeNull()
+    // The number alone: the recorded state is a creation-time word.
+    expect(pr!.textContent).not.toMatch(/open|merged/)
+  })
+
+  it('does the same for a direct-pr step', () => {
+    const { container } = run({
+      dispatch: dispatchAs('direct-pr', null),
+      result_summary: withPr('http://forge.example/pr/7', 7),
+    })
+    expect(container.querySelector('.wf-h a.wf-pr')!.textContent).toBe('PR #7')
+  })
+
+  it('prints the number without a link when the URL is not http(s)', () => {
+    const { container } = run({
+      dispatch: dispatchAs('direct-pr', null),
+      result_summary: withPr('javascript:alert(1)', 9),
+    })
+    expect(container.querySelector('.wf-h a')).toBeNull()
+    const pr = container.querySelector<HTMLElement>('.wf-h .wf-pr')
+    expect(pr, 'a PR with a non-http URL lost its number too').toBeTruthy()
+    expect(pr!.textContent).toBe('PR #9')
+  })
+
+  it('names no PR from a contributor, a collect run, or a result with none', () => {
+    for (const [what, over] of [
+      ['a contributor', { dispatch: dispatchAs('integrate', 'contributor'), result_summary: withPr('https://x/pull/1') }],
+      ['a collect step', { dispatch: dispatchAs('collect', null), result_summary: withPr('https://x/pull/1') }],
+      ['no pull request', { dispatch: dispatchAs('direct-pr', null), result_summary: { git: {} } }],
+    ] as const) {
+      const { container, unmount } = run(over as Partial<Task>)
+      expect(container.querySelector('.wf-pr'), what).toBeNull()
+      unmount()
+    }
+  })
+})
+
+describe('#330: the graph’s details panel opens on the right', () => {
+  pinTheClock()
+
+  function opened() {
+    const { w, tasks } = labelled('workflows-board')
+    const r = render(
+      <WorkflowCard
+        workflow={w}
+        taskById={tasks}
+        expanded
+        usage={{ kind: 'ready', usage: null }}
+        onToggle={noop}
+        openStages={{}}
+        onToggleStage={noop}
+        loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
+        reload={noop}
+      />,
+    )
+    const node = nodeNamed(r.container, 'review')
+    node.focus()
+    fireEvent.click(node)
+    return { ...r, node }
+  }
+
+  it('renders the panel in a right-hand column beside the graph, not under it', () => {
+    const { container } = opened()
+    const split = container.querySelector<HTMLElement>('.wf-split')
+    expect(split, 'the graph is not in a split').toBeTruthy()
+    expect(split!.className).toContain('has-panel')
+    const cols = [...split!.children] as HTMLElement[]
+    expect(cols.map((c) => c.className)).toEqual(['wf-split-main', 'wf-panel'])
+    // The graph is in the left column and the inspector in the right.
+    expect(cols[0]!.querySelector('.wf-canvas')).toBeTruthy()
+    expect(cols[1]!.querySelector('.wf-inspect')).toBeTruthy()
+    expect(cols[0]!.querySelector('.wf-inspect'), 'the inspector is still under the canvas').toBeNull()
+    expect(cols[1]!.getAttribute('aria-label')).toBe('Step details')
+
+    // AND THE SHIPPED SHEET PUTS IT THERE: two columns at 1440, the second
+    // a fixed-width track; the panel sticks and scrolls on its own.
+    const at = (el: Element, prop: string, width: number) =>
+      cascade(SHEETS.dark, el, prop, { width, theme: 'dark' }).winner?.value ?? null
+    expect(at(split!, 'display', 1440)).toBe('grid')
+    const tracks = splitTop(at(split!, 'grid-template-columns', 1440) ?? '', ' ').filter((t) => t !== '')
+    expect(tracks).toHaveLength(2)
+    expect(tracks[0]).toBe('minmax(0, 1fr)')
+    expect(at(cols[1]!, 'position', 1440)).toBe('sticky')
+    expect(at(cols[1]!, 'overflow-y', 1440)).toBe('auto')
+    // At phone width it is a bottom sheet instead.
+    expect(at(split!, 'display', 390)).toBe('block')
+    expect(at(cols[1]!, 'position', 390)).toBe('fixed')
+    expect(at(cols[1]!, 'bottom', 390)).toBe('0')
+    expect(at(cols[1]!, 'overflow-y', 390)).toBe('auto')
+
+    // Closed, the graph has the whole width back.
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-inspect-close')!)
+    expect(container.querySelector('.wf-panel')).toBeNull()
+    expect(container.querySelector('.wf-split')!.className).toBe('wf-split')
+  })
+
+  it('takes focus on opening, closes on Escape, and gives focus back to the node', () => {
+    const { container, node } = opened()
+    const panel = container.querySelector<HTMLElement>('.wf-panel')!
+    expect(panel.contains(document.activeElement), 'focus did not move into the panel').toBe(true)
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' })
+    expect(container.querySelector('.wf-panel'), 'Escape did not close the panel').toBeNull()
+    expect(container.querySelector('.wf-inspect')).toBeNull()
+    expect(document.activeElement, 'focus did not return to the node').toBe(nodeNamed(container, 'review'))
+    expect(node.getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('gives focus back to the node from the close control too', () => {
+    const { container } = opened()
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-panel .wf-inspect-close')!)
+    expect(document.activeElement).toBe(nodeNamed(container, 'review'))
+  })
+})
+
+// #330 ITEM 4: A 3-STEP CHAIN AND A 20-STEP FAN-OUT FIT A 1440x900 VIEWPORT.
+// `CANVAS_COLUMN` is the canvas's measured width at that viewport and
+// `CANVAS_HEIGHT` the height left under the open card's own chrome; the graph
+// at its Auto tier fits inside both, with every card still saying its step,
+// its state and its one-line cause.
+describe('#330 item 4: smaller Graph nodes', () => {
+  /** plan -> `n` shards -> join. Every step joined to a task, so every card
+   *  draws a state and the running ones a stop control; one shard FAILED with
+   *  an error, so its card draws a note. */
+  function fan(n: number, join = true): { w: Workflow; tasks: Map<string, Task> } {
+    const tasks = new Map<string, Task>()
+    const at = (id: string, state: TaskState, err: string | null = null) => {
+      tasks.set(`t_${id}`, task(`t_${id}`, state, { started_at: iso(-90_000), completed_at: state === 'FAILED' ? iso(-30_000) : null, last_error: err }))
+      return `t_${id}`
+    }
+    const shards = Array.from({ length: n }, (_, i) => `shard-${String(i + 1).padStart(2, '0')}`)
+    const steps: WorkflowStep[] = [step('plan', [], { task_id: at('plan', 'SUCCEEDED') })]
+    shards.forEach((id, i) =>
+      steps.push(step(id, ['plan'], { task_id: i === 4 ? at(id, 'FAILED', 'exit 1: the agent crashed on shard five') : at(id, 'RUNNING') })),
+    )
+    if (join) steps.push(step('join', shards))
+    return { w: workflow('wf_fan', steps), tasks }
+  }
+  function chain(): { w: Workflow; tasks: Map<string, Task> } {
+    const tasks = new Map<string, Task>([
+      ['t_a', task('t_a', 'SUCCEEDED', { started_at: iso(-300_000), completed_at: iso(-200_000) })],
+      ['t_b', task('t_b', 'FAILED', { started_at: iso(-200_000), completed_at: iso(-100_000), last_error: 'exit 1: tests failed' })],
+    ])
+    const steps = [
+      step('design', [], { task_id: 't_a' }),
+      step('implement', ['design'], { task_id: 't_b' }),
+      step('review', ['implement']),
+    ]
+    return { w: workflow('wf_chain', steps), tasks }
+  }
+  const everyone = (w: Workflow) => new Set(w.steps.map((s) => s.step_id))
+  /** The canvas fits the 1440x900 box, with no card noted and with every one. */
+  function fitsOneScreen(w: Workflow, column = CANVAS_COLUMN): DagLayout {
+    let checked = 0
+    for (const noted of [new Set<string>(), everyone(w)]) {
+      const tier = autoTier(w.steps, column, noted, column === CANVAS_COLUMN)
+      const l = layoutOf(w.steps, undefined, tier, noted, column)
+      expect(l.width, `${w.workflow_id} at ${tier}`).toBeLessThanOrEqual(column)
+      expect(l.height, `${w.workflow_id} at ${tier}`).toBeLessThanOrEqual(CANVAS_HEIGHT)
+      expect(l.bands, 'nothing is folded into a band').toHaveLength(0)
+      expect(l.nodes).toHaveLength(w.steps.length)
+      checked += 1
+    }
+    expect(checked).toBe(2)
+    return layoutOf(w.steps, undefined, autoTier(w.steps, column, everyone(w)), everyone(w), column)
+  }
+  /** No two cards on the canvas overlap. */
+  function noOverlap(l: DagLayout): void {
+    let pairs = 0
+    for (const a of l.nodes)
+      for (const b of l.nodes) {
+        if (a === b) continue
+        const apart = a.x + l.nodeW <= b.x || b.x + l.nodeW <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y
+        expect(apart, `${a.step.step_id} overlaps ${b.step.step_id}`).toBe(true)
+        pairs += 1
+      }
+    expect(pairs).toBeGreaterThan(0)
+  }
+
+  it('shrinks the Names card, in the layout and in the stylesheet by the same numbers', () => {
+    // 6 above + 34 stop strip + 2 border, then the name (21), the state (17.4)
+    // and one --ctl-s1 between them. It was 97 on the full tier's chrome.
+    expect(nodeHeightAt('names')).toBe(Math.ceil(6 + 34 + 2 + 14 * 1.5 + 12 * 1.45 + 4))
+    expect(nodeHeightAt('names')).toBeLessThan(Math.ceil(10 + 42 + 2 + 14 * 1.5 + 12 * 1.45 + 4))
+    const { w, tasks } = fan(18)
+    const { container } = card(w, tasks, true, 'names')
+    const node = nodeNamed(container, 'shard-01')
+    expect(node.classList.contains('zoom-names')).toBe(true)
+    expect(cascade(STYLES, node, 'padding', { width: 1440 }).winner?.value).toBe('6px 12px 34px')
+    const stop = slotOf(container, 'shard-01').querySelector('.node-stop')!
+    expect(stop, 'a running card keeps its stop control at Names').toBeTruthy()
+    expect(cascade(STYLES, stop, 'bottom', { width: 1440 }).winner?.value).toBe('4px')
+    // The slot is given exactly the height the tier claims.
+    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt('names'))
+  })
+
+  it('fits a 3-step chain on one screen, at the tier that keeps the most fields', () => {
+    const { w, tasks } = chain()
+    // Non-vacuous: at Figures three cards and two gaps are taller than the screen.
+    expect(layoutOf(w.steps, undefined, 'figures').height).toBeGreaterThan(CANVAS_HEIGHT)
+    const l = fitsOneScreen(w)
+    expect(l.tier).toBe('details')
+    // Beside the open details panel too: a chain is one card wide.
+    fitsOneScreen(w, CANVAS_COLUMN - PANEL_COLUMN)
+    const { container } = card(w, tasks, true)
+    expect(container.querySelectorAll('.node')).toHaveLength(3)
+    for (const id of ['design', 'implement', 'review']) {
+      const n = nodeNamed(container, id)
+      expect(n.querySelector('.node-name')!.textContent).toBe(id)
+      expect(n.querySelector('.node-state')!.textContent).not.toBe('')
+    }
+    // The failed step's one-line cause is on its card, and the whole of it is
+    // the line's title and the card's description on focus.
+    const note = nodeNamed(container, 'implement').querySelector('.node-note')!
+    expect(note.getAttribute('title')).toContain('exit 1: tests failed')
+    expect(slotOf(container, 'implement').querySelector('.node-note-full')!.textContent).toContain('exit 1: tests failed')
+  })
+
+  it('fits a 20-step fan-out on one screen by wrapping its stage at Names, not folding it', () => {
+    // A FAN-OUT in this file's own words (`shapeOf`): one step opening into
+    // nineteen, twenty steps.
+    const { w, tasks } = fan(19, false)
+    expect(w.steps).toHaveLength(20)
+    expect(shapeOf(w.steps).kind).toBe('fan-out')
+    // Non-vacuous: at Figures the nineteen shards are one band and one node.
+    const folded = layoutOf(w.steps, undefined, 'figures')
+    expect(folded.bands).toHaveLength(1)
+    expect(folded.nodes).toHaveLength(1)
+
+    const l = fitsOneScreen(w)
+    expect(l.tier).toBe('names')
+    expect(l.wrapped).toEqual([false, true])
+    noOverlap(l)
+    // Rows of `stageFitsAt` cards, WRAP_GAP apart, the rows centred.
+    const fits = stageFitsAt(l.nodeW)
+    const rowYs = [...new Set(l.nodes.filter((n) => n.level === 1).map((n) => n.y))].sort((a, b) => a - b)
+    expect(rowYs).toHaveLength(Math.ceil(19 / fits))
+    expect(rowYs[1]! - rowYs[0]!).toBe(l.nodes.find((n) => n.level === 1)!.h + WRAP_GAP)
+    // Every edge into or out of the wrapped stage runs to the block, not
+    // behind a card in its first row, and is painted as one figure.
+    const into = l.edges.filter((e) => e.from === 'plan')
+    expect(new Set(into.map((e) => `${e.x2},${e.y2}`)).size).toBe(1)
+    expect(into[0]!.y2).toBe(rowYs[0])
+    expect(assertNothingPassesUnder(l)).toBeGreaterThan(0)
+    const kinds = edgeKinds(l, new Map())
+    expect(new Set(into.map((e) => kinds.get(`${e.from}->${e.to}`))).size).toBe(1)
+
+    // Narrower stages fit the same way, down to the seven that first wraps.
+    for (const n of [7, 12, 13, 18]) fitsOneScreen(fan(n, false).w)
+    // And a stage that closes on a join wraps at Names too when drawn there.
+    expect(layoutOf(fan(18).w.steps, undefined, 'names').wrapped).toEqual([false, true, false])
+
+    const { container } = card(w, tasks, true)
+    expect(container.querySelector('.wf-band')).toBeNull()
+    expect(container.querySelectorAll('.node')).toHaveLength(20)
+    for (const n of container.querySelectorAll('.node')) {
+      expect(n.querySelector('.node-name')!.textContent).not.toBe('')
+      expect(n.querySelector('.node-state')!.textContent).not.toBe('')
+    }
+    const note = nodeNamed(container, 'shard-05').querySelector('.node-note')!
+    expect(note.getAttribute('title')).toContain('exit 1: the agent crashed on shard five')
+    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+    expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(CANVAS_COLUMN)
+    expect(Number.parseFloat(canvas.style.height)).toBeLessThanOrEqual(CANVAS_HEIGHT)
+  })
+
+  it('lays the graph out beside the open panel, and never folds the picked step into a band', () => {
+    const { w, tasks } = fan(19, false)
+    const { container } = card(w, tasks, true)
+    fireEvent.click(nodeNamed(container, 'shard-07'))
+    expect(container.querySelector('.wf-split.has-panel .wf-panel')).toBeTruthy()
+    // The graph narrowed to the column left beside the panel rather than
+    // scrolling under it, and the stage is still cards, the picked one on it.
+    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+    expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(CANVAS_COLUMN - PANEL_COLUMN)
+    expect(container.querySelector('.wf-band')).toBeNull()
+    expect(container.querySelectorAll('.node')).toHaveLength(20)
+    expect(nodeNamed(container, 'shard-07').getAttribute('aria-pressed')).toBe('true')
+    expect(container.querySelector('.wf-canvas')!.closest('.wf-split-main')).toBeTruthy()
+    // Closed, the graph has the whole column back.
+    fireEvent.keyDown(container.querySelector('.wf-panel')!, { key: 'Escape' })
+    expect(container.querySelector('.wf-panel')).toBeNull()
+    expect(Number.parseFloat(container.querySelector<HTMLElement>('.wf-canvas')!.style.width)).toBeGreaterThan(
+      CANVAS_COLUMN - PANEL_COLUMN,
+    )
   })
 })
