@@ -1,0 +1,463 @@
+{
+  "_comment": [
+    "ONE FIXTURE SET FOR BOTH REDACTION FILTERS: swarm_api.redaction.redact and",
+    "redact() in scripts/lib/common.sh. Each case is run through both, and both",
+    "must give `expected` exactly; `never` must survive neither; `count` is what",
+    "the Python filter reports. Read by tests/unit/control_plane/test_log_redaction.py",
+    "and by scripts/lib/check-contract-parity.sh (section 8).",
+    "The private-key markers are written with \\u002d for their first dash, so no",
+    "tracked file holds a PEM header a secret scanner (security.yml) would flag;",
+    "every JSON reader decodes it to the real marker. Every value is synthetic."
+  ],
+  "cases": [
+    {
+      "name": "kv-escaped-export",
+      "text": "export DB_PASSWORD=\\\"hunter2-very-secret\\\" && ./deploy.sh",
+      "expected": "export DB_PASSWORD=\\\"********\\\" && ./deploy.sh",
+      "never": [
+        "hunter2-very-secret"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-in-stream-json",
+      "text": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"input\":{\"command\":\"export DB_PASSWORD=\\\"hunter2-very-secret\\\"\"}}]}}",
+      "expected": "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"input\":{\"command\":\"export DB_PASSWORD=\\\"********\\\"\"}}]}}",
+      "never": [
+        "hunter2-very-secret"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-curl-body",
+      "text": "curl -d '{\\\"api_key\\\": \\\"q8Zr7Lm2Xv9T\\\"}' https://example.com",
+      "expected": "curl -d '{\\\"api_key\\\": \\\"********\\\"}' https://example.com",
+      "never": [
+        "q8Zr7Lm2Xv9T"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-list-first-element",
+      "text": "{\"password\": [\"hunter2-list-value\"]}",
+      "expected": "{\"password\": [\"********\"]}",
+      "never": [
+        "hunter2-list"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-list-first-element",
+      "text": "{\\\"password\\\": [\\\"hunter2-list-value\\\"]}",
+      "expected": "{\\\"password\\\": [\\\"********\\\"]}",
+      "never": [
+        "hunter2-list"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-key-number",
+      "text": "\\\"password\\\": 12345678",
+      "expected": "\\\"password\\\": ********",
+      "never": [
+        "12345678"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-key-boolean",
+      "text": "\\\"secret\\\":true",
+      "expected": "\\\"secret\\\":********",
+      "never": [
+        "true"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-escaped-key-bareword",
+      "text": "\\\"token\\\": abcdefgh",
+      "expected": "\\\"token\\\": ********",
+      "never": [
+        "abcdefgh"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-two-escapes-deep-bash-c",
+      "text": "{\"command\": \"bash -c \\\"export DB_PASSWORD=\\\\\\\"hunter2-very-secret\\\\\\\" && ./deploy.sh\\\"\"}",
+      "expected": "{\"command\": \"bash -c \\\"export DB_PASSWORD=\\\\\\\"********\\\\\\\" && ./deploy.sh\\\"\"}",
+      "never": [
+        "hunter2-very-secret"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-two-escapes-deep-curl-d",
+      "text": "{\"command\": \"curl -d \\\"{\\\\\\\"api_key\\\\\\\": \\\\\\\"q8Zr7Lm2Xv9T\\\\\\\"}\\\" https://api\"}",
+      "expected": "{\"command\": \"curl -d \\\"{\\\\\\\"api_key\\\\\\\": \\\\\\\"********\\\\\\\"}\\\" https://api\"}",
+      "never": [
+        "q8Zr7Lm2Xv9T"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plain-quoted",
+      "text": "PASSWORD=\"bare-value-123\"",
+      "expected": "PASSWORD=\"********\"",
+      "never": [
+        "bare-value"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plain-backslash-inside",
+      "text": "password=ab\\cd-still-whole",
+      "expected": "password=********",
+      "never": [
+        "cd-still-whole"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plain-prefixed-name",
+      "text": "GH_TOKEN=abcdef0123456789abcdef0123456789",
+      "expected": "GH_TOKEN=********",
+      "never": [
+        "0123456789abc"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-aws-secret-access-key-env",
+      "text": "AWS_SECRET_ACCESS_KEY=sand-dune-lantern-4471",
+      "expected": "AWS_SECRET_ACCESS_KEY=********",
+      "never": [
+        "dune-lantern"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-aws-credentials-file",
+      "text": "aws_secret_access_key = sand-dune-lantern-4471",
+      "expected": "aws_secret_access_key = ********",
+      "never": [
+        "dune-lantern"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-private-key",
+      "text": "private_key: pale-orchid-ledger-5190",
+      "expected": "private_key: ********",
+      "never": [
+        "orchid-ledger"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-password-hash",
+      "text": "password_hash: pbkdf2-synthetic-0042",
+      "expected": "password_hash: ********",
+      "never": [
+        "pbkdf2-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-secret-key",
+      "text": "SECRET_KEY=moss-quartz-anvil-2217",
+      "expected": "SECRET_KEY=********",
+      "never": [
+        "quartz-anvil"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plural-secrets",
+      "text": "secrets: plain-db-pass-0042",
+      "expected": "secrets: ********",
+      "never": [
+        "plain-db-pass"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plural-api-keys",
+      "text": "API_KEYS=first-synthetic-key-01",
+      "expected": "API_KEYS=********",
+      "never": [
+        "first-synthetic"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plural-tokens",
+      "text": "tokens: amber-kite-3308",
+      "expected": "tokens: ********",
+      "never": [
+        "amber-kite"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plural-credentials-json",
+      "text": "{\"credentials\": \"cedar-walrus-9931\"}",
+      "expected": "{\"credentials\": \"********\"}",
+      "never": [
+        "cedar-walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-plural-passwords-escaped",
+      "text": "{\\\"passwords\\\": \\\"cedar-walrus-9931\\\"}",
+      "expected": "{\\\"passwords\\\": \\\"********\\\"}",
+      "never": [
+        "cedar-walrus"
+      ],
+      "count": 1
+    },
+    {
+      "name": "control-max-tokens",
+      "text": "max_tokens=4096",
+      "expected": "max_tokens=4096",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-usage-counts",
+      "text": "\"usage\": {\"input_tokens\": 10, \"output_tokens\": 5}",
+      "expected": "\"usage\": {\"input_tokens\": 10, \"output_tokens\": 5}",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-escaped-usage-count",
+      "text": "{\\\"output_tokens\\\":57}",
+      "expected": "{\\\"output_tokens\\\":57}",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-revoked-times",
+      "text": "credential_revoked_times: 2",
+      "expected": "credential_revoked_times: 2",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-secret-name",
+      "text": "secret_name: swarm-tenant-eng-anthropic",
+      "expected": "secret_name: swarm-tenant-eng-anthropic",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-singular-number-still-masked",
+      "text": "password: 12345678",
+      "expected": "password: ********",
+      "never": [
+        "12345678"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-x-api-key-header",
+      "text": "x-api-key: c2VydmljZS1rZXktc3ludGhldGlj",
+      "expected": "x-api-key: ********",
+      "never": [
+        "c2VydmljZS1rZXkt"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-api-key-hyphen",
+      "text": "api-key=plum-harbor-7710",
+      "expected": "api-key=********",
+      "never": [
+        "plum-harbor"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-x-api-key-curl",
+      "text": "curl -H \"X-API-KEY: plum-harbor-7710\" https://example.com",
+      "expected": "curl -H \"X-API-KEY: ********\" https://example.com",
+      "never": [
+        "plum-harbor"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-token",
+      "text": "Authorization: token 0123456789abcdef0123",
+      "expected": "Authorization: ******** ********",
+      "never": [
+        "456789abcdef"
+      ],
+      "count": 2
+    },
+    {
+      "name": "authorization-token-curl",
+      "text": "curl -H \"Authorization: token 0123456789abcdef0123\" https://api.github.com/user",
+      "expected": "curl -H \"Authorization: ******** ********\" https://api.github.com/user",
+      "never": [
+        "456789abcdef"
+      ],
+      "count": 2
+    },
+    {
+      "name": "authorization-token-escaped",
+      "text": "{\\\"Authorization\\\": \\\"token 0123456789abcdef0123\\\"}",
+      "expected": "{\\\"Authorization\\\": \\\"******** ********\\\"}",
+      "never": [
+        "456789abcdef"
+      ],
+      "count": 2
+    },
+    {
+      "name": "authorization-short-bearer",
+      "text": "Authorization: Bearer short-tok",
+      "expected": "Authorization: ******** ********",
+      "never": [
+        "short-tok"
+      ],
+      "count": 2
+    },
+    {
+      "name": "pem-block-over-many-lines",
+      "text": "before the key\n\u002d----BEGIN RSA PRIVATE KEY-----\nK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\nK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\nK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\nK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\nK0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004QQQQ\nK0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005QQQQ\n\u002d----END RSA PRIVATE KEY-----\nafter the key",
+      "expected": "before the key\n\u002d----BEGIN RSA PRIVATE KEY-----********\nafter the key",
+      "never": [
+        "K0000K0000",
+        "K0005"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-cut-short-stops-at-the-first-line-that-is-not-key",
+      "text": "\u002d----BEGIN RSA PRIVATE KEY-----\nK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\nK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\nK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\nK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\n\nError: the file ended early",
+      "expected": "\u002d----BEGIN RSA PRIVATE KEY-----********\n\nError: the file ended early",
+      "never": [
+        "K0000K0000",
+        "K0003"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-numbered-listing-whole",
+      "text": "     1\t\u002d----BEGIN RSA PRIVATE KEY-----\n     2\tK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\n     3\tK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\n     4\tK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\n     5\tK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\n     6\t\u002d----END RSA PRIVATE KEY-----\n     7\tafter",
+      "expected": "     1\t\u002d----BEGIN RSA PRIVATE KEY-----********\n     7\tafter",
+      "never": [
+        "K0000K0000",
+        "K0003"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-numbered-listing-cut",
+      "text": "     1\t\u002d----BEGIN RSA PRIVATE KEY-----\n     2\tK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\n     3\tK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\n     4\tK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\n     5\tK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\n     6\tordinary words",
+      "expected": "     1\t\u002d----BEGIN RSA PRIVATE KEY-----********\n     6\tordinary words",
+      "never": [
+        "K0000K0000",
+        "K0003"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-text-that-starts-inside-a-key",
+      "text": "K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\nK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\nK0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004QQQQ\nK0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005QQQQ\n\u002d----END RSA PRIVATE KEY-----\nafter",
+      "expected": "********\u002d----END RSA PRIVATE KEY-----\nafter",
+      "never": [
+        "K0002K0002",
+        "K0005"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-end-with-material-before-it-on-its-line",
+      "text": "tail of key AAAABBBBCCCC\u002d----END RSA PRIVATE KEY----- trailing",
+      "expected": "tail of key ********\u002d----END RSA PRIVATE KEY----- trailing",
+      "never": [
+        "AAAABBBB"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-encrypted-headers-cut-short",
+      "text": "\u002d----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00FF00FF00FF00FF\n\nK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\nK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\nK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\nnot key material here",
+      "expected": "\u002d----BEGIN RSA PRIVATE KEY-----********\nnot key material here",
+      "never": [
+        "K0000K0000",
+        "ENCRYPTED",
+        "00FF00FF"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-key-on-one-json-line",
+      "text": "{\"type\": \"user\", \"content\": \"\u002d----BEGIN RSA PRIVATE KEY-----\\nK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\\nK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\\nK0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002K0002QQQQ\\nK0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003K0003QQQQ\\n\u002d----END RSA PRIVATE KEY-----\\n\"}\nthe next line",
+      "expected": "{\"type\": \"user\", \"content\": \"\u002d----BEGIN RSA PRIVATE KEY-----********\nthe next line",
+      "never": [
+        "K0000K0000"
+      ],
+      "count": 1
+    },
+    {
+      "name": "pem-two-keys-with-text-between",
+      "text": "\u002d----BEGIN RSA PRIVATE KEY-----\nK0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000K0000QQQQ\nK0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001K0001QQQQ\n\u002d----END RSA PRIVATE KEY-----\nmiddle line\n\u002d----BEGIN RSA PRIVATE KEY-----\nK0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004K0004QQQQ\nK0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005K0005QQQQ\n\u002d----END RSA PRIVATE KEY-----",
+      "expected": "\u002d----BEGIN RSA PRIVATE KEY-----********\nmiddle line\n\u002d----BEGIN RSA PRIVATE KEY-----********",
+      "never": [
+        "K0000K0000",
+        "K0004K0004"
+      ],
+      "count": 2
+    },
+    {
+      "name": "control-wide-prose-reauth",
+      "text": "There was a problem refreshing your current auth tokens: Reauthentication required.",
+      "expected": "There was a problem refreshing your current auth tokens: Reauthentication required.",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-status-word-secrets",
+      "text": "Found 3 secrets: none leaked",
+      "expected": "Found 3 secrets: none leaked",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-prose-no-value",
+      "text": "Found 3 secrets",
+      "expected": "Found 3 secrets",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-count-colon-unmasked",
+      "text": "secrets: 3",
+      "expected": "secrets: 3",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "control-wide-key-suffix-digit-masked",
+      "text": "SECRET_KEY=1234567",
+      "expected": "SECRET_KEY=********",
+      "never": [
+        "1234567"
+      ],
+      "count": 1
+    },
+    {
+      "name": "authorization-bearer-google-oauth-prefix",
+      "text": "Authorization: Bearer ya29.a0AfB_1234567890abcdefghijklmnop",
+      "expected": "Authorization: ******** ya29.********",
+      "never": [
+        "1234567890abcdefghijklmnop"
+      ],
+      "count": 2
+    }
+  ]
+}
