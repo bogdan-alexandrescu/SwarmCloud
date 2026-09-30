@@ -86,30 +86,16 @@ STATE_FILE = "mock_state.json"
 QUOTA_EXHAUSTED_PARKS = 1
 
 
-def _load_state(work: Path, attempt_id: Any) -> dict[str, Any]:
-    """Resume state left behind by a previous, checkpointed attempt.
-
-    `resumed` counts CHECKPOINT RESTORES only, so it equals the number of
-    `checkpoint_restored` events the task has (#361). The state file records
-    the attempt that last wrote it. A file written by ANOTHER attempt reached
-    this workspace through a restore -- every attempt starts in a fresh one --
-    and counts. A file this attempt wrote itself is an in-place restart (a
-    short provider wait, a credential reload) finding its own earlier run's
-    work, and does not: the 2026-09-30 acceptance run's three in-attempt
-    retries and one restore reported 4.
-    """
+def _load_state(work: Path) -> dict[str, Any]:
+    """Resume state left behind by a previous, checkpointed attempt."""
     path = work / STATE_FILE
     if not path.exists():
-        return {"completed_steps": 0, "resumed": 0, "attempt_id": attempt_id}
+        return {"completed_steps": 0, "resumed": 0}
     try:
         data = json.loads(path.read_text() or "{}")
     except json.JSONDecodeError:
-        return {"completed_steps": 0, "resumed": 0, "attempt_id": attempt_id}
-    resumed = int(data.get("resumed", 0))
-    if data.get("attempt_id") != attempt_id:
-        resumed += 1
-    data["resumed"] = resumed
-    data["attempt_id"] = attempt_id
+        return {"completed_steps": 0, "resumed": 0}
+    data["resumed"] = int(data.get("resumed", 0)) + 1
     return data
 
 
@@ -163,11 +149,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     sleep_seconds = float(payload.get("sleep_seconds", 1.0))
     cpu_burn_seconds = float(payload.get("cpu_burn_seconds", 0.0))
 
-    state = _load_state(work, payload.get("attempt_id"))
-    # Written at once, not only when a step finishes, so an in-place restart
-    # of this attempt reads this attempt's id and is not counted as a restore
-    # even when this run completes no step (a restore that holds all the work).
-    _save_state(work, state)
+    state = _load_state(work)
     completed = int(state.get("completed_steps", 0))
     if completed >= steps:
         # A restored checkpoint already contains all the work.
@@ -231,11 +213,6 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             slice_ = min(0.1, remaining)
             time.sleep(slice_)
             remaining -= slice_
-        if ctx.stop_requested:
-            # Interrupted inside this step: it did not finish, so it is not
-            # counted, written or saved (#361). The attempt that resumes from
-            # this checkpoint runs it again rather than skipping work nobody did.
-            break
         (progress_dir / f"step-{index:04d}.txt").write_text(
             f"step {index} of {steps}\nprompt: {prompt}\n"
         )
