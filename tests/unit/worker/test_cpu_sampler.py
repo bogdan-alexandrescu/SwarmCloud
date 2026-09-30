@@ -351,8 +351,8 @@ def test_an_attempt_that_restarts_its_runner_reports_every_runners_usage(
     # the densest setting there is.)
     monkeypatch.setattr(lifecycle, "HEARTBEAT_EVENT_EVERY", 2)
 
-    seed_attempt(db, task_input={"prompt": "rotated once", "steps": 3, "sleep_seconds": 5.0,
-                                 "credential_revoked_times": 1})
+    seed_attempt(db, task_input={"prompt": "rotated once", "steps": 3, "sleep_seconds": 5.0},
+                 simulated={"credential_revoked_times": 1})
     worker, _, exporter = worker_factory(heartbeat_interval_seconds=1)
 
     assert worker.run() == ExitCode.OK

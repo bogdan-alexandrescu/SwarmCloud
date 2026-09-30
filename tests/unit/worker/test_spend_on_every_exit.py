@@ -234,8 +234,8 @@ def test_a_cancelled_attempt_records_what_its_runner_reported(db, worker_factory
             "prompt": "cancel me",
             "steps": 40,
             "sleep_seconds": 8.0,
-            "spend": {"usage": USAGE, "total_cost_usd": COST},
         },
+        simulated={"spend": {"usage": USAGE, "total_cost_usd": COST}},
     )
     worker, _, _ = worker_factory(control_poll_seconds=1, timeout_seconds=30)
 
@@ -270,7 +270,8 @@ def a_long_mock_run(db: Any) -> None:
     """A mock runner that works for about eight seconds, reporting MOCK_SPEND."""
     seed_attempt(
         db,
-        task_input={"prompt": "long", "steps": 40, "sleep_seconds": 8.0, "spend": MOCK_SPEND},
+        task_input={"prompt": "long", "steps": 40, "sleep_seconds": 8.0},
+        simulated={"spend": MOCK_SPEND},
     )
 
 

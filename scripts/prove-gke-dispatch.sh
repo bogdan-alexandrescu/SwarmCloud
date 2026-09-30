@@ -91,8 +91,10 @@ RUN_ID="$(test_run_id)"
 # The shared per-profile input (testlib.sh): one screenshot of about:blank. A
 # --url is merged in as the page to load first, which also proves egress.
 EXTRA_INPUT="$(jq -nc --arg u "${URL}" 'if $u == "" then {} else {url: $u} end')"
+# profile_extra: what the profile's task carries beside its input (testlib.sh).
+SUBMIT_EXTRA="$(profile_extra "${PROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"prove-gke-dispatch"}}')"
 if ! TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}" | jq -c --argjson x "${EXTRA_INPUT}" '. + $x')" \
-    '{"priority":10,"metadata":{"source":"prove-gke-dispatch"}}')"; then
+    "${SUBMIT_EXTRA}")"; then
   t_fail "the ${PROFILE} task could not be submitted; see the API response above"
   t_summary
   exit 1

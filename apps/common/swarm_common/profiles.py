@@ -19,12 +19,15 @@ Two hard rules follow from the stability requirement:
 
 from __future__ import annotations
 
+import ipaddress
 import math
+import re
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from types import MappingProxyType
 from typing import Any
+from urllib.parse import urlsplit
 
 
 class Backend(str, Enum):
@@ -98,13 +101,35 @@ RESOURCE_CLASSES: dict[str, ResourceClass] = {
 # choose the model a `claude-code` agent runs. So what may be sent is declared
 # per profile, here, once. swarm-api refuses anything else at submission and
 # the plugin's bridge refuses it sooner; both read this, and neither keeps a
-# table of its own. Two profiles, `browser` and `generic`, have not declared
-# yet (#218), and the API bounds what is sent to them by size alone.
+# table of its own. Every profile declares: `browser` and `generic` last, by
+# contract request 32 (#218), which added the kinds their inputs needed.
 
 #: The kinds an input can be. `filename` is a bare file name with no
 #: directory: the worker keeps only the last path segment of an artifact name
 #: (`RunnerContext.artifact_path`), so `../x` would quietly become `x`.
-INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
+#:
+#: Added by contract request 32 (#218), for the two runners whose work IS
+#: their input:
+#:
+#: * `url`: an http or https URL a browser may open. See `url_refusal`.
+#: * `argument`: a value the generic runner appends to a catalogue argv, or
+#:   runs in -- `_ARGUMENT_SAFE` and the `..` refusal in
+#:   `agent_worker/runners/generic.py`, restated because the catalogue cannot
+#:   import the worker. Existence and "inside the workspace" stay the
+#:   runner's: only it has the workspace.
+#: * `list`: a JSON array. Its BOUNDS ARE ITS LENGTH, both required, as a
+#:   number's are; every element is `items`, and `items` may not itself be
+#:   `required` -- an element of a list is always present, so that flag on an
+#:   element has nothing to say.
+#: * `object`: a JSON object in one of the fixed shapes `variants` names,
+#:   chosen by its `type` key. A key its shape does not name is refused, as a
+#:   key a profile does not declare is.
+#: * `header`: a string that is, or could become, an HTTP header value:
+#:   printable ASCII only (0x20-0x7E), which by construction rules out CR and
+#:   LF and every other control character, so a caller cannot use it to
+#:   inject a second header. `maximum` is required, as it is for a list: the
+#:   bound is the string's length in characters.
+INPUT_KINDS = ("number", "integer", "boolean", "string", "filename", "url", "argument", "list", "object", "header")
 
 #: The signed 64-bit range, which is what Firestore stores an integer in.
 #: Python reads a JSON integer of any length, so an integer input whose bounds
@@ -113,16 +138,282 @@ INPUT_KINDS = ("number", "integer", "boolean", "string", "filename")
 INT64_MIN = -(2**63)
 INT64_MAX = 2**63 - 1
 
+#: `argument`: what `generic._ARGUMENT_SAFE` accepts, restated because the
+#: catalogue cannot import the worker. No leading dash, so no value becomes a
+#: flag; no leading slash; 256 characters at most.
+_ARGUMENT = re.compile(r"[A-Za-z0-9._][A-Za-z0-9._\-/]{0,255}")
+
+#: The longest URL a browser task may name. Chromium's own limit is far
+#: larger; a task's URL is stored with the task and shown with it, and past
+#: this it is not a page address but a payload.
+_URL_MAX_CHARS = 2048
+
+#: A host, once `urlsplit` has extracted it and this module has lower-cased
+#: it, must be exactly this: letters, digits, `.` and `-`. Nothing else is
+#: plain ASCII host syntax, so this single check is what closes a
+#: percent-encoded host (`interna%6cl`), a host carrying a literal backslash,
+#: and a raw non-ASCII host at once -- see `url_refusal` and the entry's own
+#: prose for the three bypasses a security review found here on 2026-09-29.
+_HOST_CHARS = re.compile(r"[a-z0-9.-]+")
+
+#: Every network `url_refusal` refuses a *global* IPv4 address in, besides
+#: RFC 1918 and the rest of the ranges `ipaddress` itself would already
+#: refuse as non-global. Chosen as an explicit, named list instead of relying
+#: on `ipaddress.IPv4Address.is_global`, because that property's own
+#: membership is not pinned across the versions this platform runs: the
+#: CGNAT block (100.64.0.0/10) and 192.0.0.0/24 have both changed category
+#: in `ipaddress` between Python 3.11 and 3.13. An explicit list is what a
+#: reviewer can diff against RFC 1918, 5735 and 6890 directly, and it does
+#: not move under this module on a Python upgrade the platform did not make
+#: for this reason.
+_URL_REFUSED_V4_NETWORKS = (
+    ipaddress.ip_network("0.0.0.0/8"),  # "this network" (RFC 791)
+    ipaddress.ip_network("10.0.0.0/8"),  # RFC 1918
+    ipaddress.ip_network("100.64.0.0/10"),  # CGNAT, RFC 6598
+    ipaddress.ip_network("127.0.0.0/8"),  # loopback
+    ipaddress.ip_network("169.254.0.0/16"),  # link-local, and the metadata server
+    ipaddress.ip_network("172.16.0.0/12"),  # RFC 1918
+    ipaddress.ip_network("192.0.0.0/24"),  # IETF protocol assignments
+    ipaddress.ip_network("192.0.2.0/24"),  # documentation (TEST-NET-1)
+    ipaddress.ip_network("192.168.0.0/16"),  # RFC 1918
+    ipaddress.ip_network("198.18.0.0/15"),  # benchmarking
+    ipaddress.ip_network("198.51.100.0/24"),  # documentation (TEST-NET-2)
+    ipaddress.ip_network("203.0.113.0/24"),  # documentation (TEST-NET-3)
+    ipaddress.ip_network("224.0.0.0/4"),  # multicast
+    ipaddress.ip_network("240.0.0.0/4"),  # reserved
+    ipaddress.ip_network("255.255.255.255/32"),  # limited broadcast
+)
+
+#: The IPv6 equivalent of `_URL_REFUSED_V4_NETWORKS`, for a literal IPv6 host
+#: that is neither IPv4-mapped nor a NAT64/6to4 embedding (both unwrapped to
+#: an IPv4 address and checked against the list above instead; see
+#: `_embedded_v4`).
+_URL_REFUSED_V6_NETWORKS = (
+    ipaddress.ip_network("::1/128"),  # loopback
+    ipaddress.ip_network("::/128"),  # unspecified
+    ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
+    ipaddress.ip_network("2001:db8::/32"),  # documentation
+    ipaddress.ip_network("fc00::/7"),  # unique local
+    ipaddress.ip_network("fe80::/10"),  # link-local
+    ipaddress.ip_network("ff00::/8"),  # multicast
+)
+
+#: Private Google Access, which the worker's NetworkPolicy opens
+#: (kubernetes/network-policies/allow-egress.yaml, rule 3). These are global
+#: addresses by any definition, so they are refused explicitly rather than by
+#: `is_global`: the pod can reach them, but they are authenticated Google
+#: APIs, useless to a browser task without a token, and not what "the public
+#: internet" is meant to include.
+_URL_REFUSED_NETWORKS = (
+    ipaddress.ip_network("199.36.153.4/30"),
+    ipaddress.ip_network("199.36.153.8/30"),
+)
+
+#: Every IPv6 range that EMBEDS an IPv4 address, so a refused v4 address
+#: reachable through any of them would otherwise pass
+#: `_URL_REFUSED_V6_NETWORKS` unseen. IPv4-mapped (`::ffff:a.b.c.d`) is
+#: handled separately by `ipaddress.IPv6Address.ipv4_mapped`; the rest are
+#: unwrapped by `_embedded_v4`:
+#: * `64:ff9b::/96` -- NAT64, RFC 6052 (well-known prefix).
+#: * `64:ff9b:1::/48` -- NAT64, RFC 8215 (local-use prefix; the embedding
+#:   follows RFC 6052 section 2.2's PL48 layout: 48-bit prefix, 16 bits of
+#:   v4, an 8-bit zero field, 16 more bits of v4, 40-bit suffix).
+#: * `2002::/16` -- 6to4, RFC 3056.
+#: * `::ffff:0:0:0/96` -- "IPv4-translated", RFC 6052's SIIT form
+#:   (`::ffff:0:a.b.c.d`; note the extra `:0:` before the address, which is
+#:   what distinguishes it from IPv4-mapped).
+#: * `::/96` -- IPv4-compatible, deprecated (RFC 4291 says so; RFC 6540 says
+#:   not to originate or accept it) but still a parseable literal
+#:   (`::a9fe:a9fe`), so still refused here explicitly rather than assumed
+#:   gone.
+_URL_NAT64_PREFIX = ipaddress.ip_network("64:ff9b::/96")
+_URL_NAT64_LOCAL_PREFIX = ipaddress.ip_network("64:ff9b:1::/48")
+_URL_6TO4_PREFIX = ipaddress.ip_network("2002::/16")
+_URL_SIIT_PREFIX = ipaddress.ip_network("::ffff:0:0:0/96")
+_URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
+
+#: Names that are never a public page: GKE's metadata server is
+#: `metadata.google.internal`; `.local`/`.localhost` never leave the host or
+#: the cluster (`cluster.local`); and `.svc` is the short, no-FQDN-suffix
+#: form Kubernetes' own DNS resolves for a Service
+#: (`<service>.<namespace>.svc`, e.g. `kubernetes.default.svc`), which the
+#: pod's search path completes to `.svc.cluster.local` for any name under
+#: five dots (`ndots:5`) -- added 2026-09-29, after the owner found the
+#: dot-count rule this replaced still admitted it. See `url_refusal`'s
+#: docstring for what actually closes the general search-path gap; this
+#: suffix closes only the specific, well-known `.svc` shorthand.
+_URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
+
 #: How much of a refused value a refusal repeats. A caller who sent three
 #: hundred digits needs the bound, not the digits back.
 _SHOWN_VALUE_CHARS = 40
+
+
+def _bound(value: float) -> str:
+    """`33554432`, not `3.35544e+07`: a caller copies a bound, and `:g` rounds it."""
+    return str(int(value)) if float(value).is_integer() else f"{value:g}"
+
+
+def _embedded_v4(address: ipaddress.IPv6Address) -> ipaddress.IPv4Address | None:
+    """The IPv4 address a NAT64, 6to4, SIIT or IPv4-compatible address
+    embeds, or None. IPv4-mapped is handled by the caller
+    (`address.ipv4_mapped`) and never reaches here."""
+    packed = address.packed
+    if address in _URL_NAT64_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    if address in _URL_NAT64_LOCAL_PREFIX:
+        # RFC 6052 section 2.2, PL48: prefix(6 bytes) + v4-hi(2) + u(1, zero)
+        # + v4-lo(2) + suffix(5). The `u` byte at packed[8] is skipped.
+        return ipaddress.IPv4Address(bytes([packed[6], packed[7], packed[9], packed[10]]))
+    if address in _URL_6TO4_PREFIX:
+        return ipaddress.IPv4Address(packed[2:6])
+    if address in _URL_SIIT_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    if address in _URL_IPV4_COMPATIBLE_PREFIX:
+        return ipaddress.IPv4Address(packed[12:16])
+    return None
+
+
+def url_refusal(value: str) -> str:
+    """Why `value` is not a URL a browser task may open, or "" when it is.
+
+    One home for the rule, so swarm-api, the plugin's bridge and the browser
+    runner (`_check_url`, which today checks the scheme and that there is a
+    host) give one answer. Not one of #218's three questions -- declaring
+    `url` as a kind at all raises it; see the entry's prose in
+    docs/contract-change-requests.md for why, and for four bypasses a
+    security review found and closed here on 2026-09-29.
+
+    THIS IS NOT THE SSRF CONTROL, AND CANNOT BE. It sees the URL a caller
+    typed, never the page's redirects, its subresources, its script's
+    requests, or what a name resolves to when the pod asks. The control is the
+    network: the worker's NetworkPolicy drops every private range but the
+    metadata server, and the metadata server answers only a request carrying
+    `Metadata-Flavor: Google`, which a navigation does not send. What this
+    buys is a 422 naming the reason, instead of a task that waits out
+    `timeout_ms` against an address the network silently drops (Dataplane V2
+    drops; the sender sees a timeout), and a URL with a password in it that
+    is never stored with the task, served by the API or shown in the UI.
+
+    Refuses rather than normalises. Every check below runs on the raw string
+    or on `urlsplit`'s own view of it: a host that is not already plain ASCII
+    (`[a-z0-9.-]+` once lower-cased) is refused outright rather than
+    IDNA/UTS46-normalised and re-checked, because a normalising rule has to
+    track whatever WHATWG host-parsing Chromium does, forever, while a
+    refusing rule only has to be a subset of what Chromium accepts. A caller
+    whose real target is an internationalised domain sends its ASCII
+    (punycode) form, which the site already answers to -- the owner accepted
+    this as the rule on 2026-09-29 (no separate IDN allowance).
+
+    An underscore is refused by the same `[a-z0-9.-]+` check as any other
+    character outside that set, with no separate rule: RFC 952/1035 do not
+    allow one in a hostname label at all (some internal DNS -- SRV records,
+    `_service._proto.name` -- uses one anyway, which is one more reason a
+    browser task should not be handed a host carrying one).
+
+    WHAT THIS DOES NOT DO, as of the owner's decision on 2026-09-29: it does
+    not refuse a host by dot count. An earlier revision refused any non-IP
+    host with fewer than two dots, which caught `kubernetes.default` and
+    `swarm-api.swarm-system` but also every bare apex domain a browser task
+    might legitimately target (`github.com`, `example.com` both have exactly
+    one dot) -- for a browser profile, refusing those is refusing the
+    profile's main use. It was also incomplete on its own terms: a three-label
+    name ending in `.svc` (`kubernetes.default.svc`) has two dots and was
+    never caught by it either. The general gap -- GKE's `ndots:5` pod
+    resolver tries every search domain before the absolute name for anything
+    under five dots -- is NOT closed by any check in this function, and
+    cannot be from here: it sees the string the caller sent, never what the
+    pod's resolver does with it. The real controls are the worker's
+    NetworkPolicy (which does not depend on what a name resolves to), the
+    pod's own DNS config (tracked as #341: set `ndots:1` and drop search
+    domains, which removes the search-path trial entirely rather than
+    guessing at every name shape it could produce), and the planned
+    `context.route` guard (see the entry's *Preconditions*). What this
+    function still refuses is the single-label case (`kubernetes`,
+    `metadata`), which resolves only through the cluster's search path and
+    is never a real page address, and the specific `.svc` shorthand below,
+    which is the one case named in the review that is also a fixed, known
+    string rather than an open-ended shape.
+    """
+    if len(value) > _URL_MAX_CHARS:
+        return f"it is longer than {_URL_MAX_CHARS} characters"
+    if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
+        return "it contains a space, a control character or a non-ASCII character"
+    if "\\" in value:
+        return "it contains a backslash, which a browser treats as a host or path separator"
+    try:
+        parsed = urlsplit(value)
+        parsed.port  # noqa: B018 -- raises ValueError on a port out of range
+    except ValueError:
+        return "it is not a URL"
+    if parsed.scheme not in ("http", "https"):
+        return "only http and https are opened"
+    if parsed.username is not None or parsed.password is not None:
+        return "it carries credentials, which would be stored with the task and shown with it"
+    host = (parsed.hostname or "").rstrip(".")
+    if not host:
+        return "it has no host"
+    # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
+    # IPv6 literal's `hostname` is unbracketed and colon-bearing
+    # (`64:ff9b::808:808`), which `_HOST_CHARS` never matches, and `ipaddress`
+    # itself already rejects a backslash, a percent sign or a non-ASCII
+    # character in an address -- there is nothing left for a second charset
+    # check to catch there.
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address is None:
+        if not _HOST_CHARS.fullmatch(host):
+            return (
+                "its host is not letters, digits, '.' and '-' once lower-cased -- a "
+                "browser's own host parsing accepts more than this, including a "
+                "percent-encoded or backslash-bearing host, and this module refuses "
+                "rather than reproduces it"
+            )
+        labels = host.split(".")
+        if any(label == "" for label in labels):
+            return "its host has an empty label ('..' in it, or it starts or ends with '.')"
+        if any(label.strip("-") == "" for label in labels):
+            return "its host has a label made only of hyphens, which is not a valid domain label"
+        # A browser reads a host whose last label is a number (`2852039166`,
+        # `0xa9.254.169.254`) as an IPv4 address in another notation, which
+        # `ip_address` does not parse. No public suffix starts with a digit.
+        if labels[-1][:1].isdigit():
+            return "its host ends in a number, which a browser reads as an address"
+        if not labels[-1][:1].isalpha():
+            return f"its host's last label starts with {labels[-1][:1]!r}, not a letter"
+        # SINGLE LABEL ONLY, not a general dot-count rule: see the docstring
+        # above for why the broader rule this replaced was both too costly
+        # (it refused bare apex domains) and still incomplete.
+        if len(labels) < 2:
+            return "its host is a single label, which only the cluster's search path resolves"
+        if host.endswith(_URL_REFUSED_SUFFIXES):
+            return "its host is a cluster or node-local name"
+        return ""
+    if isinstance(address, ipaddress.IPv6Address):
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        else:
+            embedded = _embedded_v4(address)
+            if embedded is not None:
+                address = embedded
+    if isinstance(address, ipaddress.IPv4Address):
+        if any(address in net for net in _URL_REFUSED_V4_NETWORKS) or any(
+            address in net for net in _URL_REFUSED_NETWORKS
+        ):
+            return "its host is not a public address"
+    elif any(address in net for net in _URL_REFUSED_V6_NETWORKS):
+        return "its host is not a public address"
+    return ""
 
 
 class InputRefused(ValueError):
     """An input a profile does not accept, and why.
 
     `key` is the first key refused and `keys` every one; `expected` is the
-    declared bound a value broke, or None when the key is not declared at all.
+    declared bound a value broke, or None when the key is not declared at all
+    or is required and was not sent.
     The message names the key and the bound, and never repeats a value longer
     than it has to.
     """
@@ -165,18 +456,73 @@ class RunnerInput:
     #: the platform would read it as instead -- the mock's exit codes 77, 78
     #: and 143. Pairs, not a dict, so the declaration stays hashable.
     refused: tuple[tuple[Any, str], ...] = ()
+    #: A `string` must be one of these, when any are named: a name from a
+    #: catalogue the runner owns, such as the generic runner's commands.
+    choices: tuple[str, ...] = ()
+    #: The caller must send this key. Read for a profile's keys and for an
+    #: object's fields. Refused on a list's `items`: an element of a list is
+    #: always present, so `required` on it has nothing to say.
+    required: bool = False
+    #: What each element of a `list` must be.
+    items: RunnerInput | None = None
+    #: An `object`'s shapes: the value of its `type` key, to the fields that
+    #: shape takes besides `type`. Excluded from the hash, as
+    #: `RunnerProfile.inputs` is; frozen read-only below.
+    variants: Mapping[str, Mapping[str, RunnerInput]] | None = field(default=None, hash=False)
 
     def __post_init__(self) -> None:
         if self.kind not in INPUT_KINDS:
             raise ValueError(f"input kind {self.kind!r} is not one of {INPUT_KINDS}")
         numeric = self.kind in ("number", "integer")
-        if not numeric and (self.minimum is not None or self.maximum is not None or self.refused):
-            raise ValueError(f"a {self.kind} input has no bounds; only a number or an integer does")
-        if numeric and (self.minimum is None or self.maximum is None):
+        #: `list` and `header` MUST give both bounds, like a number: without
+        #: them a list or a header string is unbounded until the task write
+        #: fails. `string` MAY give a `maximum` -- a length bound in
+        #: characters, for keys such as `selector`, `text` and `key`, whose
+        #: content the runner does not otherwise constrain -- and when it
+        #: does, an omitted `minimum` defaults to 0 rather than being
+        #: required, because most bounded strings have no meaningful floor.
+        strictly_bounded = numeric or self.kind in ("list", "header")
+        length_boundable = strictly_bounded or self.kind == "string"
+        if not length_boundable and (self.minimum is not None or self.maximum is not None):
+            raise ValueError(
+                f"a {self.kind} input has no bounds; only a number, a list, a header or a "
+                "string does"
+            )
+        if not numeric and self.refused:
+            raise ValueError(f"a {self.kind} input refuses no values; only a number does")
+        if strictly_bounded and (self.minimum is None or self.maximum is None):
             raise ValueError(
                 f"a {self.kind} input declares both a minimum and a maximum; without "
-                "one, a JSON number of any size passes and fails at the store instead"
+                "one, a JSON number -- or a string, for a header -- of any size passes "
+                "and fails at the store instead"
             )
+        if self.kind == "string" and self.maximum is not None and self.minimum is None:
+            object.__setattr__(self, "minimum", 0.0)
+        if self.kind in ("list", "header") and not (
+            float(self.minimum).is_integer() and float(self.maximum).is_integer() and self.minimum >= 0
+        ):
+            raise ValueError(f"a {self.kind}'s bounds are its length: whole numbers, from 0")
+        if self.choices and self.kind != "string":
+            raise ValueError(f"a {self.kind} input has no choices; only a string does")
+        if (self.kind == "list") != isinstance(self.items, RunnerInput):
+            raise ValueError("a list input names what its elements are, and nothing else does")
+        if self.kind == "list" and self.items is not None and self.items.required:
+            raise ValueError(
+                "a list's items are always present; `required` on them is refused"
+            )
+        if (self.kind == "object") != bool(self.variants):
+            raise ValueError("an object input names its shapes, and nothing else does")
+        if self.variants:
+            frozen: dict[str, Mapping[str, RunnerInput]] = {}
+            for shape, fields in self.variants.items():
+                for name, declared in fields.items():
+                    if name == "type" or not isinstance(declared, RunnerInput):
+                        raise ValueError(
+                            f"shape {shape!r}: field {name!r} must be a RunnerInput, "
+                            "and `type` is the shape's name, not a field"
+                        )
+                frozen[shape] = MappingProxyType(dict(fields))
+            object.__setattr__(self, "variants", MappingProxyType(frozen))
         for bound in (self.minimum, self.maximum):
             if bound is not None and not math.isfinite(bound):
                 raise ValueError("an input's bounds must be finite numbers")
@@ -197,10 +543,16 @@ class RunnerInput:
     def describe(self) -> str:
         """`integer 1..255 except 77, 78, 143`: the kind and the bound, as a caller reads it."""
         # `__post_init__` gives a number both bounds and anything else neither.
+        if self.kind == "list" and self.items is not None:
+            return f"list of {_bound(self.minimum)}..{_bound(self.maximum)}, each {self.items.describe()}"
+        if self.variants:
+            return f"object, `type` one of {' | '.join(self.variants)}"
         if self.minimum is not None and self.maximum is not None:
-            text = f"{self.kind} {self.minimum:g}..{self.maximum:g}"
+            text = f"{self.kind} {_bound(self.minimum)}..{_bound(self.maximum)}"
         else:
             text = self.kind
+        if self.choices:
+            text += f", one of {' | '.join(self.choices)}"
         if self.refused:
             text += " except " + ", ".join(str(value) for value, _ in self.refused)
         return text
@@ -208,7 +560,7 @@ class RunnerInput:
     def check(self, key: str, value: Any) -> Any:
         """`value`, normalised (an integral float becomes an int), or InputRefused."""
         expected = self.describe()
-        article = "an" if expected[0] in "aeiou" else "a"
+        article = "an" if expected[0] in "aeio" else "a"  # "a url"
         wanted = f"input {key!r} must be {article} {expected}"
 
         def refuse(detail: str = "") -> InputRefused:
@@ -245,18 +597,64 @@ class RunnerInput:
             if not isinstance(value, bool):
                 raise refuse(" (true or false)")
             return value
+        if self.kind == "list":
+            if not isinstance(value, list):
+                raise refuse()
+            if not self.minimum <= len(value) <= self.maximum:
+                raise refuse(f" -- it has {len(value)} entries")
+            # Named by position, so a refusal says WHICH element: `actions[3].url`.
+            return [self.items.check(f"{key}[{index}]", item) for index, item in enumerate(value)]
+        if self.kind == "object":
+            if not isinstance(value, Mapping):
+                raise refuse()
+            shape = value.get("type")
+            if not isinstance(shape, str) or shape not in self.variants:
+                raise refuse()
+            fields = self.variants[shape]
+            unknown = sorted(set(value) - set(fields) - {"type"})
+            if unknown:
+                raise refuse(f" -- a {shape!r} takes {sorted(fields) or 'no field'}, not {unknown}")
+            missing = sorted(name for name, spec in fields.items() if spec.required and name not in value)
+            if missing:
+                raise refuse(f" -- a {shape!r} needs {missing}")
+            checked = {
+                name: fields[name].check(f"{key}.{name}", value[name])
+                for name in sorted(value)
+                if name != "type"
+            }
+            return {"type": shape, **checked}
         if not isinstance(value, str):
             raise refuse()
         if self.kind == "filename" and (
             not value or value in (".", "..") or "/" in value or "\\" in value or "\x00" in value
         ):
             raise refuse(" -- a bare file name, with no directory")
+        if self.kind == "argument" and (not _ARGUMENT.fullmatch(value) or ".." in value):
+            raise refuse(
+                " -- letters, digits, '.', '_', '-' and '/', starting with none of '-' or "
+                "'/', at most 256 characters, and no '..'"
+            )
+        if self.kind == "url":
+            reason = url_refusal(value)
+            if reason:
+                raise refuse(f" -- {reason}")
+        if self.kind == "header":
+            if not (self.minimum <= len(value) <= self.maximum):
+                raise refuse(f" -- it has {len(value)} characters")
+            if any(ch < " " or ch == "\x7f" or ord(ch) > 0x7E for ch in value):
+                raise refuse(" -- printable ASCII only (0x20-0x7E), which rules out CR and LF")
+        if self.kind == "string" and self.maximum is not None and not (
+            self.minimum <= len(value) <= self.maximum
+        ):
+            raise refuse(f" -- it has {len(value)} characters")
+        if self.choices and value not in self.choices:
+            raise refuse()
         return value
 
 
-def _frozen_inputs(declared: Mapping[str, RunnerInput] | None) -> Mapping[str, RunnerInput] | None:
+def _frozen_inputs(declared: Mapping[str, RunnerInput]) -> Mapping[str, RunnerInput]:
     """A read-only copy, so no caller can widen a profile's declaration in place."""
-    return None if declared is None else MappingProxyType(dict(declared))
+    return MappingProxyType(dict(declared))
 
 
 @dataclass(frozen=True)
@@ -330,29 +728,39 @@ class RunnerProfile:
     #: That is what closes `input.model` on `claude-code`, which its runner
     #: would pass as `--model`.
     #:
-    #: NONE MEANS NOT DECLARED YET, and then only the input's size is bounded,
-    #: as it was for every profile before this field existed. It exists for
-    #: the runners whose work IS their input -- `browser` cannot start without
-    #: `url` or `actions`, `generic` without `command` -- where an empty
-    #: declaration would refuse every task they run. What they declare is the
-    #: owner's open question #218, recorded under contract request 25 in
-    #: docs/contract-change-requests.md as an amendment awaiting approval:
-    #: the request as accepted typed this field `Mapping`, with no None.
+    #: THERE IS NO "NOT DECLARED YET". Until contract request 32 (#218) this
+    #: field could be None, for `browser` and `generic`, and then only the
+    #: input's size was bounded -- an amendment to request 25 the owner
+    #: confirmed on 2026-09-26 as the state until #218 was decided. Both
+    #: declare now, so the type is the one request 25 was accepted with.
     #:
     #: Excluded from the hash: a mapping is not hashable, and a profile's
     #: identity is its name.
-    inputs: Mapping[str, RunnerInput] | None = field(default_factory=dict, hash=False)
+    inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
 
     def __post_init__(self) -> None:
-        if self.inputs is not None:
-            for key, declared in self.inputs.items():
-                if not isinstance(declared, RunnerInput):
-                    raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
-                if key == "prompt":
-                    raise ValueError(
-                        f"runner {self.name}: `prompt` is every profile's input and is not declared"
-                    )
-            object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
+        for key, declared in self.inputs.items():
+            if not isinstance(declared, RunnerInput):
+                raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
+            if key == "prompt":
+                raise ValueError(
+                    f"runner {self.name}: `prompt` is every profile's input and is not declared"
+                )
+            if key == "command" and self.name != "generic":
+                raise ValueError(
+                    f"runner {self.name}: `command` is invariant 10's own guard "
+                    "(_NEVER, FORBIDDEN_CALLER_FIELDS); only `generic` is exempted, "
+                    "and only for its closed catalogue -- see contract request 32"
+                )
+            if key == "command" and self.name == "generic" and (
+                declared.kind != "string" or set(declared.choices) != set(_GENERIC_COMMANDS)
+            ):
+                raise ValueError(
+                    f"runner {self.name}: `command` may only be a string whose choices "
+                    "are exactly GENERIC_COMMANDS -- the one exemption contract request "
+                    "32 asks _NEVER to carry, not a general licence to declare it"
+                )
+        object.__setattr__(self, "inputs", _frozen_inputs(self.inputs))
         if not self.available and not self.disabled_reason:
             raise ValueError(
                 f"runner {self.name}: a disabled profile must say why. A caller "
@@ -450,6 +858,194 @@ _MOCK_INPUTS: dict[str, RunnerInput] = {
 }
 
 
+#: A wait the browser runner hands Playwright, in milliseconds. FROM 1, NOT 0:
+#: Playwright reads a timeout of 0 as "no timeout", so a 0 here would let one
+#: action wait out the whole 5400 s attempt. FIVE MINUTES at most: a selector
+#: that has not appeared in five minutes is not coming, and the attempt's own
+#: timeout is the ceiling above that.
+_BROWSER_WAIT_MS = {"minimum": 1, "maximum": 300_000}
+
+#: `selector`, `text` and `key` may carry arbitrary Unicode (a CSS selector, a
+#: page's own text, a key combination), so they are `string` with a length
+#: bound rather than `header`, which is ASCII-only. 4 KiB: far past any real
+#: selector or typed text, and small enough that a caller who sent this much
+#: sent a payload, not a selector.
+_BROWSER_TEXT_MAX = 4096
+
+#: The browser runner's actions (`agent_worker/runners/browser.py`, `body`),
+#: one shape per `type`, each field as the runner reads it. `type` is matched
+#: exactly: the runner lower-cases it, so `"Goto"` runs today and is refused
+#: here. The restatement is held to the runner's source by a test, as the
+#: mock's keys are (tests/unit/mcp/test_runner_inputs.py).
+_BROWSER_ACTION = RunnerInput(
+    "object",
+    means="one step of the run, in the shape its `type` names",
+    variants={
+        "goto": {
+            "url": RunnerInput("url", required=True, means="the page to open"),
+            "wait_until": RunnerInput(
+                "string",
+                choices=("load", "domcontentloaded", "networkidle", "commit"),
+                means="when the load counts as done; default load",
+            ),
+        },
+        "click": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to click",
+            )
+        },
+        "fill": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the field to fill",
+            ),
+            "text": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="what to type into it; default empty",
+            ),
+        },
+        "press": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to press a key in",
+            ),
+            "key": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="the key; default Enter",
+            ),
+        },
+        "wait_for": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX, required=True,
+                means="the element to wait for",
+            ),
+            "timeout_ms": RunnerInput(
+                "integer", **_BROWSER_WAIT_MS, means="how long to wait; default the task's timeout_ms"
+            ),
+        },
+        # 0..60: the runner clamps above 60 with `min(..., 60.0)`, so a larger
+        # value is refused rather than quietly shortened.
+        "wait": {"seconds": RunnerInput("number", minimum=0, maximum=60, means="how long to pause; default 1")},
+        "screenshot": {
+            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
+            "full_page": RunnerInput("boolean", means="the whole page, not the viewport; default true"),
+        },
+        "extract": {
+            "selector": RunnerInput(
+                "string", minimum=0, maximum=_BROWSER_TEXT_MAX,
+                means="the element whose text is kept; default body",
+            ),
+            "name": RunnerInput("filename", means="the artifact's file name; default by position"),
+        },
+    },
+)
+
+#: The browser runner's inputs. NEITHER `url` NOR `actions` IS REQUIRED ALONE:
+#: the runner needs one or the other, which `required` cannot say, so that
+#: refusal stays the runner's (contract request 32, *Owner's decisions*).
+_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    "url": RunnerInput("url", means="opened first, before any action"),
+    # 200: the runner's MAX_ACTIONS.
+    "actions": RunnerInput(
+        "list", minimum=0, maximum=200, items=_BROWSER_ACTION, means="run in order, after `url`"
+    ),
+    "timeout_ms": RunnerInput(
+        "integer", **_BROWSER_WAIT_MS, means="how long any one action may take; default 30000"
+    ),
+    # Three minutes: Chromium starts in seconds, and a launch still waiting at
+    # three minutes is a pod short of /dev/shm, not a slow start.
+    "launch_timeout_ms": RunnerInput(
+        "integer", minimum=1, maximum=180_000, means="how long Chromium may take to start; default 60000"
+    ),
+    # Up to 4K. The viewport is rendered in the pod's memory, and a full-page
+    # screenshot of it is written to the workspace, which is memory too.
+    "viewport_width": RunnerInput("integer", minimum=320, maximum=3840, means="pixels; default 1280"),
+    "viewport_height": RunnerInput("integer", minimum=240, maximum=2160, means="pixels; default 900"),
+    # `header`, not `string`: this value is sent as the User-Agent HTTP
+    # header verbatim, so it must be printable ASCII -- a caller could
+    # otherwise inject a second header through it. 512: real User-Agent
+    # strings run under 300 characters; past 512 it is not a browser
+    # signature.
+    "user_agent": RunnerInput(
+        "header", minimum=0, maximum=512, means="the User-Agent sent; default Chromium's"
+    ),
+    "extract_text": RunnerInput("boolean", means="keep the final page's text as page.txt; default true"),
+    "screenshot": RunnerInput("boolean", means="keep a final full-page screenshot; default true"),
+}
+
+#: The generic runner's catalogue (`agent_worker/runners/generic.py`,
+#: `GENERIC_COMMANDS`), restated because the catalogue cannot import the
+#: worker, and held to it by a test, as `_ARGUMENT` is.
+_GENERIC_COMMANDS = ("make", "npm-build", "npm-ci", "npm-test", "pytest", "uv-sync")
+
+#: Built without `inputs` first, so `_GENERIC_INPUTS` below can read this
+#: profile's OWN `timeout_seconds` for its `timeout_seconds` input's ceiling
+#: instead of restating the number as a second literal. `RunnerProfile` sets
+#: no `timeout_seconds` for `generic`, so this is the class default (3600) --
+#: reading it here, rather than writing `3600` again, is what keeps the two
+#: from drifting if a future change gives `generic` its own value.
+_GENERIC_PROFILE = RunnerProfile(
+    name="generic",
+    image="agent-runtime-base",
+    resource_class="standard",
+    backend=Backend.CLOUD_RUN_JOB,
+    runner_argv=("python", "-m", "agent_worker.runners.generic"),
+    provider=None,
+)
+
+#: The generic runner's inputs (`agent_worker/runners/generic.py`).
+#:
+#: `command` IS A NAME, NOT AN ARGV: `choices` is `_GENERIC_COMMANDS`, the
+#: runner's own `GENERIC_COMMANDS` restated, whose argv are constants in the
+#: runner. Declaring it reads as invariant 10 relaxed and is not -- see
+#: contract request 32, Question 2 (#218) -- and `RunnerProfile.__post_init__`
+#: enforces the one exemption `_NEVER` (tests/unit/mcp/test_runner_inputs.py)
+#: is asked to carry: `command` declared as a string whose `choices` are
+#: exactly `_GENERIC_COMMANDS`, for `generic` only.
+#:
+#: THE FOUR LIMITS MAY ONLY LOWER THE PLATFORM'S (`runners/limits.py`). Each
+#: ceiling here is the value the worker exports by default -- the profile's
+#: `timeout_seconds`, and `WorkerConfig`'s grace and output caps -- so a
+#: request above it is refused at the door instead of accepted and clamped.
+#: The runner still clamps to what the attempt's worker exports, which an
+#: operator may have set lower. From 1: the runner reads 0 or less as "not
+#: asked", so a 0 was accepted and meant nothing.
+_GENERIC_INPUTS: dict[str, RunnerInput] = {
+    "command": RunnerInput(
+        "string",
+        required=True,
+        choices=_GENERIC_COMMANDS,
+        means="the platform catalogue entry to run; the platform owns its argv",
+    ),
+    # 32: `GenericCommand.max_arguments`. Read for `pytest` only.
+    "paths": RunnerInput(
+        "list",
+        minimum=0,
+        maximum=32,
+        items=RunnerInput("argument", means="an existing path inside the workspace"),
+        means="pytest only: what to run; default everything",
+    ),
+    "target": RunnerInput("argument", means="make only: the target; default all"),
+    "working_directory": RunnerInput(
+        "argument", means="a directory inside the workspace to run in; default the workspace"
+    ),
+    "timeout_seconds": RunnerInput(
+        "number", minimum=1, maximum=_GENERIC_PROFILE.timeout_seconds,
+        means="lowers the command's wall clock",
+    ),
+    "grace_seconds": RunnerInput(
+        "number", minimum=1, maximum=20, means="lowers the wait between SIGTERM and SIGKILL"
+    ),
+    "max_stdout_bytes": RunnerInput(
+        "integer", minimum=1, maximum=32 * 1024 * 1024, means="lowers the stdout kept"
+    ),
+    "max_stderr_bytes": RunnerInput(
+        "integer", minimum=1, maximum=8 * 1024 * 1024, means="lowers the stderr kept"
+    ),
+}
+
+
 #: What claude-code and codex take beside the prompt: contract request 28,
 #: accepted by the owner on 2026-09-28 for #265. `issue` names an issue in the
 #: task's OWN repository; the worker fetches its title, body and comments
@@ -487,18 +1083,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         checkpoint_interval_seconds=30,
         inputs=_MOCK_INPUTS,
     ),
-    "generic": RunnerProfile(
-        name="generic",
-        image="agent-runtime-base",
-        resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
-        runner_argv=("python", "-m", "agent_worker.runners.generic"),
-        provider=None,
-        # NOT DECLARED YET. The runner cannot start without `input.command`,
-        # the NAME of an entry in its own catalogue, so an empty declaration
-        # would refuse every task it runs. See RunnerProfile.inputs.
-        inputs=None,
-    ),
+    # Built from `_GENERIC_PROFILE` (declared above, alongside `_GENERIC_INPUTS`,
+    # so the input's own `timeout_seconds` ceiling can read this profile's
+    # `timeout_seconds` instead of restating it).
+    "generic": replace(_GENERIC_PROFILE, inputs=_GENERIC_INPUTS),
     "claude-code": RunnerProfile(
         name="claude-code",
         image="agent-runtime-base",
@@ -554,10 +1142,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         provider="anthropic",
         secrets=("ANTHROPIC_API_KEY",),
         timeout_seconds=5400,
-        # NOT DECLARED YET. The runner cannot start without `input.url` or
-        # `input.actions`, so an empty declaration would refuse every task it
-        # runs, the smoke suite's GKE row included. See RunnerProfile.inputs.
-        inputs=None,
+        inputs=_BROWSER_INPUTS,
     ),
 }
 
@@ -582,23 +1167,10 @@ def check_inputs(profile: RunnerProfile, raw: Mapping[str, Any]) -> dict[str, An
 
     `raw` holds the keys BESIDES the prompt. Returns them normalised (an
     integral float for an integer input becomes an int), or raises
-    InputRefused: for every key the profile does not declare, naming them all,
-    or for the first declared key whose value is out of its bounds, naming the
-    bound.
-
-    NOT DECLARED YET IS DECIDED HERE, AND ONLY HERE. A profile whose inputs are
-    not declared yet (`inputs is None`: `browser` and `generic`, open with the
-    owner on #218) has no declaration to check a key against, so `raw` comes
-    back as it was sent and only its size bounds it, which the caller that
-    measures the size enforces (`validate_input_size` in swarm-api). The review
-    of #213 found this decided twice and differently: this function refused
-    every key while the API returned before asking and accepted every key, so
-    the one rule and the API gave opposite answers for the same profile. The
-    plugin's bridge sending such a profile nothing is its own send policy, not
-    this rule (#218's third question).
+    InputRefused: for every key the profile does not declare, naming them all;
+    for every required key `raw` does not send, naming them all; or for the
+    first declared key whose value is out of its bounds, naming the bound.
     """
-    if profile.inputs is None:
-        return dict(raw)
     declared = profile.inputs
     unknown = sorted(set(raw) - set(declared))
     if unknown:
@@ -616,4 +1188,11 @@ def check_inputs(profile: RunnerProfile, raw: Mapping[str, Any]) -> dict[str, An
                 f"so {unknown} cannot be sent"
             )
         raise InputRefused(message, key=unknown[0], keys=tuple(unknown))
+    missing = sorted(key for key, spec in declared.items() if spec.required and key not in raw)
+    if missing:
+        raise InputRefused(
+            f"runner profile {profile.name!r} needs {missing} in its input",
+            key=missing[0],
+            keys=tuple(missing),
+        )
     return {key: declared[key].check(key, raw[key]) for key in sorted(raw)}
