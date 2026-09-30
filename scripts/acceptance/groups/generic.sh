@@ -131,7 +131,7 @@ _generic_door() {
   while IFS='|' read -r label case_input; do
     [[ -n "${label}" ]] || continue
     answer="$(acc_door generic "${case_input}")"
-    acc_assert_eq "422 invalid_input" "${answer}" "${label}"
+    acc_assert_eq "422 invalid_input" "${answer}" "${label}" ""
   done <<EOF
 a command not in the catalogue|{"prompt":"x","command":"rm"}
 no command at all|{"prompt":"x"}

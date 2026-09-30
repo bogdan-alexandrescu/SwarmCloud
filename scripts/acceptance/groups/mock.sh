@@ -111,7 +111,7 @@ _mock_check_success() {
     return 0
   fi
   acc_assert_eq "2/2" "$(acc_output "${task}" '"\(.completed_steps)/\(.requested_steps)"')" "completed/requested steps" "${task}"
-  acc_assert_eq "mock runner completed 2/2 steps" "$(acc_output "${task}" '.summary // empty')" "runner summary" "${task}"
+  acc_assert_eq "mock runner completed 2/2 steps" "$(acc_runner_field "${task}" '.summary // empty')" "runner summary" "${task}"
   local released
   if released="$(acc_leases_released "${task}")" && [[ "${released}" != 0* ]]; then
     acc_pass "${released}" "${task}"
@@ -158,7 +158,7 @@ _mock_check_exit_codes() {
   # credential), 143 (SIGTERM), 256 (out of range). Each is a 422 at the door.
   for code in 0 77 78 143 256; do
     answer="$(acc_door mock "$(jq -nc --argjson c "${code}" '{prompt: "acceptance door", fail: true, exit_code: $c}')")"
-    acc_assert_eq "422 invalid_input" "${answer}" "exit_code ${code} at the door"
+    acc_assert_eq "422 invalid_input" "${answer}" "exit_code ${code} at the door" ""
   done
 }
 
@@ -364,7 +364,7 @@ _mock_check_cpu() {
   [[ -n "${task}" ]] || { acc_fail "not submitted"; return 0; }
   acc_run_to_end state "${task}" || return 0
   acc_assert_eq "SUCCEEDED" "${state}" "state" "${task}"
-  acc_assert_eq "20" "$(acc_output "${task}" '.metrics.cpu_burn_seconds // "none" | tostring')" "cpu_burn_seconds the runner reports" "${task}"
+  acc_assert_eq "20" "$(acc_runner_field "${task}" '.metrics.cpu_burn_seconds // "none" | tostring')" "cpu_burn_seconds the runner reports" "${task}"
   duration="$(task_field "${task}" '.result_summary.duration_seconds // 0 | floor')"
   if [[ "${duration}" -ge 20 ]]; then
     acc_pass "the runner ran ${duration}s, so the burn happened" "${task}"

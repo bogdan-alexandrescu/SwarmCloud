@@ -62,10 +62,32 @@ source "${REPO_ROOT}/scripts/acceptance/groups/browser.sh"
 
 ALL_GROUPS=(mock generic claude-code workflow browser)
 
+#: A group `--only` accepts that is NEVER in ALL_GROUPS and never appears in
+#: --list's output or a normal run's group list. It does no platform work and
+#: exists only so a unit test can prove the exit-code and progress-reporting
+#: behaviour below (a mid-run crash must still exit nonzero and say how far the
+#: suite got) without a deployment to talk to.
+SELFTEST_CRASH_GROUP="_selftest_crash"
+#: Named to match fn_name(SELFTEST_CRASH_GROUP) + "_checks" / "run_" + fn_name(...),
+#: the same convention every real group's <group>_checks / run_<group> follows
+#: (fn_name only replaces "-" with "_", and this group's name has no dashes).
+_selftest_crash_checks() {
+  cat <<'EOF'
+selftest: deliberately crashes to prove a mid-run failure still exits nonzero
+EOF
+}
+run__selftest_crash() {
+  step "Acceptance: ${SELFTEST_CRASH_GROUP}"
+  acc_check "$(_selftest_crash_checks)"
+  local selftest_required_var
+  : "${selftest_required_var:?selftest: this crash is deliberate -- proving run.sh's exit trap reports it and exits nonzero}"
+}
+
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
 
 is_group() {
   local g
+  [[ "$1" == "${SELFTEST_CRASH_GROUP}" ]] && return 0
   for g in "${ALL_GROUPS[@]}"; do
     [[ "${g}" == "$1" ]] && return 0
   done
@@ -104,15 +126,53 @@ if [[ "${LIST}" -eq 1 ]]; then
 fi
 
 step "Acceptance: ${PROJECT_ID} / ${ENVIRONMENT} -- groups: ${SELECTED[*]}"
-require_platform
-info "api ${API_URL:-$(api_url)}; fixtures ${ACC_REPOSITORY_URL} @ ${ACC_REF}"
+if [[ "${SELECTED[*]}" == "${SELFTEST_CRASH_GROUP}" ]]; then
+  # The self-test proves the exit trap, not the platform: skip the readyz
+  # probe so a unit test can run it with no deployment and no credentials.
+  info "selftest: skipping require_platform -- this group talks to nothing"
+else
+  require_platform
+  info "api ${API_URL:-$(api_url)}; fixtures ${ACC_REPOSITORY_URL} @ ${ACC_REF}"
+fi
 acc_init
-trap acc_cleanup EXIT
+
+#: How many checks this run is answerable for, so a crash can say how far it
+#: got. Computed the same way --list enumerates them: one line per check, per
+#: selected group's `_checks` function.
+ACC_TOTAL_CHECKS=0
+for g in "${SELECTED[@]}"; do
+  ACC_TOTAL_CHECKS=$(( ACC_TOTAL_CHECKS + $("$(fn_name "${g}")_checks" | wc -l) ))
+done
+
+#: Set only right before the two intended exits below. If the trap fires
+#: while this is still 0, the run ended some other way -- an unhandled error,
+#: an unbound variable, a killed process -- and that is reported as a crash,
+#: not silently exited 0.
+ACC_FINISHED=0
+
+_acc_exit_trap() {
+  # $? here is whatever caused the shell to exit -- an explicit `exit 0`/`exit
+  # 1` below, or a mid-run crash (an unbound variable, a command `set -e`
+  # caught). Capturing it as the FIRST statement, before acc_cleanup runs, is
+  # what makes the reported and final exit code the CRASH's, not
+  # acc_cleanup's: acc_cleanup (cancel_all + rm -rf) almost always succeeds,
+  # and without this capture the shell exits with ITS status -- 0 -- silently
+  # turning a crashed run into a green one (PR #358's live run, finding 2).
+  local ec=$?
+  acc_cleanup
+  if [[ "${ACC_FINISHED}" != "1" ]]; then
+    [[ "${ec}" -ne 0 ]] || ec=1
+    err "${SUITE_NAME}: the suite did not finish -- crashed after ${TESTS_RUN} of ${ACC_TOTAL_CHECKS} checks visited (exit ${ec})"
+  fi
+  exit "${ec}"
+}
+trap _acc_exit_trap EXIT
 
 for g in "${SELECTED[@]}"; do
   "run_$(fn_name "${g}")"
 done
 
+ACC_FINISHED=1
 if t_summary; then
   exit 0
 fi

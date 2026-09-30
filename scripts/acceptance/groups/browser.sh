@@ -228,12 +228,12 @@ _browser_check_door() {
     [[ -n "${label}" ]] || continue
     input="$(jq -nc --arg u "${url}" '{prompt: "acceptance door", url: $u}')"
     answer="$(acc_door browser "${input}")"
-    acc_assert_eq "422 invalid_input" "${answer}" "url: ${label}"
+    acc_assert_eq "422 invalid_input" "${answer}" "url: ${label}" ""
     # The same URL where an action carries it, not the start url: a door that
     # checked only `url` would let `goto` through.
     input="$(jq -nc --arg u "${url}" '{prompt: "acceptance door", actions: [{type: "goto", url: $u}]}')"
     answer="$(acc_door browser "${input}")"
-    acc_assert_eq "422 invalid_input" "${answer}" "actions[0].url: ${label}"
+    acc_assert_eq "422 invalid_input" "${answer}" "actions[0].url: ${label}" ""
   done <<'EOF'
 the metadata server|http://169.254.169.254/computeMetadata/v1/
 a 10.x address|http://10.0.0.1/

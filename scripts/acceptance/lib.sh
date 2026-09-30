@@ -82,12 +82,19 @@ acc_fail() { t_fail "$(_acc_line "$@")"; }
 # A skip must say WHY, and is counted apart from passes (testlib's t_skip).
 acc_skip() { t_skip "$(_acc_line "$@")"; }
 
-# acc_assert_eq WANT GOT WHAT TASK
+# acc_assert_eq WANT GOT WHAT [TASK]
+#
+# TASK is optional -- a check made "at the door" (a submission refused before
+# a task ever existed) has none to name. `"${4:-}"` is required, not
+# decoration: a caller that omits it leaves $4 unset, and under this file's
+# `set -u` referencing "$4" directly is a fatal "unbound variable" that kills
+# the whole suite mid-run (PR #358's first live run, at the door checks in
+# mock.sh, browser.sh and generic.sh that pass only WANT GOT WHAT).
 acc_assert_eq() {
   if [[ "$1" == "$2" ]]; then
-    acc_pass "$3: $2" "$4"
+    acc_pass "$3: $2" "${4:-}"
   else
-    acc_fail "$3: expected '$1', got '$2'" "$4"
+    acc_fail "$3: expected '$1', got '$2'" "${4:-}"
   fi
 }
 
@@ -356,9 +363,23 @@ acc_artifact_text() {
   rm -f "${file}"
 }
 
-# acc_output TASK JQ -> a field of the runner's own output
-# (result_summary.runner.output), which is what the runner said it did.
+# acc_output TASK JQ -> a field of the runner's own OUTPUT
+# (result_summary.runner.output), the free-form dict the runner returned.
+#
+# `summary` and `metrics` are NOT inside it, though every runner's own return
+# value has them alongside its output fields: the shared harness
+# (run_runner, apps/agent-worker/agent_worker/runners/base.py) pops both keys
+# off that dict before it becomes result.json, so lifecycle._finalise reads
+# them back at result_summary.runner.summary and result_summary.runner.metrics
+# -- siblings of .output, one level up. Use acc_runner_field for either (found
+# wrong in PR #358's first live run: mock.sh read the summary at
+# .result_summary.runner.output.summary, which the worker never writes).
 acc_output() { task_field "$1" ".result_summary.runner.output | $2"; }
+
+# acc_runner_field TASK JQ -> a field of the runner's own RECORD
+# (result_summary.runner), the level `status`, `summary`, `output`, `usage`
+# and `metrics` all sit at. See acc_output's note above.
+acc_runner_field() { task_field "$1" ".result_summary.runner | $2"; }
 
 acc_events() { task_events "$1"; }
 
