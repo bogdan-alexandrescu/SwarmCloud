@@ -86,13 +86,33 @@ run_mock() {
     queued_down="$(workflow_step_task "${wf}" queued)"
   fi
 
+  # _mock_check_park_and_restore goes FIRST, ahead of every other check, and
+  # this is load-bearing rather than cosmetic. All twelve tasks above were
+  # submitted together (module header: "the group costs roughly its slowest
+  # task ... rather than the sum"), so "park"'s own clock started at
+  # submission regardless of when its check runs. Its check is the only one
+  # in this file that must observe a TRANSIENT state -- the task parks for
+  # its 90 s retry_after and then resumes and finishes on its own, so a
+  # PARKED window that opens and closes entirely before this function is
+  # reached is invisible to a `wait_for_state` call made after it closes. The
+  # other checks below don't have that failure mode: they either wait on a
+  # true terminal state that cannot un-happen (success/fail/exit-code/steps/
+  # cpu/checkpoints), or on RUNNING, which cancel_running's task cannot leave
+  # on its own before max_run_seconds (it sleeps 600 s and only this suite
+  # cancels it). Measured on dev 2026-09-30: with this check placed after
+  # cancel_running and retry, those two calls alone burned enough wall time
+  # for the 90 s park to complete and resume to SUCCEEDED before this
+  # function's `wait_for_state` ever polled, so it read "ended SUCCEEDED
+  # without parking" for a task that, per its own events, parked and resumed
+  # correctly (task_686e4ea55f60448895d9) -- a false failure, not a platform
+  # defect.
+  _mock_check_park_and_restore "${park}"
   _mock_check_success "${ok}"
   _mock_check_fail "${fail}"
   _mock_check_exit_codes "${ex2}" "${ex76}" "${ex255}"
   _mock_check_cancel_queued "${queued_down}" "${queued_up}"
   _mock_check_cancel_running "${cancel_run}"
   _mock_check_retry "${retry}"
-  _mock_check_park_and_restore "${park}"
   _mock_check_artifact "${art}" "${art_name}" "${art_text}"
   _mock_check_steps "${steps}"
   _mock_check_cpu "${cpu}"

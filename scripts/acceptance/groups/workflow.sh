@@ -187,7 +187,14 @@ _wf_check_cascade() {
       acc_fail "still ${state} 180 s after the root failed" "${id}"
       continue
     fi
-    acc_assert_eq "CANCELLED failed_parent" "${state} $(task_field "${id}" '.end_cause // "none"')" "a dependant of the failed root" "${id}"
+    # end_cause is workflow_sweep, not failed_parent: `_stop_for_failed_workflow`
+    # runs ahead of the depends_on cascade in `_admit_one`
+    # (apps/scheduler/scheduler/loop.py `_sweep_failed_workflow`, which always
+    # passes `end_cause=EndCause.WORKFLOW_SWEEP`) and catches every not-started
+    # step of a fail_workflow workflow -- dependent or not -- before the
+    # per-parent `failed_parent` check is ever reached. Confirmed on dev by the
+    # manual acceptance pass, row 14 (PR #358 comment, 2026-09-30).
+    acc_assert_eq "CANCELLED workflow_sweep" "${state} $(task_field "${id}" '.end_cause // "none"')" "a dependant of the failed root" "${id}"
     leases="$(task_lease_ids "${id}")"
     if [[ -z "${leases}" ]]; then
       acc_pass "never held a lease" "${id}"

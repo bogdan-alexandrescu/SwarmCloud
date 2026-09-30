@@ -143,7 +143,7 @@ that file.**
 |---|---|
 | input_from | step `a` writes a known file; step `b` stages it; the file in `b`'s own last checkpoint (its workspace as it saw it) is byte-identical to what `a` wrote |
 | expected_outputs | `a`'s `metadata.expected_outputs` names the file `b` stages; a parent that writes the wrong file ends `FAILED outputs_missing`, `result_summary.expected_outputs_missing` names the file, it was retried to `max_attempts`, and its child ends `CANCELLED` having never held a lease |
-| on_step_failure | a failing root's child and grandchild both end `CANCELLED failed_parent` with no lease ever, and the workflow's derived state is `FAILED` |
+| on_step_failure | a failing root's child and grandchild both end `CANCELLED workflow_sweep` with no lease ever, and the workflow's derived state is `FAILED` (the fail_workflow sweep in `apps/scheduler/scheduler/loop.py` `_sweep_failed_workflow` cancels every not-started step of the workflow ahead of the per-parent `failed_parent` cascade, dependent or not, and always records `end_cause=WORKFLOW_SWEEP`) |
 | integrate chain | implement (fix the bug) -> review (write `verdict.json`) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line. Then the pull request and every branch are cleaned up |
 
 ### browser
