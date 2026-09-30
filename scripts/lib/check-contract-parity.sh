@@ -1549,6 +1549,49 @@ def script_default(text, var):
     return found.group(1) if found else None
 
 
+def enclosing_object_start(text, pos):
+    """The offset of the `{` that opens the object the key at POS sits in.
+
+    Scanned backward: a CLOSER seen first means its OPENER belongs to a
+    balanced sibling value (an array, a nested object) and must be walked
+    past rather than mistaken for the object enclosing POS, so a closer
+    pushes the depth up and its matching opener brings it back down. The
+    first opener found at depth zero is the one that actually encloses POS.
+    """
+    depth = 0
+    i = pos - 1
+    while i >= 0:
+        ch = text[i]
+        if ch in CLOSERS:
+            depth += 1
+        elif ch in OPENERS:
+            if depth == 0:
+                return i
+            depth -= 1
+        i -= 1
+    return None
+
+
+RUNNER_PROFILE_KEY = re.compile(
+    "runner_profile:\\s*" + chr(34) + "([a-z][a-z0-9-]*)" + chr(34)
+)
+
+
+def sibling_runner_profile(text, pos):
+    """The `runner_profile: "name"` literal declared in the same jq object
+    as the key at POS -- a workflow step like
+    `{step_id: "a", runner_profile: "mock", input: {...}}`, where each step
+    names its own profile rather than a script-wide PROFILE variable. None
+    when the enclosing object cannot be found or names none, including when
+    it is a jq variable (`runner_profile: $profile`) rather than a literal.
+    """
+    start = enclosing_object_start(text, pos)
+    if start is None:
+        return None
+    found = RUNNER_PROFILE_KEY.search(text, start, pos)
+    return found.group(1) if found else None
+
+
 if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__", {}):
     emit("MISSING", "RunnerProfile.inputs",
          "the frozen catalogue declares no runner inputs, so there is nothing "
@@ -1583,6 +1626,19 @@ else:
         for call in re.finditer(r"\bsubmit_task\s+(\S+)\s+(.*)", logical):
             where = "%s, at: %s" % (rel, call.group(0)[:72])
             token, rest = call.group(1).strip("\""), call.group(2)
+            if token == "$" + "@":
+                # A forwarder, not a call: acc_submit in
+                # scripts/acceptance/lib.sh shifts off its own VAR argument
+                # and passes the rest straight through
+                # ("submit_task \"$@\""). This exact line names no profile
+                # and sends no input of its own, so there is nothing to
+                # compare here -- unlike a real call, skipping it hides no
+                # restatement, because it restates nothing itself. Its own
+                # callers (acc_submit VAR PROFILE INPUT EXTRA) are a
+                # distinct spelling this scan does not parse yet; teaching
+                # it that shape is separate follow-up work, not a silent
+                # gap introduced by this line.
+                continue
             if token.startswith("$" + "{"):
                 token = script_default(text, token[2:].split("}")[0].split(":")[0])
             if rest.startswith(SUBSHELL + "profile_input"):
@@ -1600,7 +1656,17 @@ else:
         for step in re.finditer(r"\binput:\s*[{]", text):
             where = "%s:%d" % (rel, line_of(text, step.start()))
             keys = top_level_keys(text[step.end() - 1:])
-            profile = script_default(text, "PROFILE")
+            # A workflow step names its own profile as a sibling key --
+            # `{step_id: "a", runner_profile: "mock", input: {...}}`, as the
+            # jq bodies in the acceptance suite do, one workflow naming
+            # several profiles in a single call -- so that literal is
+            # checked FIRST.
+            # Only when the step carries no such literal (a jq variable like
+            # `runner_profile: $profile`, filled from a script-wide PROFILE
+            # the old e2e-test.sh shape uses) does this fall back to that.
+            profile = sibling_runner_profile(text, step.start())
+            if profile is None:
+                profile = script_default(text, "PROFILE")
             if keys is None or profile is None:
                 unread.append(where)
                 continue
@@ -1624,10 +1690,14 @@ else:
         else:
             unread.append(where)
 
-    # The floor is what this scan found when it was written: eleven
-    # submit_task calls, four workflow steps in e2e-test.sh and the two
-    # branches of profile_input. Fewer means a site moved out of its sight.
-    SITE_FLOOR = 17
+    # The floor is what this scan found the last time it was widened: the
+    # original eleven submit_task calls, four workflow steps in e2e-test.sh
+    # and the two branches of profile_input (17), plus the twelve step
+    # objects the acceptance suite names its own runner_profile on directly
+    # -- two in scripts/acceptance/groups/mock.sh, ten in
+    # scripts/acceptance/groups/workflow.sh. Fewer means a site moved out of
+    # its sight.
+    SITE_FLOOR = 29
     compared = 0
     drift = []
     for where, profile, keys in sites:
