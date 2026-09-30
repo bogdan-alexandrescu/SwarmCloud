@@ -10,7 +10,7 @@ decodes the screenshot and asserts two things about its PIXELS:
   * it is not blank -- more than one colour, and a luminance spread above a
     floor that a solid fill (white, black, or any flat colour) cannot reach;
   * optionally, a known colour is present over a minimum fraction of it --
-    the fixture page paints a block of one exact colour, so a screenshot of
+    example.com's background is one exact colour (#eee), so a screenshot of
     any OTHER page, an error page included, does not satisfy it.
 
 STANDARD LIBRARY ONLY. It runs in the swarm-verify image and in CI's unit job,
@@ -57,10 +57,12 @@ MAX_SAMPLED_PIXELS = 2_000_000
 #: text); only the difference between one and "more than a handful" matters.
 DISTINCT_CAP = 4096
 
-#: The default floor on luminance standard deviation. A flat fill is 0. The
-#: fixture page -- black text, a saturated block, white ground -- measures
-#: well above 20. A page with a single line of small text on white sits near 5,
-#: which is still "not blank"; 2.0 is below that and above JPEG-style noise.
+#: The default floor on luminance standard deviation. A flat fill is exactly
+#: 0, and PNG is lossless, so there is no compression noise to clear. Any
+#: rendered text on a flat ground lifts it above 0; 2.0 leaves room for a
+#: near-flat page with one short line of small text (example.com is a few
+#: lines) while refusing every solid fill. Not calibrated against a live
+#: screenshot yet: the first acceptance run's JSON line reports the value.
 DEFAULT_MIN_STDDEV = 2.0
 
 
@@ -89,7 +91,9 @@ def _paeth(a: int, b: int, c: int) -> int:
 
 
 def _unfilter(raw: bytes, width: int, height: int, bpp: int) -> bytearray:
-    """Undo the per-row filters. `bpp` is bytes per pixel (>= 1 at 8-bit)."""
+    """Undo the per-row filters of the first `height` rows. `bpp` is bytes per
+    pixel (>= 1 at 8-bit). A row's filter reads only the row above it, so a
+    prefix of the rows is decoded exactly without the rest."""
     stride = width * bpp
     expected = height * (stride + 1)
     if len(raw) < expected:
@@ -125,8 +129,14 @@ def _unfilter(raw: bytes, width: int, height: int, bpp: int) -> bytearray:
     return out
 
 
-def decode(data: bytes) -> Image:
-    """Decode an 8-bit, non-interlaced PNG into RGBA."""
+def decode(data: bytes, *, max_rows: int | None = None) -> Image:
+    """Decode an 8-bit, non-interlaced PNG into RGBA.
+
+    `max_rows` decodes only the top of a tall image. A full-page screenshot of
+    a real site (an infinite-scroll front page) can be tens of thousands of
+    rows, which pure Python unfilters in minutes; whether the page rendered is
+    decided by its top. The returned Image's height is the rows decoded.
+    """
     if not data.startswith(PNG_SIGNATURE):
         raise PngError("not a PNG (bad signature)")
     pos = len(PNG_SIGNATURE)
@@ -170,6 +180,8 @@ def decode(data: bytes) -> Image:
         raise PngError(f"image data does not inflate: {exc}") from exc
 
     channels = _CHANNELS[colour]
+    if max_rows is not None and max_rows > 0:
+        height = min(height, max_rows)
     pixels = _unfilter(raw, width, height, channels)
     if colour == 6:
         return Image(width, height, bytes(pixels))
@@ -300,11 +312,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--min-colour-fraction", type=float, default=0.01)
     parser.add_argument("--tolerance", type=int, default=8)
     parser.add_argument("--min-stddev", type=float, default=DEFAULT_MIN_STDDEV)
+    parser.add_argument(
+        "--max-rows", type=int, default=4000, help="decode at most this many rows from the top (0: all)"
+    )
     args = parser.parse_args(argv)
 
     try:
         with open(args.file, "rb") as handle:
-            image = decode(handle.read())
+            image = decode(handle.read(), max_rows=args.max_rows)
     except (OSError, PngError) as exc:
         print(json.dumps({"ok": False, "reason": f"unreadable: {exc}"}))
         return 2

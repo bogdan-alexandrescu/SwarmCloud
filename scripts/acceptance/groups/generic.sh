@@ -6,6 +6,11 @@
 # exit code, and the marker the fixture prints. Then the door: arguments the
 # runner would refuse must be refused by swarm-api before any task exists.
 
+# Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
+# this file on its own too, where the variables those set and the ones this
+# file sets for them read as unassigned and unused. Checked in context
+# through run.sh -x.
+# shellcheck disable=SC2034,SC2154
 set -euo pipefail
 
 #: Where the fixture lands inside the task's workspace: the worker clones the

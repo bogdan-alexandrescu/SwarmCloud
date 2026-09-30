@@ -113,7 +113,10 @@ jobs:
 
       - name: shellcheck
         # -x follows `source` directives so lib/common.sh is analysed in context.
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
+        # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
+        # every group file, so the group files are analysed in that context
+        # as well as on their own.
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
 
       - name: scripts are executable and strict
         # The property is "strict mode is on before anything runs", so the check
@@ -129,7 +132,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in scripts/*.sh scripts/lib/*.sh; do
+          for f in scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
             [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
             first="$(awk 'NR==1 && /^#!/ {next} /^[[:space:]]*#/ {next} /^[[:space:]]*$/ {next} {print; exit}' "$f")"
             [ "$first" = "set -euo pipefail" ] \

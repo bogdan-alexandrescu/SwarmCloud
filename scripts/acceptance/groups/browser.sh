@@ -3,41 +3,72 @@
 #
 # WHY THIS GROUP EXISTS. Every browser task reported as a success before
 # 2026-09-29 screenshotted about:blank. The task SUCCEEDED, the artifact
-# uploaded, and nothing looked at the picture. So here a page with known
-# content is opened, and the checks read what came back: the extracted text
-# must be the page's, the screenshot's pixels must contain the page's
-# coloured block, and a form driven by `fill` and `click` must produce the
-# text only the page's own script writes.
+# uploaded, and nothing looked at the picture. So here real pages are opened
+# and the checks read what came back: the text, the title, the final URL and
+# the screenshot's PIXELS.
 #
-# THE FIXTURE PAGE is tests/acceptance/fixtures/browser/index.html. It has to
-# be served as text/html from a public, stable URL, and that URL is
-# SWARM_ACCEPTANCE_BROWSER_URL. raw.githubusercontent.com and jsDelivr do NOT
-# qualify: both serve an .html file as `text/plain` with
-# `X-Content-Type-Options: nosniff` (measured 2026-09-29), so Chromium shows
-# the source as text -- no block, no script, no form. Where it is served from
-# is the owner's decision (docs/acceptance.md); until it is set, the page
-# checks SKIP saying so. The door checks below need no page and always run
-# where the door exists.
+# THE PAGES ARE THIRD-PARTY (owner decision on #358, 2026-09-29), because no
+# host this repository has serves an .html file as text/html:
+# raw.githubusercontent.com and jsDelivr both answer `text/plain` with
+# `X-Content-Type-Options: nosniff` (measured 2026-09-29), so Chromium would
+# show a fixture's source rather than render it.
+#
+#   * https://example.com -- the deterministic page. Its body text, its title
+#     and its background (#eee under the light scheme headless Chromium uses)
+#     are known. NOTE, measured 2026-09-29: the page's visible text no longer
+#     contains "Example Domain" -- only its <title> does. The body reads "This
+#     domain is for use in documentation examples...". So the title is
+#     asserted to be "Example Domain" and the extracted text to carry the body
+#     sentence. The page also asks not to be relied on "for testing and
+#     monitoring purposes"; one request per dev release is the whole use.
+#   * https://www.reddit.com -- a real-world render (the owner's note). No
+#     exact text is asserted: final_url is on reddit.com, the title is not
+#     empty, and the full-page screenshot is not blank. A bot challenge or a
+#     consent wall is a SKIP naming what was seen, never a PASS.
+#   * https://httpbin.org/forms/post -- a public test form made for exactly
+#     this (httpbin is a request-echo service). `fill` the customer name,
+#     `click` the submit button, and the echoed response must carry the name.
+#     If httpbin itself is unreachable the check SKIPs saying so: that is a
+#     third party's availability, not the platform's.
 
+# Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
+# this file on its own too, where the variables those set and the ones this
+# file sets for them read as unassigned and unused. Checked in context
+# through run.sh -x.
+# shellcheck disable=SC2034,SC2154
 set -euo pipefail
 
-BROWSER_URL="${SWARM_ACCEPTANCE_BROWSER_URL:-}"
-BROWSER_KNOWN_TEXT="swarmcloud-acceptance-known-text-7f3a"
-BROWSER_TITLE="SwarmCloud acceptance fixture"
-BROWSER_BLOCK_COLOUR="12a150"
+EXAMPLE_URL="https://example.com/"
+EXAMPLE_TITLE="Example Domain"
+EXAMPLE_TEXT="This domain is for use in documentation examples"
+#: html{background:light-dark(#eee,#222)} -- #eee under the light scheme.
+EXAMPLE_BACKGROUND="eeeeee"
+REDDIT_URL="https://www.reddit.com/"
+FORM_URL="https://httpbin.org/forms/post"
+
+#: Titles and text that mean the page served a wall instead of itself.
+BROWSER_WALL_RE='blocked|verify you are human|are you a robot|prove your humanity|just a moment|attention required|access denied|captcha|cloudflare|unusual traffic|consent|accept all cookies|whoa there'
 
 browser_checks() {
   cat <<'EOF'
-browser: goto the fixture, and extract_text returns its known string
-browser: the full-page screenshot is not blank and shows the fixture's block colour
-browser: fill and click on the fixture's form produce the text its script writes
+browser: example.com renders, and its title and text are the page's
+browser: example.com's full-page screenshot is not blank and shows its background colour
+browser: reddit.com renders a real page (final_url, title, a screenshot that is not blank)
+browser: fill and click on httpbin's form produce the echoed name
 browser: the door refuses the metadata server, a 10.x address, a .svc host and file:// with a 422
 EOF
 }
 
+_browser_task() {
+  local __bt_var="$1" url="$2" actions="$3"
+  acc_submit "${__bt_var}" browser "$(jq -nc --arg u "${url}" --argjson a "${actions}" \
+      '{prompt: "acceptance browser", url: $u, actions: $a, extract_text: true, screenshot: false}')" \
+    "$(acc_extra '{"max_attempts": 1}')" || printf -v "${__bt_var}" '%s' ""
+}
+
 run_browser() {
-  step "Acceptance: browser${BROWSER_URL:+ (fixture ${BROWSER_URL})}"
-  local rc=0 name task="" state=""
+  step "Acceptance: browser"
+  local rc=0 name example="" reddit="" form="" s_example="" s_reddit="" s_form=""
 
   # Is the browser profile's input declared on this deployment (contract
   # request 32, #218 / PR #345)? Asked of the door without creating anything
@@ -56,63 +87,25 @@ run_browser() {
     return 0
   fi
 
-  if _browser_page_ready; then
-    ACC_CHECK="browser: page"
-    acc_submit task browser "$(jq -nc --arg u "${BROWSER_URL}" --arg name "acceptance-${ACC_RUN_ID}" '{
-        prompt: "acceptance browser fixture",
-        url: $u,
-        actions: [
-          {type: "wait_for", selector: "#known"},
-          {type: "extract", selector: "#known", name: "known.txt"},
-          {type: "screenshot", name: "full.png", full_page: true},
-          {type: "fill", selector: "#name", text: $name},
-          {type: "click", selector: "#go"},
-          {type: "wait_for", selector: "#result:not(:empty)"},
-          {type: "extract", selector: "#result", name: "result.txt"}
-        ],
-        extract_text: true,
-        screenshot: false}')" "$(acc_extra '{"max_attempts": 1}')" || task=""
-    if [[ -n "${task}" ]]; then
-      acc_run_to_end state "${task}" || state="NOT_RUN"
-    fi
-    _browser_check_extract "${task}" "${state}"
-    _browser_check_screenshot "${task}" "${state}"
-    _browser_check_form "${task}" "${state}"
-  fi
-  _browser_check_door
-}
+  ACC_CHECK="browser: example.com"
+  _browser_task example "${EXAMPLE_URL}" '[{"type":"screenshot","name":"full.png","full_page":true}]'
+  ACC_CHECK="browser: reddit.com"
+  _browser_task reddit "${REDDIT_URL}" '[{"type":"wait","seconds":3},{"type":"screenshot","name":"full.png","full_page":true}]'
+  ACC_CHECK="browser: form"
+  _browser_task form "${FORM_URL}" "$(jq -nc --arg n "acceptance-${ACC_RUN_ID}" '[
+      {type: "fill", selector: "input[name=custname]", text: $n},
+      {type: "click", selector: "form button"},
+      {type: "wait_for", selector: "pre"}]')"
 
-# _browser_page_ready -> 0 when a fixture URL is set and serves HTML; records
-# a SKIP for each page check (and returns 1) when it is not.
-_browser_page_ready() {
-  local reason="" type name headers
-  if [[ -z "${BROWSER_URL}" ]]; then
-    reason="SWARM_ACCEPTANCE_BROWSER_URL is not set: the fixture page has no host that serves it as text/html (raw.githubusercontent.com and jsDelivr serve text/plain with nosniff, measured 2026-09-29); see docs/acceptance.md"
-  else
-    # A reachable URL that answers text/plain would render as source and fail
-    # every check for a reason that is the fixture's, not the platform's.
-    # Unreachable from here is NOT a reason to skip: the swarm-verify job's
-    # egress is not the browser pod's, and the task will say what it saw.
-    headers="${ACC_WORK}/browser-headers"
-    if curl -sS -m 15 -o /dev/null -D "${headers}" "${BROWSER_URL}" 2>/dev/null; then
-      type="$(awk -F': *' 'tolower($1) == "content-type" { print tolower($2) }' "${headers}" | tr -d '\r' | tail -n 1)"
-      case "${type}" in
-        text/html*) ;;
-        *) reason="${BROWSER_URL} is served as '${type:-no content type}', not text/html, so Chromium would show its source instead of rendering it" ;;
-      esac
-    else
-      t_info "could not fetch ${BROWSER_URL} from this job; submitting anyway -- the browser pod's egress is its own"
-    fi
-  fi
-  [[ -n "${reason}" ]] || return 0
-  while IFS= read -r name; do
-    case "${name}" in
-      *door*) continue ;;
-    esac
-    acc_check "${name}"
-    acc_skip "not measured: ${reason}"
-  done < <(browser_checks)
-  return 1
+  if [[ -n "${example}" ]]; then acc_run_to_end s_example "${example}" || s_example="NOT_RUN"; fi
+  if [[ -n "${reddit}" ]]; then acc_run_to_end s_reddit "${reddit}" || s_reddit="NOT_RUN"; fi
+  if [[ -n "${form}" ]]; then acc_run_to_end s_form "${form}" || s_form="NOT_RUN"; fi
+
+  _browser_check_example "${example}" "${s_example}"
+  _browser_check_example_pixels "${example}" "${s_example}"
+  _browser_check_reddit "${reddit}" "${s_reddit}"
+  _browser_check_form "${form}" "${s_form}"
+  _browser_check_door
 }
 
 _browser_ran() {
@@ -123,38 +116,15 @@ _browser_ran() {
   fi
   case "${state}" in
     SUCCEEDED) return 0 ;;
-    NOT_RUN) acc_skip "not measured: the task did not run (see the first page check)" "${task}"; return 1 ;;
+    NOT_RUN) acc_skip "not measured: the task did not run (see the reason above)" "${task}"; return 1 ;;
     *) acc_fail "ended ${state}: $(task_field "${task}" '.last_error // "no error"' | redact | tr '\n' ' ' | head -c 300)" "${task}"; return 1 ;;
   esac
 }
 
-_browser_check_extract() {
-  local task="$1" state="$2" known page title url
-  acc_check "browser: goto the fixture, and extract_text returns its known string"
-  _browser_ran "${task}" "${state}" || return 0
-  title="$(acc_output "${task}" '.title // ""')"
-  url="$(acc_output "${task}" '.final_url // ""')"
-  acc_assert_eq "${BROWSER_TITLE}" "${title}" "the page title the runner read" "${task}"
-  if [[ "${url}" == "about:blank" || -z "${url}" ]]; then
-    acc_fail "the runner ended on '${url:-nothing}', not the fixture" "${task}"
-  else
-    acc_pass "ended on ${url}" "${task}"
-  fi
-  known="$(acc_artifact_text "${task}" "known.txt" || true)"
-  acc_assert_eq "${BROWSER_KNOWN_TEXT}" "$(printf '%s' "${known}" | tr -d '\r\n')" "#known, extracted" "${task}"
-  page="$(acc_artifact_text "${task}" "page.txt" || true)"
-  if grep -qF "${BROWSER_KNOWN_TEXT}" <<<"${page}"; then
-    acc_pass "page.txt (extract_text) carries the known string" "${task}"
-  else
-    acc_fail "page.txt (extract_text) does not carry the known string: $(printf '%s' "${page}" | head -c 120 | tr '\n' ' ')" "${task}"
-  fi
-}
-
-_browser_check_screenshot() {
-  local task="$1" state="$2" png out rc=0
-  acc_check "browser: the full-page screenshot is not blank and shows the fixture's block colour"
-  _browser_ran "${task}" "${state}" || return 0
-  png="${ACC_WORK}/full.png"
+# _browser_pixels TASK [COLOUR MIN_FRACTION] -> PASS or FAIL on full.png.
+_browser_pixels() {
+  local task="$1" colour="${2:-}" fraction="${3:-}" png out rc=0 args=()
+  png="${ACC_WORK}/full-${task}.png"
   if ! acc_raw_artifact "${task}" "full.png" "${png}"; then
     acc_fail "full.png could not be downloaded (HTTP ${ACC_HTTP:-none})" "${task}"
     return 0
@@ -163,20 +133,92 @@ _browser_check_screenshot() {
     acc_skip "not measured: this image has no python3 to decode the PNG with (scripts/acceptance/pngcheck.py is standard-library Python); $(wc -c <"${png}" | tr -d ' ') bytes were downloaded" "${task}"
     return 0
   fi
-  out="$(python3 "${ACC_DIR}/pngcheck.py" "${png}" --colour "${BROWSER_BLOCK_COLOUR}" --min-colour-fraction 0.05)" || rc=$?
+  [[ -z "${colour}" ]] || args=(--colour "${colour}" --min-colour-fraction "${fraction}")
+  out="$(python3 "${ACC_DIR}/pngcheck.py" "${png}" ${args[@]+"${args[@]}"})" || rc=$?
   case "${rc}" in
-    0) acc_pass "$(jq -r '.reason' <<<"${out}")" "${task}" ;;
-    1) acc_fail "$(jq -r '.reason' <<<"${out}")" "${task}" ;;
+    0) acc_pass "full.png $(jq -r '"\(.width)x\(.height)"' <<<"${out}"): $(jq -r '.reason' <<<"${out}")" "${task}" ;;
+    1) acc_fail "full.png: $(jq -r '.reason' <<<"${out}")" "${task}" ;;
     *) acc_fail "full.png is not a PNG the decoder reads: $(jq -r '.reason // empty' <<<"${out}" 2>/dev/null || printf '%s' "${out}")" "${task}" ;;
   esac
 }
 
-_browser_check_form() {
-  local task="$1" state="$2" result
-  acc_check "browser: fill and click on the fixture's form produce the text its script writes"
+_browser_check_example() {
+  local task="$1" state="$2" page url
+  acc_check "browser: example.com renders, and its title and text are the page's"
   _browser_ran "${task}" "${state}" || return 0
-  result="$(acc_artifact_text "${task}" "result.txt" || true)"
-  acc_assert_eq "Hello, acceptance-${ACC_RUN_ID}!" "$(printf '%s' "${result}" | tr -d '\r\n')" "#result after fill and click" "${task}"
+  acc_assert_eq "${EXAMPLE_TITLE}" "$(acc_output "${task}" '.title // ""')" "the page title the runner read" "${task}"
+  url="$(acc_output "${task}" '.final_url // ""')"
+  if [[ "${url}" == https://example.com* ]]; then
+    acc_pass "ended on ${url}" "${task}"
+  else
+    acc_fail "ended on '${url:-nothing}', not example.com" "${task}"
+  fi
+  page="$(acc_artifact_text "${task}" "page.txt" || true)"
+  if grep -qF "${EXAMPLE_TEXT}" <<<"${page}"; then
+    acc_pass "page.txt (extract_text) carries \"${EXAMPLE_TEXT}\"" "${task}"
+  else
+    acc_fail "page.txt (extract_text) does not carry \"${EXAMPLE_TEXT}\": $(printf '%s' "${page}" | head -c 120 | tr '\n' ' ')" "${task}"
+  fi
+}
+
+_browser_check_example_pixels() {
+  local task="$1" state="$2"
+  acc_check "browser: example.com's full-page screenshot is not blank and shows its background colour"
+  _browser_ran "${task}" "${state}" || return 0
+  # Half the page at least: example.com is a few lines of text on #eee.
+  _browser_pixels "${task}" "${EXAMPLE_BACKGROUND}" 0.5
+}
+
+_browser_check_reddit() {
+  local task="$1" state="$2" title url page wall
+  acc_check "browser: reddit.com renders a real page (final_url, title, a screenshot that is not blank)"
+  _browser_ran "${task}" "${state}" || return 0
+  title="$(acc_output "${task}" '.title // ""')"
+  url="$(acc_output "${task}" '.final_url // ""')"
+  page="$(acc_artifact_text "${task}" "page.txt" || true)"
+  # A wall first: a challenge page renders too, and would pass the rest.
+  # The title always; the text only when it is short, as a wall's is -- a
+  # real front page is long, and a post title saying "blocked" is not a wall.
+  wall="$(printf '%s' "${title}" | grep -oiE "${BROWSER_WALL_RE}" | head -n 1 || true)"
+  if [[ -z "${wall}" && "${#page}" -lt 2000 ]]; then
+    wall="$(printf '%s' "${page}" | grep -oiE "${BROWSER_WALL_RE}" | head -n 1 || true)"
+  fi
+  if [[ -n "${wall}" ]]; then
+    acc_skip "not measured: reddit.com served a bot challenge or consent wall (saw \"${wall}\"; title \"${title}\")" "${task}"
+    return 0
+  fi
+  if [[ "${url}" =~ ^https://([a-z0-9-]+\.)*reddit\.com(/|$) ]]; then
+    acc_pass "ended on ${url}" "${task}"
+  else
+    acc_fail "ended on '${url:-nothing}', not reddit.com" "${task}"
+  fi
+  if [[ -n "${title//[[:space:]]/}" ]]; then
+    acc_pass "title: ${title}" "${task}"
+  else
+    acc_fail "the page has no title" "${task}"
+  fi
+  _browser_pixels "${task}"
+}
+
+_browser_check_form() {
+  local task="$1" state="$2" page name error
+  acc_check "browser: fill and click on httpbin's form produce the echoed name"
+  if [[ -n "${task}" && "${state}" == "FAILED" ]]; then
+    error="$(task_field "${task}" '.last_error // ""')"
+    # httpbin down, slow or unreachable is httpbin's availability, not a result.
+    if grep -qiE 'net::ERR|Timeout .*exceeded|50[234]' <<<"${error}"; then
+      acc_skip "not measured: ${FORM_URL} did not answer ($(printf '%s' "${error}" | redact | tr '\n' ' ' | head -c 160))" "${task}"
+      return 0
+    fi
+  fi
+  _browser_ran "${task}" "${state}" || return 0
+  name="acceptance-${ACC_RUN_ID}"
+  page="$(acc_artifact_text "${task}" "page.txt" || true)"
+  if grep -qE "\"custname\": *\"${name}\"" <<<"${page}"; then
+    acc_pass "httpbin echoed custname \"${name}\": the fill reached the field and the click submitted the form" "${task}"
+  else
+    acc_fail "the echoed response does not carry custname \"${name}\": $(printf '%s' "${page}" | head -c 160 | tr '\n' ' ')" "${task}"
+  fi
 }
 
 _browser_check_door() {

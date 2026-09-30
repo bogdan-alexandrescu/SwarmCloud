@@ -132,6 +132,16 @@ def test_every_row_filter_round_trips_to_the_pixels_written(filters):
     assert image.rgba == expected
 
 
+def test_max_rows_decodes_the_top_of_a_tall_image_exactly():
+    width, height = 7, 20
+    rows = rgb_rows(width, height, lambda x, y: ((x * 31 + y) % 256, (y * 7) % 256, 90))
+    data = make_png(rows, width, filters=(4, 2, 1, 3))
+    full = pngcheck.decode(data)
+    top = pngcheck.decode(data, max_rows=5)
+    assert (top.width, top.height) == (width, 5)
+    assert top.rgba == full.rgba[: width * 5 * 4]
+
+
 def test_grey_palette_and_alpha_images_decode_to_rgba():
     grey = pngcheck.decode(make_png([bytes([0, 128, 255])], 3, colour_type=0))
     assert grey.rgba == bytes([0, 0, 0, 255, 128, 128, 128, 255, 255, 255, 255, 255])

@@ -41,7 +41,6 @@ the release.
 | `SWARM_ACCEPTANCE_REF` | `main` | the ref of this repository the tasks clone. A release run cannot set it (verify-remote passes no environment), and reads main, which is what the release deployed |
 | `SWARM_ACCEPTANCE_TIMEOUT` | `900` | how long one task may take |
 | `SWARM_ACCEPTANCE_ADMIT_WAIT` | `300` | how long a never-admitted task is waited on before it is a SKIP |
-| `SWARM_ACCEPTANCE_BROWSER_URL` | unset | where the browser fixture page is served (below) |
 | `SWARM_ACCEPTANCE_ISSUE`, `_ISSUE_EXPECT` | `77`, `bootstrap.sh` | the issue the `issue` input fetches, and a string only its text contains |
 | `SWARM_ACCEPTANCE_GITHUB_TOKEN` (or `GH_TOKEN`, `GITHUB_TOKEN`) | unset | lets each check close its own pull request and branches |
 
@@ -49,7 +48,7 @@ the release.
 
 A check that cannot be measured says so and why: a profile input this
 deployment does not declare yet, a pool an operator closed, a credential the
-caller's tenant does not hold, no fixture URL. It is counted apart and listed by
+caller's tenant does not hold, a third-party page's bot wall. It is counted apart and listed by
 name in the summary, as testlib's `t_skip` does for every suite. Nothing here
 passes silently. Two skips are decided by the platform's own behaviour rather
 than restated from its configuration:
@@ -149,27 +148,42 @@ that file.**
 
 ### browser
 
-| check | asserts |
-|---|---|
-| goto + extract_text | the runner's `title` is the fixture's, its `final_url` is not `about:blank`, `#known` extracts to the known string, and `page.txt` carries it |
-| screenshot | the full-page `full.png`, decoded by `scripts/acceptance/pngcheck.py`, is not blank (more than one colour and a luminance spread a flat fill cannot have) and at least 5% of it is the fixture block's exact colour, `#12a150` |
-| click and type | `fill` `#name`, `click` `#go`, and `#result` then reads `Hello, <name>!` -- text only the page's own script writes |
-| door refusals | `http://169.254.169.254/...`, `http://10.0.0.1/`, `http://kubernetes.default.svc/` and `file:///etc/passwd` are each a 422 `invalid_input`, as `url` and as a `goto` action's `url` |
+The pages are **third-party sites** (owner decision on #358, 2026-09-29).
+Nothing this repository owns serves an `.html` file as HTML:
+`raw.githubusercontent.com` and jsDelivr answer `text/plain` with
+`X-Content-Type-Options: nosniff` (measured 2026-09-29), so Chromium would show a
+fixture's source instead of rendering it.
+
+| check | page | asserts |
+|---|---|---|
+| example.com renders | `https://example.com/` | the title is `Example Domain`, `final_url` is on example.com, and `page.txt` (extract_text) carries "This domain is for use in documentation examples" |
+| example.com's pixels | same task | the full-page screenshot, decoded by `scripts/acceptance/pngcheck.py`, is not blank, and at least half of it is the page's background, `#eee` |
+| reddit.com renders | `https://www.reddit.com/` | `final_url` is on reddit.com, the title is not empty, the full-page screenshot is not blank. No exact text: the page changes. A bot challenge or consent wall (by title, or by the text of a short page) is a SKIP naming what was seen, never a PASS |
+| fill and click | `https://httpbin.org/forms/post` | `fill` the customer name, `click` submit, and httpbin's echoed response carries `"custname": "<the name>"`. httpbin unreachable (a `net::ERR`, a timeout, a 50x) is a SKIP |
+| door refusals | none | `http://169.254.169.254/...`, `http://10.0.0.1/`, `http://kubernetes.default.svc/` and `file:///etc/passwd` are each a 422 `invalid_input`, as `url` and as a `goto` action's `url` |
+
+**example.com's visible text no longer says "Example Domain"** (measured
+2026-09-29): only its `<title>` does, and the body reads "This domain is for use
+in documentation examples without needing permission." So the title carries
+the "Example Domain" assertion and the text assertion uses the body sentence.
+The page also asks not to be relied on for testing and monitoring; one request
+per dev release is the whole use. Its background is `light-dark(#eee,#222)`:
+`#eee` under the light scheme headless Chromium renders by default.
+
+**httpbin.org** is the form page because it exists to echo requests: filling a
+form there sends test data to a service built to receive it, and its response
+proves the fill reached the field and the click submitted the form. It is not
+always available, which is why its outage is a SKIP.
 
 These need contract request 32 (#218, PR #345) deployed, and the group skips
 until it is.
 
 **`pngcheck.py` uses the standard library only** (`zlib` and the five PNG row
-filters), so it runs anywhere Python 3 does. It needs `python3` wherever the
-suite runs; where there is none, the screenshot check skips saying so.
-
-**The fixture page needs a host that serves it as `text/html`**, and that is
-the owner's decision. `raw.githubusercontent.com` and jsDelivr both serve an
-`.html` file as `text/plain` with `X-Content-Type-Options: nosniff` (measured
-2026-09-29), so Chromium would show the page's source: no block, no script, no
-form. Until `SWARM_ACCEPTANCE_BROWSER_URL` names a host that serves
-`tests/acceptance/fixtures/browser/index.html` as HTML, the page checks skip;
-the door checks do not need a page and run regardless.
+filters). The swarm-verify image carries `python3` for it (#358). Wherever the
+suite runs without `python3`, the pixel checks SKIP saying so. It decodes at
+most the top 4000 rows (`--max-rows`): a real site's full-page screenshot can
+be tens of thousands of rows, which pure Python unfilters in minutes, and
+whether a page rendered is decided at its top.
 
 ## Pull requests on this repository
 

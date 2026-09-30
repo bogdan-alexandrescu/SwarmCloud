@@ -15,8 +15,8 @@ reviewer cannot see running:
   needs it);
 * every acceptance script is a script this repository accepts: `set -euo
   pipefail` first, executable, and shellcheck-clean where shellcheck exists.
-  CI's shell job globs scripts/*.sh and scripts/lib/*.sh only, so without this
-  nothing would check scripts/acceptance/.
+  CI's shell job checks scripts/acceptance/ as well since #358; this holds
+  the entry scripts to it in the unit job too.
 """
 
 from __future__ import annotations

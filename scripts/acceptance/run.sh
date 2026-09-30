@@ -37,8 +37,7 @@
 # (scripts/acceptance/github-cleanup.sh).
 #
 # Environment: SWARM_ACCEPTANCE_REF (default main), SWARM_ACCEPTANCE_TIMEOUT
-# (900), SWARM_ACCEPTANCE_ADMIT_WAIT (300), SWARM_ACCEPTANCE_BROWSER_URL
-# (unset: the browser page checks skip), SWARM_ACCEPTANCE_ISSUE (77) and
+# (900), SWARM_ACCEPTANCE_ADMIT_WAIT (300), SWARM_ACCEPTANCE_ISSUE (77) and
 # SWARM_ACCEPTANCE_ISSUE_EXPECT (bootstrap.sh).
 
 set -euo pipefail

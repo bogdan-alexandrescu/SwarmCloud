@@ -8,6 +8,11 @@
 # implement -> review -> fix chain uses claude-code, because `integrate` is
 # about agents' git work; its prompts are one sentence each.
 
+# Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
+# this file on its own too, where the variables those set and the ones this
+# file sets for them read as unassigned and unused. Checked in context
+# through run.sh -x.
+# shellcheck disable=SC2034,SC2154
 set -euo pipefail
 
 WF_PAYLOAD_NAME="payload.txt"
