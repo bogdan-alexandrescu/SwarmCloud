@@ -348,6 +348,83 @@ def test_a_workflow_without_continues_task_is_refused_to_the_listed_account(fixe
 
 
 # ---------------------------------------------------------------------------
+# continues_task itself, for the listed account (could not be written in
+# #343: `resolve_continuation` did not yet pass `Store.get_task` its now-
+# required `submitted_by`, so any of these raised TypeError before route
+# refusal ever ran).
+# ---------------------------------------------------------------------------
+
+CONTINUATION_REPO = "https://github.com/saga-xyz/example"
+
+
+def _submit_direct_pr_task(fixer_client, headers: dict[str, str], **extra: Any) -> str:
+    body = {
+        "runner_profile": "mock",
+        "strategy": "direct-pr",
+        "repository_url": CONTINUATION_REPO,
+        **extra,
+    }
+    response = fixer_client.post("/v1/tasks", headers=headers, json=body)
+    assert response.status_code == 201, response.text
+    return response.json()["task"]["id"]
+
+
+def _fix_workflow(continues: str) -> dict:
+    return {
+        "steps": [{"step_id": "fix", "runner_profile": "mock", "input": {"prompt": "fix"}}],
+        "strategy": "direct-pr",
+        "continues_task": continues,
+    }
+
+
+def test_the_listed_account_can_continue_a_task_another_member_submitted(fixer_client):
+    """The whole point of the scope: ci-fix continues ALICE's red pull request,
+    never one of its own -- so this must not be narrowed by `submitted_by`."""
+    original = _submit_direct_pr_task(fixer_client, ALICE)
+    response = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(original)
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["dispatch"]["continues_task"] == original
+
+
+def test_the_continued_tasks_submitted_by_is_the_listed_account_not_the_original(
+    fixer_client, db
+):
+    """The fix task's `submitted_by` is the caller (contract request 30,
+    decision 2): copying it from the continued task would lose the listed
+    account's own sight of what it submitted, on every later read route that
+    filters by `submitted_by`."""
+    original = _submit_direct_pr_task(fixer_client, ALICE)
+    response = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(original)
+    )
+    assert response.status_code == 201, response.text
+    fix_task_id = response.json()["workflow"]["steps"][0]["task_id"]
+    assert db.docs[f"tasks/{fix_task_id}"]["submitted_by"] == FIXER
+
+    # And the listed account can now read its own continuation back, unlike
+    # alice's original task (test_another_members_task_reads_as_missing...).
+    mine = fixer_client.get(f"/v1/tasks/{fix_task_id}", headers=FIXER_HEADERS)
+    assert mine.status_code == 200, mine.text
+
+
+def test_a_task_from_another_tenant_still_cannot_be_continued_by_the_listed_account(
+    fixer_client,
+):
+    """The tenant check in `resolve_continuation` is unaffected by the
+    unfiltered `submitted_by=None`: only the CALLER'S TENANT's tasks are
+    reachable at all."""
+    bob = auth_header("bob")
+    theirs = _submit_direct_pr_task(fixer_client, bob)
+    response = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(theirs)
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] == "invalid_dispatch"
+
+
+# ---------------------------------------------------------------------------
 # Ownership
 # ---------------------------------------------------------------------------
 

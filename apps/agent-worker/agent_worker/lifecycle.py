@@ -129,6 +129,7 @@ from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
+from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
@@ -2025,15 +2026,17 @@ class Worker:
                 "from_checkpoint": True,
                 "commit": self._clone_base,
             }
-        # A step that BUILDS ON an upstream step (#264) starts from the branch
-        # that step pushed, so a fix sees the code it is fixing. The branch is
-        # derived from the task id with this worker's own prefix, never read
-        # as a name, exactly as the integrator's contributor branches are.
+        # A fix step clones the branch it continues (#263, continuation.py)
+        # first; failing that, a step that BUILDS ON an upstream step (#264)
+        # starts from the branch that step pushed, so a fix sees the code it
+        # is fixing. Either way the branch is derived from a task id with
+        # this worker's own prefix, never read as a name, exactly as the
+        # integrator's contributor branches are.
         builds_on = self._dispatch_builds_on()
         ref = (
-            f"{self.cfg.git_branch_prefix}{builds_on}"
-            if builds_on
-            else self.cfg.repository_ref or task.get("repository_ref")
+            continuation_mod.clone_ref(task.get("metadata"), self.cfg.git_branch_prefix)
+            or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
+            or (self.cfg.repository_ref or task.get("repository_ref"))
         )
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
@@ -4735,7 +4738,15 @@ class Worker:
             out["publish_reason"] = "no credential"
             return out
 
-        branch = f"{cfg.git_branch_prefix}{cfg.task_id}"
+        # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
+        try:
+            branch = continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+            )
+        except WorkerError as exc:
+            out["published"] = False
+            out["publish_reason"] = f"refusing to publish: {exc}"
+            return out
         protected = (access.default_branch,) if access.default_branch else ()
 
         role = self._dispatch_role() if strategy == "integrate" else ""

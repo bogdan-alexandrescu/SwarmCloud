@@ -613,9 +613,29 @@ access_token() {
       # account's access token rather than the operator's own. gcloud's
       # `--impersonate-service-account` is the one way to get one without a key
       # file, which this repository does not issue.
-      _ACCESS_TOKEN="$(gcloud auth print-access-token \
-        --impersonate-service-account="${SWARM_IMPERSONATE_SA}" 2>/dev/null)" \
-        || die "could not mint an access token by impersonating ${SWARM_IMPERSONATE_SA}; you need roles/iam.serviceAccountTokenCreator on it"
+      #
+      # UNLESS the active gcloud account already IS that service account: a
+      # caller can now federate directly as SWARM_IMPERSONATE_SA (ci-fix.yml,
+      # terraform/bootstrap/ci_fix.tf, since #273) rather than reaching it
+      # through the deployer. `--impersonate-service-account` naming the
+      # account gcloud is already signed in as asks it to impersonate itself,
+      # which is refused without roles/iam.serviceAccountTokenCreator on
+      # itself -- a grant nobody holds and self-impersonation would never
+      # need. Compared case-insensitively: IAM service account emails are not
+      # case-sensitive, and `gcloud config get-value account` echoes back
+      # whatever case a caller's `gcloud auth login`/ADC used to set it.
+      local active active_lc sa_lc
+      active="$(gcloud config get-value account 2>/dev/null)"
+      active_lc="$(printf '%s' "${active}" | tr '[:upper:]' '[:lower:]')"
+      sa_lc="$(printf '%s' "${SWARM_IMPERSONATE_SA}" | tr '[:upper:]' '[:lower:]')"
+      if [[ -n "${active}" && "${active_lc}" == "${sa_lc}" ]]; then
+        _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
+          || die "could not mint an access token for the active account ${active}"
+      else
+        _ACCESS_TOKEN="$(gcloud auth print-access-token \
+          --impersonate-service-account="${SWARM_IMPERSONATE_SA}" 2>/dev/null)" \
+          || die "could not mint an access token by impersonating ${SWARM_IMPERSONATE_SA}; you need roles/iam.serviceAccountTokenCreator on it"
+      fi
     else
       _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
         || die "no gcloud credentials; run: gcloud auth login"
