@@ -111,6 +111,7 @@ from __future__ import annotations
 import functools
 import json
 import os
+import re
 import shutil
 import sys
 import threading
@@ -122,13 +123,16 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, InputRefused, check_inputs
 from swarm_common.states import EventType, ParkReason, TaskState
+from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
+from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
 from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
+from . import issue as issue_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
 from . import workspace as workspace_mod
@@ -147,11 +151,18 @@ from .accountlease import (
     NoAccountAvailable,
     credential_env_from_account,
 )
-from .checkpoint import CheckpointManager, CheckpointRecord
+from .checkpoint import (
+    ARCHIVE_NAME,
+    MANIFEST_NAME,
+    CheckpointManager,
+    CheckpointRecord,
+    checkpoint_prefix,
+)
 from .config import WorkerConfig
-from .control import ControlPlane, ControlSignals
+from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
+    ConfigError,
     ExitCode,
     FencedError,
     FencedWriteRefused,
@@ -161,6 +172,7 @@ from .errors import (
 )
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
+    ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
     GitError,
     MergeOutcome,
@@ -168,11 +180,24 @@ from .gitops import (
     fold_agent_commits,
     hide_from_git,
     merge_branches,
+    mirror_worktree,
     prepare_publish_repo,
     push_branch,
+    read_agent_excludes,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
+)
+# The helpers every function in `gitops` builds its git commands from. Borrowed
+# rather than restated for `replay_agent_commits` below, so its commands carry
+# exactly the hook, fsmonitor, signing and identity overrides the fold's do.
+from .gitops import (
+    _NO_HOOKS,
+    _SHA_RE,
+    _git_stream,
+    _git_text,
+    _git_text_full,
+    _worker_identity,
 )
 from .hardening import FAILED, MemoryProtection
 from .metrics import (
@@ -285,6 +310,60 @@ WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 
+#: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
+#: request's title and body (#214), so a platform pull request can say what it
+#: closes. Read without following a link, scrubbed, bounded, and refused -- in
+#: favour of the generated text -- on attribution; see
+#: `Worker._agent_pull_request_text`.
+PR_TITLE_FILE = "pr-title.txt"
+PR_BODY_FILE = "pr-body.md"
+#: One line, at most this many characters: GitHub's own title field is 256.
+PR_TITLE_MAX_CHARS = 256
+#: At most this many bytes of the agent's body, before the platform's block. A
+#: GitHub body holds 65,536 characters; the platform's block has to fit too, so
+#: the agent's part is cut here rather than letting the forge refuse the lot.
+PR_BODY_MAX_BYTES = 60 * 1024
+#: How much of either file is read at all. Past this the text is cut anyway.
+PR_READ_LIMIT_BYTES = 256 * 1024
+
+#: The retired generated title's shape, `[swarm] task_...`, in any case. A
+#: title that matches is treated as carrying the task id even when the id in
+#: it is not this task's (an agent that copied another task's old title).
+_RETIRED_TITLE_RE = re.compile(r"\[swarm\]\s*task_", re.IGNORECASE)
+
+#: One path segment of a checkpoint's key, as a manifest's `attempt_id` and
+#: `checkpoint_id` must be before a restore builds a key from them (#347). A
+#: manifest is bucket data: an id carrying `/` or `..` would name a key that
+#: starts with this task's prefix and leaves it.
+_KEY_SEGMENT_RE = re.compile(r"[A-Za-z0-9_-][A-Za-z0-9_.-]*")
+
+
+def _as_issue_number(value: Any) -> int | None:
+    """A GitHub issue number from whatever `input.issue` turns out to hold.
+
+    `#265` is landing separately and had not, as of this change, fixed that
+    input's shape -- so this reads defensively: a bare number, a numeric
+    string, or a leading `#N`. Anything else, including a non-positive
+    number, is "no number here" rather than a guess.
+    """
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value > 0 else None
+    if isinstance(value, str):
+        stripped = value.strip().lstrip("#")
+        if stripped.isdigit():
+            n = int(stripped)
+            return n if n > 0 else None
+    return None
+
+#: The most agent commits the publish keeps one by one (#242). Each costs two
+#: git processes; past this many the agent's history is folded into one worker
+#: commit as it was before, and the run result says which happened.
+MAX_KEPT_COMMITS = 200
+#: The most bytes of one agent commit message kept, after it is cleaned.
+COMMIT_MESSAGE_MAX_BYTES = 16 * 1024
+
 #: The worker-owned repository the token-bearing git commands run in lives under
 #: `ws.private` -- never checkpointed, never uploaded, never named in the agent's
 #: environment -- so the push and the integrator's fetch authenticate from
@@ -314,6 +393,21 @@ class WorkerDeps:
     #: None means nothing established it, and is treated as FAILED: a worker
     #: built some other way holds no token rather than an unprotected one.
     memory: MemoryProtection | None = None
+
+
+@dataclass(frozen=True)
+class _Upload:
+    """What `Worker._upload_copy` did with one file.
+
+    `bytes` is what was uploaded, or None when nothing was, with `skipped` the
+    reason (`standalone_outputs`' wording). `unredacted` is the file's
+    `redaction_skipped` entry when it left without being rewritten and its
+    bytes were not found clean.
+    """
+
+    bytes: int | None = None
+    skipped: str = ""
+    unredacted: dict[str, Any] | None = None
 
 
 @dataclass
@@ -379,6 +473,12 @@ class Worker:
         self._restored_from: CheckpointRecord | None = None
         self._repo_url: str | None = None
         self._task: dict[str, Any] | None = None
+        #: An `input.issue` number's title, when something upstream of the pull
+        #: request title (#265's own fetch, once it lands) already read it.
+        #: Nothing sets this yet -- #265 is landing separately and had not, as
+        #: of this change, shipped the fetch -- so it stays None and
+        #: `_title_from_issue_input` falls back to "Fixes #N".
+        self._issue_title: str | None = None
         self._clone_base: str | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
@@ -747,12 +847,25 @@ class Worker:
         # ---- STEP 4: restore the latest checkpoint ----------------------
         self.phases.enter("restore_checkpoint")
         task = self.control.fetch_task()
+        # THE STORED INPUT IS CHECKED AGAIN, AT THE FIRST READ OF THE TASK
+        # (contract request 32, *Preconditions*; the owner's decision on #345:
+        # every profile, no exemption). swarm-api and the bridge refuse an
+        # input its profile does not declare at submission; this asks the same
+        # rule of the input AS STORED -- `task["input"]`, before the worker adds
+        # `task_id`, `attempt_id`, `repository`, `attempt_count`,
+        # `resumed_from_checkpoint` or `staged_inputs` of its own -- so a task
+        # written before its profile declared, or by a path that skipped the
+        # API, is refused by the process that would run it. Here, and not where
+        # `input.json` is written: before a checkpoint is restored, a
+        # repository cloned, an upstream artifact staged or a credential
+        # mounted for an input that was always going to be refused.
+        _recheck_runner_input(cfg.runner_profile, task.get("input"))
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed.
         self._task = task
         self._standalone = self._uploads_working_folder(task)
-        self._restore_checkpoint(task.get("latest_checkpoint"))
+        self._restore_checkpoint(task)
         if self._standalone and self._restored_from is not None:
             # What the checkpoint brought back, BEFORE the worker stages
             # anything: whatever in here is not a staged input was written by
@@ -819,9 +932,9 @@ class Worker:
             # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
             # refuses `input.model` on every profile that declares its inputs
             # (#213); this is the same rule for a task written before that
-            # refusal shipped, a profile whose inputs are not declared yet
-            # (`browser`, `generic`: #218), or a path that does not go through
-            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # refusal shipped (every profile declares since contract request
+            # 32, #218, so the API now refuses it for all of them), or a path
+            # that does not go through the API. The model is the Job's `MODEL`, which reaches the runner
             # in its environment (`_build_child_env`), never through input.json.
             payload.pop("model")
             self.log.warning(
@@ -883,6 +996,24 @@ class Worker:
             # The pool is this tenant's way of running and it is momentarily
             # empty. A wait, not a failure -- see `_park_no_account`.
             return functools.partial(self._park_no_account, exc)
+
+        # ---- STEP 6b: the issue this step was pointed at (#265) -----------
+        # After the credentials, so every secret this attempt holds is
+        # registered before the issue's text is scrubbed. A fetch that fails
+        # fails the attempt here, before the agent starts (`agent_worker.issue`).
+        issue_number = issue_mod.requested(task.get("input"), cfg.profile)
+        if issue_number is not None:
+            self.phases.enter("fetch_issue")
+            issue_mod.stage_issue(
+                number=issue_number,
+                repository_url=self._repo_url,
+                token=self._git_token(),
+                refusal=self._git_token_refusal(),
+                work_dir=ws.work,
+                scrub=self._scrub,
+                logger=self.log,
+                on_request=self._heartbeat,
+            )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -947,6 +1078,14 @@ class Worker:
             stderr_path=ws.stderr_path,
             max_stdout_bytes=cfg.max_stdout_bytes,
             max_stderr_bytes=cfg.max_stderr_bytes,
+            # THE END OF EACH STREAM IS KEPT (#208). A runner's stderr ends
+            # with the line it failed on, and `last_error` is the last 2,000
+            # characters of it when the runner wrote no `error` of its own
+            # (`_finalise`). Head-only, a stderr past its cap ended with the
+            # truncation notice, and `last_error` quoted output from before
+            # it. Head-only is git's rule -- a patch with its middle removed
+            # must never read as one that fitted -- and a log is not a patch.
+            keep_tail=True,
             logger=self.log,
         )
         self._child = child
@@ -1282,7 +1421,10 @@ class Worker:
             and result.exit_code == 0
             and _read_json(ws.result_path) is not None
         )
-        withheld = self._publish_withheld(ran_clean)
+        # Read BEFORE the harvest and the upload, like the absence check in
+        # `_publish_withheld`: a refused title withholds the publish too.
+        title_refused = self._refused_title_reason() if ran_clean else None
+        withheld = self._publish_withheld(ran_clean, title_refused=title_refused)
         # The ONLY call that may pass publish=True. The agent exited on its own
         # here; the other five call sites are parks and crashes. It is False
         # only for an attempt that is going to run again (`_publish_withheld`).
@@ -1344,6 +1486,12 @@ class Worker:
                 )
             if missing:
                 return self._fail_for_missing_outputs(missing, summary, exit_code=0)
+            if title_refused is not None:
+                return self._fail_for_refused_title(title_refused, summary, exit_code=0)
+            git_summary = summary.get("git")
+            leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
+            if leak:
+                return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -1668,16 +1816,33 @@ class Worker:
                 error=f"{type(write_exc).__name__}: {write_exc}",
             )
 
-    def _restore_checkpoint(self, pointer: Any) -> None:
+    def _restore_checkpoint(self, task: dict[str, Any]) -> None:
+        """Restore the checkpoint this task's own earlier attempt recorded, or nothing.
+
+        ONLY A RECORDED CHECKPOINT, AND NEVER ON A FIRST ATTEMPT (#347, owner
+        decision 2026-09-29). This used to fall back to the newest manifest
+        under the task's prefix when the pointer resolved to nothing, and to
+        do so on attempt 1 as well. The tenant's worker account can write
+        anywhere under `tenants/<tenant>/`, so any agent of the tenant could
+        plant a checkpoint under another task's prefix -- an implement step
+        under its parked review step's -- and HOME is `work/`, whose
+        `.claude/` travels in every checkpoint: the planter's settings, and
+        the hooks in them, arrived in the next step, where a hook runs code
+        without persuading any model. Now:
+
+        * a first attempt restores nothing, whatever is under the prefix;
+        * a retry restores only what `_recorded_checkpoint` accepts;
+        * nothing lists the prefix to choose a checkpoint.
+
+        Every refusal starts the attempt from an empty workspace, which is
+        what a first attempt does anyway. The restore's own checks --
+        ownership, digest, the member filter, the escaping-link skip, the
+        size caps -- still apply to whatever is accepted.
+        """
         ws = self.ws
         assert ws is not None
-        record: CheckpointRecord | None = None
-        if isinstance(pointer, str) and pointer:
-            record = self.checkpoints.find_by_uri(pointer)
+        record = self._recorded_checkpoint(task)
         if record is None:
-            record = self.checkpoints.find_latest()
-        if record is None:
-            self.log.info("no checkpoint to restore; starting from an empty workspace")
             return
         files = self.checkpoints.restore(record, ws)
         self._restored_from = record
@@ -1690,6 +1855,120 @@ class Worker:
                 "bytes": record.archive_bytes,
             },
         )
+
+    def _recorded_checkpoint(self, task: dict[str, Any]) -> CheckpointRecord | None:
+        """The checkpoint an earlier attempt of THIS task recorded, or None.
+
+        Accepted only when every one of these holds:
+
+        1. the task has had an earlier attempt: its `attempt_count`, which
+           admission increments in the lease's own transaction, is above 1;
+        2. the task's `latest_checkpoint` names one, and it resolves inside
+           this task's own prefix to a manifest naming this tenant and task
+           (`CheckpointManager.find_by_uri`, which refuses anything outside
+           the prefix);
+        3. the pointer, the manifest and the archive all lie where the
+           manifest's own ids put them, so the attempt and checkpoint it
+           names are the ones at that path;
+        4. it is not this attempt's own -- this attempt has recorded nothing;
+        5. the attempt document of the attempt that wrote it exists, is this
+           tenant's and this task's, lists that checkpoint id, and records
+           the archive digest the manifest carries -- as
+           `ControlPlane.record_checkpoint` writes both, before it moves the
+           pointer. The restore then checks the archive's bytes against that
+           digest, so bytes rewritten in the bucket after the attempt
+           recorded them are refused even when manifest and archive were
+           rewritten together.
+
+        WHAT THIS DOES NOT STOP. Firestore has no document-level IAM
+        (docs/multi-tenancy.md), so an agent of the tenant that knows this
+        task's id can write `attempt_count`, `latest_checkpoint` and an
+        attempt document of an id it chose, and satisfy every check above.
+        What it stops is every first attempt, and on a retry the planter
+        that has only the bucket -- the issue's reproduction -- whether it
+        adds a checkpoint beside the recorded one or rewrites the recorded
+        one. The complete fix needs a record the tenant cannot write, which
+        is the signed step specs' work (#342).
+        """
+        refuse = functools.partial(
+            self.log.info, "no checkpoint is restored; starting from an empty workspace"
+        )
+        count = task.get("attempt_count")
+        if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
+            refuse(reason="first attempt of this task", attempt_count=count)
+            return None
+        pointer = task.get("latest_checkpoint")
+        if not isinstance(pointer, str) or not pointer:
+            refuse(reason="no earlier attempt of this task recorded a checkpoint")
+            return None
+        record = self.checkpoints.find_by_uri(pointer)
+        if record is None:
+            refuse(reason="the recorded checkpoint does not resolve to one of this task's")
+            return None
+        ids = (record.attempt_id, record.checkpoint_id)
+        if not all(isinstance(i, str) and _KEY_SEGMENT_RE.fullmatch(i) for i in ids):
+            self.log.error(
+                "refusing a checkpoint whose ids are not single key segments",
+                attempt_id=str(record.attempt_id)[:200],
+                checkpoint_id=str(record.checkpoint_id)[:200],
+            )
+            refuse(reason="the checkpoint's ids are not single key segments")
+            return None
+        expected = checkpoint_prefix(
+            tenant_id=self.cfg.tenant_id,
+            task_id=self.cfg.task_id,
+            attempt_id=record.attempt_id,
+            checkpoint_id=record.checkpoint_id,
+        )
+        named = pointer.rstrip("/")
+        if (
+            record.manifest_key != f"{expected}/{MANIFEST_NAME}"
+            or record.archive_key != f"{expected}/{ARCHIVE_NAME}"
+            or not (named == expected or named.endswith("/" + expected))
+        ):
+            self.log.error(
+                "refusing a checkpoint that is not where its own ids put it",
+                pointer=pointer,
+                manifest_key=record.manifest_key,
+                archive_key=record.archive_key,
+                expected_prefix=expected,
+            )
+            refuse(reason="the checkpoint's ids do not match its path")
+            return None
+        if record.attempt_id == self.cfg.attempt_id:
+            refuse(reason="the pointer names this attempt, which has recorded nothing")
+            return None
+        try:
+            attempt = self.control.fetch_attempt(record.attempt_id)
+        except TenantMismatchError as exc:
+            self.log.error(
+                "refusing a checkpoint whose attempt document is another tenant's",
+                attempt_id=record.attempt_id,
+                error=str(exc),
+            )
+            refuse(reason="the recording attempt is another tenant's")
+            return None
+        listed = attempt.get("checkpoints") if attempt else None
+        digests = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+        if (
+            attempt is None
+            or attempt.get("task_id") != self.cfg.task_id
+            or not isinstance(listed, list)
+            or record.checkpoint_id not in listed
+            or not isinstance(digests, dict)
+            or digests.get(record.checkpoint_id) != record.archive_sha256
+        ):
+            self.log.error(
+                "refusing a checkpoint no earlier attempt of this task recorded",
+                attempt_id=record.attempt_id,
+                checkpoint_id=record.checkpoint_id,
+                attempt_document=attempt is not None,
+                digest_recorded=isinstance(digests, dict)
+                and record.checkpoint_id in digests,
+            )
+            refuse(reason="no attempt document of this task lists the checkpoint")
+            return None
+        return record
 
     def _maybe_clone(self, task: dict[str, Any]) -> dict[str, Any] | None:
         ws = self.ws
@@ -1808,7 +2087,9 @@ class Worker:
             # `work/`. `repo` and `.swarm` are the worker's OWN directories
             # inside `work/`, not the workspace's, so they are named here.
             reserved=frozenset({REPO_DIR_NAME, WORKER_STATE_DIR})
-            | ws.control_file_names(),
+            | ws.control_file_names()
+            # `issue.md`, when the task asks for an issue (#265).
+            | issue_mod.reserved_names(task.get("input"), self.cfg.profile),
         )
         self._staged_inputs = staged
         self.log.info(
@@ -1938,6 +2219,28 @@ class Worker:
             "could not be asked); files the agent writes under ./artifacts stay "
             "in the repository"
         )
+
+    def _hidden_checkout_names(self, checkout: Path) -> tuple[str, ...]:
+        """Top-level names the publish repository hides from git, as the clone did.
+
+        `_link_checkout_artifacts` hides the checkout's `./artifacts` link in
+        the CLONE's `.git/info/exclude`; the worker's commit is now made in the
+        publish repository (`gitops.mirror_worktree`, #259 M1), which does not
+        read that file, so the name is handed over. Only when the entry is
+        still the worker's link -- a symlink to this attempt's artifacts
+        directory. A repository that tracks its own `artifacts/` never got the
+        link, and hiding the name there would drop the agent's new files under
+        it from the branch.
+        """
+        ws = self.ws
+        assert ws is not None
+        link = ws.artifacts_link(checkout)
+        try:
+            if link.is_symlink() and os.path.realpath(link) == os.path.realpath(ws.artifacts):
+                return (link.name,)
+        except OSError:
+            pass
+        return ()
 
     # -- the working folder of a task with no repository (#184) --------------
     def _uploads_working_folder(self, task: dict[str, Any]) -> bool:
@@ -2252,8 +2555,20 @@ class Worker:
                 "later steps will stage these artifacts from this task",
                 expected_outputs=list(declared.names),
             )
-        self._expected_outputs = declared.names
-        return declared.names
+        names = declared.names
+        if PR_TITLE_FILE not in names and self._title_owed(task):
+            # REQUIRED, NOT INVENTED (owner decision, 2026-09-28): a pull
+            # request this attempt opens is titled by the agent. Owed as an
+            # expected output, a CLI runner tells the agent to write it, and a
+            # clean finish without it fails the attempt retryably (#149's
+            # path) instead of opening an untitled pull request.
+            names = (*names, PR_TITLE_FILE)
+            self.log.info(
+                "this attempt opens a pull request; the agent must write its title",
+                file=PR_TITLE_FILE,
+            )
+        self._expected_outputs = names
+        return names
 
     def _report_missing_outputs(
         self, summary: dict[str, Any], *, fails_the_attempt: bool
@@ -2312,7 +2627,7 @@ class Worker:
         """
         return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
 
-    def _publish_withheld(self, ran_clean: bool) -> str | None:
+    def _publish_withheld(self, ran_clean: bool, *, title_refused: str | None = None) -> str | None:
         """Why this attempt must not publish, or None when it may (#149).
 
         Withheld only from an attempt that is going to RUN AGAIN: its runner
@@ -2339,19 +2654,25 @@ class Worker:
         ws = self.ws
         assert ws is not None
         owed = expected_mod.without_platform_names(self._expected_outputs, (PATCH_NAME,))
-        present = [
-            path.relative_to(ws.artifacts).as_posix()
-            for path in ws.artifacts.rglob("*")
-            if path.is_file() and not path.is_symlink()
-        ]
+        # The same walk as the upload's (#227): `rglob` recursed per folder,
+        # and a deep enough tree raised RecursionError out of `_finalise`
+        # before anything was uploaded.
+        present = list(self._walk_artifacts(ws.artifacts)[0])
         absent = expected_mod.missing_outputs(owed, present)
-        if not absent:
+        if not absent and title_refused is None:
             return None
         task = self._task or {}
         if retries_exhausted(
             int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
         ):
             return None
+        if not absent:
+            # `title_refused` (`_refused_title_reason`): the file is there and
+            # cannot title the pull request, which withholds like an absence.
+            return (
+                f"this attempt is retried because {title_refused}; publishing "
+                f"waits for the attempt that writes a usable one"
+            )
         return (
             "this attempt is retried because expected outputs are missing ("
             + ", ".join(absent)
@@ -2394,6 +2715,81 @@ class Worker:
             missing_count=len(missing),
         )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_refused_title(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, because its `pr-title.txt` was refused.
+
+        The owner's decision of 2026-09-28: the same outcome as a missing
+        expected output (`_fail_for_missing_outputs`), with the refusal as the
+        cause, so the retry is told what to fix. `reason` quotes none of the
+        title. The retry starts with an empty artifacts folder and must write
+        the title again.
+        """
+        error = self._scrub(reason)
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="pull_request_title_refused",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"refused": error},
+            # To become `PUBLISH_REFUSED` with the contract change request of
+            # 2026-09-29 (docs/contract-change-requests.md); OUTPUTS_MISSING
+            # stands in until `swarm_common.EndCause` carries it.
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _fail_for_final_tree_leak(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this attempt, retryably, because the branch it would push adds a
+        credential (owner decision, 2026-09-28, #259 review M4).
+
+        `reason` comes from `final_tree_leak`: it names the file and never the
+        value, so it is safe as the attempt's error, which is what tells the
+        retry what to remove. Nothing was pushed (`_publish_git` returned
+        before the publish repository was made). The retry resumes from the
+        final checkpoint, taken before the worker's commit of uncommitted work,
+        so the agent's files are there to edit.
+        """
+        error = self._scrub(reason)
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause="final_tree_adds_a_credential",
+            result_summary=summary,
+            retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
+            detail={"refused": error},
+            # OWNER DECISION, 2026-09-29: this gets its own end cause,
+            # `PUBLISH_REFUSED`, requested in docs/contract-change-requests.md
+            # (accepted by the owner, not yet applied). `EndCause` is in the
+            # frozen `swarm_common`, so RUNNER_ERROR stands in until the
+            # request lands; switch this line (and the refused title's) then.
+            end_cause=EndCause.RUNNER_ERROR,
+        )
+        self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _leaks_in_added_text(self, text: str) -> bool:
+        """The leak test both publish scans apply to the text a diff ADDS.
+
+        A registered secret -- the scrub replaces exactly the registered
+        values, so "the scrub changed it" is "a registered value is in it" --
+        or a credential-shaped literal (`_holds_a_credential`), which catches
+        a key the agent minted or pasted and nobody registered.
+        """
+        return str(self._scrub(text)) != text or _holds_a_credential(text)
+
+    def _scan_overlap(self) -> int:
+        """How far the leak scan's windows overlap: the longest credential
+        match (`SCAN_OVERLAP_CHARS`) plus the longest registered secret, so a
+        value straddling a window's edge is whole in the next window."""
+        secrets = getattr(self.log, "_secrets", None) or ()
+        return SCAN_OVERLAP_CHARS + max((len(s) for s in secrets), default=0)
 
     def _clone_base_path(self) -> Path | None:
         ws = self.ws
@@ -3131,7 +3527,7 @@ class Worker:
         catalogue cpu of the class the container was SIZED with, which is
         `scheduler.dispatch.resource_class_for(task, profile)` -- the task's
         own class when the catalogue still has it, else the profile's -- and
-        NOT `WorkerConfig.resource_class`, which is always the profile's. A
+        NOT `WorkerConfig.profile_resource_class`, which is always the profile's. A
         task submitted with a larger class than its profile's would otherwise
         have its CPU drawn against a limit its container never had. Restated
         rather than imported (the worker image does not install the
@@ -3161,13 +3557,25 @@ class Worker:
         return float(RESOURCE_CLASSES[sized].cpu), "resource_class"
 
     def _sized_resource_class(self) -> str | None:
+        """The class the container was sized with; None before the task is read.
+
+        What the CPU limit (`_cpu_limit`), the OOM near-miss limit
+        (`_start_sampler`) and the exported metric's `resource_class`
+        (`_export_metrics`) are all read against (#205).
+        """
         task = self._task
         if not task:
             return None
-        named = task.get("resource_class")
-        if isinstance(named, str) and named in RESOURCE_CLASSES:
-            return named
-        return self.cfg.profile.resource_class
+        return self.cfg.sized_resource_class(task.get("resource_class"))
+
+    def _memory_class(self) -> str:
+        """`_sized_resource_class`, or the profile's before the task is read.
+
+        The sampler starts with the runner, which starts after the task was
+        read, so the fallback is for a path that has no task yet and still
+        needs a label -- never a guess drawn as the container's size.
+        """
+        return self._sized_resource_class() or self.cfg.profile_resource_class
 
     def _checkpoint(self, label: str) -> CheckpointRecord | None:
         """Mandatory checkpoint. A failure here is logged, never swallowed.
@@ -3180,7 +3588,9 @@ class Worker:
         A FENCE IS NOT A FAILED CHECKPOINT. The attempt is over, and
         `FencedWriteRefused` is raised to say so. It is checked twice. The first
         check comes before anything is uploaded, because a stale archive in the
-        task's prefix is one `find_latest` can later choose. The second is in
+        task's prefix is bytes a superseded attempt should not have written
+        (a restore no longer lists the prefix, #347, but the archive still
+        costs storage and reads as this task's work). The second is in
         the pointer's own transaction (`ControlPlane.record_checkpoint`),
         because a fence can land during the upload.
         """
@@ -3216,6 +3626,7 @@ class Worker:
             uri=record.uri,
             size_bytes=record.archive_bytes,
             seq=record.seq,
+            archive_sha256=record.archive_sha256,
         )
         return record
 
@@ -3328,22 +3739,27 @@ class Worker:
         """Redact every registered secret from a value bound for Firestore."""
         return self.log.scrub_value(value)
 
-    def _redact_before_upload(self, artifacts: Sequence[Path]) -> list[dict[str, Any]]:
-        """Scrub the captured streams and `artifacts` before they leave the pod.
+    def _redact_before_upload(self) -> list[dict[str, Any]]:
+        """Scrub the worker's own files in place before anything leaves the pod.
 
-        `artifacts` is the files of the artifacts folder that are going to be
-        uploaded (`artifact_manifest.plan`), not the whole folder (#228). A
-        file past the 500-file cap never leaves the pod, so rewriting it would
-        be work for nothing, and an entry for it in `redaction_skipped` -- "it
-        is uploaded as-is" -- would be false. A name that is not UTF-8 is not
-        in it either: no object can be named with it, so it never leaves the
-        pod and has no `redaction_skipped` entry to earn (#225 review).
+        THE THREE FILES OUTSIDE THE ARTIFACTS FOLDER: the runner's
+        `stdout.log` and `stderr.log`, and `result.json`. Each is rewritten
+        where it lies, because it is read again -- the streams are uploaded to
+        `logs/`, and `result.json` lives in `work/`, which a later checkpoint
+        archives. Each is read without following a link and put back without
+        following one either (`_redact_in_place`).
 
-        The agent CLI's two captures are scrubbed WHATEVER the cap decided:
-        they live in the artifacts folder, and a copy of each goes to `logs/`
-        on every exit (`_stream_files`), in or out of the manifest. A link
-        planted at a capture's name is neither scrubbed nor copied: rewriting
-        it would rewrite whatever it points at.
+        NOTHING IN THE ARTIFACTS FOLDER IS REWRITTEN IN PLACE ANY MORE (#227).
+        The pass used to rewrite each file bound for upload by path, after a
+        leaf check for a link -- so a link put in the path between the check
+        and the open, or a FOLDER link the leaf check never saw, had the
+        worker rewrite whatever it pointed at, and upload it after. Every file
+        taken from there is now copied once, with no link followed, into the
+        worker's own scratch, and the copy is what is redacted and what is
+        uploaded (`_upload_copy`). The agent CLI's captures, which go to
+        `logs/` on every exit whatever the cap decided, are copied the same
+        way there. The folder is never checkpointed, so nothing reads its
+        files again after the upload.
 
         A log line is only one of four ways a provider key gets out. The other
         three are `stdout.log` and `stderr.log`, the runner's artifacts, and the
@@ -3371,23 +3787,199 @@ class Worker:
         ws = self.ws
         if ws is None or not self.log.has_secrets:
             return []
-        targets = [ws.stdout_path, ws.stderr_path]
-        captures = [
-            path
-            for _label, path in self._stream_files(ws)
-            if path not in targets and path.is_file() and not path.is_symlink()
-        ]
-        targets += captures
-        # Each file once: a capture the cap took is in `artifacts` too.
-        seen = set(captures)
-        targets += [path for path in artifacts if path not in seen]
-        targets.append(ws.result_path)
         unredacted: list[dict[str, Any]] = []
-        for path in targets:
-            entry = self._redact_file(path, label=_workspace_label(ws, path))
+        for path in (ws.stdout_path, ws.stderr_path, ws.result_path):
+            entry = self._redact_in_place(path, label=_workspace_label(ws, path))
             if entry is not None:
                 unredacted.append(entry)
         return unredacted
+
+    def _redact_in_place(self, path: Path, *, label: str) -> dict[str, Any] | None:
+        """Rewrite one of the worker's own files with no link followed. Never raises.
+
+        Copied out with `copy_without_following` (its folder opened with
+        `O_NOFOLLOW`, the file too), redacted as the copy, and -- only when
+        the redaction rewrote it -- renamed back over the file through a
+        descriptor for its folder, again opened with `O_NOFOLLOW`. A rename
+        replaces a link put at the name meanwhile; it never writes through
+        one. A file that is a link, or whose folder is, is left alone and
+        said so. Returns the file's `redaction_skipped` entry, or None.
+        """
+        ws = self.ws
+        assert ws is not None
+        staging = ws.private / "redact-in-place"
+        try:
+            ws.private.mkdir(parents=True, exist_ok=True)
+            standalone_mod.copy_without_following(
+                path.parent, path.name, staging, limit=sys.maxsize
+            )
+        except FileNotFoundError:
+            return None
+        except standalone_mod.Refused as exc:
+            self.log.warning(
+                "not redacted in place: a symlink, or not a regular file, when it "
+                "was read; nothing was followed",
+                file=label,
+                error=str(exc),
+            )
+            return None
+        except (OSError, standalone_mod.OverCap) as exc:
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            return None
+        try:
+            rewritten, entry = self._redact_outcome(staging, label=label)
+            if rewritten:
+                folder = os.open(
+                    os.fspath(path.parent),
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | getattr(os, "O_CLOEXEC", 0),
+                )
+                try:
+                    os.replace(staging, path.name, dst_dir_fd=folder)
+                finally:
+                    os.close(folder)
+            return entry
+        except OSError as exc:
+            self.log.warning("could not redact a file before upload", file=label, error=str(exc))
+            return None
+        finally:
+            staging.unlink(missing_ok=True)
+
+    def _upload_copy(
+        self,
+        root: Path,
+        relative: str,
+        *,
+        key: str,
+        label: str,
+        limit: int,
+        content_type: str | None = None,
+        absent_ok: bool = False,
+        report: bool = True,
+    ) -> _Upload:
+        """Upload `root/<relative>` as it is AT THIS MOMENT, with no link followed.
+
+        THE ONE WAY A FILE FROM THE ARTIFACTS FOLDER LEAVES THE POD (#227).
+        Copied with `standalone_outputs.copy_without_following` into the
+        worker's own scratch (`ws.private`, in no child's environment): every
+        folder on the way, `root` included, is opened with `O_NOFOLLOW`
+        relative to the one above it, and the file too, so a link anywhere in
+        the path is refused instead of followed, whenever it was put there.
+        The copy is redacted (`_redact_outcome`), uploaded and deleted. The
+        store is never handed a path the agent can write.
+
+        `limit` is the bytes the caller's cap leaves; a file past it, before or
+        after redaction, is not uploaded. `absent_ok` makes a missing file
+        silent (a stream that never wrote anything). With `report`, a file
+        that left unredacted is logged as such -- AFTER its upload, so a file
+        the cap or the store kept in the pod is never logged as "uploaded
+        as-is" (#227); without it, the caller reports.
+        """
+        ws = self.ws
+        assert ws is not None
+        staging = ws.private / "upload-copy"
+        shown = standalone_mod.shown(self._scrub(label))
+        try:
+            ws.private.mkdir(parents=True, exist_ok=True)
+            standalone_mod.copy_without_following(root, relative, staging, limit=max(0, limit))
+        except standalone_mod.OverCap:
+            return _Upload(skipped=standalone_mod.OVER_CAP)
+        except standalone_mod.Refused as exc:
+            self.log.warning(
+                "refused a file bound for upload: a symlink, or not a regular file, "
+                "when it was read; nothing was followed",
+                file=shown,
+                error=str(exc),
+            )
+            return _Upload(skipped=standalone_mod.SYMLINK_REFUSED)
+        except FileNotFoundError as exc:
+            if not absent_ok:
+                self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UNREADABLE)
+        except OSError as exc:
+            self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UNREADABLE)
+        try:
+            entry = None
+            if self.log.has_secrets:
+                _rewritten, entry = self._redact_outcome(staging, label=label, report=False)
+            size = staging.stat().st_size
+            if size > limit:
+                # Redaction can lengthen a file; the cap is on what is uploaded.
+                return _Upload(skipped=standalone_mod.OVER_CAP)
+            if content_type is None:
+                self.store.upload_file(key, staging)
+            else:
+                self.store.upload_file(key, staging, content_type=content_type)
+        except Exception as exc:
+            self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
+            return _Upload(skipped=standalone_mod.UPLOAD_FAILED)
+        finally:
+            staging.unlink(missing_ok=True)
+        if entry is not None and report:
+            self._report_unredacted(entry)
+        return _Upload(bytes=size, unredacted=entry)
+
+    def _walk_artifacts(self, root: Path) -> tuple[dict[str, int], list[str]]:
+        """Every regular file under the artifacts folder, and the folders not walked.
+
+        `{relative POSIX name: size as lstat saw it}`, and the relative names
+        of the folders passed over: too deep for any name under them to be an
+        object's, or unreadable. Never raises, never follows a link, and never
+        recurses: the walk keeps its own stack, so no depth of tree can raise
+        RecursionError (#227), and a folder whose name alone leaves no room
+        under `MAX_OBJECT_NAME_BYTES` is listed instead of walked, which also
+        bounds the work a deep tree costs.
+
+        A folder the agent replaced with a link is not walked at all.
+        """
+        found: dict[str, int] = {}
+        not_walked: list[str] = []
+        if root.is_symlink() or not root.is_dir():
+            if root.is_symlink():
+                self.log.warning(
+                    "the artifacts folder is a symlink, so nothing was uploaded "
+                    "from it; a link is never followed out of the workspace"
+                )
+            return found, not_walked
+        stack = [""]
+        while stack:
+            folder = stack.pop()
+            try:
+                with os.scandir(root / folder if folder else root) as listing:
+                    entries = list(listing)
+            except OSError as exc:
+                if folder:
+                    self.log.warning(
+                        "could not list a folder in $SWARM_ARTIFACTS_DIR; its files "
+                        "were not uploaded",
+                        folder=standalone_mod.shown(self._scrub(folder)),
+                        error=str(exc),
+                    )
+                    not_walked.append(folder)
+                continue
+            for entry in entries:
+                relative = f"{folder}/{entry.name}" if folder else entry.name
+                try:
+                    if entry.is_dir(follow_symlinks=False):
+                        # The shortest name under it is `<folder>/x`.
+                        width = len(relative.encode("utf-8", "surrogateescape")) + 2
+                        if width > standalone_mod.MAX_OBJECT_NAME_BYTES:
+                            not_walked.append(relative)
+                        else:
+                            stack.append(relative)
+                    elif entry.is_file(follow_symlinks=False):
+                        found[relative] = entry.stat(follow_symlinks=False).st_size
+                except OSError:
+                    continue
+        if not_walked:
+            self.log.warning(
+                "folders in $SWARM_ARTIFACTS_DIR were not walked: too deep for any "
+                "name under them to be stored, or unreadable",
+                count=len(not_walked),
+                folders=[standalone_mod.shown(self._scrub(name)) for name in not_walked[:50]],
+                cap_name_bytes=standalone_mod.MAX_OBJECT_NAME_BYTES,
+            )
+        return found, not_walked
 
     def _redact_file(
         self, path: Path, *, label: str, withheld: bool = False
@@ -3398,7 +3990,9 @@ class Worker:
         hold no registered value. `label` is what a reader can place: a path
         under the workspace, or the manifest name of a working-folder copy
         (`_upload_workdir_outputs`), whose scratch path means nothing to anyone.
-        See `_redact_before_upload` for the trade this reports on.
+        See `_redact_before_upload` for the trade this reports on. `path` is
+        always the WORKER's copy in `ws.private`, never a path the agent can
+        write (#227).
 
         `withheld` is the working-folder upload's answer to that trade: a file
         this returns an entry for is NOT uploaded, and the lines say so. An
@@ -3407,16 +4001,28 @@ class Worker:
         review). A file the rewrite raised on is unexamined, so with
         `withheld` it gets an entry rather than a pass.
         """
+        return self._redact_outcome(path, label=label, withheld=withheld)[1]
+
+    def _redact_outcome(
+        self, path: Path, *, label: str, withheld: bool = False, report: bool = True
+    ) -> tuple[bool, dict[str, Any] | None]:
+        """`_redact_file`, also saying whether the file was rewritten.
+
+        Without `report`, the entry is returned and not logged: the caller
+        logs it with `_report_unredacted` once the file has actually left.
+        """
         label = standalone_mod.displayable(label)
         try:
             outcome = self.log.scrub_file_outcome(path, max_bytes=redact_mod.MAX_SCRUB_BYTES)
         except OSError as exc:  # a read-only or vanished file must not fail the attempt
             self.log.warning("could not redact a file before upload", file=label, error=str(exc))
             if withheld:
-                return {"file": label, "reason": "unreadable", "bytes": None, "secret_found": None}
-            return None
+                return False, {
+                    "file": label, "reason": "unreadable", "bytes": None, "secret_found": None,
+                }
+            return False, None
         if not outcome.skipped:
-            return None
+            return outcome is redact_mod.ScrubOutcome.REWRITTEN, None
         found = self.log.file_contains_secret(path)
         try:
             size: int | None = path.stat().st_size
@@ -3429,8 +4035,15 @@ class Worker:
                 reason=outcome.value,
                 bytes=size,
             )
-            return None
+            return False, None
         entry = {"file": label, "reason": outcome.value, "bytes": size, "secret_found": found}
+        if report:
+            self._report_unredacted(entry, withheld=withheld)
+        return False, entry
+
+    def _report_unredacted(self, entry: dict[str, Any], *, withheld: bool = False) -> None:
+        """Log a file that could not be redacted, as what happens to it next."""
+        found = entry.get("secret_found")
         if withheld:
             self.log.warning(
                 "a working-folder file could not be redacted and "
@@ -3453,7 +4066,6 @@ class Worker:
                 "a file could be neither redacted nor scanned; it is uploaded unexamined",
                 **entry,
             )
-        return entry
 
     # -- live logs ----------------------------------------------------------
     def _publish_live_logs(self) -> None:
@@ -3520,14 +4132,26 @@ class Worker:
         try:
             # A symlink is refused, not followed. The agent can write inside
             # `artifacts/`, and a link planted at a capture file's name would
-            # otherwise publish whatever it points at; the final upload skips
+            # otherwise publish whatever it points at; the final upload refuses
             # links for the same reason.
-            if path.is_symlink() or not path.is_file():
+            #
+            # REFUSED AT THE OPEN, NOT BEFORE IT (#227). A leaf check and then
+            # an open by path were two moments, and a link swapped in between
+            # was followed -- as was a link at the stream's FOLDER, which the
+            # leaf check never saw. The descriptor is opened with `O_NOFOLLOW`
+            # for the folder and the file, and everything below reads it.
+            try:
+                fd = standalone_mod.open_without_following(path.parent, path.name)
+            except FileNotFoundError:
                 return
-            size = path.stat().st_size
-            if size == 0:
+            except standalone_mod.Refused as exc:
+                self.log.debug("a live log stream is not a regular file; not published",
+                               stream=label, error=str(exc))
                 return
-            with path.open("rb") as handle:
+            with os.fdopen(fd, "rb") as handle:
+                size = os.fstat(handle.fileno()).st_size
+                if size == 0:
+                    return
                 start, chunk = _read_tail(handle, size=size, window=cfg.live_log_tail_bytes)
             text = chunk.decode("utf-8", errors="replace")
             if self.log.has_secrets:
@@ -3682,20 +4306,81 @@ class Worker:
                 "uncommitted files are still listed"
             )
 
+        # THE HARVEST RUNS NO GIT IN THE CLONE EITHER (#259, owner item 3).
+        # `summarize_work` used to take its patch with `git diff <base>` in the
+        # clone, and a diff of the working tree reads each file through the
+        # clean filter the clone's `.gitattributes` and `.git/config` name --
+        # the agent's program, run as the worker. So the order is now:
+        #
+        #   1. REAP. No process the agent started is alive from here on
+        #      (`reap_before_publish`); if one survives, nothing below runs.
+        #      This used to happen only inside `_publish_git`; it moves here
+        #      because the clean repository is built here, and a live agent
+        #      process could poison it (see `_publish_git`).
+        #   2. BUILD the worker's clean repository: the agent's commits are
+        #      fetched in (`prepare_publish_repo`) and its working tree copied
+        #      in (`mirror_worktree`), with the patterns it excluded read as
+        #      data.
+        #   3. HARVEST there: the patch, the commit list and the dirty list
+        #      are read from the worker's repository, where a `.gitattributes`
+        #      naming a filter is data.
+        #   4. PUBLISH from the same repository (`_publish_git`), which
+        #      commits the uncommitted work on top and pushes.
+        #
+        # The clone itself is read only by the object-checked fetch, whose
+        # `upload-pack` runs with every program-naming key pinned
+        # (`gitops._UPLOAD_PACK_ENV`).
+        survivors = self.reap_before_publish()
+        if survivors:
+            reason = (
+                f"refusing to publish: {len(survivors)} process(es) the agent started "
+                f"are still alive after the pre-publish reap ({', '.join(str(p) for p in survivors[:10])}); "
+                "the tenant credential is not put in hand while agent code can run"
+            )
+            self.log.error(
+                "not harvesting or publishing: agent processes survived the reap",
+                surviving_pids=list(survivors),
+            )
+            out["published"] = False
+            out["publish_reason"] = reason
+            out["error"] = (
+                "the agent's work was not harvested: processes it started survived "
+                "the reap, and the worker reads no repository while agent code can run"
+            )
+            return out
+
+        # The floor the clean repository is built on: the worker's own record
+        # when it has one, else the harvest's base (the workspace marker, on a
+        # resume from a checkpoint that recorded none -- the publish refuses
+        # that case before it pushes, but the work is still described). A floor
+        # that is not a full sha is unknown, and then only HEAD is fetched.
+        floor = self._publish_base if self._publish_base is not None else base
+        fetched_base = (
+            floor if floor and re.fullmatch(r"[0-9a-f]{40}", floor) else None
+        )
         try:
+            publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
             work = summarize_work(
-                repo=repo,
-                base=base,
+                repo=publish_repo,
+                base=fetched_base,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 patch_path=ws.artifacts / PATCH_NAME,
                 max_patch_bytes=cfg.max_patch_bytes,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                # `_publish_base`, the worker's own record, not the workspace
+                # marker the agent can write: only a clone the worker itself
+                # saw land on nothing counts every commit as the agent's.
+                empty_base=base is None and self._publish_base == EMPTY_CLONE_BASE,
             )
         except GitError as exc:
             self.log.warning("could not harvest the agent's git changes", error=str(exc))
             out["error"] = self._scrub(str(exc)[:500])
+            if publish:
+                # Fails closed, and says so where a reader of the publish looks.
+                out["published"] = False
+                out["publish_reason"] = f"nothing was published: {out['error']}"
             return out
 
         out.update(
@@ -3755,7 +4440,8 @@ class Worker:
 
         out.update(
             self._publish_git(
-                repo=repo, work_head=work.head, publish=publish, withheld=withheld
+                repo=repo, work_head=work.head, publish=publish, withheld=withheld,
+                publish_repo=publish_repo,
             )
         )
         return out
@@ -3774,10 +4460,60 @@ class Worker:
             and bool(self._dispatch_integrates())
         )
 
+    def _build_clean_repo(
+        self, repo: Path, *, floor: str | None, allow_unknown_base: bool = False
+    ) -> Path:
+        """The worker's clean repository, holding the agent's commits and a copy
+        of its working tree (#259). Call only after the reap.
+
+        `prepare_publish_repo` fetches the clone's HEAD (and `floor`) in with
+        object checking; `mirror_worktree` copies the working tree in, with the
+        worker's `./artifacts` link and the patterns the agent excluded
+        (`read_agent_excludes`, read as data) hidden from git there. Nothing is
+        committed yet: the harvest reads the uncommitted work from here, and
+        `_publish_git` commits it here.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        publish_repo = prepare_publish_repo(
+            source_repo=repo,
+            # The clone's HEAD: the agent's last commit, or none at all in an
+            # empty repository it never committed in.
+            work_head=None,
+            base=floor,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            allow_unknown_base=allow_unknown_base,
+        )
+        mirror_worktree(
+            source=repo,
+            dest=publish_repo,
+            logger=self.log,
+            hidden_names=self._hidden_checkout_names(repo),
+            agent_excludes=read_agent_excludes(
+                clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
+            ),
+        )
+        return publish_repo
+
     def _publish_git(
-        self, *, repo: Path, work_head: str | None, publish: bool, withheld: str = ""
+        self,
+        *,
+        repo: Path,
+        work_head: str | None,
+        publish: bool,
+        withheld: str = "",
+        publish_repo: Path | None = None,
     ) -> dict[str, Any]:
-        """The push-and-pull-request half. Gated on the forge, not on hope."""
+        """The push-and-pull-request half. Gated on the forge, not on hope.
+
+        `publish_repo` is the clean repository the harvest already built,
+        after its reap (`_harvest_git`). Without one -- a direct call -- this
+        reaps and builds it itself, at the same point it always did.
+        """
         cfg = self.cfg
         ws = self.ws
         assert ws is not None
@@ -3878,15 +4614,23 @@ class Worker:
 
         # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
         # place the credential-bearing publish begins -- everything below carries
-        # or leads directly to the tenant token (`commit_dirty`/`fold` run in the
-        # clone, then `prepare_publish_repo` mkdtemps the publish repo and the
-        # fetch/merge/push authenticate). A process the agent double-forked into
+        # or leads directly to the tenant token (`prepare_publish_repo` mkdtemps
+        # the clean publish repo and fetches the agent's commits into it,
+        # `mirror_worktree` copies its uncommitted files there, and the commit,
+        # the scans, the replay or fold and the merge/push all run there). A
+        # process the agent double-forked into
         # its own session survives the runner's group kill (procman.py), shares
         # the worker's uid, and could watch `ws.private` to poison the publish
         # repo before the push or read the short-lived credential file while it
         # runs. So every such process is killed and its death verified BEFORE the
         # publish repo is created; if any survives the bounded retry, the whole
         # publish is refused rather than run with agent code still able to act.
+        # Reaped AGAIN here even when the harvest already reaped and built the
+        # repository (`_harvest_git`), before any step that writes the
+        # credential file or pushes: the #259 final review (B1) found a git in
+        # the clone that could start a process after the first reap. That path
+        # is closed (HEAD is read as data), and this second reap keeps the
+        # guarantee above from depending on it.
         survivors = self.reap_before_publish()
         if survivors:
             out["published"] = False
@@ -3903,10 +4647,77 @@ class Worker:
 
         auto_committed = False
         folded = 0
+        kept = 0
         merge: MergeOutcome | None = None
         try:
+            # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
+            # committed itself -- possibly as Claude, possibly with a
+            # Co-Authored-By trailer and a "Generated with" line, which is what
+            # Claude Code adds by default -- is rewritten as a commit the
+            # worker writes. See `gitops.fold_agent_commits` for why this is
+            # done here and not with a setting in the image.
+            #
+            # EACH OF THE AGENT'S COMMITS IS KEPT (#242), in order, with its
+            # own tree and its own message cleaned of trailers and footers
+            # (`replay_agent_commits`); the worker's commit of the uncommitted
+            # work below, if there is one, stays last. Folding them into one
+            # made a red-first pull request -- tests, then the fix --
+            # impossible: CI never saw the
+            # tests alone. The fold is kept for the history that cannot be
+            # replayed: one that does not descend from the clone base, or one
+            # past `MAX_KEPT_COMMITS`.
+            # `_publish_base`, never the workspace marker: see `_maybe_clone`.
+            if self._publish_base is None and self._clone_base:
+                # Said precisely, because "unknown" would be false: the harvest
+                # HAD a base, and a reader comparing the two would think one
+                # of them was a bug.
+                raise GitError(
+                    "the clone base is known only from the marker in the "
+                    "workspace, which the agent can write: this attempt resumed "
+                    "from a checkpoint that does not record the base, so the "
+                    "worker cannot tell which commits are the agent's. Nothing "
+                    "was pushed; the harvest still describes the work against "
+                    "that marker"
+                )
+            # A repository the harvest built may stand on no base at all
+            # (`allow_unknown_base`, so the dirty list survives); it is never
+            # published from. One built below refuses the unknown base itself,
+            # in `prepare_publish_repo`.
+            if publish_repo is not None and self._publish_base is None:
+                raise GitError(
+                    "the clone base is unknown, so the worker cannot tell the agent's "
+                    "commits from the repository's; nothing was pushed"
+                )
+
+            # EVERYTHING THAT DECIDES WHAT IS PUSHED, AND THE PUSH, RUNS IN A
+            # REPOSITORY THE WORKER OWNS (owner decision, 2026-09-29, #259).
+            # The agent's commits are fetched out of the clone into a fresh,
+            # worker-owned repository -- object-checked, by sha, with no
+            # alternates into the clone and none of its config, hooks, grafts,
+            # shallow file, replace refs or commit-graph honoured -- and the
+            # kept-commit list, the per-commit scan, the fold, the final-tree
+            # scan, the replay, the authorship check, the integrator's merges
+            # and the token-bearing push all run there. Three reviews found
+            # the scans bypassable through `.git` state the agent writes, one
+            # file at a time; this removes the class. The token is still only
+            # ever used in this repository (#219). See
+            # `gitops.prepare_publish_repo` and docs/merge-strategy-live-proof.md §6.
+            #
+            # WHAT THE AGENT LEFT UNCOMMITTED IS COMMITTED THERE, NOT IN ITS
+            # CLONE (#259 M1, owner decision 2026-09-28). `git add` in the
+            # clone read the clone's `.git/config` and the tree's
+            # `.gitattributes`, so a filter driver the agent defined ran as the
+            # worker after the reap. The working tree is copied into the
+            # publish repository instead (`_build_clean_repo`) -- no `.git`,
+            # links as links -- and staged and committed with the worker's
+            # configuration alone, where a `.gitattributes` naming a filter is
+            # data: no filter of that name is defined. Nothing under the
+            # clone's `.git` runs at publish; the clone is read only by the
+            # object-checked fetch.
+            if publish_repo is None:
+                publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
             new_sha = commit_dirty(
-                repo=repo,
+                repo=publish_repo,
                 message=(
                     f"swarm: uncommitted changes from {cfg.task_id}\n\n"
                     "Staged by the worker at the end of the attempt so that work "
@@ -3924,67 +4735,89 @@ class Worker:
                 auto_committed = True
                 work_head = new_sha
 
-            # EVERY COMMIT THIS PUSHES IS THE WORKER'S. Whatever the agent
-            # committed itself -- possibly as Claude, possibly with a
-            # Co-Authored-By trailer and a "Generated with" line, which is what
-            # Claude Code adds by default -- is folded into one commit the
-            # worker writes. See `gitops.fold_agent_commits` for why this is
-            # done here and not with a setting in the image.
-            # `_publish_base`, never the workspace marker: see `_maybe_clone`.
-            if self._publish_base is None and self._clone_base:
-                # Said precisely, because "unknown" would be false: the harvest
-                # above HAD a base, and a reader comparing the two would think
-                # one of them was a bug.
-                raise GitError(
-                    "the clone base is known only from the marker in the "
-                    "workspace, which the agent can write: this attempt resumed "
-                    "from a checkpoint that does not record the base, so the "
-                    "worker cannot tell which commits are the agent's. Nothing "
-                    "was pushed; the harvest still describes the work against "
-                    "that marker"
-                )
-            replaced = fold_agent_commits(
-                repo=repo,
+            replayed = replay_agent_commits(
+                repo=publish_repo,
                 base=self._publish_base,
                 keep=new_sha,
-                message=(
-                    f"swarm: work from {cfg.task_id}\n\n"
-                    "Everything the agent changed in this attempt, committed or "
-                    "not, as one commit made by the worker. The worker writes "
-                    "every commit it pushes, so no author, trailer or footer "
-                    "added inside the agent's container reaches this branch."
-                ),
+                task_id=cfg.task_id,
+                scrub=lambda text: str(self._scrub(text)),
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
                 timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                # A registered secret OR a credential-shaped run in any kept
+                # commit's diff folds the history instead (#259 review; owner
+                # decision 4, 2026-09-28, for the patterns): the scrub
+                # replaces exactly the registered values, so "the scrub
+                # changed it" is "a registered value is in it", and a key the
+                # agent minted or an `.env` it committed is registered nowhere
+                # and caught only by the patterns. Asked about the text each
+                # file ADDS, `+` removed, in overlapping windows.
+                leaks=self._leaks_in_added_text,
+                overlap=self._scan_overlap(),
             )
-            # The worker's own auto-commit is among what was replaced when
-            # there was one; the rest were the agent's.
-            folded = max(replaced - (1 if new_sha else 0), 0)
-            out["agent_commits_folded"] = folded
+            if replayed is not None:
+                kept = replayed
+                out["agent_commits_kept"] = kept
+            else:
+                replaced = fold_agent_commits(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    keep=new_sha,
+                    message=(
+                        f"swarm: work from {cfg.task_id}\n\n"
+                        "Everything the agent changed in this attempt, committed or "
+                        "not, as one commit made by the worker. The worker writes "
+                        "every commit it pushes, so no author, trailer or footer "
+                        "added inside the agent's container reaches this branch."
+                    ),
+                    author_name=cfg.git_author_name,
+                    author_email=cfg.git_author_email,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
+                # The worker's own auto-commit is among what was replaced when
+                # there was one; the rest were the agent's.
+                folded = max(replaced - (1 if new_sha else 0), 0)
+                out["agent_commits_folded"] = folded
 
-            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN A REPOSITORY THE WORKER
-            # OWNS, NOT IN THE CLONE. The push and the integrator's contributor
-            # fetch authenticate with the tenant token; run in the clone, a
-            # `credential.helper` or `url.*.insteadOf` the agent wrote into
-            # `.git/config` would receive or redirect it. So the worker's folded
-            # commit is transferred into a fresh, worker-owned repository -- by
-            # borrowing the clone's objects, with no token and no git run against
-            # the clone -- and the merge, the authorship check and the push all
-            # happen there. See `gitops.prepare_publish_repo` and
-            # docs/merge-strategy-live-proof.md §6. The verify runs here too, so
-            # it sees the integrator's merge commits, which exist only here.
-            publish_repo = prepare_publish_repo(
-                source_repo=repo,
-                work_head=None,
+            # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
+            # (owner decision, 2026-09-28, #259 review M4). The scan above
+            # decides only between keeping and folding; the fold's one commit
+            # and the worker's commit of uncommitted work carry the FINAL
+            # tree, which it never read. A registered value or a
+            # credential-shaped literal that tree ADDS publishes nothing, and
+            # the attempt fails retryably (`_fail_for_final_tree_leak`),
+            # naming the file and never the value.
+            leak = final_tree_leak(
+                repo=publish_repo,
+                base=self._publish_base,
+                leaks=self._leaks_in_added_text,
                 private_dir=ws.private,
                 logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
+                timeout_seconds=cfg.git_harvest_timeout_seconds,
                 logger=self.log,
+                overlap=self._scan_overlap(),
             )
+            if leak is not None:
+                reason = str(self._scrub(leak))
+                out["published"] = False
+                out["auto_committed"] = auto_committed
+                out["final_tree_leak"] = reason
+                out["publish_reason"] = f"refusing to publish: {reason}"
+                self.log.error("not publishing: the final tree failed the leak check", reason=reason)
+                return out
+
+            # EVERYTHING THAT CARRIES THE TOKEN RUNS IN THE SAME WORKER-OWNED
+            # REPOSITORY, NOT IN THE CLONE. The push and the integrator's
+            # contributor fetch authenticate with the tenant token; run in the
+            # clone, a `credential.helper` or `url.*.insteadOf` the agent wrote
+            # into `.git/config` would receive or redirect it. The verify runs
+            # here too, so it sees the integrator's merge commits.
 
             # THE INTEGRATOR MERGES BEFORE IT PUSHES.
             #
@@ -4090,10 +4923,44 @@ class Worker:
             )
             return out
 
-        title = f"[swarm] {cfg.task_id}"
-        body = self._pull_request_body(
-            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded
+        # THE AGENT'S OWN TITLE AND BODY WHEN IT WROTE THEM (#214), so a
+        # platform pull request can say `Closes #N`. The platform's block --
+        # provenance, the commit note, an integration's missing branches --
+        # follows the agent's text, whole: a reviewer still learns what ran
+        # and what this pull request does NOT contain. Read here, after the
+        # pre-publish reap, so no agent process is left to change the files.
+        generated = self._pull_request_body(
+            branch=branch, auto_committed=auto_committed, merge=merge, folded=folded, kept=kept
         )
+        agent_title, agent_body, refused = self._agent_pull_request_text()
+        title = agent_title or self._generated_pull_request_title()
+        body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
+        # The generated block quotes the step's prompt, which is anyone's
+        # text too; the whole body is neutralised, so no part of what the
+        # platform posts can page anyone (owner decision, 2026-09-29). The
+        # agent's part already was, and a second pass changes nothing.
+        body = _neutralise_mentions(body)
+        out["pull_request_text"] = {
+            "title": "agent" if agent_title else "platform",
+            "body": "agent" if agent_body else "platform",
+        }
+        if refused:
+            out["pull_request_text_refused"] = refused
+        if title is None:
+            # NO TITLE IS INVENTED (owner decision, 2026-09-28). The branch is
+            # pushed; the pull request waits for a title the agent writes.
+            # An attempt with retries left never gets here without the file:
+            # `_title_owed` made `pr-title.txt` an expected output, so its
+            # absence failed the attempt retryably before the publish.
+            out["published"] = True
+            out["publish_reason"] = (
+                f"the branch was pushed; no pull request was opened because the "
+                f"agent wrote no usable {PR_TITLE_FILE}. Write a one-line title "
+                f"to $SWARM_ARTIFACTS_DIR/{PR_TITLE_FILE} (no task id, no "
+                f"attribution) and retry"
+            )
+            self.log.warning("no pull request opened: no usable agent title", refused=refused)
+            return out
         try:
             pr = open_pull_request(
                 access=access,
@@ -4102,6 +4969,16 @@ class Worker:
                 base=access.default_branch,
                 title=title,
                 body=body,
+                # A reused pull request takes the agent's text too; generated
+                # text never overwrites one a human may have edited.
+                update_existing=bool(agent_title or agent_body),
+                # An adopted pull request whose title carries the task id --
+                # the OLD generated `[swarm] <task id>`, from before this
+                # rule -- is retitled (title only) even when nothing here
+                # asked for an update: the owner's rule is that a title never
+                # carries the task id, and that has to reach a pull request
+                # this attempt only adopts, not just one it opens.
+                retitle_if=self._title_carries_task_id,
             )
         except ForgeError as exc:
             out["published"] = True
@@ -4111,6 +4988,7 @@ class Worker:
             )
             return out
 
+        updated = bool(getattr(pr, "updated", False))
         out.update(
             {
                 "published": True,
@@ -4119,9 +4997,21 @@ class Worker:
                     "url": pr.url,
                     "state": pr.state,
                     "created": pr.created,
+                    "updated": updated,
                 },
                 "publish_reason": (
-                    "opened" if pr.created else "an open pull request already existed and was reused"
+                    "opened"
+                    if pr.created
+                    else "an open pull request already existed and was reused"
+                    + (
+                        (
+                            ", with the agent's title and body"
+                            if agent_title or agent_body
+                            else ", retitled because its title carried the task id"
+                        )
+                        if updated
+                        else ""
+                    )
                 ),
             }
         )
@@ -4135,6 +5025,7 @@ class Worker:
         auto_committed: bool,
         merge: "MergeOutcome | None" = None,
         folded: int = 0,
+        kept: int = 0,
     ) -> str:
         """The body a reviewer reads. Provenance first, prompt second.
 
@@ -4167,6 +5058,22 @@ class Worker:
                 "uncommitted are one commit on this branch, made by the worker. "
                 "The worker writes every commit it pushes.",
             ]
+        elif kept:
+            # Said on the page, because the commits a reviewer sees are the
+            # agent's in content and order and the worker's in authorship.
+            lines += [
+                "",
+                f"The agent's {kept} commit(s) are on this branch in order, each "
+                "rewritten by the worker: the same tree, the agent's message with "
+                "its trailers and footers taken out. The worker writes every "
+                "commit it pushes.",
+            ]
+            if auto_committed:
+                lines.append(
+                    "The last commit is the worker's own: the agent left changes "
+                    "uncommitted and they would otherwise not have reached this "
+                    "branch at all."
+                )
         elif auto_committed:
             lines += [
                 "",
@@ -4202,6 +5109,246 @@ class Worker:
 
         return "\n".join(lines)
 
+    def _agent_pull_request_text(self) -> tuple[str | None, str | None, list[str]]:
+        """The agent's pull request title and body, each usable or None (#214).
+
+        Returns `(title, body, refused)`. `refused` names each file that was
+        there and could not be used, and why, in words that quote none of it.
+
+        THE SAME RULES AS ANY OTHER AGENT TEXT THE WORKER PUBLISHES:
+
+        * read with `open_without_following`, like every file taken out of the
+          artifacts folder (#227): a link is refused, never followed;
+        * UTF-8 or refused, and blank is refused;
+        * the title is ONE line -- a second line is refused, not joined -- and
+          neither may carry attribution (`gitops.ATTRIBUTION_MARKERS`, the
+          list the push check reads): the owner's rule is none on GitHub, and
+          the forge would carry it where the push check cannot see;
+        * scrubbed of every registered secret, then every `@` that could
+          mention given a zero-width joiner (`_neutralise_mentions`; a mention
+          never refuses either file), THEN cut (the #232 rule): the title to
+          `PR_TITLE_MAX_CHARS`, the body to `PR_BODY_MAX_BYTES`.
+
+        The body is Markdown rendered on a public page, like the prompt the
+        generated body used to quote; it gets no more trust than that.
+        """
+        ws = self.ws
+        assert ws is not None
+        refused: list[str] = []
+        body: str | None = None
+
+        title = self._agent_title(refused)
+
+        raw = self._read_agent_text(PR_BODY_FILE, refused)
+        if raw is not None:
+            text = raw.strip()
+            if not text:
+                refused.append(f"{PR_BODY_FILE}: blank")
+            elif _carries_attribution(text):
+                refused.append(f"{PR_BODY_FILE}: carries attribution")
+            else:
+                # Scrubbed FIRST, then every mention neutralised: a joiner
+                # inserted inside a registered value would stop the scrub
+                # matching it (owner decision, 2026-09-29: neutralised, never
+                # refused).
+                text = _neutralise_mentions(str(self._scrub(text)))
+                encoded = text.encode("utf-8")
+                if len(encoded) > PR_BODY_MAX_BYTES:
+                    text = (
+                        encoded[:PR_BODY_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
+                        + f"\n\n_[cut at {PR_BODY_MAX_BYTES} bytes by the worker]_"
+                    )
+                body = text
+
+        if refused:
+            self.log.warning(
+                "the agent's pull request text was not used; the generated text was",
+                refused=refused,
+            )
+        return title, body, refused
+
+    def _agent_title(self, refused: list[str]) -> str | None:
+        """The agent's `pr-title.txt`, scrubbed and capped, or None.
+
+        None when the file is absent, or when it is there and refused, in
+        which case `refused` gains one `pr-title.txt: <why>` entry that quotes
+        none of it. The one check both the publish (`_agent_pull_request_text`)
+        and the finish check (`_refused_title_reason`) make, so a title the
+        finish accepts is a title the publish uses.
+        """
+        raw = self._read_agent_text(PR_TITLE_FILE, refused)
+        if raw is None:
+            return None
+        text = raw.strip()
+        if not text:
+            refused.append(f"{PR_TITLE_FILE}: blank")
+        elif "\n" in text or "\r" in text:
+            refused.append(f"{PR_TITLE_FILE}: more than one line")
+        elif any(ord(char) < 32 and char != "\t" for char in text):
+            refused.append(f"{PR_TITLE_FILE}: holds control characters")
+        elif _carries_attribution(text):
+            refused.append(f"{PR_TITLE_FILE}: carries attribution")
+        else:
+            # A mention does not refuse a title: `_scrub_and_cap_title`
+            # neutralises it (owner decision, 2026-09-29).
+            candidate = self._scrub_and_cap_title(text)
+            if self._title_carries_task_id(text) or self._title_carries_task_id(candidate):
+                # OWNER RULE, 2026-09-28: a pull request title never carries
+                # the task id. An agent's own `pr-title.txt` is not an
+                # exception -- one that echoed the id (by habit, or by
+                # copying the platform's old `[swarm] <task>` fallback) is
+                # refused like any other unusable title.
+                refused.append(f"{PR_TITLE_FILE}: names a task id")
+            else:
+                return candidate
+        return None
+
+    def _refused_title_reason(self) -> str | None:
+        """Why the agent's `pr-title.txt` cannot title the pull request this
+        attempt owes, or None when it can, is not owed, or is absent.
+
+        OWNER DECISION, 2026-09-28: a title that EXISTS but is refused (it
+        names a task id, carries attribution, ...; a mention is neutralised,
+        never refused, since 2026-09-29) fails
+        the attempt retryably before anything is pushed, exactly like a
+        missing one (`_publish_withheld`, `_fail_for_refused_title`). The
+        finish check tests that the title is USABLE, not only that the file
+        exists: a refused title reaching the publish would push a branch with
+        no pull request. An absent file is the missing-output path's (#149).
+        """
+        if self.ws is None or PR_TITLE_FILE not in self._expected_outputs:
+            return None
+        if not self._title_owed(self._task or {}):
+            return None
+        refused: list[str] = []
+        if self._agent_title(refused) is not None or not refused:
+            return None
+        why = refused[0].partition(": ")[2] or "unusable"
+        return f"{PR_TITLE_FILE} refused: {why}; write a fact-style title"
+
+    def _scrub_and_cap_title(self, text: str) -> str:
+        """Redact every registered secret, neutralise every mention, THEN cut
+        to `PR_TITLE_MAX_CHARS` (#232's rule): scrubbed first, or a cut prefix
+        of a secret would survive the cut that was supposed to remove it, and
+        before the joiners go in, which would stop a registered value that
+        holds an `@` from matching. Every title the platform sends -- the
+        agent's and one made from an issue title -- comes through here, so
+        none can page anyone (owner decision, 2026-09-29)."""
+        text = _neutralise_mentions(str(self._scrub(text)))
+        if len(text) > PR_TITLE_MAX_CHARS:
+            text = text[: PR_TITLE_MAX_CHARS - 3].rstrip() + "..."
+        return text
+
+    def _title_carries_task_id(self, title: str) -> bool:
+        """True when `title` names this attempt's task id, or looks like the
+        platform's own old `[swarm] task_...` fallback (owner rule,
+        2026-09-28). Checked against the agent's own `pr-title.txt` too: an
+        agent that echoed the id, or copied the retired fallback's shape, gets
+        no exception to a rule stated for the platform's generated text.
+        """
+        task_id = self.cfg.task_id
+        if task_id and task_id in title:
+            return True
+        return _RETIRED_TITLE_RE.search(title) is not None
+
+    def _generated_pull_request_title(self) -> str | None:
+        """The platform's own pull request title when the agent wrote none, or None.
+
+        NEVER THE TASK ID, AND NEVER INVENTED (owner decisions, 2026-09-28).
+        The only title the platform writes is the one the step's `issue`
+        input names (`_title_from_issue_input`). Without it the agent's
+        `pr-title.txt` is REQUIRED: a title made up from the prompt's first
+        sentence or the runner profile described the request, not the change,
+        and `f"[swarm] {task_id}"` described nothing. None here means no pull
+        request is opened (`_publish_git`), and `_title_owed` makes a missing
+        `pr-title.txt` a retryable failure of the attempt before that.
+        """
+        return self._title_from_issue_input(self._task or {})
+
+    def _title_owed(self, task: dict[str, Any]) -> bool:
+        """True when this attempt will open a pull request that only the agent
+        can title: it may publish, its strategy opens one (`direct-pr`, or
+        `integrate` as the integrator), it has a repository, and its `issue`
+        input names no issue to title it from.
+        """
+        if not self.cfg.git_publish_enabled:
+            return False
+        if not (self.cfg.repository_url or task.get("repository_url")):
+            return False
+        strategy = self._dispatch_strategy()
+        opens = strategy == "direct-pr" or (
+            strategy == "integrate" and self._dispatch_role() == "integrator"
+        )
+        return opens and self._title_from_issue_input(task) is None
+
+    def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
+        """"<issue title> (#N)", or "Fixes #N" with no title to hand.
+
+        `input.issue` is `#265`'s field (contract request 28, accepted
+        2026-09-28): "a positive integer naming an issue in the step's own
+        `repo`", which the worker fetches read-only and writes to
+        `issue.md`. That fetch is landing separately and had not, as of this
+        change, shipped, so this reads the number defensively -- a bare
+        integer or a numeric string, also tolerating a mapping with a
+        `number`/`issue_number` key in case the shape changes before it
+        lands -- and returns None, not a guess, when there is no number at
+        all. `self._issue_title` is the hook the fetch fills in once it
+        exists; until then it is always None and this always says "Fixes #N".
+        """
+        payload = task.get("input")
+        issue = payload.get("issue") if isinstance(payload, dict) else None
+        title = self._issue_title if isinstance(self._issue_title, str) and self._issue_title.strip() else None
+        if isinstance(issue, dict):
+            number = _as_issue_number(issue.get("number"))
+            if number is None:
+                number = _as_issue_number(issue.get("issue_number"))
+            if title is None:
+                raw_title = issue.get("title")
+                if isinstance(raw_title, str) and raw_title.strip():
+                    title = raw_title.strip()
+        else:
+            number = _as_issue_number(issue)
+        if number is None:
+            return None
+        # An issue's title is anyone's text: a mention in it would page that
+        # person or team from a title the platform wrote, so
+        # `_scrub_and_cap_title` puts a zero-width joiner after each `@`.
+        text = f"{title} (#{number})" if title else f"Fixes #{number}"
+        return self._scrub_and_cap_title(text)
+
+    def _read_agent_text(self, name: str, refused: list[str]) -> str | None:
+        """`artifacts/<name>` as text, read with no link followed; None if absent or refused."""
+        ws = self.ws
+        assert ws is not None
+        try:
+            fd = standalone_mod.open_without_following(ws.artifacts, name)
+        except FileNotFoundError:
+            return None
+        except standalone_mod.Refused:
+            refused.append(f"{name}: a symlink, or not a regular file; nothing was followed")
+            return None
+        except OSError as exc:
+            refused.append(f"{name}: unreadable ({type(exc).__name__})")
+            return None
+        try:
+            with os.fdopen(fd, "rb") as handle:
+                data = handle.read(PR_READ_LIMIT_BYTES + 1)
+        except OSError as exc:
+            refused.append(f"{name}: unreadable ({type(exc).__name__})")
+            return None
+        cut = len(data) > PR_READ_LIMIT_BYTES
+        if cut:
+            data = data[:PR_READ_LIMIT_BYTES]
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            # A read cut through the middle of a character is not a file that
+            # is not UTF-8: at most three bytes of it are the cut's.
+            if cut and exc.start >= len(data) - 3:
+                return data[: exc.start].decode("utf-8")
+            refused.append(f"{name}: not UTF-8")
+            return None
+
     def _artifacts_first(self) -> list[str]:
         """The names the artifacts folder's cap takes before any other (#228).
 
@@ -4236,10 +5383,11 @@ class Worker:
         # Written only when the figures changed, so an orderly exit that just
         # reaped its runner writes nothing twice.
         self._record_cpu()
-        # BEFORE the redaction pass, not after: the harvest writes a patch into
-        # `artifacts/`, and `_redact_before_upload` is what scrubs what goes up
-        # from there. A patch produced afterwards would be the one file in the
-        # upload that never had a provider key taken out of it.
+        # BEFORE the upload, not after: the harvest writes a patch into
+        # `artifacts/`, and the upload's redacted copy (`_upload_copy`) is what
+        # scrubs what goes up from there. A patch produced afterwards would be
+        # the one file in the upload that never had a provider key taken out
+        # of it.
         try:
             git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
@@ -4248,16 +5396,16 @@ class Worker:
         # WHICH FILES OF THE ARTIFACTS FOLDER, IN WHICH ORDER (#228, owner
         # decision of 2026-09-26): at most `max_artifact_files`, a declared
         # output first, no name past the manifest's bound; see
-        # `agent_worker.artifact_manifest`. Decided BEFORE the redaction pass,
-        # so the pass scrubs what is going to leave the pod and nothing else.
-        found: dict[str, int] = {}
-        for path in ws.artifacts.rglob("*"):
-            if not path.is_file() or path.is_symlink():
-                continue
-            try:
-                found[path.relative_to(ws.artifacts).as_posix()] = path.stat().st_size
-            except OSError:
-                continue
+        # `agent_worker.artifact_manifest`. Decided BEFORE anything is copied,
+        # so only what is going to leave the pod is read and redacted.
+        #
+        # WALKED WITHOUT RECURSION (#227). `Path.rglob` recursed once per
+        # folder on Python 3.11, so a tree about 1,000 folders deep raised
+        # RecursionError out of this method and none of the attempt's
+        # artifacts, logs or summary went up. `_walk_artifacts` keeps its own
+        # stack, and lists a folder too deep to hold any storable name as
+        # skipped instead of walking it.
+        found, too_deep = self._walk_artifacts(ws.artifacts)
         plan = manifest_mod.plan(
             found,
             first=self._artifacts_first(),
@@ -4288,6 +5436,9 @@ class Worker:
                     names=past[index * batch : (index + 1) * batch],
                 )
         skipped: list[str] = []
+        for folder in too_deep:
+            # Scrubbed, then cut, like every name below (#232 review).
+            skipped.append(standalone_mod.shown(self._scrub(folder)))
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be
             # named with it, and as a lone surrogate in the summary it made
@@ -4326,30 +5477,34 @@ class Worker:
             cap_files=self.cfg.max_artifact_files,
             cap_name_bytes=manifest_mod.MAX_NAME_BYTES,
         )
-        unredacted = self._redact_before_upload([ws.artifacts / rel for rel in plan.take])
+        # The worker's own files, rewritten where they lie. Everything taken
+        # from the artifacts folder is redacted as the COPY that is uploaded
+        # (`_upload_copy`), never in place: see `_redact_before_upload`.
+        unredacted = self._redact_before_upload()
         artifacts: list[dict[str, Any]] = []
         total = 0
         for rel in plan.take:
-            path = ws.artifacts / rel
-            try:
-                # After the redaction pass, which can change a file's length.
-                size = path.stat().st_size
-            except OSError as exc:
-                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
-                skipped.append(rel)
-                continue
-            if total + size > self.cfg.max_artifact_bytes:
-                skipped.append(rel)
-                continue
             key = f"{self.cfg.artifact_prefix}/{rel}"
-            try:
-                self.store.upload_file(key, path)
-            except Exception as exc:
-                self.log.warning("artifact upload failed", artifact=rel, error=str(exc))
-                skipped.append(rel)
+            sent = self._upload_copy(
+                ws.artifacts,
+                rel,
+                key=key,
+                label=f"artifacts/{rel}",
+                limit=self.cfg.max_artifact_bytes - total,
+            )
+            if sent.bytes is None:
+                # SCRUBBED, THEN CUT (#227), as every other name this list
+                # holds: a raw name ran to 1,024 bytes for a declared output,
+                # and was scrubbed only later, with the summary, after
+                # nothing had cut it.
+                skipped.append(standalone_mod.shown(self._scrub(rel)))
                 continue
-            total += size
-            artifacts.append({"name": rel, "bytes": size, "uri": self.store.uri(key)})
+            # Listed only for a file that LEFT (#227): one the byte cap or an
+            # upload failure kept in the pod was never uploaded "as-is".
+            if sent.unredacted is not None:
+                unredacted.append(sent.unredacted)
+            total += sent.bytes
+            artifacts.append({"name": rel, "bytes": sent.bytes, "uri": self.store.uri(key)})
         # LISTED IN PATH ORDER, as the manifest always has been: the order
         # above decides which files are taken, not the order a reader sees
         # them in, nor which of them the listing route's first page holds.
@@ -4380,20 +5535,38 @@ class Worker:
         # stages them from there -- and a copy goes beside the runner's logs as
         # `logs/agent_stdout.log` / `logs/agent_stderr.log`, so every reader of
         # an agent's own output reads one layout whatever the runner, and the
-        # copy is not subject to `max_artifact_bytes`. Same scrubbed file:
-        # `_redact_before_upload` above scrubbed the captures whether or not
-        # the file cap took them into the manifest.
+        # copy is not subject to `max_artifact_bytes`. Scrubbed whether or not
+        # the file cap took them into the manifest: each copy is redacted as
+        # it is uploaded.
+        #
+        # Through the same no-follow copy as an artifact (#227): the check for
+        # a link and the upload by path were two moments, and a capture
+        # swapped for a link between them was followed.
         agent_files = agent_stream_files(self.cfg.runner_profile)
         logs: dict[str, str] = {}
+        reported = {entry.get("file") for entry in unredacted}
         for label, path in self._stream_files(ws):
-            if path.is_symlink() or not path.is_file():
-                continue
             key = f"{self.cfg.log_prefix}/{label}.log"
-            try:
-                self.store.upload_file(key, path, content_type="text/plain")
-                logs[label] = self.store.uri(key)
-            except Exception as exc:
-                self.log.warning("log upload failed", stream=label, error=str(exc))
+            sent = self._upload_copy(
+                path.parent,
+                path.name,
+                key=key,
+                label=_workspace_label(ws, path),
+                limit=sys.maxsize,
+                content_type="text/plain",
+                absent_ok=True,
+                report=False,
+            )
+            if sent.bytes is None:
+                continue
+            logs[label] = self.store.uri(key)
+            # Each file once: the runner's two streams were examined in place
+            # above, and a capture the cap took was examined as an artifact.
+            entry = sent.unredacted
+            if entry is not None and entry.get("file") not in reported:
+                self._report_unredacted(entry)
+                unredacted.append(entry)
+                reported.add(entry.get("file"))
 
         if skipped:
             self.log.warning(
@@ -4550,10 +5723,14 @@ class Worker:
     def _start_sampler(self, child: ChildProcess) -> None:
         ws = self.ws
         assert ws is not None
+        # THE CONTAINER'S MEMORY, NOT THE PROFILE'S (#205). The dispatcher
+        # sizes the container from the task's class, and a workflow step may
+        # narrow `browser` (16 GiB) to `standard` (8 GiB): judged against the
+        # profile's 16, a run at 7.9 of its 8 GiB raised no near miss.
         self._sampler = ResourceSampler(
             pid_provider=lambda: child.pid,
             disk_provider=ws.disk_bytes,
-            memory_limit_bytes=self.cfg.memory_limit_bytes,
+            memory_limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
         )
         self._sampler.start()
 
@@ -4588,8 +5765,8 @@ class Worker:
             self.log.error(
                 "OOM NEAR MISS: this attempt came within a hair of its memory limit",
                 peak_rss_bytes=usage.peak_rss_bytes,
-                limit_bytes=self.cfg.memory_limit_bytes,
-                resource_class=self.cfg.resource_class,
+                limit_bytes=self.cfg.memory_limit_bytes_of(self._memory_class()),
+                resource_class=self._memory_class(),
             )
         # The attempt's CPU at this runner's end, on the attempt (request #15)
         # -- where #188 emitted a `final` HEARTBEAT into the task's events.
@@ -4621,7 +5798,10 @@ class Worker:
             {
                 "tenant_id": self.cfg.tenant_id,
                 "runner_profile": self.cfg.runner_profile,
-                "resource_class": self.cfg.resource_class,
+                # The sized class (#205): the sizing decisions read this label,
+                # and the profile's would file a narrowed step under a class
+                # its container was not.
+                "resource_class": self._memory_class(),
                 "backend": self.cfg.backend,
                 "attempt_id": self.cfg.attempt_id,
                 "task_id": self.cfg.task_id,
@@ -4754,6 +5934,834 @@ class Worker:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+
+
+
+def _carries_attribution(text: str) -> bool:
+    lowered = text.lower()
+    return any(marker in lowered for marker in ATTRIBUTION_MARKERS)
+
+
+#: Every `@` that could start a GitHub mention, written literally, as a
+#: character reference (`&#64;`, `&#x40;`, `&commat;`, or a numeric one with
+#: no semicolon, which an HTML parser still decodes), or as the fullwidth
+#: `U+FF20`. OWNER DECISION, 2026-09-29 (#259): the agent's `pr-title.txt` and
+#: `pr-body.md`, and every title or body the platform opens a pull request
+#: with, have a U+200D ZERO WIDTH JOINER inserted right after each such `@`,
+#: in code or not, so nothing the worker publishes pages anyone and no text
+#: is refused for a mention. It replaced a Markdown parser that tried to tell
+#: code from prose and that three reviews each found a way past (an escaped
+#: backtick, an unterminated fence, an HTML block).
+#:
+#: WHAT FOLLOWS THE `@`: a character a GitHub username, organisation or team
+#: can start with, widened to `_` and `-`, or `&`, which could begin a
+#: character reference for the name's first letter (`@&#111;ctocat`).
+#: Erring towards neutralising costs an invisible character; missing one
+#: pages a person.
+#:
+#: CHARACTER REFERENCES ARE MATCHED, NOT DECODED: GitHub decodes them before
+#: it looks for mentions, so `&#64;octocat` renders as `@octocat` and pages.
+#: Decoding first and re-encoding would change more of the agent's text than
+#: the joiner; matching the reference and putting the joiner after it is the
+#: same result with nothing else changed. A decimal or hex reference is
+#: matched only where it ends (`;`, or no further digit), so `&#640;` and
+#: `&#x40a;` -- other characters -- are left alone.
+#:
+#: AN EMAIL ADDRESS IS LEFT INTACT. GitHub's mention filter (html-pipeline's
+#: `MentionFilter`, the open-source implementation GitHub.com's is derived
+#: from) matches `@` only at the start of the text or after a character
+#: outside ASCII `[A-Za-z0-9_]` -- `(?:^|\W)@` in a Ruby pattern, where `\W`
+#: is ASCII-only -- so `ops@example.com` pages no one. The lookbehind here is
+#: that same ASCII class, spelled out: Python's `\w` would also match `é`,
+#: and `café@octocat` DOES page `@octocat` on GitHub (#259 review, M3).
+#:
+#: IDEMPOTENT: an `@` already followed by the joiner is not followed by a
+#: name character, so a second pass inserts nothing.
+_MENTION_AT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])"
+    r"(@|\uff20|&commat;|&#0*64(?![0-9]);?|&#[xX]0*40(?![0-9A-Fa-f]);?)"
+    r"(?=[A-Za-z0-9_&-])"
+)
+
+#: U+200D ZERO WIDTH JOINER. Invisible where GitHub renders it, and not a
+#: character a mention can contain, so `@<U+200D>octocat` names and pages no one.
+MENTION_BREAK = "\u200d"
+
+
+def _neutralise_mentions(text: str) -> str:
+    """`text` with a zero-width joiner after every `@` that could mention.
+
+    Nothing else changes: removing every joiner the call added gives back
+    the input exactly. See `_MENTION_AT_RE` for which `@` qualify and why.
+    """
+    return _MENTION_AT_RE.sub(lambda match: match.group(1) + MENTION_BREAK, text)
+
+
+#: A trailer line as git reads one: `Token: value`, the token letters, digits
+#: and hyphens. `Co-Authored-By:`, `Signed-off-by:`, `Change-Id:`.
+_TRAILER_LINE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]*[ \t]*:[ \t]")
+
+
+def clean_commit_message(message: str, *, scrub: Callable[[str], str], fallback: str) -> str:
+    """An agent's commit message as the worker pushes it (#242).
+
+    * every line carrying attribution (`gitops.ATTRIBUTION_MARKERS`) is
+      removed, wherever it is -- the "Generated with" footer is a paragraph of
+      its own, not a trailer;
+    * then the trailer block -- a closing paragraph of `Token: value` lines,
+      as git reads one -- is removed, more than once if there are several;
+      the subject is never taken for one;
+    * registered secrets are scrubbed, then the message is cut to
+      `COMMIT_MESSAGE_MAX_BYTES`;
+    * a message with nothing left is `fallback`, the worker's own.
+
+    NULs are dropped: an argv cannot carry one, and a commit message can.
+    """
+    text = message.replace("\x00", "").replace("\r\n", "\n")
+    lines = [line.rstrip() for line in text.split("\n")]
+    lines = [line for line in lines if not _carries_attribution(line)]
+    paragraphs: list[list[str]] = [[]]
+    for line in lines:
+        if line.strip():
+            paragraphs[-1].append(line)
+        elif paragraphs[-1]:
+            paragraphs.append([])
+    paragraphs = [p for p in paragraphs if p]
+    while len(paragraphs) > 1 and _is_trailer_block(paragraphs[-1]):
+        paragraphs.pop()
+    cleaned = scrub("\n\n".join("\n".join(p) for p in paragraphs)).strip()
+    if not cleaned:
+        return fallback
+    encoded = cleaned.encode("utf-8")
+    if len(encoded) > COMMIT_MESSAGE_MAX_BYTES:
+        cleaned = (
+            encoded[:COMMIT_MESSAGE_MAX_BYTES].decode("utf-8", errors="ignore").rstrip()
+            + f"\n\n[cut at {COMMIT_MESSAGE_MAX_BYTES} bytes by the worker]"
+        )
+    return cleaned
+
+
+def _is_trailer_block(paragraph: list[str]) -> bool:
+    """True when every line is a trailer, or continues the one above it."""
+    if not _TRAILER_LINE.match(paragraph[0]):
+        return False
+    return all(_TRAILER_LINE.match(line) or line[:1] in (" ", "\t") for line in paragraph)
+
+
+#: How much added text one window of the leak scan holds (`_DiffLeakScanner`).
+#: OWNER DECISION, 2026-09-29 (#259): a diff is scanned WHOLE however big it
+#: is, in windows of this size, rather than refused or cut at a cap. Sized so
+#: a window is cheap to hold and to run every rule over, not as a limit.
+SCAN_WINDOW_CHARS = 4 * 1024 * 1024
+
+#: How much of one window is scanned again at the start of the next, so a
+#: credential straddling the cut is still seen whole in one of them. It must
+#: be at least the longest credential match and the longest registered
+#: secret; the callers add the longest registered secret to this. Every
+#: credential rule matches within one line, and a key/value assignment or a
+#: provider token is far under 64 KiB. A PEM block's marker is what its rule
+#: finds, and the marker is 40 characters.
+SCAN_OVERLAP_CHARS = 64 * 1024
+
+
+class _DiffLeakScanner:
+    """Scans a `git diff` stream's ADDED text, file by file, in bounded windows.
+
+    `feed` takes the diff's bytes as they arrive (`gitops._git_stream`), in
+    chunks of any size; `close` ends the stream and returns the path of the
+    first file whose added text `leaks`, or None. Nothing is held but the
+    current window, the overlap carried from the one before, and one line's
+    first few characters -- a 40 MB single-line file costs a window, not 40 MB.
+
+    The diff is parsed as `_added_by_file` parses a whole one: a `+++ `
+    line is a file's header only before its first `@@`, and every `+` line
+    after is content. Bytes are decoded incrementally as UTF-8 with
+    replacement, and no newline translation happens, so a lone `\\r` stays
+    inside its line (#259 review, M2).
+
+    WINDOWS OVERLAP. When a file's added text passes `window` characters, it
+    is scanned and all but its last `overlap` characters are dropped; those
+    are scanned again with what follows. The carry starts at a line boundary
+    when one is within another `overlap` of the cut, so a match at the start
+    of a window reads the true character before it. On a single line longer
+    than that the carry starts mid-line, where a pattern starting the window
+    counts as starting a token: a possible false hit, which folds or refuses
+    -- the safe direction.
+    """
+
+    _HEADS = ("diff --git ", "+++ ", "@@")
+
+    def __init__(self, leaks: Callable[[str], bool], *, window: int, overlap: int) -> None:
+        import codecs
+
+        self._leaks = leaks
+        self._window = max(window, 2 * overlap + 1)
+        self._overlap = overlap
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        self.hit: str | None = None
+        self._path = ""
+        self._in_header = True
+        self._mode: str | None = None  # None (line start), "add", "header", "skip"
+        self._head = ""
+        self._header_line = ""
+        self._buf: list[str] = []
+        self._buf_len = 0
+        self._carry = ""
+
+    def feed(self, data: bytes) -> None:
+        if self.hit is None:
+            self._text(self._decoder.decode(data))
+
+    def close(self) -> str | None:
+        if self.hit is None:
+            self._text(self._decoder.decode(b"", final=True))
+        if self.hit is None:
+            self._end_line()
+            self._flush_file()
+        return self.hit
+
+    # -- parsing -------------------------------------------------------------
+
+    #: Runs of whole content lines, taken in one step rather than a line at a
+    #: time: a 40 MB diff is millions of lines, and a Python step per line
+    #: made the scan the slowest thing in the publish. Inside a hunk a line
+    #: starting `+` is added content, and `-`, ` ` or `\\` is not; neither
+    #: run can hold a `diff --git` or `@@` line, which start otherwise.
+    _ADDED_RUN = re.compile(r"(?:\+[^\n]*\n)+")
+    _OTHER_RUN = re.compile(r"(?:[-\\ ][^\n]*\n)+")
+
+    def _text(self, text: str) -> None:
+        i, n = 0, len(text)
+        while i < n and self.hit is None:
+            if self._mode is None and not self._head and not self._in_header:
+                run = self._ADDED_RUN.match(text, i)
+                if run is not None:
+                    # Each line's one `+` prefix goes: the first by the
+                    # slice, every other as the character after a newline.
+                    self._add(run.group()[1:].replace("\n+", "\n"))
+                    i = run.end()
+                    continue
+                run = self._OTHER_RUN.match(text, i)
+                if run is not None:
+                    i = run.end()
+                    continue
+            newline = text.find("\n", i)
+            end = n if newline < 0 else newline
+            if self._mode is None:
+                need = 11 - len(self._head)
+                take = text[i : min(end, i + need)]
+                self._head += take
+                i += len(take)
+                complete = i == end and newline >= 0
+                if not complete and len(self._head) < 11 and i >= n:
+                    if any(p.startswith(self._head) for p in self._HEADS):
+                        return  # undecided until more arrives
+                self._classify()
+                continue
+            segment = text[i:end]
+            if self._mode == "add":
+                self._add(segment)
+            elif self._mode == "header" and len(self._header_line) < 64 * 1024:
+                self._header_line += segment
+            i = end
+            if newline >= 0:
+                i += 1
+                self._end_line()
+
+    def _classify(self) -> None:
+        head = self._head
+        if head.startswith("diff --git "):
+            self._flush_file()
+            self._path, self._in_header, self._mode = "", True, "skip"
+        elif head.startswith("@@"):
+            self._in_header, self._mode = False, "skip"
+        elif self._in_header:
+            if head.startswith("+++ "):
+                self._mode, self._header_line = "header", head
+            else:
+                self._mode = "skip"
+        elif head.startswith("+"):
+            self._mode = "add"
+            self._add(head[1:])
+        else:
+            self._mode = "skip"
+
+    def _end_line(self) -> None:
+        if self._mode is None and self._head:
+            self._classify()
+        if self._mode == "add":
+            self._add("\n")
+        elif self._mode == "header":
+            name = self._header_line[4:].rstrip("\r")
+            if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+                name = name[1:-1]
+            self._path = name[2:] if name.startswith("b/") else name
+        self._mode, self._head, self._header_line = None, "", ""
+
+    # -- scanning ------------------------------------------------------------
+
+    def _add(self, text: str) -> None:
+        if not text:
+            return
+        self._buf.append(text)
+        self._buf_len += len(text)
+        if self._buf_len >= self._window:
+            self._scan(last=False)
+
+    def _scan(self, *, last: bool) -> None:
+        text = self._carry + "".join(self._buf)
+        self._buf, self._buf_len = [], 0
+        if text and self._leaks(text):
+            self.hit = self._path or "a file"
+            return
+        if last:
+            self._carry = ""
+            return
+        cut = max(len(text) - self._overlap, 0)
+        line_start = text.rfind("\n", max(cut - self._overlap, 0), cut)
+        self._carry = text[line_start + 1 :] if line_start >= 0 else text[cut:]
+
+    def _flush_file(self) -> None:
+        if self._buf:
+            self._scan(last=True)
+        self._carry = ""
+
+
+def _scan_diff_stream(
+    argv: list[str],
+    *,
+    leaks: Callable[[str], bool],
+    overlap: int,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    slug: str,
+    timeout_seconds: int,
+    logger: Any,
+) -> tuple[int, str | None]:
+    """Run a `git diff` and scan everything it adds; (exit code, leaking path or None)."""
+    scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
+    code = _git_stream(
+        argv,
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug=slug,
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+        consume=scanner.feed,
+    )
+    return code, scanner.close()
+
+
+def _adds_a_credential(diff: str) -> bool:
+    """True when a line this diff ADDS matches a credential pattern.
+
+    The patterns are `swarm_redaction.RULES`, the same families swarm-api
+    masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
+    means one thing on the platform. Only added lines are read: a removed line
+    was in the parent's tree already -- the repository's own history, or an
+    earlier agent commit, whose own diff added it and is scanned in its turn --
+    and `+++ ` is a file header, not content.
+
+    A MATCH MUST START A TOKEN. swarm-api masks a run wherever it starts,
+    because there a false positive costs one masked word. Here it costs the
+    agent's whole history (a fold), and code is full of identifiers that hold
+    a family's prefix in the middle: `keyword_only` holds `eyword_only`, which
+    the JWT rule takes for a token. So a pattern match counts only when the
+    character before it is not a letter, a digit or `_`. The private-key
+    block is exempt: its marker is never part of an identifier.
+    """
+    return _holds_a_credential("\n".join(added for _path, added in _added_by_file(diff)))
+
+
+def _added_by_file(diff: str) -> list[tuple[str, str]]:
+    """Each file in a `git diff` that adds text, with that text, `+` removed.
+
+    A file's `+++ b/<path>` line is read as its header only BEFORE its first
+    `@@` hunk line. After that every line starting with `+` is content, even
+    one that reads `+++ ...`: an added line whose own text is `++ AKIA...`
+    prints as `+++ AKIA...`, so dropping every `+++ ` line as a header let a
+    credential through behind two plus signs. The path is what the `+++ `
+    header names after the `b/` destination prefix; a deleted file
+    (`+++ /dev/null`) adds nothing. Text before any `diff --git` line is read
+    as one file, named by its own `+++ ` header if it has one.
+    """
+    files: list[tuple[str, list[str]]] = []
+    path = ""
+    added: list[str] = []
+    # A file's header runs from its `diff --git` line (or the start of the
+    # text) to its first `@@`: git prints every hunk behind one.
+    in_header = True
+    for line in diff.split("\n"):
+        if line.startswith("diff --git "):
+            if added:
+                files.append((path, added))
+            path, added, in_header = "", [], True
+            continue
+        if line.startswith("@@"):
+            in_header = False
+            continue
+        if in_header:
+            if line.startswith("+++ "):
+                name = line[4:]
+                if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+                    name = name[1:-1]
+                path = name[2:] if name.startswith("b/") else name
+            continue
+        if line.startswith("+"):
+            added.append(line[1:])
+    if added:
+        files.append((path, added))
+    return [(name, "\n".join(lines)) for name, lines in files]
+
+
+def _holds_a_credential(added: str) -> bool:
+    """True when `added` -- text a diff adds, its `+` removed -- matches a
+    credential pattern where the match starts a token (`_adds_a_credential`)."""
+    if not added:
+        return False
+    for rule in CREDENTIAL_RULES:
+        if rule.apply is not None:
+            if rule.apply(added, False, False)[1]:
+                return True
+            continue
+        for match in rule.pattern.finditer(added):
+            start = match.start()
+            if start and (added[start - 1].isalnum() or added[start - 1] == "_"):
+                continue
+            if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
+                continue
+            return True
+    return False
+
+
+#: A bare value shaped like a credential: twelve or more token characters,
+#: with at least one letter and one digit. `get_token()`, `str`, `self.token`
+#: and `DEFAULT_TOKEN` are not; `a1b2c3d4e5f6g7h8` is.
+_BARE_CREDENTIAL_RE = re.compile(r"(?=[^\s]*[A-Za-z])(?=[^\s]*[0-9])[A-Za-z0-9_\-+/=~]{12,}")
+
+
+def _assigns_a_literal(match: re.Match[str]) -> bool:
+    """True when a `KEY_VALUE` match assigns a LITERAL to the credential's name.
+
+    OWNER DECISION, 2026-09-28 (#259): in a commit's code, `token =
+    get_token()` and `password: str` name a credential without holding one,
+    and folding a history for them would fold nearly every history that
+    touches authentication. So the key/value rule counts only for a quoted
+    string -- the rule's group 1 ends with the opening quote, or the value
+    opens with a single quote the rule's value class takes as a character --
+    or for a bare value shaped like a credential (`_BARE_CREDENTIAL_RE`). The
+    specific families (AWS keys, private keys, JWTs, provider tokens) and the
+    registered literals count wherever they appear.
+    """
+    prefix = match.group(1)
+    value = match.group(0)[len(prefix):]
+    if prefix.rstrip().endswith('"') or value.startswith("'"):
+        return True
+    return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
+
+
+def _first_leaking_commit(
+    *,
+    shas: list[str],
+    keep: str | None,
+    leaks: Callable[[str], bool],
+    git: list[str],
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    overlap: int = SCAN_OVERLAP_CHARS,
+    floor: str = "",
+) -> int | None:
+    """The 1-based index of the first agent commit whose ADDED text `leaks`, or None.
+
+    `floor` is the clone base the first commit must sit on ("" for an empty
+    repository, whose first commit has no parent). A commit whose first
+    parent is not the entry before it in `shas` (or `floor`) is returned as
+    a hit too: the list is not the chain the replay would write.
+
+    Each commit is diffed against the tree it will sit on once replayed --
+    the entry before it, which the chain check makes its first parent (the
+    empty tree for a parentless first commit) -- with `--text` so a file git would call
+    binary is still shown byte for byte, and `--no-renames` so a moved file's
+    content is shown rather than only its new name. `leaks` is asked about
+    what each file ADDS, `+` removed: a removed line was in the parent's tree
+    already. The worker's own `keep` commit is skipped here; its tree is the
+    final tree, which `final_tree_leak` scans before any push.
+    """
+
+    def run(argv: list[str], slug: str, cap: int = 4 * 1024 * 1024) -> tuple[int, str, bool]:
+        return _git_text_full(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+            max_bytes=cap,
+        )
+
+    empty_tree: str | None = None
+    for index, sha in enumerate(shas, 1):
+        code, raw, _ = run([*git, "cat-file", "commit", sha], "publish-scan-read")
+        if code != 0:
+            raise GitError(f"could not read commit {sha[:12]}")
+        header = raw.partition("\n\n")[0]
+        parents = [line[len("parent "):].strip() for line in header.split("\n") if line.startswith("parent ")]
+        # EACH COMMIT IS SCANNED AGAINST THE TREE IT WILL ACTUALLY SIT ON
+        # (#259 re-review, grafts). The replay writes commit i on the
+        # rewritten commit i-1 (or the base for the first), so the diff that
+        # matters is against THAT, and it is the same as the commit's own
+        # first parent only when the list is an unbroken chain. A list that
+        # skips a commit -- `.git/info/grafts`, which `rev-list` and
+        # `merge-base` follow and `GIT_GRAFT_FILE=/dev/null` now switches off
+        # (`gitops._git_env`) -- would have scanned each commit against a
+        # parent the push never sends, and shipped a skipped commit's secret
+        # in the next kept tree. A broken chain folds: the index is returned.
+        expected = shas[index - 2] if index > 1 else (floor or None)
+        actual = parents[0] if parents else None
+        if actual != expected:
+            return index
+        if sha == keep:
+            continue
+        if expected is not None:
+            before = expected
+        else:
+            if empty_tree is None:
+                code, made, _ = run([*git, "hash-object", "-t", "tree", "/dev/null"], "publish-scan-empty")
+                empty_tree = made.strip()
+                if code != 0 or not _SHA_RE.match(empty_tree):
+                    raise GitError("could not name the empty tree")
+            before = empty_tree
+        # EVERY BYTE OF THE DIFF IS SCANNED, AND NONE IS STORED (owner
+        # decision, 2026-09-29): streamed from git through a pipe into
+        # overlapping windows (`_DiffLeakScanner`), so a big diff is neither
+        # refused for its size nor scanned only in part, and no file holds
+        # the value it was scanned for.
+        code, hit = _scan_diff_stream(
+            [
+                *git, "-c", "core.quotePath=false", "diff", "--no-color", "--no-ext-diff",
+                "--no-textconv", "--text", "--no-renames", "--submodule=short", "--src-prefix=a/",
+                "--dst-prefix=b/", "-U0", before, sha, "--",
+            ],
+            leaks=leaks,
+            overlap=overlap,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="publish-scan-diff",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        if code != 0:
+            raise GitError(f"could not diff commit {sha[:12]} against its parent")
+        if hit is not None:
+            return index
+    return None
+
+
+def final_tree_leak(
+    *,
+    repo: Path,
+    base: str | None,
+    leaks: Callable[[str], bool],
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    overlap: int = SCAN_OVERLAP_CHARS,
+) -> str | None:
+    """Why the branch about to be pushed must not be, or None when it may.
+
+    OWNER DECISION, 2026-09-28 (#259 review, M4). The per-commit scan
+    (`_first_leaking_commit`) decides only between keeping the agent's
+    commits and folding them; it skips the worker's own commit of
+    uncommitted work, and a fold pushes the final tree unscanned. So a key
+    the agent committed and never deleted -- or wrote and never committed --
+    reached the forge in the one commit the worker wrote. This reads what
+    the push would add, `base..HEAD` diffed as one span AFTER the replay or
+    the fold, so it covers every commit's tree the push carries: each kept
+    commit is scanned by the per-commit pass and the final tree here.
+
+    `leaks` is asked about the text each FILE adds, with the `+` removed, so
+    a line the branch removes -- the repository's own, already public --
+    never refuses it. The answer names the FILE and never the value: the
+    reason becomes the attempt's error, which the retry and a human both
+    read. The whole diff is scanned however big it is, streamed in
+    overlapping windows (`_DiffLeakScanner`; owner decision, 2026-09-29):
+    size alone never refuses a publish, and no file holds the diff.
+
+    `repo` is the worker's clean repository (`gitops.prepare_publish_repo`,
+    owner decision 2026-09-29): the agent's objects were fetched into it with
+    object checking, and it holds no commit-graph, grafts, shallow file,
+    replace refs or config of the agent's -- a forged commit-graph entry made
+    `git diff` in the clone compare a tree the push never sends. The
+    `GIT_NO_REPLACE_OBJECTS=1`, `GIT_GRAFT_FILE` and `core.commitGraph=false`
+    of `gitops._git_env`, and the explicit `--src-prefix`/`--dst-prefix` and
+    `core.quotePath=false`, stay as a second belt.
+    """
+    g = [git_binary, *_NO_HOOKS, "-c", "core.quotePath=false"]
+    run_kwargs: dict[str, Any] = {
+        "repo": Path(repo),
+        "private_dir": private_dir,
+        "logs_dir": logs_dir,
+        "timeout_seconds": timeout_seconds,
+        "logger": logger,
+    }
+    code, _head, _ = _git_text_full(
+        [*g, "rev-parse", "--verify", "--quiet", "HEAD"], slug="publish-final-head", **run_kwargs
+    )
+    if code != 0:
+        # Nothing is committed, so the push has nothing to send.
+        return None
+    if base == EMPTY_CLONE_BASE:
+        code, made, _ = _git_text_full(
+            [*g, "hash-object", "-t", "tree", "/dev/null"], slug="publish-final-empty", **run_kwargs
+        )
+        before = made.strip()
+        if code != 0 or not _SHA_RE.match(before):
+            raise GitError("could not name the empty tree")
+    elif base and _SHA_RE.match(base.strip()):
+        before = base.strip()
+    else:
+        raise GitError(
+            "the clone base is unknown, so the worker cannot read what the push "
+            "would add; nothing was pushed"
+        )
+    code, hit = _scan_diff_stream(
+        [
+            *g, "diff", "--no-color", "--no-ext-diff", "--no-textconv", "--text",
+            "--no-renames", "--submodule=short", "--src-prefix=a/", "--dst-prefix=b/", "-U0",
+            before, "HEAD", "--",
+        ],
+        leaks=leaks,
+        overlap=overlap,
+        slug="publish-final-diff",
+        **run_kwargs,
+    )
+    if code != 0:
+        raise GitError("could not diff the branch against the clone base")
+    if hit is not None:
+        return f"the final tree adds a credential in {hit}; remove it"
+    return None
+
+
+def replay_agent_commits(
+    *,
+    repo: Path,
+    base: str | None,
+    keep: str | None,
+    task_id: str,
+    scrub: Callable[[str], str],
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    leaks: Callable[[str], bool] | None = None,
+    overlap: int = SCAN_OVERLAP_CHARS,
+) -> int | None:
+    """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
+
+    Returns how many of the AGENT's commits were kept -- `keep`, the worker's
+    own commit from `commit_dirty`, is rewritten too and not counted -- or
+    None when this history cannot be kept commit by commit, and the caller
+    folds it as before (`gitops.fold_agent_commits`):
+
+    * HEAD does not descend from `base` (the agent reset or checked out
+      another line): nothing tells its commits from the repository's;
+    * more than `MAX_KEPT_COMMITS` of them;
+    * `leaks` answers True for the text any agent commit ADDS over its parent
+      (#259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added
+      in one commit and deleted in the next would be pushed in the first
+      one's tree even though the final tree is clean -- and a pushed object
+      on a public forge is published for good. The fold pushes only the
+      final tree. Only the offending commit's index is logged, never any of
+      its content. A diff of any size is scanned whole (owner decision,
+      2026-09-29), so size alone never folds a history.
+
+    WHAT IS KEPT, AND WHAT IS NOT. Each commit keeps its TREE, exactly -- so
+    the tests-only commit of a red-first change is still tests only, and CI
+    can run it -- and its message, cleaned (`clean_commit_message`). Its
+    author, committer, dates and signature are the worker's: the commit is
+    made with `git commit-tree` under `_worker_identity`, and #219's rule that
+    the worker writes every commit it pushes holds, checked again at the push
+    by `verify_worker_authorship`. A merge the agent made keeps its merged
+    tree and loses its second parent: every commit on that side would
+    otherwise be pushed as it was written.
+
+    The index and working tree are not touched; `reset --soft` moves the
+    branch onto the rewritten line, which ends in the same tree HEAD had.
+    An unknown `base` refuses, exactly as the fold does.
+
+    `repo` is the worker's clean repository, never the agent's clone
+    (`gitops.prepare_publish_repo`, owner decision 2026-09-29): the list, the
+    scan and the rewrite read only objects fetched with object checking, and
+    none of the agent's grafts, shallow file, replace refs, commit-graph or
+    config.
+    """
+    empty = base == EMPTY_CLONE_BASE
+    if not empty and (not base or not _SHA_RE.match(base.strip())):
+        raise GitError(
+            "the clone base is unknown, so the worker cannot tell the agent's "
+            "commits from the repository's; nothing was pushed rather than "
+            "commits whose author and message the worker did not write"
+        )
+    floor = "" if empty else (base or "").strip()
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    if empty:
+        code, _ = run([*g, "rev-parse", "--verify", "--quiet", "HEAD"], "publish-keep-born")
+        if code != 0:
+            return 0
+        span = "HEAD"
+    else:
+        code, _ = run([*g, "merge-base", "--is-ancestor", floor, "HEAD"], "publish-keep-descends")
+        if code == 1:
+            logger.warning(
+                "the agent's branch does not descend from the clone base; its "
+                "commits are folded into one worker commit"
+            )
+            return None
+        if code != 0:
+            raise GitError("could not tell whether the agent's work descends from the clone base")
+        span = f"{floor}..HEAD"
+
+    code, text = run([*g, "rev-list", "--first-parent", "--reverse", span], "publish-keep-list")
+    if code != 0:
+        raise GitError("could not list the commits made since the clone base")
+    shas = text.split()
+    if not shas:
+        return 0
+    if len(shas) > MAX_KEPT_COMMITS:
+        logger.warning(
+            "the agent made more commits than are kept one by one; they are "
+            "folded into one worker commit",
+            commits=len(shas),
+            cap=MAX_KEPT_COMMITS,
+        )
+        return None
+
+    if leaks is not None:
+        index = _first_leaking_commit(
+            shas=shas,
+            keep=keep,
+            leaks=leaks,
+            overlap=overlap,
+            floor=floor,
+            git=g,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        if index is not None:
+            logger.warning(
+                "an agent commit's diff carries a registered secret; the agent's "
+                "commits are folded into one worker commit of the final tree",
+                commit_index=index,
+                commits=len(shas),
+            )
+            return None
+
+    parent = floor or None
+    kept = 0
+    for index, sha in enumerate(shas, 1):
+        code, raw = run([*g, "cat-file", "commit", sha], "publish-keep-read")
+        if code != 0:
+            raise GitError(f"could not read commit {sha[:12]}")
+        header, _, message = raw.partition("\n\n")
+        trees = [line[len("tree "):] for line in header.split("\n") if line.startswith("tree ")]
+        tree = trees[0].strip() if trees else ""
+        if not _SHA_RE.match(tree):
+            raise GitError(f"could not read the tree of commit {sha[:12]}")
+        if sha == keep:
+            # The worker's own message, from `commit_dirty`.
+            text = message.replace("\x00", "").strip()
+            text = text or f"swarm: uncommitted changes from {task_id}"
+        else:
+            kept += 1
+            text = clean_commit_message(
+                message,
+                scrub=scrub,
+                fallback=f"swarm: commit {index} of {len(shas)} from {task_id}",
+            )
+        argv = [*g, "commit-tree", tree]
+        if parent:
+            argv += ["-p", parent]
+        argv += ["-m", text]
+        code, made = run(argv, "publish-keep-write")
+        made = made.strip()
+        if code != 0 or not _SHA_RE.match(made):
+            raise GitError(f"could not rewrite commit {sha[:12]} as the worker's")
+        parent = made
+    code, _ = run([*g, "reset", "--soft", parent or ""], "publish-keep-reset")
+    if code != 0:
+        raise GitError("could not move the branch onto the worker's rewritten commits")
+    logger.info(
+        "kept the agent's commits, each rewritten as the worker's",
+        kept=kept,
+        rewritten=len(shas),
+    )
+    return kept
+
+
+def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
+    """Refuse a stored `input` its profile's declaration refuses. Every profile.
+
+    The same rule swarm-api and the plugin's bridge apply at submission,
+    `swarm_common.profiles.check_inputs`, asked of the input as stored, without
+    its `prompt` (which every profile takes and no declaration names). A
+    refusal is `ConfigError`, which exits 78, "cannot start": the task fails
+    with `EndCause.CANNOT_START`, and the reconciler does not retry it, because
+    every retry would read the same document and be refused the same way.
+
+    NO PROFILE IS EXEMPT (the owner, on #345, 2026-09-29). The mock reads keys
+    no caller may send -- `spend`, `provider`, `credential_revoked_times` and
+    the others with which it acts out a provider -- and the worker's unit suite
+    used to write them into the stored input. It hands them to the runner
+    through a test-only seam now (tests/unit/worker/conftest.py, `simulated`),
+    so a mock task is held to its declaration like any other.
+
+    The message names the key and the bound, never the value: a refused URL
+    may carry `user:password@`, and this text is stored as the task's error.
+    """
+    profile = RUNNER_PROFILES[runner_profile]
+    raw = stored if stored is not None else {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"the task's input is a {type(raw).__name__}, not an object; runner profile "
+            f"{runner_profile!r} cannot read it (checked again by the worker, contract "
+            "request 32)"
+        )
+    try:
+        check_inputs(profile, {key: value for key, value in raw.items() if key != "prompt"})
+    except InputRefused as refused:
+        bound = f"; expected {refused.expected}" if refused.expected else ""
+        raise ConfigError(
+            f"the task's input is refused by runner profile {runner_profile!r}: "
+            f"{', '.join(refused.keys)}{bound} (checked again by the worker, contract "
+            "request 32)"
+        ) from None
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

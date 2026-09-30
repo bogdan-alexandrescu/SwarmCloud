@@ -106,9 +106,12 @@ QUOTA_RUN = {
     "steps": 1,
     "sleep_seconds": 0.05,
     "quota_exhausted": True,
-    "provider": "anthropic",
     "retry_after_seconds": 1800,
 }
+
+#: The provider QUOTA_RUN's rate limit names. What the mock's simulated
+#: provider says, never the task's input (`simulated`, conftest.py).
+QUOTA_PROVIDER = {"provider": "anthropic"}
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +725,7 @@ def test_a_quota_park_the_fence_overtakes_does_not_announce_itself(db, worker_fa
     The fence lands after the provider publish. The old code then wrote
     QUOTA_EXHAUSTED into the task's stream, and the park refused.
     """
-    seed_attempt(db, task_input=QUOTA_RUN, pool_active=3)
+    seed_attempt(db, task_input=QUOTA_RUN, simulated=QUOTA_PROVIDER, pool_active=3)
     worker, _, _ = worker_factory(**QUIET)
     parking = park_began(worker, "quota-park")
     frozen: dict[str, World] = {}
@@ -763,7 +766,7 @@ def test_an_account_park_the_fence_overtakes_does_not_announce_itself(db, worker
     seed_attempt(
         db,
         runner_profile="claude-code",
-        task_input={"prompt": "waits for an account", "steps": 1, "sleep_seconds": 0.05},
+        task_input={"prompt": "waits for an account"},
         pool_active=3,
     )
     worker, _, _ = worker_factory(runner_profile="claude-code", **QUIET)
@@ -817,7 +820,7 @@ def test_a_quota_parks_announcement_commits_with_the_park_or_not_at_all(
     apart.
     """
     db = ContendedFirestore()
-    seed_attempt(db, task_input=QUOTA_RUN, pool_active=3)
+    seed_attempt(db, task_input=QUOTA_RUN, simulated=QUOTA_PROVIDER, pool_active=3)
     worker, _, _ = build_worker(
         db, store, tmp_path, log_stream, txn_runner=ContendedTransactionRunner(db), **QUIET
     )

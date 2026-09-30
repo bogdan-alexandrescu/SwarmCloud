@@ -142,7 +142,9 @@ matters most:
    secret is read, before the runner starts;
 2. STARTING -> RUNNING;
 3. create an isolated workspace;
-4. restore the newest checkpoint across all attempts of this task;
+4. restore the checkpoint an earlier attempt of this task recorded, and
+   nothing on a first attempt (#347; [checkpointing.md](checkpointing.md#3-restore)
+   says why the prefix is not listed);
 5. optional shallow clone;
 6. resolve the tenant's provider credential;
 7. start the runner as a child process (never a shell);

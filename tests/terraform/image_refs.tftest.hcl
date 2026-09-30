@@ -19,7 +19,11 @@
 #   * a tag, a truncated digest, another image's digest under this name, and an
 #     image from another registry are each refused before anything is planned.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id  = "saga-agents-staging"

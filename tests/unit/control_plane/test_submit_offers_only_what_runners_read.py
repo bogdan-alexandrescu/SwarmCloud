@@ -1,23 +1,24 @@
-"""The Submit form offers a profile only the keys its runner reads (#213 review).
+"""The Submit form offers a profile only what it declares, and its runner reads (#213 review, #218).
 
 `SUGGESTED` in apps/swarm-ui/src/Submit.tsx is what the form offers per
-profile. For a profile that DECLARES its inputs, section 13 of
-scripts/lib/check-contract-parity.sh holds every offer to the declaration, and
-tests/unit/mcp/test_runner_inputs.py holds every declared key to a read in the
-runner. For `browser` and `generic`, whose inputs are NOT DECLARED YET (#218),
-neither applies: the API bounds what is sent to them by size alone, so a key
-their runner never reads is accepted, stored and ignored.
+profile. Section 13 of scripts/lib/check-contract-parity.sh holds every offer
+to the profile's declaration, and tests/unit/mcp/test_runner_inputs.py holds
+every declared key to a read in the runner.
 
-The review found one: the form offered the browser runner `timeout_seconds`,
-described as "lowers the child wall clock". Only the runners that start a
-child through `runners/limits.py` (`resolve_limits`) read it -- generic and the
-CLI runners -- and the browser runner does not, so a user who set it was told
-their run was shorter while the platform's ceiling applied unchanged.
+Until contract request 32 (#218) `browser` and `generic` declared nothing, so
+neither check applied to them and this file held their offers to the runner's
+source instead. The review of #213 had found one offer nothing read: the form
+offered the browser runner `timeout_seconds`, described as "lowers the child
+wall clock", which only the runners that start a child through
+`runners/limits.py` (`resolve_limits`) read -- generic and the CLI runners.
 
-So for every profile not declared yet, each key the form offers must be one
-the profile's runner reads: a `payload.get("key")` or `payload["key"]` in the
-module its `runner_argv` names, or one of the limits `resolve_limits` reads
-when that module calls it. Read from the source, never imported.
+Both declare now. So every profile's offers are held here to BOTH: the
+declaration (the same comparison section 13 makes, so the form cannot invite
+a 422) and the runner's source (a `payload.get("key")` or `payload["key"]` in
+the module its `runner_argv` names, or one of the limits `resolve_limits`
+reads when that module calls it). And the browser actions the form BUILDS are
+held to the eight declared shapes, field by field. Read from the source,
+never imported.
 """
 
 from __future__ import annotations
@@ -33,9 +34,6 @@ ROOT = Path(__file__).resolve().parents[3]
 SUBMIT = ROOT / "apps/swarm-ui/src/Submit.tsx"
 RUNNERS = ROOT / "apps/agent-worker"
 LIMITS = RUNNERS / "agent_worker/runners/limits.py"
-
-#: The profiles whose inputs the catalogue has not declared yet.
-UNDECLARED = sorted(name for name, profile in RUNNER_PROFILES.items() if profile.inputs is None)
 
 _READ = re.compile(r"""payload(?:\.get\(|\[)\s*["']([A-Za-z_]\w*)["']""")
 
@@ -79,23 +77,64 @@ def test_the_table_is_read():
     )
 
 
-@pytest.mark.parametrize("name", UNDECLARED or ["<none>"])
-def test_a_profile_not_declared_yet_is_offered_only_keys_its_runner_reads(name):
-    if name == "<none>":
-        pytest.skip("every profile declares its inputs now; section 13 holds the form")
+@pytest.mark.parametrize("name", sorted(RUNNER_PROFILES))
+def test_every_offer_is_declared_and_read(name):
     offered = _offers()[name]
     assert offered, f"the form offers {name} nothing; this test reads nothing there"
-    reads = _reads(name)
-    assert reads, f"read no payload key from {name}'s runner; this test reads nothing there"
-    unread = sorted(set(offered) - reads)
-    assert not unread, (
-        f"the Submit form offers {name} {unread}, which its runner never reads: "
-        f"the API accepts it (size alone bounds {name}), stores it and nothing acts on it"
+    declared = {"prompt"} | set(RUNNER_PROFILES[name].inputs)
+    undeclared = sorted(set(offered) - declared)
+    assert not undeclared, (
+        f"the Submit form offers {name} {undeclared}, which it does not declare: "
+        "the form invites a submission the API refuses with 422 invalid_input"
     )
+    unread = sorted(set(offered) - _reads(name) - {"prompt"})
+    assert not unread, f"the Submit form offers {name} {unread}, which its runner never reads"
+
+
+def test_the_generic_command_choices_are_the_declarations():
+    """The form's `command` picker is the catalogue's closed list, not a copy
+    that can gain a name the API refuses."""
+    text = SUBMIT.read_text()
+    offer = re.search(r"\{ name: 'command'[^}]*choices: \[([^\]]*)\]", text)
+    assert offer, "the form no longer offers generic a command picker"
+    choices = set(re.findall(r"'([a-z-]+)'", offer.group(1)))
+    assert choices == set(RUNNER_PROFILES["generic"].inputs["command"].choices), choices
+
+
+def _action_shape() -> dict[str, list[str]]:
+    """`ACTION_SHAPE` in Submit.tsx, as {type: [the key each field is SENT as]}."""
+    text = SUBMIT.read_text()
+    table = re.search(r"const ACTION_SHAPE\b[^=]*=\s*\{\n(.*?)\n\}\n", text, re.S)
+    assert table, "Submit.tsx has no ACTION_SHAPE table; this test reads nothing"
+    shapes: dict[str, list[str]] = {}
+    for line in re.finditer(r"^  ([a-z_]+):\s*\[(.*)\],?$", table.group(1), re.M):
+        sent = []
+        for part in re.finditer(r"\{([^}]*)\}", line.group(2)):
+            prop = re.search(r"prop:\s*'([a-z_]+)'", part.group(1))
+            send = re.search(r"send:\s*'([a-z_]+)'", part.group(1))
+            assert prop, part.group(0)
+            sent.append(send.group(1) if send else prop.group(1))
+        shapes[line.group(1)] = sent
+    return shapes
+
+
+def test_every_action_the_form_builds_is_a_declared_shape():
+    """The form built `press` as `{selector, text}` while the runner reads
+    `key` -- the text typed as the key was sent under a name nothing read, and
+    since request 32 the declaration refuses it outright. Every field the form
+    sends must be one the declared shape takes."""
+    variants = RUNNER_PROFILES["browser"].inputs["actions"].items.variants
+    shapes = _action_shape()
+    assert set(shapes) == set(variants), (sorted(shapes), sorted(variants))
+    for kind, sent in shapes.items():
+        extra = sorted(set(sent) - set(variants[kind]))
+        assert not extra, f"the form sends a {kind!r} action {extra}, which that shape does not take"
+        required = sorted(f for f, spec in variants[kind].items() if spec.required)
+        assert set(required) <= set(sent), f"the form's {kind!r} action never sends {required}"
 
 
 def test_the_limits_are_read_only_by_runners_that_resolve_them():
-    """The control for the test above: generic reads `timeout_seconds` through
-    `resolve_limits`, and the browser runner does not call it at all."""
+    """The control for the runner-read check: generic reads `timeout_seconds`
+    through `resolve_limits`, and the browser runner does not call it at all."""
     assert "timeout_seconds" in _reads("generic")
     assert "timeout_seconds" not in _reads("browser")

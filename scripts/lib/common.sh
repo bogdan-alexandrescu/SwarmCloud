@@ -1680,7 +1680,7 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # a backslash inside it (`password=ab\cd`) is still masked whole, as before.
 # Both take an optional `[` before the value, so the first element of
 # `"password": ["<v>"]` is masked rather than the bracket. This is the same
-# rule as `swarm_api.redaction.KEY_VALUE`, written as two expressions because
+# rule as `swarm_redaction.KEY_VALUE`, written as two expressions because
 # sed has no conditional group; the test file runs both filters over the same
 # lines and holds their output equal. An escaped status word
 # (`\"token\": \"not set\"`) is not protected: it is log text, not

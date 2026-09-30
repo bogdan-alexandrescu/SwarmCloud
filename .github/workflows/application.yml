@@ -59,6 +59,12 @@ on:
       # a pull request changing it never runs it: this is the one place it is
       # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
       - ".github/workflows/auto-merge.yml"
+      # ci-gate is the check the ruleset requires in place of this workflow
+      # and terraform.yml. A pull request changing only its workflow would
+      # otherwise run neither actionlint below nor tests/unit/scripts/test_ci_gate.py
+      # (scripts/ci-gate.sh is already under scripts/**; named for the record).
+      - ".github/workflows/ci-gate.yml"
+      - "scripts/ci-gate.sh"
   workflow_dispatch:
 
 permissions:
@@ -232,13 +238,14 @@ jobs:
     # expression in its revert gate would otherwise first show on that run.
     # auto-merge.yml likewise: a pull request that changes it runs main's
     # copy, not its own, so a broken expression would first show on the first
-    # `ready` label after it merged.
+    # `ready` label after it merged. ci-gate.yml is linted because main's ruleset
+    # is to require its one job: a broken expression there holds every pull request.
     env:
       ACTIONLINT_VERSION: "1.7.7"
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml, auto-merge.yml and ci-gate.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -248,7 +255,7 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
-            .github/workflows/auto-merge.yml
+            .github/workflows/auto-merge.yml .github/workflows/ci-gate.yml
 
   python:
     name: format / unit tests
@@ -263,6 +270,37 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: read the platform's Node major for the WHATWG URL table
+        id: node
+        # tests/unit/control_plane/test_url_refusal_whatwg.py drives Node's own
+        # `URL` class to measure which host a browser opens for each URL the
+        # browser profile's `url_refusal` judges (contract request 32, #345),
+        # and it FAILS under CI without `node` rather than skipping. This job
+        # never installed Node; it passed on the runner image's own, which is
+        # someone else's choice. The major comes from the one place the
+        # platform states it, `ARG NODE_IMAGE` in images/swarm-ui/Dockerfile,
+        # read exactly as the ui job reads it -- not a third literal here.
+        # Unlike the ui job there is no step comparing the running Node with
+        # it: nothing here is built or bundled, and WHATWG `URL` is the same
+        # on every supported line, so a fallback to the runner's Node (what an
+        # empty version would mean) changes no result. The table's own
+        # fail-under-CI is the guard that matters.
+        # tests/unit/scripts/test_python_job_node.py holds this step here.
+        run: |
+          set -euo pipefail
+          dockerfile=images/swarm-ui/Dockerfile
+          majors="$(sed -nE 's/^ARG NODE_IMAGE=node:([0-9]+)[^0-9].*/\1/p' "$dockerfile")"
+          count="$(printf '%s' "$majors" | grep -c . || true)"
+          if [ "$count" -ne 1 ]; then
+            echo "::error file=${dockerfile}::expected exactly one 'ARG NODE_IMAGE=node:<major>-...' line, found ${count}"
+            exit 1
+          fi
+          echo "major=${majors}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ steps.node.outputs.major }}
 
       - name: sync
         run: uv sync --frozen --all-extras --dev

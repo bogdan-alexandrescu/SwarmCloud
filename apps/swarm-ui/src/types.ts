@@ -3822,16 +3822,33 @@ export interface ArtifactContent {
  * The Artifacts tab chooses by the server's `kind` instead: one table, on the
  * server, rather than a second copy of it here.
  */
-export type ArtifactKind = 'markdown' | 'transcript' | 'text'
+export type ArtifactKind = 'markdown' | 'transcript' | 'diff' | 'text'
 
 export function artifactKind(name: string): ArtifactKind {
   const lower = name.toLowerCase()
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  // A PATCH BY NAME (#104): `swarm-work.patch`, the worker's own, and the
+  // `change.diff` a workflow step writes for its dependant to stage. The
+  // server's name table calls both `text`, which is true of the bytes and
+  // says nothing about how to read them, so this rule is asked first for
+  // every text-like kind (ArtifactViewer.tsx `Rendered`).
+  if (lower.endsWith('.patch') || lower.endsWith('.diff')) return 'diff'
   // `claude-transcript.json` and `codex-transcript.json` -- `spec.transcript_name`
   // in the two cliagent runners. Matched on the suffix rather than on either
   // exact name, so a third runner's transcript renders as a transcript too.
   if (lower.endsWith('transcript.json')) return 'transcript'
   return 'text'
+}
+
+/**
+ * A diff BY ITS CONTENT, for a file whose name does not say (#104): `git diff`
+ * output starts `diff --git`, and a plain unified diff has `@@ -a,b +c,d @@`
+ * hunk headers. The hunk has to be the whole header shape, at the start of a
+ * line: an `@@` in prose, or a decorator in code, is not one.
+ */
+export function looksLikeDiff(content: string): boolean {
+  if (content.startsWith('diff --git ')) return true
+  return /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/m.test(content)
 }
 
 /**

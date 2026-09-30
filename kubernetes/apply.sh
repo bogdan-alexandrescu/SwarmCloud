@@ -4,6 +4,9 @@
 #   kubernetes/apply.sh --tenant eng                 # dry run, prints a diff
 #   kubernetes/apply.sh --tenant eng --confirm       # actually applies
 #   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies
+#   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
+#                         # ... with the step-spec public keys ConfigMap, from
+#                         # `terraform output -json spec_verify_keys_configmap`
 #
 # Three safety properties, in the order they matter.
 #
@@ -82,6 +85,7 @@ MODE="tenant"
 CONFIRM=0
 SERVER_DRY_RUN=0
 CONTEXT=""
+SPEC_VERIFY_KEYS_FILE=""
 RENDER_ARGS=()
 
 # THE CLUSTER'S NETWORK IS READ, NOT PASSED. These five render.py flags used to
@@ -136,6 +140,13 @@ while [[ $# -gt 0 ]]; do
     # The `=` spellings of the three above. Without them `--cluster=NAME` was
     # forwarded, and the renderer read `--cluster` as an abbreviation of
     # `--cluster-dns-ip` and tried to render the cluster's NAME as its DNS IP.
+    # The step-spec public keys (contract request 34): a file holding
+    # `terraform -chdir=terraform/infra output -json spec_verify_keys_configmap`.
+    # Rendered as the tenant namespace's swarm-spec-verify-keys ConfigMap and
+    # applied with the rest of it. The release passes it for every tenant;
+    # without it no ConfigMap is rendered and an existing one is left alone.
+    --spec-verify-keys)   SPEC_VERIFY_KEYS_FILE="$2"; shift 2 ;;
+    --spec-verify-keys=*) SPEC_VERIFY_KEYS_FILE="${1#*=}"; shift ;;
     --tenant=*)   TENANT="${1#*=}"; shift ;;
     --context=*)  CONTEXT="${1#*=}"; shift ;;
     --cluster=*)  CLUSTER="${1#*=}"; shift ;;
@@ -309,6 +320,7 @@ info "context  ${CURRENT} -> ${CURRENT_CLUSTER}"
 # --- render ------------------------------------------------------------------
 PYTHON="${PYTHON_BIN:-python3}"
 if [[ "${MODE}" == "policies" ]]; then
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to the cluster-scoped policies"
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" policies)"
   info "rendering cluster-scoped admission policies"
 else
@@ -449,7 +461,17 @@ else
        scripts/register-tenant.sh) issues it." ;;
   esac
 
+  SPEC_ARGS=()
+  if [[ -n "${SPEC_VERIFY_KEYS_FILE}" ]]; then
+    [[ -r "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys ${SPEC_VERIFY_KEYS_FILE}: no such readable file"
+    SPEC_ARGS+=(--spec-verify-keys-file "${SPEC_VERIFY_KEYS_FILE}")
+    info "step-spec keys   rendering swarm-spec-verify-keys from ${SPEC_VERIFY_KEYS_FILE}"
+  else
+    dim "  no --spec-verify-keys: swarm-spec-verify-keys is not rendered; an existing one is left as it is"
+  fi
+
   MANIFEST="$("${PYTHON}" "${HERE}/render.py" tenant --tenant "${TENANT}" \
+    ${SPEC_ARGS[@]+"${SPEC_ARGS[@]}"} \
     --scheduler-uid "${SCHEDULER_UID}" \
     --reconciler-uid "${RECONCILER_UID}" \
     --pod-cidr "${CLUSTER_POD_CIDR}" \

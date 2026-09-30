@@ -18,6 +18,7 @@ dependencies = [
     { name = "swarm-mcp" },
     { name = "swarm-quota-broker" },
     { name = "swarm-reconciler" },
+    { name = "swarm-redaction" },
     { name = "swarm-scheduler" },
 ]
 
@@ -37,6 +38,7 @@ requires-dist = [
     { name = "swarm-mcp", editable = "apps/swarm-mcp" },
     { name = "swarm-quota-broker", editable = "apps/quota-broker" },
     { name = "swarm-reconciler", editable = "apps/reconciler" },
+    { name = "swarm-redaction", editable = "apps/redaction" },
     { name = "swarm-scheduler", editable = "apps/scheduler" },
 ]
 
@@ -1820,6 +1822,7 @@ dependencies = [
     { name = "google-cloud-secret-manager" },
     { name = "google-cloud-storage" },
     { name = "swarm-common" },
+    { name = "swarm-redaction" },
 ]
 
 [package.metadata]
@@ -1829,6 +1832,7 @@ requires-dist = [
     { name = "google-cloud-secret-manager", specifier = ">=2.20" },
     { name = "google-cloud-storage", specifier = ">=2.18" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-redaction", editable = "apps/redaction" },
 ]
 
 [[package]]
@@ -1845,6 +1849,7 @@ dependencies = [
     { name = "prometheus-client" },
     { name = "pydantic" },
     { name = "swarm-common" },
+    { name = "swarm-redaction" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -1859,6 +1864,7 @@ requires-dist = [
     { name = "prometheus-client", specifier = ">=0.20" },
     { name = "pydantic", specifier = ">=2.8" },
     { name = "swarm-common", editable = "apps/common" },
+    { name = "swarm-redaction", editable = "apps/redaction" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 
@@ -1929,6 +1935,11 @@ requires-dist = [
     { name = "swarm-common", editable = "apps/common" },
     { name = "uvicorn", specifier = ">=0.30" },
 ]
+
+[[package]]
+name = "swarm-redaction"
+version = "0.1.0"
+source = { editable = "apps/redaction" }
 
 [[package]]
 name = "swarm-scheduler"

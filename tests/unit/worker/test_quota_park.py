@@ -27,9 +27,9 @@ def test_quota_park_releases_the_lease(db, store, worker_factory):
             "steps": 1,
             "sleep_seconds": 0.05,
             "quota_exhausted": True,
-            "provider": "anthropic",
             "retry_after_seconds": 1800,
         },
+        simulated={"provider": "anthropic"},
     )
     worker, _, _ = worker_factory()
 
@@ -96,8 +96,11 @@ def test_short_wait_retries_in_place_then_parks_when_it_keeps_failing(db, worker
             "steps": 1,
             "sleep_seconds": 0.02,
             "quota_exhausted": True,
-            "retry_after_seconds": 0,
         },
+        # A provider's own retry-after of 0, which is not a caller's to send:
+        # the declaration bounds `retry_after_seconds` to 1..3600, and 0 is
+        # what keeps three in-place retries instant.
+        simulated={"retry_after_seconds": 0},
     )
     worker, _, _ = worker_factory(max_in_worker_retry_delay_seconds=45)
 
@@ -113,7 +116,7 @@ def test_backpressure_from_the_control_plane_parks_a_running_task(db, worker_fac
     seed_attempt(
         db,
         runner_profile="claude-code",
-        task_input={"prompt": "long running", "steps": 40, "sleep_seconds": 10.0},
+        task_input={"prompt": "long running"},
     )
     seed_tenant(db, credentials=["anthropic"])
     db.seed(
@@ -140,7 +143,7 @@ def test_backpressure_from_the_control_plane_parks_a_running_task(db, worker_fac
 
 def test_missing_tenant_credential_parks_instead_of_failing(db, worker_factory):
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "needs a key", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "needs a key"})
     seed_tenant(db, credentials=[])       # admin has not registered the key yet
     worker, _, _ = worker_factory(runner_profile="claude-code")
 

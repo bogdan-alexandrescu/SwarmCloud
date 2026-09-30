@@ -25,7 +25,11 @@
 # rendered from, and a separate assertion holds each rendered expression to
 # exactly those prefixes, so a prefix cannot be tested here and missing there.
 
-mock_provider "google" {}
+# source: the shared defaults every suite that plans terraform/infra needs
+# (mocks/google/kms.tfmock.hcl -- the step-spec key's enabled version 1).
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id = "saga-agents-staging"
@@ -1065,4 +1069,66 @@ run "the_build_can_upload_its_source_and_list_its_bucket" {
     condition     = length(google_project_iam_member.deployer_project_buckets[0].condition) == 0
     error_message = "a parent-only permission cannot be admitted by a resource.name condition; this grant must be unconditioned"
   }
+}
+
+# OWNER DECISION 2026-09-29, from the security review of contract request 30
+# (#314): the deployer holds no roles/iam.workloadIdentityPoolAdmin.
+# terraform/infra manages no workload identity pool or provider -- the only
+# pool it names is GKE's "<project>.svc.id.goog", a string inside the member of
+# a service-account binding (modules/tenancy) -- so the role bought CI nothing
+# and let it add a provider to any pool in the project: the other team's
+# github-actions pool, or swarm-github, where a provider of its own choosing
+# mints tokens for swarm-ci-fix or swarm-tf-deployer outside the WIF ref pin.
+run "the_deployer_holds_no_workload_identity_pool_admin" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition     = !contains(var.deployer_roles, "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "roles/iam.workloadIdentityPoolAdmin is still in deployer_roles' default"
+  }
+
+  assert {
+    condition     = !contains(keys(google_project_iam_member.deployer_roles), "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "the deployer is still granted roles/iam.workloadIdentityPoolAdmin project-wide"
+  }
+
+  # The second key: a role off the reviewed list is refused at plan.
+  assert {
+    condition     = !contains(local.deployer_roles_reviewed, "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "roles/iam.workloadIdentityPoolAdmin is still on the list of roles deployer_roles may name"
+  }
+
+  # The control: the grant loop still runs and still grants the role next to
+  # it on the list, so this run is not green because WIF or the list went away.
+  assert {
+    condition     = contains(keys(google_project_iam_member.deployer_roles), "roles/run.admin") && length(google_project_iam_member.deployer_roles) > 10
+    error_message = "the deployer's other grants went away with workloadIdentityPoolAdmin"
+  }
+}
+
+# Putting it back by hand is refused at plan, by a validation that names it so
+# the refusal explains itself.
+run "workload_identity_pool_admin_cannot_be_put_back" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+    deployer_roles    = ["roles/run.admin", "roles/iam.workloadIdentityPoolAdmin"]
+  }
+
+  expect_failures = [var.deployer_roles]
 }

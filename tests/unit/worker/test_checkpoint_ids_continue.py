@@ -148,7 +148,7 @@ def test_through_the_whole_worker_the_second_attempts_ids_follow_the_first(
     restored_id = pointer.rstrip("/").rsplit("/", 1)[-1]
 
     seed_attempt(
-        db, attempt_id="att_2", lease_id="lease_2", generation=2,
+        db, attempt_id="att_2", lease_id="lease_2", generation=2, attempt_count=2,
         latest_checkpoint=pointer,
         task_input={"prompt": "resume me", "steps": 4, "sleep_seconds": 0.05},
     )

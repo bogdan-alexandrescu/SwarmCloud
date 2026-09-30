@@ -453,7 +453,12 @@ spend one, and the step parked until cancelled, which is why 0.5.2 withheld
 both keys. `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
-restated here. `claude-code` and `codex` declare none and take only the prompt.
+restated here. `claude-code` and `codex` declare one input, `issue`: the
+number of a GitHub issue in the repository the step clones (contract request
+28). The worker fetches its title, body and comments read-only into
+`issue.md` in the workspace, beside the checkout and never among the
+artifacts, and names that file in the prompt, so a prompt need not restate
+the issue. A step that sends it with no repository is refused by the API.
 A key the profile does not declare is refused by name, never dropped, and
 never an image, a command, a resource spec, a backend or a model: the model a
 `claude-code` agent runs is its Job's own `MODEL`, set in Terraform, and the
@@ -461,14 +466,14 @@ runner reads no `input.model` (#226). The declarations are the frozen
 catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
 profile that declares, the API refuses an undeclared key with 422
 `invalid_input` whoever sends it, so the bridge's refusal is only the earlier
-of two identical answers. **`browser` and `generic` have not declared their
-inputs yet** ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
-each runner's work is its input (a url or actions, a command name), and
-nobody has decided which keys they take. The bridge sends them none; the API
-bounds what any other caller sends them by size alone, as it bounded every
-profile before 0.5.3.
+of two identical answers. **`browser` and `generic` declare too**, since
+contract request 32 ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+`browser` takes a `url` and `actions`, and `generic` a required `command`
+from its runner's catalogue, so the bridge sends a browser task its page and
+steps, and refuses a private address, a missing `command` or an action its
+shape does not take before anything is dispatched.
 
-What `mock` declares, as `swarm_profiles` lists it:
+What each declaring profile takes, as `swarm_profiles` lists it:
 
 <!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the mock runner does with it |
@@ -484,6 +489,64 @@ What `mock` declares, as `swarm_profiles` lists it:
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
+
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
+
+What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code -->
+
+<!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the codex runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:codex -->
+
+`--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
+on a step, points a `claude-code` step at an issue of its repository. The
+issue's text is data for the agent: the worker scrubs it of every secret the
+attempt holds and reads nothing in it as an instruction to the platform. The
+tenant's forge token is used for the fetch in the worker's memory only, as for
+the clone, and never reaches the workspace. A fetch that fails -- no such
+issue, a pull request's number, a repository the token cannot read -- fails
+the attempt before the agent starts, with `INPUTS_UNAVAILABLE`.
 
 ## A task's input comes back masked
 

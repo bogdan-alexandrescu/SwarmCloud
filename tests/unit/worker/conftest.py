@@ -84,6 +84,83 @@ def runner_inputs(monkeypatch) -> list[dict[str, Any]]:
     return seen
 
 
+#: What `seed_attempt` stores as a task's input when a test names none: an
+#: input its profile's declaration accepts. The worker re-checks a stored
+#: input against its profile before it runs one (contract request 32,
+#: *Preconditions*), so a claude-code or browser task seeded with the mock's
+#: knobs -- which their runners never read -- would be refused before it ran.
+_DEFAULT_INPUT: dict[str, dict[str, Any]] = {
+    "mock": {"prompt": "hello", "steps": 2, "sleep_seconds": 0.1},
+    "generic": {"prompt": "hello", "command": "pytest"},
+}
+
+#: What the mock's simulated PROVIDER does, by task id: set by `seed_attempt`'s
+#: `simulated`, handed to the runner by `_the_runner_sees_its_simulation`.
+_SIMULATED: dict[str, dict[str, Any]] = {}
+
+
+@pytest.fixture(autouse=True)
+def _the_runner_sees_its_simulation(monkeypatch):
+    """Hand the mock runner what its simulated provider does, beside its input.
+
+    THESE ARE NOT CALLER INPUT, AND ARE NEVER STORED AS ONE. The mock reads
+    `spend`, `provider`, `credential_revoked_times`, `credential_detail`,
+    `quota_detail` and `reset_at` to act out what a real provider does to a
+    real runner: report a spend, revoke a credential, name its rate limit. The
+    owner withheld them from callers on #142, because each writes a platform
+    record; the API refuses them, and since contract request 32 the worker
+    refuses a stored input that carries one before anything runs. So a test
+    that needs one does not write it into the task document, which no caller
+    can do either. It passes it here, and this puts it into `input.json` after
+    the worker has checked the stored input and written the file -- the moment
+    in production when the runner, not the platform, meets its provider.
+
+    The seam is `Worker._build_child_env`, which the worker calls right after
+    writing `input.json` and again on a credential reload; the merge is the
+    same both times. A test that seeds nothing here sees no difference.
+    """
+    import json
+
+    from agent_worker.lifecycle import Worker
+
+    _SIMULATED.clear()
+    original = Worker._build_child_env
+
+    def build_child_env(self, *args: Any, **kwargs: Any):
+        simulated = _SIMULATED.get(self.cfg.task_id)
+        ws = getattr(self, "ws", None)
+        if simulated and ws is not None and ws.input_path.exists():
+            payload = json.loads(ws.input_path.read_text())
+            payload.update(simulated)
+            ws.input_path.write_text(json.dumps(payload, indent=2, default=str))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(Worker, "_build_child_env", build_child_env)
+    yield
+    _SIMULATED.clear()
+
+
+@pytest.fixture
+def recheck_bypassed(monkeypatch) -> None:
+    """A stored input that reached the runner step past the worker's re-check.
+
+    For the tests of the worker's SECOND line: `input.model`, `staged_inputs`,
+    `expected_outputs` and `attempt_count` are each dropped or overwritten by
+    the lifecycle as it writes `input.json`, whatever the stored input holds.
+    Since contract request 32 the worker refuses a stored input carrying any
+    of them before it gets that far (`lifecycle._recheck_runner_input`, held
+    by test_stored_input_is_rechecked.py), so that layer is reached only when
+    the first is not there. This removes the first, so each test still proves
+    what the second does on its own. `raising=False`: on a tree without the
+    re-check there is nothing to remove, and the test asserts the same thing.
+    """
+    from agent_worker import lifecycle
+
+    monkeypatch.setattr(
+        lifecycle, "_recheck_runner_input", lambda *_args, **_kwargs: None, raising=False
+    )
+
+
 def seed_tenant(db: FakeFirestore, *, credentials: list[str] | None = None) -> None:
     db.seed(
         f"tenants/{TENANT}",
@@ -127,8 +204,16 @@ def seed_attempt(
     latest_checkpoint: str | None = None,
     pool_active: int = 1,
     attempt_count: int = 1,
+    simulated: dict[str, Any] | None = None,
 ) -> dict[str, str]:
-    """Create the documents a dispatched attempt would find in Firestore."""
+    """Create the documents a dispatched attempt would find in Firestore.
+
+    `simulated` is what the mock's simulated provider does (see
+    `_the_runner_sees_its_simulation`): handed to the runner, never stored in
+    the task's input.
+    """
+    if simulated:
+        _SIMULATED[task_id] = dict(simulated)
     profile = RUNNER_PROFILES[runner_profile]
     backend = resolve_backend(profile).value
     units = RESOURCE_CLASSES[profile.resource_class].units
@@ -149,7 +234,8 @@ def seed_attempt(
             "runner_profile": runner_profile,
             "resource_class": profile.resource_class,
             "provider": profile.provider,
-            "input": task_input or {"prompt": "hello", "steps": 2, "sleep_seconds": 0.1},
+            # By profile, and one its declaration accepts: see `_DEFAULT_INPUT`.
+            "input": task_input or dict(_DEFAULT_INPUT.get(runner_profile, {"prompt": "hello"})),
             "submitted_by": "alice@saga.xyz",
             "created_at": now,
             "updated_at": now,
@@ -190,6 +276,37 @@ def seed_attempt(
         )
     seed_tenant(db)
     return {"task_id": task_id, "attempt_id": attempt_id, "lease_id": lease_id}
+
+
+def record_as_earlier_attempt(
+    db: FakeFirestore, record: Any, *, task_id: str | None = None, attempt_count: int = 2
+) -> None:
+    """What a real earlier attempt leaves behind for `record`, a checkpoint it wrote.
+
+    A test that builds a checkpoint with `CheckpointManager.create` directly
+    skips `ControlPlane.record_checkpoint`, and since #347 a worker restores
+    only a checkpoint an earlier attempt of the task RECORDED: its attempt
+    document listing the id and the archive digest, the task's pointer, and an
+    `attempt_count` past the first. Call it after `seed_attempt`, which
+    rewrites the task document.
+    """
+    from agent_worker.control import CHECKPOINT_DIGESTS_FIELD
+
+    db.seed(
+        f"attempts/{record.attempt_id}",
+        {
+            "attempt_id": record.attempt_id,
+            "task_id": record.task_id,
+            "tenant_id": record.tenant_id,
+            "generation": record.generation,
+            "checkpoints": [record.checkpoint_id],
+            CHECKPOINT_DIGESTS_FIELD: {record.checkpoint_id: record.archive_sha256},
+        },
+    )
+    task = db.documents.get(f"tasks/{task_id or record.task_id}")
+    if task is not None:
+        task["latest_checkpoint"] = record.uri
+        task["attempt_count"] = max(int(task.get("attempt_count") or 0), attempt_count)
 
 
 def build_worker(
