@@ -74,8 +74,9 @@ def test_every_profile_input_is_one_its_profile_declares(profile):
     """The suites submit through this against a live platform, where a key the
     catalogue does not declare is a 422 `invalid_input` and the run proves
     nothing. Checked with the rule the API applies, not a copy of it, and for
-    every profile: what a profile whose inputs are not declared yet takes is
-    that rule's to say too, not a special case here."""
+    every profile: every one declares its inputs since contract request 32
+    (#218), `generic`'s required `command` included, so what each takes is
+    that rule's to say, not a special case here."""
     from swarm_common.profiles import check_inputs
 
     body = profile_input(profile, "run-123")
@@ -105,6 +106,118 @@ def test_the_browser_input_needs_no_site_outside_the_platform():
     body = profile_input("browser")
     assert not body.get("url")
     assert all(a.get("type") != "goto" for a in body.get("actions") or [])
+
+
+def profile_extra(profile: str) -> dict:
+    env = dict(os.environ)
+    env["NO_COLOR"] = "1"
+    env.pop("SWARM_ENV_FILE", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REPOSITORY", None)
+    env.pop("SWARM_SMOKE_FIXTURE_REF", None)
+    script = (
+        f'source "{ROOT}/scripts/lib/common.sh"; '
+        f'source "{ROOT}/scripts/lib/testlib.sh"; '
+        f'profile_extra "$1"'
+    )
+    result = subprocess.run(
+        ["bash", "-c", script, "profile-extra", profile],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    return json.loads(result.stdout)
+
+
+# -- generic runs a command that PASSES, on a fixture the smoke clones ------------
+#
+# The owner's decision on #345 (2026-09-29): the generic smoke row sends
+# `command=pytest` and asserts exit 0, rather than proving dispatch alone. On
+# an empty workspace pytest exits 5, "no tests collected", so the row clones
+# this repository and runs pytest in a directory that holds one passing test.
+
+#: The public repository the smoke clones for the fixture: this one. Public,
+#: so the clone needs no tenant credential (`Worker._git_token` returns None
+#: and the clone runs anonymously).
+FIXTURE_REPOSITORY = "https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+
+
+def _fixture_dir() -> Path:
+    body = profile_input("generic")
+    working = body.get("working_directory")
+    assert isinstance(working, str) and working.startswith("repo/"), (
+        "the generic input must run pytest inside the clone (`work/repo`), in the "
+        f"fixture directory, not the bare workspace: {body!r}"
+    )
+    return ROOT / working[len("repo/"):]
+
+
+def test_the_generic_input_runs_pytest_in_the_fixture_directory():
+    body = profile_input("generic")
+    assert body.get("command") == "pytest", body
+    fixture = _fixture_dir()
+    assert fixture.is_dir(), f"{fixture} is not a directory in this repository"
+    assert (fixture / "pytest.ini").is_file(), (
+        "the fixture needs its own pytest.ini, so pytest takes it as the rootdir "
+        "and reads neither this repository's pyproject.toml nor a conftest above it"
+    )
+    assert "paths" not in body, (
+        "input.paths resolves against the workspace but reaches pytest's argv as "
+        "written, beside a working_directory -- pytest would look for it twice deep"
+    )
+
+
+def test_the_fixture_has_a_test_that_passes():
+    """Run it the way the generic runner does: `python -m pytest -q --color=no`,
+    in the fixture directory. Exit 0 with exactly one test passed -- not 5,
+    "no tests collected", which is what the row got on an empty workspace."""
+    import sys
+
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTEST_")}
+    result = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "--color=no", "-p", "no:cacheprovider"],
+        cwd=_fixture_dir(),
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert re.search(r"\b1 passed\b", result.stdout), result.stdout
+
+
+def test_generic_is_submitted_with_the_fixture_repository_and_nothing_else_is():
+    extra = profile_extra("generic")
+    assert extra.get("repository_url") == FIXTURE_REPOSITORY, extra
+    assert extra.get("repository_ref") == "main", extra
+    from swarm_api.validation import check_repository_url
+
+    assert check_repository_url(extra["repository_url"]) == extra["repository_url"]
+    for profile in AVAILABLE:
+        if profile != "generic":
+            assert profile_extra(profile) == {}, profile
+
+
+def test_the_smoke_asserts_the_generic_command_exited_zero():
+    """SUCCEEDED alone is the worker's reading; the row names the command and
+    its exit code from the runner's own result, so a pass is pytest's."""
+    text = (ROOT / "scripts" / "smoke-test.sh").read_text()
+    assert ".result_summary.runner.output.exit_code" in text, (
+        "smoke-test.sh no longer reads the generic runner's exit code"
+    )
+    assert ".result_summary.runner.output.command" in text
+
+
+@pytest.mark.parametrize("script", ["scripts/smoke-test.sh", "scripts/prove-gke-dispatch.sh"])
+def test_the_suites_submit_with_profile_extra(script):
+    """The generic row cannot pass without its clone, so every suite that
+    submits through `profile_input` merges `profile_extra` into the body."""
+    text = (ROOT / script).read_text()
+    assert "profile_extra" in text, f"{script} submits through profile_input without profile_extra"
 
 
 @pytest.mark.parametrize("script", ["scripts/smoke-test.sh", "scripts/prove-gke-dispatch.sh"])

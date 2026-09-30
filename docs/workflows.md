@@ -45,11 +45,13 @@ costs nothing while it waits.
 |---|---|
 | `step_id` | unique within the workflow; `^[A-Za-z0-9][A-Za-z0-9_\-.]*$` |
 | `runner_profile` | a **name** from the frozen catalogue — never an image or command |
-| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below) |
-| `depends_on` | upstream `step_id`s, up to 50 |
-| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace |
-| `resource_class` | optional named class, no larger than the profile's own |
-| `timeout_seconds` | may only **shorten** the profile's timeout |
+| `input` | the step's own payload, bounded by `max_input_bytes`: its `prompt`, plus only the keys its profile declares (below). |
+| `depends_on` | upstream `step_id`s, up to 50. |
+| `input_from` | `{upstream_step: artifact_filename}` staged into this step's workspace. |
+| `resource_class` | optional named class, no larger than the profile's own. |
+| `timeout_seconds` | optional; may only shorten the profile's own default. |
+| `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
+| `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -68,12 +70,13 @@ and each step here.
 | the profile | what `input` may carry |
 |---|---|
 | `mock` | `prompt`, and its declared test knobs, in the table below |
+| `browser` | `prompt`, and what the browser runner reads: a `url`, `actions` in eight fixed shapes, timeouts, the viewport, in the table below |
+| `generic` | `prompt`, and a **required** `command` from the runner's own catalogue, plus the paths, target, directory and limits in the table below |
 | `claude-code`, `codex` | `prompt`, and `issue`, in the tables below |
-| `browser`, `generic` | **not declared yet**: anything, bounded by `max_input_bytes` alone, as before |
 
-What the mock declares, with each key's kind and bounds. This table is
-generated from the catalogue, not written: a bound stated anywhere else in
-this file would be a copy nothing compares, so none is.
+What each declaring profile takes, with each key's kind and bounds. These
+tables are generated from the catalogue, not written: a bound stated anywhere
+else in this file would be a copy nothing compares, so none is.
 
 <!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the mock runner does with it |
@@ -89,6 +92,41 @@ this file would be a copy nothing compares, so none is.
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
+
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
 
 What `claude-code` and `codex` declare (contract request 28, #265):
 
@@ -128,7 +166,7 @@ them. Python reads a JSON integer at any length and Firestore stores 64 bits,
 so an unbounded number passed every check and failed at the task write with a
 500. The API also refuses, with 422, an integer anywhere in an input or a
 task's metadata that Firestore could not store, which is the only number check
-a profile not declared yet gets.
+a task's metadata gets.
 
 A key the profile does not declare, or a declared one outside its bounds, is
 refused with 422 `invalid_input`. The detail names the key (`key`, and every
@@ -140,16 +178,24 @@ them from JSON, and every comparison with `NaN` is false, so a bound alone
 would let them through. `swarm_profiles` and `swarm profiles` list each
 profile's inputs.
 
-`browser` and `generic` are the exception because their work IS their input.
-The browser runner cannot start without `url` or `actions`, and the generic
-runner cannot start without the name of a command in its own catalogue, so an
-empty declaration would refuse every task they run. Which keys they declare,
-with which bounds, is an open question recorded under request 25 in
-[contract-change-requests.md](contract-change-requests.md) and tracked as #218.
-Request 29 in that file proposes an answer: every key each runner reads, with
-its kind and bounds, and the list, object and URL kinds they need. It is not
-applied, so until the owner decides, these two profiles are still bounded by
-size alone.
+`browser` and `generic` declare every key their runners read (contract
+request 32, #218, accepted by the owner on 2026-09-29). Until then both were
+bounded by size alone, so a `generic` task with no `command`, an action with
+no `selector`, or a browser `goto` to a private address was admitted, leased
+and started, and failed inside the pod. Each is a 422 at the door now.
+
+* A browser `url`, and every `goto` action's, must be http or https, carry no
+  `user:password@`, and name a public host: the metadata server, private and
+  cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
+  single-label host and any host that is not plain ASCII letters, digits, dots
+  and hyphens are refused (`url_refusal` in the frozen catalogue). That check
+  is **not** the SSRF control -- it sees the URL typed, never a redirect, a
+  page's subresources or what a name resolves to in the pod. The worker's
+  NetworkPolicy is the control.
+* A browser task still needs `url` or at least one action. Neither is required
+  on its own, so a task with neither is refused by the runner, not the API.
+* A `generic` task's four limits may only lower the platform's own: each
+  declared ceiling is what the worker exports by default.
 
 `{"quota_exhausted": true}` parks a mock step ONCE: the task's first attempt,
 and no other. The attempt is counted by the task's own `attempt_count`, which
@@ -311,6 +357,148 @@ monopolise a pass.
 would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, but
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
+
+## Review before publishing: implement, review, fix-if-needed
+
+**A step's patch can be reviewed inside the workflow, and fixed, before
+anything opens a pull request** (#264). Until this existed every SwarmCloud PR
+was reviewed by an agent on the operator's machine after it had opened. On
+2026-09-27/28 two of seven came back NOT YET (#247 fixed the wrong layer, #256
+left an ssh-user bypass), and each then needed a local fixer.
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "strategy": "integrate",
+  "repository_url": "https://github.com/acme/widgets.git",
+  "steps": [
+    {"step_id": "implement",
+     "runner_profile": "claude-code",
+     "input": {"prompt": "Implement the change described in the issue."}},
+
+    {"step_id": "review",
+     "runner_profile": "claude-code",
+     "depends_on": ["implement"],
+     "builds_on": "implement",
+     "input_from": {"implement": "swarm-work.patch"},
+     "input": {"prompt": "Review swarm-work.patch against the repository. Do not edit files. Write verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", \"findings\": [\"one blocker per entry\"]}."}},
+
+    {"step_id": "fix",
+     "runner_profile": "claude-code",
+     "depends_on": ["review"],
+     "builds_on": "implement",
+     "input_from": {"review": "verdict.json"},
+     "when": {"step": "review", "verdict_in": ["NOT_YET"]},
+     "input": {"prompt": "Fix every finding in verdict.json. Change nothing else."}}
+  ]
+}'
+```
+
+What each step does, and why each field is there:
+
+| step | what it gets | what it does | what it publishes |
+|---|---|---|---|
+| `implement` | the default branch | the change | pushes `swarm/<task>`, opens no PR (an `integrate` contributor) |
+| `review` | the implementer's branch (`builds_on`), and its patch (`input_from`) | writes `verdict.json` to `$SWARM_ARTIFACTS_DIR` | nothing it is merged for; see below |
+| `fix` | the implementer's branch (`builds_on`), and the verdict (`input_from`) | on NOT_YET its agent fixes the findings; on MERGE **no agent runs** | the ONE pull request, carrying the verdict |
+
+* **The patch is a named artifact already.** `swarm-work.patch` is the diff
+  the worker harvests from every attempt with a repository and uploads under
+  that name, so `input_from` stages it like any file. The implementer is not
+  told to write it: it is the platform's (see "Artifacts pass by reference").
+  An implementer that changes nothing writes no patch, so it fails for the
+  missing output, retryably, like any step that did not write what a later
+  step stages.
+* **The verdict is a file the review writes**, `{"verdict": "MERGE" |
+  "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
+  `summary`, `title` or `message` is one. The verdict is read whatever its case
+  and surrounding spaces. The file name is yours: the gate reads whatever the
+  gated step stages from `when.step`.
+* **`when` gates the AGENT, not the step.** The gated step runs whatever the
+  verdict, because it is the step that publishes: if it were skipped on
+  MERGE, the reviewed work would never reach a pull request. When the verdict
+  is not in `verdict_in`, the worker stages the verdict, checks its fencing
+  generation as it would before an agent, starts no agent, and ends the
+  attempt through the same path a clean agent exit takes: final checkpoint,
+  uploads, publish, lease release. The task is SUCCEEDED, and
+  `result_summary.verdict_gate` says `agent_ran: false`. The step holds a
+  lease for that short publish; it is real work, and it counts like any
+  other (invariants 1 and 3).
+* **The gate is read by the worker, not the scheduler.** The scheduler reads
+  no artifact, so it would need a GCS read on its drain path to learn the
+  verdict, and skipping the step there would skip the pull request.
+* **`builds_on` is how the fix sees the implementer's code.** Without it every
+  step clones the default branch, and the fix agent would edit code that does
+  not contain the change it is fixing. The worker clones
+  `swarm/<implement task id>`, derived from the task id with its own branch
+  prefix and never read as a ref name, exactly as the integrator's
+  contributor branches are. The branch exists because the implementer pushed
+  it as a contributor, so `builds_on` needs a strategy that pushes every step:
+  `integrate` or `direct-pr`. A base whose branch was never pushed (a
+  read-only token, a failed push) fails the clone, naming the task and the
+  branch. The review builds on the implementer too, so it reviews the change
+  in its tree rather than the patch alone.
+* **Only the final step opens a pull request.** Under `integrate` the
+  contributors push branches and open nothing; the fix is the integrator,
+  merges the implementer's branch (already in its history, so the merge is a
+  no-op, not a conflict) and opens the one PR. Its body carries the verdict,
+  whether the fix ran, and the findings, inside a fenced block with every
+  run of three backticks broken, because they are an agent's untrusted text
+  on a page anyone with read access sees.
+* **The review's own branch is not merged.** swarm-api leaves the step a
+  gated integrator reads its verdict from out of that integrator's
+  `integrates`. A review edits nothing, so it pushes no branch, and the
+  integrator would otherwise report it "not found" on the PR as an incomplete
+  integration. If it did edit the repository, those edits are unreviewed
+  work, which is what the gate keeps out.
+
+### What is refused at submission
+
+Every refusal is a 422 before anything is created, naming the step.
+
+| declaration | answer | why |
+|---|---|---|
+| `when.step` that this step stages no file from | `invalid_dag` | the verdict is read from that file; add `input_from` (and `depends_on`) |
+| `when.verdict_in` empty, repeated, or outside `MERGE`, `NOT_YET` | `invalid_dag`, `detail.accepted_verdicts` | a review following the convention could never write it |
+| `when` under `direct-pr` | `invalid_dispatch` | every step opens its own PR there, the implementer's included, before the review |
+| `when` under `integrate` on a step that is not the integrator | `invalid_dispatch`, `detail.integrator_step_id` | the integrator's PR is where the verdict is shown |
+| a gated step that another step's `input_from` stages from | `invalid_dag`, `detail.staged_by` | when its agent does not run it writes nothing, so that step would fail |
+| `builds_on` naming a step that is not upstream, or itself | `invalid_dag` | its branch may not exist yet |
+| `builds_on` under `collect` | `invalid_dispatch` | `collect` pushes no branch to start from |
+
+`when` under `collect` is accepted: nothing publishes, and the gate only
+decides whether an agent runs.
+
+### What the worker refuses
+
+A gate or a verdict file that cannot be read fails the attempt with
+`INPUTS_UNAVAILABLE`, naming the upstream task and the file, and the agent is
+never started. That covers a file that is not JSON, is not an object, has no
+`verdict` or one outside the two, or is over 256 KiB, and a gate whose task
+this step stages nothing from. **An unreadable review is not a MERGE**: read
+as one, it would publish unreviewed work; read as NOT_YET, it would run a
+fixer against findings that are not there. The review step has already
+SUCCEEDED by then, so under `fail_workflow` the workflow ends with nothing
+published, which is the safe outcome, and the review has to be run again.
+
+### Where it is recorded
+
+The two fields travel in `task.metadata.dispatch`, which is already reserved,
+keyed by upstream task id as `integrates` is: `builds_on: <task id>` and
+`verdict_gate: {"task_id", "verdict_in"}`. `GET /v1/tasks/{id}` returns them in
+`dispatch` on the steps that have them. The workflow document's steps do NOT
+carry them: `WorkflowStep` is frozen, so typing them there is contract request
+29 in [contract-change-requests.md](contract-change-requests.md).
+
+### What this does not do
+
+* **It does not review the fix.** One review, one conditional fix. A second
+  review of the fixed branch is another review step and another gated step,
+  but under `integrate` only the integrator may be gated, so that chain needs
+  a gate on a non-integrator whose verdict the PR also carries, which is not
+  built.
+* **It does not check the verdict where it is written.** A malformed verdict
+  is found by the gated step, after the review has SUCCEEDED, not by the
+  review's own end-of-attempt check, which would retry it.
 
 ## `metadata.input_from` belongs to the service, not the caller
 

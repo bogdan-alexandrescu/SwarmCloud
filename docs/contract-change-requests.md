@@ -37,9 +37,12 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | ACCEPTED 2026-09-28 by the owner on #245, applied in PR #245 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
-| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
+| 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
+| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 
 ---
 
@@ -2830,6 +2833,48 @@ figures are not dated, and a limit is never attributed to the kernel.
   UI's `limitSource`; compare request #20.
 
 
+## 27. `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists
+
+**Status: ACCEPTED, accepted by the owner 2026-09-28 on #245 and applied in
+PR #245.** Recorded 2026-09-28 by the #176 lane.
+
+### What is true today
+
+`apps/common/swarm_common/identity.py`, `_slug`'s docstring, LENGTH bullet:
+"A long group name yields an id no GCP service account can be named for,
+because `swarm-t-<id>` must fit in 30 characters." The code under it is right:
+`_MAX_TENANT_ID` is computed from `_GSA_PREFIX = "swarm-agent-worker-"`, and the
+comment on `_GSA_PREFIX` itself says the `swarm-t-` prefix "no longer exists".
+So the frozen module contradicts itself about which identity the cap is for.
+
+That contradiction is how #176 survived: the quota broker's comment said
+register-tenant.sh writes `swarm-t-<tenant>`, and accepted it as a worker
+identity, long after nothing created one. The broker no longer accepts it; this
+docstring is the one live statement left in the repository that `swarm-t-<id>`
+is the name a tenant's worker must fit.
+
+### The requested change
+
+Docstring only: `swarm-t-<id>` becomes `swarm-agent-worker-<id>` in that
+sentence. No code, no value, no type.
+
+### What it would break if accepted
+
+Nothing. No code reads a docstring, and `check-contract-parity.sh` compares
+`_GSA_PREFIX`, not prose.
+
+### If it is declined
+
+The frozen module keeps telling its reader that tenant ids are sized for an
+identity nothing creates, and the next restatement copied from that sentence
+reintroduces #176.
+
+### Applied, 2026-09-28 (PR #245)
+
+`_slug`'s LENGTH docstring bullet now reads `swarm-agent-worker-<id>` in place
+of `swarm-t-<id>`, matching `_GSA_PREFIX` and the comment already on it.
+
+
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
 **Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), and
@@ -4329,12 +4374,65 @@ the implementing branch and must fail there before the change lands on
 Applied by #343 (accepted by the owner 2026-09-29).
 ---
 
+## 31. `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on`
+
+**Status:** open, recorded 2026-09-29 from #264. If another branch has taken
+31 by the time this merges, renumber this one.
+
+### What is true today
+
+#264 added two workflow step fields, `when` (`{"step", "verdict_in"}`: run
+this step's agent only on an upstream review's verdict) and `builds_on` (an
+upstream step whose pushed branch this step clones). They are accepted by
+`WorkflowStepCreate`, checked by `validation.validate_step_routing`, and
+stored where the worker reads them: `task.metadata["dispatch"]`, as
+`verdict_gate: {"task_id", "verdict_in"}` and `builds_on: <task id>`, keyed by
+task id the way `integrates` is. That block is already reserved, so no new
+reserved key was needed and nothing frozen was edited.
+
+The frozen `WorkflowStep` has no field for either, so the workflow document
+does not record them. `GET /v1/workflows/{id}` shows a gated step exactly as
+it shows an ungated one; a reader has to open the step's task to see the gate
+(`GET /v1/tasks/{id}`, `dispatch.verdict_gate`). The declaration as the caller
+wrote it, keyed by step id, is not stored anywhere.
+
+### The requested change
+
+Two optional fields on `WorkflowStep`, both defaulting to "absent", so every
+stored workflow reads back unchanged:
+
+```python
+#: {"step": upstream step_id, "verdict_in": [...]} -- run this step's agent
+#: only on those verdicts (#264).
+when: dict[str, Any] | None = None
+#: An upstream step_id whose pushed branch this step's checkout starts from.
+builds_on: str | None = None
+```
+
+And, with them, `REVIEW_VERDICTS = ("MERGE", "NOT_YET")` in `models.py`, which
+is today written out twice (`swarm_api.validation.REVIEW_VERDICTS` and
+`agent_worker.verdict.REVIEW_VERDICTS`) and held equal only by
+tests/unit/worker/test_verdict_gate.py.
+
+### What it would break if accepted
+
+Nothing stored: both fields default to absent. `SubmissionService.submit_workflow`
+would copy them onto the `WorkflowStep` it already builds, and the workflow
+codec and the UI's step rows would start showing them.
+
+### If it is declined
+
+The gate stays visible only on the task, and the verdict vocabulary stays in
+two copies behind a parity test. That test lives in the unit suite, so it
+protects the repository, not a worker image built from an older commit.
+---
+
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
-Nothing here is applied yet; an implementation PR, `part of #218`, carries
-this out (see `docs/DEPLOY_STATE.md` or the linked PR for its state — this
-entry itself does not track a moving target). It answers #218,
+**Applied by #345** (accepted by the owner 2026-09-29), `part of #218` (see `docs/DEPLOY_STATE.md` or the linked
+PR for its state — this entry itself does not track a moving target). It
+answers #218,
 which contract request 25 left open: which inputs `browser` and `generic`
 declare, and with which bounds. Originally numbered 29, because 28 was the
 last entry on `main` when this branch was cut and 27 appears nowhere on
@@ -6119,3 +6217,1139 @@ reach it. They are listed there as rejected, not as fallbacks.
 - **#219.** The credential is read only by the merge worker, only at merge
   time. It is never in the workspace, a file, an environment variable, argv or
   a log, and it is revoked in a `finally`.
+---
+
+## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
+
+**Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Recorded from #342 (S0), which the round-3 security re-review of #316
+(contract request 33, the merge step) found the same day. This entry went
+through three rounds of joint review with contract request 33 on 2026-09-29 --
+the initial mechanism decision, the checkpoint-restore/shared-signer/GKE
+review, and the checkpoint-residual/end-cause/post-verdict-mechanism
+correction, each recorded in this entry as it was made -- before the owner
+accepted it as it now reads. The owner decided the mechanism on 2026-09-29, in
+a joint review with contract request 33: swarm-api signs each step's canonical
+spec at
+submission with a Cloud KMS asymmetric key that only `swarm-api`'s service
+account holds `signer` on; every worker verifies the signature against the
+spec it fetched before it starts an agent or a worker action, and refuses a
+mismatch with a typed end cause; worker-action steps (`post-verdict` and
+`merge`, contract request 33) also verify the upstream specs they rely on.
+The key stays in the shared `saga-agents-staging` project (the owner's
+decision, 2026-09-29, **not** a dedicated project), and workers trust every
+`ENABLED` version of it. Both are accepted residuals, stated honestly in **Key
+management** and **The threat model** rather than designed away: a project
+owner or editor of the shared project can already reach `swarm-api`'s signing
+identity, and a KMS admin's new version is trusted the moment it ships. This
+entry is what that decision needs from the frozen contract, and the
+design around it that the frozen fields only make sense inside. Nothing under
+`apps/common/swarm_common/` has been edited. Numbered 34 because 29 to 33 are
+taken on open branches (#259, #314, #304, #315, #316); if another branch has
+taken 34 by the time this merges, renumber this one.
+
+### What is true today
+
+A step's instructions are whatever its task document says when its worker
+reads it, and the document is writable by every agent of the tenant.
+
+* **The worker trusts the document unsigned.** `Lifecycle._prepare`
+  (`apps/agent-worker/agent_worker/lifecycle.py`, step 4) calls
+  `self.control.fetch_task()` and builds the runner's `input.json` from
+  `task.get("input")`. The same dict is kept as `self._task` and is where the
+  worker later reads `repository_url` and `repository_ref` (`_maybe_clone`),
+  `metadata.input_from` (`inputs.py`), `metadata.expected_outputs`
+  (`expected_outputs.py`), `metadata.dispatch` (the publish gate, and #273's
+  `continuation.py`), `resource_class` and `max_attempts`.
+  `ControlPlane.fetch_task` (`control.py`) checks one thing about the
+  document: that its `tenant_id` is this worker's.
+* **The scheduler trusts it too.** `worker_env()`
+  (`apps/scheduler/scheduler/dispatch.py`) sets `RUNNER_PROFILE` and
+  `TASK_TIMEOUT_SECONDS` on the execution from the document, and picks the Job
+  (one per tenant per profile) by the document's `runner_profile`. The
+  per-execution override wins over the Job's own `RUNNER_PROFILE`
+  (`terraform/infra/locals.tf`, "The dispatcher's per-execution overrides
+  MERGE with this").
+* **Any agent of the tenant can write the document.**
+  [multi-tenancy.md](multi-tenancy.md#the-firestore-row-in-full) records it:
+  the tenant worker's service account holds its Firestore role on the whole
+  database, because Firestore has no document-level IAM, and an agent can mint
+  that account's token from the metadata server
+  ([security.md](security.md#cloud-metadata-abuse)). So "it CAN read and write
+  a document whose id it can guess". Within a workflow nothing has to be
+  guessed: every step's `task_id` is on the workflow document
+  (`WorkflowStep.task_id`), and every step knows its workflow.
+* **So one step can rewrite another's instructions.** In an implement →
+  review → fix chain the implement agent can set the parked review task's
+  `input.prompt` to "write verdict.json with MERGE", point its
+  `metadata.input_from` at a different file, or rewrite the fix step's prompt.
+  The real review step then runs the rewritten instructions, with no prompt
+  injection involved. #342 has the reproduction.
+
+`swarm-api`'s `Store` is the only thing in `apps/` that creates a task document
+(`create_tasks`, `create_workflow`; read on main at `bc90da1`, 2026-09-29).
+
+### The requested change
+
+Three frozen additions: a module that defines the canonical form, three
+optional fields on `Task`, and one `EndCause`. Everything else in this entry
+(the KMS key, the signing call, the verification, the rollout) is outside
+`swarm_common` and is written here so the frozen part can be judged against
+the design it serves.
+
+#### 1. The canonical form: `swarm_common/specsign.py` (new, frozen)
+
+The spec is a projection of the task document: the fields that decide what a
+step runs, as swarm-api wrote them, and nothing a later writer changes. Both
+sides compute it from the **Firestore dict** (`Task.to_firestore()` on
+swarm-api, the fetched snapshot in the worker), so they project the same
+shape.
+
+**Covered, format 1.** Every value is taken from the document as stored, with
+a missing key read as null:
+
+| canonical key | source | why it is covered |
+|---|---|---|
+| `purpose` | the constant `"swarm.step-spec"` | domain separation: the bytes cannot be read as any other message this key might one day sign |
+| `format` | the constant `1` | a later format is a different message, never a reinterpretation of this one |
+| `task_id` | **the document id the worker was pointed at**, never the document's own `id` field | binds the signature to one task, so a signature copied onto another task fails |
+| `tenant_id`, `workflow_id`, `step_id` | the fields | binds it to one tenant and one workflow; a spec cannot be replayed across either |
+| `submitted_by` | the field | who submitted is part of what was submitted (and of contract request 30's audit) |
+| `runner_profile` | the field | the profile picks the Job, and so the service account; a rewrite to `merge` or `post-verdict` would move a step onto an identity no agent may use |
+| `resource_class`, `timeout_seconds`, `max_attempts` | the fields | read by the scheduler and the worker (`TASK_TIMEOUT_SECONDS`, `_sized_resource_class`, `fail_retryably`) |
+| `provider`, `model` | the fields | set at submission, from the profile and the request, and changed by no later writer |
+| `input` | the **whole object** | the prompt and every declared input (`issue`, the mock's), whatever keys a profile declares later |
+| `depends_on` | the list, **in stored order** | a removed parent is how a step would be made to run early |
+| `repository_url`, `repository_ref` | the fields | what is cloned, and where a pull request is opened |
+| `metadata` | exactly the three keys `dispatch`, `input_from`, `expected_outputs`, each the stored value or null | the platform's own blocks. `dispatch` carries `strategy`, `carrier`, `role`, `integrates`, #273's `continues`, and contract request 33's `pr_role`, `merges` and `verdict_source` (`post-verdict`'s own dispatch-block pointer at the review task it reads, `{review: <review task id>}`, added in that entry's round-5 re-review so `post-verdict` never has to trust `input_from`'s tenant-writable staging for the one read this whole design depends on); `input_from` is the task-id-keyed map `submit_workflow` writes; `expected_outputs` is what `record_expected_outputs` writes on an upstream step |
+
+**Not covered, on purpose.** `state`, `park_reason`, `blocked_by`,
+`current_lease_id`, `current_generation`, `attempt_count`,
+`next_eligible_at`, `cancel_requested`, `started_at`, `completed_at`,
+`last_error`, `result_summary`, `latest_checkpoint`, `end_cause` and
+`updated_at`: every one is written after submission by the scheduler, the
+reconciler, the worker or a cancel, so a signature over any of them would
+break on the first legitimate write. `created_at` binds nothing `task_id`
+does not, and a timestamp is the one value whose round trip through Firestore
+(microseconds, a zone) would have to be specified for no gain. `priority` is admission's
+ordering within the tenant and no worker reads it. `metadata.startup_refunds`
+is the reconciler's. Every other `metadata` key is the caller's own free-form
+label, which no worker acts on. **The rule that keeps this true:** a metadata
+key the worker starts reading is added to `SIGNED_METADATA_KEYS` in the same
+change, with a format bump; a test holds the two together (**Tests**, below).
+
+**Serialisation: RFC 8785 (JSON Canonicalization Scheme), implemented inside
+`specsign.py` with no dependency.** `swarm_common` declares
+`dependencies = []`, and the `sc` plugin installs it from a git tag
+(`apps/common/pyproject.toml`), so it cannot take the `rfc8785` package. The
+value domain is small enough to implement exactly: null, booleans, strings,
+integers, finite doubles, arrays and string-keyed maps, which is everything
+Firestore returns for a document swarm-api wrote from JSON. The implementation
+is held to RFC 8785's own test vectors and to the `rfc8785` package as a
+test-only oracle (**Tests**). Three values have no canonical form, and swarm-api
+refuses them at submission with 422 `invalid_input` **before** anything is
+signed or stored: an integer outside ±(2^53 − 1) (JCS numbers are IEEE doubles;
+today `validate_storable` admits up to 2^63 − 1), a non-finite float, and a
+string holding a lone surrogate. This is a narrowing of what the API accepts,
+and says so.
+
+**Hash: SHA-256** over the UTF-8 bytes. The key signs that digest
+(`EC_SIGN_P256_SHA256`, below).
+
+The proposed module, whole. It was run on 2026-09-29, from a scratch copy
+outside the repository, against RFC 8785's number vectors (Appendix B) and its
+§3.2.2 and §3.2.3 examples, and against the `rfc8785` package (0.1.4) on
+20,000 generated values, with no difference. The first draft sorted members by
+their *escaped* names and put `"\r"` after `"1"`; §3.2.3's example is the
+vector that caught it, which is why it is named in **Tests**.
+
+```python
+"""The canonical form of a step's spec, signed by swarm-api and verified by the worker.
+
+Contract request 34 (#342). A tenant's agents can write any task document of
+their tenant (docs/multi-tenancy.md, "The Firestore row, in full"), so a
+worker must not run a spec swarm-api did not sign. This module is the ONE
+definition of which fields that signature covers and how they become bytes:
+swarm-api signs `spec_digest(canonical_step_spec(task.to_firestore(),
+task_id=task.id))`, and the worker verifies the same digest over the document
+it fetched. Two copies of this projection would be two opinions about what
+is signed. No cryptography lives here: signing is swarm-api's (Cloud KMS) and
+verification is the worker's.
+
+The encoding is RFC 8785 (JCS), implemented for exactly the values a
+Firestore document written from JSON can hold, with no dependency: this
+package is installed from a git tag by the plugin and declares none.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+from decimal import Decimal
+from typing import Any, Mapping
+
+#: The canonical form's version. A change to the covered fields or the encoding
+#: is a NEW format, never an edit to this one: a signature is over a format.
+SPEC_FORMAT = 1
+
+#: Domain separation. The bytes of a step spec cannot be read as another message.
+SPEC_PURPOSE = "swarm.step-spec"
+
+#: The keys of `Task.metadata` that swarm-api writes and the worker acts on.
+#: Every other metadata key is the caller's label or another writer's record.
+SIGNED_METADATA_KEYS = ("dispatch", "input_from", "expected_outputs")
+
+#: JCS numbers are IEEE doubles, so an integer is exact only within this bound.
+MAX_SAFE_INTEGER = 2**53 - 1
+
+
+class SpecNotCanonical(ValueError):
+    """A value in the spec has no canonical form (see `jcs`)."""
+
+
+def canonical_step_spec(doc: Mapping[str, Any], *, task_id: str) -> bytes:
+    """The bytes the signature covers, from a task document as stored.
+
+    `task_id` is the id the document was READ BY (the worker's TASK_ID, the
+    id swarm-api minted), never the document's own `id` field.
+    """
+    metadata = doc.get("metadata")
+    if metadata is None:
+        metadata = {}
+    if not isinstance(metadata, Mapping):
+        raise SpecNotCanonical("metadata is not a map")
+    spec = {
+        "purpose": SPEC_PURPOSE,
+        "format": SPEC_FORMAT,
+        "task_id": task_id,
+        "tenant_id": doc.get("tenant_id"),
+        "workflow_id": doc.get("workflow_id"),
+        "step_id": doc.get("step_id"),
+        "submitted_by": doc.get("submitted_by"),
+        "runner_profile": doc.get("runner_profile"),
+        "resource_class": doc.get("resource_class"),
+        "timeout_seconds": doc.get("timeout_seconds"),
+        "max_attempts": doc.get("max_attempts"),
+        "provider": doc.get("provider"),
+        "model": doc.get("model"),
+        "input": doc.get("input"),
+        "depends_on": doc.get("depends_on"),
+        "repository_url": doc.get("repository_url"),
+        "repository_ref": doc.get("repository_ref"),
+        "metadata": {key: metadata.get(key) for key in SIGNED_METADATA_KEYS},
+    }
+    return jcs(spec)
+
+
+def spec_digest(canonical: bytes) -> bytes:
+    """SHA-256 of the canonical bytes: what the KMS key signs."""
+    return hashlib.sha256(canonical).digest()
+
+
+def jcs(value: Any) -> bytes:
+    """RFC 8785 serialisation of `value`, as UTF-8 bytes."""
+    return _encode(value, "$").encode("utf-8")
+
+
+def _encode(value: Any, path: str) -> str:
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        if abs(value) > MAX_SAFE_INTEGER:
+            raise SpecNotCanonical(f"{path} is an integer outside +/-(2**53 - 1)")
+        return str(value)
+    if isinstance(value, float):
+        return _number(value, path)
+    if isinstance(value, str):
+        return _string(value, path)
+    if isinstance(value, (list, tuple)):
+        return "[" + ",".join(_encode(v, f"{path}[{i}]") for i, v in enumerate(value)) + "]"
+    if isinstance(value, Mapping):
+        items = []
+        for key in value:
+            if not isinstance(key, str):
+                raise SpecNotCanonical(f"{path} has a key that is not a string")
+            _string(key, path)  # refuses a lone surrogate before it is sorted
+            items.append(key)
+        # RFC 8785 3.2.3: members sorted by the UTF-16 code units of their RAW
+        # names -- not their escaped form, which would put "\r" after "1".
+        items.sort(key=lambda k: k.encode("utf-16-be"))
+        return "{" + ",".join(
+            _string(k, path) + ":" + _encode(value[k], f"{path}.{k}") for k in items
+        ) + "}"
+    raise SpecNotCanonical(f"{path} is a {type(value).__name__}, which JSON has no form for")
+
+
+def _string(text: str, path: str) -> str:
+    try:
+        text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise SpecNotCanonical(f"{path} holds a lone surrogate") from exc
+    # json.dumps with ensure_ascii=False escapes exactly what RFC 8785 3.2.2.2
+    # does: '"', '\\', the five short forms, and \u00xx (lowercase) for the
+    # rest of U+0000..U+001F. Everything else is written as itself.
+    return json.dumps(text, ensure_ascii=False)
+
+
+def _number(x: float, path: str) -> str:
+    # RFC 8785 3.2.2.3: ECMAScript's Number.prototype.toString.
+    if not math.isfinite(x):
+        raise SpecNotCanonical(f"{path} is not a finite number")
+    if x == 0:
+        return "0"
+    if x < 0:
+        return "-" + _number(-x, path)
+    # repr() is the shortest round-tripping decimal, as ECMAScript requires.
+    _, digits_t, exponent = Decimal(repr(x)).as_tuple()
+    digits = "".join(map(str, digits_t))
+    stripped = digits.rstrip("0")
+    exponent += len(digits) - len(stripped)
+    digits = stripped
+    k = len(digits)
+    n = exponent + k
+    if k <= n <= 21:
+        return digits + "0" * (n - k)
+    if 0 < n <= 21:
+        return digits[:n] + "." + digits[n:]
+    if -6 < n <= 0:
+        return "0." + "0" * (-n) + digits
+    e = n - 1
+    mantissa = digits if k == 1 else digits[0] + "." + digits[1:]
+    return mantissa + "e" + ("+" if e >= 0 else "-") + str(abs(e))
+```
+
+#### 2. `models.py`: three fields on `Task` and one `EndCause` (exact diff against `bc90da1`, not applied)
+
+```diff
+--- a/apps/common/swarm_common/models.py
++++ b/apps/common/swarm_common/models.py
+@@ -182,7 +182,8 @@
+     Each value is written by exactly one kind of writer, beside `completed_at`:
+ 
+       * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
+-        INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED;
++        INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED,
++        SPEC_SIGNATURE_INVALID;
+       * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
+         CANCEL_REQUESTED;
+       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
+@@ -209,6 +210,17 @@
+     its own class, not a runner error -- 10 of dev's 13 "runner errors" on
+     2026-09-25 were exactly that. CANCELLED_PARENT is the request's own, and
+     what decision item 2 (split "after a cancel" from "after a failure") needs.
++
++    SPEC_SIGNATURE_INVALID is contract request 34 (#342): the worker refused
++    to run a spec swarm-api did not sign -- a signature that does not verify
++    over the fetched document, a missing one outside the rollout window, or a
++    key version that is not the platform's. A worker-action step's OWN spec
++    failing this check is this cause too; an UPSTREAM step's spec failing it
++    is contract request 33's own end cause instead (that entry names it; this
++    one does not), with reason "upstream:<task id>:<why>" -- the same reason
++    shape this cause uses for its own failures. Never retried: another
++    attempt reads the same document. Every occurrence is either a tenant's
++    agent rewriting a step or a platform bug, and both causes are alerted on.
+     """
+ 
+     TIMEOUT = "timeout"
+@@ -222,6 +234,7 @@
+     FAILED_PARENT = "failed_parent"
+     CANCELLED_PARENT = "cancelled_parent"
+     WORKFLOW_SWEEP = "workflow_sweep"
++    SPEC_SIGNATURE_INVALID = "spec_signature_invalid"
+ 
+ 
+ @dataclass
+@@ -263,6 +276,21 @@
+     #: every task that has not ended, on a success, and on anything written
+     #: before 2026-09-25 -- an old document decodes exactly as it did.
+     end_cause: EndCause | None = None
++    #: swarm-api's signature over this task's canonical step spec (contract
++    #: request 34, #342): standard base64 of the DER ECDSA signature that Cloud
++    #: KMS returns for `specsign.spec_digest(specsign.canonical_step_spec(...))`.
++    #: Written once, in the write that creates the document, and never after.
++    #: None on every task written before swarm-api signed; the worker refuses
++    #: such a task outside the rollout window.
++    spec_signature: str | None = None
++    #: The FULL resource name of the key version that made `spec_signature`:
++    #: projects/<p>/locations/<l>/keyRings/<r>/cryptoKeys/<k>/cryptoKeyVersions/<n>.
++    #: Written by the same write. A tenant can rewrite it, so the worker trusts
++    #: it only as a lookup key among the versions the platform published.
++    spec_key_version: str | None = None
++    #: `specsign.SPEC_FORMAT` at signing. Read to choose the projection; it is
++    #: also inside the signed bytes, so a rewrite to another format fails.
++    spec_format: int | None = None
+ 
+     def retries_exhausted(self) -> bool:
+         """This task has used its last attempt. See `retries_exhausted`."""
+```
+
+**Re-verified against current `main`, 2026-09-29.** The `SPEC_SIGNATURE_INVALID`
+docstring above was reworded after the joint review, to separate own-spec from
+upstream-spec failures (**Verification in the worker**, below), which changed
+this hunk's line counts twice over. The original PR's "Checked" note that this
+diff patched cleanly onto `bc90da1` predated both rewordings and this
+hunk-count fix. Re-run here: `git apply --check` against `apps/common/swarm_common/models.py`
+at `origin/main` (`e7c18ac`, 2026-09-29) exits 0, and the patched file parses
+(`ast.parse`). The first re-run, before this fix, failed with `error: corrupt
+patch` — the second hunk's header claimed 16 new lines where the body had 17
+(a one-line miscount left over from the rewording), which is corrected above.
+
+`to_firestore` needs no change: `asdict` writes the three fields as they are.
+`WorkflowStep` and `Workflow` are unchanged (see **What signing does not
+close**, the workflow document).
+
+#### 3. Key management (Terraform; Track C's files, named here, not written)
+
+* **`cloudkms.googleapis.com`** joins the service list in
+  `terraform/infra/main.tf`. `project_services` already refuses
+  `disable_on_destroy = true`, so enabling it can never disable it for the
+  other team.
+* **One key ring and one key per environment, and this MUST hold.** `google_kms_key_ring`
+  `swarm-<env>-specs` in `var.region` (`us-central1`), and in it
+  `google_kms_crypto_key` `step-spec` with `purpose = "ASYMMETRIC_SIGN"`,
+  `version_template { algorithm = "EC_SIGN_P256_SHA256", protection_level =
+  "SOFTWARE" }` and `labels = { managed-by = "swarm-terraform", ... }`.
+  P-256 because verification is fast and the signature is 70-odd bytes of DER
+  in every task document. **The canonical form carries no `environment`
+  field** (section 1's table): nothing in the signed bytes says "dev" or
+  "prod". A key shared across environments would let a spec signed by dev's
+  swarm-api verify against prod's worker, so `SPEC_SIGNING_KEY` and every
+  version in `SPEC_VERIFY_KEYS` must name that environment's key ring and no
+  other's; this is an operational rule Terraform's naming enforces (one ring
+  per `<env>`), not something the canonicaliser can check.
+* **`managed-by=swarm-terraform`, and the one resource that cannot carry it.**
+  The crypto key carries the label. **A key ring has no labels at all** in
+  Cloud KMS or the google provider, so `google_kms_key_ring` has to be added
+  to `scripts/lib/unlabelable-types.json`, checked against
+  `terraform providers schema -json` for the pinned provider the way every
+  entry there was. The IAM members below are `google_kms_crypto_key_iam_member`,
+  which is unlabelable for the same reason as every other `*_iam_member` and
+  needs its own entry. **Neither a key ring nor a key can be deleted** in
+  Cloud KMS: `terraform destroy` removes them from state and schedules the
+  key's versions for destruction, and the names stay taken. So `make destroy`
+  followed by a fresh apply collides with the old names; the recreate path
+  needs an `import` block, and this is written next to the resources.
+* **Who holds what.** Nobody holds `roles/cloudkms.signerVerifier`.
+
+  | identity | role, on the key only | why |
+  |---|---|---|
+  | `swarm-api` | `roles/cloudkms.signer` (`useToSign` only) | it signs; it never verifies or reads the public key, so `signerVerifier` would be reach it does not use |
+  | the CI deployer (`swarm-tf-deployer`) | `roles/cloudkms.publicKeyViewer` and `roles/cloudkms.viewer` | Terraform reads the enabled versions and their public keys at plan time (below); neither role can sign or change IAM |
+  | every worker (`swarm-agent-worker-<tenant>`, and contract request 33's `swarm-<tenant>-merge` and `swarm-<tenant>-post-verdict`) | **none** (recommended; decision 4) | the public keys reach it in its Job's environment |
+
+  The key ring, the key and the one `signer` binding live in
+  `terraform/bootstrap`, applied by the owner directly, not in
+  `terraform/infra` (decision 4). That keeps the CI deployer
+  (`swarm-tf-deployer`) off `setIamPolicy` on the key, so **the CI pipeline**
+  cannot grant itself `signer`. The binding names `swarm-api` by its email,
+  `swarm-api@<project>.iam.gserviceaccount.com`, since the account itself is
+  created by `terraform/infra` (`modules/iam`).
+
+  **This is not a boundary against the project itself, and the owner accepted
+  that rather than designing it away (2026-09-29): the key stays in the shared
+  `saga-agents-staging` project** (CLAUDE.md rule 2 -- another team's project,
+  not a dedicated one). `roles/editor` on that project carries
+  `iam.serviceAccounts.actAs` and `run.services.update`, so any project Owner
+  or Editor -- not only this platform's operators -- can redeploy
+  `swarm-api`'s Cloud Run service to run code of their choosing as its service
+  account, which holds `signer`, and sign anything through it without ever
+  calling `setIamPolicy` on the key. An Owner can also `setIamPolicy` the key,
+  the ring or the project directly, bootstrap's separation notwithstanding.
+  **This residual holds against the platform team and the other team sharing
+  the project. It does not hold against tenant agents:** the table above gives
+  no tenant or worker account any role on this key, ever, so a tenant's own
+  agent -- the actor #342 is about -- has no path to a signature through KMS
+  IAM at all; its only avenue is still the one this entry closes, rewriting an
+  already-signed document. Stated again in **The threat model**.
+* **Trusted versions.** A worker trusts **every `ENABLED` version** in
+  `SPEC_VERIFY_KEYS` (or reachable through `GetPublicKey`, under the runtime
+  alternative), with no separate allow-list of "which versions swarm-api is
+  actually using." **Accepted residual, stated plainly:** anyone who can
+  create or import a version on this key -- a KMS admin, or `swarm-tf-deployer`
+  running `terraform apply` against `terraform/bootstrap` -- gets that version
+  trusted by every worker from the next release on, whether or not swarm-api
+  ever signs with it. Narrowing trust to "the version `SPEC_SIGNING_KEY_VERSION`
+  currently names" was considered and rejected: it would break rotation step 2
+  (the entry two bullets below), where N and N+1 must both verify before
+  swarm-api cuts over.
+* **How workers get the public keys, and how they are cached (recommended).**
+  `terraform/infra` reads the key's versions with the
+  `google_kms_crypto_key_versions` data source, keeps those in state
+  `ENABLED` (the data source's attributes, the state and the PEM, are to be
+  checked against `terraform providers schema -json` for the pinned
+  provider, as the unlabelable types are).
+
+  **On Cloud Run**, it renders one worker environment variable on every Job,
+  `SPEC_VERIFY_KEYS`: a JSON map `{<full version name>: <PEM public key>}`.
+  The Job's environment **is** the cache: fixed for the life of the execution,
+  refreshed by every release, and needing no network call, no quota and no IAM
+  at attempt start. Beside it, `SPEC_SIGNING_KEY` names the crypto key.
+  `worker_env()` must never override either (a test holds the scheduler's
+  override keys to an allow-list that excludes them).
+
+  **On GKE the same map is not inlined into the pod's `env:`** (the owner's
+  decision, 2026-09-29 review): a browser pod's manifest is template-rendered
+  by `GkeJobDispatcher._manifest` from
+  `kubernetes/worker-templates/worker-job-browser.yaml`, not written once by
+  Terraform, and the tenant's own worker KSA runs in the same per-tenant
+  namespace as that Job (`kubernetes/namespaces/tenant-namespace.yaml`) --
+  putting the JSON map inline is one placeholder away from a tenant-writable
+  copy the way `worker_env()`'s per-execution overrides already are, and is
+  exactly the large-value-in-a-template problem that file's own
+  `SWARM_ARTIFACTS_DIR` comment warns about for a far smaller value. Instead,
+  `terraform/infra` renders a `kubernetes_config_map`,
+  `swarm-spec-verify-keys` (the same `{version: PEM}` shape, plus
+  `SPEC_SIGNING_KEY`), **in each tenant's namespace**, applied by Terraform's
+  own identity. `GkeJobDispatcher._manifest` mounts it **read-only** at
+  `/etc/swarm/spec-verify-keys` on the `browser` profile's Job in place of an
+  `env:` entry.
+
+  **The RBAC fact that matters is a write grant's absence, not a read grant.**
+  A volume mount is fetched by the kubelet with the node's own credentials,
+  never the pod's `ServiceAccount` token -- and that token is not even mounted
+  on these pods (`automountServiceAccountToken: false`,
+  `kubernetes/rbac/worker-rbac.yaml`'s deliberately empty `swarm-worker`
+  Role, "a worker needs nothing from the Kubernetes API"). So this ConfigMap
+  needs no `get`/`list`/`watch` rule added to that Role, and none is added --
+  the pod has no token to make such a call with regardless. What has to be
+  true, and is checked (**Tests**, below), is that no `RoleBinding` in the
+  tenant namespace grants the tenant's worker KSA (or any subject bound to the
+  `swarm-worker` Role) `update`, `patch` or `delete` on `configmaps`; only
+  Terraform's deployer identity, via its own `kubectl`/provider credentials,
+  ever writes it. `worker_env()` must never set a `SPEC_VERIFY_KEYS` /
+  `SPEC_SIGNING_KEY` environment entry on a GKE Job either, alongside the
+  Cloud Run names (the same allow-list test, extended to the GKE dispatcher).
+* **The runtime alternative (decision 4).** The worker calls
+  `GetPublicKey` on the version the document names, after the prefix check
+  below, holds the PEM in memory for the attempt (one attempt is one process,
+  so there is nothing longer-lived to cache in), and runs inside
+  `startup_budget()`. That needs `roles/cloudkms.publicKeyViewer` on the key
+  for every worker account, granted from `terraform/infra` and from
+  `register-tenant.sh` for script-registered tenants, which puts
+  `setIamPolicy` on the key back in the deployer's hands. It gives instant
+  revocation (below) at that price. **Not verified:** whether `GetPublicKey`
+  refuses a DISABLED version. If it does not, this alternative also needs
+  `roles/cloudkms.viewer` on the key so the worker can read the version's
+  state, and the live API has to answer that before it is chosen.
+* **Rotation.** Cloud KMS does not rotate asymmetric keys on a schedule, so
+  rotation is by hand and in this order: (1) create version N+1 (bootstrap, or
+  `gcloud kms keys versions create`); (2) release, so every Job's
+  `SPEC_VERIFY_KEYS` holds N and N+1; (3) point swarm-api's
+  `SPEC_SIGNING_KEY_VERSION` (a full version name, because an asymmetric key
+  has no primary version) at N+1 and release; (4) once no non-terminal task
+  names version N, disable it and release. Several enabled versions verify at
+  once; that is what makes steps 2 to 4 safe.
+* **Revocation.** Disable the version. With the recommended rendering, every
+  task signed by it is refused from the next release on; with the runtime
+  alternative, from the next attempt start. A signing identity that was
+  compromised could sign anything by submitting it through the API anyway, so
+  revocation is about closing the leak, and a release is fast enough for that.
+* **`AsymmetricSign` quota, not verified.** Every task and every workflow step
+  is one `AsymmetricSign` call at submission (one per step, decision 2), so the
+  platform's submission rate is Cloud KMS's request rate for this key. The
+  default Cloud KMS asymmetric-sign quota is per project and per region and is
+  shared with anything else in `saga-agents-staging` calling `AsymmetricSign`
+  in `us-central1` -- including, potentially, the other team's own use of KMS
+  in that project. **Not verified here:** the project's current quota value,
+  its current headroom against the other team's usage, and the platform's
+  peak submission rate against it. Before `enforce` is the default (section
+  6), this needs a check against `gcloud services quota list` (or the Cloud
+  KMS quota page) for this project, and a quota increase request filed ahead
+  of the rollout if headroom is thin -- a KMS `RESOURCE_EXHAUSTED` here is a
+  503 on every submission (this section's "Fails closed"), not a soft
+  degradation.
+
+#### 4. Signing in swarm-api
+
+* **Where.** In `SubmissionService.submit_tasks` and `submit_workflow`
+  (`apps/swarm-api/swarm_api/service.py`), after every write to the task has
+  been made and immediately before `self._store.create_tasks` /
+  `create_workflow`. For a workflow that is after the loop that writes
+  `metadata.input_from` and after `record_expected_outputs`, both of which run
+  after `_build_task`; signing inside `_build_task` would sign a spec missing
+  both.
+* **What.** For each task: `canonical_step_spec(task.to_firestore(),
+  task_id=task.id)`, SHA-256, then KMS `AsymmetricSign` with `digest.sha256`
+  and `digest_crc32c`, checking `verified_digest_crc32c` and the response's
+  `name`. The three fields are set on the `Task`, so they are part of the write
+  that creates the document, never a second update.
+* **Refused before anything is signed.** `SpecNotCanonical` from the
+  canonicaliser is 422 `invalid_input`, counted as a rejected submission like
+  every other refusal.
+* **Fails closed.** If KMS cannot sign, the submission answers 503 and nothing
+  is stored. After the cutover (below) swarm-api never writes an unsigned
+  task.
+* **One sign call per step**, concurrently for a workflow, as the owner
+  decided ("each step's canonical spec"). A per-workflow manifest signed once
+  was considered (decision 2).
+* **New dependency:** `google-cloud-kms` for `swarm-api` only.
+
+#### 5. Verification in the worker
+
+**Where.** In `Lifecycle._prepare`, **immediately after
+`self.control.fetch_task()` (step 4, today around line 749)** and before
+anything reads the document for what to do: before `_restore_checkpoint`,
+before `_maybe_clone` (which reads the tenant's git token through
+`_git_token`), before `_stage_declared_inputs`, before `_build_child_env`
+(step 6, the provider credential), before `issue.stage_issue` (#265) and so
+long before the runner child exists. Nothing between the generation check and
+that point reads a spec or a secret: step 2 records the attempt and advances
+it to RUNNING, and step 3 makes an empty workspace. It gets a phase of its
+own, `verify_spec`, so the phase log proves the order. For a worker-action
+profile (contract request 33) the same call runs at the same point, before the
+action reads its secret.
+
+**What it checks, in this order, refusing at the first failure.** Corrected
+from the first draft of this entry, which put the format check first: an
+unsigned legacy task has no `spec_format` either, so checking it before the
+legacy rule refused every legacy task with `unknown_format` instead of
+admitting it. The presence/legacy check has to run first.
+
+1. `spec_signature` and `spec_key_version` are present, or the legacy rule
+   below applies (in which case the task runs and checks 2 to 5 are skipped).
+2. `spec_format` is a format this worker knows (1).
+3. `spec_key_version` is `<SPEC_SIGNING_KEY>/cryptoKeyVersions/<digits>` and
+   is a key of `SPEC_VERIFY_KEYS`. **Checked as a string, before any key is
+   used:** the document can name any version of any key in any project, and
+   the worker never goes looking for one.
+4. `canonical_step_spec(doc, task_id=cfg.task_id)` succeeds, and its digest
+   verifies against `spec_signature` with that version's public key
+   (`cryptography`, added to the worker's dependencies explicitly).
+   **`SpecNotCanonical` is a refusal, not a crash:** the document is writable
+   by any agent of the tenant (**What is true today**, above), so a covered
+   field can hold a value the canonicaliser rejects (an out-of-range integer,
+   a non-finite float, a lone surrogate) without ever having gone through
+   swarm-api's submission-time check. `_prepare` catches
+   `SpecNotCanonical` from this call specifically and maps it to
+   `SpecSignatureInvalid` with reason `not_canonical`, the same way an
+   unverified signature is refused; letting it propagate would crash the
+   worker process instead of failing the task cleanly.
+5. The execution's own environment agrees with the signed spec:
+   `RUNNER_PROFILE`, `TENANT_ID`, `TASK_TIMEOUT_SECONDS`, `REPOSITORY_URL` /
+   `REPOSITORY_REF` when set, and the Job's own identity against the Job name
+   the scheduler derived from `tenant_id` and `runner_profile` (one Job per
+   tenant per profile). The scheduler derives `RUNNER_PROFILE`, `TENANT_ID`
+   and `TASK_TIMEOUT_SECONDS` from the document, so a rewritten
+   `runner_profile` that got a step dispatched onto another profile's Job is
+   refused here even though step 4 alone would catch it too.
+
+   **The two backends' Job-identity checks are not equally strong, and this
+   entry says so rather than implying otherwise.** On **Cloud Run**,
+   `CLOUD_RUN_JOB` is set by the platform itself -- the execution environment,
+   not anything the scheduler wrote -- so comparing it catches a scheduler bug
+   that dispatched onto the wrong Job while still copying the right
+   environment variables across; that check is independent of the scheduler's
+   own arithmetic. On **GKE**, there is no such platform-injected value: the
+   dispatcher's manifest template sets `RUNNER_JOB_NAME` itself, from the same
+   `tenant_id`/`runner_profile` computation that also produces the Job's
+   actual `metadata.name` and the other env vars in the same render. **This
+   check on GKE only confirms the scheduler agrees with itself within one
+   render** -- it catches a copy-paste mismatch inside `GkeJobDispatcher`, not
+   an independent confirmation of which Job the pod is actually running in the
+   way Cloud Run's does. Closing that gap on GKE would need the worker to read
+   its own Job's name from the Kubernetes Downward API (`metadata.name` into
+   an env var, which needs no RBAC) rather than from a value the same
+   dispatcher wrote twice; not proposed here, since GKE runs only the
+   `browser` profile today and a wrong-Job dispatch there still fails step 4
+   (`RUNNER_PROFILE` disagreement) or the tenant-namespace boundary itself.
+
+**After it passes, the worker reads only the verified dict.** It already does:
+the rest of the attempt reads `self._task`, and the later `fetch_task` calls
+(`validate_generation`, `poll`, `_current_state`) read only the state,
+generation and cancel flag, none of them covered.
+
+**On a refusal.** A new `SpecSignatureInvalid(WorkerError)`. The lifecycle
+closes the startup window and calls `control.finish(state=FAILED,
+end_cause=SPEC_SIGNATURE_INVALID, exit_code=ExitCode.FAILED, error=<reason
+and task id, no spec content>, result_summary={"spec_check": {"reason": ...,
+"task_id": ..., "key_version": ..., "digest": <hex>}})`. **FAILED directly,
+whatever attempts are left:** a retry reads the same document. The write is
+fenced like every terminal write, so a superseded worker stands down instead.
+The reason is a worker vocabulary, not a frozen one (`signature_mismatch`,
+`unsigned`, `unknown_format`, `not_canonical`, `foreign_key_version`,
+`environment_mismatch`, `upstream:<task id>:<reason>`), the way
+`publish_reason` is. The log line is
+ERROR and carries the same fields; the spec itself is never logged, since a
+prompt can hold anything. The process exits 1.
+
+**Outages are not refusals.** With the recommended rendering, verification
+makes no network call. Under the runtime alternative, a KMS `UNAVAILABLE` or a
+spent budget is exit 69 (`UNAVAILABLE`: nothing written, the reconciler
+retries), a `PERMISSION_DENIED` is exit 78 (`CANNOT_START`: the worker's own
+configuration), and only `NOT_FOUND` or a disabled or destroyed version is a
+refusal.
+
+**Worker-action steps verify their upstream steps too** (the owner's
+decision). Before it reads its credential, contract request 33's
+`post-verdict` step fetches `review.json` from the path it computes itself,
+using the review task id **named in its own signed `metadata.dispatch.verdict_source`**
+(`{review: <review task id>}`, the same way `merge`'s `dispatch.merges` block
+names task ids, not through `input_from`). **Corrected from the first draft of
+this entry, which said
+`post-verdict` uses `input_from`:** contract request 33's joint review with
+this entry, 2026-09-29, removed `post-verdict`'s `input_from` on purpose --
+the ordinary staging path resolves an artifact's location from the upstream
+task's own `result_summary`, a Firestore field the tenant identity writes,
+which is exactly the tenant-writable pointer this whole design exists to stop
+trusting. `merge` verifies the **union** of every task its own signed spec
+names: the `dispatch.merges` block (author, review, **post-verdict**, fix,
+proof) and `input_from`. `post-verdict` is in that union because `merge`
+trusts what `post-verdict` posted to GitHub every bit as much as it trusts
+`review`'s verdict file. Each upstream task must pass checks 2 to 4 above
+**with no legacy exception**, and in addition carry the acting step's own
+`tenant_id` and `workflow_id` and the role contract request 33's `single-pr`
+table gives it: `reader` for `review` and `proof`, `amender` for `fix`,
+`author` for the implement step, and **`none`, the same as `merge` itself,
+for `post-verdict`** -- it clones nothing, holds no `pr_role`, and only reads
+an upstream verdict and posts it. (This entry's earlier draft gave
+`post-verdict` role `reader`; contract request 33's own table has always said
+`none`, and this entry now agrees with it rather than the other way round.)
+
+**The end causes are deliberately not unified with #342's own (the owner's
+decision, 2026-09-29): a worker-action step's own spec failing its own check
+is still `SPEC_SIGNATURE_INVALID`,** exactly as for an agent step. **An
+upstream task failing this check is contract request 33's own concern, not
+this entry's, and keeps that entry's own end causes:** `merge` ends
+`EndCause.MERGE_REFUSED`, and `post-verdict` ends `EndCause.VERDICT_REFUSED`
+(contract request 33 names and owns both; this entry only requires that an
+upstream-spec failure use them, never `SPEC_SIGNATURE_INVALID`). **The owner's
+decision, 2026-09-29: both report through the same field this entry uses for
+its own refusals,** `result_summary.spec_check.reason`, with the value
+`"upstream:<task id>:<why>"` -- the same shape `SPEC_SIGNATURE_INVALID` uses
+for its own failures, so a reader (or an alert) does not need two different
+field names to find out why a spec check failed. **Decision 9's alert is keyed
+on both:** a log-based metric over `end_cause == SPEC_SIGNATURE_INVALID` alone
+would miss every worker-action refusal caused by a tampered upstream spec,
+since those end `MERGE_REFUSED` or `VERDICT_REFUSED`; the alert matches
+`end_cause == SPEC_SIGNATURE_INVALID` **or** (`end_cause` in `{MERGE_REFUSED,
+VERDICT_REFUSED}` **and** `result_summary.spec_check.reason` starts with
+`"upstream:"`), because both are the same threat -- a spec that does not
+verify -- surfacing through two different steps' vocabularies, and `MERGE_REFUSED`
+/ `VERDICT_REFUSED` have other, unrelated causes (contract request 33's own
+table) that this alert must not also fire on. Verifying an upstream spec proves that the step
+the action trusts was submitted as that step of this workflow and still
+carries that spec. It does not prove what that step produced (next section).
+
+#### 6. Rollout: legacy unsigned tasks
+
+Every task written before swarm-api signs carries no signature, and some of
+those will still be parked or queued when the verifying worker ships. Signing
+cannot be retrofitted onto them: re-signing a document as it now stands would
+sign whatever an agent already wrote into it.
+
+* **`SPEC_SIGNATURE_MODE`**, on the worker Jobs: `enforce` (**the default**)
+  or `legacy`. In `legacy`, an unsigned task runs, with a WARNING log and a
+  `spec_check: {"reason": "legacy_unsigned"}` note on its event, **only if the
+  document's Firestore `create_time` is earlier than `SPEC_LEGACY_CUTOVER`**
+  (an RFC 3339 time, the moment the signing swarm-api revision took all
+  traffic). `create_time` is set by Firestore and no client can write it, so
+  stripping the signature off a task created after the cutover does not
+  qualify it; the tenant's role has no delete, so the document cannot be
+  re-created with an earlier one either. `fetch_task` returns the snapshot's
+  `create_time` beside the dict for this.
+* **The end date is in the code, not only the configuration:**
+  `SPEC_LEGACY_UNTIL = 2026-10-20T00:00:00Z` (decision 5). After it the worker
+  ignores `legacy`, logs that it did, and enforces. A flag nobody remembers to
+  turn off stays off anyway.
+* **Before the end date**, an operator counts non-terminal tasks without
+  `spec_signature` (a read-only query) and lets them finish or cancels and
+  resubmits them; after it, any left fail `SPEC_SIGNATURE_INVALID` with reason
+  `unsigned`.
+* **Worker-action steps never take the legacy path, for themselves or their
+  upstream steps.** Contract request 33 is not built yet, so no legacy
+  worker-action task can exist.
+* **Order:** (1) the key and its IAM (bootstrap), then the contract fields and
+  `specsign.py`; (2) swarm-api signs, and its release time becomes
+  `SPEC_LEGACY_CUTOVER`; (3) the worker verifies, with `legacy` and the
+  cutover set; (4) `enforce` by the end date at the latest. A worker that
+  enforces before swarm-api signs refuses every task, which is why (2) and (3)
+  are separate releases.
+
+#### 7. Continuations and retries
+
+* **A retry is another attempt at the same task.** Same document, same spec,
+  same signature, nothing re-signed. That is exactly why no field a retry
+  changes (`attempt_count`, `current_generation`, `state`, `next_eligible_at`,
+  `startup_refunds`) is covered. The scheduler's
+  `return_to_ready_after_failed_dispatch` and the reconciler's
+  `repair_task_state` write none of the covered fields, and a test keeps it so.
+* **A continuation (#273's `continues_task`) is a new submission.** It is a
+  `direct-pr` workflow submitted through `submit_workflow`, so its task is
+  signed at its own submission, and the continued task id is inside its signed
+  `metadata.dispatch.continues`. An agent therefore cannot point a
+  continuation at another task's branch. The continued task's own signature is
+  never consulted: nothing about the continued task's spec is read, only its
+  id, from which the worker derives the branch (`continuation.py`).
+* **Contract request 30's continuation-scoped accounts** submit through the
+  same code, so their tasks are signed identically and `submitted_by` records
+  the account.
+* **Any future re-run that creates a new task** goes through swarm-api and is
+  signed at its own submission. No path may copy a signature from one task to
+  another; it would not verify anyway, because `task_id` is inside the bytes.
+
+#### 8. The threat model
+
+**What signing closes.** A rewrite, by any agent of the tenant (or by anything
+holding any worker's Firestore grant), of a step's `input` (prompt and
+inputs), `input_from`, `expected_outputs`, dispatch roles, `depends_on`,
+profile, class, timeout, attempt cap or repository, **before or between that
+step's attempts**. The worker refuses it before any credential is read and
+before any agent or action starts. Copying one task's signature onto another,
+moving a spec to another workflow or tenant, forging a new task document, and
+naming a key the platform did not publish are all refused the same way.
+
+**What signing does not close,** stated plainly because the platform's
+exposure is otherwise unchanged
+([multi-tenancy.md](multi-tenancy.md#the-firestore-row-in-full)):
+
+* **The restored workspace, a channel the signature does not cover at
+  all.** `latest_checkpoint` is in the "not covered" list (section 1) because
+  the reconciler and the worker itself write it legitimately mid-attempt. But
+  that also means a signed, unmodified, correctly-verifying spec can still
+  start an attempt against a workspace restored from a **planted**
+  checkpoint: the signature is over the spec, never over what
+  `_restore_checkpoint` pulls from GCS before the runner starts. Joint review
+  finding, 2026-09-29 (MAJOR): a planted checkpoint gets past this entry's
+  signature entirely, because there was never anything here for it to get
+  past.
+
+  **Fixed separately, ahead of this entry: S0 #347, closed by PR #348.**
+  #348 makes `_restore_checkpoint` accept only the checkpoint this task's own
+  earlier attempt recorded on its own attempt document (never
+  `find_latest()`'s scan of the task's GCS prefix), and never restores
+  anything on a first attempt. **State it as #348's own body states it, not
+  more strongly:** this closes the reproduction in #347 (an implement agent
+  planting for a parked review step's first attempt) and, on a retry, every
+  path limited to the GCS bucket -- a checkpoint added beside the recorded one,
+  or the recorded one's archive rewritten in place. **It does not stop an
+  agent that can also write Firestore.** Firestore has no document-level IAM
+  (`multi-tenancy.md`), so on a retry such an agent can still raise the
+  victim task's `attempt_count`, repoint `latest_checkpoint`, and write a
+  forged `attempts/<id>` document naming its own planted checkpoint and
+  digest -- every check #348 added then passes, because all of it reads
+  Firestore fields and documents the tenant identity can write. #348's own
+  words: "the complete fix needs a record the tenant cannot write." Signed
+  step specs do not supply that record: `latest_checkpoint` and `attempt_count`
+  are both explicitly in contract request 34's own "Not covered" list
+  (section 1, above), by design -- the scheduler and the worker legitimately
+  rewrite both after submission, so signing either would break on the first
+  honest write -- and the `attempts/<id>` document is a different Firestore
+  collection entirely, never a candidate for this entry's per-task signature
+  in the first place. Extending coverage to close this was not the owner's
+  decision (decision 7 covers only re-checking a signed *parent's* `state`, a
+  different field, for a different attack).
+
+  **The owner's decision, 2026-09-29: this residual is ACCEPTED, not a
+  precondition of anything closing.** Firestore-capable planting on a retry
+  remains open until workers leave direct Firestore access (the alternative
+  **If it is declined** already names, and the same one #347's issue and
+  #348's PR both point at), a materially larger change than either #347 or
+  this entry. Contract request 34 closes the rewritten-prompt path #342
+  reproduced; it was never going to also close a checkpoint-planting path
+  that reads and writes fields it deliberately does not sign.
+* **Every field that is not covered.** A tenant agent can still write a
+  task's `state`, `result_summary`, `cancel_requested`, `latest_checkpoint`
+  and the rest. In particular:
+  * **It can mark a parked step READY early**, without touching
+    `depends_on`, and the scheduler will admit it. The signature still
+    verifies, because the spec is unchanged. In contract request 33's chain
+    that would let `fix` start before `post-verdict` has posted the review,
+    which is the ordering merge-step.md §4.3 relies on to keep `fix`'s agent
+    away from `review.json`. Decision 7 adds a start-time re-check of each
+    signed parent's state, which forces the attacker to forge those states as
+    well; it raises the cost, and does not close it.
+  * **It can re-run a finished signed step by rewriting its state.** `state`
+    and `end_cause` are both uncovered, so an agent can write a SUCCEEDED or
+    FAILED task's `state` back to `READY` (or `QUEUED`, ahead of admission)
+    and have the scheduler dispatch a fresh attempt against the same,
+    still-verifying spec -- the signature says nothing about how many times a
+    step may run. A re-run costs the tenant's own capacity and attempt cap,
+    and can re-execute a step whose real effect (a merge, a posted review) has
+    already happened and is not naturally idempotent. Contract request 33's
+    sha-equality chain and GitHub-side checks are what stop a re-run from
+    double-merging or double-posting; this entry stops none of it, because
+    `state` is not a field this entry signs.
+  * **It can forge an upstream step's `result_summary` or its GCS
+    artifacts.** Contract request 33 answers that for the merge with the sha
+    equality chain and the GitHub review `post-verdict` posts, not with this
+    entry.
+* **The workflow document.** `WorkflowStep.input` is a copy for display. No
+  worker reads it, so a rewrite of it misleads a person reading the API or the
+  UI and changes nothing that runs.
+* **Everything outside `tasks/*`:** `tenants/<id>` (whose `service_account`
+  and `gcs_prefix` the control plane trusts as configuration), `pools/*`,
+  `quota/*` and `leases/*`. These need the fix multi-tenancy.md names, the
+  worker off direct Firestore access or one database per tenant.
+* **Capacity spent before the refusal.** The scheduler admits on the
+  document's `resource_class` before any worker verifies, so a rewritten
+  class costs the tenant's own capacity for one attempt (decision 8).
+* **Anyone who can sign -- an accepted residual, not a closed one (owner,
+  2026-09-29).** `swarm-api`'s own account, which holds `signer`; the release
+  deployer, which deploys the Cloud Run revision that runs as it; and, because
+  the key stays in the shared `saga-agents-staging` project rather than a
+  dedicated one, **any Owner or Editor of that project** -- `roles/editor`
+  carries `iam.serviceAccounts.actAs` and `run.services.update`, enough to
+  redeploy `swarm-api` running arbitrary code as its own service account, and
+  an Owner can `setIamPolicy` the key, the ring or the project directly
+  regardless of where the key's Terraform lives. **A KMS admin who creates or
+  imports a version** gets it trusted by every worker at the next release,
+  without ever signing anything themselves (**Key management**'s "Trusted
+  versions", above). Putting the key's own IAM binding in `terraform/bootstrap`
+  keeps the *CI deployer* off `setIamPolicy` on the key; it was never a
+  boundary against the shared project's own Owners and Editors, and this entry
+  no longer implies that it is. **This residual holds against the platform
+  team and the other team sharing the project. It does not hold against
+  tenant agents:** no tenant or worker account holds any role on this key, so
+  a tenant's own agent -- the actor #342 and this entry are about -- has no
+  KMS-side path to a valid signature at all.
+* **Anything submitted through the API.** A signature says swarm-api accepted
+  this spec from an authenticated submitter. It does not say a person meant
+  it: a continuation-scoped account (contract request 30) or a stolen ID
+  token gets a valid signature on what it submits.
+* **Prompt injection** of the step itself (contract request 33's T11).
+
+#### 9. Tests that would prove it
+
+All offline, as CLAUDE.md requires: no KMS, no credentials, no emulator. The
+signer in tests is a local P-256 key from `cryptography` behind the same
+interface as the KMS signer, and the worker's `SPEC_VERIFY_KEYS` holds its
+public key. Each goes to CI red first, in the shape CLAUDE.md gives.
+
+* **`tests/unit/common/test_specsign.py`** (the canonical form).
+  RFC 8785's own number and ordering vectors (Appendix B, and the sorting
+  example in 3.2.3); a pinned golden vector, one fixed task dict to fixed bytes
+  and a fixed SHA-256 hex, so any change to the projection is a visible diff
+  that demands a format bump; agreement with the `rfc8785` package as a
+  test-only oracle over generated JSON values; and refusal of 2^53, NaN,
+  infinity and a lone surrogate.
+* **`tests/unit/common/test_specsign_covers.py`** (the rule that keeps the
+  field list honest). Every metadata key the worker reads (`inputs.METADATA_KEY`,
+  `expected_outputs.METADATA_KEY`, `"dispatch"`, found by an AST scan of
+  `agent_worker`) is in `SIGNED_METADATA_KEYS`, and `SIGNED_METADATA_KEYS`
+  equals swarm-api's `RESERVED_METADATA_KEYS` minus `startup_refunds`.
+* **`tests/unit/control_plane/test_spec_signing_submission.py`** (swarm-api).
+  Every task from `submit_tasks` and `submit_workflow` carries the three
+  fields, and its signature verifies over its stored form; the signed bytes
+  include the task-id-keyed `input_from` and the `expected_outputs`, so a
+  signature made before either was written fails this test; a KMS failure is
+  503 and the store is never called; each non-canonical value is 422 and KMS
+  is never called.
+* **`tests/unit/worker/test_spec_signature_worker.py`** (the worker).
+  Parameterised over **every covered field**, nested ones included
+  (`input.prompt`, `input.issue`, `metadata.dispatch.role`,
+  `metadata.dispatch.integrates` reordered, a value of `metadata.input_from`,
+  `depends_on` reordered or shortened, `repository_ref`): a rewrite after
+  signing ends the task FAILED with `spec_signature_invalid` on attempt 1 of 3,
+  and the fakes record **no runner child, no secret read, no git token read,
+  no GCS download and no checkpoint restore**. Parameterised over every
+  uncovered field (`state`, `attempt_count`, `result_summary`,
+  `startup_refunds`, `priority`, a caller metadata key): the task runs. A
+  signature copied from another task, a version outside `SPEC_SIGNING_KEY`, a
+  version not in `SPEC_VERIFY_KEYS`, a `RUNNER_PROFILE` override that
+  disagrees, and (Cloud Run only, where the platform sets `CLOUD_RUN_JOB`
+  independently of the scheduler) an execution whose `CLOUD_RUN_JOB` names a
+  Job other than the one the scheduler derived from `tenant_id` and
+  `runner_profile`, are each refused. A separate GKE case proves the weaker
+  claim honestly: a `RUNNER_JOB_NAME` that disagrees with the dispatcher's own
+  `tenant_id`/`runner_profile` computation in the same render is refused, but
+  a test also documents that this check cannot catch the dispatcher deriving
+  the wrong Job **consistently** (setting `RUNNER_JOB_NAME` and the Job's real
+  `metadata.name` to the same wrong value), since GKE has no platform-injected
+  value to check against. A covered field holding
+  a value `canonical_step_spec` rejects (an integer past 2^53 − 1, a
+  non-finite float, a lone surrogate -- written directly to Firestore, not
+  through swarm-api's submission check) is refused `not_canonical`, and the
+  worker process does not crash. **The checks run in the order section 5
+  gives**, proven by a legacy-eligible task with no `spec_format` at all
+  (never `unknown_format`) alongside an out-of-window unsigned task that
+  correctly still gets `unsigned`. The phase log shows `verify_spec` before
+  `restore_checkpoint`, `clone`, `stage_inputs`, `credentials` and
+  `fetch_issue`.
+* **`tests/unit/worker/test_spec_legacy_window.py`.** Unsigned in `enforce`:
+  refused. In `legacy` with `create_time` before the cutover: runs, with the
+  note. After the cutover: refused. After `SPEC_LEGACY_UNTIL`, with an injected
+  clock: refused, and the log says the flag was ignored.
+* **Worker-action upstream checks**, in contract request 33's own test files
+  when it lands: `post-verdict` and `merge` refuse an upstream task that fails
+  verification, is unsigned (in `legacy` mode too), belongs to another
+  workflow or carries the wrong role -- **`post-verdict` included** in
+  `merge`'s upstream set, with role `none` (matching contract request 33's own
+  `single-pr` table); the merge and review credentials are never read in any
+  of those cases; and the end cause on such a refusal is `EndCause.MERGE_REFUSED`
+  (`merge`) or `EndCause.VERDICT_REFUSED` (`post-verdict`) -- contract request
+  33's own causes, never `SPEC_SIGNATURE_INVALID` -- with
+  `result_summary.spec_check.reason == "upstream:<task id>:<why>"`. That cause
+  is reserved for the acting step's own spec, and a test in this entry's own
+  suite asserts the two causes are never confused for the acting step's own
+  failures.
+* **Writers.** A test that the scheduler's and the reconciler's task updates
+  (`return_to_ready_after_failed_dispatch`, `cancel`, `repair_task_state` and
+  the rest) write no covered field; that **swarm-api's own writes to an
+  existing task** (`Store.request_cancel`/`cancel_workflow`, `store.py`, which
+  patch `cancel_requested`, `state` and `completed_at` -- the only writes
+  swarm-api itself makes to a task it did not just create -- and any future
+  one) also write no covered field --
+  the three signed fields are written once, at creation, and never again
+  (section 2's diff comment), so this test fails loudly the day a second
+  swarm-api write path touches, say, `input` or `metadata.dispatch`; and that
+  `worker_env()` never sets `SPEC_VERIFY_KEYS`, `SPEC_SIGNING_KEY`,
+  `SPEC_SIGNATURE_MODE` or `SPEC_LEGACY_CUTOVER` **on either dispatcher** --
+  Cloud Run's per-execution override and the GKE manifest's template
+  substitution both go through the same allow-list check.
+* **The ledger.** `test_outcomes_end_cause.py` gains the class, and
+  `DERIVE_VERSION` is bumped.
+* **Terraform (`tests/terraform`).** The key's purpose and algorithm; its
+  `managed-by` label; `swarm-api` is the only member holding `signer`, and no
+  tenant or worker account holds `signer` or `signerVerifier`; the Cloud Run
+  Jobs' environment carries `SPEC_VERIFY_KEYS` built from enabled versions
+  only; `cloudkms.googleapis.com` is enabled; the key ring and the key's IAM
+  member are in `unlabelable-types.json`.
+* **GKE (`tests/unit/worker/test_kubernetes_manifests.py` and
+  `tests/terraform`).** The rendered `swarm-spec-verify-keys` `ConfigMap`
+  carries the same `{version: PEM}` map as `SPEC_VERIFY_KEYS`, lives in the
+  tenant's own namespace, and is applied by Terraform's identity, not the
+  scheduler's per-task render; `worker-job-browser.yaml`'s manifest and the
+  dispatcher's rendered Job agree that neither sets `SPEC_VERIFY_KEYS` or
+  `SPEC_SIGNING_KEY` in `env:` and both mount the ConfigMap read-only.
+  **The write-grant check is wider than one `RoleBinding` lookup, because a
+  write path could come in by any of several doors:**
+  * no `RoleBinding` in the tenant namespace (`kubernetes/rbac/*.yaml`) grants
+    `update`, `patch` or `delete` on `configmaps` to the `swarm-worker` Role,
+    to any subject bound to it, or **to the tenant's GSA named either way a
+    Kubernetes subject can name it** -- by email
+    (`swarm-agent-worker-<tenant>@<project>.iam.gserviceaccount.com`) and by
+    its numeric `uniqueId` -- since an email-only check here would repeat the
+    defect a prior lane already measured elsewhere in this platform: an
+    email-only RBAC subject can apply cleanly and bind nothing, which reads as
+    a passing test while authorising nobody, but the reverse -- a binding
+    keyed on `uniqueId` alone -- would be invisible to a check that only
+    greps for the email;
+  * no `ClusterRoleBinding` grants it either, cluster-wide, to any subject --
+    matching `kubernetes/rbac/worker-rbac.yaml`'s existing invariant that no
+    `ClusterRole` or `ClusterRoleBinding` appears anywhere in `kubernetes/` at
+    all, which this ConfigMap must not become the first exception to;
+  * and, in `tests/terraform`, no project-level IAM binding grants the
+    tenant's GSA a `container.*` role or permission (`roles/container.admin`,
+    `roles/container.developer`, or a custom role naming
+    `container.configMaps.update` or `container.secrets.update`) that would
+    let it write the object through the GKE API directly, bypassing in-cluster
+    RBAC entirely -- the tenant's GSA holds no `container.*` role today
+    (Terraform's `modules/iam`), and this test pins that absence rather than
+    assuming it.
+
+  This is the same assertion style `test_kubernetes_manifests.py` already uses
+  to hold the empty worker Role empty.
+* **Live, in dev, once, after (3) of the rollout.** Submit a two-step workflow,
+  rewrite the parked step's `input.prompt` with the tenant worker account's
+  own credentials, and see the step end `spec_signature_invalid` with no
+  agent started. Worth keeping as a `make smoke` case, since this is the one
+  guarantee the entry exists for.
+
+### What it would break if accepted
+
+* **Nothing stored.** The three fields are optional and an old document
+  decodes with None. What an unsigned task does is the rollout's question
+  (section 6), not the decoder's.
+* **Every writer that creates a task document must sign.** Today that is only
+  swarm-api's `Store`. The integration tests that seed task documents
+  directly in the emulator need the test signer.
+* **The API refuses three inputs it accepts today**: integers past 2^53 − 1,
+  non-finite numbers and lone surrogates. No declared input's bounds reach
+  2^53 (the largest is `issue`'s 999999), so only undeclared profiles' inputs
+  (`browser`, `generic`) can be affected.
+* **A submission now depends on Cloud KMS.** A KMS outage stops submissions
+  (503) instead of accepting unsigned ones; that is the point.
+* **Every restatement of `EndCause` follows:** the outcome ledger
+  (`swarm_api.outcomes`, with its `DERIVE_VERSION` bumped), the UI's
+  `outcomes.ts`, `plugin/README.md` and `docs/workflows.md`.
+* **Terraform:** a new API, a key ring and key in bootstrap, two entries in
+  `unlabelable-types.json`, Cloud Run worker environment in `terraform/infra`,
+  and a per-tenant `swarm-spec-verify-keys` `ConfigMap` (**Key management**,
+  above) that `register-tenant.sh` and every existing tenant's namespace need.
+* **`kubernetes/`:** `worker-job-browser.yaml` gains a read-only volume mount
+  for the ConfigMap; `test_kubernetes_manifests.py` gains the assertion that
+  no RoleBinding grants the worker KSA write on it.
+* **If contract request 3 is applied** (`input_from` as a `Task` field), the
+  projection changes and that is format 2.
+
+### If it is declined
+
+#342 stays open at S0. Every multi-step workflow runs whatever its parked
+steps' documents say when they start, and contract request 33's merge step has
+no answer to its round-3 blocker: a review step whose prompt an earlier agent
+rewrote produces a real, honest-looking verdict that `post-verdict` would post.
+The remaining alternative is the one multi-tenancy.md names, taking workers
+off direct Firestore access, which closes this and much more at a far larger
+cost.
+
+### Invariants
+
+- **Invariants 1 to 3.** Unchanged. Signing happens before the task exists;
+  a refusal is an ordinary terminal write that releases the lease in the same
+  way as every other.
+- **Invariant 4.** No wait is added. With the recommended rendering,
+  verification makes no network call; under the alternative the one call is
+  inside the startup budget, and an outage is exit 69, not a sleep.
+- **Invariant 5.** Verification runs after the generation check, and the
+  refusal's terminal write is fenced: a stale worker stands down without
+  writing it.
+- **Invariants 6 and 7.** Untouched.
+- **Invariant 8.** Untouched. A refused attempt has done no work to keep.
+- **Invariant 9.** Strengthened within a tenant, which is where #342 lives,
+  and across tenants for task documents: the signature binds `tenant_id`, and
+  `_assert_tenant` keeps its check. No tenant account gains any KMS role.
+- **Invariant 10.** The signature binds exactly what the caller chose by name
+  and what swarm-api derived from it. The caller still sends no image,
+  command, resource spec or backend parameter, and cannot choose a key.
+- **#219.** Verification runs before any secret is read, so a refused step
+  never holds the tenant's git token or provider key.
+
+### Owner decisions, each with a recommendation
+
+1. **The covered fields.** Recommended: the table in section 1, with
+   `priority` and the caller's own metadata keys left out.
+2. **One signature per step, or one per workflow.** Recommended: one per step,
+   as decided on 2026-09-29. A per-workflow manifest is one sign call instead
+   of N, but every worker would read and verify the whole workflow's specs, and
+   a standalone task would need a second shape.
+3. **The canonicaliser.** Recommended: RFC 8785 written into `specsign.py`,
+   with the `rfc8785` package as a test-only oracle, because `swarm_common`
+   takes no dependency.
+4. **Where the key lives, and how workers get the public key.** Recommended:
+   ring, key and the `signer` binding in `terraform/bootstrap`; public keys
+   rendered by `terraform/infra` into the Jobs' `SPEC_VERIFY_KEYS`; no KMS role
+   for any worker account; the deployer holds only `publicKeyViewer` and
+   `viewer`. The alternative (runtime `GetPublicKey` with `publicKeyViewer` on
+   every worker account) revokes faster but returns `setIamPolicy` on the key
+   to the deployer.
+5. **The legacy window.** Recommended: `enforce` by default, `legacy` only
+   for tasks whose Firestore `create_time` is before the cutover, and a hard
+   `SPEC_LEGACY_UNTIL` of 2026-10-20.
+6. **What a refusal does.** Recommended: FAILED at once, not retried and not
+   parked, with `SPEC_SIGNATURE_INVALID` and an alert.
+7. **A start-time re-check of parent states for every step with `depends_on`**
+   (not only worker actions): each signed parent must be SUCCEEDED, or the
+   worker parks the task back as `DEPENDENCY_INCOMPLETE` without running.
+   Recommended: yes, as defence in depth, stated as raising the cost of the
+   early-release rewrite rather than closing it.
+8. **Verification at admission too.** Recommended: not now. The worker is the
+   gate; admission's hot path stays one query, and the cost of a rewritten
+   class is one attempt of the tenant's own capacity.
+9. **An alert on `spec_signature_invalid`.** Recommended: yes, a log-based
+   metric and an alert in `terraform/modules/monitoring`, because every
+   occurrence is an attack or a bug. **Keyed on both end causes** (**Verification
+   in the worker**, above): `end_cause == SPEC_SIGNATURE_INVALID` for an
+   acting step's own spec, or (`end_cause` in `{MERGE_REFUSED, VERDICT_REFUSED}`
+   and `result_summary.spec_check.reason` starts with `"upstream:"`) for an
+   upstream one -- the owner did not unify the end causes themselves, so the
+   metric is what ties the two vocabularies to one alert, and the reason
+   prefix is what keeps it from also firing on `MERGE_REFUSED` /
+   `VERDICT_REFUSED`'s many other, unrelated causes.
+10. **`SOFTWARE` or `HSM` protection.** Recommended: `SOFTWARE`. The private
+    key never leaves Cloud KMS either way, and the threat here is who may call
+    `AsymmetricSign`, which IAM decides, not extraction of the key.

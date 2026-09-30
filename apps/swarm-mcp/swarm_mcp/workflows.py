@@ -83,6 +83,10 @@ _STEP_KEYS = frozenset(
         "resource_class",
         "timeout_seconds",
         "stage",
+        # The review shape (#264): run this step's agent only on an upstream
+        # review's verdict, and start its checkout from an upstream's branch.
+        "when",
+        "builds_on",
     }
 )
 
@@ -247,6 +251,32 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
             )
         if raw.get("timeout_seconds") is not None:
             step["timeout_seconds"] = int(raw["timeout_seconds"])
+        if raw.get("when") is not None:
+            # THE SHAPE ONLY. Which verdicts exist, and whether the gate is
+            # legal for this DAG and strategy, is `swarm_api.validation`'s
+            # rule (`validate_step_routing`) and is not restated here.
+            when = raw["when"]
+            if (
+                not isinstance(when, dict)
+                or set(when) != {"step", "verdict_in"}
+                or not isinstance(when.get("step"), str)
+                or not isinstance(when.get("verdict_in"), list)
+                or not all(isinstance(v, str) for v in when["verdict_in"])
+            ):
+                raise SwarmError(
+                    f"{where}: when must be "
+                    '{"step": <upstream step id>, "verdict_in": ["NOT_YET"]} -- '
+                    "the step whose verdict file this step stages, and the "
+                    "verdicts that run this step's agent"
+                )
+            step["when"] = {"step": when["step"], "verdict_in": list(when["verdict_in"])}
+        if raw.get("builds_on") is not None:
+            if not isinstance(raw["builds_on"], str):
+                raise SwarmError(
+                    f"{where}: builds_on must be one upstream step id, whose "
+                    "pushed branch this step's checkout starts from"
+                )
+            step["builds_on"] = raw["builds_on"]
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
             raise SwarmError(f"{where}: stage must be a string -- the group /sc:run shows it under")
         steps.append(step)

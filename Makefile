@@ -359,8 +359,17 @@ logs: ## Recent control-plane logs (SERVICE=swarm-api LINES=100 FOLLOW=1)
 	@if [ "$${FOLLOW:-0}" = "1" ]; then \
 	  gcloud beta logging tail 'resource.type="cloud_run_revision" AND resource.labels.service_name=~"^swarm-"' --project $(PROJECT_ID) --format='value(timestamp,resource.labels.service_name,textPayload,jsonPayload.message)' | $(SCRIPTS)/lib/redact-stream.sh; \
 	else \
-	  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name=~"^swarm-"'$${SERVICE:+" AND resource.labels.service_name=\"$$SERVICE\""} --project $(PROJECT_ID) --limit $${LINES:-100} --freshness $${FRESHNESS:-1h} --order desc --format='table(timestamp.date("%H:%M:%S"),resource.labels.service_name:label=SERVICE,severity,jsonPayload.message,textPayload)' | $(SCRIPTS)/lib/redact-stream.sh; \
+	  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name=~"^swarm-"'$${SERVICE:+" AND resource.labels.service_name=\"$$SERVICE\""} --project $(PROJECT_ID) --limit $${LINES:-100} --freshness $${FRESHNESS:-1h} --order desc --format='table(timestamp.date("%H:%M:%S"),resource.labels.service_name:label=SERVICE,severity,jsonPayload.message,textPayload)' | awk '{a[NR]=$$0} END {for (i=NR; i>=1; i--) print a[i]}' | $(SCRIPTS)/lib/redact-stream.sh; \
 	fi
+# `--order desc` (newest first, same LIMIT) is kept -- reversing which lines
+# come back would change what "recent" means. The lines themselves are
+# reversed locally before `redact-stream.sh`: a multi-line private key is
+# logged BEGIN, body, END in that order, and `redact()`'s awk stage only
+# masks forward from a BEGIN it has already seen, so `--order desc` handed it
+# END, body, BEGIN and the body printed in clear (#260). Reversing restores
+# forward order for the redaction pass; the display itself becomes oldest of
+# the window first, which is the one acceptable side effect of not leaking a
+# key.
 
 pause-swarm: ## Stop admitting new work; running tasks continue
 	@$(SCRIPTS)/pause-swarm.sh

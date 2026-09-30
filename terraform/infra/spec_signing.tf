@@ -133,8 +133,10 @@ locals {
 }
 
 # swarm-api signs with a version every worker trusts, or every submission is a
-# task no worker will run. A check, not a precondition: it warns on the plan
-# rather than blocking a release whose other changes are urgent.
+# task no worker will run. A check everywhere, not a precondition: it warns on
+# the plan rather than blocking a release whose other changes are urgent --
+# except in dev (below), where nothing else depends on this release landing
+# and an empty trust set is caught here rather than shipping to prod next.
 check "spec_signing_version_is_trusted" {
   assert {
     condition     = contains(keys(local.spec_verify_keys), local.spec_signing_key_version)
@@ -150,6 +152,18 @@ output "spec_verify_keys" {
 output "spec_verify_keys_configmap" {
   description = "The data of each tenant namespace's swarm-spec-verify-keys ConfigMap: `terraform output -json spec_verify_keys_configmap` is what kubernetes/render.py --spec-verify-keys-file reads. Public keys, not secrets."
   value       = local.spec_worker_env
+
+  # dev-only, and blocking rather than a warning: this is the value every
+  # worker Job and Kubernetes ConfigMap this release renders is built from
+  # (spec_worker_env, above), so an untrusted signing version here means
+  # every worker #353 ships refuses every task with foreign_key_version --
+  # not a degraded release, a non-functional one. Caught in dev, before a
+  # release with the same key state reaches prod's plan (which still only
+  # warns, so an urgent unrelated prod change is never blocked by this).
+  precondition {
+    condition     = var.environment != "dev" || contains(keys(local.spec_verify_keys), local.spec_signing_key_version)
+    error_message = "dev: spec_signing_key_version names a version that is not ENABLED on the step-spec key. Every worker this release renders would refuse every task (foreign_key_version). Enable the version, or point spec_signing_key_version at one that is."
+  }
 }
 
 output "spec_signing_key_version" {

@@ -287,14 +287,18 @@ def test_a_task_that_expects_nothing_hands_the_runner_nothing(db, store, worker_
 
 
 def test_a_callers_own_input_expected_outputs_never_reaches_the_runner(
-    db, store, worker_factory, log_stream
+    db, store, worker_factory, log_stream, recheck_bypassed
 ):
     """Only names the API recorded on the task reach the agent.
 
     The appended block says "later steps of this workflow need these files",
     in the platform's voice. A caller who could set it through `input` would
     be writing that claim for the platform, on a task nothing stages from.
-    """
+
+    Past the worker's re-check (`recheck_bypassed`, conftest.py), which since
+    contract request 32 refuses a stored input carrying this key before the
+    runner step (test_stored_input_is_rechecked.py). This holds the layer
+    behind it on its own."""
     seed_attempt(
         db,
         task_input={
@@ -312,7 +316,13 @@ def test_a_callers_own_input_expected_outputs_never_reaches_the_runner(
     assert len(dropped) == 1, "the caller's value was dropped without a word"
 
 
-def test_the_platforms_names_replace_a_callers_own(db, store, worker_factory):
+def test_the_platforms_names_replace_a_callers_own(db, store, worker_factory, recheck_bypassed):
+    """The API's names win over a caller's own `input.expected_outputs`.
+
+    Past the worker's re-check (`recheck_bypassed`, conftest.py), which since
+    contract request 32 refuses a stored input carrying this key before the
+    runner step (test_stored_input_is_rechecked.py). This holds the layer
+    behind it on its own."""
     _seed(db, ["notes.md"])
     db.doc("tasks/task_1")["input"][RUNNER_INPUT_KEY] = ["caller.md"]
     worker, _config, _exporter = worker_factory()

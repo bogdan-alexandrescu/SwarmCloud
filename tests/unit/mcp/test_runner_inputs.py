@@ -305,20 +305,62 @@ def test_the_bridge_keeps_no_table_of_its_own():
     assert _declared("mock"), "the mock declares no input; #142 is undone"
 
 
-def test_who_declares_inputs_and_no_declaration_names_execution_detail():
-    """The owner's decision on #142: the mock declares its test knobs, and the
-    runners whose work IS their input have not declared yet. Contract request
-    28 (#265, accepted 2026-09-28): claude-code and codex declare `issue`, and
-    only it. And no declaration, anywhere, names an image, a command, a
-    resource spec, a backend, a model or a key the mock writes platform
-    records with."""
+def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
+    """The owner's decisions on #142, on contract request 28 (#265, accepted
+    2026-09-28) and on contract request 32 (#218): the mock declares its test
+    knobs, `claude-code` and `codex` declare `issue` and only it, and
+    `browser` and `generic` declare what their runners read. And no
+    declaration, anywhere, names an image, a command, a resource spec, a
+    backend, a model or a key the mock writes platform records with.
+
+    ONE NAMED EXEMPTION, not a hole in the guard: `generic` declares
+    `command`, the name of an entry in its runner's closed catalogue, whose
+    argv the platform owns (request 32, Question 2). `command` stays in
+    `_NEVER`; the exemption is `generic` alone, and only in the one shape
+    `test_generic_command_is_exactly_the_runners_catalogue` holds it to.
+    Every other profile declaring `command` is still flagged here."""
     declaring = sorted(name for name in RUNNER_PROFILES if _declared(name))
-    assert declaring == ["claude-code", "codex", "mock"], declaring
+    assert declaring == ["browser", "claude-code", "codex", "generic", "mock"], declaring
     for name in ("claude-code", "codex"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
     for name in RUNNER_PROFILES:
-        named = sorted(set(_declared(name)) & set(_NEVER))
-        assert not named, f"{name} declares {named}"
+        named = set(_declared(name)) & set(_NEVER)
+        if name == "generic":
+            named -= {"command"}
+        assert not named, f"{name} declares {sorted(named)}"
+
+
+def test_no_profile_is_left_undeclared():
+    """Request 32 retired the `inputs is None` amendment to request 25: every
+    profile's `inputs` is a mapping, and `{}` is the declaration "the prompt
+    and nothing else"."""
+    undeclared = sorted(name for name, p in RUNNER_PROFILES.items() if p.inputs is None)
+    assert not undeclared, f"{undeclared} still declare no inputs at all"
+
+
+def test_the_catalogue_refuses_command_on_any_other_profile_or_in_any_other_shape():
+    """`RunnerProfile.__post_init__` enforces the exemption at construction,
+    so a declaration that widens it cannot even be built."""
+    import dataclasses
+
+    from swarm_common.profiles import RunnerInput
+
+    commands = tuple(sorted(_generic_commands()))
+    for name in ("mock", "claude-code", "browser"):
+        with pytest.raises(ValueError):
+            dataclasses.replace(
+                RUNNER_PROFILES[name],
+                inputs={"command": RunnerInput("string", choices=commands)},
+            )
+    generic = RUNNER_PROFILES["generic"]
+    for wrong in (
+        RunnerInput("string"),
+        RunnerInput("argument"),
+        RunnerInput("string", choices=commands[:-1]),
+        RunnerInput("string", choices=(*commands, "sh")),
+    ):
+        with pytest.raises(ValueError):
+            dataclasses.replace(generic, inputs={**generic.inputs, "command": wrong})
 
 
 def test_every_declared_input_is_one_its_runner_reads():
@@ -338,11 +380,14 @@ def test_every_declared_input_is_one_its_runner_reads():
             # claude-code and codex hand their payload to the one CLI runner,
             # which is where every key of theirs is read.
             source += (path.parent / "cliagent.py").read_text()
+        # The generic runner hands its whole payload to `resolve_limits`,
+        # which reads the four limits by name (`runners/limits.py`).
+        limits = _limit_keys() if "resolve_limits(payload" in source else set()
         for key in declared:
             checked += 1
-            assert re.search(rf"""payload(\.get\(|\[)\s*["']{re.escape(key)}["']""", source), (
-                f"{name} declares {key!r}, which {path.relative_to(_REPO)} never reads"
-            )
+            assert key in limits or re.search(
+                rf"""payload(\.get\(|\[)\s*["']{re.escape(key)}["']""", source
+            ), f"{name} declares {key!r}, which {path.relative_to(_REPO)} never reads"
     assert checked, "no declared input was checked; the loop ran over nothing"
 
 
@@ -498,30 +543,285 @@ def test_every_input_the_bridge_or_the_skill_shows_is_one_that_is_declared():
         assert not undeclared, f"{where} shows {undeclared} as inputs, which mock does not declare"
 
 
-# -- the profiles whose inputs are not declared yet (#218) ------------------------
-
-#: The profiles the frozen catalogue has not declared inputs for yet
-#: (`inputs is None`). What they should declare is open with the owner on #218.
-_UNDECLARED = sorted(name for name, p in RUNNER_PROFILES.items() if p.inputs is None)
+# -- browser and generic declare (contract request 32, #218) ---------------------
 
 
-@pytest.mark.parametrize("name", _UNDECLARED or ["<none>"])
-def test_the_bridge_sends_nothing_to_a_profile_that_has_not_declared_yet(name):
-    """THE BRIDGE'S OWN SEND POLICY, not a second copy of the rule. The API
-    bounds what a caller sends these by size alone; the bridge sends them
-    nothing, because it sends only what a declaration names and neither has
-    one. Letting `swarm_dispatch` send a browser task's `actions` would be a
-    new plugin capability, which is #218's third question for the owner."""
-    if name == "<none>":
-        pytest.skip("every profile declares its inputs now; #218 is settled")
+def test_the_bridge_sends_a_browser_task_its_url_and_actions():
+    """#220: every browser task dispatched through the plugin failed after it
+    started, with "browser runner needs input.url or at least one action",
+    because the bridge sends only what a declaration names and `browser`
+    declared nothing. It declares now, so the bridge sends them, unchanged."""
+    recorder = _Recorder()
+    actions = [{"type": "goto", "url": "https://example.com/a"}, {"type": "screenshot", "name": "a.png"}]
+
+    server._call(recorder, "swarm_dispatch", {
+        "prompt": "look", "profile": "browser",
+        "inputs": {"url": "https://example.com", "actions": actions},
+    })
+
+    (_, _, payload), = recorder.sent
+    assert payload["input"] == {"prompt": "look", "url": "https://example.com", "actions": actions}
+
+
+def test_swarm_dispatch_keeps_a_url_and_an_argument_as_typed_text():
+    """Question 3 of request 32: `--input target=123` is the make target
+    "123", not the number 123 -- which the `argument` kind would refuse."""
+    recorder = _Recorder()
+    args = cli.build_parser().parse_args(
+        ["dispatch", "build", "--profile", "generic",
+         "--input", "command=make",
+         "--input", "target=123",
+         "--input", "working_directory=2024",
+         "--input", "timeout_seconds=60"]
+    )
+
+    assert cli.cmd_dispatch(recorder, args) == cli.EXIT_OK
+
+    (_, _, payload), = recorder.sent
+    assert payload["input"] == {
+        "prompt": "build", "command": "make", "target": "123",
+        "working_directory": "2024", "timeout_seconds": 60,
+    }
+
+
+def test_swarm_dispatch_reads_a_list_input_as_json():
+    recorder = _Recorder()
+    args = cli.build_parser().parse_args(
+        ["dispatch", "look", "--profile", "browser",
+         "--input", "url=https://example.com",
+         "--input", 'actions=[{"type":"screenshot"}]']
+    )
+
+    assert cli.cmd_dispatch(recorder, args) == cli.EXIT_OK
+
+    (_, _, payload), = recorder.sent
+    assert payload["input"] == {
+        "prompt": "look", "url": "https://example.com", "actions": [{"type": "screenshot"}],
+    }
+
+
+@pytest.mark.parametrize(
+    "profile,inputs,named",
+    [
+        ("generic", {"paths": ["tests"]}, "command"),
+        ("generic", {"command": "sh"}, "command"),
+        ("generic", {"command": "pytest", "argv": ["-x"]}, "argv"),
+        ("generic", {"command": "make", "target": "-rf"}, "target"),
+        ("generic", {"command": "make", "target": "all\n"}, "target"),
+        ("generic", {"command": "pytest", "timeout_seconds": 0}, "timeout_seconds"),
+        ("browser", {"url": "http://169.254.169.254/computeMetadata/v1/"}, "url"),
+        ("browser", {"actions": [{"type": "goto", "url": "http://10.0.0.1/"}]}, "actions[0].url"),
+        ("browser", {"actions": [{"type": "click"}]}, "actions[0]"),
+        ("browser", {"actions": [{"type": "Goto", "url": "https://example.com"}]}, "actions[0]"),
+        ("browser", {"actions": [{"type": "wait", "seconds": 600}]}, "actions[0].seconds"),
+        ("browser", {"timeout_ms": 0}, "timeout_ms"),
+        ("browser", {"user_agent": "x\r\nX-Injected: 1"}, "user_agent"),
+    ],
+)
+def test_the_bridge_refuses_what_the_declaration_refuses_before_it_travels(profile, inputs, named):
+    """Each of these was admitted, leased and started before request 32, and
+    failed (or ran something else) inside the pod. Refused here, it costs
+    nothing and never reaches the API."""
     with pytest.raises(SwarmError) as caught:
-        workflows.build_steps(
-            [{"step_id": "a", "runner_profile": name, "prompt": "x",
-              "inputs": {"url": "https://example.com"}}]
-        )
+        server._call(_Refusing(), "swarm_dispatch", {"prompt": "x", "profile": profile, "inputs": inputs})
+    assert named in str(caught.value), str(caught.value)
+
+
+def test_a_generic_dispatch_with_no_inputs_is_refused_for_its_missing_command():
+    """`command` is required. No `inputs` at all is not a way around that."""
+    with pytest.raises(SwarmError) as caught:
+        server._call(_Refusing(), "swarm_dispatch", {"prompt": "x", "profile": "generic"})
     message = str(caught.value)
-    assert name in message, message
-    assert "yet" in message, "the refusal says the profile has not declared, not that it takes nothing"
+    assert "command" in message, message
+    assert "does not declare" not in message, "a missing required key is not an undeclared one"
+
+
+# -- the restatements request 32 creates, held to the runners' source ----------
+#
+# The frozen catalogue cannot import the worker, so each number and name
+# below is a copy -- the same kind of copy as the mock's exit codes, and held
+# the same way: the runner's source is READ, never imported.
+
+_RUNNERS = _REPO / "apps" / "agent-worker" / "agent_worker" / "runners"
+_CONFIG = _REPO / "apps" / "agent-worker" / "agent_worker" / "config.py"
+
+
+def _module(path: Path) -> ast.Module:
+    return ast.parse(path.read_text())
+
+
+def _constant(node: ast.AST) -> object:
+    """A literal, or a `*`/`+` of literals such as `32 * 1024 * 1024`."""
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Add)):
+        left, right = _constant(node.left), _constant(node.right)
+        return left * right if isinstance(node.op, ast.Mult) else left + right
+    return ast.literal_eval(node)
+
+
+def _assigned(tree: ast.Module, name: str) -> ast.AST:
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == name for t in node.targets
+        ):
+            return node.value
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
+            return node.value
+    raise AssertionError(f"no module-level {name} to compare against")
+
+
+def _generic_commands() -> set[str]:
+    """The keys of `GENERIC_COMMANDS` in runners/generic.py."""
+    table = _assigned(_module(_RUNNERS / "generic.py"), "GENERIC_COMMANDS")
+    assert isinstance(table, ast.Dict), "GENERIC_COMMANDS is no longer a dict literal"
+    keys = {ast.literal_eval(key) for key in table.keys}
+    assert keys, "read no command from GENERIC_COMMANDS"
+    return keys
+
+
+def _class_defaults(path: Path, class_name: str) -> dict[str, object]:
+    """A class's field defaults that are literals; any other default is left out."""
+    for node in _module(path).body:
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            defaults: dict[str, object] = {}
+            for item in node.body:
+                if isinstance(item, ast.AnnAssign) and isinstance(item.target, ast.Name) and item.value:
+                    try:
+                        defaults[item.target.id] = _constant(item.value)
+                    except (ValueError, TypeError):
+                        continue
+            return defaults
+    raise AssertionError(f"{path.name} has no class {class_name}")
+
+
+def _limit_keys() -> set[str]:
+    """The caller-lowerable limits `resolve_limits` reads (runners/limits.py)."""
+    body = re.search(
+        r"def resolve_limits\(.*?\n    return ", (_RUNNERS / "limits.py").read_text(), re.S
+    )
+    assert body, "limits.py has no resolve_limits"
+    keys = set(re.findall(r'"([a-z_]+)":\s*(?:float\()?ceilings\.', body.group(0)))
+    assert keys == {"timeout_seconds", "grace_seconds", "max_stdout_bytes", "max_stderr_bytes"}, keys
+    return keys
+
+
+def test_generic_command_is_exactly_the_runners_catalogue():
+    command = _declared("generic")["command"]
+    assert command.kind == "string" and command.required, command
+    assert set(command.choices) == _generic_commands(), (
+        f"generic's command offers {sorted(command.choices)}; the runner's catalogue is "
+        f"{sorted(_generic_commands())}"
+    )
+
+
+def test_the_argument_kind_is_the_generic_runners_argument_rule():
+    """`_ARGUMENT` in the catalogue restates `_ARGUMENT_SAFE` in the runner."""
+    from swarm_common import profiles
+
+    call = _assigned(_module(_RUNNERS / "generic.py"), "_ARGUMENT_SAFE")
+    assert isinstance(call, ast.Call) and call.args, "_ARGUMENT_SAFE is no longer re.compile(...)"
+    runner = ast.literal_eval(call.args[0])
+    # The runner anchors with ^...$ and must use fullmatch; the catalogue uses
+    # fullmatch unanchored. The rule between the anchors is the one compared.
+    assert runner.removeprefix("^").removesuffix("$") == profiles._ARGUMENT.pattern, (
+        runner, profiles._ARGUMENT.pattern,
+    )
+
+
+def test_the_list_bounds_are_the_runners():
+    tree = _module(_RUNNERS / "browser.py")
+    assert _declared("browser")["actions"].maximum == _constant(_assigned(tree, "MAX_ACTIONS"))
+    defaults = _class_defaults(_RUNNERS / "generic.py", "GenericCommand")
+    assert _declared("generic")["paths"].maximum == defaults["max_arguments"]
+    # `paths` is read for `pytest` only, which must keep the default bound.
+    table = _assigned(_module(_RUNNERS / "generic.py"), "GENERIC_COMMANDS")
+    pytest_entry = next(v for k, v in zip(table.keys, table.values) if ast.literal_eval(k) == "pytest")
+    assert not any(kw.arg == "max_arguments" for kw in pytest_entry.keywords), (
+        "GENERIC_COMMANDS['pytest'] sets its own max_arguments; the catalogue's bound is the default's"
+    )
+
+
+def _action_branches() -> dict[str, ast.If]:
+    """Each `kind == "<type>"` branch of `body()` in runners/browser.py."""
+    branches: dict[str, ast.If] = {}
+    for node in ast.walk(_module(_RUNNERS / "browser.py")):
+        if (
+            isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name)
+            and node.test.left.id == "kind"
+            and isinstance(node.test.ops[0], ast.Eq)
+            and isinstance(node.test.comparators[0], ast.Constant)
+        ):
+            branches[node.test.comparators[0].value] = node
+    assert len(branches) == 8, sorted(branches)
+    return branches
+
+
+def _fields_read(branch: ast.If) -> set[str]:
+    """`action["x"]` and `action.get("x", ...)` inside one branch's own body."""
+    fields: set[str] = set()
+    for statement in branch.body:
+        for node in ast.walk(statement):
+            if (
+                isinstance(node, ast.Subscript)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "action"
+                and isinstance(node.slice, ast.Constant)
+            ):
+                fields.add(node.slice.value)
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id == "action"
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+            ):
+                fields.add(node.args[0].value)
+    return fields
+
+
+def test_the_eight_action_shapes_are_the_runners():
+    """Each declared shape takes exactly the fields its branch of `body()`
+    reads, and the eight `type`s are the branches."""
+    variants = _declared("browser")["actions"].items.variants
+    branches = _action_branches()
+    assert set(variants) == set(branches), (sorted(variants), sorted(branches))
+    for shape, branch in branches.items():
+        assert set(variants[shape]) == _fields_read(branch), (
+            f"the {shape!r} action declares {sorted(variants[shape])}; the runner reads "
+            f"{sorted(_fields_read(branch))}"
+        )
+
+
+def test_the_wait_ceiling_is_the_runners_clamp():
+    clamp = [
+        node.args[1].value
+        for node in ast.walk(_action_branches()["wait"])
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "min"
+        and len(node.args) == 2
+        and isinstance(node.args[1], ast.Constant)
+    ]
+    assert clamp, "the wait branch no longer clamps with min(..., N)"
+    seconds = _declared("browser")["actions"].items.variants["wait"]["seconds"]
+    assert seconds.maximum == clamp[0], (seconds.maximum, clamp)
+
+
+def test_the_generic_limit_ceilings_are_what_the_worker_exports():
+    """Each of the four ceilings is the value the worker exports by default,
+    so a caller may only lower the platform's own."""
+    declared = _declared("generic")
+    config = _class_defaults(_CONFIG, "WorkerConfig")
+    assert set(declared) >= _limit_keys()
+    assert declared["timeout_seconds"].maximum == RUNNER_PROFILES["generic"].timeout_seconds
+    assert declared["grace_seconds"].maximum == config["termination_grace_seconds"]
+    assert declared["max_stdout_bytes"].maximum == config["max_stdout_bytes"]
+    assert declared["max_stderr_bytes"].maximum == config["max_stderr_bytes"]
+    for key in _limit_keys():
+        assert declared[key].minimum == 1, f"{key}: the runner reads 0 or less as not asked"
 
 
 def _inputs_paragraphs() -> dict[str, str]:
@@ -539,31 +839,14 @@ def _inputs_paragraphs() -> dict[str, str]:
     return {where: " ".join(paragraphs[0].split()) for where, paragraphs in found.items()}
 
 
-def test_the_plugin_says_which_profiles_the_api_bounds_by_size_alone():
-    """The review of #213: the delegate skill said an undeclared key is refused
-    "by the bridge, and by the API for every other caller", and the README that
-    "the API refuses an undeclared key from every caller" and that "every other
-    profile declares none and takes none". For `browser` and `generic`, whose
-    inputs are not declared yet, the API takes any key under the size limit, so
-    an operator who read either believed those two were policed. Each text
-    names every profile not declared yet and says it is bounded by size; the
-    claims the review quoted do not come back while one exists."""
+def test_the_plugin_says_every_profile_declares():
+    """The review of #213 held both texts to naming every profile that had
+    not declared yet and saying the API bounded it by size alone. Request 32
+    left none, so neither text may still say a profile has not declared, and
+    both name `browser` and `generic` among the ones that do."""
     for where, text in _inputs_paragraphs().items():
-        for name in _UNDECLARED:
-            assert f"`{name}`" in text, (
-                f"{where} does not name {name}, whose inputs are not declared yet"
-            )
-        if _UNDECLARED:
-            assert "size" in text, f"{where} does not say what bounds {_UNDECLARED}"
-            for claim in (
-                "for every other caller",
-                "from every caller",
-                "Every other profile declares none",
-            ):
-                assert claim not in text, (
-                    f"{where} says {claim!r}, which is false for {_UNDECLARED}"
-                )
-        else:
-            assert "not declared yet" not in text, (
-                f"{where} still says a profile has not declared its inputs; none is left"
-            )
+        assert "not declared yet" not in text and "declared their inputs yet" not in text, (
+            f"{where} still says a profile has not declared its inputs; none is left"
+        )
+        for name in ("browser", "generic"):
+            assert f"`{name}`" in text, f"{where} does not say what {name} declares"
