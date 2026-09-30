@@ -56,7 +56,6 @@ import {
   stageCensus,
   stageFitsAt,
   stepDuration,
-  WRAP_GAP,
   type DagLayout,
   type ZoomTier,
 } from '../dag'
@@ -1229,38 +1228,31 @@ describe('semantic zoom', () => {
     expect(a.container.querySelector('.wf-band')).toBeNull()
     expect(a.container.querySelectorAll('.node')).toHaveLength(8)
 
-    // Seven: no tier holds it ON ONE ROW, so it WRAPS at `names` (#330 item
-    // 4): two rows of cards that each still say step, state and cause, where
-    // it used to be a band and two nodes. The trade is stated on the canvas.
-    expect(autoTier(seven.w.steps)).toBe('names')
+    // Seven: no tier holds it on one row, and a level never wraps onto a
+    // second one (owner decision 2026-09-30: a wrapped level reads as two
+    // dependency levels). So it stays a band at every tier -- exactly as
+    // thirteen and forty do below -- and opening it draws every card at that
+    // tier's real width rather than folding them into extra rows.
+    expect(autoTier(seven.w.steps)).toBe('figures')
     const b = card(seven.w, seven.tasks, true)
-    expect(b.container.querySelector('.wf-band')).toBeNull()
-    expect(b.container.querySelectorAll('.node')).toHaveLength(9)
-    expect(b.container.querySelector('.wf-zoom .wf-zoom-note')!.textContent).toBe(
-      'profile, duration and figures not drawn',
-    )
+    expect(b.container.querySelector('.wf-band')).toBeTruthy()
+    expect(b.container.querySelectorAll('.node')).toHaveLength(2)
+    b.unmount()
 
-    // Thirteen -- the measured run's widest stage -- is a band at the two
-    // tiers that cannot wrap, and three rows of cards at the one that can.
-    for (const tier of ['figures', 'details'] as const) {
+    // Thirteen -- the measured run's widest stage -- is a band at every tier;
+    // nothing here can widen enough to draw thirteen cards in one row without
+    // wrapping, which this canvas may not do.
+    for (const tier of ['figures', 'details', 'names'] as const) {
       const { w, tasks } = wideStage(13)
       const c = card(w, tasks, true, tier)
       expect(c.container.querySelector('.wf-band'), tier).toBeTruthy()
       expect(c.container.querySelectorAll('.node'), tier).toHaveLength(2)
       c.unmount()
     }
-    const thirteen = wideStage(13)
-    const c = card(thirteen.w, thirteen.tasks, true, 'names')
-    expect(c.container.querySelector('.wf-band')).toBeNull()
-    expect(c.container.querySelectorAll('.node')).toHaveLength(15)
-    c.unmount()
 
-    // AND THE BAND STILL DOES ITS JOB PAST ONE SCREEN. Forty steps wrap into
-    // seven rows at `names`, which is taller than `CANVAS_HEIGHT`, so the zoom
-    // stays at `figures` and the stage is one band -- the claim stage
-    // collapsing exists for, which wrapping does not replace.
+    // AND THE BAND STILL DOES ITS JOB PAST ONE SCREEN. Forty steps stay one
+    // band at every tier too -- the claim stage collapsing exists for.
     const forty = wideStage(40)
-    expect(layoutOf(forty.w.steps, undefined, 'names').height).toBeGreaterThan(CANVAS_HEIGHT)
     expect(autoTier(forty.w.steps)).toBe('figures')
     const d = card(forty.w, forty.tasks, true)
     expect(d.container.querySelector('.wf-band')).toBeTruthy()
@@ -3333,42 +3325,81 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(slotOf(container, 'implement').querySelector('.node-note-full')!.textContent).toContain('exit 1: tests failed')
   })
 
-  it('fits a 20-step fan-out on one screen by wrapping its stage at Names, not folding it', () => {
+  it('keeps a 12-sibling level on one row instead of wrapping it (owner decision 2026-09-30)', () => {
+    // A WRAPPED LEVEL READS AS TWO DEPENDENCY LEVELS, which this canvas may
+    // not draw -- so semantic zoom sheds detail tiers first, and the canvas
+    // scrolls sideways second; it never reflows a level onto a second row.
+    // Opened (`new Set([1])`) so the level actually draws its cards instead of
+    // collapsing into its band -- the math under test is the same either way.
+    const { w } = fan(12, false)
+    const l = layoutOf(w.steps, new Set([1]), 'names')
+    const shardNodes = l.nodes.filter((n) => n.level === 1)
+    expect(shardNodes).toHaveLength(12)
+    // ONE ROW: every sibling shares the level's own y.
+    expect(new Set(shardNodes.map((n) => n.y)).size, 'the level split onto more than one row').toBe(
+      1,
+    )
+    // AND THE PITCH IS ARITHMETIC: x is `pos * (nodeW + SIB_GAP)`, not a
+    // row/column pair, so it never resets partway through the level.
+    const byPos = [...shardNodes].sort((a, b) => a.pos - b.pos)
+    for (let i = 1; i < byPos.length; i++) {
+      expect(byPos[i]!.x - byPos[i - 1]!.x).toBe(l.nodeW + SIB_GAP)
+    }
+    // NON-VACUOUS: twelve does not fit `CANVAS_COLUMN` in one row at Names --
+    // the narrowest tier -- so the only way every assertion above holds is
+    // that the level really did stay one (wider-than-the-column) row.
+    expect(stageFitsAt(l.nodeW)).toBeLessThan(12)
+    expect(l.width).toBeGreaterThan(CANVAS_COLUMN)
+  })
+
+  it("scrolls the canvas horizontally, instead of wrapping, when an opened stage is too wide even at Names", () => {
+    // NAMES IS THE NARROWEST TIER (#330 item 4). A stage still too wide for
+    // one row there stays a band until the reader opens it, and open it is
+    // drawn at its real width -- which may run past `column` -- rather than
+    // wrapped into rows. `.wf-canvas-wrap` is `overflow-x: auto` for exactly
+    // this (WF-9 already proves it scrolls an opened band; this is the Names
+    // case #330 item 4 added).
+    const { w, tasks } = fan(13, false)
+    expect(autoTier(w.steps)).toBe('figures')
+    const l = layoutOf(w.steps, new Set([1]), 'names')
+    expect(l.wide[1]).toBe(true)
+    expect(l.width, 'thirteen cards at Names still overflow the column').toBeGreaterThan(
+      CANVAS_COLUMN,
+    )
+    noOverlap(l)
+
+    const { container } = card(w, tasks, true, 'names')
+    expect(openEveryBand(container)).toBe(1)
+    const wrap = container.querySelector<HTMLElement>('.wf-canvas-wrap')!
+    const r = cascade(STYLES, wrap, ['overflow-x', 'overflow'], { width: 1440 })
+    expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+    expect(r.winner?.value).toBe('auto')
+    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+    expect(Number.parseFloat(canvas.style.width)).toBeGreaterThan(CANVAS_COLUMN)
+    expect(container.querySelectorAll('.node')).toHaveLength(14)
+  })
+
+  it('stays a band at every tier when a fan-out never fits one row, and opening it still shows every card', () => {
     // A FAN-OUT in this file's own words (`shapeOf`): one step opening into
-    // nineteen, twenty steps.
+    // nineteen, twenty steps -- too wide for one row at any tier, so it is one
+    // band and one node everywhere rather than wrapped into rows at Names.
     const { w, tasks } = fan(19, false)
     expect(w.steps).toHaveLength(20)
     expect(shapeOf(w.steps).kind).toBe('fan-out')
-    // Non-vacuous: at Figures the nineteen shards are one band and one node.
-    const folded = layoutOf(w.steps, undefined, 'figures')
-    expect(folded.bands).toHaveLength(1)
-    expect(folded.nodes).toHaveLength(1)
-
-    const l = fitsOneScreen(w)
-    expect(l.tier).toBe('names')
-    expect(l.wrapped).toEqual([false, true])
-    noOverlap(l)
-    // Rows of `stageFitsAt` cards, WRAP_GAP apart, the rows centred.
-    const fits = stageFitsAt(l.nodeW)
-    const rowYs = [...new Set(l.nodes.filter((n) => n.level === 1).map((n) => n.y))].sort((a, b) => a - b)
-    expect(rowYs).toHaveLength(Math.ceil(19 / fits))
-    expect(rowYs[1]! - rowYs[0]!).toBe(l.nodes.find((n) => n.level === 1)!.h + WRAP_GAP)
-    // Every edge into or out of the wrapped stage runs to the block, not
-    // behind a card in its first row, and is painted as one figure.
-    const into = l.edges.filter((e) => e.from === 'plan')
-    expect(new Set(into.map((e) => `${e.x2},${e.y2}`)).size).toBe(1)
-    expect(into[0]!.y2).toBe(rowYs[0])
-    expect(assertNothingPassesUnder(l)).toBeGreaterThan(0)
-    const kinds = edgeKinds(l, new Map())
-    expect(new Set(into.map((e) => kinds.get(`${e.from}->${e.to}`))).size).toBe(1)
-
-    // Narrower stages fit the same way, down to the seven that first wraps.
-    for (const n of [7, 12, 13, 18]) fitsOneScreen(fan(n, false).w)
-    // And a stage that closes on a join wraps at Names too when drawn there.
-    expect(layoutOf(fan(18).w.steps, undefined, 'names').wrapped).toEqual([false, true, false])
+    for (const tier of ['figures', 'details', 'names'] as const) {
+      const l = layoutOf(w.steps, undefined, tier)
+      expect(l.bands, tier).toHaveLength(1)
+      expect(l.nodes, tier).toHaveLength(1)
+      // Collapsed, every edge into the stage is one path at every tier -- none
+      // of them draws it in full without being opened.
+      const kinds = edgeKinds(l, new Map())
+      const into = l.edges.filter((e) => e.from === 'plan')
+      expect(new Set(into.map((e) => kinds.get(`${e.from}->${e.to}`))).size, tier).toBe(1)
+    }
+    expect(autoTier(w.steps)).toBe('figures')
 
     const { container } = card(w, tasks, true)
-    expect(container.querySelector('.wf-band')).toBeNull()
+    expect(openEveryBand(container)).toBe(1)
     expect(container.querySelectorAll('.node')).toHaveLength(20)
     for (const n of container.querySelectorAll('.node')) {
       expect(n.querySelector('.node-name')!.textContent).not.toBe('')
@@ -3376,29 +3407,43 @@ describe('#330 item 4: smaller Graph nodes', () => {
     }
     const note = nodeNamed(container, 'shard-05').querySelector('.node-note')!
     expect(note.getAttribute('title')).toContain('exit 1: the agent crashed on shard five')
+    // Opened, the canvas is wider than the column and scrolls to show it,
+    // rather than wrapping the stage to stay inside it.
     const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
-    expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(CANVAS_COLUMN)
-    expect(Number.parseFloat(canvas.style.height)).toBeLessThanOrEqual(CANVAS_HEIGHT)
+    expect(Number.parseFloat(canvas.style.width)).toBeGreaterThan(CANVAS_COLUMN)
   })
 
   it('lays the graph out beside the open panel, and never folds the picked step into a band', () => {
-    const { w, tasks } = fan(19, false)
+    // THREE FITS THE FULL COLUMN AT `figures` (`STAGE_FITS`) BUT NOT THE
+    // COLUMN LEFT BESIDE THE PANEL AT `figures` -- so opening the panel would
+    // fold this stage into a band if `autoTier` did not zoom to a narrower
+    // tier first (#330 item 5). Computed from `stageFitsAt` and `NODE_W`
+    // rather than asserted as a literal, so the case stays a genuine boundary
+    // if either moves.
+    const narrowColumn = CANVAS_COLUMN - PANEL_COLUMN
+    expect(STAGE_FITS).toBe(3)
+    expect(stageFitsAt(NODE_W, narrowColumn), 'the case needs a narrower tier to fit beside the panel').toBeLessThan(
+      3,
+    )
+    const { w, tasks } = fan(3, false)
     const { container } = card(w, tasks, true)
-    fireEvent.click(nodeNamed(container, 'shard-07'))
-    expect(container.querySelector('.wf-split.has-panel .wf-panel')).toBeTruthy()
-    // The graph narrowed to the column left beside the panel rather than
-    // scrolling under it, and the stage is still cards, the picked one on it.
-    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
-    expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(CANVAS_COLUMN - PANEL_COLUMN)
     expect(container.querySelector('.wf-band')).toBeNull()
-    expect(container.querySelectorAll('.node')).toHaveLength(20)
-    expect(nodeNamed(container, 'shard-07').getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(nodeNamed(container, 'shard-01'))
+    expect(container.querySelector('.wf-split.has-panel .wf-panel')).toBeTruthy()
+    // The graph narrowed to the column left beside the panel and zoomed to a
+    // tier that still draws every card, rather than folding the picked step's
+    // stage into a band because the panel opened.
+    const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
+    expect(Number.parseFloat(canvas.style.width)).toBeLessThanOrEqual(narrowColumn)
+    expect(container.querySelector('.wf-band')).toBeNull()
+    expect(container.querySelectorAll('.node')).toHaveLength(4)
+    expect(nodeNamed(container, 'shard-01').getAttribute('aria-pressed')).toBe('true')
     expect(container.querySelector('.wf-canvas')!.closest('.wf-split-main')).toBeTruthy()
     // Closed, the graph has the whole column back.
     fireEvent.keyDown(container.querySelector('.wf-panel')!, { key: 'Escape' })
     expect(container.querySelector('.wf-panel')).toBeNull()
     expect(Number.parseFloat(container.querySelector<HTMLElement>('.wf-canvas')!.style.width)).toBeGreaterThan(
-      CANVAS_COLUMN - PANEL_COLUMN,
+      narrowColumn,
     )
   })
 })

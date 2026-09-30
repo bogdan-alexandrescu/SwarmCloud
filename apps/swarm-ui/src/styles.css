@@ -2359,14 +2359,14 @@ body {
   border-radius: var(--radius); padding: 10px 12px 42px;
   box-sizing: border-box;
 }
-/* THE NAMES TIER IS THE SMALLER BOX (#330 item 4). It is the tier a wide fan
-   is drawn at, wrapped into rows, and every pixel of chrome is paid once per
-   row in the canvas's height -- so its padding is 6px above instead of 10, and
-   the same 28px stop control sits 4px from the card's edge over a 2px floor
-   instead of 10 and 4: `28 + 4 + 2 = 34`. `dag.ts`'s `NAMES_CHROME_H` carries
-   the same numbers and `nodeHeightAt('names')` sums them; keep the three in
-   step. The horizontal padding is unchanged, so `NODE_CHROME_W` holds at every
-   tier. */
+/* THE NAMES TIER IS THE SMALLER BOX (#330 item 4). It is the tier a graph is
+   zoomed to when it needs the most height back, and every pixel of chrome
+   here is paid once per level in the canvas's height -- so its padding is 6px
+   above instead of 10, and the same 28px stop control sits 4px from the
+   card's edge over a 2px floor instead of 10 and 4: `28 + 4 + 2 = 34`.
+   `dag.ts`'s `NAMES_CHROME_H` carries the same numbers and
+   `nodeHeightAt('names')` sums them; keep the three in step. The horizontal
+   padding is unchanged, so `NODE_CHROME_W` holds at every tier. */
 .node.zoom-names { padding: 6px 12px 34px; }
 .node.zoom-names ~ .node-stop { bottom: 4px; }
 /* State and duration on ONE line. They were two stacked 12px rows reading

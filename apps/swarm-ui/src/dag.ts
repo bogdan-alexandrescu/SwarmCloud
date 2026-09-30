@@ -391,24 +391,19 @@ const NUMS_H = CTL_S2 + 4 * (ROW_BODY_H + 1) + 3 * 2
 const NODE_CHROME_H = 10 + 42 + 2
 /**
  * `.node.zoom-names`'s vertical chrome, and why the smallest tier is also the
- * smallest box (#330 item 4: a 20-step fan-out has to fit a 1440x900 viewport).
+ * smallest box (#330 item 4: fitting a 1440x900 viewport).
  *
  * 6px of padding above, a 34px stop strip below, the 1px border top and
  * bottom. The strip is the same 28px control as every other tier's, inset 4px
  * from the card's edge instead of 10 and with a 2px floor instead of 4:
  * `28 + 4 + 2 = 34`. It is still RESERVED, for the reason `nodeHeightAt`
  * gives -- a card that grew the moment its step started would push every row
- * beneath it down the page -- it is only drawn tighter, because this tier is
- * the one a wide fan is drawn at, and nineteen cards in four rows pay for
- * every pixel here four times over in the canvas's height. `.node.zoom-names`
- * and `.node.zoom-names ~ .node-stop` in styles.css carry the same numbers.
- *
- * THE FIGURE IS WHAT MAKES THE WORST CASE FIT, and the worst case is stated:
- * 1 -> 19, every card noted (a root still waiting, nineteen shards waiting on
- * it), each shard also drawing its `↑ plan` line. Four rows of
- * `85 + 22 + 22 = 129`, three `WRAP_GAP`s, the root at 107 and one
- * `LEVEL_GAP`: 10 + 107 + 56 + 528 + 10 = 711, inside `CANVAS_HEIGHT`. On the
- * other tiers' chrome (97px cards) the same graph is 771, outside it.
+ * beneath it down the page -- it is only drawn tighter, because Names is the
+ * tier a graph is zoomed to when it needs every pixel of height it can get
+ * back (#330 item 4), and a level never wraps onto more than one of them
+ * (owner decision 2026-09-30), so the saving is paid once per level rather
+ * than lost to extra rows. `.node.zoom-names` and `.node.zoom-names ~
+ * .node-stop` in styles.css carry the same numbers.
  */
 const NAMES_CHROME_H = 6 + 34 + 2
 
@@ -1219,7 +1214,7 @@ export type EdgeKind = 'order' | 'staged' | 'declared'
  * between two drawn nodes are groups of one, so this is `edgeProvenance`.
  */
 export function edgeKinds(
-  layout: Pick<DagLayout, 'edges' | 'bands'> & Partial<Pick<DagLayout, 'levels' | 'wrapped'>>,
+  layout: Pick<DagLayout, 'edges' | 'bands'>,
   inputs: ReadonlyMap<string, StepInputs>,
 ): Map<string, EdgeKind> {
   // Which collapsed band each step is drawn as, if any.
@@ -1228,14 +1223,7 @@ export function edgeKinds(
     if (b.expanded) continue
     for (const s of b.steps) bandOf.set(s.step_id, b.level)
   }
-  // Which wrapped stage, if any: its edges share the block's path too.
-  const wrapOf = new Map<string, number>()
-  layout.levels?.forEach((level, lvl) => {
-    if (layout.wrapped?.[lvl] === true) for (const s of level) wrapOf.set(s.step_id, lvl)
-  })
   const end = (id: string) => {
-    const wrap = wrapOf.get(id)
-    if (wrap !== undefined) return `wrap:${wrap}`
     const band = bandOf.get(id)
     return band === undefined ? `step:${id}` : `band:${band}`
   }
@@ -1507,17 +1495,6 @@ export const CANVAS_HEIGHT = 720
 export const PANEL_COLUMN = 400 + 12
 
 /**
- * The gap between two ROWS OF ONE STAGE, when a stage is wrapped (#330 item 4).
- *
- * `--ctl-s1`, the gap between two rows INSIDE a card. The rows are ONE
- * subject -- one stage, cut where the column ran out -- and the tighter the
- * rows sit, the more plainly they read as one block against the `LEVEL_GAP`
- * that separates levels, the one distance on this canvas a reader parses as
- * "and then". It is also the pixels the worst case needs (`NAMES_CHROME_H`).
- */
-export const WRAP_GAP = 4
-
-/**
  * The threshold at the FULL tier, which is the one the collapsing pass shipped
  * and the one every fixture and every comment above is written against.
  *
@@ -1650,24 +1627,21 @@ export function autoTier(
   for (const tier of ZOOM_TIERS) {
     if (rowFits(tier) && tall(tier) <= CANVAS_HEIGHT) return tier
   }
-  // THEN THE STAGE WRAPPED AT NAMES, if that fits. A stage too wide for one
-  // row at every tier is drawn as rows of Names cards (`layoutOf`), every
-  // card still saying its step, its state and its one-line cause -- which a
-  // band, a census of the stage, does not.
-  if (widest > stageFitsAt(nodeWidthAt('names', steps), column) && tall('names') <= CANVAS_HEIGHT) {
-    return 'names'
-  }
-  // NOTHING FITS ONE SCREEN. A graph deeper than `CANVAS_HEIGHT` at every tier
-  // scrolls down whatever is chosen, so zooming out would cost its nodes their
-  // fields and buy nothing: the widest tier whose row fits, as before.
+  // NO TIER FITS BOTH. A level never wraps onto a second row (owner decision
+  // 2026-09-30: a wrapped level reads as two dependency levels), so there is
+  // no tier that can turn a stage too wide for `column` into one that isn't --
+  // only a collapsed band, or an opened one whose real width the canvas
+  // scrolls to show. Zooming out still buys height, though, so take the
+  // widest tier whose row fits on its own, deferring to height only past this
+  // point.
   for (const tier of ZOOM_TIERS) if (rowFits(tier)) return tier
-  // And a stage too wide to wrap onto one screen either. `figures` keeps every
-  // field on the nodes that ARE drawn and leaves the band to carry the stage
-  // that is not -- unless the caller has said a band may not appear here
-  // (`band` false: the details panel opened beside a graph that had none, and
-  // a picked step vanishing into a band because the graph narrowed would be
-  // worse than a graph that scrolls). Then the stage wraps at Names and the
-  // canvas scrolls down.
+  // NOTHING FITS ONE ROW AT ANY TIER. The widest stage bands (or, opened,
+  // scrolls) regardless of which tier is drawn, so `figures` keeps every
+  // field on the nodes that ARE drawn -- unless the caller has said a band may
+  // not appear here (`band` false: the details panel opened beside a graph
+  // that had none, and a picked step vanishing into a collapsed band because
+  // the graph narrowed would be worse than a graph that scrolls). Then Names,
+  // whose smaller nodes cost less canvas when that band is opened.
   return band ? 'figures' : 'names'
 }
 
@@ -1782,13 +1756,6 @@ export interface DagLayout {
    * that call would still have said it was a band.
    */
   readonly wide: readonly boolean[]
-  /**
-   * Which levels were too wide for one row at this tier and are drawn as rows
-   * of cards instead of a band -- only ever at Names (#330 item 4). A wrapped
-   * level has nodes and no band, and its edges attach to the block, not to
-   * its cards, exactly as a collapsed band's do.
-   */
-  readonly wrapped: readonly boolean[]
 }
 
 // ---------------------------------------------------------------------------
@@ -1971,7 +1938,6 @@ export function layoutOf(
       tier,
       nodeW,
       wide: [],
-      wrapped: [],
     }
   }
 
@@ -2008,26 +1974,19 @@ export function layoutOf(
   // feature. A stage that does not fit even the smallest tier still gets a
   // band, because there is no width at which thirteen nodes fit a laptop.
   //
-  // AND AT NAMES A WIDE STAGE WRAPS INSTEAD (#330 item 4). Names is the tier a
-  // wide fan is drawn at, and a card there is only its step, its state and
-  // its one-line cause -- small enough that eighteen of them in three rows of
-  // six fit a laptop screen, which a band's census of them could only
-  // summarise. So at Names a stage wider than the column is drawn as ROWS of
-  // `fits` cards, `WRAP_GAP` apart, and has no band. `autoTier` only chooses
-  // Names for this when the wrapped graph fits `CANVAS_HEIGHT`; past that it
-  // stays at Figures and the band does its job.
+  // A LEVEL NEVER WRAPS (owner decision 2026-09-30): a wrapped level reads as
+  // two dependency levels, which is the one thing this canvas may not draw.
+  // So there is no second shape here besides a band -- collapsed, or open and
+  // drawn at its real width, which may run past `column`. `fits` is computed
+  // against `column` rather than always `CANVAS_COLUMN` because item 5's open
+  // details panel narrows the column this layout is asked to fill.
   const fits = stageFitsAt(nodeW, column)
-  const tooWide = levels.map((l) => l.length > fits)
-  const wrapped = tooWide.map((w) => w && tier === 'names')
-  const wide = tooWide.map((w, i) => w && !wrapped[i])
-  const rowsOf = (lvl: number) => (wrapped[lvl] ? Math.ceil(levels[lvl]!.length / fits) : 1)
+  const wide = levels.map((l) => l.length > fits)
   const open = (lvl: number) => wide[lvl] === true && expandedStages.has(lvl)
   const nodesH = (l: readonly WorkflowStep[]) =>
     Math.max(nodeHeightAt(tier), ...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id))))
-  /** A wrapped level's rows, one card height each and `WRAP_GAP` between. */
-  const blockH = (lvl: number) => rowsOf(lvl) * nodesH(levels[lvl]!) + (rowsOf(lvl) - 1) * WRAP_GAP
   const levelH = levels.map((l, i) => {
-    if (!wide[i]) return blockH(i)
+    if (!wide[i]) return nodesH(l)
     return open(i) ? BAND_H + BAND_GAP + nodesH(l) : BAND_H
   })
   // The top of each band: every band above it, plus a gap per boundary.
@@ -2051,15 +2010,10 @@ export function layoutOf(
   // whole mechanism: the widest level of a 1 -> 13 -> 1 workflow stops being
   // 3,560px and becomes 800px, which fits CANVAS_COLUMN with room to spare.
   // An OPEN stage contributes its real width again and the canvas scrolls,
-  // which is the behaviour that shipped and which opening a band asks for.
-  //
-  // A WRAPPED STAGE CONTRIBUTES ONE FULL ROW, `fits` cards, which fits the
-  // column by the definition of `fits`.
-  const widest = Math.max(
-    ...levels.map((l, i) =>
-      wide[i] && !open(i) ? bandMin : levelWidth(wrapped[i] ? fits : l.length),
-    ),
-  )
+  // which is the behaviour that shipped and which opening a band asks for --
+  // and, since a level never wraps, the only way a stage wider than `column`
+  // at every tier is ever drawn in full (#330 item 4 addendum, 2026-09-30).
+  const widest = Math.max(...levels.map((l, i) => (wide[i] && !open(i) ? bandMin : levelWidth(l.length))))
 
   const nodes: DagNode[] = []
   levels.forEach((level, lvl) => {
@@ -2070,15 +2024,8 @@ export function layoutOf(
     // sits under the middle of the fan it joins rather than at the left edge of
     // an empty band -- which reads as "this belongs to the first branch". It is
     // the same guarantee the old layout made vertically, on the other axis.
-    //
-    // A WRAPPED level centres each of its rows the same way, so a last row
-    // holding fewer cards sits under the middle of the rows above it.
-    const perRow = wrapped[lvl] ? fits : level.length
+    const left = PAD + (widest - levelWidth(level.length)) / 2
     level.forEach((step, pos) => {
-      const row = Math.floor(pos / perRow)
-      const col = pos % perRow
-      const inRow = Math.min(perRow, level.length - row * perRow)
-      const left = PAD + (widest - levelWidth(inRow)) / 2
       nodes.push({
         step,
         level: lvl,
@@ -2087,11 +2034,11 @@ export function layoutOf(
         // contains its band and the gap under it, and a card given that figure
         // would paint BAND_H + BAND_GAP past its own bottom edge.
         h: nodesH(level),
-        // POSITION drives X: siblings side by side, one band per level.
-        x: left + col * (nodeW + SIB_GAP),
-        // LEVEL drives Y: the flow descends. A wrapped level's later rows sit
-        // one card and one `WRAP_GAP` below the row before.
-        y: nodesTop(lvl) + row * (nodesH(level) + WRAP_GAP),
+        // POSITION drives X: siblings side by side, one band per level, and a
+        // level never wraps onto a second row (owner decision 2026-09-30).
+        x: left + pos * (nodeW + SIB_GAP),
+        // LEVEL drives Y: the flow descends.
+        y: nodesTop(lvl),
       })
     })
   })
@@ -2130,26 +2077,13 @@ export function layoutOf(
       attach.set(step.step_id, { cx: b.x + b.w / 2, top: b.y, bottom: b.y + b.h })
     }
   }
-  // A WRAPPED STAGE IS ENTERED AT ITS TOP AND LEFT AT ITS FOOT, as one block.
-  // An edge drawn to a card in its second row would run behind a card in its
-  // first, and eighteen of them would hatch the whole stage. So, like a
-  // collapsed band, every step of the stage attaches at the block's centre,
-  // and each card still names its parents on its own `↑ depends on` line.
-  levels.forEach((level, lvl) => {
-    if (!wrapped[lvl]) return
-    const top = nodesTop(lvl)
-    for (const step of level) {
-      attach.set(step.step_id, { cx: PAD + widest / 2, top, bottom: top + blockH(lvl) })
-    }
-  })
-
   // WHERE A SKIP-LEVEL EDGE RUNS (WF-4; `laneRouter` says why). What each level
   // draws across the canvas: a wide stage's band spans all of it, open or not;
   // any other level is its cards.
   const levelOfStep = new Map<string, number>()
   levels.forEach((level, lvl) => level.forEach((s) => levelOfStep.set(s.step_id, lvl)))
   const drawnAt: Span1D[][] = levels.map((_, lvl) =>
-    wide[lvl] || wrapped[lvl]
+    wide[lvl]
       ? [{ from: PAD, to: PAD + widest }]
       : nodes.filter((n) => n.level === lvl).map((n) => ({ from: n.x, to: n.x + nodeW })),
   )
@@ -2162,7 +2096,6 @@ export function layoutOf(
   // from the band -- are one path, so they are routed as one.
   const endOf = (id: string): string => {
     const lvl = levelOfStep.get(id)
-    if (lvl !== undefined && wrapped[lvl]) return `wrap:${lvl}`
     return lvl !== undefined && wide[lvl] && !open(lvl) ? `band:${lvl}` : `step:${id}`
   }
 
@@ -2222,7 +2155,6 @@ export function layoutOf(
     tier,
     nodeW,
     wide,
-    wrapped,
   }
 }
 
