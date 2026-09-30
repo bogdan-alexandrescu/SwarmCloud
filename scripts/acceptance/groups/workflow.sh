@@ -63,6 +63,21 @@ run_workflow() {
           {step_id: "grandchild", runner_profile: "mock", depends_on: ["child"], input: {prompt: $p}}
         ]}')" || cascade=""
 
+  # Under strategy integrate, only the integrator step (here, fix) ever
+  # brings another step's tree in, at PR-open time -- "strategy 'integrate'
+  # makes one workflow step apply every other step's work and open ONE pull
+  # request" (apps/swarm-mcp/swarm_mcp/server.py's `_dispatch_strategy`).
+  # Every other step, review included, clones repository_ref like any
+  # standalone task (docs/workflows.md's `input_from` section: staging is the
+  # only channel a step's own artifact crosses to a dependant; there is no
+  # implicit branch inheritance outside the single-pr strategy's documented
+  # chain). So for review to judge implement's actual change rather than
+  # whatever repository_ref alone contains, implement stages that change as
+  # an artifact and review applies it itself before judging. implement runs
+  # only the two git plumbing commands needed to produce that artifact, and
+  # review reverses the patch once it has read the file, so review still
+  # pushes nothing -- it stays a reader, not a second contributor for fix to
+  # merge.
   ACC_CHECK="workflow: integrate chain"
   acc_workflow chain "$(jq -nc --argjson m "$(acc_metadata)" --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" \
       --arg fx "${CC_FIXTURE}" --arg run "${ACC_RUN_ID}" '{
@@ -70,9 +85,9 @@ run_workflow() {
         strategy: "integrate", repository_url: $u, repository_ref: $r,
         steps: [
           {step_id: "implement", runner_profile: "claude-code",
-           input: {prompt: ("In " + $fx + ", add() returns a - b; make it return a + b. Change only that line and no other file. Do not run anything and do not commit.")}},
-          {step_id: "review", runner_profile: "claude-code", depends_on: ["implement"],
-           input: {prompt: ("Read add() in " + $fx + ". Write verdict.json to $SWARM_ARTIFACTS_DIR containing {\"verdict\": \"MERGE\"} if it returns a + b, otherwise {\"verdict\": \"CHANGES\"}. Change no repository file.")}},
+           input: {prompt: ("In " + $fx + ", add() returns a - b; make it return a + b. Change only that line and no other file. Then run: git add -A && git diff --cached --binary HEAD -- and save the output of that command verbatim to $SWARM_ARTIFACTS_DIR/change.diff. Do not run anything else, and do not commit.")}},
+          {step_id: "review", runner_profile: "claude-code", depends_on: ["implement"], input_from: {implement: "change.diff"},
+           input: {prompt: ("First apply the staged change.diff to this checkout: git apply --index (its path was named above). Then read add() in " + $fx + " and write verdict.json to $SWARM_ARTIFACTS_DIR containing {\"verdict\": \"MERGE\"} if it now returns a + b, otherwise {\"verdict\": \"CHANGES\"}. Finally reverse that same patch (git apply --reverse --index) so the checkout is left exactly as it was cloned. Do not commit.")}},
           {step_id: "fix", runner_profile: "claude-code", depends_on: ["review"], input_from: {review: "verdict.json"},
            input: {prompt: ("Read verdict.json. Write its verdict value alone to $SWARM_ARTIFACTS_DIR/verdict-seen.txt. Write a one-line pull request title naming the add() fix, with no task id, to $SWARM_ARTIFACTS_DIR/pr-title.txt, and the single line acceptance-run:" + $run + " to $SWARM_ARTIFACTS_DIR/pr-body.md. Change no repository file.")}}
         ]}')" || chain=""
@@ -207,7 +222,7 @@ _wf_check_cascade() {
 }
 
 _wf_check_integrate() {
-  local wf="$1" implement review fix state id git prs number branch verdict seen pr files merged
+  local wf="$1" implement review fix state id git prs number branch verdict seen pr files merged staged
   acc_check "workflow: implement -> review -> fix with integrate opens one pull request, with the review's verdict.json staged into fix"
   [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
   implement="$(workflow_step_task "${wf}" implement)"
@@ -237,24 +252,34 @@ _wf_check_integrate() {
   else
     acc_fail "review's verdict.json says '${verdict}', fix read '${seen:-nothing}'" "${fix}"
   fi
-  # The review prompt's own vocabulary is MERGE|CHANGES (it tells the runner
-  # exactly which string to write for which outcome), so there is no
-  # prompt/check wording mismatch here. But which of the two a real reviewer
-  # LLM picks for a technically-correct one-line fix is its own judgement call
-  # -- caution, a wish to see it run, phrasing it read into the diff -- not a
-  # deterministic function of the code. Asserting MERGE exactly makes this
-  # check flake on legitimate reviewer judgement rather than on a defect.
-  # What must hold regardless of which the reviewer picks is that it picked
-  # from the declared vocabulary at all (asserted here) and that fix acted on
-  # that exact value (already asserted above, independent of what it says).
-  case "${verdict}" in
-    MERGE | CHANGES)
-      acc_pass "the review judged the implement step's fix with a verdict from its declared vocabulary: ${verdict}" "${review}"
-      ;;
-    *)
-      acc_fail "the review's verdict is not one of MERGE|CHANGES: '${verdict}'" "${review}"
-      ;;
-  esac
+  # review's checkout, under strategy integrate, clones repository_ref like
+  # every non-integrator step (docs/workflows.md's input_from section, and
+  # swarm_mcp/server.py's `_dispatch_strategy`: "strategy 'integrate' makes
+  # one workflow step apply every other step's work" -- singular, the
+  # integrator, at PR-open time; nothing else in the chain ever sees another
+  # step's tree). So review reads implement's change only if the spec stages
+  # it: "implement" writes change.diff and review applies it before judging
+  # (see the workflow spec above). This is the precondition the MERGE
+  # assertion below depends on -- without it, review silently judges whatever
+  # repository_ref alone contains (the bug), and every run would report
+  # CHANGES regardless of what implement did.
+  staged="$(task_field "${review}" '.result_summary.staged_inputs // []')"
+  if jq -e --arg imp "${implement}" \
+      'any(.[]?; (.filename // "") == "change.diff" and (.task_id // "") == $imp)' \
+      <<<"${staged}" >/dev/null 2>&1; then
+    acc_pass "review's result_summary.staged_inputs lists implement's change.diff" "${review}"
+  else
+    acc_fail "review's staged_inputs does not list change.diff from ${implement}: ${staged}" "${review}"
+  fi
+
+  # With that staged, MERGE is what a correct fix should get: this asserts
+  # the value, not merely its shape, on purpose -- relaxing it to "any
+  # declared verdict" would hide exactly the defect this check exists to
+  # catch (round 2 of #358's triage: review judged the UNFIXED fixture
+  # because its checkout never contained implement's change, confirmed via
+  # `uv run swarm artifact task_feccd6c41e1b498b89a7 verdict.json` and its
+  # answer text, which named the still-unfixed line by number).
+  acc_assert_eq "MERGE" "${verdict}" "the review judged the implement step's fix" "${review}"
 
   if [[ -n "${number}" ]] && pr="$(acc_github GET "/repos/${ACC_GITHUB_REPO}/pulls/${number}")"; then
     merged="$(jq -r '.body // ""' <<<"${pr}" | acc_merged_branches | tr '\n' ' ')"
