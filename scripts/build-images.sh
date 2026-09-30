@@ -486,15 +486,17 @@ launch_build() {
 #
 # WHY ONLY THESE STRINGS. Each is Go's net package (docker and buildkit are Go)
 # reporting that the connection itself failed -- the dial did not complete
-# (`dial tcp`, `i/o timeout`), the TLS handshake did not (`TLS handshake
-# timeout`), or the peer dropped it (`connection reset`). None of them can come
+# (`dial tcp`, `i/o timeout`) or the TLS handshake did not (`TLS handshake
+# timeout`). `connection reset` is deliberately left out: a reset can follow a
+# connection that succeeded, and the owner's rule (2026-09-30) is to retry only
+# when no answer came back at all. None of these can come
 # from a registry that answered: a missing tag is `manifest unknown`, a refused
 # pull is `denied`/`unauthorized`, and a broken Dockerfile is a RUN step's exit
 # code. Rebuilding those would spend a second build to be told the same thing
 # and would report a real defect minutes later than it could have.
 pull_got_no_answer() {
   [[ -s "$1" ]] || return 1
-  grep -qF -e 'i/o timeout' -e 'dial tcp' -e 'TLS handshake timeout' -e 'connection reset' "$1"
+  grep -qF -e 'i/o timeout' -e 'dial tcp' -e 'TLS handshake timeout' "$1"
 }
 
 finish_build() {
