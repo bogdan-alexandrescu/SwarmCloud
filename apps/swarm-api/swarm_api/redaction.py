@@ -449,6 +449,8 @@ class JsonMasker:
                 '"' + re.escape(f"{_STAND_IN_OPEN}{self._tag}.") + r"(\d+)" + re.escape(_STAND_IN_CLOSE) + '"'
             )
             text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
+        # A lone surrogate (decoded from a `\\ud800` escape) cannot be written as UTF-8: escape it again (PR #378).
+        text = re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", text)
         return Redacted(text=text, count=total)
 
     def value(self, value: Any) -> tuple[Any, int]:

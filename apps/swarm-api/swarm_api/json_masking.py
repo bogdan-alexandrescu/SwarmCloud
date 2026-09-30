@@ -39,10 +39,11 @@ WHAT THIS DOES INSTEAD. A window that is JSON is masked by its TOKENS:
     PR #378 review): a PIN the task named, echoed by the agent as a number,
     was served in clear because only strings were compared;
   * a private key split over several strings is masked from the string
-    holding its BEGIN marker through the one holding its END, WHATEVER
+    holding its BEGIN marker through the one holding its END, whatever
     containers those strings sit in -- a flat list, an object's values, a
     list with a number in it, nested lists, a list of objects (the PR #378
-    review) -- when the END is within `PEM_BLOCK_MAX_CHARS` of string
+    review), an object KEY, a value masked whole under a credential's name
+    (the re-review) -- when the END is within `PEM_BLOCK_MAX_CHARS` of string
     content, as the text path masks a block. With no END in reach, a key
     written as a flat LIST of strings is masked to the end of that run of
     strings, as `JsonMasker` does (`redaction._key_run_end`, restated here
@@ -127,6 +128,7 @@ from __future__ import annotations
 
 import json
 import re
+from bisect import bisect_left
 from json.decoder import scanstring
 from typing import Any, Iterable
 
@@ -286,14 +288,17 @@ def _structure(text: str, *, strict: bool) -> tuple[_Spans, _Runs]:
     leave open what the text after it closes; a container left open has no
     entry.
 
-    A KEY SPLIT OVER STRINGS (the PR #378 review). A string VALUE that
-    leaves a private key open (`_open_key`) runs to the next string value
-    holding an END marker, in whatever container either sits -- `{"l1":
-    BEGIN, "l2": body}`, `[BEGIN, 1, body, END]`, `[[BEGIN], [body]]`,
-    `[{"line": BEGIN}, ...]` -- when the string content between them is
-    within `PEM_BLOCK_MAX_CHARS`, the reach the text path gives a block. One
-    pass: every open waits in `pending` for the next END, so the work is
-    linear however many BEGIN markers a window holds.
+    A KEY SPLIT OVER STRINGS (the PR #378 review and re-review). A string
+    -- a value OR an object key -- that leaves a private key open
+    (`_open_key`) runs to the next string, value or key, holding an END
+    marker, whatever containers either sits in -- `{"l1": BEGIN, "l2":
+    body}`, `[BEGIN, 1, body, END]`, `[[BEGIN], [body]]`, `[{"line": BEGIN},
+    ...]`, `{BEGIN: body, ...}`, and a BEGIN inside a value masked whole
+    under a credential's name (`{"secret": [BEGIN], "x": body, ...}`) --
+    when the string VALUE content between them is within
+    `PEM_BLOCK_MAX_CHARS`, the reach the text path gives a block. One pass:
+    every open waits in `pending` for the next END, so the work is linear
+    however many BEGIN markers a window holds.
     """
     spans: _Spans = {}
     runs: _Runs = {}
@@ -341,6 +346,11 @@ def _structure(text: str, *, strict: bool) -> tuple[_Spans, _Runs]:
                 raise _NotJson("a value followed by a colon")
             if frame.kind == "{" and before in ("{", ",") and not follows:
                 raise _NotJson("an object member with no key")
+            if pending and _PEM_HINT in value and _PEM_END.search(value) is not None:
+                for opened, after in pending:
+                    if size - after <= PEM_BLOCK_MAX_CHARS:
+                        runs[opened] = start
+                pending = []
             if follows:
                 frame.key = value
                 kind = "k"
@@ -348,14 +358,9 @@ def _structure(text: str, *, strict: bool) -> tuple[_Spans, _Runs]:
                 frame.key = None
                 if value.strip():
                     frame.has_str = True
-                if pending and _PEM_HINT in value and _PEM_END.search(value) is not None:
-                    for opened, after in pending:
-                        if size - after <= PEM_BLOCK_MAX_CHARS:
-                            runs[opened] = start
-                    pending = []
                 size += len(value) + 1
-                if _open_key(value):
-                    pending.append((start, size))
+            if _open_key(value):
+                pending.append((start, size))
         elif kind == "n":
             frame.key = None
             frame.has_num = True
@@ -422,6 +427,8 @@ def _walk(
     run_open = -1
     # Values opened before the window that this page has already counted.
     charged: set[int] = set()
+    # Every string that opens a run, in order: for a BEGIN a jump skips.
+    opens = sorted(runs)
 
     def put(start: int, end: int, new: str, counted: int, opened: int | None = None) -> None:
         nonlocal at, count
@@ -485,6 +492,10 @@ def _walk(
                 name = masker.text(value)
                 if name.count:
                     put(start, end, _encode(name.text), name.count)
+            # A key holding a BEGIN marker (`{BEGIN: body, ...}`): its body
+            # is in the values after it (the PR #378 re-review).
+            if _open_key(value) and start in runs:
+                run_stop, run_open = max(run_stop, runs[start]), start
             continue
 
         key, frame.key = frame.key, None
@@ -530,6 +541,15 @@ def _walk(
                         learned.append({key: _leaves(text, start, stop)})
                     else:
                         put(start, stop, _MASKED, 1)
+                    # A BEGIN inside the masked value whose END lies after it
+                    # (`{"secret": [BEGIN], "x": body, ...}`): the jump would
+                    # skip the string that starts the run, so the run is
+                    # taken from the LAST opening string inside -- the one
+                    # whose END is furthest, since each open runs to the next
+                    # END after it (the PR #378 re-review).
+                    inside = bisect_left(opens, stop) - 1
+                    if inside >= 0 and opens[inside] >= start and runs[opens[inside]] > run_stop:
+                        run_stop, run_open = runs[opens[inside]], opens[inside]
                     scanner.seek(stop)
                     continue
             stack.append(_Frame(kind))
