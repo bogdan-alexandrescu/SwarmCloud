@@ -17,7 +17,12 @@ fixture week (`test_outcomes_route.seed_week`):
     before it, so a non-admin learns nothing by naming sections;
   * a section that needs no extra read costs none: the previous span, the
     terminal count and the workflow enrichment are read only for the section
-    that shows them.
+    that shows them;
+  * (owner decision 2026-09-30, the review of #391) the cache holds the FOLD,
+    keyed by the query without its sections, so the headline and all seven
+    cards of one page pay for one scan -- counted at the store, not trusted
+    to the service's own meter -- and a section is the same value alone as
+    in the full response on a COLD store too.
 
 Each comparison is between two FRESH services over the same warmed store, so
 neither the payload cache nor a first-read derive makes the two differ.
@@ -37,6 +42,7 @@ from swarm_api.main import create_app
 from swarm_api.outcomes import SECTIONS
 
 from .conftest import auth_header
+from .fakes import FakeDocumentRef, FakeFirestore, FakeQuery
 from .test_outcomes_route import Clock, _context, seed_week
 
 WEEK = {"tz": "UTC", "span": "7d", "compare": "previous"}
@@ -169,16 +175,48 @@ def test_a_non_admin_still_cannot_ask_for_platform_scope_by_naming_a_section(war
     assert response.json()["code"] == "forbidden"
 
 
-def test_a_cached_full_payload_is_never_served_for_a_section_or_the_reverse(warmed, tokens, group_map, clock):
+def test_every_section_of_one_query_is_served_from_one_fold(warmed, tokens, group_map, clock):
+    """Owner decision 2026-09-30: the cache holds the FOLD, keyed by the query
+    without its sections, and every section is a projection of it. A card
+    arriving in the same minute as another reuses its scan; it never pays for
+    the day documents again, and what it is served is still only what it asked
+    for."""
     api = fresh(warmed, tokens, group_map, clock)
     part = ok(api, "alice", **WEEK, section="retries")
-    assert "totals" not in part
+    assert "totals" not in part and part["cached"] is False and part["reads"] > 0
     full = ok(api, "alice", **WEEK)
-    assert list(full) == FULL_KEYS and full["cached"] is False
+    assert list(full) == FULL_KEYS
+    assert full["generated_at"] == part["generated_at"], "the fold keeps its real age"
+    reference = ok(fresh(warmed, tokens, group_map, clock), "alice", **WEEK)
+    for key in SECTIONS:
+        assert full[key] == reference[key], key
     again = ok(api, "alice", **WEEK, section="retries")
     assert list(again) == [k for k in FULL_KEYS if k in ENVELOPE or k == "retries"]
-    assert again["cached"] is True, "the same section set, in the same minute, is a cache hit"
-    assert ok(api, "alice", **WEEK, section=["latency"])["cached"] is False
+    assert again["cached"] is True and again["reads"] == 0
+    latency = ok(api, "alice", **WEEK, section=["latency"])
+    assert latency["cached"] is True and latency["reads"] == 0, "a section of a fold already made is free"
+    assert latency["latency"] == reference["latency"]
+
+
+def test_the_fold_is_never_shared_across_tenants_or_queries(warmed, tokens, group_map, clock):
+    api = fresh(warmed, tokens, group_map, clock)
+    mine = ok(api, "alice", **WEEK, section="totals")
+    theirs = ok(api, "bob", **WEEK, section="totals")
+    assert theirs["cached"] is False, "another tenant's fold is never served"
+    assert theirs["scope"] != mine["scope"]
+    other = ok(api, "alice", **{**WEEK, "kind": "steps"}, section="totals")
+    assert other["cached"] is False, "a different filter is a different fold"
+
+
+def test_the_latency_section_carries_the_wait_it_leaves_out(warmed, tokens, group_map, clock):
+    """The latency card prints `wait_excluded`; it gets it with `latency`
+    rather than asking for the whole of `coverage` (a count() per terminal
+    state per tenant) to read one number."""
+    full = ok(fresh(warmed, tokens, group_map, clock), "alice", **WEEK)
+    part = ok(fresh(warmed, tokens, group_map, clock), "alice", **WEEK, section="latency")
+    assert part["latency"]["wait_excluded"] == full["coverage"]["wait_excluded"]
+    source = (REPO / "apps/swarm-ui/src/Activity.tsx").read_text()
+    assert "coverage" not in _page_sections(source)[1]["latency"]
 
 
 def _reads(db, tokens, group_map, clock, **params: Any) -> int:
@@ -202,3 +240,128 @@ def test_a_section_reads_only_what_it_shows(warmed, tokens, group_map, clock):
         + (_reads(warmed, tokens, group_map, clock, section="coverage") - scan)
         + (_reads(warmed, tokens, group_map, clock, section="workflows_failed") - scan)
     ), "the full read is the scan plus each section's own extra reads, and nothing else"
+
+
+# --------------------------------------------------------------------------
+# A cold store: a section is the same value alone as in the full response
+# --------------------------------------------------------------------------
+
+def _cold(tokens, group_map, clock) -> TestClient:
+    """A new store, seeded and never read: every day is derived by the read."""
+    db = FakeFirestore()
+    seed_week(db)
+    return fresh(db, tokens, group_map, clock)
+
+
+@pytest.mark.parametrize("section", SECTIONS)
+@pytest.mark.parametrize(("user", "extra"), [("alice", {}), ("root", {"scope": "platform"})])
+def test_each_section_alone_is_that_key_of_the_full_response_on_a_cold_store(tokens, group_map, clock, section, user, extra):
+    """The review of #391: `coverage` alone on a cold store reported a smaller
+    `derived_now` than the full read, which also derived the previous span. A
+    section's value may not depend on what else was asked with it."""
+    full = ok(_cold(tokens, group_map, clock), user, **WEEK, **extra)
+    part = ok(_cold(tokens, group_map, clock), user, **WEEK, **extra, section=section)
+    assert full["coverage"]["derived_now"] > 0, "the store was not cold; this check would be vacuous"
+    assert part[section] == full[section], section
+    for key in ENVELOPE:
+        if key not in ("reads", "cached"):
+            assert part[key] == full[key], key
+
+
+# --------------------------------------------------------------------------
+# What the whole Timeline page costs, counted at the store
+# --------------------------------------------------------------------------
+
+def _page_sections(source: str) -> tuple[list[str], dict[str, list[str]]]:
+    """LEDGER_SECTIONS and CARD_SECTIONS as Activity.tsx states them -- read
+    from the page, so a card that starts asking for more is priced here."""
+    ledger = re.search(r"const LEDGER_SECTIONS = \[(.*?)\] as const", source, flags=re.DOTALL)
+    cards = re.search(r"const CARD_SECTIONS = \{(.*?)\} as const", source, flags=re.DOTALL)
+    assert ledger and cards, "the page's section lists moved; this check would be vacuous"
+    parsed = {
+        name: re.findall(r"'(\w+)'", body)
+        for name, body in re.findall(r"(\w+): \[(.*?)\]", cards.group(1), flags=re.DOTALL)
+    }
+    assert len(parsed) == 7, parsed
+    return re.findall(r"'(\w+)'", ledger.group(1)), parsed
+
+
+class Counter:
+    """Every document the store hands back, as Firestore bills it: one per
+    document fetched, one per row a query streams (at least one per query),
+    one per count() aggregation."""
+
+    def __init__(self, monkeypatch) -> None:
+        self.n = 0
+        counter = self
+        doc_get = FakeDocumentRef.get
+        rows = FakeQuery._rows
+        count = FakeQuery.count
+
+        def get(ref, *a, **k):
+            counter.n += 1
+            return doc_get(ref, *a, **k)
+
+        def stream(query, *a, **k):
+            out = list(rows(query))
+            counter.n += max(1, len(out))
+            return iter(out)
+
+        def listed(query, *a, **k):
+            return list(stream(query))
+
+        def counted(query, *a, **k):
+            counter.n += 1
+            return count(query, *a, **k)
+
+        monkeypatch.setattr(FakeDocumentRef, "get", get)
+        monkeypatch.setattr(FakeQuery, "stream", stream)
+        monkeypatch.setattr(FakeQuery, "get", listed)
+        monkeypatch.setattr(FakeQuery, "count", counted)
+
+    def cost(self, fn) -> int:
+        before = self.n
+        fn()
+        return self.n - before
+
+
+@pytest.mark.parametrize("order", ["headline_first", "cards_first"])
+@pytest.mark.parametrize(("user", "extra"), [("alice", {}), ("root", {"scope": "platform"})])
+def test_the_whole_timeline_page_costs_one_full_read(warmed, tokens, group_map, clock, monkeypatch, order, user, extra):
+    """Owner decision 2026-09-30: cut the cost of #391 before merging it. The
+    review measured a fully scrolled page at 73 reads (identical asks shared)
+    and 91 (not shared) against 24 for the one full read it replaced.
+
+    THE BOUND: headline + all seven cards on one query, in one minute, cost at
+    most the old full read plus, for each of the seven extra requests, what a
+    request costs that the fold serves entirely -- authentication, the tenant
+    check and, in platform scope, the tenant listing that is part of the
+    cache key. Those are per request by design (the listing is what keeps one
+    tenant set's fold from being served for another) and do not grow with the
+    span. Measured here, not assumed: `overhead` is a repeat of the full read
+    in the same minute. Everything the outcome service reads beyond that --
+    the day documents, the previous span, the terminal counts, the workflow
+    lookups -- is paid once per page, which the per-card `reads` pins too."""
+    ledger, cards = _page_sections((REPO / "apps/swarm-ui/src/Activity.tsx").read_text())
+    counter = Counter(monkeypatch)
+    old = fresh(warmed, tokens, group_map, clock)
+    full = counter.cost(lambda: ok(old, user, **WEEK, **extra))
+    overhead = counter.cost(lambda: ok(old, user, **WEEK, **extra))
+    assert 0 <= overhead < full, (overhead, full)
+
+    page = fresh(warmed, tokens, group_map, clock)
+    asks = [ledger, *cards.values()]
+    if order == "cards_first":
+        asks = asks[::-1]
+    served = []
+
+    def scroll_the_whole_page() -> None:
+        for sections in asks:
+            served.append(ok(page, user, **WEEK, **extra, section=sections))
+
+    cost = counter.cost(scroll_the_whole_page)
+    assert cost <= full + 7 * overhead, (cost, full, overhead)
+    assert sum(1 for body in served if body["cached"] is False) == 1, "one scan per page"
+    if extra.get("scope") != "platform":
+        # The service's own meter: nothing it reads is paid twice.
+        assert sum(body["reads"] for body in served) == ok(fresh(warmed, tokens, group_map, clock), user, **WEEK)["reads"]

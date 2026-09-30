@@ -48,7 +48,7 @@ const LEDGER = ['buckets', 'coverage', 'previous', 'totals']
 const CARDS: Record<string, string[]> = {
   failures: ['buckets', 'totals'],
   retries: ['buckets', 'retries', 'totals'],
-  latency: ['buckets', 'coverage', 'latency', 'totals'],
+  latency: ['buckets', 'latency', 'totals'],
   reliability: ['buckets', 'groups', 'totals'],
   workflows: ['buckets', 'totals', 'workflows_failed'],
   cost: ['buckets', 'totals'],
