@@ -39,6 +39,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | ACCEPTED 2026-09-28 by the owner on #245, applied in PR #245 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
@@ -4371,6 +4372,59 @@ the implementing branch and must fail there before the change lands on
   still a group (or a user), and its listed accounts are members by
   declaration rather than by directory.
 Applied by #343 (accepted by the owner 2026-09-29).
+---
+
+## 31. `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on`
+
+**Status:** open, recorded 2026-09-29 from #264. If another branch has taken
+31 by the time this merges, renumber this one.
+
+### What is true today
+
+#264 added two workflow step fields, `when` (`{"step", "verdict_in"}`: run
+this step's agent only on an upstream review's verdict) and `builds_on` (an
+upstream step whose pushed branch this step clones). They are accepted by
+`WorkflowStepCreate`, checked by `validation.validate_step_routing`, and
+stored where the worker reads them: `task.metadata["dispatch"]`, as
+`verdict_gate: {"task_id", "verdict_in"}` and `builds_on: <task id>`, keyed by
+task id the way `integrates` is. That block is already reserved, so no new
+reserved key was needed and nothing frozen was edited.
+
+The frozen `WorkflowStep` has no field for either, so the workflow document
+does not record them. `GET /v1/workflows/{id}` shows a gated step exactly as
+it shows an ungated one; a reader has to open the step's task to see the gate
+(`GET /v1/tasks/{id}`, `dispatch.verdict_gate`). The declaration as the caller
+wrote it, keyed by step id, is not stored anywhere.
+
+### The requested change
+
+Two optional fields on `WorkflowStep`, both defaulting to "absent", so every
+stored workflow reads back unchanged:
+
+```python
+#: {"step": upstream step_id, "verdict_in": [...]} -- run this step's agent
+#: only on those verdicts (#264).
+when: dict[str, Any] | None = None
+#: An upstream step_id whose pushed branch this step's checkout starts from.
+builds_on: str | None = None
+```
+
+And, with them, `REVIEW_VERDICTS = ("MERGE", "NOT_YET")` in `models.py`, which
+is today written out twice (`swarm_api.validation.REVIEW_VERDICTS` and
+`agent_worker.verdict.REVIEW_VERDICTS`) and held equal only by
+tests/unit/worker/test_verdict_gate.py.
+
+### What it would break if accepted
+
+Nothing stored: both fields default to absent. `SubmissionService.submit_workflow`
+would copy them onto the `WorkflowStep` it already builds, and the workflow
+codec and the UI's step rows would start showing them.
+
+### If it is declined
+
+The gate stays visible only on the task, and the verdict vocabulary stays in
+two copies behind a parity test. That test lives in the unit suite, so it
+protects the repository, not a worker image built from an older commit.
 ---
 
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none

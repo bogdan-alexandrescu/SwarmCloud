@@ -66,6 +66,21 @@ class TaskBatchCreate(StrictModel):
 # Workflows
 # --------------------------------------------------------------------------
 
+class StepVerdictGate(StrictModel):
+    """`when` on a workflow step: run this step's agent only on these verdicts (#264).
+
+    The verdict is read from the file this step stages from `step` through
+    `input_from`, a JSON object whose `verdict` is one of
+    `validation.REVIEW_VERDICTS`. When the verdict is not in `verdict_in` the
+    step still runs, without an agent, and still publishes: it is the step
+    that opens the pull request. The values are checked by
+    `validation.validate_step_routing`, which names the accepted ones.
+    """
+
+    step: str = Field(min_length=1, max_length=64)
+    verdict_in: list[str] = Field(min_length=1, max_length=8)
+
+
 class WorkflowStepCreate(StrictModel):
     step_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_\-.]*$")
     runner_profile: str = Field(min_length=1, max_length=64)
@@ -77,6 +92,13 @@ class WorkflowStepCreate(StrictModel):
     #: upstream step_id -> artifact filename staged into this step's workspace.
     input_from: dict[str, str] = Field(default_factory=dict)
     timeout_seconds: int | None = Field(default=None, ge=1, le=86_400)
+    #: Run this step's agent only when an upstream review's verdict says so
+    #: (#264). See `StepVerdictGate`.
+    when: StepVerdictGate | None = None
+    #: An upstream step whose pushed branch this step's checkout starts from,
+    #: instead of the workflow's `repository_ref` (#264). A step id, never a
+    #: ref: the worker derives the branch from the upstream's task id.
+    builds_on: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class WorkflowCreate(StrictModel):
