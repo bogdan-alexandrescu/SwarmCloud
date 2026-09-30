@@ -100,6 +100,7 @@ while IFS=$'\t' read -r number head; do
   closed=$(( closed + 1 ))
   delete_branch "${head}"
   deleted_heads="${deleted_heads}${head} "
+  # shellcheck disable=SC2016  # sed pattern below: the backtick and \1 are sed's, not the shell's
   while IFS= read -r merged; do
     [[ -n "${merged}" ]] || continue
     delete_branch "${merged}"

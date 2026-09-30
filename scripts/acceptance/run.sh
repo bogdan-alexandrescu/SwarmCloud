@@ -45,18 +45,25 @@ set -euo pipefail
 # shellcheck source=../lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
 SUITE_NAME="acceptance"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=../lib/testlib.sh
 source "${REPO_ROOT}/scripts/lib/testlib.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib.sh
 source "${REPO_ROOT}/scripts/acceptance/lib.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/mock.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/mock.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/generic.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/generic.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/claude-code.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/claude-code.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/workflow.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/workflow.sh"
+# shellcheck source-path=SCRIPTDIR
 # shellcheck source=groups/browser.sh
 source "${REPO_ROOT}/scripts/acceptance/groups/browser.sh"
 
@@ -71,11 +78,13 @@ SELFTEST_CRASH_GROUP="_selftest_crash"
 #: Named to match fn_name(SELFTEST_CRASH_GROUP) + "_checks" / "run_" + fn_name(...),
 #: the same convention every real group's <group>_checks / run_<group> follows
 #: (fn_name only replaces "-" with "_", and this group's name has no dashes).
+# shellcheck disable=SC2317,SC2329  # invoked indirectly as "$(fn_name "${g}")_checks" below
 _selftest_crash_checks() {
   cat <<'EOF'
 selftest: deliberately crashes to prove a mid-run failure still exits nonzero
 EOF
 }
+# shellcheck disable=SC2317,SC2329  # invoked indirectly as "run_$(fn_name "${g}")" below
 run__selftest_crash() {
   step "Acceptance: ${SELFTEST_CRASH_GROUP}"
   acc_check "$(_selftest_crash_checks)"
@@ -150,6 +159,7 @@ done
 #: not silently exited 0.
 ACC_FINISHED=0
 
+# shellcheck disable=SC2317,SC2329  # invoked indirectly via "trap _acc_exit_trap EXIT" below
 _acc_exit_trap() {
   # $? here is whatever caused the shell to exit -- an explicit `exit 0`/`exit
   # 1` below, or a mid-run crash (an unbound variable, a command `set -e`

@@ -93,7 +93,8 @@ def make_png(
     interlace: int = 0,
     extra_chunks: tuple[tuple[bytes, bytes], ...] = (),
 ) -> bytes:
-    bpp = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour_type]
+    channels = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour_type]
+    bpp = max(1, channels * depth // 8)
     prev = bytes(width * bpp)
     raw = bytearray()
     for y, row in enumerate(rows):

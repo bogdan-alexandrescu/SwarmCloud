@@ -133,6 +133,7 @@ acc_title_is_fact() {
 
 # acc_merged_branches < a pull-request body -> the contributor branches an
 # integration names as merged ("- merged: `swarm/task_...`"), one per line.
+# shellcheck disable=SC2016  # sed pattern below: the backtick and \1 are sed's, not the shell's
 acc_merged_branches() {
   sed -nE 's/^- merged: `(swarm\/[A-Za-z0-9_.-]+)`.*$/\1/p'
 }
