@@ -1844,3 +1844,117 @@ describe('#107: the Timeline splits a wait at the parents’ finish', () => {
     expect(labels.at(-1)).toMatch(/^\+3h/)
   })
 })
+
+// ---------------------------------------------------------------------------
+// #330: chains only
+// ---------------------------------------------------------------------------
+
+describe('#330: the chains-only toggle', () => {
+  const KEY = 'swarm.workflows.chainsOnly'
+
+  /** The fixture board plus two one-step wrappers, the shape direct dispatch makes. */
+  function withWrappers(): void {
+    const { board: b } = board()
+    const single = (id: string) => workflow(id, 300, [step('only', [])])
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { ...b, workflows: [...b.workflows, single('wf_one_a'), single('wf_one_b')] },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+  }
+
+  const ids = () => [...document.querySelectorAll('.wf-bar .id')].map((el) => el.textContent)
+  const toggle = () => {
+    const box = screen.getByRole('checkbox', { name: /chains only/i }) as HTMLInputElement
+    return box
+  }
+
+  beforeEach(() => window.localStorage.removeItem(KEY))
+
+  it('is off by default, and hides the one-step workflows when turned on', async () => {
+    withWrappers()
+    await landed()
+    expect(toggle().checked).toBe(false)
+    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid', 'wf_one_a', 'wf_one_b'])
+
+    fireEvent.click(toggle())
+    expect(toggle().checked).toBe(true)
+    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid'])
+    // It says how many it is hiding, so a filtered board is not read as a quiet one.
+    expect(document.querySelector('.wf-chains-hidden')!.textContent).toBe('2 one-step hidden')
+    expect(window.localStorage.getItem(KEY)).toBe('1')
+
+    fireEvent.click(toggle())
+    expect(ids()).toHaveLength(5)
+    expect(document.querySelector('.wf-chains-hidden')).toBeNull()
+    expect(window.localStorage.getItem(KEY)).toBeNull()
+  })
+
+  it('is remembered per viewer across a remount', async () => {
+    withWrappers()
+    window.localStorage.setItem(KEY, '1')
+    await landed()
+    expect(toggle().checked).toBe(true)
+    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid'])
+  })
+
+  it('opens on the default when storage throws', async () => {
+    withWrappers()
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('SecurityError')
+    })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('SecurityError')
+    })
+    await landed()
+    expect(toggle().checked).toBe(false)
+    expect(ids()).toHaveLength(5)
+    // Turning it on still works for this visit.
+    fireEvent.click(toggle())
+    expect(ids()).toHaveLength(3)
+  })
+
+  it('puts the pick down when the toggle hides the row it is in', async () => {
+    withWrappers()
+    await landed()
+    chooseBoard('Table')
+    pick(cardOf('wf_one_a'), 'only')
+    inspector(cardOf('wf_one_a'))
+    fireEvent.click(toggle())
+    expect(ids()).not.toContain('wf_one_a')
+    // Turned off again, the row is back and nothing in it is still selected.
+    fireEvent.click(toggle())
+    expect(cardOf('wf_one_a').querySelector('.wf-inspect')).toBeNull()
+    expect(document.querySelectorAll('.wf-inspect')).toHaveLength(0)
+  })
+
+  it('says "no chains" only when it is hiding something', async () => {
+    const { board: b } = board()
+    const single = (id: string) => workflow(id, 300, [step('only', [])])
+    window.localStorage.setItem(KEY, '1')
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { ...b, workflows: [] },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+    const empty = render(<WorkflowsScreen />)
+    await waitFor(() => expect(toggle().checked).toBe(true))
+    // An empty board with the toggle on hides nothing, so there is no
+    // "turn it off to see the 0".
+    expect(document.querySelector('.wf-chains-none')).toBeNull()
+    empty.unmount()
+
+    api.loadWorkflowBoard.mockResolvedValue({
+      status: 'ok',
+      data: { ...b, workflows: [single('wf_one_a')] },
+      fetchedAt: T0,
+    } satisfies Result<WorkflowBoard>)
+    render(<WorkflowsScreen />)
+    const mark = await waitFor(() => {
+      const m = document.querySelector('.wf-chains-none')
+      expect(m).toBeTruthy()
+      return m!
+    })
+    expect(mark.getAttribute('aria-label')).toContain('Turn it off to see the 1.')
+  })
+})

@@ -1561,7 +1561,7 @@ body {
    workflow is named, so it stays in the document outline -- and the button
    inside it turns the uppercase back off for its own contents. B17's rule on
    `.id` is what keeps the id lowercase regardless. */
-.wf-h { margin: 0; }
+.wf-h { margin: 0; position: relative; }
 /* THE ROW'S WIDTH, FOR THE ROW. `.wf-bar` cannot ask a container query about
    itself, and the heading around it is exactly as wide (the button is
    `width: 100%`, and the heading has no padding), so the heading is the
@@ -1699,6 +1699,32 @@ body {
   font-size: var(--t-micro); line-height: var(--lh-micro);
 }
 .wf-bar .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `[name]` IS THE LABEL OVER THE ID (#330). One cell, two lines: the spec's
+   label in the row's own ink leads, and the id -- still whole in its title --
+   drops to a second line in the faint micro mono every secondary fact on the
+   row uses. With no label the cell is the id alone, one line, as before. */
+.wf-name { display: flex; flex-direction: column; min-width: 0; }
+.wf-label {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-weight: 600; color: var(--text);
+}
+.wf-name.has-label > .id {
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
+}
+/* THE ROW'S PULL REQUEST (#330). A sibling of `.wf-bar`, never inside it (an
+   anchor in a button is invalid), laid over the right end of the reserved
+   `[flags]` track: past the caret's 16px column, the grid gap and the bar's
+   right padding and border. `.wf-flags` gives it that room on a row that has
+   one, so a `cancel requested` tag ellipses rather than running under it.
+   Hidden with `[flags]` below 900px; the open card states it as a fact there.
+   `.wf-h` is its containing block (`position: relative` on the rule above). */
+.wf-pr {
+  position: absolute; top: 50%; transform: translateY(-50%);
+  right: calc(var(--ctl-s3) * 2 + 16px + 1px);
+  max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-card.has-pr .wf-flags { padding-right: 10ch; }
 /* WEIGHT 500, NOT 600. The id beside it is the datum and outranks it; a state
    word set heavier than the identity it qualifies inverts the hierarchy (§2).
    The mark at `[state]` is what makes it scannable, not the weight. */
@@ -1897,6 +1923,9 @@ body {
    ellipses at the edge instead of painting into `[actions]`. */
 .wf-flags { display: flex; justify-content: flex-end; min-width: 0; overflow: hidden; }
 .wf-flags > .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* `chains only` (#330), beside the mode control in the board's chrome. */
+.wf-chains { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+.wf-chains > label { display: inline-flex; align-items: center; gap: var(--ctl-s1); cursor: pointer; }
 
 /* THE TWO FACT STRIPS IN AN OPEN CARD, and between them they replaced four
    paragraphs totalling 72 words (§6.13).
@@ -2330,6 +2359,16 @@ body {
   border-radius: var(--radius); padding: 10px 12px 42px;
   box-sizing: border-box;
 }
+/* THE NAMES TIER IS THE SMALLER BOX (#330 item 4). It is the tier a graph is
+   zoomed to when it needs the most height back, and every pixel of chrome
+   here is paid once per level in the canvas's height -- so its padding is 6px
+   above instead of 10, and the same 28px stop control sits 4px from the
+   card's edge over a 2px floor instead of 10 and 4: `28 + 4 + 2 = 34`.
+   `dag.ts`'s `NAMES_CHROME_H` carries the same numbers and
+   `nodeHeightAt('names')` sums them; keep the three in step. The horizontal
+   padding is unchanged, so `NODE_CHROME_W` holds at every tier. */
+.node.zoom-names { padding: 6px 12px 34px; }
+.node.zoom-names ~ .node-stop { bottom: 4px; }
 /* State and duration on ONE line. They were two stacked 12px rows reading
    `running` and then `running 1m 32s` -- the same word twice and 18px of node
    height on every step in every graph. */
@@ -2554,9 +2593,10 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    AND IT IS ONLY THE FULL TIER'S WIDTH. Semantic zoom draws nodes at three
    widths on one canvas -- `.node-slot`'s inline width comes from
    `layout.nodeW`, and `.node.zoom-details` / `.node.zoom-names` simply have
-   fewer children. There is no per-tier rule in this sheet on purpose: a tier is
-   a set of FIELDS, so the difference between them is which elements React
-   renders, not which declarations win. A rule that hid a row with `display:
+   fewer children. No per-tier rule HIDES anything, on purpose: a tier is a set
+   of FIELDS, so the difference between them is which elements React renders,
+   not which declarations win. The one per-tier rule is Names' tighter chrome
+   (#330 item 4, beside `.node`), which `nodeHeightAt('names')` counts. A rule that hid a row with `display:
    none` would leave the row in the accessibility tree and in `layoutOf`'s
    height, which is the two-sources-of-truth defect this canvas has already
    paid for twice. */
@@ -2625,7 +2665,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
        is easier to hit is not a row that needs bigger text. */
     min-height: 44px;
   }
-  .wf-state, .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text { display: none; }
+  .wf-state, .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text, .wf-pr { display: none; }
   /* The open body loses the chrome padding it does not have room for; the
      canvas inside it keeps its own computed width and scrolls, and is NOT
      scaled to fit. Scaling a twenty-step graph onto a 358px column turns
@@ -2647,7 +2687,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
       [age] 56px
       [actions] 16px;
   }
-  .wf-mix, .wf-spend, .wf-flags { display: none; }
+  .wf-mix, .wf-spend, .wf-flags, .wf-pr { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -11023,6 +11063,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   flex-wrap: wrap;
 }
 .wf-inspect-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
+/* WHICH WORKFLOW, on a line of its own at the head (#330): the label, and the
+   id under it in faint micro mono -- the row's own pairing. */
+.wf-inspect-wf { display: flex; flex-direction: column; flex-basis: 100%; min-width: 0; }
+.wf-inspect-label { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wf-inspect-wf.has-label > .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 .wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-inspect-run { margin-left: auto; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .wf-inspect-close {
@@ -11090,6 +11135,42 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-scrub-strip li.is-here { border-color: var(--text); }
 /* The attempt's figures take a line of their own under its controls. */
 .wf-inspect-facts { flex-basis: 100%; }
+
+/* THE GRAPH'S DETAILS PANEL, ON THE RIGHT (#330, owner request 2026-09-29).
+   Under the canvas, the inspector was a screen below the node that opened it
+   on any graph taller than the viewport. Open, the split is two columns: the
+   graph takes what is left and scrolls sideways inside its own wrapper, the
+   panel is a fixed-width column that sticks to the top of the viewport and
+   scrolls on its own. Closed, the split is a plain block and the graph has
+   the whole width back. */
+.wf-split.has-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
+  gap: var(--ctl-s3);
+  align-items: start;
+}
+.wf-split-main { min-width: 0; }
+.wf-panel {
+  position: sticky; top: var(--ctl-s3);
+  max-height: calc(100vh - var(--ctl-s3) * 2);
+  overflow-y: auto; overscroll-behavior: contain;
+}
+.wf-panel:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-panel > .wf-inspect { margin-top: 0; }
+/* BELOW 700px IT IS A BOTTOM SHEET. Two columns do not fit a phone, and the
+   panel under a tall canvas is the defect this rule exists for, so it rises
+   over the foot of the screen instead: full width, at most 60% of the
+   viewport's height, its own scroll. */
+@media (max-width: 699px) {
+  .wf-split.has-panel { display: block; }
+  .wf-panel {
+    position: fixed; top: auto; left: 0; right: 0; bottom: 0;
+    max-height: 60vh; z-index: 35;
+    border-top: 1px solid var(--line);
+    background: var(--bg);
+  }
+  .wf-panel > .wf-inspect { border-radius: 0; border-width: 0; }
+}
 
 /* -------------------------------------------------------------------------- */
 /* 14b. The inspector charts  (charts/AttemptPhases, PeakMemory,               */
