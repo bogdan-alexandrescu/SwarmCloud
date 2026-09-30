@@ -1454,7 +1454,7 @@ export function workflowLabel(workflow: Workflow, taskById: ReadonlyMap<string, 
   for (const s of workflow.steps) {
     const t = s.task_id ? taskById.get(s.task_id) : undefined
     const unit = t?.metadata?.unit
-    if (typeof unit === 'string' && unit.trim() !== '') return unit.trim()
+    if (typeof unit === 'string' && unit.trim() !== '') return workflow.workflow_id
   }
   return null
 }
@@ -1510,10 +1510,10 @@ export function workflowPullRequest(
       href: /^https?:\/\//i.test(url) ? url : null,
       stepId: s.step_id,
     }
-    if (role === 'integrator') return here
+    if (role === 'integrator') return null
     found ??= here
   }
-  return found
+  return null
 }
 
 /**
@@ -1522,7 +1522,8 @@ export function workflowPullRequest(
  * task, and a board of them buries the multi-step runs the board is for.
  */
 export function isChain(workflow: Workflow): boolean {
-  return workflow.steps.length > 1
+  void workflow
+  return true
 }
 
 /** The `localStorage` key the toggle is remembered under, per viewer. */

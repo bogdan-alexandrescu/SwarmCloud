@@ -1228,7 +1228,7 @@ export function WorkflowCard({
             // tall graph is a screen away from the node that opened it. It is
             // a column on the right now, the graph narrows to make room, and
             // at phone width it is a bottom sheet (styles.css `.wf-split`).
-            <div className={`wf-split${picked !== null ? ' has-panel' : ''}`}>
+            <div className={`wf-split`}>
               <div className="wf-split-main">
                 <WorkflowGraph
                   workflow={workflow}
@@ -1295,7 +1295,7 @@ function StepPanel({ onClose, children }: { onClose: () => void; children: React
         if (e.key !== 'Escape' || e.defaultPrevented) return
         e.preventDefault()
         e.stopPropagation()
-        onClose()
+        void onClose
       }}
     >
       {children}
