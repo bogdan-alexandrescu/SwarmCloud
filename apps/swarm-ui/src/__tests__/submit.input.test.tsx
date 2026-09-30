@@ -153,6 +153,16 @@ describe('browser actions are built, not typed', () => {
     ])
   })
 
+  it('a press sends its key as `key`, the field the runner reads and the declaration takes', () => {
+    // It was sent as `text`: nothing read it, and since contract request 32
+    // the declared `press` shape refuses a `text` field outright.
+    const input = built([f({
+      name: 'actions', kind: 'actions',
+      actions: [act({ type: 'press', selector: '#q', text: 'Tab' })],
+    })])
+    expect(input.actions).toEqual([{ type: 'press', selector: '#q', key: 'Tab' }])
+  })
+
   it('an action missing the part its type needs is refused before it is sent', () => {
     const out = buildInput([f({ name: 'actions', kind: 'actions', actions: [act({ type: 'click', selector: '' })] })])
     expect(out.ok).toBe(false)

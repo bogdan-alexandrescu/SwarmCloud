@@ -1477,9 +1477,10 @@ else:
 #     "never refuses valid work" -- and that stopped being true: an offer the
 #     catalogue does not declare is a refusal the form invites.
 #
-# `prompt` is every profile input. A profile whose inputs are NOT DECLARED YET
-# -- `inputs is None`: browser and generic, whose runners cannot start on a
-# prompt alone -- is bounded by size only, so nothing sent to it is compared.
+# `prompt` is every profile input. Every profile declares since contract
+# request 32 (#218): browser and generic were `inputs is None` until then,
+# bounded by size only and so never compared here. Now they are compared like
+# the rest, and a generic submission without its required `command` is a 422.
 # The default branch of `profile_input` in testlib.sh goes to whichever
 # profile a run names, so it may carry only what every declared profile takes.
 #
@@ -1555,14 +1556,11 @@ if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__"
          "for the scripts or the Submit form to be compared against")
 else:
     CATALOGUE = frozen_profiles.RUNNER_PROFILES
-    DECLARING = [set(p.inputs) for p in CATALOGUE.values() if p.inputs is not None]
+    DECLARING = [set(p.inputs) for p in CATALOGUE.values()]
 
     def accepted(name):
-        """`prompt` plus what `name` declares; None when it is not declared yet."""
-        declared = CATALOGUE[name].inputs
-        if declared is None:
-            return None
-        return {"prompt"} | set(declared)
+        """`prompt` plus what `name` declares."""
+        return {"prompt"} | set(CATALOGUE[name].inputs)
 
     # What the default branch of profile_input may carry: the keys EVERY
     # declared profile takes, because a run may name any of them.

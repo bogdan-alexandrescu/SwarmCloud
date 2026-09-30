@@ -233,10 +233,11 @@ def validate_storable(payload: Any, *, label: str = "input", step_id: str | None
     raised when the task was written: a 500 at the store, where the caller
     learns nothing, instead of a 422 here that names the path (the review of
     #213). A declared runner input cannot get this far out of range --
-    `RunnerInput` requires both bounds, inside the same range -- but a profile
-    whose inputs are not declared yet (`browser`, `generic`, #218) is bounded
-    by size alone, and a task's metadata by size and its reserved keys. This is
-    the store's own limit, not a declaration, so it applies to every profile.
+    `RunnerInput` requires both bounds, inside the same range, and since
+    contract request 32 (#218) every profile declares -- but a task's metadata
+    is bounded by size and its reserved keys alone, and this check runs on the
+    input too, so it holds whatever order the two checks run in. This is the
+    store's own limit, not a declaration, so it applies to every profile.
 
     Walked with a stack, not recursion: a payload nested a thousand deep is
     small enough to pass the size limit and deep enough to overflow Python's.
@@ -309,14 +310,17 @@ def validate_runner_input(
     task of a batch, and `submit_workflow` for each step before any task is
     built. Values are checked, never rewritten: the input is stored as sent.
 
-    EVERY PROFILE IS ASKED, and the answer is the shared rule's. A profile
-    whose inputs are NOT DECLARED YET (`inputs is None`: `browser`, `generic`,
-    open with the owner on #218) is bounded by size alone, as every profile was
-    before, because its runner cannot start without keys nobody has decided on
-    yet -- and that is `check_inputs`'s answer, not a branch here. The review
-    of #213 found this function returning before it asked, while the shared
-    rule refused every key for the same profiles: two answers to one question.
-    The size is `validate_input_size`'s, which every caller runs first.
+    EVERY PROFILE IS ASKED, and the answer is the shared rule's. Every profile
+    DECLARES now. The mock declared first (#142); `claude-code` and `codex`
+    declare `issue` (contract request 28, #265); `browser` and `generic`, which
+    were `inputs=None` and bounded by size alone until contract request 32
+    (#218, accepted by the owner on 2026-09-29), declare every key their
+    runners read, and `generic`'s `command` is required -- a task without it is
+    refused here, naming it, rather than admitted and failed in the pod. There
+    is no branch here for any profile; the review of #213 found this function
+    once deciding a case for itself ahead of the shared rule, which gave two
+    answers to one question. The size is `validate_input_size`'s, which every
+    caller runs first.
 
     `issue` NEEDS A REPOSITORY (#265). It names an issue in the task's own
     `repository_url` -- a workflow's, for a step -- and the worker fetches it
@@ -338,8 +342,7 @@ def validate_runner_input(
                 expected="an issue in the task's repository_url",
             )
     except InputRefused as refused:
-        # Only a profile that declares can refuse, so `inputs` is a mapping here.
-        declared = profile.inputs or {}
+        declared = profile.inputs
         detail: dict[str, Any] = {
             "runner_profile": profile.name,
             "key": refused.key,

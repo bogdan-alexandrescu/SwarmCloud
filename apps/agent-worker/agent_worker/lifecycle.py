@@ -123,7 +123,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, InputRefused, check_inputs
 from swarm_common.states import EventType, ParkReason, TaskState
 from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
@@ -161,6 +161,7 @@ from .config import WorkerConfig
 from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
+    ConfigError,
     ExitCode,
     FencedError,
     FencedWriteRefused,
@@ -904,6 +905,27 @@ class Worker:
 
         # ---- STEP 4b: restore the latest checkpoint ---------------------
         self.phases.enter("restore_checkpoint")
+        # THE STORED INPUT IS CHECKED AGAIN, AT THE FIRST READ OF THE TASK
+        # (contract request 32, *Preconditions*; the owner's decision on #345:
+        # every profile, no exemption). swarm-api and the bridge refuse an
+        # input its profile does not declare at submission; this asks the same
+        # rule of the input AS STORED -- `task["input"]`, before the worker adds
+        # `task_id`, `attempt_id`, `repository`, `attempt_count`,
+        # `resumed_from_checkpoint` or `staged_inputs` of its own -- so a task
+        # written before its profile declared, or by a path that skipped the
+        # API, is refused by the process that would run it. Here, and not where
+        # `input.json` is written: before a checkpoint is restored, a
+        # repository cloned, an upstream artifact staged or a credential
+        # mounted for an input that was always going to be refused.
+        #
+        # Runs AFTER `verify_spec` (STEP 4, contract request 34) and on the
+        # SAME `task` object that step verified -- never a fresh re-fetch.
+        # A spec that fails `verify_spec` raises `SpecSignatureInvalid` and
+        # ends the attempt before this line is reached, so an unverified
+        # snapshot never reaches `_recheck_runner_input`. The owner's
+        # decision on #353/#345 ordering: verify the signature first, then
+        # re-check the input, both on the one verified document.
+        _recheck_runner_input(cfg.runner_profile, task.get("input"))
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed. It is the
@@ -977,9 +999,9 @@ class Worker:
             # A CALLER NEVER CHOOSES THE MODEL (#226, invariant 10). The API
             # refuses `input.model` on every profile that declares its inputs
             # (#213); this is the same rule for a task written before that
-            # refusal shipped, a profile whose inputs are not declared yet
-            # (`browser`, `generic`: #218), or a path that does not go through
-            # the API. The model is the Job's `MODEL`, which reaches the runner
+            # refusal shipped (every profile declares since contract request
+            # 32, #218, so the API now refuses it for all of them), or a path
+            # that does not go through the API. The model is the Job's `MODEL`, which reaches the runner
             # in its environment (`_build_child_env`), never through input.json.
             payload.pop("model")
             self.log.warning(
@@ -6763,6 +6785,45 @@ def replay_agent_commits(
         rewritten=len(shas),
     )
     return kept
+
+
+def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
+    """Refuse a stored `input` its profile's declaration refuses. Every profile.
+
+    The same rule swarm-api and the plugin's bridge apply at submission,
+    `swarm_common.profiles.check_inputs`, asked of the input as stored, without
+    its `prompt` (which every profile takes and no declaration names). A
+    refusal is `ConfigError`, which exits 78, "cannot start": the task fails
+    with `EndCause.CANNOT_START`, and the reconciler does not retry it, because
+    every retry would read the same document and be refused the same way.
+
+    NO PROFILE IS EXEMPT (the owner, on #345, 2026-09-29). The mock reads keys
+    no caller may send -- `spend`, `provider`, `credential_revoked_times` and
+    the others with which it acts out a provider -- and the worker's unit suite
+    used to write them into the stored input. It hands them to the runner
+    through a test-only seam now (tests/unit/worker/conftest.py, `simulated`),
+    so a mock task is held to its declaration like any other.
+
+    The message names the key and the bound, never the value: a refused URL
+    may carry `user:password@`, and this text is stored as the task's error.
+    """
+    profile = RUNNER_PROFILES[runner_profile]
+    raw = stored if stored is not None else {}
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"the task's input is a {type(raw).__name__}, not an object; runner profile "
+            f"{runner_profile!r} cannot read it (checked again by the worker, contract "
+            "request 32)"
+        )
+    try:
+        check_inputs(profile, {key: value for key, value in raw.items() if key != "prompt"})
+    except InputRefused as refused:
+        bound = f"; expected {refused.expected}" if refused.expected else ""
+        raise ConfigError(
+            f"the task's input is refused by runner profile {runner_profile!r}: "
+            f"{', '.join(refused.keys)}{bound} (checked again by the worker, contract "
+            "request 32)"
+        ) from None
 
 
 def _end_cause_of(exc: BaseException) -> EndCause:

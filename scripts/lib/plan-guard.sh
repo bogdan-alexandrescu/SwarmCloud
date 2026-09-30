@@ -34,12 +34,21 @@
 #   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json            # apply
 #   scripts/lib/plan-guard.sh --plan build/dev.plan.json --mode destroy
 #   scripts/lib/plan-guard.sh --plan terraform/infra/plan.json --classify-iam \
-#       [--summary "$GITHUB_STEP_SUMMARY"]
+#       [--summary "$GITHUB_STEP_SUMMARY"] [--out build/plan-iam.json]
 #   scripts/lib/plan-guard.sh --self-test
 #
 # Exit 0 = the plan is allowed. Exit 2 = it is not. Exit 1 = it could not be
 # judged, which is also a refusal: this fails closed. --classify-iam exits 0
 # with its answer, or 1 without one: a plan it cannot read is never "false".
+#
+# --classify-iam writes its classification JSON to `--out FILE` when given, or
+# otherwise to a fresh `mktemp` file under build/ made for that one invocation.
+# It used to be the fixed path build/plan-iam.json, which every concurrent
+# invocation in the same checkout -- pytest-xdist workers being the case that
+# found it -- overwrote and truncated at once, so a reader could see another
+# invocation's half-written or unrelated JSON. Nothing outside this script
+# reads that path: release.yml takes the answer from stdout and the table from
+# `--summary`, never from the classification file itself.
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -51,6 +60,7 @@ MODE="apply"
 SELF_TEST=0
 CLASSIFY_IAM=0
 SUMMARY=""
+CLASSIFY_OUT=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -59,6 +69,7 @@ while [[ $# -gt 0 ]]; do
     --self-test) SELF_TEST=1; shift ;;
     --classify-iam) CLASSIFY_IAM=1; shift ;;
     --summary)   SUMMARY="$2"; shift 2 ;;
+    --out)       CLASSIFY_OUT="$2"; shift 2 ;;
     -h|--help)   sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
@@ -460,8 +471,16 @@ fi
 [[ -f "${PLAN}" ]] || die "no such plan file: ${PLAN}"
 
 if [[ "${CLASSIFY_IAM}" -eq 1 ]]; then
-  mkdir -p "${BUILD_DIR}"
-  CLASSIFICATION="${BUILD_DIR}/plan-iam.json"
+  if [[ -n "${CLASSIFY_OUT}" ]]; then
+    CLASSIFICATION="${CLASSIFY_OUT}"
+    mkdir -p "$(dirname -- "${CLASSIFICATION}")"
+  else
+    # A per-invocation file, not a fixed name: two invocations sharing a
+    # checkout (concurrent CI steps, or pytest-xdist workers running the unit
+    # tests) must never write over one another's classification.
+    mkdir -p "${BUILD_DIR}"
+    CLASSIFICATION="$(mktemp "${BUILD_DIR}/plan-iam.XXXXXX")"
+  fi
   step "Does this plan change IAM?"
   classify_iam "${PLAN}" "${CLASSIFICATION}" || die "could not classify ${PLAN} -- refusing to answer rather than answering 'false'"
   # `|| die` on the assignment itself: its status is the substitution's, so an
@@ -479,6 +498,7 @@ if [[ "${CLASSIFY_IAM}" -eq 1 ]]; then
   exit 0
 fi
 [[ -z "${SUMMARY}" ]] || die "--summary is written only with --classify-iam"
+[[ -z "${CLASSIFY_OUT}" ]] || die "--out is written only with --classify-iam"
 case "${MODE}" in
   apply|destroy) ;;
   *) die "--mode must be 'apply' or 'destroy', got '${MODE}'" ;;
