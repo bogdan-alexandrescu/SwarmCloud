@@ -1857,6 +1857,8 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "swarm-api"))
+# swarm_api.redaction re-exports the rules from swarm_redaction (#259).
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "redaction"))
 from swarm_api.redaction import redact
 
 for case in json.loads(Path(sys.argv[2]).read_text())["cases"]:

@@ -262,7 +262,15 @@ def _start_of_line(text: str, at: int, floor: int) -> int | None:
 
 
 def _tail_start(text: str, marker_start: int, floor: int) -> int:
-    """(c): the first character of the key material above an END marker with no BEGIN."""
+    """(c): the first character of the key material above an END marker with no BEGIN.
+
+    Lines above are taken no further than `PEM_BLOCK_MAX_CHARS` from the
+    marker, the reach a BEGIN has to find its END (wave 2026-09-27): a key's
+    body is under 13 KB, so base64 further up is not that key's. The bound is
+    also what lets the shell filter (`redact` in scripts/lib/common.sh),
+    which streams, hold the lines an END may yet claim -- it cannot hold an
+    unbounded run -- and the two filters agree only because both keep it.
+    """
     at = marker_start
     while at > floor and text[at - 1] in _PEM_INLINE_BODY:
         at -= 1
@@ -273,6 +281,8 @@ def _tail_start(text: str, marker_start: int, floor: int) -> int:
     while line_end >= floor:
         above = _start_of_line(text, line_end, floor)
         if above is None or _body_line(text[above:line_end], headers_allowed=False) != "base64":
+            break
+        if marker_start - above > PEM_BLOCK_MAX_CHARS:
             break
         at = above
         line_end = above - 1
