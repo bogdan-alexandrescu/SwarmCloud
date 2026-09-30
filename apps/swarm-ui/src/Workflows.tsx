@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import {
   loadWorkflowBoard,
@@ -26,7 +26,6 @@ import {
   stepDuration,
   workflowSpend,
   CANVAS_COLUMN,
-  PANEL_COLUMN,
   DECLARED_WORDS,
   NEVER_STARTED_WORD,
   PAD,
@@ -67,11 +66,8 @@ import {
   boardResultNote,
   failureGroups,
   failureCause,
-  isChain,
   nodeNote,
   parentsDoneOf,
-  rememberChainsOnly,
-  rememberedChainsOnly,
   sameStepAcross,
   shapeSignature,
   stateRankOf,
@@ -81,11 +77,8 @@ import {
   tokenPairCell,
   VIEW_LABEL,
   WORKFLOW_VIEWS,
-  workflowLabel,
-  workflowPullRequest,
   type BoardTelemetryGap,
   type StepWhy,
-  type WorkflowPullRequest,
   type WorkflowView,
 } from './stepviews'
 import { StopRun } from './StopRun'
@@ -233,17 +226,6 @@ export function WorkflowsScreen() {
   // a new card, so a reader holding the key keeps walking.
   const [pick, setPick] = useState<PickedStep | null>(null)
 
-  // HIDE THE ONE-STEP WRAPPERS (#330). Direct dispatch wraps every single task
-  // in a one-step workflow, so a busy board is mostly those and the chains it
-  // exists to show are pages down. Remembered per viewer, OFF by default: a
-  // board that silently hid rows on a first visit would be a board that lies
-  // about what exists. Up here with the other stores, above the `key`.
-  const [chainsOnly, setChainsOnly] = useState<boolean>(rememberedChainsOnly)
-  const chooseChainsOnly = useCallback((on: boolean) => {
-    setChainsOnly(on)
-    rememberChainsOnly(on)
-  }, [])
-
   // A board-wide instruction overrules the per-card ones. Keeping stale
   // overrides would make "Collapse all" leave three cards open with no way to
   // tell why -- and, since the views arrived, would make "Table" leave two
@@ -329,8 +311,6 @@ export function WorkflowsScreen() {
           pick={pick}
           choosePick={setPick}
           openCard={openCard}
-          chainsOnly={chainsOnly}
-          chooseChainsOnly={chooseChainsOnly}
           reload={reload}
         />
       )}
@@ -369,8 +349,6 @@ function Board({
   pick,
   choosePick,
   openCard,
-  chainsOnly,
-  chooseChainsOnly,
   reload,
 }: {
   board: WorkflowBoard
@@ -387,22 +365,8 @@ function Board({
   pick: PickedStep | null
   choosePick: (p: PickedStep | null) => void
   openCard: (id: string) => void
-  chainsOnly: boolean
-  chooseChainsOnly: (on: boolean) => void
   reload: () => void
 }) {
-  // THE ROWS ON SCREEN. Everything below that draws or counts a card reads
-  // this, so the sample mark cannot describe a card the toggle has hidden.
-  const shown = useMemo(
-    () => (chainsOnly ? board.workflows.filter(isChain) : board.workflows),
-    [chainsOnly, board.workflows],
-  )
-  const hidden = board.workflows.length - shown.length
-  // A PICK IN A ROW THE TOGGLE HID IS PUT DOWN. Otherwise the selection lives
-  // on in a card nobody can see, and the scrubber keeps stepping from it.
-  useEffect(() => {
-    if (pick !== null && !shown.some((w) => w.workflow_id === pick.workflowId)) choosePick(null)
-  }, [pick, shown, choosePick])
   // THE RESOURCE-CLASS CATALOGUE, read once for the board (#106): a step's why
   // line weighs its blockers against its class's `units`, as the Agents list
   // does, and forty cards each reading it would be forty reads of one table.
@@ -416,10 +380,9 @@ function Board({
   // a differently shaped workflow is a different job, not a comparison.
   const siblings = useMemo(() => {
     if (pick === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    // Over the rows ON SCREEN: a scrub may not land in a card `chains only` hid.
-    const anchor = shown.find((w) => w.workflow_id === pick.workflowId)
+    const anchor = board.workflows.find((w) => w.workflow_id === pick.workflowId)
     if (anchor === undefined) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    const found = sameStepAcross(shown, pick.stepId, shapeSignature(anchor.steps))
+    const found = sameStepAcross(board.workflows, pick.stepId, shapeSignature(anchor.steps))
     return {
       ids: found.map((f) => f.workflowId),
       refs: found.map((f) => {
@@ -427,7 +390,7 @@ function Board({
         return { workflowId: f.workflowId, dot: dotClass({ tone: p.tone, derived: p.derived }), word: p.word }
       }),
     }
-  }, [shown, board.taskById, pick])
+  }, [board.workflows, board.taskById, pick])
 
   const onPick = useCallback(
     (workflowId: string, stepId: string) =>
@@ -533,7 +496,7 @@ function Board({
   // sitting beside figures it did not qualify. The Timeline
   // draws times from the task read, and a Graph below the Figures tier draws no
   // figure either.
-  const figuresDrawn = shown.some((w) => {
+  const figuresDrawn = board.workflows.some((w) => {
     if (!expandedOf(w.workflow_id)) return false
     const view = viewOf(w.workflow_id)
     if (view === 'table') return true
@@ -551,7 +514,6 @@ function Board({
           data below the fold on a laptop. */}
       <div className="ctl-toolbar wf-chrome">
         <ModeControl mode={mode} onChoose={chooseMode} />
-        <ChainsOnly on={chainsOnly} hidden={hidden} onChoose={chooseChainsOnly} />
         <span className="is-end wf-caveats">
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
           {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
@@ -563,15 +525,7 @@ function Board({
         </span>
       </div>
       <div className="wf-board">
-        {shown.length === 0 && hidden > 0 && (
-          <span
-            className="ctl-mark is-absent wf-chains-none"
-            aria-label={`Every workflow on this board is a single step, and chains only is on. Turn it off to see the ${hidden}.`}
-          >
-            no chains
-          </span>
-        )}
-        {shown.map((w) => {
+        {board.workflows.map((w) => {
           // The selection, only when it is in THIS workflow. Every other card
           // gets null and draws no inspector.
           const mine = pick !== null && pick.workflowId === w.workflow_id ? pick : null
@@ -648,31 +602,6 @@ function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardM
         </button>
       ))}
     </div>
-  )
-}
-
-/**
- * `chains only` (#330): hide the one-step workflows direct dispatch wraps each
- * task in. A checkbox, because it is a yes/no about the board and not a fourth
- * way of drawing it. While it is on, how many rows it is hiding sits beside it
- * as a mark, so a reader never mistakes a filtered board for a quiet one.
- */
-function ChainsOnly({ on, hidden, onChoose }: { on: boolean; hidden: number; onChoose: (on: boolean) => void }) {
-  return (
-    <span className="wf-chains">
-      <label>
-        <input type="checkbox" checked={on} onChange={(e) => onChoose(e.target.checked)} />
-        chains only
-      </label>
-      {on && hidden > 0 && (
-        <span
-          className="ctl-mark wf-chains-hidden"
-          aria-label={`${hidden} one-step workflow${hidden === 1 ? ' is' : 's are'} hidden by chains only.`}
-        >
-          {hidden} one-step hidden
-        </span>
-      )}
-    </span>
   )
 }
 
@@ -1052,11 +981,6 @@ export function WorkflowCard({
   )
   const header = workflowHeaderState(workflow)
   const bodyId = `wf-body-${workflow.workflow_id}`
-  // WHAT THE ROW IS CALLED AND WHAT IT OPENED (#330), both off the step tasks
-  // the board already joined -- see `workflowLabel` and `workflowPullRequest`.
-  const label = workflowLabel(workflow, taskById)
-  const pr = workflowPullRequest(workflow, taskById)
-  const sectionRef = useRef<HTMLElement | null>(null)
 
   // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
   // always passes both, so on the real screen these are never read.
@@ -1070,41 +994,8 @@ export function WorkflowCard({
       ? onPick(workflow.workflow_id, stepId)
       : setLocalPick((p) => (p === stepId ? null : stepId))
 
-  // CLOSING THE GRAPH'S PANEL PUTS FOCUS BACK ON THE NODE THAT OPENED IT, so a
-  // keyboard reader is where they were rather than at the top of the page. The
-  // node survives the close -- only the panel unmounts -- so it can take focus
-  // at once.
-  const closePanel = (stepId: string) => {
-    pickStep(stepId)
-    const node = [...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node') ?? [])].find(
-      (b) => b.dataset.step === stepId,
-    )
-    node?.focus()
-  }
-
-  const inspector = (stepId: string, onClose: () => void) => (
-    <InspectorSlot
-      key={`${workflow.workflow_id}/${stepId}`}
-      workflow={workflow}
-      workflowLabel={label}
-      stepId={stepId}
-      taskById={taskById}
-      classes={classes}
-      usage={usage}
-      siblings={siblings}
-      onSibling={onSibling}
-      focus={scrubFocus}
-      onFocused={onScrubFocused}
-      onClose={onClose}
-      loadAttempts={loadAttempts}
-    />
-  )
-
   return (
-    <section
-      ref={sectionRef}
-      className={`section wf-card${expanded ? ' is-open' : ''}${pr !== null ? ' has-pr' : ''}`}
-    >
+    <section className={`section wf-card${expanded ? ' is-open' : ''}`}>
       {/* STILL AN <h2>, and the button is inside it rather than around it. The
           bar is this panel's heading -- it is how the workflow is named on the
           board -- and demoting it to a bare <button> would take the row out of
@@ -1140,20 +1031,7 @@ export function WorkflowCard({
               pasted anywhere, which is the only thing an id is for (B17), so
               the complete value has to survive somewhere on the row itself
               rather than only in the open card. */}
-          {/* THE LABEL LEADS, THE ID IS THE SECOND LINE (#330). A wf_ id is
-              how a workflow is pasted, not how it is recognised: ten rows of
-              `wf_5e5a…` are ten rows nobody can tell apart without opening.
-              The spec's label, when the submission gave one, is the name; the
-              id stays on the row, whole in its title, one line down. No label
-              and the id leads alone, exactly as before. */}
-          <span className={`wf-name${label !== null ? ' has-label' : ''}`}>
-            {label !== null && (
-              <span className="wf-label" title={label}>
-                {label}
-              </span>
-            )}
-            <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
-          </span>
+          <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
           {/* `workflowHeaderState`, NOT `workflow.state`. The same field name
               carries two different meanings depending on which server answered:
               derived from the step tasks on this read, or the Firestore cache
@@ -1202,18 +1080,13 @@ export function WorkflowCard({
             {expanded ? '▾' : '▸'}
           </span>
         </button>
-        {/* THE PULL REQUEST, ON THE ROW (#330), AND OUTSIDE THE BUTTON: an
-            anchor inside a <button> is invalid HTML and a click on it would
-            toggle the card as well as follow the link. It is laid over the
-            reserved `[flags]` track instead (styles.css `.wf-pr`). */}
-        {pr !== null && <PullRequestLink pr={pr} className="wf-pr" />}
       </h2>
 
       {expanded && (
         <div className="wf-body" id={bodyId}>
           <CensusFact roll={roll} />
           <StateDrift drift={workflow.drift} />
-          <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
+          <WorkflowDispatchLine workflow={workflow} taskById={taskById} />
           {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
               and the one mark that belongs to the workflow rather than to any
               view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
@@ -1223,101 +1096,49 @@ export function WorkflowCard({
             <UnreadableMark counts={unreadableOf(workflow, taskById)} />
           </div>
           {view === 'graph' ? (
-            // THE GRAPH AND ITS PANEL, SIDE BY SIDE (#330, owner request
-            // 2026-09-29). The inspector sat under the canvas, which on a
-            // tall graph is a screen away from the node that opened it. It is
-            // a column on the right now, the graph narrows to make room, and
-            // at phone width it is a bottom sheet (styles.css `.wf-split`).
-            <div className={`wf-split${picked !== null ? ' has-panel' : ''}`}>
-              <div className="wf-split-main">
-                <WorkflowGraph
-                  workflow={workflow}
-                  taskById={taskById}
-                  classes={classes}
-                  usage={usage}
-                  openStages={openStages}
-                  onToggleStage={onToggleStage}
-                  zoom={zoom}
-                  onZoom={onZoom}
-                  picked={picked}
-                  onPick={pickStep}
-                  reload={reload}
-                />
-              </div>
-              {picked !== null && (
-                <StepPanel
-                  key={`${workflow.workflow_id}/${picked}`}
-                  onClose={() => closePanel(picked)}
-                >
-                  {inspector(picked, () => closePanel(picked))}
-                </StepPanel>
-              )}
-            </div>
+            <WorkflowGraph
+              workflow={workflow}
+              taskById={taskById}
+              classes={classes}
+              usage={usage}
+              openStages={openStages}
+              onToggleStage={onToggleStage}
+              zoom={zoom}
+              onZoom={onZoom}
+              picked={picked}
+              onPick={pickStep}
+              reload={reload}
+            />
           ) : (
-            <>
-              <WorkflowSteps
-                workflow={workflow}
-                taskById={taskById}
-                classes={classes}
-                usage={usage}
-                view={view}
-                picked={picked}
-                onPick={pickStep}
-              />
-              {picked !== null && inspector(picked, () => pickStep(picked))}
-            </>
+            <WorkflowSteps
+              workflow={workflow}
+              taskById={taskById}
+              classes={classes}
+              usage={usage}
+              view={view}
+              picked={picked}
+              onPick={pickStep}
+            />
+          )}
+          {picked !== null && (
+            <InspectorSlot
+              key={`${workflow.workflow_id}/${picked}`}
+              workflow={workflow}
+              stepId={picked}
+              taskById={taskById}
+              classes={classes}
+              usage={usage}
+              siblings={siblings}
+              onSibling={onSibling}
+              focus={scrubFocus}
+              onFocused={onScrubFocused}
+              onClose={() => pickStep(picked)}
+              loadAttempts={loadAttempts}
+            />
           )}
         </div>
       )}
     </section>
-  )
-}
-
-/**
- * The details panel beside the graph (#330): its own scroll, a close control
- * (the inspector's `×`), and Escape. Focus moves INTO it when it opens -- unless
- * the inspector already took it, which is what a same-step scrub does on
- * arrival -- and `onClose` is the caller's, which puts focus back on the node.
- */
-function StepPanel({ onClose, children }: { onClose: () => void; children: ReactNode }) {
-  const ref = useRef<HTMLElement | null>(null)
-  useEffect(() => {
-    const el = ref.current
-    if (el !== null && !el.contains(document.activeElement)) el.focus()
-  }, [])
-  return (
-    <aside
-      ref={ref}
-      className="wf-panel"
-      tabIndex={-1}
-      aria-label="Step details"
-      onKeyDown={(e) => {
-        if (e.key !== 'Escape' || e.defaultPrevented) return
-        e.preventDefault()
-        e.stopPropagation()
-        onClose()
-      }}
-    >
-      {children}
-    </aside>
-  )
-}
-
-/**
- * The row's pull request: `PR #N`, a link only when the result's URL is
- * http(s). No state word -- see `workflowPullRequest` for why the recorded one
- * is not shown.
- */
-function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className: string }) {
-  const title = `Pull request #${pr.number}, opened by ${pr.stepId}. Its current state is not read here.`
-  return pr.href !== null ? (
-    <a className={`ctl-link ${className}`} href={pr.href} target="_blank" rel="noreferrer" title={title}>
-      PR #{pr.number}
-    </a>
-  ) : (
-    <span className={className} title={`${title} The recorded URL is not http(s), so it is not a link.`}>
-      PR #{pr.number}
-    </span>
   )
 }
 
@@ -1622,11 +1443,9 @@ function money(v: number): string {
 function WorkflowDispatchLine({
   workflow,
   taskById,
-  pr,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
-  pr: WorkflowPullRequest | null
 }) {
   // Rolled up from the steps' TASKS, exactly as `codec.workflow_dispatch` does
   // server-side -- the frozen `Workflow` has no metadata field, so there is
@@ -1642,7 +1461,6 @@ function WorkflowDispatchLine({
       integratorTaskId={dispatch?.integratorTaskId ?? null}
       steps={workflow.steps.length}
       joined={tasks.length > 0}
-      pr={pr}
     />
   )
 }
@@ -1659,13 +1477,11 @@ function WorkflowDispatch({
   integratorTaskId,
   steps,
   joined,
-  pr,
 }: {
   dispatch: TaskDispatch | null
   integratorTaskId: string | null
   steps: number
   joined: boolean
-  pr: WorkflowPullRequest | null
 }) {
   // BOTH ABSENCES KEEP THEIR SLOT AND THEIR KEY (design-system.md §6.13). The
   // two 29- and 15-word paragraphs this replaces are one `.ctl-mark` each --
@@ -1726,14 +1542,6 @@ function WorkflowDispatch({
           <li className="ctl-fact">
             <b>via</b>
             <code>{integratorTaskId.slice(-8)}</code>
-          </li>
-        )}
-        {/* THE SAME PULL REQUEST THE ROW NAMES (#330), here too because the
-            row's copy sits in `[flags]`, which drops below 900px. */}
-        {pr !== null && (
-          <li className="ctl-fact">
-            <b>pr</b>
-            <PullRequestLink pr={pr} className="wf-pr-fact" />
           </li>
         )}
       </ul>
@@ -1941,7 +1749,6 @@ function WorkflowSteps({
  */
 function InspectorSlot({
   workflow,
-  workflowLabel: label,
   stepId,
   taskById,
   classes,
@@ -1954,8 +1761,6 @@ function InspectorSlot({
   loadAttempts,
 }: {
   workflow: Workflow
-  /** The spec's label, or null: the inspector's head names the workflow by it (#330). */
-  workflowLabel: string | null
   stepId: string
   taskById: ReadonlyMap<string, Task> | null
   classes: ResourceClasses | null
@@ -1988,7 +1793,6 @@ function InspectorSlot({
   return (
     <StepInspector
       workflowId={workflow.workflow_id}
-      workflowLabel={label}
       row={row}
       taskState={state.kind === 'state' ? state.state : null}
       siblings={refs}
@@ -2394,35 +2198,18 @@ function WorkflowGraph({
   // render against the steps as they are now, which is right: a workflow whose
   // fan-out has not been created yet should not be pinned to the tier its first
   // two steps needed.
-  //
+  const auto = autoTier(workflow.steps)
+  const tier: ZoomTier = zoom === 'auto' ? auto : zoom
   // WHAT EACH NODE SAYS UNDER ITS STATE (#105, #106): a failure's first error
   // line, or why a waiting step is not running. Decided BEFORE the layout,
   // because the layout has to measure the line into the node's height --
   // a card that drew a row its box was not given overlaps the one beneath it.
-  // And before the tier now, because a noted card is taller and `autoTier`
-  // asks whether the whole graph fits one screen (#330 item 4).
   const notes = new Map<string, StepWhy>()
   for (const s of workflow.steps) {
     const n = nodeNote(s, stepState(s, taskById), workflow.steps, taskById, classUnits(classes, s.resource_class))
     if (n !== null) notes.set(s.step_id, n)
   }
-  const noted = new Set(notes.keys())
-  // THE DETAILS PANEL TAKES ITS COLUMN FROM THE GRAPH (#330 item 5). While a
-  // step is picked the panel stands on the right, so under Auto the graph is
-  // laid out for what is left beside it rather than scrolling sideways under
-  // it. ONLY WHEN THAT CANNOT FOLD A STAGE: a graph with a band at full width
-  // keeps its full-width layout, and one without is laid out with `band`
-  // false, so no stage -- the picked step's included -- vanishes into a band
-  // because the panel opened. A tier the reader chose is left as chosen.
-  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted)
-  const beside =
-    picked !== null &&
-    zoom === 'auto' &&
-    !layoutOf(workflow.steps, undefined, fullAuto, noted).wide.some(Boolean)
-  const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
-  const auto = beside ? autoTier(workflow.steps, column, noted, false) : fullAuto
-  const tier: ZoomTier = zoom === 'auto' ? auto : zoom
-  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column)
+  const layout = layoutOf(workflow.steps, expandedStages, tier, new Set(notes.keys()))
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -3281,7 +3068,6 @@ function StepNode({
       <button
         type="button"
         className={`node ${p.tone} zoom-${tier}${picked ? ' is-picked' : ''}`}
-        data-step={step.step_id}
         title={p.title}
         aria-pressed={picked}
         aria-describedby={note === null ? undefined : noteId}
