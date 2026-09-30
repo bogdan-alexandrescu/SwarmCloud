@@ -447,7 +447,11 @@ def test_a_value_opened_before_the_window_is_not_served():
     joined = one.text + two.text
     assert V_LISTED not in joined and V_NESTED not in joined, joined
     assert json.loads(joined) == {"a": 1, "secrets": MASK, "b": 2}
-    assert one.count + two.count == 1
+    # Each page reports what it hid: the second serves none of the list, and
+    # a page that hid a credential's lines must not say `redacted: false`
+    # (the PR #378 review). A reader of one page cannot see the other's count.
+    assert one.count == 1
+    assert two.count == 1
 
 
 def test_a_window_over_the_bound_goes_through_redact_lines(monkeypatch):
@@ -455,3 +459,229 @@ def test_a_window_over_the_bound_goes_through_redact_lines(monkeypatch):
     stored = _escaped_quote_transcript()
     monkeypatch.setattr(masking, "JSON_WINDOW_MAX_CHARS", len(stored) - 1)
     assert masking.redact_json_window(stored).text == redact_lines(stored).text
+
+
+# --------------------------------------------------------------------------
+# The PR #378 security review
+# --------------------------------------------------------------------------
+#
+# Four majors and two minors, each asserted on what is SERVED. Every test
+# below imports a module that exists at the reviewed head (d30c515), so a red
+# run is a red assertion, not an ImportError.
+
+#: A learned literal made only of digits (major 1): a PIN the task's
+#: metadata names, echoed by the agent as a JSON NUMBER.
+DIGITS = _shape("4826", "1937")
+
+
+def _no_lone_surrogate(text: str) -> bool:
+    return not any("\ud800" <= char <= "\udfff" for char in text)
+
+
+def _loads_or_none(text: str) -> Any:
+    """`json.loads`, or None: so a text that stopped being JSON fails an
+    ASSERTION, not the test's own call."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
+
+
+# Major 1: a learned literal written as a JSON number ------------------------
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        '{"n": ' + DIGITS + "}",  # the number itself
+        '{"n": 9' + DIGITS + "1}",  # inside a longer number
+        '{"n": ' + DIGITS + ".0}",  # a float of it
+        DIGITS + " ",  # a window that is only the number
+        "[1, " + DIGITS + "e0]",  # an exponent
+    ],
+    ids=["plain", "embedded", "float", "bare-window", "exponent"],
+)
+def test_a_learned_literal_written_as_a_number_is_masked(window):
+    got = _masking().redact_json_window(window, literals=(DIGITS,))
+    assert DIGITS not in got.text, got.text
+    assert _loads_or_none(got.text) is not None, got.text
+    assert MASK in got.text and got.count >= 1
+
+
+def test_a_number_the_metadata_names_is_masked_through_both_routes(client, db, objects):
+    stored = _transcript(
+        {"type": "tool_result", "exit": 0, "pin_echo": int(DIGITS)},
+        {"type": "text", "text": "done", "n": 3},
+    )
+    assert DIGITS in stored, "control: the stored text holds the number as a number"
+    _a_finished_task(
+        db, objects, files={"claude-transcript.json": stored}, metadata={"db_password": DIGITS}
+    )
+
+    for route, served in _both_routes(client, "claude-transcript.json").items():
+        assert DIGITS not in served, (route, served)
+        parsed = _loads_or_none(served)
+        assert parsed is not None, (route, served)
+        assert parsed["events"][0]["pin_echo"] == MASK, route
+        assert parsed["events"][1] == {"type": "text", "text": "done", "n": 3}, route
+
+
+# Major 2: a number under a credential-suffixed name (SECRET_KEY, ...) ---------
+
+#: One number per name the key/value rule's `keysuffix` group takes.
+SUFFIXED = {
+    "SECRET_KEY": int(_shape("6613", "0582")),
+    "PASSWORD_HASH": int(_shape("2290", "7746")),
+    "AWS_SECRET_ACCESS_KEY": int(_shape("5038", "1164")),
+}
+#: Names that hold a keyword and are counts: served exactly as sent.
+COUNTS = {"secrets": 3, "max_tokens": 4096, "input_tokens": 10, "credential_revoked_times": 2}
+
+
+def test_a_number_under_a_key_suffixed_name_is_masked_in_an_artifact():
+    document = {**SUFFIXED, **COUNTS, "TOKEN_HASH": None, "SECRET_KEY_SET": True}
+    got = _masking().redact_json_window(json.dumps(document, indent=2))
+    for name, number in SUFFIXED.items():
+        assert str(number) not in got.text, (name, got.text)
+    parsed = _loads_or_none(got.text)
+    assert parsed == {
+        **{name: MASK for name in SUFFIXED}, **COUNTS, "TOKEN_HASH": None, "SECRET_KEY_SET": True
+    }, got.text
+    assert got.count == len(SUFFIXED)
+
+
+def test_a_number_under_a_key_suffixed_name_is_masked_on_input(client, db):
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng", runner_profile="claude-code")
+    db.docs["tasks/task_a"]["input"] = {"prompt": "go", **SUFFIXED, **COUNTS, "TOKEN_HASH": None}
+
+    response = client.get("/v1/tasks/task_a/input", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    for name, number in SUFFIXED.items():
+        assert str(number) not in response.text, (name, response.text)
+    rest = _loads_or_none(response.json()["full"]["text"])
+    assert rest == {
+        "prompt": "go", **{name: MASK for name in SUFFIXED}, **COUNTS, "TOKEN_HASH": None
+    }, response.text
+    assert response.json()["full"]["redaction_count"] == len(SUFFIXED)
+
+
+def test_a_number_under_a_key_suffixed_name_is_masked_on_logs(client, db, objects):
+    lines = [
+        {"type": "config", "SECRET_KEY": SUFFIXED["SECRET_KEY"], "n": 1},
+        {"type": "config", "PASSWORD_HASH": {"v": SUFFIXED["PASSWORD_HASH"]}},
+        {"type": "config", "AWS_SECRET_ACCESS_KEY": [SUFFIXED["AWS_SECRET_ACCESS_KEY"]]},
+        {"type": "result", **COUNTS},
+    ]
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng", state="SUCCEEDED")
+    moment = datetime(2026, 9, 29, 12, 0, tzinfo=timezone.utc)
+    db.collection("attempts").document("att_1").set({
+        "attempt_id": "att_1", "task_id": "task_a", "tenant_id": "eng", "generation": 1,
+        "lease_id": "lease_att_1", "backend": "CLOUD_RUN_JOB", "execution_name": "x",
+        "created_at": moment, "started_at": moment,
+        "completed_at": moment, "exit_code": 0, "error": None,
+        "peak_rss_bytes": 1, "oom_near_miss": False, "checkpoints": [],
+    })
+    body = "".join(json.dumps(line) + "\n" for line in lines)
+    objects.put("tenants/eng/tasks/task_a/attempts/att_1/logs/stdout.log", body)
+
+    response = client.get("/v1/tasks/task_a/logs?stream=stdout", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    entry = next(s for s in response.json()["streams"] if s["stream"] == "stdout")
+    for name, number in SUFFIXED.items():
+        assert str(number) not in entry["content"], (name, entry["content"])
+    served = [_loads_or_none(line) for line in entry["content"].splitlines() if line.strip()]
+    assert served == [
+        {"type": "config", "SECRET_KEY": MASK, "n": 1},
+        {"type": "config", "PASSWORD_HASH": MASK},
+        {"type": "config", "AWS_SECRET_ACCESS_KEY": MASK},
+        {"type": "result", **COUNTS},
+    ], entry["content"]
+
+
+# Major 3: a private key split across strings in different containers ---------
+
+def _split_keys() -> list[Any]:
+    return [
+        {"l1": PEM_BEGIN, "l2": KEY_BODY[0], "l3": KEY_BODY[1], "l4": PEM_END, "after": "kept"},
+        {"k": [PEM_BEGIN, 1, *KEY_BODY, PEM_END], "after": "kept"},
+        {"k": [[PEM_BEGIN], [KEY_BODY[0]], [KEY_BODY[1]], [PEM_END]], "after": "kept"},
+        {"k": [{"line": PEM_BEGIN}, {"line": KEY_BODY[0]}, {"line": KEY_BODY[1]}, {"line": PEM_END}],
+         "after": "kept"},
+    ]
+
+
+@pytest.mark.parametrize("index", range(4), ids=["object", "list-with-number", "nested-lists", "list-of-objects"])
+def test_a_private_key_split_across_containers_is_masked_through_its_end(index):
+    document = _split_keys()[index]
+    got = _masking().redact_json_window(json.dumps(document, indent=2))
+    for line in KEY_BODY:
+        assert line not in got.text, (line, got.text)
+    parsed = _loads_or_none(got.text)
+    assert parsed is not None and parsed["after"] == "kept", got.text
+
+
+def test_a_private_key_split_across_containers_is_masked_through_both_routes(client, db, objects):
+    stored = _transcript({"type": "tool_result", **_split_keys()[3]}, {"type": "text", "text": "done"})
+    _a_finished_task(db, objects, files={"claude-transcript.json": stored})
+
+    for route, served in _both_routes(client, "claude-transcript.json").items():
+        for line in KEY_BODY:
+            assert line not in served, (route, line)
+        parsed = _loads_or_none(served)
+        assert parsed is not None and parsed["events"][1] == {"type": "text", "text": "done"}, route
+
+
+# Major 4: a fragment's grammar ------------------------------------------------
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        '  "password": "' + V_QUOTED + '": 1,\n',
+        '{\n  "a": 1,\n  "password": "' + V_QUOTED + '": 1\n}\n',
+        '  "password": "' + V_QUOTED + '": "x",\n  "b": 2\n',
+    ],
+    ids=["bare", "in-an-object", "string-after"],
+)
+def test_a_value_followed_by_a_colon_is_not_taken_for_a_key(window):
+    got = _masking().redact_json_window(window, fragment=True)
+    assert V_QUOTED not in got.text, got.text
+    assert got.count >= 1
+
+
+# Minors -----------------------------------------------------------------------
+
+def test_a_lone_surrogate_in_a_masked_string_is_served_escaped():
+    stored = '{"text": "\\ud800 PASSWORD=' + V_QUOTED + '", "n": 1}\n'
+    got = _masking().redact_json_window(stored)
+    assert V_QUOTED not in got.text, got.text
+    assert _no_lone_surrogate(got.text), repr(got.text)
+    parsed = _loads_or_none(got.text)
+    assert parsed is not None and parsed["text"] == "\ud800 PASSWORD=" + MASK, repr(got.text)
+
+
+def test_a_page_inside_a_masked_value_reports_it_redacted(client, db, objects):
+    """A page wholly inside a list under a credential's name serves none of it
+    (the page that opened it masked it whole) and must say it hid something."""
+    listed = [hashlib.sha256(f"listed {n}".encode()).hexdigest() for n in range(160)]
+    stored = _transcript({"type": "text", "text": "before"}, {"type": "config", "secrets": listed})
+    open_at = stored.index('"secrets": [')
+    close_at = stored.index("]", open_at)
+    assert close_at - open_at > 2 * 4096, "control: the list must span a whole page"
+    _a_finished_task(db, objects, files={"claude-transcript.json": stored})
+
+    inside = 0
+    offset = 0
+    while True:
+        body = _content(client, "claude-transcript.json", offset=offset, limit_bytes=4096)
+        for value in listed:
+            assert value not in body["content"], (offset, value)
+        if open_at < body["offset"] < close_at:
+            inside += 1
+            assert body["redacted"] is True, (body["offset"], body["content"][:200])
+            assert body["redaction_count"] >= 1, body["offset"]
+        following = body.get("next_offset")
+        if not body["truncated"] or not isinstance(following, int) or following <= offset:
+            break
+        offset = following
+    assert inside >= 1, "control: at least one page starts inside the list"
