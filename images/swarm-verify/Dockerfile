@@ -62,7 +62,15 @@ FROM alpine:3.20
 # the check that would have caught every "successful" browser task that
 # screenshotted about:blank (owner decision on #358, 2026-09-29). Without it
 # the acceptance suite's pixel checks SKIP in the release.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates python3
+# git because scripts/acceptance/groups/claude-code.sh applies the collected
+# patch with `git apply`, falling back to `patch -p1` only when git is
+# missing. Without either binary that fallback itself fails closed with
+# "patch: command not found", so the check never gets to say whether the
+# agent's patch was right -- release run 36738557395 (31be425) caught this:
+# the fixture patch was byte-correct and still reported FAIL. This is not the
+# gcloud/Cloud-SDK tradeoff above: git alone, with no Python dependency chain,
+# carries no comparable CVE surface.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git
 
 WORKDIR /swarm
 
