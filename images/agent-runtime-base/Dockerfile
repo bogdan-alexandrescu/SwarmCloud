@@ -171,59 +171,87 @@ RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 # npm bundles its own copy of brace-expansion, hoisted to
 # node_modules/npm/node_modules/brace-expansion -- not a Debian package, so
 # `apt-get upgrade` above never touches it. The copy NODE_IMAGE carries is
-# 5.0.7, which has CVE-2026-102276 (HIGH: stack exhaustion DoS from a crafted
-# brace pattern, fixed upstream in 5.0.10) and CVE-2026-102278 (uncontrolled
+# 5.0.7 (verified against the exact bundled npm: NODE_IMAGE resolves to Node
+# 24.21.0 -- read from the image's OCI source annotation, which points at
+# nodejs/docker-node.git 93a7bafc "24/bookworm-slim" -- and Node 24.21.0 bundles
+# npm 11.19.0 per https://nodejs.org/dist/index.json; npm@11.19.0's own
+# published tree carries brace-expansion 5.0.7, matching trivy exactly), which
+# has CVE-2026-102276 (HIGH: stack exhaustion DoS from a crafted brace
+# pattern, fixed upstream in 5.0.10) and CVE-2026-102278 (uncontrolled
 # recursion in nested patterns, fixed in 5.0.11). No published npm release
 # bundles the fix yet -- checked against npm's own `latest` (12.1.0) on
 # 2026-09-29, which still ships 5.0.9, one patch short -- so this replaces the
 # module in place rather than waiting on an npm bump.
 #
-# The replacement is the 2.x line's 2.1.6, NOT the current 5.x line's 5.0.10+.
-# 5.x was rewritten around isaacs's `tshy` dual ESM/CJS build and, as of
-# 5.0.12, declares a runtime dependency on `balanced-match@^4.0.2`, which in
-# turn depends on `jackspeak@^4.2.3` (a CLI-arg parser -- no legitimate reason
-# a brace-pattern matcher needs it at runtime, and neither 5.0.7 nor 2.x pull
-# it in). That is a materially bigger, harder-to-audit dependency graph to
-# vendor into every runner image than the fix warrants. 2.1.6 is upstream's
-# own security backport of the SAME fix to the pre-rewrite codebase (trivy's
-# fixed-version list is "5.0.10, 3.0.7, 2.1.5, 1.1.19" for CVE-2026-102276 and
-# "5.0.11, 3.0.8, 2.1.6, 1.1.20" for CVE-2026-102278 -- four maintained major
-# lines patched together, not a fork), keeps the classic flat `index.js` shape
-# npm's own pre-5.x tree already used, and depends on nothing but
-# `balanced-match@^1.0.0`, itself dependency-free. Both tarballs are pinned by
-# exact version and verified against an independently-recomputed sha512 before
-# anything is extracted -- the same download-then-verify shape UV_IMAGE and
-# NODE_IMAGE get from a digest-addressed registry, just without one available
-# here -- and balanced-match is vendored NESTED under brace-expansion's own
-# node_modules so resolution can't fall through to whatever balanced-match
-# version the rest of npm's tree happens to carry.
-ARG BRACE_EXPANSION_VERSION=2.1.6
-ARG BRACE_EXPANSION_SHA512=a62fd616906f081981fcdb1446dee15b9b03bee3aabc96833036a2ec2ae54fdc687a1cd6473a3f7614112aa3a1a4fbe59e2715693cc709bcc69e74e0a6f31317
-ARG BALANCED_MATCH_VERSION=1.0.2
-ARG BALANCED_MATCH_SHA512=de849e50ed13315ebb84dd4099b5ec2b8c9aa94eed8e21e56f144364ea47d0a5bdf82797e1b440697d009f1b74b71d8cae94695b041a3f02252121098585393f
+# This stays on the 5.x line (5.0.12, which folds in the 5.0.11 fix for
+# CVE-2026-102278 too) rather than dropping in the pre-rewrite 2.x/1.x lines
+# trivy also lists as fixed. Read straight from npm@11.19.0's own bundled
+# tree (https://unpkg.com/npm@11.19.0/node_modules/minimatch/package.json and
+# its dist/commonjs/index.js): npm's bundled minimatch is 10.2.5, which
+# depends on `brace-expansion@^5.0.5` and calls it as
+# `(0, brace_expansion_1.expand)(pattern, {...})` -- a NAMED `expand` export.
+# The 2.x/1.x lines only ever exported a default `module.exports = expandTop`
+# function with no `.expand` property, so swapping in 2.1.6 (tried in an
+# earlier revision of this change, before this was checked) would have left
+# `brace_expansion_1.expand` undefined and broken every npm codepath that
+# globs -- `npm pack`, `npm ci`'s `files` matching, `npm ls` -- silently past
+# a build that only called brace-expansion directly. brace-expansion 5.0.7,
+# 5.0.10 and 5.0.12 all define `exports.expand = expand` (checked against
+# each version's dist/commonjs/index.js), so 5.0.12 is a same-API patch.
+#
+# brace-expansion 5.0.12 depends on `balanced-match@^4.0.2`. An earlier
+# revision of this change also vendored a pinned balanced-match, having found
+# that balanced-match@4.0.2 pulls in `jackspeak@^4.2.3` (a CLI-arg parser,
+# no legitimate reason for a balanced-brace matcher to need it at runtime).
+# That check was against the wrong version: npm@11.19.0 already bundles
+# balanced-match at 4.0.4 (node_modules/npm/node_modules/balanced-match,
+# https://registry.npmjs.org/balanced-match/4.0.4 -- "dependencies" is absent
+# entirely), which satisfies brace-expansion 5.0.12's `^4.0.2` range and is
+# exactly the balanced-match 5.0.7 already resolves against today, so nothing
+# about the dependency graph changes -- only brace-expansion's own directory
+# is replaced, and Node's module resolution finds the existing sibling
+# `balanced-match` by walking up to npm's own node_modules, the same way it
+# does for every other npm-bundled package today.
+#
+# The tarball is pinned by exact version and verified against an
+# independently-recomputed sha512 before extraction -- the same
+# download-then-verify shape UV_IMAGE and NODE_IMAGE get from a
+# digest-addressed registry, just without one available for a single bundled
+# module. The build then proves the swap two ways: a direct call through the
+# same named `expand` export minimatch uses, and an end-to-end run of `npm
+# pack --dry-run`, which walks a `files` glob through npm's own bundled
+# minimatch/glob -- the actual codepath a mismatched API would break -- so a
+# bad swap fails the build rather than shipping quietly.
+ARG BRACE_EXPANSION_VERSION=5.0.12
+ARG BRACE_EXPANSION_SHA512=628bd0debce168b308ac38cd0cc90d4b4d6d79af77aa11211b9c72f1febe47497e770dca8bee6c0a822823de368ae2d94c75a881692d830543854d3d88d12299
 RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
- && BM_DIR="${BE_DIR}/node_modules/balanced-match" \
  && BE_TGZ="/tmp/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
- && BM_TGZ="/tmp/balanced-match-${BALANCED_MATCH_VERSION}.tgz" \
  && curl -fsSL -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
- && curl -fsSL -o "${BM_TGZ}" \
-      "https://registry.npmjs.org/balanced-match/-/balanced-match-${BALANCED_MATCH_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
- && echo "${BALANCED_MATCH_SHA512}  ${BM_TGZ}" | sha512sum -c - \
  && rm -rf "${BE_DIR}" \
- && mkdir -p "${BE_DIR}" "${BM_DIR}" \
+ && mkdir -p "${BE_DIR}" \
  && tar -xzf "${BE_TGZ}" -C "${BE_DIR}" --strip-components=1 \
- && tar -xzf "${BM_TGZ}" -C "${BM_DIR}" --strip-components=1 \
- && rm -f "${BE_TGZ}" "${BM_TGZ}" \
+ && rm -f "${BE_TGZ}" \
  && node -e "\
 const pkg = require('${BE_DIR}/package.json'); \
 if (pkg.version !== '${BRACE_EXPANSION_VERSION}') { throw new Error('brace-expansion landed ' + pkg.version + ', expected ${BRACE_EXPANSION_VERSION}'); } \
-const be = require('${BE_DIR}'); \
-const out = be('a{{1,2},{3,4}}b'); \
+const { expand } = require('${BE_DIR}'); \
+if (typeof expand !== 'function') { throw new Error('brace-expansion has no expand() export -- minimatch calls brace_expansion_1.expand()'); } \
+const out = expand('a{{1,2},{3,4}}b'); \
 const want = ['a1b','a2b','a3b','a4b']; \
 if (JSON.stringify(out) !== JSON.stringify(want)) { throw new Error('brace-expansion regressed: ' + JSON.stringify(out)); } \
-console.log('brace-expansion', pkg.version, 'ok');"
+console.log('brace-expansion', pkg.version, 'ok');" \
+ && export HOME=/tmp \
+ && rm -rf /tmp/npm-brace-expansion-smoke \
+ && mkdir -p /tmp/npm-brace-expansion-smoke \
+ && cd /tmp/npm-brace-expansion-smoke \
+ && npm --version \
+ && npm init -y >/dev/null \
+ && npm pack --dry-run >/dev/null \
+ && cd / \
+ && rm -rf /tmp/npm-brace-expansion-smoke \
+ && echo "npm pack (minimatch/glob brace-expansion path) ok"
 
 COPY --from=uvbin /uv /usr/local/bin/uv
 COPY --from=uvbin /uvx /usr/local/bin/uvx
