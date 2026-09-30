@@ -685,3 +685,38 @@ def test_a_page_inside_a_masked_value_reports_it_redacted(client, db, objects):
             break
         offset = following
     assert inside >= 1, "control: at least one page starts inside the list"
+
+
+# The PR #378 re-review: a key whose BEGIN is hidden where no run started ------
+
+def _hidden_begins() -> list[Any]:
+    """A BEGIN inside a value masked whole, or in an object KEY, with its END outside."""
+    return [
+        {"secret": [PEM_BEGIN], "x": KEY_BODY[0], "y": KEY_BODY[1], "z": PEM_END, "after": "kept"},
+        {"password": {"v": PEM_BEGIN}, "x": KEY_BODY[0], "y": KEY_BODY[1], "z": PEM_END, "after": "kept"},
+        {PEM_BEGIN: KEY_BODY[0], "y": KEY_BODY[1], "z": PEM_END, "after": "kept"},
+        {"token": [PEM_BEGIN, KEY_BODY[0]], "rest": [KEY_BODY[1], PEM_END], "after": "kept"},
+    ]
+
+
+@pytest.mark.parametrize("indent", [2, None], ids=["pretty", "one-line"])
+@pytest.mark.parametrize(
+    "index", range(4), ids=["in-a-masked-list", "in-a-masked-object", "as-a-key", "masked-list-then-list"]
+)
+def test_a_key_opened_inside_a_masked_value_or_a_key_is_masked_through_its_end(index, indent):
+    document = _hidden_begins()[index]
+    got = _masking().redact_json_window(json.dumps(document, indent=indent) + "\n")
+    for line in KEY_BODY:
+        assert line not in got.text, (line, got.text)
+    parsed = _loads_or_none(got.text)
+    assert parsed is not None and parsed["after"] == "kept", got.text
+
+
+def test_a_lone_surrogate_on_a_log_line_is_served_escaped():
+    """The `redact_lines` path: a JSON line re-written by `JsonMasker.json`."""
+    line = '{"text": "\\ud800 PASSWORD=' + V_QUOTED + '", "n": 1}\n'
+    got = redact_lines(line)
+    assert V_QUOTED not in got.text, got.text
+    assert _no_lone_surrogate(got.text), repr(got.text)
+    parsed = _loads_or_none(got.text)
+    assert parsed is not None and parsed["text"] == "\ud800 PASSWORD=" + MASK, repr(got.text)
