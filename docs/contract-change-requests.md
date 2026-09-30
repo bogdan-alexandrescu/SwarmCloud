@@ -6120,7 +6120,6 @@ reach it. They are listed there as rejected, not as fallbacks.
 - **#219.** The credential is read only by the merge worker, only at merge
   time. It is never in the workspace, a file, an environment variable, argv or
   a log, and it is revoked in a `finally`.
-
 ---
 
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
