@@ -79,7 +79,7 @@ while [[ $# -gt 0 ]]; do
     --only)
       [[ $# -ge 2 ]] || die "--only needs a group: ${ALL_GROUPS[*]}"
       IFS=',' read -r -a wanted <<<"$2"
-      for g in "${wanted[@]}"; do
+      for g in ${wanted[@]+"${wanted[@]}"}; do
         is_group "${g}" || die "unknown group '${g}'; the groups are: ${ALL_GROUPS[*]}"
         SELECTED+=("${g}")
       done

@@ -33,12 +33,14 @@ EOF
 }
 
 _mock_input() {
-  jq -nc --arg p "acceptance ${ACC_RUN_ID} ${ACC_CHECK}" --argjson x "${1:-{\}}" '{prompt: $p} + $x'
+  local empty='{}'
+  jq -nc --arg p "acceptance ${ACC_RUN_ID} ${ACC_CHECK}" --argjson x "${1:-$empty}" '{prompt: $p} + $x'
 }
 
 # _mock_submit VAR CHECK INPUT_EXTRA [TASK_EXTRA]
 _mock_submit() {
-  local __ms_var="$1" __ms_input="$3" __ms_extra="${4:-{\}}"
+  local empty='{}'
+  local __ms_var="$1" __ms_input="$3" __ms_extra="${4:-$empty}"
   ACC_CHECK="$2"
   acc_submit "${__ms_var}" mock "$(_mock_input "${__ms_input}")" "$(acc_extra "${__ms_extra}")" \
     || printf -v "${__ms_var}" '%s' ""

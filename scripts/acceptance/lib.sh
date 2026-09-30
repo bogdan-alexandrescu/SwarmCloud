@@ -98,19 +98,22 @@ acc_assert_eq() {
 # acc_metadata [EXTRA_JSON] -> the metadata every submission carries, so a
 # human reading Firestore can tell acceptance traffic from real work.
 acc_metadata() {
-  jq -nc --arg r "${ACC_RUN_ID}" --arg c "${ACC_CHECK}" --argjson x "${1:-{\}}" \
+  local empty='{}'
+  jq -nc --arg r "${ACC_RUN_ID}" --arg c "${ACC_CHECK}" --argjson x "${1:-$empty}" \
     '{source: "acceptance", acceptance_run: $r, check: $c} + $x'
 }
 
 # acc_extra [EXTRA_JSON] -> submit_task's EXTRA: priority and metadata, plus
 # whatever the check adds (a repository, a strategy, max_attempts).
 acc_extra() {
-  jq -nc --argjson m "$(acc_metadata)" --argjson x "${1:-{\}}" '{priority: 10, metadata: $m} + $x'
+  local empty='{}'
+  jq -nc --argjson m "$(acc_metadata)" --argjson x "${1:-$empty}" '{priority: 10, metadata: $m} + $x'
 }
 
 # acc_repo_extra [EXTRA_JSON] -> acc_extra plus this repository at ACC_REF.
 acc_repo_extra() {
-  acc_extra "$(jq -nc --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" --argjson x "${1:-{\}}" \
+  local empty='{}'
+  acc_extra "$(jq -nc --arg u "${ACC_REPOSITORY_URL}" --arg r "${ACC_REF}" --argjson x "${1:-$empty}" \
     '{repository_url: $u, repository_ref: $r} + $x')"
 }
 
