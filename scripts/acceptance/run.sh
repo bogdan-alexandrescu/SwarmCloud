@@ -80,7 +80,7 @@ run__selftest_crash() {
   step "Acceptance: ${SELFTEST_CRASH_GROUP}"
   acc_check "$(_selftest_crash_checks)"
   local selftest_required_var
-  : "${selftest_required_var:?selftest: this crash is deliberate -- proving run.sh's exit trap reports it and exits nonzero}"
+  : "${selftest_required_var:?selftest: this crash is deliberate -- proving the run.sh exit trap reports it and exits nonzero}"
 }
 
 usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
