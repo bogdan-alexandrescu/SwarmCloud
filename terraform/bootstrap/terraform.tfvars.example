@@ -13,3 +13,9 @@ location   = "US-CENTRAL1"
 enable_github_wif = false
 # github_repository   = "saga/agent-swarm-infra"
 # github_allowed_refs = ["refs/heads/main"]
+
+# The CI fixer's account (ci_fix.tf, docs/ci.md "The CI fixer"): bound to
+# .github/workflows/ci-fix.yml on refs/heads/main and to nothing else. The same
+# email as the repository variable SWARM_CI_FIX_SA, and it must also be in
+# frontend_iap_members as serviceAccount:<email>. Empty binds nothing.
+# ci_fix_service_account = "swarm-ci-fix@saga-agents-staging.iam.gserviceaccount.com"

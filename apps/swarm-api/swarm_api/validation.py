@@ -19,7 +19,7 @@ at run time, it is caught only after every upstream step has spent its compute.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -448,6 +448,21 @@ RESERVED_METADATA_KEYS = (
 #: Strategies and carriers that cannot work without somewhere to push to.
 _NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
 
+#: Strategies under which EVERY step pushes `swarm/<its task id>`: `direct-pr`
+#: and an `integrate` contributor both push, and so does the integrator. A step
+#: can start from an upstream step's branch (`builds_on`) only under these,
+#: because under `collect` no branch is ever pushed to start from.
+_EVERY_STEP_PUSHES_STRATEGIES = ("direct-pr", "integrate")
+
+#: The verdicts a review step writes into its verdict file, in the order every
+#: refusal lists them (#264). `{"verdict": "MERGE" | "NOT_YET", "findings":
+#: [...]}` is the convention; a step's `when.verdict_in` names which of them
+#: run its agent. The worker restates this as
+#: `agent_worker.verdict.REVIEW_VERDICTS`, because it must not import the
+#: control plane, and tests/unit/worker/test_verdict_gate.py holds the two
+#: equal.
+REVIEW_VERDICTS = ("MERGE", "NOT_YET")
+
 
 # --------------------------------------------------------------------------
 # A repository URL carries no credential
@@ -590,6 +605,22 @@ class DispatchOptions:
     #: integrator c never names a -- and walking the DAG in the worker would be
     #: a second implementation of the ordering this module already computed.
     integrates: tuple[str, ...] = ()
+    #: The task whose `swarm/<task-id>` branch this dispatch clones and pushes
+    #: to, instead of a branch of its own (#263). Set only on a one-step
+    #: `direct-pr` workflow, by `continuation.resolve_continuation`, which has
+    #: checked it is the caller's own task and resolved it to the ROOT of any
+    #: chain of continuations. A task id, never a branch name: the worker
+    #: derives the branch with the prefix it pushed under.
+    continues: str | None = None
+    #: The upstream TASK id whose pushed branch this step clones instead of the
+    #: workflow's `repository_ref` (#264). The worker derives the branch from
+    #: the id with its own prefix, as it does for `integrates`, so nothing here
+    #: is a ref name.
+    builds_on: str | None = None
+    #: The verdict gate (#264): the upstream TASK id whose staged verdict file
+    #: decides whether this step's agent runs, and the verdicts that run it.
+    gate_task_id: str | None = None
+    gate_verdicts: tuple[str, ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -604,11 +635,21 @@ class DispatchOptions:
         return self.strategy in _NEEDS_REPOSITORY_STRATEGIES or self.carrier == "branches"
 
     def with_role(self, role: str, integrates: Sequence[str] = ()) -> "DispatchOptions":
-        return DispatchOptions(
-            strategy=self.strategy,
-            carrier=self.carrier,
-            role=role,
-            integrates=tuple(integrates),
+        return replace(self, role=role, integrates=tuple(integrates))
+
+    def with_routing(
+        self,
+        *,
+        builds_on: str | None,
+        gate_task_id: str | None,
+        gate_verdicts: Sequence[str] = (),
+    ) -> "DispatchOptions":
+        """This step's `builds_on` and verdict gate, already resolved to task ids."""
+        return replace(
+            self,
+            builds_on=builds_on,
+            gate_task_id=gate_task_id,
+            gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
         )
 
     def to_metadata(self) -> dict[str, Any]:
@@ -618,6 +659,17 @@ class DispatchOptions:
             block["role"] = self.role
         if self.integrates:
             block["integrates"] = list(self.integrates)
+        if self.continues:
+            block["continues"] = self.continues
+        # Absent unless the step asked, so a workflow that uses neither stores
+        # exactly the block it stored before #264.
+        if self.builds_on:
+            block["builds_on"] = self.builds_on
+        if self.gate_task_id:
+            block["verdict_gate"] = {
+                "task_id": self.gate_task_id,
+                "verdict_in": list(self.gate_verdicts),
+            }
         return block
 
 
@@ -784,6 +836,143 @@ def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
     return terminals[0]
 
 
+def _ancestors(steps: Sequence[StepSpec]) -> dict[str, set[str]]:
+    """Every step's transitive upstreams. Call only after `validate_dag`."""
+    parents = {step.step_id: set(step.depends_on) for step in steps}
+    found: dict[str, set[str]] = {}
+
+    def walk(step_id: str) -> set[str]:
+        if step_id not in found:
+            found[step_id] = set()
+            seen: set[str] = set()
+            for parent in parents.get(step_id, ()):
+                seen |= {parent} | walk(parent)
+            found[step_id] = seen
+        return found[step_id]
+
+    for step in steps:
+        walk(step.step_id)
+    return found
+
+
+def validate_step_routing(
+    steps: Sequence[StepSpec],
+    *,
+    strategy: str,
+    integrator_step_id: str | None,
+) -> None:
+    """Refuse a verdict gate or a `builds_on` that could not work (#264).
+
+    Call only AFTER `validate_dag` and, under `integrate`,
+    `resolve_integrator_step`: this reasons about a graph already known to be
+    acyclic and closed.
+
+    The shape these make expressible is implement -> review -> fix, where the
+    fix's agent runs only when the review's verdict names it and the fix is the
+    one step that publishes. Each refusal below is a way that shape would
+    otherwise run to completion and do something other than what was asked:
+
+    * a gate on a step that stages nothing from the gating step has no file
+      to read, and would fail only after every upstream step had run;
+    * a verdict outside REVIEW_VERDICTS can never be written by a review that
+      follows the convention, so the gate would never open (or never shut);
+    * under `direct-pr` every step opens its own pull request, the
+      implementer's included, so the review would come after the publish it
+      exists to prevent;
+    * under `integrate` the integrator's pull request is the one place the
+      verdict is shown, so a gate on any other step would route work that PR
+      says nothing about;
+    * a gated step whose agent does not run writes no artifact, so a step that
+      stages from it would fail every time the gate stayed shut;
+    * `builds_on` names a step whose branch this step clones, so it must be
+      upstream (or its branch may not exist yet), and the strategy must push
+      every step's branch (`collect` pushes none).
+
+    Graph-shape refusals are `invalid_dag`; strategy refusals are
+    `invalid_dispatch`, the same split `resolve_integrator_step` makes.
+    """
+    ancestors = _ancestors(steps)
+    staged_by: dict[str, list[str]] = {}
+    for step in steps:
+        for source in step.input_from:
+            staged_by.setdefault(source, []).append(step.step_id)
+
+    for step in steps:
+        if step.when_step is not None:
+            if step.when_step not in step.input_from:
+                raise DagError(
+                    f"step {step.step_id!r} runs its agent on the verdict of "
+                    f"{step.when_step!r} but stages no file from it. Add "
+                    f'`"input_from": {{"{step.when_step}": "verdict.json"}}` '
+                    f"(and {step.when_step!r} to depends_on): the verdict is read "
+                    "from the file this step stages from that step.",
+                    detail={"step_id": step.step_id, "when": step.when_step},
+                )
+            verdicts = list(step.when_verdicts)
+            unknown = [v for v in verdicts if v not in REVIEW_VERDICTS]
+            if not verdicts or unknown or len(set(verdicts)) != len(verdicts):
+                raise DagError(
+                    f"step {step.step_id!r}: when.verdict_in must name one or more "
+                    "distinct verdicts from " + ", ".join(REVIEW_VERDICTS)
+                    + (f"; {', '.join(repr(v) for v in unknown)} is not one" if unknown else "")
+                    + ". A review writes one of these as `verdict` in its verdict file.",
+                    detail={
+                        "step_id": step.step_id,
+                        "verdict_in": verdicts,
+                        "accepted_verdicts": list(REVIEW_VERDICTS),
+                    },
+                )
+            if strategy == "direct-pr":
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} is gated on a review verdict, and under "
+                    "strategy 'direct-pr' every step opens its own pull request -- "
+                    "the implementer's included -- so the review would come after "
+                    "the publish it is meant to precede. Use 'integrate', where "
+                    "only the final step opens a pull request, or 'collect'.",
+                    detail={"step_id": step.step_id, "strategy": strategy},
+                )
+            if strategy == "integrate" and step.step_id != integrator_step_id:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} is gated on a review verdict, but under "
+                    f"strategy 'integrate' the step that publishes is "
+                    f"{integrator_step_id!r}, and its pull request is where the "
+                    "verdict is shown. Gate the integrating step, or make the "
+                    "gated step the one every other step feeds.",
+                    detail={
+                        "step_id": step.step_id,
+                        "integrator_step_id": integrator_step_id,
+                    },
+                )
+            if staged_by.get(step.step_id):
+                raise DagError(
+                    f"step {step.step_id!r} is gated on a review verdict, so when the "
+                    "verdict does not name it its agent does not run and it writes "
+                    "no artifact -- but " + ", ".join(repr(s) for s in staged_by[step.step_id])
+                    + " stage a file from it. A gated step cannot be an input_from "
+                    "source.",
+                    detail={"step_id": step.step_id, "staged_by": staged_by[step.step_id]},
+                )
+
+        if step.builds_on is not None:
+            if step.builds_on not in ancestors.get(step.step_id, set()):
+                raise DagError(
+                    f"step {step.step_id!r} builds on {step.builds_on!r}, which is not "
+                    "upstream of it. A step starts from the branch its base pushed, "
+                    "so the base must be one of its dependencies, directly or "
+                    "through another step.",
+                    detail={"step_id": step.step_id, "builds_on": step.builds_on},
+                )
+            if strategy not in _EVERY_STEP_PUSHES_STRATEGIES:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} builds on {step.builds_on!r}'s branch, and "
+                    f"under strategy {strategy!r} no step pushes a branch. Use "
+                    "'integrate' (only the final step opens a pull request) or "
+                    "'direct-pr'.",
+                    detail={"step_id": step.step_id, "strategy": strategy,
+                            "builds_on": step.builds_on},
+                )
+
+
 def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
     """A caller may shorten a timeout, never lengthen it past the profile's."""
     if requested is None:
@@ -811,6 +1000,11 @@ class StepSpec:
     #: the worker refused the step, after both parents had run (#64). Excluded
     #: from the hash because a mapping has none.
     input_from: Mapping[str, str] = field(default_factory=dict, hash=False)
+    #: `when.step` and `when.verdict_in` as submitted (#264), or None and ().
+    when_step: str | None = None
+    when_verdicts: tuple[str, ...] = ()
+    #: `builds_on` as submitted (#264): an upstream step id, or None.
+    builds_on: str | None = None
 
 
 class DagError(ValidationFailed):

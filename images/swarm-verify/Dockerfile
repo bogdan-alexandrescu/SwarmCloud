@@ -57,7 +57,12 @@ FROM alpine:3.20
 # jq because the scripts parse every API response with it.
 # curl because that is how they talk to the API and to the metadata server.
 # coreutils for the GNU `date`/`timeout` semantics the scripts assume.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates
+# python3 (standard library only, no pip) for scripts/acceptance/pngcheck.py,
+# which decodes a browser task's screenshot and asserts it is not blank --
+# the check that would have caught every "successful" browser task that
+# screenshotted about:blank (owner decision on #358, 2026-09-29). Without it
+# the acceptance suite's pixel checks SKIP in the release.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3
 
 WORKDIR /swarm
 

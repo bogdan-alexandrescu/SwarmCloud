@@ -103,10 +103,10 @@ CORPUS = [
 # The filter itself
 # --------------------------------------------------------------------------
 
-#: The one rule that takes the REST OF THE LINE rather than a bounded run, in
-#: both the shell filter (`sed` is line-at-a-time, so its `.*` stops at the
-#: newline) and here. A PEM block has no terminator inside the line, so
-#: anything after `-----BEGIN ... PRIVATE KEY-----` is key material.
+#: The one rule that takes at least the REST OF THE LINE rather than a bounded
+#: run, in both filters: a PEM block has no terminator inside the line, so
+#: anything after `-----BEGIN ... PRIVATE KEY-----` is key material (and the
+#: lines after it, while they look like a key's body -- #188, #206).
 LINE_TERMINAL = {"private-key"}
 
 
@@ -319,9 +319,9 @@ def test_every_rule_in_the_house_filter_has_a_counterpart_here():
     browser is not, silently, and nobody compares the two files unless
     something makes them.
 
-    The relation asserted is a SUPERSET, not equality: this module's key/value
-    rule deliberately accepts a prefix on the name so `ANTHROPIC_API_KEY=` and
-    `GH_TOKEN=` are caught, which the shell rule as written lets through.
+    This checks only that no family is missing here. That the two filters
+    give the SAME output is `test_both_filters_give_the_fixtures_output_exactly`,
+    over `tests/fixtures/redaction-parity.json`.
     """
     shell_rules = _shell_redact_rules()
     assert len(shell_rules) >= 11, "common.sh lost rules; that is the interesting direction too"
@@ -388,11 +388,16 @@ def _house_filter(lines: list[str]) -> list[str]:
 
 
 def _house_key_words() -> list[str]:
-    """The key words the house assignment rule masks after, read off the rule."""
-    rule = next(r for r in _shell_redact_rules() if "api_?key" in r)
-    words = re.search(r"\(api_\?key\|([a-z|]+)\)", rule)
-    assert words, rule
-    return ["api_key"] + words.group(1).split("|")
+    """The key words the house assignment rule masks after, read off the rule,
+    each in one literal spelling: `api_?key` and `api[-_]?key` as `api_key`,
+    `private[-_]?key` as `private_key`. The first expression whose group
+    OPENS with the api-key word is the rule; the `Authorization:` scheme rule
+    names `api[-_]?key` too, inside a group that does not open with it."""
+    for rule in _shell_redact_rules():
+        words = re.search(r"\((api(?:_|\[-_\])\?key(?:\|[a-z?_|\[\]-]+)?)\)", rule)
+        if words:
+            return [re.sub(r"\[-_\]\?|_\?", "_", word) for word in words.group(1).split("|")]
+    raise AssertionError("no expression in redact() carries the assignment rule's key words")
 
 
 @pytest.mark.parametrize(
@@ -445,9 +450,15 @@ def test_the_house_filter_still_masks_a_value_that_starts_like_a_status_word(lin
 
 
 def test_the_house_filter_still_masks_the_whole_corpus():
-    """Every credential shape above, through the shell filter itself."""
-    out = _house_filter([line for _, line, _ in CORPUS])
-    for (name, _, secret), redacted in zip(CORPUS, out):
+    """Every credential shape above, through the shell filter itself.
+
+    One input per shape: the private-key line holds a BEGIN with no END, and
+    the shell filter now masks a key as a block, as this module's does (#206)
+    -- so fed as one stream, the header-shaped `Authorization:` lines after it
+    are taken as the key's RFC 1421 headers and masked with it, which is right
+    for a key and says nothing about the Bearer rule."""
+    for name, line, secret in CORPUS:
+        redacted = _house_filter_text(line)
         assert secret not in redacted, f"{name} survived the house filter: {redacted}"
 
 
@@ -494,67 +505,116 @@ _CURL_D = json.dumps(
 )
 assert '\\\\\\"' + _KV_SECRET in _BASH_C, "the fixture must hold the value two escapes deep"
 
-#: (line as it sits in JSON text, what must not survive, what both filters give)
-ESCAPED_KEY_VALUE = [
-    (
-        'export DB_PASSWORD=\\"' + _KV_SECRET + '\\" && ./deploy.sh',
-        _KV_SECRET,
-        'export DB_PASSWORD=\\"********\\" && ./deploy.sh',
-    ),
-    (
-        '{"type":"assistant","message":{"content":[{"type":"tool_use","input":'
-        '{"command":"export DB_PASSWORD=\\"' + _KV_SECRET + '\\""}}]}}',
-        _KV_SECRET,
-        '{"type":"assistant","message":{"content":[{"type":"tool_use","input":'
-        '{"command":"export DB_PASSWORD=\\"********\\""}}]}}',
-    ),
-    (
-        "curl -d '{\\\"api_key\\\": \\\"" + _KV_BARE + "\\\"}' https://example.com",
-        _KV_BARE,
-        "curl -d '{\\\"api_key\\\": \\\"********\\\"}' https://example.com",
-    ),
-    # The reach limit PR #210 reported (comment 5841681051): a list under a
-    # credential key had its `[` masked and its value served.
-    ('{"password": ["hunter2-list-value"]}', "hunter2-list", '{"password": ["********"]}'),
-    ('{\\"password\\": [\\"hunter2-list-value\\"]}', "hunter2-list", '{\\"password\\": [\\"********\\"]}'),
-    # AN ESCAPED KEY WITH A BARE VALUE (owner decision 2026-09-27): the shell
-    # filter's plain (non-quoted-value) expression only took a bare `"?`
-    # after the key, so a number, a boolean or a bareword value -- which
-    # never opens with a quote either way -- stopped the whole expression
-    # from matching when the KEY was escaped, and passed through unmasked.
-    ('\\"password\\": 12345678', "12345678", '\\"password\\": ********'),
-    ('\\"secret\\":true', "true", '\\"secret\\":********'),
-    ('\\"token\\": abcdefgh', "abcdefgh", '\\"token\\": ********'),
-    # ONE LEVEL DEEPER (the PR #229 review): a command that quotes its own
-    # quotes, as a stream-json line holds it -- three backslashes, then the
-    # quote. Both filters masked the backslashes and served the value.
-    (_BASH_C, _KV_SECRET, _BASH_C.replace(_KV_SECRET, "********")),
-    (_CURL_D, _KV_BARE, _CURL_D.replace(_KV_BARE, "********")),
-]
-
-#: Controls: masked exactly as before the change, by both filters.
-UNCHANGED_KEY_VALUE = [
-    ('PASSWORD="bare-value-123"', "bare-value", 'PASSWORD="********"'),
-    # A backslash inside a value that was NOT opened by an escaped quote is
-    # part of the value: stopping there would serve the rest of a password.
-    ("password=ab\\cd-still-whole", "cd-still-whole", "password=********"),
-    ("GH_TOKEN=abcdef0123456789abcdef0123456789", "0123456789abc", "GH_TOKEN=********"),
-]
+#: THE CASES LIVE IN ONE FIXTURE FILE NOW (wave 2026-09-27): the escaped-quote
+#: cases above this comment used to be two lists here, and the shell parity
+#: check had none of them. `tests/fixtures/redaction-parity.json` holds every
+#: case both filters must agree on -- these, #224's names, #206's private keys,
+#: `api-key`, `Authorization: token` -- and `scripts/lib/check-contract-parity.sh`
+#: reads the same file, so the terminal and the API are held to one list.
+PARITY_FIXTURE = REPO / "tests/fixtures/redaction-parity.json"
+PARITY_CASES = json.loads(PARITY_FIXTURE.read_text())["cases"]
 
 
-@pytest.mark.parametrize(
-    "line,secret,expected",
-    ESCAPED_KEY_VALUE + UNCHANGED_KEY_VALUE,
-    ids=[f"kv-{n}" for n in range(len(ESCAPED_KEY_VALUE) + len(UNCHANGED_KEY_VALUE))],
-)
-def test_both_filters_mask_a_key_value_pair_in_json_text_the_same_way(line, secret, expected):
-    python = redact(line)
-    (shell,) = _house_filter([line])
-    assert secret not in python.text, f"the API served it: {python.text}"
-    assert secret not in shell, f"the terminal printed it: {shell}"
-    assert python.text == expected, python.text
-    assert shell == expected, f"the two filters are not one rule: {shell!r} vs {python.text!r}"
-    assert python.count == 1, "one credential, one mask"
+def _house_filter_text(text: str) -> str:
+    """`redact()` from common.sh over `text` as ONE input, so a case that spans
+    lines (a private key) reaches the filter as the lines a terminal would see."""
+    import subprocess
+
+    source = (REPO / "scripts/lib/common.sh").read_text()
+    match = re.search(r"^redact\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL)
+    assert match, "redact() is no longer where this test expects it in common.sh"
+    done = subprocess.run(
+        ["bash", "-c", match.group(0) + "redact\n"],
+        input=text + "\n",
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.endswith("\n"), repr(done.stdout)
+    return done.stdout[:-1]
+
+
+def test_the_parity_fixture_is_the_one_set_it_claims_to_be():
+    """Read, non-empty, and covering every family this wave's issues named --
+    a fixture that silently lost its private-key or #224 cases would leave the
+    parametrized test below green over nothing."""
+    names = [case["name"] for case in PARITY_CASES]
+    assert len(names) == len(set(names)), "two cases share a name"
+    for family in ("kv-", "control-", "authorization-", "pem-"):
+        assert any(name.startswith(family) for name in names), family
+    assert len(PARITY_CASES) >= 40, len(PARITY_CASES)
+
+
+@pytest.mark.parametrize("case", PARITY_CASES, ids=[c["name"] for c in PARITY_CASES])
+def test_both_filters_give_the_fixtures_output_exactly(case):
+    """EQUAL, not merely both masked: a shell rule that masked the value and
+    left a stray backslash, or a Python one that masked one character more,
+    is the drift this exists to catch."""
+    python = redact(case["text"])
+    shell = _house_filter_text(case["text"])
+    for secret in case["never"]:
+        assert secret not in python.text, f"the API served it: {python.text!r}"
+        assert secret not in shell, f"the terminal printed it: {shell!r}"
+    assert python.text == case["expected"], python.text
+    assert shell == case["expected"], f"the two filters are not one rule: {shell!r} vs {python.text!r}"
+    assert python.count == case["count"], python.count
+
+
+# --------------------------------------------------------------------------
+# A key's extent is decided by DISTANCE, in both filters (#206)
+# --------------------------------------------------------------------------
+#
+# Too large for the fixture file, so built here -- and held to the same rule:
+# both filters give the constructed output exactly. `PEM_BLOCK_MAX_CHARS` is
+# how far after a BEGIN its END is looked for, and how far above an END with
+# no BEGIN its key's lines are looked for; the shell filter streams, so it can
+# only look as far as it holds, and it holds exactly that far.
+
+def _both(text: str) -> tuple[str, str]:
+    return redact(text).text, _house_filter_text(text)
+
+
+def test_an_end_within_reach_masks_everything_since_its_begin_in_both_filters():
+    """Not only lines shaped like a key: an END within reach closes the block
+    whatever lies between, as the line rule on one JSON line always did."""
+    body = _pem_body(8)
+    text = "\n".join([_pem_marker("BEGIN"), *body[:4], "an ordinary line, not key material",
+                      *body[4:], _pem_marker("END"), "after"])
+    python, shell = _both(text)
+    assert python == shell == "\n".join([_pem_marker("BEGIN") + MASK, "after"]), (python, shell)
+
+
+def test_an_end_out_of_reach_is_an_orphan_and_the_key_stops_at_its_body_in_both_filters():
+    from swarm_api.redaction import PEM_BLOCK_MAX_CHARS
+
+    body = _pem_body(4)
+    ordinary = [f"ordinary line {n:05d} of padding, not key material" for n in range(1500)]
+    assert sum(len(line) + 1 for line in ordinary) > PEM_BLOCK_MAX_CHARS
+    text = "\n".join([_pem_marker("BEGIN"), *body, *ordinary, _pem_marker("END"), "after"])
+    python, shell = _both(text)
+    expected = "\n".join([_pem_marker("BEGIN") + MASK, *ordinary, _pem_marker("END"), "after"])
+    assert python == expected, python[:300]
+    assert shell == expected, shell[:300]
+
+
+def test_the_lines_above_an_orphan_end_are_taken_only_as_far_as_a_key_reaches():
+    """1,100 lines of base64 and an END: a key is under 13 KB, so lines more
+    than `PEM_BLOCK_MAX_CHARS` above the marker are not its lines. The bound
+    is what lets the shell filter hold a run of such lines at all -- it cannot
+    buffer an unbounded one -- and the API's filter keeps the same bound so
+    the two agree."""
+    from swarm_api.redaction import PEM_BLOCK_MAX_CHARS
+
+    lines = [f"L{n:04d}" * 12 + "QQQQ" for n in range(1100)]
+    reach = PEM_BLOCK_MAX_CHARS // (64 + 1)
+    kept = len(lines) - reach
+    assert 0 < kept < len(lines)
+    text = "\n".join([*lines, _pem_marker("END")])
+    python, shell = _both(text)
+    expected = "\n".join([*lines[:kept], MASK + _pem_marker("END")])
+    assert python == expected, python[-300:]
+    assert shell == expected, shell[-300:]
 
 
 def test_an_escaped_empty_value_is_left_alone_by_both_filters():

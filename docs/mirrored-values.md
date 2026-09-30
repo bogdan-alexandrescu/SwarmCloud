@@ -355,18 +355,6 @@ sets still fails open and silently, which is the exact shape
 `check-env-parity.sh` was built for. This is the largest remaining gap and it is
 a bounded piece of work, not a research problem.
 
-**`WORKER_SA_PREFIXES` accepts a prefix nothing creates.** The quota broker
-accepts `swarm-t` alongside the current prefix, and its comment says
-`register-tenant.sh` writes `swarm-t-<tenant>`. It does not: `GSA_PREFIX` in
-that script is the current prefix, asserted against the frozen module by
-section 4, and `swarm_common.identity` records that the `swarm-t-` prefix "no
-longer exists". So the broker accepts a tenant-identity shape no provisioning
-path produces. Section 8 asserts containment rather than equality and reports
-the extra entry instead of failing on it, because **narrowing an accepted
-identity is a migration, not a parity fix** — it needs someone to confirm no
-tenant registered under the old prefix is still live, and that is not a decision
-a checker makes.
-
 **`SCHEDULER_UID` and `RECONCILER_UID`.** `tests/unit/worker/` holds the control
 plane's numeric IAM uniqueIds as literals. IAM assigns them; nothing in the
 repository can derive them and nothing offline can verify them. They cannot be

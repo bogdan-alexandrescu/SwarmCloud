@@ -897,6 +897,69 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
+  # ACCEPTANCE: real tasks, judged by what they produced (owner decision,
+  # 2026-09-29). Smoke proves a task reaches SUCCEEDED; every browser task that
+  # screenshotted about:blank did that. scripts/acceptance/run.sh asserts the
+  # OUTPUTS -- pixels, patch lines, staged bytes, a pull request's title -- and
+  # docs/acceptance.md says why each check asserts what it does.
+  #
+  # DEV ONLY, as its name says: it spends subscription quota on six small
+  # claude-code tasks and opens real pull requests on this repository, which
+  # is a price for dev's confidence, not a step of a prod release. It never
+  # starts on prod (tests/unit/scripts/test_release_acceptance_job.py).
+  #
+  # Its own job, after `deploy`, so a red acceptance is re-run alone with
+  # "Re-run failed jobs" -- without redeploying -- and so it cannot hide a
+  # smoke failure: it starts only when `deploy` (which runs smoke) succeeded.
+  #
+  # SAME CREDENTIALS AS SMOKE: the suite runs inside the VPC as the swarm-verify
+  # job, through verify-remote.sh, one execution per group (the job's timeout
+  # is 30 minutes, and the groups together would not fit). A FAIL in any group
+  # fails this job, and so the release.
+  #
+  # The GITHUB_TOKEN is write-scoped here for one step only, the sweep: the
+  # swarm-verify job holds no GitHub credential, so the pull requests and
+  # branches the direct-pr and integrate checks opened are closed from here
+  # (scripts/acceptance/github-cleanup.sh touches only swarm/task_ branches
+  # whose changes lie entirely under tests/acceptance/fixtures/).
+  # -------------------------------------------------------------------------
+  acceptance:
+    name: acceptance (dev)
+    runs-on: ubuntu-24.04
+    needs: [deploy]
+    if: ${{ !cancelled() && needs.deploy.result == 'success' && github.event.inputs.environment != 'prod' }}
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      REGION: ${{ vars.GCP_REGION }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: acceptance suite (inside the VPC)
+        id: suite
+        # Every group runs even when an earlier one failed: verify-remote.sh
+        # runs all its targets and exits non-zero at the end naming the ones
+        # that failed.
+        run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
+
+      - name: close the pull requests and branches the suite opened
+        if: ${{ !cancelled() }}
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: ./scripts/acceptance/github-cleanup.sh
+
+  # -------------------------------------------------------------------------
   # A PARTIAL RE-RUN OF PROD GOES RED, AND SAYS WHY. On prod, `promote`,
   # `infrastructure` and `deploy` run only in the attempt `approval` cleared
   # (see the header), so "Re-run failed jobs" or "Re-run this job" skips
@@ -912,7 +975,7 @@ jobs:
   stale-approval:
     name: prod approval is from an earlier attempt
     runs-on: ubuntu-24.04
-    needs: [approval, promote, infrastructure, deploy]
+    needs: [approval, promote, infrastructure, deploy, acceptance]
     if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
     env:
       APPROVED_ATTEMPT: ${{ needs.approval.outputs.attempt }}
