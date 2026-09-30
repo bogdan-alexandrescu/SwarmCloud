@@ -207,7 +207,15 @@ for target in "${TARGETS[@]}"; do
 
   # `--wait` blocks until the execution finishes and propagates its exit code,
   # so the shell's own status is the test's status.
-  out="${TMPDIR:-/tmp}/swarm-verify-${target}.$$"
+  #
+  # `target` names an acceptance group as "acceptance/mock", so it is never
+  # safe to splice into a path directly -- "swarm-verify-acceptance/mock.$$"
+  # points INSIDE a directory ("swarm-verify-acceptance") nothing creates,
+  # and the redirection below fails before gcloud ever runs (release
+  # 36678195824: "line 212: /tmp/swarm-verify-acceptance/mock.2283: No such
+  # file or directory"). mktemp names the file itself, with no target text
+  # in the path at all.
+  out="$(mktemp "${TMPDIR:-/tmp}/swarm-verify.XXXXXX")"
   rc=0
   gcloud run jobs execute "${JOB}" \
     --project "${PROJECT_ID}" \
