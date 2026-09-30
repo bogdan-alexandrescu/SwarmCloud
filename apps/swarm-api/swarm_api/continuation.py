@@ -130,7 +130,16 @@ def resolve_continuation(
     if not TASK_ID_RE.match(requested):
         raise not_found
     try:
-        task = store.get_task(tenant_id, requested)
+        # submitted_by=None: UNFILTERED, deliberately. This check is "is this
+        # task in the caller's tenant and continuable", not "did the caller
+        # submit it" -- a continuation-scoped account's entire purpose is to
+        # continue a PULL REQUEST SOMEONE ELSE SUBMITTED (the ci-fix account
+        # fixes another member's red CI, #263). Narrowing this read to the
+        # caller's own submissions would make the feature continue nothing.
+        # `submission_scope` (deps.py) still narrows every READ route that
+        # serves data back to a continuation-scoped caller; this call is not
+        # one of those routes.
+        task = store.get_task(tenant_id, requested, submitted_by=None)
     except NotFound:
         raise not_found from None
 
