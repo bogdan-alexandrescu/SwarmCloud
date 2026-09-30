@@ -33,7 +33,9 @@
 # policy holds changes only when the owner applies bootstrap, and
 # docs/runbooks/custom-roles-to-bootstrap.md is that step.
 
-mock_provider "google" {}
+mock_provider "google" {
+  source = "./mocks/google"
+}
 
 variables {
   project_id = "saga-agents-staging"
@@ -104,6 +106,14 @@ run "the_deployer_is_not_granted_role_admin" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     enable_github_wif = true
     github_repository = "saga/agent-swarm-infra"
@@ -151,6 +161,14 @@ run "swarm_secret_lister_is_not_a_role_ci_may_grant" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     enable_github_wif = true
     github_repository = "saga/agent-swarm-infra"
@@ -190,6 +208,14 @@ run "role_admin_cannot_be_put_back_on_the_deployer" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   variables {

@@ -13,7 +13,24 @@
 #   * the deployer holds only what reading the public keys at plan needs;
 #   * the key carries managed-by=swarm-terraform, and cloudkms is enabled.
 
-mock_provider "google" {}
+mock_provider "google" {
+  source = "./mocks/google"
+}
+
+# The step-spec key this root creates (spec_signing.tf) gates a data read with
+# depends_on, so on a genuinely first-ever plan (nothing in state yet -- which
+# is what a mock plan always is) that read, and the per-version reads the
+# shared spec_signing_key module now does with a for_each over it, would stay
+# "known only after apply". Every run below is about something else entirely,
+# so the key is given a plan-time identity here, once, the same way
+# platform_roles.tftest.hcl does for the custom roles it is not testing either.
+override_resource {
+  target          = google_kms_crypto_key.step_spec
+  override_during = plan
+  values = {
+    id = "mock-bootstrap-step-spec-key"
+  }
+}
 
 variables {
   project_id = "saga-agents-staging"

@@ -286,7 +286,9 @@ run "dev_blocks_the_plan_on_an_untrusted_signing_version" {
     spec_signing_key_version = 2 # DISABLED: not a key in local.spec_verify_keys
   }
 
-  expect_failures = [output.spec_verify_keys_configmap]
+  # Both fire on the same untrusted version: the check (a warning everywhere)
+  # and, in dev only, the output precondition that blocks the plan.
+  expect_failures = [check.spec_signing_version_is_trusted, output.spec_verify_keys_configmap]
 }
 
 run "prod_only_warns_on_the_same_untrusted_version" {
@@ -301,9 +303,14 @@ run "prod_only_warns_on_the_same_untrusted_version" {
     spec_signing_key_version = 2 # DISABLED, same as above
   }
 
-  # No expect_failures: prod's plan must still succeed. check
-  # "spec_signing_version_is_trusted" still fires (a WARNING, not a failure);
-  # only dev's output precondition blocks.
+  # check "spec_signing_version_is_trusted" still fires here too -- it is
+  # unconditional, so a real `terraform plan` warns in every environment and
+  # only dev's output precondition actually blocks. `terraform test` itself
+  # has no notion of "warning": it surfaces ANY failing check as an error
+  # unless expect_failures names it, in every environment, so this run must
+  # list it even though prod's own plan would exit clean.
+  expect_failures = [check.spec_signing_version_is_trusted]
+
   assert {
     condition     = !contains(keys(output.spec_verify_keys), output.spec_signing_key_version)
     error_message = "the control for this run: version 2 must actually be untrusted, or the run above proves nothing"

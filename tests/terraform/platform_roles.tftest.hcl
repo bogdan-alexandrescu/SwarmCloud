@@ -72,6 +72,14 @@ run "bootstrap_defines_the_eight_roles_exactly_as_terraform_infra_did" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   assert {
     condition     = toset(keys(google_project_iam_custom_role.platform)) == toset(keys(run.fixture.roles))
     error_message = "terraform/bootstrap must define exactly the eight custom roles terraform/infra defined: one missing is a role the release forgets and nobody manages, one extra is a role nobody decided on"
@@ -129,6 +137,14 @@ run "bootstrap_grants_the_broker_swarm_secret_lister" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   assert {
     condition     = toset(keys(google_project_iam_member.broker_secret_lister)) == toset(["swarm-quota-broker"])
     error_message = "terraform/bootstrap must make the broker's swarmSecretLister grant, once"
@@ -180,6 +196,14 @@ run "a_fresh_project_grants_the_broker_nothing_until_it_exists" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     grant_broker_secret_lister = false
   }
@@ -206,6 +230,14 @@ run "only_the_reconciler_s_roles_can_delete" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   assert {
@@ -254,6 +286,14 @@ run "the_broker_can_provision_account_secrets_and_read_none" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   # Pinned as an exact SET, not a subset check. The point of a custom role here
@@ -318,6 +358,14 @@ run "dropping_the_project_wide_versions_add_removes_nothing_else" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     broker_secret_lister_project_wide_versions_add = false
   }
@@ -348,6 +396,14 @@ run "a_tenant_worker_can_neither_enumerate_nor_destroy_control_plane_state" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   # The predefined roles/datastore.user would add entities.delete and
@@ -412,6 +468,14 @@ run "a_puller_role_that_can_enumerate_is_refused" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     image_puller_permissions = [
       "artifactregistry.repositories.get",
@@ -428,6 +492,14 @@ run "a_puller_role_that_can_push_is_refused" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   variables {
@@ -507,6 +579,14 @@ run "adoption_waits_until_terraform_infra_has_let_go" {
     source = "../../terraform/bootstrap"
   }
 
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
+  }
+
   variables {
     adopt_from_infra_states = ["infra/dev"]
 
@@ -542,6 +622,14 @@ run "adoption_proceeds_once_terraform_infra_has_let_go" {
 
   module {
     source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_kms_crypto_key.step_spec
+    override_during = plan
+    values = {
+      id = "mock-bootstrap-step-spec-key"
+    }
   }
 
   variables {

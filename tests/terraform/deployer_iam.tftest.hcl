@@ -31,6 +31,19 @@ mock_provider "google" {
   source = "./mocks/google"
 }
 
+# The step-spec key this root creates (spec_signing.tf) gates a data read with
+# depends_on, so on a first-ever plan (a mock plan always is one) that read,
+# and the per-version reads the shared spec_signing_key module now does with a
+# for_each over it, would stay "known only after apply". None of these runs
+# are about the key, so it is given a plan-time identity here, once.
+override_resource {
+  target          = google_kms_crypto_key.step_spec
+  override_during = plan
+  values = {
+    id = "mock-bootstrap-step-spec-key"
+  }
+}
+
 variables {
   project_id = "saga-agents-staging"
 
