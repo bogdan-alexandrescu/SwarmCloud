@@ -81,7 +81,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
 from functools import lru_cache
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Collection, Iterable, Mapping, Sequence
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from google.cloud import firestore
@@ -810,6 +810,20 @@ SCOPES = ("tenant", "platform")
 KINDS = ("all", "standalone", "steps")
 GROUPS = ("runner_profile", "submitted_by", "tenant_id")
 COMPARES = ("none", "previous")
+#: The keys of the response a caller may ask for alone, with `section` (#377),
+#: in the order the response carries them. Everything else -- the resolved
+#: query, `vocab`, `reads`, `cached`, `generated_at` -- is the envelope, sent
+#: with every section because every card needs it to say what it shows.
+SECTIONS = (
+    "buckets",
+    "totals",
+    "retries",
+    "latency",
+    "groups",
+    "workflows_failed",
+    "coverage",
+    "previous",
+)
 
 _DATE_ONLY = re.compile(r"\d{4}-\d{2}-\d{2}")
 
@@ -833,6 +847,9 @@ class Params:
     group: str
     compare: str
     previous_edges: tuple[datetime, ...] | None
+    #: The sections asked for, in SECTIONS order; None is every one (no
+    #: `section` at all), which is the response as it was before #377.
+    sections: tuple[str, ...] | None = None
 
     def filters(self) -> dict[str, Any]:
         return {
@@ -857,6 +874,7 @@ class Params:
             self.kind,
             self.group,
             self.compare,
+            self.sections,
         )
 
 
@@ -1119,6 +1137,21 @@ def parse_params(raw: Mapping[str, Any], *, now: datetime) -> Params:
             )
     people = sorted({p.lower() for p in _many(raw, "submitted_by")})
 
+    asked = _many(raw, "section")
+    for name in asked:
+        if name not in SECTIONS:
+            raise _refuse(
+                "section",
+                f"unknown section {name!r}",
+                value=name,
+                allowed=list(SECTIONS),
+            )
+    # Naming every section is the full response, so it is keyed (and cached)
+    # as one: None.
+    sections = tuple(s for s in SECTIONS if s in asked) if asked else None
+    if sections == SECTIONS:
+        sections = None
+
     previous: tuple[datetime, ...] | None = None
     if compare == "previous":
         back = [since]
@@ -1149,6 +1182,7 @@ def parse_params(raw: Mapping[str, Any], *, now: datetime) -> Params:
         group=group,
         compare=compare,
         previous_edges=previous,
+        sections=sections,
     )
 
 
@@ -1999,8 +2033,15 @@ def fold(
     main_days: Sequence[date],
     previous_days: Sequence[date] = (),
     generated_at: datetime,
+    sections: Collection[str] = SECTIONS,
 ) -> dict[str, Any]:
     """Every figure the response carries, from the tuples. Pure.
+
+    `sections` names the blocks wanted (#377). `buckets`, `totals` and
+    `reopened` are always folded -- they are one pass over the placed tuples,
+    and `totals.complete` decides whether the payload may be cached -- and
+    each other block only when asked for (`wait_excluded` with `latency` or
+    `coverage`, which prints it).
 
     Totals, cards and groups are computed ONLY over buckets that were read
     (the TS-9 rule): a bucket is unread when any overlapping tenant-day is, and
@@ -2050,7 +2091,6 @@ def fold(
         buckets.append(row)
 
     kept = [t for _, t in placed_ended]
-    latency, wait_excluded = _latency(kept)
     totals = {
         "complete": read == buckets_n,
         "buckets": buckets_n,
@@ -2065,17 +2105,18 @@ def fold(
         "failure_classes": dict(total.classes),
         "cost": _cost_totals(kept),
     }
-    return {
-        "buckets": buckets,
-        "totals": totals,
-        "retries": _retries(kept),
-        "latency": latency,
-        "groups": _groups(placed_ended, placed_arrived, params.group, reasons),
-        "workflows_failed": _workflows_failed(kept, params),
-        "previous": _previous(params, tenants, days, previous_days),
-        "reopened": reopened,
-        "wait_excluded": wait_excluded,
-    }
+    out: dict[str, Any] = {"buckets": buckets, "totals": totals, "reopened": reopened}
+    if "retries" in sections:
+        out["retries"] = _retries(kept)
+    if "latency" in sections or "coverage" in sections:
+        out["latency"], out["wait_excluded"] = _latency(kept)
+    if "groups" in sections:
+        out["groups"] = _groups(placed_ended, placed_arrived, params.group, reasons)
+    if "workflows_failed" in sections:
+        out["workflows_failed"] = _workflows_failed(kept, params)
+    if "previous" in sections:
+        out["previous"] = _previous(params, tenants, days, previous_days)
+    return out
 
 
 def _chunks(items: Sequence[Any], size: int) -> Iterable[Sequence[Any]]:
@@ -2643,10 +2684,24 @@ class Outcomes:
     # -- GET /v1/outcomes ------------------------------------------------------
 
     def read(self, *, tenant_id: str, raw: Mapping[str, Any]) -> dict[str, Any]:
-        """The whole response. `tenant_id` is tenant_scope's resolved id; the route
-        has already run the admin gate if anything beyond it was asked for."""
+        """The whole response, or the envelope and the `section`s asked for.
+        `tenant_id` is tenant_scope's resolved id; the route has already run the
+        admin gate if anything beyond it was asked for.
+
+        WHAT A SECTION COSTS (#377). Every section is folded from the same
+        tenant-day documents of the span, so a call for ONE section still reads
+        all of them -- the stored day docs and their shards, the live day's
+        delta since its cut, and any day it has to derive -- plus the tenant
+        listing in platform scope. That scan is done once per request however
+        many sections it names. Only three sections read more, and only they
+        do: `previous` the span before's day docs, `coverage` one count() per
+        terminal state per tenant (`terminal_without_completed_at`), and
+        `workflows_failed` the listed workflows and their steps. No section is
+        the full response, exactly as before sections existed.
+        """
         now = self._utcnow()
         params = parse_params(raw, now=now)
+        want = SECTIONS if params.sections is None else params.sections
         meter = _Meter()
         scope, tenants, whole_platform = self._resolve_scope(params, tenant_id, meter)
         key = (
@@ -2664,7 +2719,7 @@ class Outcomes:
         main_days = _utc_days(params.since, params.until)
         previous_days = (
             _utc_days(params.previous_edges[0], params.previous_edges[-1])
-            if params.previous_edges
+            if params.previous_edges and "previous" in want
             else []
         )
         wanted = sorted(set(main_days) | set(previous_days))
@@ -2676,10 +2731,53 @@ class Outcomes:
             main_days=main_days,
             previous_days=previous_days,
             generated_at=now,
+            sections=want,
         )
-        self._enrich_workflows(folded["workflows_failed"], meter)
-        terminal = self._terminal_without_completed_at(tenants, whole_platform, meter)
+        if "workflows_failed" in want:
+            self._enrich_workflows(folded["workflows_failed"], meter)
+        blocks = {k: folded[k] for k in SECTIONS if k in want and k in folded}
+        if "coverage" in want:
+            blocks["coverage"] = self._coverage(
+                tenants, main_days, days, derived, folded, whole_platform, meter
+            )
 
+        payload = {
+            "scope": scope,
+            "tz": params.tz_name,
+            "requested": dict(params.requested),
+            "since": _local_iso(params.since, params.tz),
+            "until": _local_iso(params.until, params.tz),
+            "bucket": params.bucket,
+            "bucket_chosen_by": params.bucket_chosen_by,
+            "basis": {"outcomes": "completed_at", "submitted": "created_at"},
+            "filters": params.filters(),
+            "vocab": VOCAB,
+            **{k: blocks[k] for k in SECTIONS if k in want},
+            "reads": meter.reads,
+            "cached": False,
+            "generated_at": _utc_iso(now),
+        }
+        previous = folded.get("previous")
+        # Only a COMPLETE payload is cached. One with unread days is not, so a
+        # re-request continues the derive where this one stopped instead of
+        # being handed the same gaps for a minute. A section's payload is keyed
+        # by its sections (`canonical`), so it is never served for another.
+        if folded["totals"]["complete"] and (previous is None or previous["complete"]):
+            self._cache_put(key, payload, now)
+        return payload
+
+    def _coverage(
+        self,
+        tenants: Sequence[str],
+        main_days: Sequence[date],
+        days: Mapping[tuple[str, date], DayResult],
+        derived: int,
+        folded: Mapping[str, Any],
+        whole_platform: bool,
+        meter: _Meter,
+    ) -> dict[str, Any]:
+        """The `coverage` block: what was read, and what cannot be placed."""
+        terminal = self._terminal_without_completed_at(tenants, whole_platform, meter)
         census = {"total": 0, "sealed": 0, "live": 0, "unread": 0}
         unread = []
         cuts = []
@@ -2693,46 +2791,16 @@ class Outcomes:
                 elif result.status == "live" and result.built_through is not None:
                     cuts.append(result.built_through)
         unread.sort(key=lambda u: (u["day"], u["tenant_id"]))
-
-        payload = {
-            "scope": scope,
-            "tz": params.tz_name,
-            "requested": dict(params.requested),
-            "since": _local_iso(params.since, params.tz),
-            "until": _local_iso(params.until, params.tz),
-            "bucket": params.bucket,
-            "bucket_chosen_by": params.bucket_chosen_by,
-            "basis": {"outcomes": "completed_at", "submitted": "created_at"},
-            "filters": params.filters(),
-            "vocab": VOCAB,
-            "buckets": folded["buckets"],
-            "totals": folded["totals"],
-            "retries": folded["retries"],
-            "latency": folded["latency"],
-            "groups": folded["groups"],
-            "workflows_failed": folded["workflows_failed"],
-            "coverage": {
-                "days": census,
-                "unread": unread,
-                "derived_now": derived,
-                "built_through": _utc_iso(min(cuts)) if cuts else None,
-                "reopened": folded["reopened"],
-                "terminal_without_completed_at": terminal,
-                "wait_excluded": folded["wait_excluded"],
-                "seal_grace_s": OUTCOMES_SEAL_GRACE_S,
-            },
-            "previous": folded["previous"],
-            "reads": meter.reads,
-            "cached": False,
-            "generated_at": _utc_iso(now),
+        return {
+            "days": census,
+            "unread": unread,
+            "derived_now": derived,
+            "built_through": _utc_iso(min(cuts)) if cuts else None,
+            "reopened": folded["reopened"],
+            "terminal_without_completed_at": terminal,
+            "wait_excluded": folded["wait_excluded"],
+            "seal_grace_s": OUTCOMES_SEAL_GRACE_S,
         }
-        previous = folded["previous"]
-        # Only a COMPLETE payload is cached. One with unread days is not, so a
-        # re-request continues the derive where this one stopped instead of
-        # being handed the same gaps for a minute.
-        if folded["totals"]["complete"] and (previous is None or previous["complete"]):
-            self._cache_put(key, payload, now)
-        return payload
 
     # -- POST /v1/admin/outcomes/rollup ----------------------------------------
 
