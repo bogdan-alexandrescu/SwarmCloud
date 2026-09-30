@@ -269,7 +269,7 @@ def test_a_tenant_with_no_key_and_no_pool_still_parks_as_before(db, worker_facto
     """The pre-existing behaviour, unchanged: an admin has not registered the
     key, so the task parks rather than failing."""
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "needs a key", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "needs a key"})
     seed_tenant(db, credentials=[])
     worker, _, _ = worker_factory(runner_profile="claude-code")
     worker._account_broker = FakeBroker(NoAccount(reason=NO_ACCOUNTS_REGISTERED))
@@ -285,7 +285,7 @@ def test_an_exhausted_pool_parks_the_task(db, worker_factory, secrets):
     """Every account is spent. Nobody did anything wrong, so this must not
     spend one of the task's three attempts."""
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "waits for capacity", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "waits for capacity"})
     seed_tenant(db, credentials=["anthropic"])
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(NoAccount(reason="no_account_available"))
@@ -302,7 +302,7 @@ def test_the_park_names_the_pool_so_the_cause_is_not_guessed_at(db, worker_facto
     """PROVIDER_QUOTA_EXHAUSTED is also what a 429 parks as. The detail is what
     separates "the provider throttled us" from "our own pool is full"."""
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(NoAccount(reason="no_account_available"))
@@ -318,7 +318,7 @@ def test_the_task_wakes_when_the_window_clears_rather_than_polling(db, worker_fa
     scheduled back at a known instant instead of probed."""
     clears = datetime.now(timezone.utc) + timedelta(hours=2)
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(
@@ -336,7 +336,7 @@ def test_a_pool_waiting_on_a_person_uses_the_fallback_delay(db, worker_factory, 
     from agent_worker.lifecycle import NO_ACCOUNT_RETRY_SECONDS
 
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(NoAccount(reason="no_account_available"))
@@ -355,7 +355,7 @@ def test_the_account_is_released_when_the_attempt_parks(db, worker_factory, secr
     from swarm_common.models import ProviderState
 
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=[])          # NO tenant key: only the pool can serve this
     db.seed(
         f"quota/anthropic:{TENANT}",
@@ -378,7 +378,7 @@ def test_a_fenced_worker_releases_the_account_it_had_taken(db, worker_factory, s
     took it, so this worker gives it back, or the pool counts an agent that
     does not exist."""
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])
     broker = FakeBroker()
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
@@ -586,7 +586,7 @@ def test_a_borrowed_account_the_worker_cannot_read_parks_rather_than_failing(
             raise gexc.PermissionDenied("Permission denied on secret")
 
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=[])          # only the pool can serve this tenant
     broker = FakeBroker()
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=Denied({}))
@@ -635,7 +635,7 @@ def test_a_refused_worker_parks_instead_of_using_the_tenant_secret(
     shared subscription -- the exact contention the pool removes -- while the
     pool's own dashboards showed it healthy and idle."""
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])   # a usable tenant secret EXISTS
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(
@@ -661,7 +661,7 @@ def test_a_stale_pool_waits_minutes_rather_than_a_quarter_of_an_hour(
     )
 
     seed_attempt(db, runner_profile="claude-code",
-                 task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+                 task_input={"prompt": "x"})
     seed_tenant(db, credentials=["anthropic"])
     worker, _, _ = worker_factory(runner_profile="claude-code", secret_client=secrets)
     worker._account_broker = FakeBroker(NoAccount(reason="no_recent_reading"))

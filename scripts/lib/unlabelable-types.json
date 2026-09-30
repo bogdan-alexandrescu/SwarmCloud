@@ -47,7 +47,14 @@
     "google_logging_log_view was added on 2026-09-24 for that view (the release's",
     "deployer reads swarm-verify's logs through it), checked the same way against",
     "the pinned provider 6.50.0: its attributes are bucket, create_time,",
-    "description, filter, id, location, name, parent and update_time -- no labels."
+    "description, filter, id, location, name, parent and update_time -- no labels.",
+    "",
+    "google_kms_key_ring was added on 2026-09-29 for terraform/bootstrap/spec_signing.tf",
+    "(contract request 34, the step-spec signing key), checked the same way against",
+    "the pinned provider 6.50.0: its attributes are id, location, name and project --",
+    "no labels. google_kms_crypto_key DOES have labels, carries managed-by, and is",
+    "not listed. The key's google_kms_crypto_key_iam_member grants are not listed",
+    "either: they are *_iam_member, exempt by shape like every other one above."
   ],
   "types": [
     "google_cloud_scheduler_job",
@@ -71,6 +78,7 @@
     "google_firestore_index",
     "google_iam_workload_identity_pool",
     "google_iam_workload_identity_pool_provider",
+    "google_kms_key_ring",
     "google_logging_log_view",
     "google_logging_metric",
     "google_logging_project_bucket_config",

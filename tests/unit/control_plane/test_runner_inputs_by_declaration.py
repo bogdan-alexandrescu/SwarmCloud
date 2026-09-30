@@ -21,11 +21,12 @@ bound it broke. Nothing is created.
 WHAT IS HELD HERE, at each of the three doors a caller has: POST /v1/tasks,
 POST /v1/tasks/batch, and a step of POST /v1/workflows.
 
-A PROFILE WHOSE INPUTS ARE NOT DECLARED YET is bounded by size only, as every
-profile was before: `browser` cannot start without `url` or `actions`, and
-`generic` without `command`, so declaring none for them would refuse every
-task they run. Which keys they declare is recorded as an open question in
-docs/contract-change-requests.md (25).
+EVERY PROFILE DECLARES (contract request 32, #218, accepted by the owner on
+2026-09-29). Until then `browser` and `generic` were `inputs=None` and bounded
+by size only, so a `generic` task with no `command`, or a browser `goto` to a
+private address, was admitted, leased and started before it failed. They
+declare every key their runners read now, `generic`'s `command` is required,
+and the API holds them to it at every door like the mock.
 """
 
 from __future__ import annotations
@@ -266,26 +267,39 @@ def test_the_catalogue_refuses_a_number_it_could_not_store(kwargs):
         RunnerInput(**kwargs)
 
 
-#: A profile whose inputs are not declared yet has no bound to break, so the
-#: store's own limit is the only one: the API refuses what Firestore cannot
-#: encode, wherever in the input it sits.
-UNSTORABLE_UNDECLARED = {
-    "a browser viewport": ("browser", {"url": "https://example.com", "viewport_width": HUGE}),
-    "a nested generic value": (
-        "generic", {"command": "pytest", "paths": ["tests"], "extra": {"deep": [1, -PAST_INT64 - 1]}},
+#: What `browser` and `generic` were sent while they were `inputs=None`, and
+#: the API bounded them by size alone: each was admitted and failed, or ran
+#: something other than asked, inside the pod. Each is refused at the door now.
+REFUSED_SINCE_REQUEST_32 = {
+    "a generic task with no command": ("generic", {"paths": ["tests"]}, "command"),
+    "a command outside the catalogue": ("generic", {"command": "sh"}, "command"),
+    "an argv by another name": ("generic", {"command": "pytest", "argv": ["-x"]}, "argv"),
+    "a make target that is a flag": ("generic", {"command": "make", "target": "-k"}, "target"),
+    "a limit of zero": ("generic", {"command": "pytest", "timeout_seconds": 0}, "timeout_seconds"),
+    "a limit past the ceiling": ("generic", {"command": "pytest", "max_stdout_bytes": 10**9}, "max_stdout_bytes"),
+    "a nested value nobody reads": (
+        "generic", {"command": "pytest", "paths": ["tests"], "extra": {"deep": [1, -PAST_INT64 - 1]}}, "extra",
+    ),
+    "the metadata server": ("browser", {"url": "http://169.254.169.254/computeMetadata/v1/"}, "url"),
+    "a private goto": ("browser", {"actions": [{"type": "goto", "url": "http://10.0.0.1/"}]}, "actions"),
+    "a credentialled url": ("browser", {"url": "https://user:pw@example.com/"}, "url"),
+    "a click with no selector": ("browser", {"actions": [{"type": "click"}]}, "actions"),
+    "a wait past the runner's clamp": ("browser", {"actions": [{"type": "wait", "seconds": 600}]}, "actions"),
+    "a timeout of zero": ("browser", {"url": "https://example.com", "timeout_ms": 0}, "timeout_ms"),
+    "a viewport Firestore cannot store": (
+        "browser", {"url": "https://example.com", "viewport_width": HUGE}, "viewport_width",
     ),
 }
 
 
 @pytest.mark.parametrize("door", DOORS)
-@pytest.mark.parametrize("case", UNSTORABLE_UNDECLARED)
-def test_a_profile_not_declared_yet_refuses_an_integer_firestore_cannot_store(client, db, door, case):
-    name, input = UNSTORABLE_UNDECLARED[case]
-    response = DOORS[door](client, name, input)
+@pytest.mark.parametrize("case", REFUSED_SINCE_REQUEST_32)
+def test_browser_and_generic_are_held_to_their_declarations_at_every_door(client, db, door, case):
+    name, input, key = REFUSED_SINCE_REQUEST_32[case]
+    response = DOORS[door](client, name, {"prompt": "x", **input})
     assert response.status_code == 422, response.text
     body = response.json()
-    assert body["detail"]["path"].startswith("input."), body
-    assert "64-bit" in body["message"], body
+    assert key in body["message"], body
     assert not _tasks(db), "a refused submission created a task"
 
 
@@ -304,7 +318,7 @@ def test_the_edges_of_the_signed_64_bit_range_are_storable(client, value):
     """The refusal is Firestore's range, not a guess at it: both ends are kept."""
     response = client.post(
         "/v1/tasks", headers=auth_header("alice"),
-        json={"runner_profile": "browser", "input": {"url": "https://example.com", "n": value}},
+        json={"runner_profile": "mock", "input": {"prompt": "x"}, "metadata": {"run": {"n": value}}},
     )
     assert response.status_code == 201, response.text
 
@@ -335,29 +349,77 @@ def test_the_mock_takes_every_input_it_declares(client, db, door):
     assert EVERY_MOCK_INPUT in stored, "the input is stored as it was sent"
 
 
+#: What a profile needs besides its prompt: `generic`'s one required key.
+REQUIRED_BESIDES_THE_PROMPT = {"generic": {"command": "pytest"}}
+
+
 @pytest.mark.parametrize("name", sorted(n for n, p in RUNNER_PROFILES.items() if p.available))
 def test_the_prompt_is_every_available_profiles(client, name):
-    response = _task(client, name, {"prompt": "the instructions"})
+    response = _task(client, name, {"prompt": "the instructions", **REQUIRED_BESIDES_THE_PROMPT.get(name, {})})
     assert response.status_code == 201, response.text
 
 
-@pytest.mark.parametrize(
-    "name,input",
-    [
-        ("browser", {"url": "https://example.com", "actions": [{"type": "screenshot", "name": "a.png"}],
-                     "extract_text": False, "viewport_width": 800}),
-        ("generic", {"command": "pytest", "paths": ["tests"], "working_directory": "repo"}),
+def test_the_only_required_key_is_generics_command():
+    """Guards the table above: a newly required key must be added to it."""
+    required = {
+        name: sorted(key for key, spec in p.inputs.items() if spec.required)
+        for name, p in RUNNER_PROFILES.items()
+    }
+    assert {name: keys for name, keys in required.items() if keys} == {"generic": ["command"]}, required
+
+
+@pytest.mark.parametrize("door", DOORS)
+def test_a_generic_task_without_its_command_is_refused_naming_it(client, db, door):
+    body = _refused(DOORS[door](client, "generic", {"prompt": "x"}), "command")
+    assert "expected" not in body["detail"], "a missing key has no bound it broke"
+    assert not _tasks(db)
+
+
+EVERY_BROWSER_INPUT = {
+    "prompt": "look",
+    "url": "https://example.com",
+    "actions": [
+        {"type": "goto", "url": "https://example.com/a", "wait_until": "networkidle"},
+        {"type": "click", "selector": "#go"},
+        {"type": "fill", "selector": "#q", "text": "swarm"},
+        {"type": "press", "selector": "#q", "key": "Enter"},
+        {"type": "wait_for", "selector": ".done", "timeout_ms": 5000},
+        {"type": "wait", "seconds": 2},
+        {"type": "screenshot", "name": "a.png", "full_page": False},
+        {"type": "extract", "selector": "main", "name": "main.txt"},
     ],
+    "timeout_ms": 30000,
+    "launch_timeout_ms": 60000,
+    "viewport_width": 800,
+    "viewport_height": 600,
+    "user_agent": "SwarmCloud-test/1.0",
+    "extract_text": False,
+    "screenshot": True,
+}
+
+EVERY_GENERIC_INPUT = {
+    "prompt": "test it",
+    "command": "pytest",
+    "paths": ["tests", "tests/unit/test_x.py"],
+    "working_directory": "repo",
+    "timeout_seconds": 600,
+    "grace_seconds": 5,
+    "max_stdout_bytes": 1024,
+    "max_stderr_bytes": 1024,
+}
+
+
+@pytest.mark.parametrize("door", DOORS)
+@pytest.mark.parametrize(
+    "name,input", [("browser", EVERY_BROWSER_INPUT), ("generic", EVERY_GENERIC_INPUT)], ids=["browser", "generic"],
 )
-def test_a_profile_that_has_not_declared_its_inputs_is_bounded_by_size_only(client, name, input):
-    """Undeclared is not "declares none". `inputs is None` in the catalogue
-    means nobody has decided yet which keys these runners take, and refusing
-    every key would refuse every task they run."""
-    assert getattr(RUNNER_PROFILES[name], "inputs", "missing") is None, (
-        f"{name} now declares its inputs; move it out of this test"
-    )
-    response = _task(client, name, input)
+def test_browser_and_generic_take_every_input_they_declare(client, db, door, name, input):
+    """Every declared key, every action shape: the declaration refuses none of
+    what the runner reads, and the input is stored as it was sent."""
+    response = DOORS[door](client, name, input)
     assert response.status_code == 201, response.text
+    stored = [db.docs[k]["input"] for k in _tasks(db)]
+    assert input in stored, "the input is stored as it was sent"
 
 
 # -- one rule, one answer ------------------------------------------------------------
@@ -399,16 +461,14 @@ def test_the_api_and_the_shared_rule_give_one_answer_for_every_profile(client, d
     assert bool(_tasks(db)) == (rule == 201)
 
 
-def test_the_shared_rule_is_where_not_declared_yet_is_decided():
-    """`inputs is None` means NOT DECLARED YET (open with the owner on #218),
-    and the input is then bounded by its size alone -- which the caller that
-    measures the size decides, not this function. So the shared rule hands it
-    back unchecked, and no caller has to catch the None before asking."""
-    from swarm_common.profiles import check_inputs
-
-    undeclared = dataclasses.replace(RUNNER_PROFILES["mock"], inputs=None)
-    raw = {"url": "https://example.com", "actions": [{"type": "screenshot"}], "command": "pytest"}
-    assert check_inputs(undeclared, raw) == raw
+def test_there_is_no_not_declared_yet_any_more():
+    """Request 32 returned `RunnerProfile.inputs` to the type request 25 was
+    accepted with: a mapping, never None. So a profile cannot be built
+    undeclared, and the shared rule has no branch that hands input back
+    unchecked."""
+    with pytest.raises((TypeError, AttributeError, ValueError)):
+        dataclasses.replace(RUNNER_PROFILES["mock"], inputs=None)
+    assert all(p.inputs is not None for p in RUNNER_PROFILES.values())
 
 
 def test_the_api_reads_the_catalogue_and_keeps_no_table_of_its_own(client, monkeypatch):
