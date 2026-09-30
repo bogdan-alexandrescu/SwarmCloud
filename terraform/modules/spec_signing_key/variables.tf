@@ -25,7 +25,9 @@ variable "versions" {
   description = <<-EOT
     The key's versions as the google_kms_crypto_key_versions data source
     returns them: version number and state. Empty when the caller only needs
-    the names. Deliberately NOT the data source's public_key: that field is
+    the names. Must be known at plan: it keys a for_each (main.tf), so a
+    caller that creates the key in the same plan (terraform/bootstrap) must
+    leave it empty. Deliberately NOT the data source's public_key: that field is
     never populated per entry (main.tf explains, with the provider source
     lines) -- the module reads each ENABLED version's own public key itself,
     from google_kms_crypto_key_version, once per version.

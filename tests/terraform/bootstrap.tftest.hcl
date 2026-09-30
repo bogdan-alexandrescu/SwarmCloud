@@ -3,9 +3,7 @@
 # its own backend lives in -- terraform initialises the backend before it plans
 # a single resource.
 
-mock_provider "google" {
-  source = "./mocks/google"
-}
+mock_provider "google" {}
 
 variables {
   project_id = "saga-agents-staging"
@@ -21,14 +19,6 @@ run "state_survives_the_ways_a_platform_is_usually_lost" {
 
   module {
     source = "../../terraform/bootstrap"
-  }
-
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
   }
 
   assert {
@@ -84,14 +74,6 @@ run "too_few_state_versions_is_refused" {
     source = "../../terraform/bootstrap"
   }
 
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
-  }
-
   variables {
     state_noncurrent_versions_to_keep = 2
   }
@@ -104,14 +86,6 @@ run "ci_is_keyless_and_bound_to_one_repository_and_ref" {
 
   module {
     source = "../../terraform/bootstrap"
-  }
-
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
   }
 
   variables {
@@ -191,14 +165,6 @@ run "ci_is_never_granted_owner" {
     source = "../../terraform/bootstrap"
   }
 
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
-  }
-
   variables {
     enable_github_wif = true
     github_repository = "saga/agent-swarm-infra"
@@ -215,14 +181,6 @@ run "a_malformed_repository_is_refused" {
     source = "../../terraform/bootstrap"
   }
 
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
-  }
-
   variables {
     enable_github_wif = true
     github_repository = "not-a-repo-spec"
@@ -236,14 +194,6 @@ run "the_prerequisite_apis_are_the_ones_terraform_itself_needs" {
 
   module {
     source = "../../terraform/bootstrap"
-  }
-
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
   }
 
   variables {
@@ -311,14 +261,6 @@ run "iap_membership_is_bootstrap_owned_and_the_deployer_has_no_iap_role" {
     source = "../../terraform/bootstrap"
   }
 
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
-  }
-
   variables {
     enable_github_wif    = true
     github_repository    = "saga/agent-swarm-infra"
@@ -354,14 +296,6 @@ run "a_backend_that_is_not_ours_is_refused" {
 
   module {
     source = "../../terraform/bootstrap"
-  }
-
-  override_resource {
-    target          = google_kms_crypto_key.step_spec
-    override_during = plan
-    values = {
-      id = "mock-bootstrap-step-spec-key"
-    }
   }
 
   variables {

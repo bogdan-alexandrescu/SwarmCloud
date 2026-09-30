@@ -17,24 +17,7 @@
 # terraform/environments/dev/dev.tfvars, which bootstrap parses from the file.
 # The fixture runs below hold that parse to exact answers.
 
-mock_provider "google" {
-  source = "./mocks/google"
-}
-
-# The step-spec key this root creates (spec_signing.tf) gates a data read with
-# depends_on, so on a genuinely first-ever plan (nothing in state yet -- which
-# is what a mock plan always is) that read, and the per-version reads the
-# shared spec_signing_key module now does with a for_each over it, would stay
-# "known only after apply". Every run below is about something else entirely,
-# so the key is given a plan-time identity here, once, the same way
-# platform_roles.tftest.hcl does for the custom roles it is not testing either.
-override_resource {
-  target          = google_kms_crypto_key.step_spec
-  override_during = plan
-  values = {
-    id = "mock-bootstrap-step-spec-key"
-  }
-}
+mock_provider "google" {}
 
 variables {
   project_id           = "saga-agents-staging"

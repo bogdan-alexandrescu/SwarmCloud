@@ -153,36 +153,31 @@ resource "google_kms_crypto_key_iam_member" "deployer_key_readers" {
   depends_on = [google_kms_crypto_key.step_spec]
 }
 
-# The public keys, for the owner to read after an apply: the same
-# {full version name: PEM} map terraform/infra renders onto the workers, built
-# by the same module from the same data source. Public keys, not secrets.
-data "google_kms_crypto_key_versions" "step_spec" {
-  for_each = var.spec_signing_environments
-
-  crypto_key = module.spec_signing_key[each.key].crypto_key_id
-  filter     = "state=ENABLED"
-
-  # Read after the key exists: on the first apply there is nothing to list yet.
-  depends_on = [google_kms_crypto_key.step_spec]
-}
-
-module "spec_verify_keys" {
-  source   = "../modules/spec_signing_key"
-  for_each = var.spec_signing_environments
-
-  project_id  = var.project_id
-  region      = var.region
-  name_prefix = var.name_prefix
-  environment = each.key
-  versions    = data.google_kms_crypto_key_versions.step_spec[each.key].versions
-}
+# NO PER-VERSION READS HERE, ON PURPOSE (#360; the first-apply box on #361).
+# This root CREATES the key; it never needs the public keys. It used to list
+# the key's versions (depends_on the key) and hand them to
+# modules/spec_signing_key, which reads each ENABLED version's public key with
+# a for_each over that list. On any plan where the key is still to be created
+# -- a brand-new environment's first bootstrap apply, and every mock plan
+# terraform test makes -- that list is "known only after apply", and a
+# for_each whose KEYS are unknown is a hard plan error ("Invalid for_each
+# argument"), not a deferred read. No override or -target makes the keys
+# known before the key exists, so the reads cannot live in the root that
+# creates it.
+#
+# terraform/infra, which only reads the key and is planned after this root has
+# made it, is where the per-version reads stay: its versions list is known at
+# plan (it depends on no resource of its own), so rotation stays automatic --
+# a newly ENABLED version is trusted on the next release, a DISABLED one drops
+# out -- with no list of version numbers to maintain by hand.
+#
+# The public keys, for the owner: `terraform -chdir=terraform/infra output
+# spec_verify_keys` after a release, or before one
+#   gcloud kms keys versions get-public-key 1 --key step-spec \
+#     --keyring swarm-<env>-specs --location <region>
+# (docs/runbooks/spec-signing-rollout.md, step 1).
 
 output "spec_signing_keys" {
   description = "environment -> the step-spec crypto key's full name (SPEC_SIGNING_KEY)."
   value       = { for env, m in module.spec_signing_key : env => m.crypto_key_id }
-}
-
-output "spec_verify_keys" {
-  description = "environment -> {full version name: PEM} over the key's ENABLED versions: what terraform/infra renders as SPEC_VERIFY_KEYS."
-  value       = { for env, m in module.spec_verify_keys : env => m.verify_keys }
 }

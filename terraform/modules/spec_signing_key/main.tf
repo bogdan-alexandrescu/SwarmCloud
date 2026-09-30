@@ -40,8 +40,20 @@ locals {
 # THE FIX: google_kms_crypto_key_version (singular), which DOES carry its own
 # public_key (data_source_google_kms_crypto_key_version.go,
 # dataSourceGoogleKmsCryptoKeyVersionRead), read once per ENABLED version.
-# Living here, in the module both roots share, so the fix applies to
-# bootstrap's and infra's callers alike without duplicating it in both.
+#
+# var.versions MUST BE KNOWN AT PLAN. It is this for_each's key set, and a
+# for_each with unknown keys is a hard plan error ("Invalid for_each
+# argument"), never a deferred read. So only a caller whose versions list
+# depends on no resource in its own plan passes it: terraform/infra, which
+# reads a key that terraform/bootstrap already made. terraform/bootstrap
+# CREATES the key and passes no versions (its spec_signing.tf says why): its
+# list would be unknown on every plan that creates the key, i.e. a new
+# environment's first apply and every terraform test mock plan (#360, #361).
+#
+# Keyed on the listed versions rather than on a hand-kept list of expected
+# version numbers, so rotation stays automatic: a version enabled with gcloud
+# is trusted on the next release, a disabled one is gone from it, and no
+# tfvars edit can fall out of step with the key.
 data "google_kms_crypto_key_version" "enabled" {
   for_each = { for v in var.versions : tostring(v.version) => v if v.state == "ENABLED" }
 
