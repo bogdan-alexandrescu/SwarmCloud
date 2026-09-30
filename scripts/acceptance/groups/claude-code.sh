@@ -172,7 +172,11 @@ _cc_check_direct_pr() {
     acc_fail "the PR body does not carry ${task}" "${task}"
   fi
   acc_assert_eq "${branch}" "${pr_head}" "the PR's head is the branch the task pushed" "${task}"
-  if files="$(acc_github GET "/repos/${ACC_GITHUB_REPO}/pulls/${number}/files")"; then
+  # Measured against ACC_REF, not the PR's base: the platform opens direct-pr
+  # against the repository's default branch regardless of ACC_REF, so a
+  # /pulls/{n}/files diff run with a non-default ACC_REF would see every file
+  # already on ACC_REF as an apparent addition (see acc_pr_files_vs_ref).
+  if files="$(acc_pr_files_vs_ref "${pr_head}")"; then
     acc_assert_eq "${CC_FIXTURE}" "$(jq -r '[.[].filename] | join(" ")' <<<"${files}")" "the PR changes only the fixture" "${task}"
     if jq -r '.[].patch // ""' <<<"${files}" | grep -qxF -- "-${CC_BUG_LINE}"; then
       acc_pass "the PR's diff removes the bug line" "${task}"
@@ -180,7 +184,7 @@ _cc_check_direct_pr() {
       acc_fail "the PR's diff does not remove the bug line" "${task}"
     fi
   else
-    acc_fail "could not read PR #${number}'s files from GitHub" "${task}"
+    acc_fail "could not read PR #${number}'s diff against ${ACC_REF} from GitHub" "${task}"
   fi
   acc_close_pr "${number}" "${branch}"
 }

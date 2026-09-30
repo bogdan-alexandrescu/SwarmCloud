@@ -213,7 +213,9 @@ _mock_check_park_and_restore() {
   fi
   doc="$(task_doc "${task}")"
   reason="$(jq -r '.park_reason // "none"' <<<"${doc}")"
-  acc_assert_eq "QUOTA_EXHAUSTED" "${reason}" "park_reason" "${task}"
+  # ParkReason.PROVIDER_QUOTA_EXHAUSTED (apps/common/swarm_common/states.py) is
+  # the contract's actual enum value; there is no bare QUOTA_EXHAUSTED member.
+  acc_assert_eq "PROVIDER_QUOTA_EXHAUSTED" "${reason}" "park_reason" "${task}"
   latest="$(jq -r '.latest_checkpoint // ""' <<<"${doc}")"
   # Invariant 1: a PARKED task costs nothing. Its pointer to a lease is gone
   # and every lease it held is released.

@@ -411,6 +411,24 @@ acc_github() {
   [[ "${code}" =~ ^2 ]]
 }
 
+# acc_pr_files_vs_ref HEAD_BRANCH -> the files GitHub's compare API says
+# differ between ACC_REF (the ref the task's repository_ref pointed the clone
+# at) and HEAD_BRANCH, as a JSON array shaped like /pulls/{n}/files (filename,
+# patch, ...).
+#
+# NOT /repos/.../pulls/{n}/files: a direct-pr or integrate task opens its pull
+# request against the repository's default branch, whatever ACC_REF is, so a
+# run against a non-default ACC_REF (as this suite runs against its own
+# fixture branch) sees every file already on ACC_REF but still absent from
+# the default branch as an apparent addition to the PR -- the whole unmerged
+# branch, not the one line the task actually touched. Comparing against
+# ACC_REF measures what the task changed relative to what it cloned, which
+# reads the same whether or not ACC_REF has since merged to default.
+acc_pr_files_vs_ref() {
+  local head="$1"
+  acc_github GET "/repos/${ACC_GITHUB_REPO}/compare/${ACC_REF}...${head}" | jq -c '.files // []'
+}
+
 # acc_close_pr NUMBER BRANCH... -> closes the pull request and deletes each
 # branch, when this run holds a token; otherwise says what it left behind for
 # the release's sweep. Never fails the check it is called from: cleanup is
