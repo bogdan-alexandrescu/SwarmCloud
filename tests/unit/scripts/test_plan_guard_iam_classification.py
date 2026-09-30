@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
@@ -307,4 +308,52 @@ def test_the_self_test_covers_the_classification():
     proc = subprocess.run([str(GUARD), "--self-test"], capture_output=True, text=True, timeout=120)
     assert proc.returncode == 0, proc.stderr
     assert "forgotten custom role" in proc.stderr, proc.stderr
+
+
+def test_two_concurrent_classifications_do_not_corrupt_each_others_output(tmp_path):
+    """Regression for CI runs 36646694462 and 36647132849: --classify-iam used
+    to write its classification to the fixed path build/plan-iam.json, so two
+    invocations sharing a checkout -- concurrent CI steps, or pytest-xdist
+    workers running this very file -- overwrote and truncated each other's
+    file. The symptoms were "jq: parse error: Invalid numeric literal", "the
+    IAM classification is unusable", and one test's summary showing another
+    test's resources.
+
+    Run an IAM-changing plan and an IAM-free plan at once, several times, each
+    given its own `--out`, and check every run answered for -- and only wrote
+    -- the plan it was actually given.
+    MUTATION: revert `--out`/the per-invocation mktemp so both runs again
+    share build/plan-iam.json; this must then fail with a corrupted or
+    cross-contaminated classification, or a jq parse error, well before 20
+    iterations.
+    """
+    iam_plan = FIXTURES / "iam-forgotten-custom-role.json"
+    quiet_plan = FIXTURES / "image-digest-only.json"
+
+    def run(plan: Path, out: Path) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [str(GUARD), "--plan", str(plan), "--classify-iam", "--out", str(out)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+    for i in range(20):
+        out_true = tmp_path / f"true-{i}.json"
+        out_false = tmp_path / f"false-{i}.json"
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            fut_true = pool.submit(run, iam_plan, out_true)
+            fut_false = pool.submit(run, quiet_plan, out_false)
+            proc_true = fut_true.result()
+            proc_false = fut_false.result()
+
+        assert _answer(proc_true) == "true", f"iteration {i}: {proc_true.stderr}"
+        assert _answer(proc_false) == "false", f"iteration {i}: {proc_false.stderr}"
+
+        classified_true = json.loads(out_true.read_text())
+        classified_false = json.loads(out_false.read_text())
+        assert classified_true["iam"] is True, (i, classified_true)
+        assert len(classified_true["rows"]) > 0, (i, classified_true)
+        assert classified_false["iam"] is False, (i, classified_false)
+        assert classified_false["rows"] == [], (i, classified_false)
+        # Neither invocation's file carries the other plan's resource.
+        assert "job_dispatcher" not in json.dumps(classified_false), (i, classified_false)
     assert "image digest" in proc.stderr, proc.stderr
