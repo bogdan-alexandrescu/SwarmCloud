@@ -700,13 +700,13 @@ export function LatencyCard({ data }: { data: Outcomes }) {
               <LatencyLine label="failed" o={r.failed} timeout={r.timeout_s} />
             </div>
           ))}
-          {data.coverage.wait_excluded > 0 && (
+          {data.latency.wait_excluded > 0 && (
             <p className="ol-line">
               <Mark
                 kind="partial"
-                say={`${data.coverage.wait_excluded} workflow steps have no wait figure: a parent step could not be read, so when they became eligible is not known.`}
+                say={`${data.latency.wait_excluded} workflow steps have no wait figure: a parent step could not be read, so when they became eligible is not known.`}
               />{' '}
-              wait left out for {pluralise(data.coverage.wait_excluded, 'step')}
+              wait left out for {pluralise(data.latency.wait_excluded, 'step')}
             </p>
           )}
         </>

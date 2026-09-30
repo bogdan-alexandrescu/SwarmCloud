@@ -73,7 +73,8 @@ reason: a written value and a derived value are two records of one fact.
 
   It turns each task into a small tuple. A parent that is missing or belongs to
   another tenant counts as **unread**. That task's wait is excluded
-  (`coverage.wait_excluded`), never guessed.
+  (`coverage.wait_excluded`, and `latency.wait_excluded` for the card that
+  prints it), never guessed.
 * **WRITE.** The tuples are stored in `outcome_days/{tenant}_{YYYY-MM-DD}`,
   one JSON string field per kind, in columnar form. A day over 700 KB is sharded
   into `{id}_s{n}`, all in one batch (max 12 parts, because of Firestore's
@@ -117,8 +118,24 @@ reason: a written value and a derived value are two records of one fact.
 * Past the budget, the remaining days are `unread: derive_budget`.
 * An incomplete payload is **not** cached. A re-request therefore continues
   from where the last one stopped, because what that one built was written.
-* A complete payload is cached for 60 s, keyed by the minute. A cache hit keeps
+* A complete fold is cached for 60 s, keyed by the minute. A cache hit keeps
   its original `generated_at`, so the age a reader sees stays true.
+* What is cached is the FOLD, not a payload (owner decision 2026-09-30, the
+  review of #391). The key is the query WITHOUT its `section` list -- scope,
+  the caller's own tenant in tenant scope, the resolved tenant set, span,
+  bucket, tz, filters, kind, group, compare and the minute -- and every
+  section is a projection of the entry. The previous span, the terminal count
+  and the workflow lookups are made once per entry, the first time a section
+  needs them. So the Timeline's headline and seven cards, each asking for its
+  own sections, cost one full read between them, plus what every request pays
+  (authentication, the tenant check, and the tenant listing in platform
+  scope). `reads` is what that request read; `cached` means it read nothing
+  for its sections.
+* `coverage.derived_now` counts the main span's days only. The previous span
+  is read under a derive budget of its own, only when `previous` is asked for,
+  so `coverage` is the same value whether or not `previous` came with it.
+  #391 as first written counted both, and a `coverage`-only read on a cold
+  store reported fewer days built than the full read did.
 
 Read costs, measured on 2026-09-25 by the module's own meter over a read-only
 snapshot of dev (4 tenants, 740 tasks, 481 attempts, 17 workflows). The meter

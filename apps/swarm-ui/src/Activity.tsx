@@ -6,6 +6,7 @@ import {
   loadStats,
   loadTasksInState,
   loadTenants,
+  type OutcomeSection,
 } from './api'
 import { IDLE_POLL_MS } from './Agents'
 import { CardFailed, CardSkeleton } from './CardSkeleton'
@@ -176,6 +177,10 @@ export function ActivityScreen({
   )
 
   // ---- the ledger read ---------------------------------------------------
+  // THE HEADLINE'S OWN READ, AND ONLY ITS SECTIONS (#377). The success rate,
+  // the drawing, the facts line and the provenance foot are the page: they
+  // read eagerly, and only what they draw (`LEDGER_SECTIONS`). Every card
+  // below reads its own part when it scrolls into view (`LedgerPart`).
   const key = useMemo(() => outcomesQuery(view, tz).toString(), [view, tz])
   const [nonce, setNonce] = useState(0)
   const [pending, setPending] = useState(true)
@@ -185,7 +190,11 @@ export function ActivityScreen({
   useEffect(() => {
     let live = true
     setPending(true)
-    loadOutcomes(new URLSearchParams(key)).then((r) => {
+    // The same cast as the cards' (`loadPart`): the payload is the envelope and
+    // `LEDGER_SECTIONS`, which is all the headline, the drawing, the facts and
+    // the foot read (timeline.cards.test.tsx draws them from nothing more).
+    const ledger = loadOutcomes(new URLSearchParams(key), LEDGER_SECTIONS) as Promise<Result<Outcomes>>
+    ledger.then((r) => {
       if (!live) return
       setLatest({ key, result: r })
       if (r.status === 'ok' || r.status === 'stale') setGood({ key, data: r.data })
@@ -195,6 +204,37 @@ export function ActivityScreen({
       live = false
     }
   }, [key, nonce])
+
+  // ---- the cards' reads (#377) ---------------------------------------------
+  // ONE REQUEST PER DISTINCT ASK. Three cards ("Why tasks failed", "Reported
+  // cost", "Why tasks were cancelled") draw from the same two sections; the
+  // ones in view at once share one read rather than sending it three times,
+  // and one that scrolls in later under the same filters and refresh is drawn
+  // from it. A failed read is forgotten, so "try again" reads again; a filter
+  // change or a refresh starts afresh.
+  const parts = useRef(new Map<string, Promise<Result<Outcomes>>>())
+  const loadPart = useCallback((query: string, sections: readonly OutcomeSection[], ask: string) => {
+    const k = `${ask}\n${sections.join(',')}`
+    let p = parts.current.get(k)
+    if (p === undefined) {
+      // Forget the reads of earlier filters and refreshes: `ask` is the query,
+      // the refresh count and the card's retry count, one per line. Pruned
+      // here rather than in an effect of this screen's, which would run after
+      // the cards' own effects and drop the reads they had just shared.
+      const now = ask.slice(0, ask.lastIndexOf('\n') + 1)
+      for (const old of [...parts.current.keys()]) if (!old.startsWith(now)) parts.current.delete(old)
+      // THE ONE CAST: a sectioned payload is the envelope and `sections` only,
+      // and each card is handed exactly the sections it reads (`CARD_SECTIONS`;
+      // timeline.cards.test.tsx draws every card from nothing more).
+      p = loadOutcomes(new URLSearchParams(query), sections) as Promise<Result<Outcomes>>
+      parts.current.set(k, p)
+      const mine = p
+      void mine.then((r) => {
+        if (r.status !== 'ok' && r.status !== 'stale' && parts.current.get(k) === mine) parts.current.delete(k)
+      })
+    }
+    return p
+  }, [])
 
   // ---- who is asking, and what the filters can offer ---------------------
   const [admin, setAdmin] = useState<boolean | null>(null)
@@ -242,9 +282,9 @@ export function ActivityScreen({
   // of the read it shows. Between reads the last counts stay drawn rather
   // than blanking to "reading" on every tick.
   //
-  // AND IT IS READ ONLY IN VIEW (#377). It is the one card with content of
-  // its own; the other seven are drawn from the ledger's payload, which is
-  // what decides the page and stays eager. The card reads when it comes
+  // AND IT IS READ ONLY IN VIEW (#377), as every card is. Its content is not
+  // the ledger's: the other seven each read their own sections of it
+  // (`LedgerPart`), this one reads the live counts. The card reads when it comes
   // within `CARD_ROOT_MARGIN` of the viewport, and an open, a refresh, a
   // filter change or a poll tick that lands while it is off-screen is read
   // when it scrolls back. A read still in flight when the card leaves is
@@ -349,35 +389,58 @@ export function ActivityScreen({
       />
 
       {failure !== null ? (
+        // THE PAGE'S READ FAILED, SO NO CARD IS DRAWN (§6.9): a 403 or a 422 on
+        // these filters is every card's answer too, and a card drawn beside a
+        // failed headline would be a number under a failure.
         <LedgerFailed error={failure} onRetry={refresh} onMine={mine} />
-      ) : data === null ? (
-        <div className="ol-body">
-          <LedgerFacts data={null} pending view={view} />
-          {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep, at the chart's own geometry. */}
-          <div className="ctl-pending ol-pending" aria-hidden="true" />
-        </div>
       ) : (
-        <div className={dim ? 'ol-body ctl-stale-body' : 'ol-body'} aria-busy={pending}>
-          <LedgerFacts data={data} pending={pending} view={view} />
-          <LedgerSection
-            data={data}
-            view={view}
-            picked={picked}
-            onPick={setPicked}
-            onZoom={zoom}
-          />
+        <>
+          {data === null ? (
+            <div className="ol-body">
+              <LedgerFacts data={null} pending view={view} />
+              {/* STILL READING IS NOT NOTHING REPORTED (§8.7): the moving sweep, at the chart's own geometry. */}
+              <div className="ctl-pending ol-pending" aria-hidden="true" />
+            </div>
+          ) : (
+            <div className={dim ? 'ol-body ctl-stale-body' : 'ol-body'} aria-busy={pending}>
+              <LedgerFacts data={data} pending={pending} view={view} />
+              <LedgerSection
+                data={data}
+                view={view}
+                picked={picked}
+                onPick={setPicked}
+                onZoom={zoom}
+              />
+            </div>
+          )}
+          {/* EVERY CARD READS ITS OWN PART, WHEN IT SCROLLS INTO VIEW (#377),
+              whether or not the headline has landed: they are separate reads. */}
           <div className="ctl-cards ol-cards">
-            <FailureClassesCard data={data} picked={picked} />
-            <RetriesCard data={data} />
-            <LatencyCard data={data} />
-            <ReliabilityCard
-              data={data}
-              group={view.group}
-              platform={view.platform}
-              onGroup={(g: GroupBy) => setView({ ...view, group: g })}
-            />
-            <WorkflowsFailedCard data={data} spanLabel={view.span ?? 'this range'} />
-            <CostCard data={data} picked={picked} />
+            <LedgerPart id="failures" title="Why tasks failed" className="ol-failures" query={key} nonce={nonce} load={loadPart} lines={[70, 62, 54, 48, 40, 34, 30, 26]}>
+              {(d) => <FailureClassesCard data={d} picked={picked} />}
+            </LedgerPart>
+            <LedgerPart id="retries" title="Retries and attempts" className="ol-retries" query={key} nonce={nonce} load={loadPart} lines={[60, 72, 66, 58, 50, 56, 64]}>
+              {(d) => <RetriesCard data={d} />}
+            </LedgerPart>
+            <LedgerPart id="latency" title="Time to result, by profile" className="ol-latency" query={key} nonce={nonce} load={loadPart} lines={[90, 40, 76, 76, 40, 76, 76]}>
+              {(d) => <LatencyCard data={d} />}
+            </LedgerPart>
+            <LedgerPart id="reliability" title="Reliability" className="is-wide ol-reliability" wide query={key} nonce={nonce} load={loadPart} lines={[36, 92, 92, 92, 92]}>
+              {(d) => (
+                <ReliabilityCard
+                  data={d}
+                  group={view.group}
+                  platform={view.platform}
+                  onGroup={(g: GroupBy) => setView({ ...view, group: g })}
+                />
+              )}
+            </LedgerPart>
+            <LedgerPart id="workflows" title="Workflows that failed, and where" className="is-wide ol-workflows" wide query={key} nonce={nonce} load={loadPart} lines={[92, 92, 92, 92, 48]}>
+              {(d) => <WorkflowsFailedCard data={d} spanLabel={view.span ?? 'this range'} />}
+            </LedgerPart>
+            <LedgerPart id="cost" title="Reported cost" className="ol-cost-card" query={key} nonce={nonce} load={loadPart} lines={[44, 70, 62, 62, 62, 54, 48]}>
+              {(d) => <CostCard data={d} picked={picked} />}
+            </LedgerPart>
             {/* The observed box. A grid of one, so the card inside stretches
                 to the row as it did when it was the grid's own item. */}
             <div ref={openRef} className="ol-lazy">
@@ -401,10 +464,12 @@ export function ActivityScreen({
                 <OpenWorkCard open={open} view={view} tenant={myTenant} now={now} />
               )}
             </div>
-            <CancelCausesCard data={data} picked={picked} />
+            <LedgerPart id="cancels" title="Why tasks were cancelled" className="ol-cancels" query={key} nonce={nonce} load={loadPart} lines={[60, 52, 44, 36, 30]}>
+              {(d) => <CancelCausesCard data={d} picked={picked} />}
+            </LedgerPart>
           </div>
-          <Provenance data={data} />
-        </div>
+          {data !== null && <Provenance data={data} />}
+        </>
       )}
 
       <HelpLinks topics={READING_TOPICS} label="Reading this screen:" />
@@ -417,6 +482,141 @@ export function ActivityScreen({
  * person, the ones that clear themselves, the link -- as skeleton widths.
  */
 const OPEN_SKELETON = [78, 56, 64, 30] as const
+
+/**
+ * What the page itself reads, eagerly: the headline, the drawing (and its
+ * Table), the facts line and the provenance foot. `previous` is the delta,
+ * `coverage` the facts line's sealed days and the foot.
+ */
+const LEDGER_SECTIONS = ['buckets', 'totals', 'coverage', 'previous'] as const satisfies readonly OutcomeSection[]
+
+/**
+ * WHAT EACH CARD READS, AND NOTHING MORE (#377). Every card says how much of
+ * the span it covers (`spanCoverage`), which is `totals` and `buckets`, so
+ * every card asks for those two; the rest is the card's own block. "Time to
+ * result" prints `wait_excluded` from `latency`, which carries it so the card
+ * need not ask for all of `coverage` (a count() per terminal state per
+ * tenant). The route caches the FOLD, keyed by the query without its sections
+ * (the review of #391), so every card of one query in the same minute is a
+ * projection of one scan; only `previous`, `coverage` and `workflows_failed`
+ * cost reads of their own, once per fold (`swarm_api.outcomes.Outcomes.read`),
+ * so no card asks for `previous`.
+ */
+const CARD_SECTIONS = {
+  failures: ['buckets', 'totals'],
+  retries: ['buckets', 'totals', 'retries'],
+  latency: ['buckets', 'totals', 'latency'],
+  reliability: ['buckets', 'totals', 'groups'],
+  workflows: ['buckets', 'totals', 'workflows_failed'],
+  cost: ['buckets', 'totals'],
+  cancels: ['buckets', 'totals'],
+} as const satisfies Record<string, readonly OutcomeSection[]>
+
+type PartLoader = (query: string, sections: readonly OutcomeSection[], ask: string) => Promise<Result<Outcomes>>
+
+/**
+ * ONE CARD, READ WHEN IT SCROLLS INTO VIEW (#377): its own `GET /v1/outcomes`
+ * with the page's filters and only its sections (`CARD_SECTIONS`).
+ *
+ *   * NOT IN VIEW, NOT READ. The card reads when it comes within
+ *     `CARD_ROOT_MARGIN` of the viewport; before its first answer it is the
+ *     skeleton in its own shape (`CardSkeleton`), which is static under
+ *     reduced motion.
+ *   * A FILTER CHANGE OR A REFRESH re-reads it only if it is in view. Off
+ *     screen it keeps its last figures, dimmed as stale (`ctl-stale-body`,
+ *     `data-stale`), and is read when it scrolls back -- dimmed until the new
+ *     answer lands, never blanked.
+ *   * A READ THAT LANDS LATE IS DROPPED: one still in flight when the card
+ *     scrolls away, or when the filters change, is ignored, so it can draw
+ *     neither an old figure nor a late failure. It is asked again on return.
+ *   * A FAILED READ IS A FAILURE (`CardFailed`), with the server's words and
+ *     "try again", which goes back to the skeleton and reads again.
+ */
+function LedgerPart({
+  id,
+  title,
+  className,
+  wide = false,
+  query,
+  nonce,
+  load,
+  lines,
+  children,
+}: {
+  id: keyof typeof CARD_SECTIONS
+  /** The card's title, drawn by its skeleton and its failure. */
+  title: string
+  /** The loaded card's own classes, so the skeleton and the failure stand in its place. */
+  className: string
+  /** A card that spans the row. The observed box is the grid item, so it takes the span. */
+  wide?: boolean
+  query: string
+  nonce: number
+  load: PartLoader
+  /** The skeleton's line widths, in the loaded card's shape. */
+  lines: readonly number[]
+  children: (data: Outcomes) => ReactNode
+}) {
+  const sections = CARD_SECTIONS[id]
+  const [ref, inView] = useInView<HTMLDivElement>()
+  const [retry, setRetry] = useState(0)
+  /** Every reason the card re-reads, as one value. */
+  const ask = `${query}\n${nonce}\n${retry}`
+  /** The ask whose answer landed while the card was in view. */
+  const answered = useRef<string | null>(null)
+  const [good, setGood] = useState<{ ask: string; data: Outcomes } | null>(null)
+  const [failed, setFailed] = useState<{ ask: string; message: string } | null>(null)
+  useEffect(() => {
+    if (!inView || answered.current === ask) return
+    let live = true
+    load(query, sections, ask).then((r) => {
+      if (!live) return
+      answered.current = ask
+      if (r.status === 'ok' || r.status === 'stale') {
+        setGood({ ask, data: r.data })
+        setFailed(null)
+      } else {
+        setFailed({ ask, message: r.status === 'error' ? r.error.message : 'the read did not complete' })
+      }
+    })
+    return () => {
+      live = false
+    }
+    // `sections` is fixed per `id`, and `ask` carries query, nonce and retry.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inView, ask, load])
+  const failure = failed !== null && failed.ask === ask ? failed : null
+  const stale = failure === null && good !== null && good.ask !== ask
+  const onRetry = () => {
+    // Back to the skeleton, not the failure or an older figure, while the retry is in flight.
+    setGood(null)
+    setRetry((n) => n + 1)
+  }
+  return (
+    <div
+      ref={ref}
+      className={stale ? 'ol-lazy ctl-stale-body' : 'ol-lazy'}
+      data-card={id}
+      data-stale={stale ? 'true' : undefined}
+      aria-busy={stale && inView ? true : undefined}
+      // `.ol-card.is-wide` spans the row as a grid item; wrapped, the box is the item.
+      style={wide ? { gridColumn: '1 / -1' } : undefined}
+    >
+      {failure !== null ? (
+        <CardFailed
+          title={title}
+          className={className}
+          failures={[`${title} could not be read: ${failure.message}`]}
+          onRetry={onRetry}
+        />
+      ) : good === null ? (
+        <CardSkeleton title={title} className={className} say={`${title} is still being read.`} lines={lines} />
+      ) : (
+        children(good.data)
+      )}
+    </div>
+  )
+}
 
 /** `Sep 12, 00:00 → now`, in the zone the server bucketed in. */
 function rangeWords(d: Outcomes): string {
@@ -648,7 +848,8 @@ function Provenance({ data }: { data: Outcomes }) {
   const clauses: ReactNode[] = [
     `${c.days.sealed} ${dayDocWords(data, c.days.sealed)} sealed`,
     c.days.live > 0 ? `${c.days.live} live` : null,
-    data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads`,
+    // The headline's read only (#377): each card reads its own part, and says so by its own skeleton.
+    data.cached ? `from the ${OUTCOMES_CACHE_S} s cache · 0 reads this request` : `${data.reads} reads for the headline; each card reads its own`,
     cacheable(data) ? `cached ${OUTCOMES_CACHE_S} s` : 'not cached: partial, the next read continues the build',
     `generated ${generated}`,
     c.derived_now > 0 ? built : null,

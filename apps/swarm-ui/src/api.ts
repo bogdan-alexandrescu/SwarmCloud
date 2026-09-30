@@ -4566,10 +4566,43 @@ async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: Atte
  * happened in these fourteen days" is fourteen drawn zeroes, not an empty
  * state.
  */
-export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
-  if (USE_FIXTURES) return fixtureOutcomes(query)
-  return read<Outcomes>(route('/v1/outcomes', {}, query), () => false)
+export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>>
+export async function loadOutcomes<S extends OutcomeSection>(
+  query: URLSearchParams,
+  sections: readonly S[],
+): Promise<Result<OutcomesPart<S>>>
+export async function loadOutcomes(
+  query: URLSearchParams,
+  sections: readonly OutcomeSection[] = [],
+): Promise<Result<Outcomes | OutcomesPart<OutcomeSection>>> {
+  const q = new URLSearchParams(query)
+  for (const s of sections) q.append('section', s)
+  if (USE_FIXTURES) return fixtureOutcomes(q)
+  return read<Outcomes>(route('/v1/outcomes', {}, q), () => false)
 }
+
+/**
+ * THE PARTS OF THE LEDGER ONE READ MAY ASK FOR (#377): `section`, repeatable,
+ * names the response keys wanted -- `swarm_api.outcomes.SECTIONS`, in its
+ * order, which `test_outcomes_sections.py` holds this list to. Everything
+ * else in the payload (the resolved range, scope, filters, vocab, reads,
+ * cached, generated_at) is the envelope and comes with every section. No
+ * section is the whole payload, as it always was.
+ */
+export const OUTCOME_SECTIONS = [
+  'buckets',
+  'totals',
+  'retries',
+  'latency',
+  'groups',
+  'workflows_failed',
+  'coverage',
+  'previous',
+] as const
+export type OutcomeSection = (typeof OUTCOME_SECTIONS)[number]
+
+/** A sectioned payload: the envelope, and only the sections `S` that were asked for. */
+export type OutcomesPart<S extends OutcomeSection> = Omit<Outcomes, OutcomeSection> & Pick<Outcomes, S>
 
 async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
   await new Promise((r) => setTimeout(r, 260))
@@ -4589,7 +4622,14 @@ async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>
     }
   }
   noteFixtureProbe(target, 260, true)
-  return { status: 'ok', fetchedAt: Date.now(), data: ledgerFixture() }
+  // A sectioned read carries the envelope and its sections only, as the route
+  // serves it, so a card that reads a key it did not ask for fails here too.
+  const asked = query.getAll('section')
+  const whole: Record<string, unknown> = { ...ledgerFixture() }
+  if (asked.length > 0) {
+    for (const s of OUTCOME_SECTIONS) if (!asked.includes(s)) delete whole[s]
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: whole as unknown as Outcomes }
 }
 
 /**
