@@ -118,7 +118,9 @@ def logger_for(stream: io.StringIO) -> Any:
 # ---------------------------------------------------------------------------
 
 
-def test_declared_artifact_reaches_the_agents_working_directory(db, store, worker_factory):
+def test_declared_artifact_reaches_the_agents_working_directory(
+    db, store, worker_factory, runner_inputs
+):
     run_upstream(db, worker_factory)
     seed_downstream(db, {"task_up": "summary.md"})
 
@@ -140,12 +142,16 @@ def test_declared_artifact_reaches_the_agents_working_directory(db, store, worke
     ]
 
     # The file itself, with the upstream's bytes, in the directory the agent ran
-    # in -- and `input.json` telling the agent it was there.
+    # in -- and `input.json` telling the agent it was there. The archive no
+    # longer holds `input.json` (the PR #229 review), so it is read as the
+    # runner saw it, at the downstream's last checkpoint.
     with final_checkpoint_files(store, "task_2", "att_2") as archive:
         member = archive.extractfile("summary.md")
         assert member is not None
         assert member.read().decode("utf-8") == UPSTREAM_TEXT
-        payload = json.loads(archive.extractfile("input.json").read())
+        assert "input.json" not in archive.getnames()
+    payload = runner_inputs[-1]
+    assert payload["task_id"] == "task_2", "the downstream's input, not the upstream's"
     assert payload["staged_inputs"][0]["filename"] == "summary.md"
     assert payload["staged_inputs"][0]["path"] == "summary.md"
 

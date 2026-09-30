@@ -1,19 +1,30 @@
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
-import { EVENT_PAGE_LIMIT, loadAgentRun, loadTaskInputOnce, type AgentRun } from './api'
+import {
+  EVENT_PAGE_LIMIT,
+  loadAgentRun,
+  loadArtifactContent,
+  loadTaskInputOnce,
+  loadWorkflow,
+  type AgentRun,
+  type ResourceClasses,
+} from './api'
+import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { EventWhen } from './AttemptTimeline'
+import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { DispatchFacts } from './Dispatch'
-import { attemptEnd, type AttemptEnd } from './duration'
+import { attemptEnd, instant, spanText, type AttemptEnd } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
 import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
-import { RunFiles, useRead } from './RunFiles'
+import { RunFiles, useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -23,8 +34,9 @@ import {
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
+  ageSpan,
+  artifactKind,
   attemptOutcome,
-  attemptRan,
   bytesLabel,
   checkpointsFor,
   dispatchOf,
@@ -36,6 +48,7 @@ import {
   usageOf,
   whyAgent,
   whyNeedsAction,
+  type ArtifactContent,
   type ArtifactRef,
   type AttemptRow,
   type DispatchRole,
@@ -259,6 +272,10 @@ export function Run({
     reading === undefined || TERMINAL_STATES.has(task.state)
       ? clock
       : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
+  // ONE LISTING, TWO READERS (#103). The Checkpoints tile says how many of
+  // the checkpoints written are still in the bucket, and the Checkpoints
+  // section lists them: both from this one answer, so they cannot disagree.
+  const listing = useCheckpointListing(task, run.attempts, reading?.fetchedAt ?? null)
 
   return (
     /* ONE SUBJECT, SO ONE STACK — AND THE ORDER IS THE OPERATOR'S, NOT THE
@@ -283,12 +300,12 @@ export function Run({
     <div className="run-stack">
       <Headline run={run} now={now} reload={reload} />
       <Alerts task={task} />
-      <Why task={task} events={events} now={now} />
+      <Why task={task} events={events} now={now} classes={run.classes} />
       <ErrorBanner run={run} />
-      <RunMetrics run={run} now={now} />
+      <RunMetrics run={run} now={now} listing={listing} />
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
-      <Output run={run} />
+      <Output run={run} readAt={reading?.fetchedAt ?? null} />
       {/* The checkpoint READ ROUTE, which no screen had ever called. It is a
           separate component because it is a separate read with its own
           failure states: a failed checkpoint listing must not blank this page,
@@ -297,7 +314,7 @@ export function Run({
           checkpoint was written that the listing no longer finds, which is not
           a real zero. The runner's log was drawn here too, and lives in
           Artifacts › Logs only now (#184, owner decision of 2026-09-25). */}
-      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} />
+      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} listing={listing} />
       <Input run={run} readAt={reading?.fetchedAt ?? null} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
@@ -638,26 +655,24 @@ function Headline({
           row is indistinguishable from a row that was never going to be
           there. */}
       <ul className="ctl-facts">
-        {/* `run` ONLY OVER A RUN (AG-3). A cascade-cancelled step read `run
-            27m 57s` beside `never ran`: the wall time it sat READY, printed as
-            the agent's run. The key is chosen from `elapsed()`'s own `phase`
-            -- the answer it gives for exactly this, so the key and the figure
-            cannot disagree -- and not from `started_at` alone, which survives
-            a park: keyed on that, a parked retry read `run` over its wait.
-
-            `wait` ONLY OVER A WAIT. A live task that is not running has a
-            wait the document can time only when nothing has started and it
-            holds no slot, and that is the one case where `elapsed()` prints a
-            figure and ticks. A parked retry used to read `wait waiting 50m`
-            beside `age 50m ago`: its age, which includes the attempt that
-            ran, presented as a wait. Between attempts, and on a LEASED or
-            DISPATCHED task, `elapsed()` prints the state word alone, which
-            the chip already says, so the fact is left out rather than keyed
-            over a figure that is not one. `age` beside it is the task's age,
-            under the key that says so. */}
-        {(el.phase !== 'waiting' || (task.started_at === null && el.ticking)) && (
+        {/* `wait` ONLY OVER A WAIT (AG-3). A live task that is not running
+            has a wait the document can time only when nothing has started and
+            it holds no slot, and that is the one case where `elapsed()`
+            prints a figure and ticks. A parked retry used to read `wait
+            waiting 50m` beside `age 50m ago`: its age, which includes the
+            attempt that ran, presented as a wait. Between attempts, and on a
+            LEASED or DISPATCHED task, `elapsed()` prints the state word
+            alone, which the chip already says, so the fact is left out
+            rather than keyed over a figure that is not one. `age` beside it
+            is the task's age, under the key that says so. */}
+        {/* `run` IS GONE (#102). It printed `elapsed()`'s text, which is the
+            Elapsed tile's figure one row down -- the same fact twice, and the
+            one reason the two could ever disagree was that they were two
+            renders. Only `wait` stays: the tile times it too, but the fact
+            here is what tells a queued task's age from a run. */}
+        {el.phase === 'waiting' && task.started_at === null && el.ticking && (
           <li className="ctl-fact">
-            <b>{el.phase === 'waiting' ? 'wait' : 'run'}</b>
+            <b>wait</b>
             {el.text}
           </li>
         )}
@@ -694,7 +709,7 @@ function Headline({
  * rollup over. "1.8 GiB peak" across three attempts is the worst attempt, not
  * the run's total, and a tile that does not say so gets read as both.
  */
-function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
+function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing?: CheckpointListing }) {
   const { task, attempts, classes, events } = run
   const el = elapsed(task, now)
 
@@ -762,8 +777,26 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
   const withOut = attempts.filter((a) => a.output_tokens !== null)
   const tokIn = withIn.length === 0 ? null : withIn.reduce((t, a) => t + (a.input_tokens ?? 0), 0)
   const tokOut = withOut.length === 0 ? null : withOut.reduce((t, a) => t + (a.output_tokens ?? 0), 0)
+  // THE CACHE, WHICH `in + out` LEAVES OUT (#103). A cached prompt is most of
+  // what a long agent run reads, and a tile that summed input and output
+  // alone under-read it by an order of magnitude without saying so. Its own
+  // line, both halves summed across the attempts that reported either;
+  // absent when none did -- never `+ 0 cache` for a figure nobody wrote.
+  const withCache = attempts.filter(
+    (a) => a.cache_read_input_tokens !== null || a.cache_creation_input_tokens !== null,
+  )
+  const cache =
+    withCache.length === 0
+      ? null
+      : withCache.reduce((t, a) => t + (a.cache_read_input_tokens ?? 0) + (a.cache_creation_input_tokens ?? 0), 0)
   const ckpts = attempts.reduce((t, a) => t + a.checkpoints.length, 0)
   const nearMiss = attempts.some((a) => a.oom_near_miss)
+  // WHAT IS STILL IN THE BUCKET, once the listing has been read (#103). The
+  // attempt records count what was WRITTEN; a checkpoint written and since
+  // reclaimed is still in that count, and the listing is what can say so.
+  const held = listing?.state
+  const bucket = held !== undefined && (held.status === 'ok' || held.status === 'stale') && held.data.listed ? held.data : null
+  const bucketCut = bucket !== null && (bucket.truncated || bucket.next_page_token !== null)
 
   return (
     <div className="ctl-metrics">
@@ -841,6 +874,7 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
                 : 'output only'
           }
           sub={tokenRollupNote(attempts.length, withIn.length, withOut.length)}
+          foot={cache === null ? undefined : `+ ${compactCount(cache)} cache`}
         />
       )}
       {cost === null && open !== null && reports ? (
@@ -878,7 +912,28 @@ function RunMetrics({ run, now }: { run: AgentRun; now: number }) {
       <Metric
         label="Checkpoints"
         value={`${ckpts}`}
-        sub={ckpts === 0 ? undefined : `across ${attempts.length}`}
+        sub={
+          bucket === null ? (
+            ckpts === 0 ? undefined : `across ${attempts.length}`
+          ) : (
+            <>
+              {ckpts} written · {bucket.total_found} in bucket
+              {(bucketCut || bucket.total_found !== ckpts) && (
+                <>
+                  {' '}
+                  <Mark
+                    kind="partial"
+                    say={
+                      bucketCut
+                        ? `The attempt records name ${ckpts} checkpoints written. The listing was cut before its end, so ${bucket.total_found} in the bucket is only what it reached.`
+                        : `The attempt records name ${ckpts} checkpoints written and the listing, read to its end, finds ${bucket.total_found} in the bucket. The Checkpoints section below names each one the bucket no longer holds.`
+                    }
+                  />
+                </>
+              )}
+            </>
+          )
+        }
         explain="checkpoints"
       />
     </div>
@@ -920,6 +975,18 @@ function ceilingNote(run: AgentRun): string | null {
  */
 function tokenRollupNote(total: number, withIn: number, withOut: number): string {
   return `in ${withIn}/${total} · out ${withOut}/${total}`
+}
+
+/**
+ * A token count in three significant figures: `1.01M`, `12.3k`, `940`. For a
+ * qualifier line, where the exact figure would outweigh the tile it sits under.
+ */
+function compactCount(n: number): string {
+  if (n < 1000) return `${n}`
+  const k = Number((n / 1000).toPrecision(3))
+  // 999,999 rounds to `1000k`; that is `1M`.
+  if (k < 1000) return `${k}k`
+  return `${Number((n / 1_000_000).toPrecision(3))}M`
 }
 
 /**
@@ -1084,8 +1151,28 @@ function reasonText(reason: string): string {
  * of it". The heading went, because a one-line panel headed "Why" is a word of
  * chrome per word of content.
  */
-function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; now: number }) {
-  const why = whyAgent(task)
+function Why({
+  task,
+  events,
+  now,
+  classes,
+}: {
+  task: Task
+  events: TaskEvent[] | null
+  now: number
+  /**
+   * The catalogue `Run` already read alongside this task (`loadAgentRun`,
+   * api.ts) -- not a second fetch of `/v1/resource-classes`. `classUnits`
+   * (#66) turns it into this task's weight, never the bundled
+   * `RESOURCE_UNITS` table: #66's own repro (`resource:browser` at
+   * `hard_limit 1`, a 2-unit browser task) read "busy platform-wide. (0/1)"
+   * here before this was threaded through. null keeps the pre-#66 reading
+   * when the catalogue has not answered.
+   */
+  classes: ResourceClasses | null
+}) {
+  const units = classUnits(classes, task.resource_class)
+  const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
   // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
   // `last_error`, and the error banner directly below prints that same text
@@ -1097,7 +1184,7 @@ function Why({ task, events, now }: { task: Task; events: TaskEvent[] | null; no
   // sentence asks a person to act, plain ink for a routine wait or a cancel.
   return (
     <section className="section">
-      <p className={`why-full${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</p>
+      <p className={`why-full${whyNeedsAction(task, units) ? ' is-warn' : ''}`}>{why}</p>
     </section>
   )
 }
@@ -1332,12 +1419,16 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           a={a}
           ordinal={i + 1}
           isLatest={latest !== undefined && a.attempt_id === latest.attempt_id}
+          several={ordered.length > 1}
           run={run}
           now={now}
         />
       ))}
 
-      <LatestCheckpointNote run={run} attempts={ordered} />
+      {/* THE RESTORE POINTER HAS ONE HOME (#102): the Checkpoints section's
+          `restore` fact, which reads the pointer against the listing -- what
+          is actually in the bucket -- rather than against the attempt cards,
+          which no longer list checkpoints one by one. */}
       <AttemptLegend />
     </section>
   )
@@ -1383,7 +1474,7 @@ function AttemptLegend() {
     'requests-are-ceilings',
     'workspace-memory',
     'oom-near-miss',
-    'cpu-not-sampled',
+    'cpu-figures',
     'token-cost',
     'checkpoints',
     'attempt-documents',
@@ -1411,12 +1502,15 @@ function AttemptCard({
   a,
   ordinal,
   isLatest,
+  several,
   run,
   now,
 }: {
   a: AttemptRow
   ordinal: number
   isLatest: boolean
+  /** More than one attempt came back, so a per-attempt `ran` says something the Elapsed tile does not. */
+  several: boolean
   run: AgentRun
   now: number
 }) {
@@ -1492,20 +1586,26 @@ function AttemptCard({
             <b>end</b>
             {a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}
           </li>
-          <li className={`ctl-fact${lostEnd ? ' is-absent' : ''}`}>
-            <b>ran</b>
-            {lostEnd ? (
-              <>
-                <Em />{' '}
-                <Mark
-                  kind="absent"
-                  say={`This attempt started ${timeAgo(a.started_at ?? '')} and no finish time was ever written, so how long it ran is unknown.`}
-                />
-              </>
-            ) : (
-              attemptRan(a, now)
-            )}
-          </li>
+          {/* `ran` ONLY BESIDE ANOTHER ATTEMPT (#102). With one attempt it
+              is the Elapsed tile's figure a second time -- measured between
+              the attempt's instants rather than the task's, so the two read
+              48s and 49s for one run. With several, it is how the run split. */}
+          {several && (
+            <li className={`ctl-fact${lostEnd ? ' is-absent' : ''}`}>
+              <b>ran</b>
+              {lostEnd ? (
+                <>
+                  <Em />{' '}
+                  <Mark
+                    kind="absent"
+                    say={`This attempt started ${timeAgo(a.started_at ?? '')} and no finish time was ever written, so how long it ran is unknown.`}
+                  />
+                </>
+              ) : (
+                ranText(a, now)
+              )}
+            </li>
+          )}
           <li className={`ctl-fact${a.execution_name === null ? ' is-absent' : ''}`}>
             <b>exec</b>
             {a.execution_name === null ? (
@@ -1543,6 +1643,22 @@ function AttemptCard({
       </div>
     </section>
   )
+}
+
+/**
+ * How long one attempt ran, through `spanText` -- the formatter the phase
+ * chart and the Attempts pane draw the same span with (#102), so one attempt
+ * cannot read `48s` on one pane and `49s` on the next. An open attempt counts
+ * to `now` and says so.
+ */
+function ranText(a: AttemptRow, now: number): string {
+  if (a.started_at === null) return 'never started'
+  const started = instant(a.started_at)
+  if (started === null) return 'start time unreadable'
+  if (a.completed_at === null) return `${spanText(now - started)} so far`
+  const done = instant(a.completed_at)
+  if (done === null) return 'finish time unreadable'
+  return spanText(done - started)
 }
 
 // HAS THIS ATTEMPT ENDED, and on what evidence: `attemptEnd` in duration.ts.
@@ -1840,7 +1956,9 @@ function CpuRows({
     )
   }
 
-  const source = limitSource(figures.cpu_limit_cores, cls)
+  // The typed source (contract request #26) for the attempt's own figures; a
+  // heartbeat reading carries none, and older attempts recorded none.
+  const source = limitSource(figures.cpu_limit_cores, cls, from.kind === 'attempt' ? (a.cpu_limit_source ?? null) : null)
   const seconds = figures.cpu_seconds === null ? null : `${Number(figures.cpu_seconds.toFixed(1))} cpu-s`
   return (
     <>
@@ -1996,16 +2114,24 @@ function interimReading(a: AttemptRow, events: TaskEvent[]): CpuFrom | null {
 /**
  * WHERE THE CPU CEILING CAME FROM, in words for the `by` column and the strip.
  *
- *   no limit written   the task's class read here, by name;
- *   the class's cpu    the class's name (`standard limit`): the worker sized
- *                      the container by that class or its cgroup says the
- *                      same, and with `requests == limits` those agree;
- *   anything else      `reported limit`: the worker wrote a figure, and the
- *                      typed field does not say whether the kernel or the
- *                      catalogue gave it, so neither is named.
+ *   no limit written     the task's class read here, by name;
+ *   source `cgroup`      `cgroup limit`: the worker read the kernel's
+ *                        `cpu.max` (contract request #26, accepted on #184,
+ *                        2026-09-26), whatever the class says;
+ *   source `resource_class`
+ *                        the class's name (`standard limit`) when the class
+ *                        read here has that cpu, else `class limit`: the worker
+ *                        took it from the catalogue of the class it was sized
+ *                        with, which may not be the one read here;
+ *   no source recorded   an attempt from before #26: the class's name when
+ *                        the class has the same cpu (with `requests ==
+ *                        limits` the two agree), else `reported limit` --
+ *                        the legacy words, kept for older attempts.
  */
-function limitSource(cores: number | null, cls: ResourceClassSpec | null): string | null {
+function limitSource(cores: number | null, cls: ResourceClassSpec | null, recorded: string | null = null): string | null {
   if (cores === null) return cls !== null ? `${cls.name} limit` : null
+  if (recorded === 'cgroup') return 'cgroup limit'
+  if (recorded === 'resource_class') return cls !== null && cls.cpu === cores ? `${cls.name} limit` : 'class limit'
   if (cls !== null && cls.cpu === cores) return `${cls.name} limit`
   return 'reported limit'
 }
@@ -2106,22 +2232,37 @@ function cpuReading(from: CpuFrom, a: AttemptRow, end: AttemptEnd): CpuReading {
           say: 'The worker writes the attempt’s CPU figures with its first periodic reading after the runner starts, and none has landed yet. This is not a zero.',
         }
   }
+  // THE READING'S AGE (contract request #26, accepted on #184, 2026-09-26),
+  // as the API measured it against its own clock at the read: never off this
+  // browser's clock, which would be a guess drawn as a measurement. An attempt
+  // from before #26 records no time, and says so.
+  const age = typeof a.cpu_reading_age_seconds === 'number' && Number.isFinite(a.cpu_reading_age_seconds)
+    ? `${ageSpan(a.cpu_reading_age_seconds * 1000)} ago`
+    : null
   if (!end.over) {
-    return {
-      measured: true,
-      by: 'live reading',
-      strip: 'live reading · age not recorded',
-      mark: 'pending',
-      say: 'A live reading: the running worker rewrites these figures on the attempt with each periodic reading. The attempt records no time for them, so no age is shown. They are not the figures at exit.',
-    }
+    return age !== null
+      ? {
+          measured: true,
+          by: 'live reading',
+          strip: `live reading · ${age}`,
+          mark: 'pending',
+          say: `A live reading: the running worker rewrites these figures on the attempt with each periodic reading, and wrote this one ${age} by the API's clock when it was read. They are not the figures at exit.`,
+        }
+      : {
+          measured: true,
+          by: 'live reading',
+          strip: 'live reading · age not recorded',
+          mark: 'pending',
+          say: 'A live reading: the running worker rewrites these figures on the attempt with each periodic reading. This attempt records no time for them, so no age is shown. They are not the figures at exit.',
+        }
   }
   if (end.by === 'recorded') return { measured: true, by: 'at exit', strip: 'at exit', mark: null, say: '' }
   return {
     measured: true,
     by: 'last written',
-    strip: 'last written',
+    strip: age !== null ? `last written · ${age}` : 'last written',
     mark: 'partial',
-    say: 'This attempt ended without a recorded finish, so these are the figures its worker last wrote while it ran. They are not the figures at exit, and none are coming.',
+    say: `This attempt ended without a recorded finish, so these are the figures its worker last wrote while it ran${age !== null ? `, ${age} by the API's clock` : ''}. They are not the figures at exit, and none are coming.`,
   }
 }
 
@@ -2253,19 +2394,21 @@ function AttemptSpend({ a, profile }: { a: AttemptRow; profile: string }) {
 }
 
 /**
- * Every checkpoint this attempt wrote.
+ * What this attempt wrote, in one line -- and the cadence strip.
  *
- * TWO RECORDS, NEITHER COMPLETE. `attempt.checkpoints` is `list[str]` -- ids
- * and nothing else. The `checkpoint_completed` event carries the uri and the
- * size. So a row with an id and no location is not a broken checkpoint -- and
- * the table says per row WHICH of the two reasons it is: the event is off this
- * page, or the event read FAILED and nothing whatever is known about it. Those
- * two were one sentence, which reported a failed read as benign paging.
+ * ONE HOME FOR THE LIST (#102). This was a table per attempt -- id, size and
+ * location, with `copy gsutil` on every row -- directly above the Checkpoints
+ * section's table of the same checkpoints, read from the bucket. The bucket's
+ * table is the one kept: it is what a restore reads, it lists what was written
+ * and since reclaimed, and it opens each checkpoint's files. What stays on the
+ * card is what only the attempt knows: how many it recorded, what it resumed
+ * from, and WHEN it checkpointed, which the strip draws and no table can.
  *
- * CONTENTS ARE NOT RECORDED ANYWHERE. Nothing writes a manifest of what is in
- * a checkpoint archive, so this panel cannot list files and does not pretend
- * to. Reporting that as a gap is the honest move; a placeholder file tree
- * would be the dishonest one.
+ * TWO RECORDS, NEITHER COMPLETE. `attempt.checkpoints` is ids and nothing
+ * else; the `checkpoint_completed` event carries the uri. A checkpoint with no
+ * location is therefore one whose event is off this page, or one whose event
+ * read FAILED -- and the line keeps the mark that says which, because those
+ * were once one sentence that reported a failed read as benign paging.
  */
 function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
   const rows = checkpointsFor(a, run.events)
@@ -2277,7 +2420,6 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
     <div className="section" style={{ ...SUB, marginBottom: 0 }}>
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">checkpoints</span>
-        <span className="count-chip">{rows.length}</span>
         {/* RESUMED FROM, AS FACTS. "This attempt did not start from an empty
             workspace" was the sentence; the checkpoint id IS that fact, and
             the file count and byte total beside it are what a reader checks. */}
@@ -2297,7 +2439,7 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
         // whether the events were read, because a checkpoint can be recorded
         // in an event alone. Why periodic checkpointing legitimately writes
         // none on a short attempt is `#help/checkpoints`.
-        <p className="att-ckpt-none">
+        <p className="att-ckpt-none att-ckpt-line">
           <Mark
             kind={eventsRead ? 'zero' : 'partial'}
             say={
@@ -2311,142 +2453,31 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
           {a.started_at === null ? 'never started' : 'none written'}
         </p>
       ) : (
-        /* `is-stacked` — §2 OF `docs/audits/2026-09-23/overflow-inventory.md`
-           names this table by name: with the drawer open it hid 57% of itself
-           behind an `overflow-x: auto` that paints no scrollbar here, and what
-           was hidden is `Size` and `Location`. A checkpoint list showing only
-           checkpoint ids is a list that cannot answer the question anybody
-           opens it with — whether the thing was actually written and where.
-           Below 900px each row becomes a stacked record (§B6.3 in
-           `styles.css`); `data-label` supplies the key, as an attribute so the
-           rendered-word budgets count the same screen, and the explicit
-           `role`s keep the ARIA table that changing `display` drops.
-
-           A PLAIN BLOCK COMMENT, NOT A BRACED JSX ONE. This arm of the ternary
-           is an expression position, not JSX children, so a leading brace opens
-           an object literal and the file stops parsing — three of these in this
-           file, and `tsc` said `TS1005: ')' expected`. Caught by CI on the
-           first push of this change, which is the only place it could have
-           been caught.
-
-           THE STRIP GOES ABOVE THE TABLE AND DOES NOT REPLACE IT. The table
-           is the fact -- every id, size and location as text a reader can
-           copy. The strip is the cadence the table cannot show: whether this
-           attempt checkpointed steadily or stopped partway. A checkpoint
-           whose event is off this page has no instant, so the strip puts it
-           in a tray beside the axis rather than at a time nobody recorded. */
         <>
-        <CheckpointStrip attempt={a} events={run.events} />
-        <div className="ctl-table is-stacked">
-          <table role="table">
-            <thead role="rowgroup">
-              <tr role="row">
-                <th role="columnheader" scope="col">Checkpoint</th>
-                <th role="columnheader" scope="col" className="is-num">Size</th>
-                <th role="columnheader" scope="col">Location</th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {rows.map((r) => (
-                <tr role="row" key={r.checkpoint_id}>
-                  <th role="rowheader" scope="row">
-                    {r.checkpoint_id}
-                    {r.at !== null && <span className="ctl-sub">{timeAgo(r.at)}</span>}
-                    {r.eventOnly && (
-                      <span className="ctl-sub">not on the attempt document</span>
-                    )}
-                  </th>
-                  <td role="cell" data-label="Size" className="is-num">{r.bytes === null ? <Em /> : bytesLabel(r.bytes)}</td>
-                  <td role="cell" data-label="Location">
-                    {r.uri === null ? (
-                      <>
-                        <Em />{' '}
-                        <Mark
-                          kind={eventsRead ? 'partial' : 'unread'}
-                          say={
-                            eventsRead
-                              ? "This checkpoint's event is not on this page, so its location is unknown. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns."
-                              : 'The event read failed, so this checkpoint has no location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine.'
-                          }
-                        />
-                      </>
-                    ) : (
-                      <>
-                        {/* The whole uri in the title: below 900px a stacked
-                            record ellipsizes it to one line (CH-13), and a cut
-                            uri is a different uri. */}
-                        <span className="mono uri" title={r.uri}>{r.uri}</span>
-                        {/* No signed URL is minted here, by design. The reader
-                            uses their own credentials against GCS, which keeps
-                            the tenant boundary in one place. */}
-                        <button
-                          className="copy"
-                          onClick={() => navigator.clipboard?.writeText(`gsutil cp ${r.uri} .`)}
-                        >
-                          copy gsutil
-                        </button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-            {/* THE COVERAGE IS A FRACTION, NOT A PARAGRAPH. Where the ids and
-                the locations come from is `#help/checkpoints`; what this table
-                has to say for itself is how many of its rows have a location,
-                and each of those rows already carries its own mark. */}
+          <p className="att-ckpt-line">
+            {rows.length} written
+            {/* THE COVERAGE IS A FRACTION, NOT A PARAGRAPH, and it says which
+                absence it is: an event off this page, or an event read that
+                failed. */}
             {(!eventsRead || missingLocation > 0) && (
-              <caption>
-                {eventsRead ? rows.length - missingLocation : 0} of {rows.length} located
-              </caption>
+              <>
+                {' · '}
+                {eventsRead ? rows.length - missingLocation : 0} of {rows.length} located{' '}
+                <Mark
+                  kind={eventsRead ? 'partial' : 'unread'}
+                  say={
+                    eventsRead
+                      ? "A checkpoint's location is recorded on its event, and this checkpoint's event is not on this page, so its location is unknown here. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns. The Checkpoints section lists what the bucket holds."
+                      : 'The event read failed, so no checkpoint of this attempt has a location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine. The Checkpoints section lists what the bucket holds.'
+                  }
+                />
+              </>
             )}
-          </table>
-        </div>
+          </p>
+          <CheckpointStrip attempt={a} events={run.events} />
         </>
       )}
     </div>
-  )
-}
-
-/**
- * `task.latest_checkpoint` is a URI on the task, updated by every checkpoint.
- * When it does not match anything the attempt documents list, that is worth
- * saying: it is the pointer a resumed attempt would restore from, and a
- * mismatch means the record it points at is not on this page.
- */
-function LatestCheckpointNote({ run, attempts }: { run: AgentRun; attempts: AttemptRow[] }) {
-  const latest = run.task.latest_checkpoint
-  if (latest === null) return null
-  // WITH NO EVENTS THERE IS NOTHING TO MATCH AGAINST. A checkpoint's uri is
-  // recorded only on its event, so a failed event read leaves every row with
-  // `uri: null`, nothing matches, and this note fired for every task --
-  // explaining a comparison that never happened with two causes that were not
-  // what happened.
-  if (run.events === null) {
-    return (
-      <p className="att-restore">
-        <b>restore</b>
-        <span className="mono uri">{latest}</span>{' '}
-        <Mark
-          kind="unread"
-          say="The event read failed, and a checkpoint's uri is only ever recorded on its event — so nothing listed above can be compared with this pointer. Whether it matches a checkpoint of these attempts is unknown."
-        />
-      </p>
-    )
-  }
-  const known = attempts.some((a) =>
-    checkpointsFor(a, run.events).some((r) => r.uri === latest),
-  )
-  if (known) return null
-  return (
-    <p className="att-restore">
-      <b>restore</b>
-      <span className="mono uri">{latest}</span>{' '}
-      <Mark
-        kind="partial"
-        say="No checkpoint listed above matches the task's restore pointer. Either its event is off this page or it was written by an attempt whose document did not come back — it is not evidence the checkpoint is gone."
-      />
-    </p>
   )
 }
 
@@ -2454,7 +2485,7 @@ function LatestCheckpointNote({ run, attempts }: { run: AgentRun; attempts: Atte
 // Output
 // ---------------------------------------------------------------------------
 
-function Output({ run }: { run: AgentRun }) {
+function Output({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task, attempts } = run
   const summary = (task.result_summary ?? null) as ResultSummary | null
   // `result_summary` is an untyped Firestore dict: `ResultSummary` describes
@@ -2471,23 +2502,25 @@ function Output({ run }: { run: AgentRun }) {
   // the git outcome names.
   const artifactsRaw = summary?.artifacts
   const artifacts: ArtifactRef[] = Array.isArray(artifactsRaw) ? (artifactsRaw as ArtifactRef[]) : []
-  // THE SAME CAUTION, for the same reason: an older
-  // worker or a fixture can put a list -- or a string -- in `logs`. Silently
-  // substituting `{}` made `Logs` print "no log stream was uploaded for this
-  // attempt", a claim about the RUN, for a record that is merely malformed,
-  // and dropped the stdout/stderr URIs the reader came for without a word.
-  const logsRaw: unknown = summary?.logs
-  const logsOk = typeof logsRaw === 'object' && logsRaw !== null && !Array.isArray(logsRaw)
-  const logs: Record<string, unknown> = logsOk ? (logsRaw as Record<string, unknown>) : {}
-  const logsMalformed = logsRaw !== undefined && !logsOk
+  // NO LOG ROWS (owner decision, 2026-09-26, on #184). Output listed
+  // `result_summary.logs` -- the stdout and stderr object locations, each
+  // with `copy gsutil`. "The runner log's object locations move to
+  // Artifacts › Logs, beside the logs they point to. Details holds no log
+  // rows." Each log's location and its copy now sit on its own row there.
   const terminal = TERMINAL_STATES.has(task.state)
 
   const retried = attempts !== null ? attempts.length > 1 : task.attempt_count > 1
+  // ONE HEADING, NOT TWO STACKED (#102). `Output` sat directly on top of the
+  // git outcome's own `Code` heading with nothing between them, so the panel
+  // opened on two titles for one subject. When the summary carries a git
+  // outcome the panel IS the code, and says so once; otherwise it is Output.
+  const git = summary?.git
+  const hasCode = terminal && typeof git === 'object' && git !== null && !Array.isArray(git)
 
   return (
-    <section className="section panel">
+    <section className="section panel run-output">
       <div className="ctl-toolbar">
-        <h2>Output</h2>
+        <h2>{hasCode ? 'Code' : 'Output'}</h2>
         {/* THE SCOPE LINE IS NOT OPTIONAL, AND IT IS NOW A QUALIFIER.
             Everything in this panel comes from result_summary, which finish()
             writes ONCE at terminal state. On a retried task it is the last
@@ -2542,116 +2575,11 @@ function Output({ run }: { run: AgentRun }) {
         />
       ) : (
         <>
-          <GitOutcome git={summary.git} artifacts={artifacts} task={task} />
-          <Logs logs={logs} malformed={logsMalformed} raw={logsRaw} />
+          <GitOutcome git={summary.git} artifacts={artifacts} task={task} readAt={readAt} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
     </section>
-  )
-}
-
-function Logs({
-  logs,
-  malformed,
-  raw,
-}: {
-  logs: Record<string, unknown>
-  /** `logs` was present and was not a map. Not the same as no stream. */
-  malformed: boolean
-  /** The value as recorded, shown when it is malformed so a uri inside it is
-   *  not thrown away silently. */
-  raw: unknown
-}) {
-  const entries = Object.entries(logs)
-
-  if (malformed) {
-    return (
-      <div className="section" style={SUB}>
-        <span className="ctl-eyebrow">logs</span>
-        <Absent
-          kind="partial"
-          heading="logs is not a map of streams"
-          say="This result summary records a logs field that is not an object of stream name to uri, so no stream can be listed from it. The attempt may well have uploaded stdout and stderr — this is a malformed record, not a run without logs. The value is reproduced below so a uri inside it is not lost."
-        />
-        <pre className="json" style={{ maxHeight: 200, overflowY: 'auto' }}>
-          {JSON.stringify(raw, null, 2)}
-        </pre>
-        <LogsFoot />
-      </div>
-    )
-  }
-
-  return (
-    <div className="section" style={SUB}>
-      <span className="ctl-eyebrow">logs</span>
-      {entries.length === 0 ? (
-        <p className="att-none">
-          <Mark
-            kind="absent"
-            say="No log stream was uploaded for this attempt. A stream that failed to upload is absent from this list rather than recorded as empty."
-          />{' '}
-          none uploaded
-        </p>
-      ) : (
-        <ul className="ctl-facts">
-          {entries.map(([label, value]) => (
-            <li className="ctl-fact" key={label}>
-              <b>{label}</b>
-              {typeof value === 'string' ? (
-                <>
-                  <span className="mono uri">{value}</span>
-                  <button
-                    className="copy"
-                    onClick={() => navigator.clipboard?.writeText(`gsutil cat ${value}`)}
-                  >
-                    copy gsutil
-                  </button>
-                </>
-              ) : (
-                /* An entry whose value is not a string is not a uri. React
-                   would throw on an object child, and printing it as a
-                   location would send someone to gsutil with a number. */
-                <>
-                  <span className="mono">{JSON.stringify(value)}</span>{' '}
-                  <Mark
-                    kind="absent"
-                    say="This log entry's value is not a string, so it is not a uri and there is nothing to fetch from it."
-                  />
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <LogsFoot />
-    </div>
-  )
-}
-
-/**
- * The standing fact about logs on this platform, in both branches above.
- *
- * THIS USED TO SAY "there is no log-tail read path on the API, so a running
- * agent's output is not readable here at all". That was true when it was
- * written and had stopped being true: `GET /v1/tasks/{id}/logs` serves a byte
- * window of either the final object or the live tail, redacted at read time.
- * Nothing had called it, so the screen went on stating the old constraint --
- * which is worse than a missing feature, because it tells a reader not to look.
- * The Artifacts pane reads it, for the agent's streams and for the runner's
- * (#184).
- */
-function LogsFoot() {
-  // WHAT IT SAYS NOW, and it is a pointer rather than an explanation. These
-  // are object LOCATIONS from the result summary. Their text -- the agent's
-  // streams, its transcript and its answer, live while it runs, and the
-  // runner process's own log -- is the Artifacts pane's alone: the runner log
-  // panel that stood below this in Details was removed by the owner's decision
-  // of 2026-09-25 (#184).
-  return (
-    <p className="ctl-card-foot">
-      <span>locations only · text under Artifacts</span>
-    </p>
   )
 }
 
@@ -2787,7 +2715,17 @@ function DispatchPanel({ task }: { task: Task }) {
  * only counted commits would report "no changes" for the majority of real runs.
  */
 
-function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; artifacts: ArtifactRef[]; task: Task }) {
+function GitOutcome({
+  git,
+  artifacts,
+  task,
+  readAt,
+}: {
+  git: GitSummary | undefined
+  artifacts: ArtifactRef[]
+  task: Task
+  readAt: number | null
+}) {
   // Same untyped-dict caution as the artifact list: `GitSummary` describes what
   // `_harvest_git` writes, and the field is whatever is in Firestore.
   if (typeof git !== 'object' || git === null || Array.isArray(git)) return null
@@ -2798,10 +2736,20 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
   // The patch is an ordinary artifact; matching by name is what turns the
   // recorded name into the GCS uri without minting a second copy of it.
   const patch = git.patch ? artifacts.find((a) => a.name === git.patch) : undefined
+  // CODE HANDED ON RATHER THAN PUSHED (#278). A workflow step can change
+  // nothing in its clone and still write a patch into its artifacts for a
+  // dependant to stage -- the implement step of an implement -> review -> fix
+  // workflow does exactly that. "changed nothing in the repository" stays
+  // true, and it is not the whole story: the diff files are what went on.
+  const changedNothing = commits.length === 0 && dirty.length === 0 && patch === undefined
+  const handed =
+    changedNothing && task.workflow_id !== null && task.step_id !== null
+      ? artifacts.filter((a) => artifactKind(a.name) === 'diff')
+      : []
 
   return (
-    <div className="section panel git-outcome">
-      <h2>Code</h2>
+    // NO HEADING OF ITS OWN (#102): the panel around it says `Code`.
+    <div className="git-outcome">
 
       {git.error ? (
         <p className="warn-text">
@@ -2814,6 +2762,10 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
       ) : null}
 
       <PublishOutcome git={git} task={task} />
+
+      {handed.length > 0 && task.workflow_id !== null && task.step_id !== null && (
+        <HandedOn task={task} workflowId={task.workflow_id} stepId={task.step_id} files={handed} readAt={readAt} />
+      )}
 
       <ul className="ctl-facts">
         <li className={`ctl-fact${commits.length === 0 ? ' is-absent' : ''}`}>
@@ -2983,6 +2935,149 @@ function GitOutcome({ git, artifacts, task }: { git: GitSummary | undefined; art
             )}
           </table>
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * WHERE A STEP'S DIFF WENT: which dependant stages it, what is in it, and the
+ * pull request it ended up in (#278).
+ *
+ * Every part is an existing read. The edges are the workflow's `input_from`
+ * map (`GET /v1/workflows/{id}`, the read the Artifacts pane makes for staged
+ * inputs); the figures are the diff's own lines, read through the artifact
+ * content route the viewer uses; the pull request is the integrator's own
+ * result summary, from the same workflow read. Re-read with the drawer, so a
+ * pull request that is opened while this is on screen appears.
+ *
+ * A file no dependant stages is not "handed on", and is left to Artifacts.
+ */
+function HandedOn({
+  task,
+  workflowId,
+  stepId,
+  files,
+  readAt,
+}: {
+  task: Task
+  workflowId: string
+  stepId: string
+  files: ArtifactRef[]
+  readAt: number | null
+}) {
+  const { state } = useRead(() => loadWorkflow(workflowId), workflowId, `${readAt ?? ''}`, null)
+  if (state.status === 'loading') return null
+  if (state.status !== 'ok' && state.status !== 'stale') {
+    return (
+      <p className="git-handed">
+        <Mark
+          kind="unread"
+          say="The workflow could not be read, so whether a later step stages this diff, and what it opened, is unknown."
+        />{' '}
+        {files.map((f) => f.name).join(', ')} · handed on: not read
+      </p>
+    )
+  }
+  const { workflow, tasks } = state.data
+  const steps = Array.isArray(workflow.steps) ? workflow.steps : []
+  const to = (name: string) =>
+    steps
+      .filter((s) => typeof s.input_from === 'object' && s.input_from !== null && s.input_from[stepId] === name)
+      .map((s) => s.step_id)
+  const handedOn = files.map((f) => ({ file: f, to: to(f.name) })).filter((h) => h.to.length > 0)
+  if (handedOn.length === 0) return null
+  // THE INTEGRATOR'S PULL REQUEST, once it exists. The integrator is the one
+  // step whose stored dispatch names that role; its own git outcome carries
+  // the pull request the whole workflow opens.
+  const integrator = (Array.isArray(tasks) ? tasks : []).find((t) => dispatchOf(t)?.role === 'integrator')
+  const pr = integrator === undefined ? null : pullRequestOf(integrator)
+  return (
+    <div className="git-handed">
+      {handedOn.map((h) => (
+        <HandedFile key={h.file.name} task={task} file={h.file} to={h.to} />
+      ))}
+      {pr !== null && (
+        <p className="git-handed-pr">
+          <b>pr</b>{' '}
+          <a href={pr.url} target="_blank" rel="noreferrer">
+            #{pr.number}
+          </a>{' '}
+          <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
+          {integrator?.step_id ? ` · opened by ${integrator.step_id}` : ''}
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** A task's pull request, when its result summary carries a well-formed one. */
+function pullRequestOf(t: Task): { number: number; url: string; state: string } | null {
+  const summary = t.result_summary as ResultSummary | null
+  const pr: unknown = summary?.git?.pull_request
+  if (typeof pr !== 'object' || pr === null) return null
+  const { number, url, state } = pr as Record<string, unknown>
+  if (typeof number !== 'number' || typeof url !== 'string' || !/^https?:\/\//.test(url)) return null
+  return { number, url, state: typeof state === 'string' ? state : 'open' }
+}
+
+/**
+ * One handed-on diff: `+N −M in K files, handed to <step> as <name>`, and the
+ * diff itself in the artifact viewer. The figures and the viewer are ONE read:
+ * the viewer is handed the answer rather than asking again.
+ */
+function HandedFile({ task, file, to }: { task: Task; file: ArtifactRef; to: string[] }) {
+  const [open, setOpen] = useState(true)
+  // A finished task's artifacts do not change, so this reads once.
+  const { state } = useRead(() => loadArtifactContent(task.id, file.name), `${task.id}/${file.name}`, '', null)
+  const read = state.status === 'ok' || state.status === 'stale' ? state.data : null
+  const load = useCallback(
+    (): Promise<Result<ArtifactContent>> => Promise.resolve(state as Result<ArtifactContent>),
+    [state],
+  )
+  const text = read !== null && read.status === 'ok' && read.content !== null ? read.content : null
+  const stat = text === null ? null : diffStat(text)
+  const whole = read !== null && read.offset === 0 && read.next_offset === null && !read.truncated
+  const handed = `handed to ${to.join(', ')} as ${file.name}`
+  return (
+    <div className="git-handed-file">
+      <p className="git-handed-line">
+        {stat === null ? (
+          state.status === 'loading' ? (
+            <>
+              <Mark kind="pending" say={`Reading ${file.name}.`} /> {handed}
+            </>
+          ) : (
+            <>
+              <Mark
+                kind="unread"
+                say={`${file.name} could not be read as text, so what it changes is not counted here. The Artifacts pane lists it.`}
+              />{' '}
+              {handed}
+            </>
+          )
+        ) : (
+          <>
+            +{stat.insertions} −{stat.deletions} in {stat.files} file{stat.files === 1 ? '' : 's'}, {handed}
+            {!whole && (
+              <>
+                {' '}
+                <Mark
+                  kind="partial"
+                  say="Counted over the window the content route served, which is not the whole diff. The rest of it was not counted."
+                />
+              </>
+            )}
+          </>
+        )}
+        {!open && (
+          <button type="button" className="copy" onClick={() => setOpen(true)}>
+            show diff
+          </button>
+        )}
+      </p>
+      {open && read !== null && (
+        <ArtifactViewer taskId={task.id} artifact={file} onClose={() => setOpen(false)} load={load} />
       )}
     </div>
   )
@@ -3216,10 +3311,15 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  * When the copy was not read, the block says so -- it is never replaced by
  * the raw input.
  *
- * THE METADATA TABLE IS NOT MASKED. It draws `task.metadata` as submitted: the
- * owner's decision named the input, and whether the caller's metadata is
- * masked too is still his to make (recorded on PR #210). So this section does
- * NOT mask every byte it shows, and nothing here says it does.
+ * THE METADATA TABLE IS MASKED TOO (the owner's "mask it everywhere",
+ * 2026-09-26). It drew `task.metadata` as submitted, between two masked
+ * blocks: `TaskCreate.metadata` is caller-supplied, and a token in it was
+ * drawn in clear. It now draws the copy's `metadata` block -- the caller's
+ * keys through the same masker as the input, the platform's own keys
+ * (`dispatch`, `input_from`, `expected_outputs`) as stored, each such row
+ * saying so -- with its own `masked N`. A copy that was not read, or an API
+ * that does not serve the block, is said as that; `task.metadata` is never
+ * drawn in its place.
  *
  * ITS OWN READ, NOT THE DRAWER'S (PR #210 re-review). The copy rode in
  * `loadAgentRun`'s `Promise.all`, so the whole drawer waited on it. It is read
@@ -3248,7 +3348,6 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   )
   // A stale copy is still a copy the API masked; only its refresh failed.
   const served = copy.status === 'ok' || copy.status === 'stale' ? copy.data : null
-  const metadata = task.metadata
 
   return (
     <section className="section">
@@ -3351,48 +3450,7 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         )}
       </div>
 
-      <div className="section" style={SUB}>
-        <span className="ctl-eyebrow">metadata</span>
-        {metadata === null ? (
-          <p className="att-none">
-            <Mark
-              kind="absent"
-              say="The task document carried no metadata field at all, which is different from being submitted with none."
-            />{' '}
-            no field
-          </p>
-        ) : Object.keys(metadata).length === 0 ? (
-          <p className="att-none">
-            <Mark
-              kind="zero"
-              say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
-            />{' '}
-            submitted with none
-          </p>
-        ) : (
-          <div className="ctl-table">
-            <table>
-              <thead>
-                <tr>
-                  <th scope="col">Key</th>
-                  <th scope="col">Value</th>
-                </tr>
-              </thead>
-              <tbody>
-                {Object.entries(metadata).map(([k, v]) => (
-                  <tr key={k}>
-                    <th scope="row" className="mono">{k}</th>
-                    {/* Metadata is arbitrary, so a nested object is stringified
-                        rather than rendered -- React would throw on an object
-                        child, and "[object Object]" is worse than the JSON. */}
-                    <td>{typeof v === 'string' ? v : JSON.stringify(v)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <MaskedMetadataBlock served={served} copy={copy} />
 
       {/* redesign-v2 Panel 3: the files staged into the workspace, each linked
           back to the run that produced it. Renders nothing for a run that
@@ -3401,6 +3459,80 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
 
       {served !== null && <RestOfInput served={served} />}
     </section>
+  )
+}
+
+/**
+ * THE TASK'S METADATA, AS THE API MASKED IT (the owner's "mask it everywhere",
+ * 2026-09-26). Drawn from the `/input` copy's `metadata` block, which the same
+ * masker as the input made, so a literal masked in the prompt is masked here
+ * too. A row whose key only the platform writes is served as stored, and the
+ * row says so: those keys are not masked, and a reader should not take them
+ * for masked ones.
+ *
+ * NEVER `task.metadata` IN ITS PLACE. A copy still reading, a copy that failed
+ * and an API that does not serve the block are each said as that.
+ */
+function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; copy: Result<TaskInputCopy> }) {
+  const block = served?.metadata ?? null
+  const entries = block === null ? [] : Object.entries(block.value)
+  const platform = new Set(block?.platform_keys ?? [])
+  return (
+    <div className="section" style={SUB}>
+      <div className="ctl-toolbar att-sub-head">
+        <span className="ctl-eyebrow">metadata</span>
+        {block !== null && <MaskedNote count={block.redaction_count} />}
+      </div>
+      {served === null ? (
+        <InputNotRead copy={copy} />
+      ) : block === null ? (
+        <p className="att-none">
+          <Mark
+            kind="absent"
+            say="The deployment answering this UI does not serve the masked copy of a task's metadata yet. The metadata is not drawn unmasked in its place."
+          />{' '}
+          masked metadata not served by this API
+        </p>
+      ) : entries.length === 0 ? (
+        <p className="att-none">
+          <Mark
+            kind="zero"
+            say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
+          />{' '}
+          submitted with none
+        </p>
+      ) : (
+        <div className="ctl-table">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Key</th>
+                <th scope="col">Value</th>
+              </tr>
+            </thead>
+            <tbody>
+              {entries.map(([k, v]) => (
+                <tr key={k}>
+                  <th scope="row" className="mono">
+                    {k}
+                    {platform.has(k) && (
+                      <>
+                        {' '}
+                        <span className="ctl-sub">platform · as stored</span>
+                      </>
+                    )}
+                  </th>
+                  {/* Metadata is arbitrary, so a nested object is stringified
+                      rather than rendered -- React would throw on an object
+                      child, and "[object Object]" is worse than the JSON. */}
+                  <td>{typeof v === 'string' ? v : JSON.stringify(v)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -3510,19 +3642,9 @@ function InputNotRead({ copy }: { copy: Result<TaskInputCopy> }) {
 // Timeline
 // ---------------------------------------------------------------------------
 
-interface Group {
-  key: string
-  label: string
-  events: TaskEvent[]
-}
-
 /**
- * The event stream, grouped under the attempt that wrote it.
- *
- * A flat list interleaves three attempts into one column where only the
- * timestamps separate them, so what was different about the two that failed
- * cannot be read off it. Every event carries `attempt_id` (`_event_to_api`),
- * so the grouping is the API's own rather than a guess.
+ * The event stream, compact: the full list, grouped under the attempt that
+ * wrote each event, is the Attempts pane's (AttemptTimeline.tsx).
  */
 function Timeline({
   task,
@@ -3594,7 +3716,11 @@ function Timeline({
   // was, so a cancelled task whose real ending is off the page still says so.
   const lastEvent = events[events.length - 1]
   const endMissing = TERMINAL_STATES.has(task.state) && !events.some(isTerminalEvent)
-  const groups = grouped(events, attempts)
+  // THE LAST EVENT, NAMED AS THE CARDS NAME ITS ATTEMPT (AG-21).
+  const ordered = attempts === null ? [] : [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  const ordinal = lastEvent?.attempt_id == null ? -1 : ordered.findIndex((a) => a.attempt_id === lastEvent.attempt_id)
+  const owner = ordinal < 0 ? undefined : ordered[ordinal]
+  const before = events.length > 1 ? events[events.length - 2] : undefined
 
   return (
     <section className="section panel">
@@ -3639,102 +3765,28 @@ function Timeline({
         )}
       </div>
 
-      {groups.map((g) => (
-        <div className="section panel" key={g.key}>
-          <h2>
-            {g.label}
-            <span className="count-chip">{g.events.length}</span>
-          </h2>
-          {g.events.length === 0 ? (
-            <p className="att-none">
-              <Mark
-                kind="partial"
-                say="No event on this page belongs to this attempt — the page ends before them, or none were written. The two cannot be told apart from here."
-              />{' '}
-              none on this page
-            </p>
-          ) : (
-            <ol className="timeline">
-              {g.events.map((e) => (
-                <li key={e.event_id}>
-                  <span className="ev-type">{eventKind(e)}</span>
-                  <span className="ev-at">{timeAgo(e.at)}</span>
-                  {/* The fencing generation the event was written under. A
-                      stale worker's events carry the OLD one -- that is how a
-                      reclaim reads here. */}
-                  {e.generation !== null && (
-                    <span className="ev-gen" title="Fencing generation for this event">
-                      gen {e.generation}
-                    </span>
-                  )}
-                  {/* Only the reconciler labels itself. THE TEST IS THE VALUE,
-                      NOT THE KEY: the worker's quota_exhausted events also
-                      carry a detail.source, describing where the quota signal
-                      came from, so a presence check badges them as reconciler
-                      work. */}
-                  {e.detail?.['source'] === 'reconciler' && (
-                    <span className="ev-badge">reconciler</span>
-                  )}
-                  {e.detail && Object.keys(e.detail).length > 0 && (
-                    <pre className="ev-detail">{JSON.stringify(e.detail, null, 2)}</pre>
-                  )}
-                </li>
-              ))}
-            </ol>
-          )}
-        </div>
-      ))}
+      {/* THE COMPACT FORM (#101, redesign-v2 §2.3). Details printed every
+          event with its age and its whole detail as JSON, a second copy of
+          the Attempts pane's list at a tenth of its legibility. The full
+          timeline -- gaps, absolute times, each detail behind a disclosure --
+          lives on Attempts; Details keeps where the run is now: its last
+          event, the gap since the one before, and the way there. */}
+      {lastEvent !== undefined && (
+        <p className="ev-last">
+          <span className="ev-type">{eventKind(lastEvent)}</span>
+          <EventWhen e={lastEvent} prev={before ?? null} />
+          {owner !== undefined ? (
+            <span className="ev-owner">{attemptLabel(ordinal + 1, owner.generation)}</span>
+          ) : lastEvent.attempt_id !== null && attempts !== null ? (
+            <span className="ev-owner">no attempt document</span>
+          ) : null}
+        </p>
+      )}
+      <p className="ev-more-link">
+        <a className="ctl-link" href={`#work/task/${encodeURIComponent(task.id)}/attempts`}>
+          full timeline in Attempts
+        </a>
+      </p>
     </section>
   )
-}
-
-/**
- * Events under their attempt, oldest attempt first.
- *
- * `attempts === null` means the attempt read failed, so nothing can be grouped
- * by attempt without inventing the grouping — the events are shown as one
- * stream and the heading says why.
- */
-function grouped(events: TaskEvent[], attempts: AttemptRow[] | null): Group[] {
-  if (attempts === null) {
-    return [
-      {
-        key: '@ungrouped',
-        label: 'Every event (attempts unread, so they cannot be grouped)',
-        events,
-      },
-    ]
-  }
-
-  const byAttempt = new Map<string, TaskEvent[]>()
-  const preface: TaskEvent[] = []
-  for (const e of events) {
-    if (e.attempt_id === null) preface.push(e)
-    else {
-      const list = byAttempt.get(e.attempt_id)
-      if (list) list.push(e)
-      else byAttempt.set(e.attempt_id, [e])
-    }
-  }
-
-  const groups: Group[] = []
-  if (preface.length > 0) {
-    groups.push({ key: '@preface', label: 'Before any attempt', events: preface })
-  }
-  const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
-  ordered.forEach((a, i) => {
-    groups.push({
-      key: a.attempt_id,
-      label: attemptLabel(i + 1, a.generation),
-      events: byAttempt.get(a.attempt_id) ?? [],
-    })
-    byAttempt.delete(a.attempt_id)
-  })
-  // What is left names an attempt no document on this page describes. Folding
-  // these into the preface would file real attempt events under "before any
-  // attempt", which is a lie about when they happened.
-  for (const [id, list] of byAttempt) {
-    groups.push({ key: id, label: `Attempt ${id} · no attempt document`, events: list })
-  }
-  return groups
 }

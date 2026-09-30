@@ -8,7 +8,8 @@ import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadTasks } from './api'
+import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
+import { classUnits, useResourceClasses } from './Blockers'
 import { DispatchChip } from './Dispatch'
 import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
@@ -205,6 +206,11 @@ export function AgentsScreen({
   }, [listTab, listState])
   const [profile, setProfile] = useState<string>('')
   const [grouped, setGrouped] = useState(false)
+  // RECENT'S SEARCH AND SORT (#99). Held here beside `profile`, not in the
+  // address: a query is a reader's scratch, and `agentlist.ts` owns only the
+  // tab and the state segment.
+  const [query, setQuery] = useState('')
+  const [failedFirst, setFailedFirst] = useState(false)
 
   return (
     <Screen
@@ -267,6 +273,10 @@ export function AgentsScreen({
           setProfile={setProfile}
           grouped={grouped}
           setGrouped={setGrouped}
+          query={query}
+          setQuery={setQuery}
+          failedFirst={failedFirst}
+          setFailedFirst={setFailedFirst}
         />
       )}
     </Screen>
@@ -295,6 +305,10 @@ function AgentsBody({
   setProfile,
   grouped,
   setGrouped,
+  query,
+  setQuery,
+  failedFirst,
+  setFailedFirst,
 }: {
   onOpen: (taskId: string) => void
   openTaskId: string | null
@@ -313,6 +327,12 @@ function AgentsBody({
   setProfile: (p: string) => void
   grouped: boolean
   setGrouped: (g: boolean) => void
+  /** Recent's text search (#99), over the loaded rows; never in the address. */
+  query: string
+  setQuery: (q: string) => void
+  /** Recent's "failed first" sort (#99). */
+  failedFirst: boolean
+  setFailedFirst: (f: boolean) => void
 }) {
   // One clock for every ticking duration on the screen, so a hundred rows do
   // not each hold their own interval -- and it stops advancing the rows once
@@ -321,6 +341,14 @@ function AgentsBody({
   // the inspector's `run` ticks on the same instant, so a row and the drawer
   // beside it cannot disagree by a tick.
   const now = rowClock(useNow(1000), readAt, interval)
+
+  // THE CATALOGUE, READ ONCE FOR THE WHOLE LIST (#66), never per row: forty
+  // rows each mounting `useResourceClasses` would be forty reads of the same
+  // route. `whyAgent`/`whyNeedsAction` (types.ts) use a row's weight to tell
+  // a pool too small for its task apart from a genuinely full one -- #66's
+  // own repro (`resource:browser` at `hard_limit 1`, a browser task) read
+  // "busy platform-wide. (0/1)" here before this was threaded through.
+  const classes = useResourceClasses()
 
   const counts = useMemo(() => {
     const c: Record<Tab, number> = { live: 0, waiting: 0, recent: 0 }
@@ -352,14 +380,28 @@ function AgentsBody({
   // newest `PHONE_PAGE_LIMIT`, the scope qualifier says so, and the Overview
   // counts over that same phone page there -- `loadListPage`.)
   const stateFilter = shown === 'recent' ? recentState : null
+  // THE SEARCH AND THE SORT (#99) are Recent's too, for the same reason and
+  // over the same rows: applied after the state and the profile, so a pasted
+  // task id or step name narrows what those two already chose, and the
+  // qualifier below names both. Off Recent they do nothing, as the state does,
+  // so a query typed there cannot silently empty another tab.
+  const needle = shown === 'recent' ? query.trim().toLowerCase() : ''
+  const failFirst = shown === 'recent' && failedFirst
   const rows = useMemo(
     () =>
       page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
-        .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1)),
-    [page.tasks, shown, stateFilter, profile],
+        .filter((t) => needle === '' || matchesQuery(t, needle))
+        .sort((a, b) => {
+          if (failFirst) {
+            const byFailed = Number(b.state === 'FAILED') - Number(a.state === 'FAILED')
+            if (byFailed !== 0) return byFailed
+          }
+          return a.updated_at < b.updated_at ? 1 : -1
+        }),
+    [page.tasks, shown, stateFilter, profile, needle, failFirst],
   )
 
   // The segment's counts, from the loaded Recent rows, like the tab badges.
@@ -398,12 +440,16 @@ function AgentsBody({
   // the read asks for `PHONE_PAGE_LIMIT` rows, and when more exist the list is
   // the most recent ones -- `showing the 50 most recent` -- not a page that
   // merely happens to end early.
+  //
+  // THE SEARCH AND THE SORT ARE NAMED IN IT (#99). A search that finds nothing
+  // here has searched the loaded page, not the platform, and "failed first"
+  // orders only the failures this page holds.
   const phonePage = page.asked < TASK_PAGE_LIMIT && Boolean(page.next_page_token)
   const scopeSay = phonePage
-    ? `Every count and filter on this screen runs over the ${page.tasks.length} most recent agents, not over the platform. At this width the list reads ${PHONE_PAGE_LIMIT} rows rather than ${TASK_PAGE_LIMIT}, because every row carries its input and its output and the list re-reads every few seconds. More rows exist beyond it.`
+    ? `Every count, filter, search and sort on this screen runs over the ${page.tasks.length} most recent agents, not over the platform. At this width the list reads ${PHONE_PAGE_LIMIT} rows rather than ${TASK_PAGE_LIMIT}, because every row carries its input and its output and the list re-reads every few seconds. More rows exist beyond it.`
     : page.next_page_token
-      ? `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
-      : `Every count and filter on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
+      ? `Every count, filter, search and sort on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform. More rows exist beyond it.`
+      : `Every count, filter, search and sort on this screen runs over the ${page.tasks.length} rows loaded into this page, not over the platform.`
 
   return (
     <>
@@ -454,6 +500,32 @@ function AgentsBody({
           </select>
         </label>
 
+        {/* RECENT, SEARCHED (#99). A pasted full task id, a step name or a
+            workflow id, matched case-insensitively over the loaded rows. It
+            is a reader's scratch, so it is not written to the address. */}
+        {shown === 'recent' && (
+          <label className="ag-filter">
+            <span className="ctl-eyebrow">search</span>
+            <input
+              type="search"
+              value={query}
+              placeholder="task, step or workflow id"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </label>
+        )}
+
+        {shown === 'recent' && (
+          <label className="ag-filter check">
+            <input
+              type="checkbox"
+              checked={failedFirst}
+              onChange={(e) => setFailedFirst(e.target.checked)}
+            />
+            Failed first
+          </label>
+        )}
+
         {shown !== 'live' && (
           <label className="ag-filter check">
             <input
@@ -486,9 +558,11 @@ function AgentsBody({
                   ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
                   : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
-                    : stateFilter !== null
-                      ? `No ${RECENT_STATE_OF[stateFilter]} agent is in the loaded page.`
-                      : 'Nothing has finished in the loaded page.'
+                    : needle !== ''
+                      ? `No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent in the loaded page matches “${query.trim()}”.`
+                      : stateFilter !== null
+                        ? `No ${RECENT_STATE_OF[stateFilter]} agent is in the loaded page.`
+                        : 'Nothing has finished in the loaded page.'
               }
             />{' '}
             {/* THIS SCREEN'S ONE `?` (B7.4), AND ONLY ON THE EMPTY LIVE TAB
@@ -502,21 +576,114 @@ function AgentsBody({
                 the capacity topic opened from those answered a question
                 nobody there was asking. `prose.runs.test.tsx` pins it. */}
             {stateFilter !== null ? `nothing ${stateFilter} in ${shown}` : `nothing in ${shown}`}
+            {needle !== '' && ` matching “${query.trim()}”`}
             {shown === 'live' && <HelpCard topic="capacity" />}
           </h3>
         </div>
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
       ) : (
-        <div className="rows">
-          <RowHead />
-          {rows.map((t) => (
-            <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
-          ))}
-        </div>
+        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
       )}
     </>
   )
+}
+
+/**
+ * The flat list. A row whose reason is the row above's says it only to a
+ * screen reader (#100): the reader's eye already has it one line up.
+ */
+function FlatRows({
+  rows,
+  now,
+  onOpen,
+  openTaskId,
+  classes,
+}: {
+  rows: Task[]
+  now: number
+  onOpen: (taskId: string) => void
+  openTaskId: string | null
+  classes: ResourceClasses | null
+}) {
+  const shared = flatShared(rows.map((t) => rowReason(t, classes)))
+  return (
+    <div className="rows">
+      <RowHead />
+      {rows.map((t, i) => (
+        <TaskRow
+          key={t.id}
+          task={t}
+          now={now}
+          onOpen={onOpen}
+          open={t.id === openTaskId}
+          classes={classes}
+          whyShared={shared[i]}
+        />
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Recent's search (#99): the task id, the step id and the workflow id,
+ * case-insensitively. `needle` is already trimmed and lower-cased.
+ */
+function matchesQuery(t: Task, needle: string): boolean {
+  return [t.id, t.step_id, t.workflow_id].some((v) => v != null && v.toLowerCase().includes(needle))
+}
+
+/** A row's why line and whether it asks a person to act -- `TaskRow`'s own reading. */
+type RowReason = { text: string; warn: boolean }
+
+function rowReason(task: Task, classes: ResourceClasses | null): RowReason {
+  // THE TASK'S WEIGHT, FROM THE CATALOGUE (#66) -- never `RESOURCE_UNITS`,
+  // which is what fed `whyAgent`/`whyNeedsAction` a `full` reading for a pool
+  // too small to ever admit this task. `classUnits` is null exactly when the
+  // row's display units also are: the catalogue read is the same one and the
+  // display badge keeps its own bundled fallback.
+  const units = classUnits(classes, task.resource_class)
+  return { text: whyAgent(task, units), warn: whyNeedsAction(task, units) }
+}
+
+/**
+ * WHICH REASONS CAN BE SAID ONCE (#100). Only a routine one: a line that asks
+ * a person to act is on every row it applies to, whatever its neighbours say,
+ * because that is the line nobody may miss. An empty reason is never shared.
+ */
+function shareable(r: RowReason): boolean {
+  return r.text !== '' && !r.warn
+}
+
+/** The flat list: a row whose reason equals the previous row's hides it. */
+function flatShared(reasons: RowReason[]): boolean[] {
+  return reasons.map((r, i) => i > 0 && shareable(r) && reasons[i - 1]!.text === r.text)
+}
+
+/**
+ * A workflow group: every run of two or more consecutive rows with one
+ * routine reason moves that reason to the header, with the number of rows it
+ * covers. Two runs of the same reason in one group are one header line.
+ */
+function groupReasons(reasons: RowReason[]): {
+  shared: boolean[]
+  reasons: { text: string; count: number }[]
+} {
+  const shared = reasons.map(() => false)
+  const said: { text: string; count: number }[] = []
+  let i = 0
+  while (i < reasons.length) {
+    let j = i + 1
+    while (j < reasons.length && reasons[j]!.text === reasons[i]!.text && shareable(reasons[j]!)) j++
+    if (shareable(reasons[i]!) && j - i >= 2) {
+      for (let k = i; k < j; k++) shared[k] = true
+      const known = said.find((s) => s.text === reasons[i]!.text)
+      if (known) known.count += j - i
+      else said.push({ text: reasons[i]!.text, count: j - i })
+    }
+    i = j
+  }
+  return { shared, reasons: said }
 }
 
 /**
@@ -531,11 +698,13 @@ function GroupedRows({
   now,
   onOpen,
   openTaskId,
+  classes,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
+  classes: ResourceClasses | null
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -555,6 +724,7 @@ function GroupedRows({
     <>
       {groups.map(([wf, tasks]) => {
         const roll = rollupState(tasks.map((t) => t.state))
+        const said = groupReasons(tasks.map((t) => rowReason(t, classes)))
         return (
           <section className="section group" key={wf || 'standalone'}>
             <h2>
@@ -583,10 +753,28 @@ function GroupedRows({
                 {tasks.length} here
               </span>
             </h2>
+            {/* A REASON THE GROUP'S ROWS SHARE, SAID ONCE (#100). Twenty-one
+                parked steps each printing "Waiting on an earlier step in its
+                workflow." is twenty-one lines of one sentence; it is said here
+                with its count, and the rows it covers keep it in their
+                accessible name only. */}
+            {said.reasons.map((r) => (
+              <p className="group-why" key={r.text}>
+                <b>{r.count}</b> {r.text}
+              </p>
+            ))}
             <div className="rows">
               <RowHead />
-              {tasks.map((t) => (
-                <TaskRow key={t.id} task={t} now={now} onOpen={onOpen} open={t.id === openTaskId} />
+              {tasks.map((t, i) => (
+                <TaskRow
+                  key={t.id}
+                  task={t}
+                  now={now}
+                  onOpen={onOpen}
+                  open={t.id === openTaskId}
+                  classes={classes}
+                  whyShared={said.shared[i]}
+                />
               ))}
             </div>
           </section>
@@ -654,14 +842,22 @@ function TaskRow({
   now,
   onOpen,
   open = false,
+  classes,
+  whyShared = false,
 }: {
   task: Task
   now: number
   onOpen: (taskId: string) => void
   /** This is the agent the inspector has open (AG-17). */
   open?: boolean
+  /** The resource-class catalogue, for #66's below-units verdict. Read once per list, not per row. */
+  classes: ResourceClasses | null
+  /** The reason is said once for this row and its neighbours (#100); keep it for a screen reader only. */
+  whyShared?: boolean
 }) {
-  const why = whyAgent(task)
+  const why = rowReason(task, classes)
+  // Said once by a neighbour or the group header (#100), and never a warn line.
+  const whyHidden = whyShared && !why.warn
   const el = elapsed(task, now)
   const tries = attemptsUsed(task)
   const units = RESOURCE_UNITS[task.resource_class]
@@ -720,6 +916,14 @@ function TaskRow({
         <span className="id" title={task.id}>
           {shortTaskId(task.id)}
         </span>
+        {/* A SHARED REASON LIVES IN THIS CELL, NOT IN THE ROW'S GRID (#100).
+            As its own grid item it had to be placed somewhere: pinned to the
+            first cell, it pushed every auto-placed cell one column right and
+            wrapped the last onto a new line; in flow it cost a line of
+            row-gap. Here it is absolutely positioned inside `.agent`, which
+            is `position: relative` and clips, so it takes no cell, no gap and
+            no line, and stays in the row's accessible name. */}
+        {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
 
       <span className="owner" title={task.submitted_by ?? undefined}>
@@ -792,8 +996,14 @@ function TaskRow({
           spent budget), a missing credential. Routine waits and cancellations
           are plain ink. A silent worker gets no line HERE: a row is a task
           document and the heartbeat is on the lease (#179); the inspector,
-          which reads events, draws one. */}
-      {why && <span className={`why${whyNeedsAction(task) ? ' is-warn' : ''}`}>{why}</span>}
+          which reads events, draws one.
+
+          SAID ONCE WHEN THE NEIGHBOURS SHARE IT (#100). Then this line is
+          not drawn: the row above or the group header already says it, and
+          the `.agent` cell carries it visually hidden, so every row still
+          answers "why" when read on its own. Never a warn line, and never
+          hover-only: `flatShared`/`groupReasons` decide it. */}
+      {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
     </div>
   )
 }

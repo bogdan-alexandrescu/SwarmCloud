@@ -27,7 +27,7 @@
 // that is both checkable here and load-bearing.
 
 import { describe, expect, it, vi } from 'vitest'
-import { act, render } from '@testing-library/react'
+import { act, cleanup, render } from '@testing-library/react'
 
 import STYLES from '../styles.css?raw'
 // App.tsx as TEXT, not as a module: importing it would evaluate every screen
@@ -49,7 +49,9 @@ const api = vi.hoisted(() => ({
   loadStats: vi.fn(),
   loadSpend: vi.fn(),
 }))
-vi.mock('../api', () => api)
+// `TASK_PAGE_LIMIT` BESIDE THE READS: Overview names the full page it asks
+// for (#168), and a factory mock throws on any export it does not declare.
+vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
 const { OverviewScreen } = await import('../Overview')
 
@@ -622,7 +624,8 @@ describe('OV-1, OV-2, OV-12: the headroom headline is % used, names its account,
       loadSpend: ok(spend({ tasksWithAttempts: 3, tasksSampled: 3, attempts: 3, attemptsWithCost: 3, costUsd: 1.25 })),
     })
     const figures = [...el.querySelectorAll('.ctl-figure, .ctl-metric-value, .ctl-dial-figure')].map(text)
-    expect(figures.filter((f) => f.includes('$1.2500')), 'the spend figure is drawn twice').toHaveLength(1)
+    // `$1.25`, not `$1.2500`: the headline keeps two decimals at every size (#97).
+    expect(figures.filter((f) => f.includes('$1.25')), 'the spend figure is drawn twice').toHaveLength(1)
     expect(figures.filter((f) => /(^|\D)28%/.test(f)), 'the headroom figure is not drawn exactly once').toHaveLength(1)
   })
 })
@@ -673,7 +676,9 @@ describe('OV-4, OV-14: the spend figure is a partial sum, and its foot is a run 
       '2 unmeasured',
       '1 of 12 reads failed',
       expect.stringMatching(/^summed (just now|\d+[smhd] ago)$/),
-      'no re-poll',
+      // Plain words, not `no re-poll` (#97): the sum moves on a press of
+      // refresh and on nothing else.
+      'updates only on refresh',
     ])
 
     const feet = [...el.querySelectorAll('.ctl-card-foot')]
@@ -843,11 +848,19 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
    * from a count of unknown age. The owner set its cadence at 60 seconds; the
    * age is beside the figure and in the sentence that reasons from it.
    *
+   * `usePoll` (#168) schedules with `setTimeout`, re-armed per tick, rather
+   * than `setInterval` -- it has to pause while `document.hidden` and finish
+   * the wait it was part-way through on return, which a restarted interval
+   * cannot do without the same due-time bookkeeping. It always schedules its
+   * REGULAR tick as `setTimeout(fire, ms)` with the literal `ms`, so spying
+   * on `setTimeout` and keying on that value still tells the 60 s stats timer
+   * apart from the 20 s poll.
+   *
    * MUTATION: put stats back on the manual cadence, or on the 20s poll, or
    * drop either age.
    */
   it('re-reads /v1/stats on a 60-second timer and not on the 20-second one', async () => {
-    const spy = vi.spyOn(globalThis, 'setInterval')
+    const spy = vi.spyOn(globalThis, 'setTimeout')
     try {
       await mountWith()
       const timers = spy.mock.calls.map((c) => ({ fn: c[0] as unknown as () => void, ms: c[1] }))
@@ -889,6 +902,64 @@ describe('OV-16: the running count re-reads every 60 seconds and says how old it
   })
 })
 
+describe('#227: usePoll leaves nothing behind when the Overview unmounts', () => {
+  /**
+   * `usePoll` (#249) arms a `setTimeout` per poll and a `visibilitychange`
+   * listener on `document`. A screen the reader has left that still re-reads
+   * every 20 and 60 seconds is load on the API for nobody, and a listener left
+   * on `document` re-arms that timer every time the tab comes back.
+   *
+   * Fake timers from before the mount, so the timers `usePoll` arms are ones
+   * this test can run to completion after the unmount; `shouldAdvanceTime`
+   * so `settle()` still lets the reads land.
+   *
+   * MUTATION: drop `disarm()` from usePoll's cleanup (a timer is still
+   * pending), or drop the `removeEventListener` (the listener is left behind).
+   */
+  it('fires no timer and keeps no visibilitychange listener after unmount', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true, toFake: ['setTimeout', 'clearTimeout'] })
+    const added = vi.spyOn(document, 'addEventListener')
+    const removed = vi.spyOn(document, 'removeEventListener')
+    try {
+      await mountWith()
+      const listeners = added.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      expect(listeners.length, 'the Overview armed no visibilitychange listener; this check is vacuous').toBeGreaterThanOrEqual(2)
+      // The control: while mounted, the 60-second timer does re-read.
+      const mounted = api.loadStats.mock.calls.length
+      await act(async () => {
+        vi.advanceTimersByTime(60_000)
+      })
+      await settle()
+      expect(api.loadStats.mock.calls.length, 'the poll never fired while mounted; this check is vacuous').toBeGreaterThan(
+        mounted,
+      )
+
+      cleanup()
+      // THE TIMERS THEMSELVES, not only their effect: a tick that fires after
+      // unmount calls `setState` on a dead component and re-reads nothing, so
+      // counting reads alone cannot see an armed timer. Every timer the
+      // Overview armed is cleared by its unmount; `settle()` is between calls.
+      expect(vi.getTimerCount(), 'a timer the Overview armed is still pending after unmount').toBe(0)
+      const reads = () => Object.values(api).reduce((n, fn) => n + fn.mock.calls.length, 0)
+      const before = reads()
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000)
+        document.dispatchEvent(new Event('visibilitychange'))
+        vi.advanceTimersByTime(5 * 60_000)
+      })
+      await settle()
+      expect(reads(), 'a poll fired after the Overview unmounted').toBe(before)
+
+      const gone = removed.mock.calls.filter((c) => c[0] === 'visibilitychange').map((c) => c[1])
+      for (const fn of listeners) {
+        expect(gone, 'a visibilitychange listener outlived the Overview').toContain(fn)
+      }
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
 describe('OV-10: the failures figure and the failed-agents list count one population', () => {
   /** `phoneWidth()` reads `matchMedia`, which jsdom does not have. */
   function media(phone: boolean): void {
@@ -925,13 +996,19 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
     expect(limits.filter((l) => l !== 50), 'a phone Overview counted over a page the list does not read').toEqual([])
   })
 
-  /** The control: a wide screen reads the full page, as the list does. */
-  it('reads the full page on a wide screen', async () => {
+  /**
+   * The control: a wide screen reads the full page, as the list does -- and
+   * NAMES it (#168). A bare `loadTasks()` took the api's default, so the page
+   * this screen counts over was decided in another file.
+   *
+   * MUTATION: call `loadTasks()` with no argument on a wide screen.
+   */
+  it('reads the full page on a wide screen, and asks for it by number', async () => {
     media(false)
     api.loadTasks.mockClear()
     await mountWith()
     const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
     expect(limits.length).toBeGreaterThan(0)
-    expect(limits.includes(50), 'a wide Overview read the phone page').toBe(false)
+    expect(limits.filter((l) => l !== 200), 'a wide Overview did not ask for the 200-row page').toEqual([])
   })
 })

@@ -1,0 +1,136 @@
+{
+  "_what": "The eight custom roles terraform/infra and its modules defined on origin/main at 89f2e09, before they moved to terraform/bootstrap (#79). Captured from the live project with read-only `gcloud iam roles describe <id> --project saga-agents-staging --format=json` on 2026-09-25 at 08:52 UTC. Before the move, a test file that is no longer in the tree held these values to origin/main's module definitions in CI: tests/terraform/platform_roles_fixture.tftest.hcl, added by PR #150's red-first commits and deleted by the commit that moved the roles, because the module resources it planned no longer exist (read it with `git show 15856da:tests/terraform/platform_roles_fixture.tftest.hcl`; terraform run 36118571454, its four runs passed). tests/terraform/platform_roles.tftest.hcl holds terraform/bootstrap to them after it. Permissions sorted. Do not edit this to match a changed role: a permission change is a separate, owner-applied decision, and this file is the record of what the move had to preserve.",
+  "roles": {
+    "job_dispatcher": {
+      "role_id": "swarmJobDispatcher",
+      "title": "Swarm Job Dispatcher",
+      "description": "Create and run Cloud Run Job resources. No delete, no IAM, no services.",
+      "stage": "GA",
+      "permissions": [
+        "run.executions.get",
+        "run.executions.list",
+        "run.jobs.create",
+        "run.jobs.get",
+        "run.jobs.list",
+        "run.jobs.run",
+        "run.jobs.runWithOverrides",
+        "run.jobs.update",
+        "run.operations.get",
+        "run.operations.list",
+        "run.tasks.get",
+        "run.tasks.list"
+      ]
+    },
+    "job_reaper": {
+      "role_id": "swarmJobReaper",
+      "title": "Swarm Job Reaper",
+      "description": "Cancel and delete executions, garbage-collect unused Job resources. Reconciler only.",
+      "stage": "GA",
+      "permissions": [
+        "run.executions.cancel",
+        "run.executions.delete",
+        "run.executions.get",
+        "run.executions.list",
+        "run.jobs.delete",
+        "run.jobs.get",
+        "run.jobs.list",
+        "run.operations.get",
+        "run.operations.list",
+        "run.tasks.get",
+        "run.tasks.list"
+      ]
+    },
+    "gke_dispatcher": {
+      "role_id": "swarmGkeDispatcher",
+      "title": "Swarm GKE Dispatcher",
+      "description": "Create and observe Jobs on the swarm Autopilot cluster. No Secret access, no cluster mutation.",
+      "stage": "GA",
+      "permissions": [
+        "container.clusters.get",
+        "container.events.get",
+        "container.events.list",
+        "container.jobs.create",
+        "container.jobs.get",
+        "container.jobs.list",
+        "container.jobs.update",
+        "container.namespaces.get",
+        "container.namespaces.list",
+        "container.pods.get",
+        "container.pods.getLogs",
+        "container.pods.list"
+      ]
+    },
+    "gke_reaper": {
+      "role_id": "swarmGkeReaper",
+      "title": "Swarm GKE Reaper",
+      "description": "Delete finished Jobs and stuck Pods on the swarm Autopilot cluster. Reconciler only.",
+      "stage": "GA",
+      "permissions": [
+        "container.clusters.get",
+        "container.events.list",
+        "container.jobs.delete",
+        "container.jobs.get",
+        "container.jobs.list",
+        "container.namespaces.get",
+        "container.pods.delete",
+        "container.pods.get",
+        "container.pods.list"
+      ]
+    },
+    "secret_lister": {
+      "role_id": "swarmSecretLister",
+      "title": "Swarm Secret Lister and Account Provisioner",
+      "description": "List secret metadata project-wide, and create the two secrets an account pool entry needs. Cannot read any payload.",
+      "stage": "GA",
+      "permissions": [
+        "secretmanager.secrets.create",
+        "secretmanager.secrets.get",
+        "secretmanager.secrets.getIamPolicy",
+        "secretmanager.secrets.list",
+        "secretmanager.secrets.setIamPolicy",
+        "secretmanager.versions.add",
+        "secretmanager.versions.destroy",
+        "secretmanager.versions.list"
+      ]
+    },
+    "worker_firestore": {
+      "role_id": "swarmTenantWorkerFirestore",
+      "title": "Swarm Tenant Worker Firestore",
+      "description": "Read and write control-plane documents by id. No deletes, no queries.",
+      "stage": "GA",
+      "permissions": [
+        "datastore.databases.get",
+        "datastore.entities.create",
+        "datastore.entities.get",
+        "datastore.entities.update",
+        "resourcemanager.projects.get"
+      ]
+    },
+    "bucket_metadata_reader": {
+      "role_id": "swarmBucketMetadataReader",
+      "title": "Swarm Bucket Metadata Reader",
+      "description": "storage.buckets.get only. Enough to mount, not enough to enumerate.",
+      "stage": "GA",
+      "permissions": [
+        "storage.buckets.get"
+      ]
+    },
+    "image_puller": {
+      "role_id": "swarmImagePuller",
+      "title": "Swarm Image Puller",
+      "description": "Pull an image by a name already held. Cannot enumerate the repository, cannot push.",
+      "stage": "GA",
+      "permissions": [
+        "artifactregistry.dockerimages.get",
+        "artifactregistry.files.download",
+        "artifactregistry.files.get",
+        "artifactregistry.locations.get",
+        "artifactregistry.packages.get",
+        "artifactregistry.repositories.downloadArtifacts",
+        "artifactregistry.repositories.get",
+        "artifactregistry.tags.get",
+        "artifactregistry.versions.get"
+      ]
+    }
+  }
+}

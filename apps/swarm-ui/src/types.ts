@@ -366,6 +366,32 @@ export const POOL_FAMILY_ORDER: readonly PoolKind[] = [
 ]
 
 /**
+ * Each family's heading, as Capacity › Pools draws it. Here so that Pool
+ * limits, which groups the same pools the same way (#132), draws the same
+ * words over them: a family called one thing on the board and another on the
+ * screen that edits it is two names for one group. ONE TABLE, imported by
+ * both screens: Capacity.tsx held its own copy until #132, and two copies of
+ * the same words are two copies that can drift.
+ *
+ * THESE ARE POOL FAMILIES, NOT NAV LABELS, and `runner` keeps the contract's
+ * noun on purpose: it groups the pools whose scope is a runner profile. The
+ * TAB one along used to be called "Runner profiles" too and is now "Profile
+ * headroom" -- that rename was about telling a per-tenant measurement from the
+ * platform-wide catalogue beside it in the rail, and it does not reach in
+ * here. A pool family named after the thing it is scoped by is unambiguous on
+ * the capacity board, where every other row is `Tenants`, `Backends` or
+ * `Providers`.
+ */
+export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
+  global: 'Global',
+  tenant: 'Tenants',
+  resource: 'Resource classes',
+  runner: 'Runner profiles',
+  backend: 'Backends',
+  provider: 'Providers',
+}
+
+/**
  * `active` above `effective_limit`. Not merely "full": it means the pool is
  * carrying more than its ceiling allows, which admission cannot produce and
  * which therefore indicates drift -- a limit lowered under running work, or a
@@ -443,11 +469,41 @@ export interface Task {
   timeout_seconds: number | null
   /** When a PARKED task becomes eligible again. Null unless it is parked. */
   next_eligible_at: string | null
+  /**
+   * MASKED, like `input` (owner decision, 2026-09-26: masked everywhere). The
+   * caller's keys come through the API's masker; the platform's own
+   * (`dispatch`, `input_from`, `expected_outputs`, which submission refuses
+   * from callers) as stored. `metadata_redaction_count` is how many masks it
+   * took.
+   */
   metadata: Record<string, unknown> | null
   repository_ref: string | null
+  /**
+   * THE MASKED INPUT. `GET /v1/tasks/{id}` serves the input the API masked at
+   * read time, never the input as submitted -- even to the tenant that
+   * submitted it (owner decision, 2026-09-26). Screens still draw the
+   * `/input` copy, which carries the prompt and the rest as blocks.
+   */
   input: unknown
+  /**
+   * How many credential-shaped strings the API masked in `input` and in
+   * `metadata`. OPTIONAL: an API older than the change sends neither, and
+   * serves both unmasked, so absent is not zero.
+   */
+  input_redaction_count?: number | null
+  metadata_redaction_count?: number | null
+  /**
+   * MASKED too, since the PR #229 review: the agent's stderr tail and its own
+   * summary text, by the input's masker, string by string (an artifact's
+   * `name` and `uri` as stored). Each count is how many masks that took;
+   * optional for the reason the two above are.
+   */
   last_error: string | null
+  last_error_redaction_count?: number | null
   result_summary: Record<string, unknown> | null
+  result_summary_redaction_count?: number | null
+  /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
+  repository_url_redaction_count?: number | null
   latest_checkpoint: string | null
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
@@ -738,7 +794,9 @@ export interface TaskEvent {
   attempt_id: string | null
   lease_id: string | null
   generation: number | null
+  /** Every string in it masked by the task's masker (the PR #229 review); keys as written. */
   detail: Record<string, unknown> | null
+  detail_redaction_count?: number | null
 }
 
 /**
@@ -1287,7 +1345,9 @@ export interface AttemptRow {
   started_at: string | null
   completed_at: string | null
   exit_code: number | null
+  /** The stderr tail `last_error` is, masked by the task's masker (the PR #229 review). */
   error: string | null
+  error_redaction_count?: number | null
   peak_rss_bytes: number | null
   peak_disk_bytes: number | null
   oom_near_miss: boolean
@@ -1307,11 +1367,11 @@ export interface AttemptRow {
    *  - `mean_cpu_cores`   cpu_seconds over RUNNER wall time;
    *  - `cpu_limit_cores`  what they are a fraction of: the container's cgroup
    *                       `cpu.max`, else the catalogue cpu of the class it
-   *                       was sized with. Which of the two is not recorded.
+   *                       was sized with; `cpu_limit_source` says which.
    *
    * The worker rewrites them with each periodic reading while a runner runs
-   * and when each runner is reaped, so on a running attempt they are LIVE, and
-   * the document records no time for them.
+   * and when each runner is reaped, so on a running attempt they are LIVE,
+   * and `cpu_measured_at` dates them (request #26).
    *
    * NULL is not measured, never 0. OPTIONAL, and a missing key is a different
    * fact again: an API older than the typed fields, which says nothing about
@@ -1322,6 +1382,22 @@ export interface AttemptRow {
   peak_cpu_cores?: number | null
   mean_cpu_cores?: number | null
   cpu_limit_cores?: number | null
+  /**
+   * WHEN AND FROM WHERE (contract request #26, accepted on #184, 2026-09-26):
+   *
+   *  - `cpu_measured_at`          the worker's clock when it last wrote the four;
+   *  - `cpu_limit_source`         `cgroup` (the container's `cpu.max`) or
+   *                               `resource_class` (the catalogue cpu of the class
+   *                               it was sized with);
+   *  - `cpu_reading_age_seconds`  the reading's age by the API's clock at its
+   *                               `read_at` -- aged on the server, never here.
+   *
+   * Null on every attempt from before the change: not recorded. OPTIONAL, and a
+   * missing key is an API older than the fields.
+   */
+  cpu_measured_at?: string | null
+  cpu_limit_source?: string | null
+  cpu_reading_age_seconds?: number | null
 }
 
 // --------------------------------------------------------------------------
@@ -2047,18 +2123,43 @@ export function reasonCopy(reason: string): string {
  *    pool. The broker lowers provider pools on quota state, and a cooldown
  *    ends by itself, so nobody is named and the server's grouping stands.
  *  - `full`: a positive ceiling reached -- the only case "busy" is true of.
+ *
+ * TWO MORE, ADDED FOR #66, AND ONLY WHEN `units` (the caller's task's weight,
+ * read from `GET /v1/resource-classes` -- never the bundled `RESOURCE_UNITS`
+ * table) IS KNOWN:
+ *
+ *  - `below-units`: a limit above 0 and below one task's `units`, on a pool
+ *    only a person writes. Admission refuses when `active + units > limit`,
+ *    so a browser task (2 units) under a limit of 1 is refused at 0 of 1 in
+ *    use, on every drain, forever -- the fact `set-to-zero` is, arriving with
+ *    the full pool's reason and a positive limit.
+ *  - `below-units-quota`: the same on a `provider:` pool, whose limit the
+ *    quota broker also moves. The task still cannot be admitted at this
+ *    limit, but nobody is named, for the reason `zero` names nobody.
+ *
+ * With `units` null or absent (the catalogue unread, or the caller has none
+ * to give) this is exactly what it was before #66: a positive limit is
+ * always `full`.
  */
-export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full'
+export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full' | 'below-units' | 'below-units-quota'
 
-export function blockerCeiling(b: { reason: string; pool?: string; limit?: unknown }): Ceiling {
+export function blockerCeiling(
+  b: { reason: string; pool?: string; limit?: unknown },
+  units: number | null = null,
+): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
-  if (b.limit !== 0) return 'full'
+  if (b.limit !== 0) {
+    if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
+      return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
+    }
+    return 'full'
+  }
   return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
 }
 
-/** The two ceilings no amount of waiting clears: a person has to act. */
+/** The three ceilings no amount of waiting clears: a person has to act. */
 export function needsAPerson(c: Ceiling): boolean {
-  return c === 'paused' || c === 'set-to-zero'
+  return c === 'paused' || c === 'set-to-zero' || c === 'below-units'
 }
 
 /**
@@ -2067,13 +2168,16 @@ export function needsAPerson(c: Ceiling): boolean {
  *
  * `subject` is what the sentence is about: the pool's name where the line has
  * nothing else naming it (the agents list), or "This pool" beside a row that
- * already prints the name.
+ * already prints the name. `units` is the task's weight (#66); null keeps the
+ * pre-#66 sentences exactly, including for a `full` pool that is actually too
+ * small (the catalogue was not read, so nothing is claimed about the weight).
  */
 export function ceilingCopy(
   b: { reason: string; pool?: string; limit?: unknown; active?: unknown },
   subject: string = b.pool ?? 'This pool',
+  units: number | null = null,
 ): string | null {
-  const c = blockerCeiling(b)
+  const c = blockerCeiling(b, units)
   if (c === 'full') return null
   // WHAT IS STILL HELD. A pool lowered to zero under running work keeps the
   // units it already leased until they are released; admission never admits
@@ -2092,6 +2196,16 @@ export function ceilingCopy(
           : ' The blocker names no pool, so this does not say who set it.'
       return `${subject} is at limit 0 and admits nothing until that limit rises.${who}${held}`
     }
+    case 'below-units':
+    case 'below-units-quota': {
+      const limit = b.limit as number
+      const fact =
+        `${subject} has a limit of ${limit} unit${limit === 1 ? '' : 's'}, below the ${units} units one task ` +
+        'of this profile weighs, so the task can never be admitted at this limit.'
+      return c === 'below-units'
+        ? `${fact} Waiting cannot clear it: somebody has to raise the limit to at least ${units}.${held}`
+        : `${fact} A provider pool's limit also falls with its quota state, so this does not say who set it; it admits this profile once the limit reaches ${units}.${held}`
+    }
   }
 }
 
@@ -2101,10 +2215,16 @@ export function ceilingCopy(
  * -- so `global` at its ceiling can come before a pool capped at zero, and the
  * first entry would say "waiting is the answer" about a task no wait will
  * start. The first pool a person must act on wins; otherwise the first.
+ *
+ * `units` (#66) is the task's weight, so a pool too small to ever admit it
+ * counts as one a person must act on same as a pool paused or set to zero.
  */
-function leadBlocker(list: readonly BlockedEntry[] | null | undefined): BlockedEntry | undefined {
+function leadBlocker(
+  list: readonly BlockedEntry[] | null | undefined,
+  units: number | null = null,
+): BlockedEntry | undefined {
   if (!list || list.length === 0) return undefined
-  return list.find((b) => needsAPerson(blockerCeiling(b))) ?? list[0]
+  return list.find((b) => needsAPerson(blockerCeiling(b, units))) ?? list[0]
 }
 
 /** The one-line "why is this not running" for a task, or null if it is. */
@@ -2163,19 +2283,26 @@ export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
  * NEVER sets cancel_requested (scheduler/store.py:303-323), while every human
  * cancel does, including a whole-workflow cancel which fans out through
  * request_cancel per step. That survives an upstream copy change.
+ *
+ * `units` (#66) is the task's weight -- its resource class's `units`, read by
+ * the caller from `GET /v1/resource-classes` (`classUnits`/`useResourceClasses`
+ * in Blockers.tsx) and never from the bundled `RESOURCE_UNITS` table -- so a
+ * pool whose limit is positive but below it is told apart from a genuinely
+ * full one. Null (the default, and what an unread catalogue gives) keeps the
+ * pre-#66 reading exactly.
  */
-export function whyAgent(task: Task): string {
+export function whyAgent(task: Task, units: number | null = null): string {
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
   }
   if (task.state === 'READY' && task.blocked_by?.length) {
-    const b = leadBlocker(task.blocked_by)
+    const b = leadBlocker(task.blocked_by, units)
     if (!b) return ''
-    // A pool paused or capped at zero is not "busy", and "(0/0)" or
-    // "(0/1000000)" beside it is a fraction that describes nothing. See
-    // `blockerCeiling`.
-    const ceiling = ceilingCopy(b)
+    // A pool paused, capped at zero, or too small for this task's weight is
+    // not "busy", and "(0/0)" or "(0/1000000)" beside it is a fraction that
+    // describes nothing. See `blockerCeiling`.
+    const ceiling = ceilingCopy(b, undefined, units)
     if (ceiling !== null) return ceiling
     // Only show the fraction when BOTH keys are present. An admission blocker
     // always carries them; a worker park's arbitrary detail may not.
@@ -2224,18 +2351,20 @@ export function whyAgent(task: Task): string {
  *
  * WHAT "CAN NEVER BE ADMITTED" COVERS, stated because it is wider than one
  * reason: a pool paused (MANUAL_PAUSE, as a blocker or as a park) or set to
- * zero by a person, and a spent budget (BUDGET_EXHAUSTED) -- none admits the
- * task again until somebody acts. "Sign-in needed" is CREDENTIAL_MISSING.
+ * zero by a person, a pool whose limit is positive but below what this task's
+ * resource class weighs (#66, `units`), and a spent budget (BUDGET_EXHAUSTED)
+ * -- none admits the task again until somebody acts. "Sign-in needed" is
+ * CREDENTIAL_MISSING.
  */
-export function whyNeedsAction(task: Task): boolean {
+export function whyNeedsAction(task: Task, units: number | null = null): boolean {
   if (task.state === 'FAILED') return true
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
   }
   if (task.state === 'READY' && task.blocked_by?.length) {
-    const b = leadBlocker(task.blocked_by)
+    const b = leadBlocker(task.blocked_by, units)
     if (!b) return false
-    return needsAPerson(blockerCeiling(b)) || PARK_NEEDS_A_PERSON.has(b.reason)
+    return needsAPerson(blockerCeiling(b, units)) || PARK_NEEDS_A_PERSON.has(b.reason)
   }
   return false
 }
@@ -2647,7 +2776,16 @@ export interface WorkflowStep {
   input_from: Record<string, string>
   timeout_seconds?: number | null
   task_id?: string | null
+  /**
+   * The step's input, MASKED by its TASK's masker (the PR #229 review), so a
+   * literal the workflow's metadata names is masked here as on the task. Null
+   * when the route read none of the workflow's step tasks.
+   */
   input?: unknown
+  /** How many masks that took. Absent from an API older than the change. */
+  input_redaction_count?: number | null
+  /** `task` (its own task's masker), `workflow` (a sibling's copy of the metadata) or `not_read`. */
+  input_masked_by?: 'task' | 'workflow' | 'not_read'
 }
 
 /**
@@ -3385,6 +3523,12 @@ export interface ArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
   artifacts_skipped: string[]
+  /**
+   * Files past the 500-file cap, counted and not named (#227): null until
+   * `complete`, 0 when none were. `complete` means the manifest is written,
+   * not that nothing was left out.
+   */
+  artifacts_over_cap?: number | null
   artifact_bytes: number | null
   complete: boolean
   /** The attempt the manifest describes: the final one, and only it. */
@@ -3591,9 +3735,28 @@ export interface TaskInputCopy {
   prompt: MaskedText | null
   rest: MaskedText | null
   full: MaskedText
+  /**
+   * THE TASK'S METADATA, masked by the same masker as the input (the owner's
+   * "mask it everywhere", 2026-09-26). OPTIONAL: an API older than the change
+   * does not send it, and Details then says the masked metadata is not served
+   * rather than drawing `task.metadata`.
+   */
+  metadata?: MaskedMetadata
   redacted: boolean
   redaction_count: number
   redaction: { applied_at_read_time: boolean; rules: number }
+}
+
+/**
+ * `GET /v1/tasks/{id}/input`'s `metadata`: the task's metadata as an object,
+ * the caller's keys masked, with the count, and the keys served as stored
+ * because only the platform writes them (`dispatch`, `input_from`,
+ * `expected_outputs`: submission refuses them from every caller).
+ */
+export interface MaskedMetadata {
+  value: Record<string, unknown>
+  redaction_count: number
+  platform_keys: string[]
 }
 
 // ---------------------------------------------------------------------------
@@ -3659,16 +3822,33 @@ export interface ArtifactContent {
  * The Artifacts tab chooses by the server's `kind` instead: one table, on the
  * server, rather than a second copy of it here.
  */
-export type ArtifactKind = 'markdown' | 'transcript' | 'text'
+export type ArtifactKind = 'markdown' | 'transcript' | 'diff' | 'text'
 
 export function artifactKind(name: string): ArtifactKind {
   const lower = name.toLowerCase()
   if (lower.endsWith('.md') || lower.endsWith('.markdown')) return 'markdown'
+  // A PATCH BY NAME (#104): `swarm-work.patch`, the worker's own, and the
+  // `change.diff` a workflow step writes for its dependant to stage. The
+  // server's name table calls both `text`, which is true of the bytes and
+  // says nothing about how to read them, so this rule is asked first for
+  // every text-like kind (ArtifactViewer.tsx `Rendered`).
+  if (lower.endsWith('.patch') || lower.endsWith('.diff')) return 'diff'
   // `claude-transcript.json` and `codex-transcript.json` -- `spec.transcript_name`
   // in the two cliagent runners. Matched on the suffix rather than on either
   // exact name, so a third runner's transcript renders as a transcript too.
   if (lower.endsWith('transcript.json')) return 'transcript'
   return 'text'
+}
+
+/**
+ * A diff BY ITS CONTENT, for a file whose name does not say (#104): `git diff`
+ * output starts `diff --git`, and a plain unified diff has `@@ -a,b +c,d @@`
+ * hunk headers. The hunk has to be the whole header shape, at the start of a
+ * line: an `@@` in prose, or a decorator in code, is not one.
+ */
+export function looksLikeDiff(content: string): boolean {
+  if (content.startsWith('diff --git ')) return true
+  return /^@@ -\d+(,\d+)? \+\d+(,\d+)? @@/m.test(content)
 }
 
 /**

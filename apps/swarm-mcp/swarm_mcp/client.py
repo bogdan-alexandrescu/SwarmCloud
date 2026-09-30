@@ -577,6 +577,68 @@ def task_id_of(task: dict[str, Any]) -> str:
     return str(task.get("id") or task.get("task_id") or "")
 
 
+def outputs_of(
+    task: dict[str, Any],
+    listing: dict[str, Any] | None = None,
+    *,
+    listing_error: str | None = None,
+) -> dict[str, Any]:
+    """What one task produced beyond its code, in the shape every reader shows (#143).
+
+    Each artifact by name and size, the runner's own status and summary, the
+    exit code, the duration and the inputs staged into it from upstream steps.
+    `swarm result`, `sc task` and the `swarm_result` tool all read this one
+    function, so the three cannot disagree about what a step produced. Before
+    it, all three printed only "this task cloned no repository" for a step
+    whose result summary listed output.txt, a runner summary and 60.6s.
+
+    `listing` is `SwarmClient.artifacts`' answer. Without one -- a caller that
+    did not ask -- the artifacts are read from `result_summary`, which is the
+    manifest that route serves. `listing_error` is a failed listing, and then
+    `artifacts` is None with the reason beside it: "could not be listed" is
+    not "none".
+
+    NULL IS NOT MEASURED, never 0: a task that never ran has no exit code and
+    no duration, and 0 would say it exited cleanly in no time.
+    """
+    summary = task.get("result_summary") or {}
+    out: dict[str, Any] = {}
+    if listing_error is not None:
+        out["artifacts"] = None
+        out["artifacts_unavailable_because"] = listing_error
+        out["artifacts_complete"] = None
+        out["artifacts_skipped"] = []
+    else:
+        source = listing if listing is not None else summary
+        rows = source.get("artifacts") if isinstance(source, dict) else None
+        out["artifacts"] = [
+            {"name": str(row.get("name")), "bytes": row.get("bytes")}
+            for row in rows or []
+            if isinstance(row, dict) and row.get("name")
+        ]
+        complete = listing.get("complete") if listing is not None else bool(summary)
+        out["artifacts_complete"] = bool(complete)
+        skipped = source.get("artifacts_skipped") if isinstance(source, dict) else None
+        out["artifacts_skipped"] = [str(name) for name in skipped or []]
+    runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
+    out["runner_status"] = runner.get("status")
+    out["runner_summary"] = runner.get("summary") or None
+    exit_code = summary.get("exit_code")
+    out["exit_code"] = exit_code if isinstance(exit_code, int) and not isinstance(exit_code, bool) else None
+    seconds = summary.get("duration_seconds")
+    out["duration_s"] = (
+        round(float(seconds), 1)
+        if isinstance(seconds, (int, float)) and not isinstance(seconds, bool)
+        else None
+    )
+    out["staged_inputs"] = [
+        {"filename": item.get("filename"), "bytes": item.get("bytes"), "from_task": item.get("task_id")}
+        for item in summary.get("staged_inputs") or []
+        if isinstance(item, dict)
+    ]
+    return out
+
+
 def service_name() -> str:
     return os.environ.get("API_SERVICE", "").strip() or "swarm-api"
 
@@ -1111,6 +1173,88 @@ class SwarmClient:
         if isinstance(data, dict):
             return list(data.get("events") or [])
         return list(data or [])
+
+    def events_page(
+        self,
+        task_id: str,
+        *,
+        limit: int = 50,
+        newest_first: bool = False,
+        page_token: str | None = None,
+    ) -> tuple[list[dict[str, Any]], str | None, bool]:
+        """One page of a task's events: `(events, next_page_token, paged)`.
+
+        `events` above reads the route with nothing but `limit`, which it
+        answers with the OLDEST `limit` events -- the read `swarm tail` made on
+        every poll, so it never printed an event after the 50th (#164). This
+        one passes the route's `order` and `page_token`.
+
+        `paged` is False when the response carried no `next_page_token` key at
+        all: an API older than the paged route ignores both parameters and
+        serves the oldest page, and a caller has to be able to say so rather
+        than take that page for the newest.
+        """
+        params: list[tuple[str, str]] = [("limit", str(limit))]
+        if newest_first:
+            params.append(("order", "desc"))
+        if page_token:
+            params.append(("page_token", page_token))
+        query = urllib.parse.urlencode(params)
+        data = self.request("GET", f"/v1/tasks/{task_id}/events?{query}")
+        if not isinstance(data, dict):
+            return list(data or []), None, False
+        token = data.get("next_page_token")
+        return (
+            [e for e in data.get("events") or [] if isinstance(e, dict)],
+            token if isinstance(token, str) and token else None,
+            "next_page_token" in data,
+        )
+
+    def artifacts(self, task_id: str) -> dict[str, Any]:
+        """`GET /v1/tasks/{id}/artifacts`: the manifest, as the route serves it.
+
+        NOT FLATTENED TO THE LIST. `complete` is what tells "no artifacts yet"
+        (the task has not finished, and artifacts are uploaded when the
+        attempt ends) from "this task produced none", and `artifacts_skipped`
+        names what the worker dropped at the size cap. A caller that kept only
+        `artifacts` would say "none" in both of those cases.
+        """
+        data = self.request("GET", f"/v1/tasks/{task_id}/artifacts")
+        if not isinstance(data, dict) or not isinstance(data.get("artifacts"), list):
+            raise SwarmError(
+                f"GET /v1/tasks/{task_id}/artifacts answered without an `artifacts` list; "
+                "this deployment's artifacts route is not the one this client speaks to"
+            )
+        return data
+
+    def artifact_content(
+        self,
+        task_id: str,
+        name: str,
+        *,
+        offset: int = 0,
+        limit_bytes: int | None = None,
+    ) -> dict[str, Any]:
+        """`GET /v1/tasks/{id}/artifacts/content`: one window of one artifact.
+
+        A NAME, NEVER A PATH -- the route matches it against the task's own
+        manifest and rebuilds the object key itself, so nothing sent from here
+        can address another object. The envelope is returned whole: `status`
+        (ok / binary / absent / unreadable) must be read before `content`, and
+        `next_offset` is where the next window starts when `truncated` is true.
+        The content is redacted by the API at read time.
+        """
+        params: list[tuple[str, str]] = [("name", name), ("offset", str(max(0, offset)))]
+        if limit_bytes is not None:
+            params.append(("limit_bytes", str(limit_bytes)))
+        query = urllib.parse.urlencode(params)
+        data = self.request("GET", f"/v1/tasks/{task_id}/artifacts/content?{query}")
+        if not isinstance(data, dict) or "status" not in data:
+            raise SwarmError(
+                f"GET /v1/tasks/{task_id}/artifacts/content answered without a `status`; "
+                "this deployment's artifact route is not the one this client speaks to"
+            )
+        return data
 
     def attempts(self, task_id: str, *, limit: int = 20) -> list[dict[str, Any]]:
         """Every attempt for one task, newest first, as the route serves them.

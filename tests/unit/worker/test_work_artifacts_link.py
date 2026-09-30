@@ -51,7 +51,7 @@ from agent_worker.logs import build_logger
 from agent_worker.objectstore import LocalObjectStore
 from swarm_common.states import TaskState
 
-from conftest import TENANT, seed_attempt
+from conftest import TENANT, record_as_earlier_attempt, seed_attempt
 
 PROFILE = "claude-code"
 
@@ -237,7 +237,13 @@ def test_the_checkpoint_holds_neither_the_link_nor_a_second_copy_of_the_artifact
 
     with _final_archive(store) as archive:
         names = archive.getnames()
-    assert "input.json" in names, f"not the archive of work/: {names}"
+    # `result.json` is the runner's, written into work/ before the final
+    # checkpoint. `input.json` used to be the proof here; it is left out of
+    # every archive now (the PR #229 review: the task's input, served raw out
+    # of each checkpoint), which `tests/unit/worker/test_checkpoint_leaves_out_input.py`
+    # holds on its own.
+    assert "result.json" in names, f"not the archive of work/: {names}"
+    assert "input.json" not in names, f"the task's input was archived: {names}"
     under_artifacts = [n for n in names if n == "artifacts" or n.startswith("artifacts/")]
     assert under_artifacts == [], (
         "the checkpoint carries the artifacts link or what is behind it. The link "
@@ -302,11 +308,14 @@ def test_an_existing_work_artifacts_is_left_alone_and_the_skip_is_logged(
     old = workspace_mod.create(tmp_path / "old-ws", "att_0")
     (old.work / "artifacts").mkdir()
     (old.work / "artifacts" / SCAN_NAME).write_text("restored\n")
-    CheckpointManager(
+    record = CheckpointManager(
         store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_0",
         generation=1, logger=_Quiet(),
     ).create(old)
     _seed_agent(db, {"write_relative": {"artifacts/after-resume.md": "new\n"}})
+    # Attempt 0 recorded it, as a real earlier attempt does: a worker restores
+    # nothing else, and nothing at all on a first attempt (#347).
+    record_as_earlier_attempt(db, record)
 
     assert _run(worker_factory) == ExitCode.OK
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value

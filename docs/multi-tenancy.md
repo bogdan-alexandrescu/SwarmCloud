@@ -75,6 +75,16 @@ document can only be fetched by an id already known, and ids are
     --providers anthropic,openai --max-active 40 --capacity-units 80
 ```
 
+For a tenant that `terraform/environments/dev/dev.tfvars` will also name, the
+order matters (#334): the script creates the worker account, the owner applies
+terraform/bootstrap's per-account `serviceAccountAdmin` grant on it to the
+release deployer from `main`, reading the pull request's `dev.tfvars` as data
+(the script checks for the grant and prints the commands), and
+only then does the release that adds the tenant run. The release sets the
+account's IAM in the same apply, and without the grant it 403s.
+[docs/ci.md](ci.md#a-new-account-exists-before-the-release-that-adds-it) says
+why.
+
 Re-running updates limits and wiring and fills in whatever is missing — by
 writing the whole record, so `--providers` **replaces** the tenant's
 credentials and any limit not typed again goes back to its default. To add one
@@ -228,6 +238,7 @@ two independent mechanisms to fail together:
 | Name another tenant's secret in a request | secret name comes from the frozen contract, never from input |
 | Read another tenant's secret from a worker | worker runs as the tenant GSA; secret IAM names one accessor |
 | Read another tenant's checkpoints | GCS binding is conditioned on the tenant prefix, listing included |
+| Hand another task **of the same tenant** a planted checkpoint | **partially.** The bucket grant is per tenant, not per task, so an agent can write under a sibling task's prefix. A first attempt restores nothing, and a retry restores only the checkpoint its earlier attempt recorded, with the archive digest, in Firestore (#347; [checkpointing.md](checkpointing.md#3-restore)). An agent that also writes the task and attempt documents is not stopped: see the Firestore row below, and #342 |
 | Reach another tenant's pod | per-tenant namespace + default-deny NetworkPolicy |
 | Have work dispatched under another tenant's identity | Job resource is per tenant and carries the SA |
 | Escalate via a runner profile | callers name profiles; images and commands are catalogue-only |

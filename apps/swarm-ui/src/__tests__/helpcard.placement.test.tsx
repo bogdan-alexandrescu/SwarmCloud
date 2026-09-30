@@ -31,7 +31,7 @@
  * what is asserted is the arithmetic the hook does with them. That is the part
  * that was broken, and it is fully determined.
  */
-import { fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi, type Mock } from 'vitest'
 import type { CSSProperties, RefObject } from 'react'
 
@@ -190,6 +190,8 @@ describe('the pinned card and the press that dismisses it (AH-6)', () => {
     pin()
     fireEvent.pointerDown(document.body)
     expect(screen.queryByRole('dialog')).toBeNull()
+    // The tap's own click, which the dismissal swallows (#137).
+    fireEvent.click(document.body)
   })
 
   /** MUTATION: count the trigger as outside. pointerdown closes, click re-pins: it never shuts. */
@@ -246,6 +248,135 @@ describe('the `?` target at phone width (CH-8)', () => {
     media(false)
     const { container } = render(<HelpCard topic="absent-vs-zero" />)
     expect(hitArea(container.querySelector('button')!)).toBeUndefined()
+  })
+})
+
+/**
+ * #137. A PINNED CARD ON A PHONE HAS A WAY OUT, AND THE TAP THAT DISMISSES IT
+ * DOES NOTHING ELSE.
+ *
+ * On a phone there is no Escape key and no hover to leave, and the only
+ * outside tap is on whatever the card is covering -- a button, more often than
+ * not. So the pinned card carries a 44px close control at phone width, and an
+ * outside press that dismisses the card swallows the click it would otherwise
+ * become: a reader tapping away to shut a tooltip has not asked to press the
+ * button underneath.
+ */
+describe('a pinned card on a phone, and the tap that dismisses it (#137)', () => {
+  function media(phone: boolean) {
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      matches: phone && query.includes('560'),
+      media: query,
+      onchange: null,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+      addListener: () => {},
+      removeListener: () => {},
+      dispatchEvent: () => false,
+    }))
+  }
+
+  function pinWith(under?: () => void): { trigger: HTMLButtonElement; below: HTMLButtonElement } {
+    const { container } = render(
+      <div>
+        <HelpCard topic="absent-vs-zero" />
+        <button type="button" className="below" onClick={under}>
+          Underneath
+        </button>
+      </div>,
+    )
+    const trigger = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!
+    fireEvent.click(trigger)
+    expect(screen.queryByRole('dialog'), 'a click did not pin the card').not.toBeNull()
+    return { trigger, below: container.querySelector<HTMLButtonElement>('button.below')! }
+  }
+
+  /** MUTATION: drop the close control, or draw it under 44px. */
+  it('draws a 44px "Close help" control on a pinned card at phone width', () => {
+    media(true)
+    pinWith()
+    const close = screen.getByRole('button', { name: 'Close help' })
+    expect(screen.getByRole('dialog').contains(close), 'the close control is not in the card').toBe(true)
+    expect(close.style.width).toBe('44px')
+    expect(close.style.height).toBe('44px')
+  })
+
+  /** MUTATION: close without handing focus back. Focus falls to <body>. */
+  it('closes the card and returns focus to the `?` that opened it', () => {
+    media(true)
+    const { trigger } = pinWith()
+    const close = screen.getByRole('button', { name: 'Close help' })
+    close.focus()
+    fireEvent.pointerDown(close)
+    expect(screen.queryByRole('dialog'), 'a press on the close control counted as outside').not.toBeNull()
+    fireEvent.click(close)
+    expect(screen.queryByRole('dialog'), 'the close control did not close the card').toBeNull()
+    expect(document.activeElement, 'focus did not return to the trigger').toBe(trigger)
+    expect(trigger.getAttribute('aria-expanded')).toBe('false')
+  })
+
+  it('draws no close control on a wide screen, where Escape and a click away do the job', () => {
+    media(false)
+    pinWith()
+    expect(screen.queryByRole('button', { name: 'Close help' })).toBeNull()
+  })
+
+  /** MUTATION: do not swallow the click. The dismissing tap presses the button underneath. */
+  it('does not activate the button underneath the tap that dismisses the card', () => {
+    media(true)
+    const under = vi.fn()
+    const { below } = pinWith(under)
+    fireEvent.pointerDown(below)
+    expect(screen.queryByRole('dialog'), 'the outside tap did not dismiss the card').toBeNull()
+    fireEvent.click(below)
+    expect(under, 'the dismissing tap activated the button underneath').not.toHaveBeenCalled()
+    // One click, not all of them: the next tap is the reader's own.
+    fireEvent.pointerDown(below)
+    fireEvent.click(below)
+    expect(under).toHaveBeenCalledTimes(1)
+  })
+
+  /** MUTATION: drop the timeout. A pointerdown with no click would eat the next, unrelated one. */
+  it('stops waiting for the swallowed click after a moment', () => {
+    vi.useFakeTimers()
+    try {
+      const under = vi.fn()
+      const { below } = pinWith(under)
+      fireEvent.pointerDown(below)
+      expect(screen.queryByRole('dialog')).toBeNull()
+      // The press was cancelled (a scroll, a drag): no click follows it.
+      act(() => {
+        vi.advanceTimersByTime(1000)
+      })
+      fireEvent.click(below)
+      expect(under, 'a stale swallow ate a later, unrelated click').toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  /** MUTATION: keep the swallow armed across presses. A cancelled press would eat the next real tap. */
+  it('stops waiting when another press begins', () => {
+    const under = vi.fn()
+    const { below } = pinWith(under)
+    fireEvent.pointerDown(below)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    // No click: the press became a scroll. The next tap is a whole new one.
+    fireEvent.pointerDown(below)
+    fireEvent.click(below)
+    expect(under, 'a cancelled dismissal ate the next tap').toHaveBeenCalledTimes(1)
+  })
+
+  /** AH-6 still holds: the swallow is armed only by an OUTSIDE press. */
+  it('does not swallow a click that lands inside the card', () => {
+    const { container } = render(<HelpCard topic="absent-vs-zero" />)
+    fireEvent.click(container.querySelector('button')!)
+    const link = screen.getByRole('dialog').querySelector('a')!
+    const onLink = vi.fn()
+    link.addEventListener('click', onLink)
+    fireEvent.pointerDown(link)
+    fireEvent.click(link)
+    expect(onLink, 'a press inside the card was swallowed').toHaveBeenCalledTimes(1)
   })
 })
 

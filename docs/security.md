@@ -225,7 +225,13 @@ there is nothing for a route to leak.
 It is a list of `sed` patterns, so it masks the shapes it knows — `sk-…`,
 `ya29.…`, JWTs, `AIza…`, `ghp_`/`gho_`/`github_pat_`, `xox*`, `AKIA`/`ASIA`, PEM
 headers, `Bearer <token>` bodies and `key|password|secret|token|credential|
-authorization` assignments — and nothing else. An opaque, high-entropy key from
+authorization` assignments, including one written as JSON text with escaped
+quotes at any depth (`PASSWORD=\"…\"`, `\"api_key\": \"…\"` since #221, and
+`\\\"…\\\"`, a command that quoted its own quotes, since the PR #229 review;
+the same rule as the API's) — and nothing else. Being sed over text, it cannot
+decode a JSON line the way `/logs` does (`redaction.redact_lines`), so a list's
+later elements under a credential's name, and a value opened by an escaped
+quote past its first backslash, still reach the terminal. An opaque, high-entropy key from
 a provider whose prefix is not on that list (Azure, Bedrock, a self-hosted
 gateway) reaches the terminal in cleartext, and `create-secrets.sh` already has a
 generic provider branch, so those providers are contemplated rather than
@@ -272,9 +278,42 @@ identity can do.
 * Workspaces are per attempt, created empty, and destroyed at the end. A resumed
   worker wipes the tree before restoring, so it cannot inherit another attempt's
   leftovers.
-* Checkpoint archives are extracted with path-traversal and link-escape checks,
+* Checkpoint archives are checked whole before a byte is extracted, then
+  extracted through Python's `tarfile.data_filter`
+  (`agent_worker/checkpoint.py`, `_safe_members` and `_restore_filter`),
   because a checkpoint contains a tenant's working tree and an agent can put a
-  symlink to `/etc` in it.
+  symlink to `/etc` in it. Two outcomes, on purpose:
+  * **A symlink that leaves `work/` is skipped**, never created, and the rest
+    restores. uv leaves `bin/python -> /usr/local/bin/python3.11` in every
+    build environment, and refusing the archive over it failed every resume of
+    the task (#286). The skip is logged once per restore: at most 20 links
+    named, each name and target through the worker's secret scrub, then a
+    count. A symlink that comes to leave only once a later one is made
+    (`y -> z/..`, then `z -> .`) is removed after extraction and named the same
+    way.
+  * **An archive inconsistent with itself is refused whole**, and the resume
+    falls back as it does on any refused checkpoint: a member path that is
+    absolute, holds `..` or appears twice; a member whose path passes through
+    a symlink member (`d -> .`, `c -> d/..`, then `c/x`); a hard link whose
+    target is not an earlier regular-file member, including one to a skipped
+    symlink and one out of the archive root (`../private/secret.txt`). This
+    platform's archiver follows no link and writes each name once, so none of
+    these comes from an agent's ordinary tree. The hard-link rule is enforced
+    here rather than left to `tarfile`, whose fallback for a link it cannot
+    make extracts the link's target member in its place (the CVE-2025-4330
+    class), so the restore's safety does not depend on the Python patch level.
+* **Which checkpoint is restored is not chosen from the bucket** (#347). Every
+  agent of a tenant can write anywhere under `tenants/<tenant>/`, so another
+  step of the same tenant could put a checkpoint under a task's prefix, and
+  `.claude/` — settings, hooks — travels in every checkpoint because HOME is
+  `work/`. A task's first attempt therefore restores nothing, and a retry
+  restores only `task.latest_checkpoint` when the attempt document that wrote
+  it lists its id and its archive digest (`checkpoint_sha256`), and the
+  pointer lies in the task's own prefix. That stops an agent holding only the
+  bucket, whether it adds a checkpoint or rewrites the recorded one. It does
+  not stop an agent that also writes Firestore, which has no document-level
+  IAM: the complete fix waits for signed step specs (#342).
+  [checkpointing.md](checkpointing.md#3-restore) lists every check.
 
 ---
 

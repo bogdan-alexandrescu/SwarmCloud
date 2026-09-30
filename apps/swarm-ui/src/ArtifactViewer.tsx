@@ -7,6 +7,7 @@ import { HelpCard } from './HelpCard'
 import {
   artifactKind,
   bytesLabel,
+  looksLikeDiff,
   type ArtifactContent,
   type ArtifactKindName,
   type ArtifactRef,
@@ -534,6 +535,17 @@ function Rendered({
   kind: ArtifactKindName | null
   whole: boolean
 }) {
+  // A DIFF FIRST, whatever the server's kind (#104). The name table calls a
+  // `.patch` `text` -- true of the bytes, silent on how to read them -- so the
+  // name is asked here, and a file the table could only call text or a log is
+  // sniffed for `diff --git` or a hunk header. Markdown and JSON are not
+  // sniffed: a README quoting a hunk is still a README.
+  if (
+    artifactKind(name) === 'diff' ||
+    ((kind === null || kind === 'text' || kind === 'log') && looksLikeDiff(content))
+  ) {
+    return <DiffView source={content} whole={whole} />
+  }
   if (kind !== null) {
     switch (kind) {
       case 'markdown':
@@ -554,9 +566,134 @@ function Rendered({
       return <Markdown source={content} />
     case 'transcript':
       return <Transcript source={content} />
+    case 'diff':
+      return <DiffView source={content} whole={whole} />
     case 'text':
       return <pre className="art-text">{content}</pre>
   }
+}
+
+// ---------------------------------------------------------------------------
+// A unified diff, line by line
+// ---------------------------------------------------------------------------
+
+/** What one line of a unified diff is. `meta` is a file header, never a change. */
+type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx'
+
+interface DiffLine {
+  kind: DiffLineKind
+  /** The gutter glyph: `+`, `−`, or blank. Text, so kind never rests on hue. */
+  glyph: string
+  /** The line without its marker column (for `+`, `-` and context lines). */
+  text: string
+}
+
+/**
+ * A unified diff's lines, classified.
+ *
+ * THE HEADERS ARE THE TRAP. `+++ b/file` starts with `+` and `--- a/file` with
+ * `-`, and a reader that went by the first character alone counted every file
+ * header as an added and a removed line. They are headers only BEFORE a file's
+ * first hunk -- inside a hunk, a removed line whose text begins `--` is a real
+ * `---` -- so the parser tracks whether it is in a file's header.
+ */
+function diffLines(source: string): DiffLine[] {
+  const rows = source.split('\n')
+  // A trailing newline is the file ending, not an empty context line.
+  if (rows.length > 0 && rows[rows.length - 1] === '') rows.pop()
+  let header = true
+  return rows.map((line) => {
+    if (line.startsWith('diff --git ')) {
+      header = true
+      return { kind: 'meta', glyph: '', text: line }
+    }
+    if (line.startsWith('@@')) {
+      header = false
+      return { kind: 'hunk', glyph: '', text: line }
+    }
+    if (header) return { kind: 'meta', glyph: '', text: line }
+    if (line.startsWith('+')) return { kind: 'add', glyph: '+', text: line.slice(1) }
+    if (line.startsWith('-')) return { kind: 'del', glyph: '−', text: line.slice(1) }
+    // `\ No newline at end of file` is git's note, not a line of either side.
+    if (line.startsWith('\\')) return { kind: 'meta', glyph: '', text: line }
+    return { kind: 'ctx', glyph: '', text: line.startsWith(' ') ? line.slice(1) : line }
+  })
+}
+
+/**
+ * Files, insertions and deletions in a diff, counted from its lines -- the
+ * `+N −M in K files` Details prints for handed-on code (#278). A file is a
+ * `diff --git` header, or, for a plain unified diff with none, a `+++` header.
+ * Counted over the text this read served: on a window that is not the whole
+ * file the caller must say `partial`, because the rest was not counted.
+ */
+export function diffStat(source: string): { files: number; insertions: number; deletions: number } {
+  const lines = diffLines(source)
+  const gitHeaders = lines.filter((l) => l.kind === 'meta' && l.text.startsWith('diff --git ')).length
+  const plusHeaders = lines.filter((l) => l.kind === 'meta' && l.text.startsWith('+++ ')).length
+  return {
+    files: gitHeaders > 0 ? gitHeaders : plusHeaders,
+    insertions: lines.filter((l) => l.kind === 'add').length,
+    deletions: lines.filter((l) => l.kind === 'del').length,
+  }
+}
+
+/**
+ * A UNIFIED DIFF, DRAWN AS ONE (#104).
+ *
+ * Each line carries its glyph in a gutter column -- `+`, `−`, or nothing --
+ * so an added line is told from a removed one in greyscale and by a screen
+ * reader, never by hue alone; the tint is the second signal. Hunk headers
+ * (`@@ … @@`) and file headers are styled apart from the code.
+ *
+ * LONG LINES SCROLL, AND THE SCROLL IS SAID. Wrapping a diff by default breaks
+ * the one-line-one-change reading, so it is off, and a horizontal scroll that
+ * paints no scrollbar (as the drawer's does not) is a hidden column: the cue
+ * says it on the glass. The toggle wraps for a reader who would rather see it
+ * all at once.
+ *
+ * A WINDOW IS NOT THE FILE. When the served window is not the whole diff the
+ * bar says `partial`, beside the fraction the provenance strip already gives.
+ */
+function DiffView({ source, whole }: { source: string; whole: boolean }) {
+  const [wrap, setWrap] = useState(false)
+  const lines = diffLines(source)
+  return (
+    <>
+      <p className="art-diff-bar">
+        <button
+          type="button"
+          className="copy art-diff-wrap"
+          aria-pressed={wrap}
+          onClick={() => setWrap((w) => !w)}
+        >
+          wrap lines
+        </button>
+        {!wrap && <span className="art-diff-cue">long lines scroll ⇆</span>}
+        {!whole && (
+          <span className="art-diff-partial">
+            <Mark
+              kind="partial"
+              say="This is a window of the diff, not the whole of it. The lines after it were not read, so a file or a hunk may be cut off here."
+            />{' '}
+            partial
+          </span>
+        )}
+      </p>
+      <div className={`art-diff${wrap ? ' is-wrapped' : ''}`} role="table" aria-label="Unified diff">
+        {lines.map((l, i) => (
+          <div key={i} className={`art-diff-line is-${l.kind}`} role="row">
+            <span className="art-diff-glyph" role="cell">
+              {l.glyph}
+            </span>
+            <code className="art-diff-text" role="cell">
+              {l.text}
+            </code>
+          </div>
+        ))}
+      </div>
+    </>
+  )
 }
 
 /** JSON, pretty-printed only when this window is the whole file and parses. */
@@ -709,28 +846,39 @@ function markdownBlocks(source: string): ReactNode[] {
       continue
     }
 
+    // THE SOURCE'S NUMBER IS KEPT (#222, post-deploy QA of 2026-09-26). A
+    // numbered list whose items are parted by blank lines or by a line that
+    // is not an item -- the loose list an agent's answer usually is -- comes
+    // out as several lists, and each `<ol>` began at 1, so `1. 2. 3.` read
+    // `1. 1. 1.`. Each list now starts at its first item's own number, as
+    // CommonMark does; the numbers after it follow from there.
     const bulletRe = /^\s*[-*+]\s+(.*)$/
-    const numberRe = /^\s*\d+[.)]\s+(.*)$/
+    const numberRe = /^\s*(\d{1,9})[.)]\s+(.*)$/
     const bullet = bulletRe.exec(line)
     const numbered = numberRe.exec(line)
     if (bullet !== null || numbered !== null) {
       flushParagraph()
       const ordered = bullet === null
       const itemRe = ordered ? numberRe : bulletRe
+      const start = numbered !== null && ordered ? Number(group(numbered, 1)) : 1
       const items: string[] = []
       while (i < lines.length) {
         const item = itemRe.exec(at(i))
         if (item === null) break
-        items.push(group(item, 1))
+        items.push(group(item, ordered ? 2 : 1))
         i += 1
       }
-      const List = ordered ? 'ol' : 'ul'
+      const body = items.map((text, n) => <li key={n}>{inline(text)}</li>)
       out.push(
-        <List className="art-list" key={key++}>
-          {items.map((text, n) => (
-            <li key={n}>{inline(text)}</li>
-          ))}
-        </List>,
+        ordered ? (
+          <ol className="art-list" key={key++} start={start !== 1 ? start : undefined}>
+            {body}
+          </ol>
+        ) : (
+          <ul className="art-list" key={key++}>
+            {body}
+          </ul>
+        ),
       )
       continue
     }

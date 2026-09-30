@@ -93,7 +93,9 @@ describe('the premise: the events route pages', () => {
 describe('the rendered sentences put the one-page limit on this screen', () => {
   it('the checkpoint-location mark, on a checkpoint whose event is off the page', async () => {
     const el = await mount(run({ attempts: [attempt(1, { checkpoints: ['ck_1'] })] }))
-    const mark = el.querySelector('td[data-label="Location"] .ctl-mark.is-partial')
+    // The attempt card's one-line count since #102, which keeps the mark the
+    // per-attempt table's Location cell carried.
+    const mark = el.querySelector('.att-ckpt-line .ctl-mark.is-partial')
     expect(mark, 'the off-page checkpoint drew no partial mark').not.toBeNull()
     const say = mark!.getAttribute('aria-label') ?? ''
     expect(say).not.toMatch(STALE)

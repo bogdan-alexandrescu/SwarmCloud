@@ -124,20 +124,73 @@ the marker and is not pushed.
 
 ## 3. Restore
 
-**Restore searches across every attempt of the task, not just this one.** A
-resume is by definition a new attempt with a new id; the checkpoint worth
-restoring was written by the attempt that died. Selection is by
-`(created_at, seq)` — the newest committed checkpoint wins.
+**A restore takes only the checkpoint an earlier attempt of this task
+recorded, and a task's first attempt restores nothing** (#347, owner decision
+2026-09-29). A resume is by definition a new attempt with a new id, so the
+checkpoint worth restoring was written by an earlier attempt. The worker does
+**not** find it by listing the task's prefix for the newest manifest, which is
+what it did until #347: the tenant's worker account can write anywhere under
+`tenants/<tenant>/`, so any agent of the tenant — an implement step, say —
+could put a checkpoint under another task's prefix before that task ran.
+HOME is `work/` and `.claude/` is kept in every checkpoint, so the planter's
+`~/.claude/settings.json`, and the hooks in it, arrived in the next step, and a
+hook runs code without persuading any model.
+
+What is restored, and only when every check holds
+(`Worker._recorded_checkpoint`):
+
+1. the task has had an earlier attempt: `attempt_count`, which admission
+   increments in the lease's own transaction, is above 1;
+2. `task.latest_checkpoint` names a checkpoint, and it resolves inside this
+   task's own prefix to a manifest naming this tenant and task
+   (`CheckpointManager.find_by_uri`); a pointer anywhere else is refused;
+3. the pointer, the manifest and the archive sit exactly where the
+   manifest's own attempt and checkpoint ids put them, and those ids are
+   single key segments;
+4. the attempt document of the attempt that wrote it is this tenant's and
+   this task's, lists the checkpoint id in `checkpoints`, and records the
+   archive's SHA-256 in `checkpoint_sha256` — both written by
+   `ControlPlane.record_checkpoint` before it moves the pointer. The restore
+   then verifies the archive's bytes against that digest.
+
+Anything else starts the attempt from an empty workspace, as a first attempt
+does, with one log line saying which check refused it. An attempt document
+written before `checkpoint_sha256` existed records no digest, so a retry of
+such an attempt starts clean once.
+
+**What this does and does not stop.** It stops every first attempt, and, on a
+retry, an agent that can write only the bucket: a checkpoint added beside the
+recorded one is never chosen, and the recorded one rewritten in place no
+longer matches the digest in Firestore. It does **not** stop an agent that
+also writes Firestore: Firestore has no document-level IAM
+([multi-tenancy.md](multi-tenancy.md)), so an agent that knows this task's id
+can raise `attempt_count`, repoint `latest_checkpoint` and write an attempt
+document of an id it chose, and pass every check above. Closing that needs a
+record the tenant cannot write, which is the signed step specs' work (#342).
 
 Extraction is hostile-input handling, because a checkpoint contains a tenant's
 working tree and an agent can put anything in it:
 
-* absolute paths are rejected;
-* any member whose resolved destination escapes the workspace is rejected;
-* symlinks and hard links whose target escapes the workspace are rejected;
+* **a symlink whose target leaves the workspace is skipped**: never created,
+  and named in one log line per restore (at most 20 names, scrubbed, then a
+  count), while the rest of the archive restores. uv leaves
+  `bin/python -> /usr/local/bin/python3.11` in every build environment, and
+  refusing the archive over it failed every later resume of the task (#286);
+* **an archive inconsistent with itself is refused whole**, before a byte is
+  extracted: a member path that is absolute, holds `..` or appears twice; a
+  member whose path passes through a symlink member (`d -> .`, `c -> d/..`,
+  then `c/x`); a hard link whose target is not an earlier regular-file member
+  of the archive -- one to a missing member, to a skipped symlink, or out of
+  the archive root (`../private/secret.txt`). This platform's archiver follows
+  no link and writes each name once, so none of these comes from an agent's
+  ordinary tree;
+* extraction then runs through `tarfile.data_filter`, which checks each member
+  again against the links already made (`agent_worker.checkpoint` refuses to
+  import on a Python without it, and the image build asserts 3.11.4 or later);
 * sockets, FIFOs and devices are skipped rather than restored.
 
 Path traversal is checked on the way **out**, not trusted on the way in.
+[`security.md`](security.md) says why each rule is there.
 
 ---
 
@@ -194,7 +247,8 @@ reconciler -> invalidate generation (5) -> terminate -> release -> task READY
 scheduler  -> admits, new lease, generation 5, attempt 2
 worker     -> validates generation 5 == 5, OK
            -> workspace created empty
-           -> restore: newest checkpoint across ALL attempts = attempt 1, seq 23
+           -> restore: task.latest_checkpoint = attempt 1, seq 23, which
+              attempt 1's document lists with its archive digest
            -> emits checkpoint_restored, continues from minute ~46
 ```
 
@@ -234,8 +288,10 @@ and in the task's event stream, `checkpoint_started` / `checkpoint_completed` /
 | `checkpoint_started` with no matching `completed` | upload interrupted; the manifest was never written | none needed — that checkpoint is invisible to restore, by design |
 | Resume restores an old checkpoint | newer ones never committed | check worker logs for upload errors and GCS permissions on the tenant prefix |
 | Resume starts from scratch | no committed checkpoint exists yet | the attempt died inside its first interval |
-| Checkpoints growing every cycle | build output or `node_modules` inside `work/` | fix the runner; do not raise `max_bytes` |
-| Restore fails with "escapes the workspace" | the archive contains a traversing path or link | expected refusal; inspect the archive before trusting its producer |
+| Resume starts from scratch with "no checkpoint is restored; starting from an empty workspace" | a check in section 3 refused the recorded checkpoint; the log line's `reason` names which | expected on a first attempt; on a retry, an error line just before it says what did not match. A checkpoint under the prefix that no attempt recorded is never restored, by design (#347) |
+| Checkpoints growing every cycle | build output inside `work/` (`node_modules`, anywhere, and HOME's tool caches are already left out: `checkpoint.TOOL_CACHES`) | fix the runner; do not raise `max_bytes` |
+| Restore fails with "holds a path outside the workspace", "through its own link", "holds a hard link" or "more than once" | the archive is inconsistent with itself: a traversing path, a member written through a symlink member, or a hard link to a missing, skipped or outside member | expected refusal; this platform's archiver never writes one, so inspect the archive before trusting its producer |
+| "checkpoint restore skipped links escaping the workspace" | the agent's tree held symlinks pointing outside `work/` (uv's `bin/python` is the usual one) | none needed; those links are not recreated and the rest restored |
 
 ---
 

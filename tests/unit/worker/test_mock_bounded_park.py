@@ -140,11 +140,18 @@ def test_the_bound_holds_when_the_parks_checkpoint_fails(db, worker_factory, mon
     assert output["was_resumed"] is False, "there was no checkpoint to resume from"
 
 
-def test_a_callers_own_attempt_count_never_reaches_the_runner(db, worker_factory):
+def test_a_callers_own_attempt_count_never_reaches_the_runner(
+    db, worker_factory, recheck_bypassed
+):
     """The lifecycle ASSIGNS `attempt_count` from the task document; it does not
     `setdefault` it. swarm-api refuses the key for the mock (it is not
     declared), but a runner's input is written by more than the API, and a
-    count a caller could set is a bound a caller could lift."""
+    count a caller could set is a bound a caller could lift.
+
+    Past the worker's re-check (`recheck_bypassed`, conftest.py), which since
+    contract request 32 refuses a stored input carrying this key before the
+    runner step (test_stored_input_is_rechecked.py). This holds the layer
+    behind it on its own."""
     seed_attempt(
         db,
         attempt_id="att_1",

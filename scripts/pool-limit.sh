@@ -85,6 +85,61 @@ live_json() {
   fs_list_docs pools | jq -sc 'map({key: .name, value: .hard_limit}) | from_entries'
 }
 
+# --- a limit no task of some class can ever fit under ----------------------
+# #66: `--pool resource:browser --limit 1` printed "ok" and nothing else, and a
+# browser task (2 units) was then refused on every drain for twenty minutes
+# while the screen called the class busy. A limit above 0 and below the units
+# of the largest task that can reach the pool now draws a WARNING, from --pool
+# and from --sync. Not a refusal: shutting a class out on purpose is a
+# legitimate choice. Not for 0 either: 0 shuts out everything, which is what it
+# is for, and the console already says so.
+#
+# The units come from terraform's resource_classes and runner_profiles outputs
+# -- the mirror tests/terraform/catalogue.tftest.hcl holds to
+# swarm_common.profiles -- through scripts/lib/pool-units.jq.
+catalogue_json() {
+  local classes profiles
+  classes="$(tf -chdir="${REPO_ROOT}/terraform/infra" output -json resource_classes 2>/dev/null)" || return 1
+  profiles="$(tf -chdir="${REPO_ROOT}/terraform/infra" output -json runner_profiles 2>/dev/null)" || return 1
+  jq -nc --argjson c "${classes}" --argjson p "${profiles}" '{classes: $c, profiles: $p}'
+}
+
+# warn_if_unadmittable POOL LIMIT CATALOGUE_JSON
+warn_if_unadmittable() {
+  local pool="$1" limit="$2" catalogue="$3" need units class
+  # A value that is not a whole number is not compared (`[[ null -gt 0 ]]` is
+  # an unbound-variable error under set -u); --pool has already refused one.
+  [[ "${limit}" =~ ^[0-9]+$ ]] || return 0
+  [[ "${limit}" -gt 0 ]] || return 0
+  need="$(jq -nc --argjson classes "$(jq -c '.classes' <<<"${catalogue}")" \
+                 --argjson profiles "$(jq -c '.profiles' <<<"${catalogue}")" \
+                 --arg pool "${pool}" -f "${SWARM_LIB_DIR}/pool-units.jq")" || {
+    warn "${pool}: could not work out the units a task needs from this pool; hard_limit ${limit} was not checked"
+    return 0
+  }
+  [[ "${need}" != "null" ]] || return 0
+  units="$(jq -r '.units' <<<"${need}")"
+  class="$(jq -r '.class' <<<"${need}")"
+  if [[ "${limit}" -lt "${units}" ]]; then
+    warn "${pool}: hard_limit ${limit} is below the ${units} units one ${class} task needs -- a ${class} task can never be admitted through this pool at this limit, and waiting will not clear it"
+    dim "  allowed, if shutting ${class} out is the intent; otherwise use a limit of at least ${units}"
+  fi
+}
+
+# check_limits LIMITS_JSON -- warn_if_unadmittable over {pool: limit}. A
+# catalogue that cannot be read is SAID, never taken as "nothing to warn about".
+check_limits() {
+  local limits="$1" catalogue name limit
+  if ! catalogue="$(catalogue_json)"; then
+    warn "could not read the resource_classes / runner_profiles terraform outputs; these limits were not checked against the units a task needs"
+    return 0
+  fi
+  while IFS=$'\t' read -r name limit; do
+    [[ -n "${name}" ]] || continue
+    warn_if_unadmittable "${name}" "${limit}" "${catalogue}"
+  done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"${limits}")
+}
+
 report_drift() {
   local expected live
   expected="$(expected_json)"
@@ -126,6 +181,7 @@ case "${MODE}" in
     current="$(live_json | jq -r --arg p "${POOL}" '.[$p] // "MISSING"')"
     [[ "${current}" != "MISSING" ]] || die "pool ${POOL} does not exist; provisioning creates pools, this only edits them (a missing pool is treated as UNLIMITED by the admission transaction, so inventing one here would be a guess with teeth)"
     step "Pool ${POOL}: ${current} -> ${LIMIT}"
+    check_limits "$(jq -nc --arg p "${POOL}" --arg l "${LIMIT}" '{($p): ($l | tonumber)}')"
     # updateMask names hard_limit alone, so `active` -- which the admission
     # transaction owns -- is never part of the write.
     fs_patch "pools/${POOL}" "hard_limit" "{\"hard_limit\":{\"integerValue\":\"${LIMIT}\"}}"
@@ -141,6 +197,10 @@ case "${MODE}" in
     fi
     printf '%s\n' "${drift}" >&2
     hr
+    # Before the confirmation, so the warning is read before the answer is typed:
+    # only the values this sync would write.
+    check_limits "$(jq -nc --argjson e "$(expected_json)" --argjson l "$(live_json)" '
+      $e | with_entries(select(.value != ($l[.key] // null)))')"
     confirm "This changes the concurrency ceiling of the pools above on the RUNNING platform." "sync-pools"
     expected="$(expected_json)"
     live="$(live_json)"

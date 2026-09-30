@@ -279,12 +279,70 @@ variable "tenants" {
     # Empty falls back to var.secret_admin_members, which must be a platform
     # admin group rather than any tenant's own group -- see the validation there.
     secret_admins = optional(list(string), [])
+    # Service accounts that resolve to THIS tenant besides its principal, by
+    # an exact match on the email the caller's verified token carries
+    # (contract request 30). Bare emails of user-managed accounts in this
+    # project; never a human, never an admin, never under two tenants.
+    service_accounts = optional(list(string), [])
   }))
   default = {}
 
   validation {
     condition     = alltrue([for t, v in var.tenants : v.max_active == null || v.max_active > 0])
     error_message = "a tenant's max_active must be positive; omit it to take pool_limits.default_tenant."
+  }
+
+  # The same expression as swarm_common.identity.SERVICE_ACCOUNT_EMAIL, held
+  # equal by scripts/lib/check-contract-parity.sh (section 14), plus the pin to
+  # THIS project that the frozen module has no project id to apply.
+  validation {
+    condition = alltrue(flatten([
+      for t, v in var.tenants : [
+        for sa in v.service_accounts :
+        can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]@[a-z][a-z0-9-]{4,28}[a-z0-9]\\.iam\\.gserviceaccount\\.com$", sa))
+        && endswith(sa, "@${var.project_id}.iam.gserviceaccount.com")
+      ]
+    ]))
+    error_message = "tenants.*.service_accounts takes bare, lower-case emails of user-managed service accounts in this project (<id>@<project>.iam.gserviceaccount.com): never a person, a group, a domain, a pattern, a serviceAccount: member or a Google-managed account."
+  }
+
+  validation {
+    condition     = length(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])) == length(distinct(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])))
+    error_message = "a service account may be listed under ONE tenant: it decides the account's secrets, GCS prefix and namespace, and two listings would make that depend on rendering order."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset(concat(
+        [for u in var.admin_users : lower(u)],
+        [for u in var.admin_pool_users : lower(u)]
+      ))
+    )) == 0
+    error_message = "a tenant's service account may not also be in admin_users or admin_pool_users: a listing gives exactly one tenant's rights, and an admin entry would add every tenant's. (secret_admin_members is checked by that variable's own validation: reading it from here would be a cycle, since it already reads var.tenants.)"
+  }
+
+  # Per-tenant secret admins, read from var.tenants itself, so no cycle: a
+  # listed account may not be ANY tenant's `secret_admins` entry. Any, not only
+  # its own tenant's -- secretVersionAdder on another tenant's key is the
+  # cross-tenant reach a listing exists to deny, and on its own tenant's key it
+  # would let the bot replace the provider key its own tasks run on.
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset(flatten([
+        for t, v in var.tenants : [for m in v.secret_admins : lower(replace(m, "serviceAccount:", ""))]
+      ]))
+    )) == 0
+    error_message = "a tenant's service account may not also be in any tenant's secret_admins: a listing gives read and submit rights inside one tenant, never the ability to replace a provider key."
+  }
+
+  validation {
+    condition = length(setintersection(
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]])),
+      toset([for t, v in var.tenants : lower(v.principal)])
+    )) == 0
+    error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
   }
 }
 
@@ -518,6 +576,18 @@ variable "secret_admin_members" {
     ]) == 0
     error_message = "secret_admin_members is applied to every tenant's secrets, so it may not name a tenant's own principal: that grants one tenant the ability to replace another tenant's provider key. Use a dedicated platform-admin group, or set per-tenant `secret_admins`."
   }
+
+  # Contract request 30: nor a service account a tenant LISTS. This half of the
+  # "a listed account is never an admin" rule lives here, not on var.tenants
+  # beside the admin_users/admin_pool_users half, because this variable's
+  # validation already reads var.tenants and the reverse read is a cycle.
+  validation {
+    condition = length(setintersection(
+      toset([for m in var.secret_admin_members : lower(replace(m, "serviceAccount:", ""))]),
+      toset(flatten([for t, v in var.tenants : [for sa in v.service_accounts : lower(sa)]]))
+    )) == 0
+    error_message = "secret_admin_members may not name a service account a tenant lists in tenants.*.service_accounts: a listing gives exactly one tenant's rights, and secretVersionAdder on every tenant's provider key would add every tenant's."
+  }
 }
 
 variable "api_invokers" {
@@ -687,12 +757,6 @@ variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool
   default     = true
-}
-
-variable "custom_role_suffix" {
-  description = "Disambiguates custom role ids when a previous one is still in its 7-day soft-delete window."
-  type        = string
-  default     = ""
 }
 
 variable "deployer_service_account" {

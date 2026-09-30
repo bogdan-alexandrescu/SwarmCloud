@@ -71,10 +71,11 @@ from .redaction import (
     PEM_BLOCK_MAX_CHARS,
     RULES as REDACTION_RULES,
     open_key_start,
-    redact,
     redact_detail,
+    redact_lines,
 )
 from .store import Store
+from .task_input import masking_for
 
 # --------------------------------------------------------------------------
 # The layout. Compared against the worker's own by the unit tests.
@@ -340,7 +341,9 @@ class InspectionService:
         except UnsafeKeySegment as exc:
             raise ValidationFailed(str(exc)) from None
 
-    def _scoped(self, tenant_id: str, task_id: str) -> tuple[Task, str]:
+    def _scoped(
+        self, tenant_id: str, task_id: str, *, submitted_by: str | None
+    ) -> tuple[Task, str]:
         """Resolve the task inside the caller's tenant and return its prefix.
 
         `get_task` raises the SAME 404 for a task in another tenant as for one
@@ -353,7 +356,7 @@ class InspectionService:
         check costs nothing and is the difference between a boundary that holds
         by construction and one that holds by a property of another system.
         """
-        task = self._store.get_task(tenant_id, task_id)
+        task = self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
         tenant = self._segment(task.tenant_id, what="tenant id")
         task_key = self._segment(task.id, what="task id")
         return task, attempts_prefix(tenant_id=tenant, task_id=task_key)
@@ -394,6 +397,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         attempt_id: str | None = None,
         limit: int,
         page_token: str | None = None,
@@ -422,7 +426,7 @@ class InspectionService:
         it, so the digest is served for a caller who wants to check it and is
         not checked here.
         """
-        task, prefix = self._scoped(tenant_id, task_id)
+        task, prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         scope = prefix
         if attempt_id is not None:
             # Narrowing only. The attempt segment cannot widen the prefix: it
@@ -644,6 +648,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         attempt_id: str | None = None,
         stream: str | Sequence[str] | None = None,
         source: str = "auto",
@@ -701,7 +706,7 @@ class InspectionService:
             `min_log_bytes` for the same reason: a window too small to hold a
             line can only ever be withheld.
         """
-        task, prefix = self._scoped(tenant_id, task_id)
+        task, prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         if offset < 0:
             raise ValidationFailed("offset must not be negative")
         if source not in ("auto", "final", "live"):
@@ -714,6 +719,11 @@ class InspectionService:
 
         attempts = self._attempt_order(tenant_id, task_id)
         chosen, attempt_status = self._choose_attempt(attempts, attempt_id)
+        # What the task's input and metadata named as secret, masked in every
+        # window too (the PR #229 review): the runner's `child started` line
+        # logged the prompt inside argv until it logged its length, and an
+        # agent can print anything it was given.
+        literals = masking_for(task).literals
 
         read_at = self._now()
         reader = self._reader()
@@ -746,7 +756,9 @@ class InspectionService:
                     reader=reader,
                 )
                 entries.append(
-                    self._served(opened, offset=offset, probe=probe, read_at=read_at)
+                    self._served(
+                        opened, offset=offset, probe=probe, read_at=read_at, literals=literals
+                    )
                     if opened.status == "ok"
                     else opened.entry()
                 )
@@ -959,6 +971,7 @@ class InspectionService:
         offset: int,
         probe: int,
         read_at: datetime,
+        literals: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         stream, label, key, uri = opened.stream, opened.source, opened.key, opened.uri
         chunk = opened.chunk
@@ -995,7 +1008,10 @@ class InspectionService:
         withheld = withheld or key_withheld
 
         text, undecodable = _decode_window(raw)
-        scrubbed = redact(text, inside_key=inside_key)
+        # A line that is a JSON document -- every line of a stream-json
+        # transcript -- is masked by its structure; the rest by the rules over
+        # its text (`redaction.redact_lines`, the PR #229 review of #221).
+        scrubbed = redact_lines(text, inside_key=inside_key, literals=literals)
         complete = end >= chunk.total_bytes
         row = _entry(stream, label, "ok")
         row.update(ages)
@@ -1031,6 +1047,7 @@ class InspectionService:
         tenant_id: str,
         task_id: str,
         *,
+        submitted_by: str | None,
         name: str,
         offset: int = 0,
         limit_bytes: int | None = None,
@@ -1084,7 +1101,7 @@ class InspectionService:
         exists to prevent; the listing route's position -- the caller reads GCS
         with their own credentials -- is the honest one for those.
         """
-        task, _prefix = self._scoped(tenant_id, task_id)
+        task, _prefix = self._scoped(tenant_id, task_id, submitted_by=submitted_by)
         entry, attempt_id, key, reader = self._resolve_artifact(task, name)
 
         window = self._default_artifact_bytes if limit_bytes is None else limit_bytes
@@ -1164,7 +1181,12 @@ class InspectionService:
         )
         withheld = withheld or key_withheld
         text, undecodable = _decode_window(raw)
-        scrubbed = redact(text, inside_key=inside_key)
+        # As `/logs` masks a window: a JSON line by its structure, the rest by
+        # the rules, and the task's literals in both (the PR #229 review). The
+        # agent's stream-json stdout is also one of its artifacts.
+        scrubbed = redact_lines(
+            text, inside_key=inside_key, literals=masking_for(task).literals
+        )
         complete = end >= chunk.total_bytes
         row.update(
             status="ok",

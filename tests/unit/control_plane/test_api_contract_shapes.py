@@ -226,7 +226,15 @@ CODECS: tuple[Codec, ...] = (
             # for, and would be a second answer to "why" beside that one.
             "end_cause": "classified and served by GET /v1/outcomes; the task says why in last_error",
         },
-        api_computed=("dispatch",),
+        # The input and metadata are served MASKED (owner decision,
+        # 2026-09-26), and these say how many masks each took; so, since the
+        # PR #229 review, are what the task collected about itself and the
+        # userinfo of its repository URL.
+        api_computed=(
+            "dispatch", "input_redaction_count", "metadata_redaction_count",
+            "last_error_redaction_count", "result_summary_redaction_count",
+            "repository_url_redaction_count",
+        ),
     ),
     Codec(
         name="TaskEvent",
@@ -243,6 +251,10 @@ CODECS: tuple[Codec, ...] = (
         decode=attempt_from_dict,
         required=("attempt_id", "task_id", "tenant_id", "created_at"),
         to_api=attempt_to_api,
+        # Contract request #26: the CPU reading's age, against the route's
+        # own clock, computed from `cpu_measured_at`. And how many masks the
+        # served `error` took (the PR #229 review).
+        api_computed=("cpu_reading_age_seconds", "error_redaction_count"),
     ),
     Codec(
         name="Lease",

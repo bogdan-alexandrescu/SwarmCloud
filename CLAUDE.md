@@ -250,6 +250,18 @@ letting CI demonstrate that, rather than by running the mutation here. A
 mutation proven in CI is proven for everyone forever; one proven on this laptop
 is proven once.
 
+**A SwarmCloud agent is not this machine.** The rule above is about the
+operator's laptop. An agent running in a SwarmCloud container (the claude-code
+or codex runner, image `agent-runtime-base`, which carries uv, node/npm and
+pytest) **runs the offline unit tests for what it touched before it
+finishes** (`uv run pytest tests/unit -q` narrowed to its area, and vitest for
+`apps/swarm-ui`), and fixes what they catch. CI is still the gate, and a
+green run in the container proves nothing CI has not. Owner decision,
+2026-09-28, after 2 of the first 6 SwarmCloud fix PRs arrived red on failures
+a unit run would have caught (#248, #249). A brief written for a SwarmCloud
+step must therefore not repeat "do not run tests"; a brief for a local lane
+still must.
+
 What the CI jobs cover, so you know what you are waiting for:
 
 | workflow | jobs |
@@ -307,7 +319,9 @@ and waiting inside agents made lanes carry 300-500k tokens on every turn.
 * **One review, and only where it matters.** Credentials, tenant isolation,
   redaction and IAM get a review. It reports blockers and majors; minors go to the
   wave epic.
-* **A PR labelled `ready` is merged by the merge watcher** once CI is green at head.
+* **A PR labelled `ready` is merged by GitHub's native auto-merge** once its required checks are green at head
+  (`.github/workflows/auto-merge.yml`, [docs/ci.md](docs/ci.md#a-ready-pull-request-is-merged-by-github-not-by-a-session)).
+  No session has to be running. A `[swarm] task_` title is refused: retitle it first.
 
 ## Reporting
 

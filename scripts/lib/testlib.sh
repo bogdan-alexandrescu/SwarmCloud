@@ -304,8 +304,45 @@ profile_input() {
         actions: [{type: "screenshot", name: "proof.png", full_page: false}],
         extract_text: false}'
       ;;
+    generic)
+      # `command` is REQUIRED since contract request 32 (#218): a generic task
+      # with only a prompt is a 422 at the door. `pytest` is the catalogue
+      # entry that needs nothing but the image. On an empty workspace it exits
+      # 5, no tests collected, so this runs it where there is one test to pass:
+      # tests/smoke/generic in this repository, which profile_extra below has
+      # the worker clone into work/repo. Its own pytest.ini makes that
+      # directory the rootdir. No paths key: the runner checks paths against
+      # the workspace but hands them to pytest as written, beside this cwd.
+      jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r), command: "pytest", working_directory: "repo/tests/smoke/generic"}'
+      ;;
     *)
       jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r)}'
+      ;;
+  esac
+}
+
+# profile_extra PROFILE -> what a submission of PROFILE carries BESIDE its
+# input, as a compact JSON object to merge into submit_task's EXTRA_JSON.
+#
+# `{}` for every profile but `generic`, whose smoke fixture is a directory of
+# THIS repository (see profile_input): the task clones it. Public, so the clone
+# needs no tenant credential (the worker clones anonymously when the tenant
+# holds no clone token). The ref is `main`, so a run proves what is merged;
+# SWARM_SMOKE_FIXTURE_REPOSITORY and SWARM_SMOKE_FIXTURE_REF point it at a
+# fork or a branch. No dispatch block: the default strategy, collect, keeps
+# the diff and pushes nothing.
+SMOKE_FIXTURE_REPOSITORY_DEFAULT="https://github.com/bogdan-alexandrescu/SwarmCloud.git"
+profile_extra() {
+  local profile="$1"
+  case "${profile}" in
+    generic)
+      jq -nc \
+        --arg u "${SWARM_SMOKE_FIXTURE_REPOSITORY:-${SMOKE_FIXTURE_REPOSITORY_DEFAULT}}" \
+        --arg r "${SWARM_SMOKE_FIXTURE_REF:-main}" \
+        '{repository_url: $u, repository_ref: $r}'
+      ;;
+    *)
+      printf '{}'
       ;;
   esac
 }

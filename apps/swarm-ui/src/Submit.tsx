@@ -1,19 +1,26 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity } from './api'
-import { CeilingTag, ceilingFigure } from './Blockers'
+import {
+  CeilingTag,
+  blockerVerdict,
+  ceilingFigure,
+  classUnits,
+  useResourceClasses,
+  verdictCopy,
+  verdictNeedsAPerson,
+} from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
 import { isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
+import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
-  blockerCeiling,
-  ceilingCopy,
+  consequenceOf,
   headroomFor,
-  needsAPerson,
   requiredInputKeys,
   type Capacity,
   type Pool,
@@ -259,12 +266,14 @@ interface Suggestion {
  * codex that the catalogue does not declare is a refusal this form invites --
  * which is why `model` (the CLI runners pass it as `--model`, choosing the
  * model an agent runs) and a `timeout_seconds` offered to every profile are
- * gone. `generic` and `browser` have not declared their inputs yet and are
- * bounded by size only, so their entries are still the runner census.
- * scripts/lib/check-contract-parity.sh (section 13) holds every entry for a
- * declared profile to the declaration, and
+ * gone. `generic` and `browser` declared nothing until contract request 32
+ * (#218, 2026-09-29), and their entries were a runner census; they declare
+ * now, so every entry here is held to the declaration like the rest.
+ * scripts/lib/check-contract-parity.sh (section 13) holds every entry to the
+ * declaration, and
  * tests/unit/control_plane/test_submit_offers_only_what_runners_read.py holds
- * every entry for a profile not declared yet to a key its runner reads.
+ * every entry to the declaration AND to a key its runner reads, and every
+ * action `ACTION_SHAPE` builds to the declared shape of its `type`.
  *
  * REQUESTED, NOT CHANGED (CLAUDE.md's reporting rule): `/v1/capacity` should
  * serve each profile's declared inputs beside `required_keys`, so this
@@ -320,12 +329,16 @@ function suggestionsFor(profile: string): Suggestion[] {
 
 const ACTION_TYPES = ['goto', 'click', 'fill', 'press', 'wait_for', 'wait', 'screenshot', 'extract'] as const
 
-/** The scalars each action type reads. Anything not listed is not sent. */
-const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string }>> = {
+/** The scalars each action type reads. Anything not listed is not sent.
+ *  `send` is the key the value travels under when it is not `prop`: a
+ *  `press` keeps its key in the draft's `text` box, and the runner reads it
+ *  as `key`. Sent as `text`, nothing read it, and since contract request 32
+ *  the declared `press` shape refuses it. */
+const ACTION_SHAPE: Record<string, Array<{ prop: keyof BrowserAction; label: string; send?: string }>> = {
   goto: [{ prop: 'url', label: 'url' }],
   click: [{ prop: 'selector', label: 'selector' }],
   fill: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'text' }],
-  press: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'key' }],
+  press: [{ prop: 'selector', label: 'selector' }, { prop: 'text', label: 'key', send: 'key' }],
   wait_for: [{ prop: 'selector', label: 'selector' }],
   wait: [{ prop: 'seconds', label: 'seconds' }],
   screenshot: [{ prop: 'name', label: 'artifact name' }],
@@ -386,7 +399,7 @@ export function buildInput(fields: InputField[]): BuiltInput {
           const raw = String(a[part.prop] ?? '').trim()
           if (raw === '') return { ok: false, message: `a ${a.type} action needs its ${part.label}` }
           // `wait` is the one numeric field inside an action (`:141`).
-          one[part.prop === 'seconds' ? 'seconds' : part.prop] = part.prop === 'seconds' ? Number(raw) : raw
+          one[part.send ?? part.prop] = part.prop === 'seconds' ? Number(raw) : raw
         }
         if (a.type === 'wait' && !Number.isFinite(Number(a.seconds))) {
           return { ok: false, message: `a wait action needs a number of seconds` }
@@ -738,6 +751,20 @@ export function Move({ n, title, aside, children }: { n: number; title: string; 
 /** The task form's field-id prefix: the editor and the panel's buttons share it. */
 const TASK_FIELDS = 'task'
 
+/**
+ * `owner/repo` out of a repository URL, as the send panel names it (#115).
+ *
+ * Every scheme the API accepts (`REPOSITORY_SCHEMES`, Dispatch.tsx) puts the
+ * host first and the path last, so the path is the name a reviewer knows the
+ * repository by. Anything this does not recognise comes back as sent: the
+ * panel may print a long URL, never a guessed name.
+ */
+export function repositorySlug(url: string): string {
+  const sent = url.trim()
+  const m = /^(?:https:\/\/|ssh:\/\/(?:[^@/]+@)?|git@)[^/:]+(?::\d+)?[/:]([^/]+\/[^/]+?)(?:\.git)?\/?$/.exec(sent)
+  return m?.[1] ?? sent
+}
+
 function Form({ capacity }: { capacity: Capacity }) {
   const [chosen, setChosen] = useState('')
   const [fields, setFields] = useState<InputField[]>([])
@@ -749,6 +776,8 @@ function Form({ capacity }: { capacity: Capacity }) {
     repositoryUrl: '',
   })
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'idle' })
+  // Whether this tenant holds each provider's key, for every row of the picker.
+  const keys = useProviderKeys()
   const catalogue = useMemo(
     () => Object.entries(capacity.runner_profiles).sort((a, b) => a[0].localeCompare(b[0])),
     [capacity],
@@ -765,6 +794,10 @@ function Form({ capacity }: { capacity: Capacity }) {
   const built = buildInput(fields)
   const missing = missingRequired(fields, required)
   const blocked = chosen === '' || !built.ok || missing.length > 0
+  // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
+  // trimmed URL, and only while the chosen strategy pushes at all (#115).
+  const repo = dispatch.repositoryUrl.trim()
+  const pushes = consequenceOf(dispatch.strategy, 1).pushes
   // The send panel's "`prompt` missing" takes the reader to that field.
   const toField = (key: string) => {
     const f = fields.find((x) => x.name.trim() === key)
@@ -788,7 +821,6 @@ function Form({ capacity }: { capacity: Capacity }) {
       return
     }
     setOutcome({ kind: 'sending' })
-    const repo = dispatch.repositoryUrl.trim()
     setOutcome(
       await postTask({
         runner_profile: chosen,
@@ -834,45 +866,13 @@ function Form({ capacity }: { capacity: Capacity }) {
             no image, no command, no resource spec, no backend parameter -- and
             a form cannot state that by labelling the fields it does have. */}
         <Move n={1} title="Choose a runner" aside={<HelpCard topic="runner-profile-by-name" />}>
-          {/* THE CATALOGUE, VISIBLE. Invariant 10 says a caller names one of
-              these and supplies no image, command, resource spec or backend --
-              and a `<select>` hid the very thing that makes that safe. A row
-              per profile shows what each name actually selects. */}
-          {/* RADIOS, NOT BUTTONS. This is a pick-one, the screen's own
-              neighbour (`.dsp-option`) already expresses a pick-one with a
-              radio, and a native radio carries the affordance, the keyboard
-              behaviour and the accessible role without a box — `accent-color`
-              is already set for the whole app. A row of five buttons has none
-              of that and, at rest, does not look like a choice at all. */}
-          <ul className="sbf-runners" role="none">
-            {catalogue.map(([n, p]) => {
-              // `available` is `?? true` and not `|| true`: an older API omits
-              // the field, and `false || true` is true, which would offer a
-              // profile we know is refused.
-              const off = (p.available ?? true) === false
-              return (
-                <li key={n}>
-                  <label className={`sbf-runner${chosen === n ? ' is-on' : ''}${off ? ' is-off' : ''}`}>
-                    <input type="radio" name="runner-profile" value={n} checked={chosen === n}
-                      disabled={off} onChange={() => pick(n)} />
-                    <span className="sbf-runner-name mono">{n}</span>
-                    <span className="sbf-runner-facts">
-                      {p.resource_class} · {p.units} unit{p.units === 1 ? '' : 's'} · {p.backend}
-                      {/* `<provider> key needed`, not `needs a <provider>
-                          key`: the article was chosen before the name was
-                          known, and read `needs a anthropic key`. */}
-                      {p.provider ? <> · {p.provider} key needed</> : <> · no provider key needed</>}
-                    </span>
-                    {/* A DISABLED PROFILE IS KEPT AND EXPLAINED, not hidden.
-                        The catalogue says a disabled profile is known and
-                        refused, and "unknown runner_profile" would send
-                        somebody hunting a typo that is not there. */}
-                    {off && <span className="sbf-runner-off">{p.disabled_reason || 'refused by the platform'}</span>}
-                  </label>
-                </li>
-              )
-            })}
-          </ul>
+          {/* THE CATALOGUE, VISIBLE, with each runner's room and key (#114).
+              Invariant 10 says a caller names one of these and supplies no
+              image, command, resource spec or backend -- and a `<select>` hid
+              the very thing that makes that safe. `RunnerPicker` is the one
+              control both Submit forms draw. */}
+          <RunnerPicker group="runner-profile" label="runner" profiles={catalogue} chosen={chosen}
+            keys={keys} onPick={pick} />
           {bad.runner_profile && <p className="warn-text" role="alert">{bad.runner_profile}</p>}
           {profile && <ProfileFacts name={chosen} profile={profile} pools={capacity.pools} />}
         </Move>
@@ -954,6 +954,30 @@ function Form({ capacity }: { capacity: Capacity }) {
               <b>result</b>
               {dispatch.strategy}
             </li>
+            {/* WHAT THE CLICK COMMITS TO (#115), each read from the value the
+                button and the request are built from: the chosen profile's
+                weight and pool count (`in each of`, never `x`, which reads as a
+                total), its room off `headroomFor` -- the same `RoomFact` the
+                picker row draws -- and, when the strategy pushes, the
+                repository it pushes to. A blank one is named, because the API
+                refuses a push with nowhere to push. */}
+            <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+              <b>cost</b>
+              {profile === null ? <i className="ctl-em">&mdash;</i> : <>
+                {profile.units} unit{profile.units === 1 ? '' : 's'} in each of {profile.pools.length}{' '}
+                pool{profile.pools.length === 1 ? '' : 's'}
+              </>}
+            </li>
+            <li className={profile === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+              <b>room</b>
+              {profile === null ? <i className="ctl-em">&mdash;</i> : <span><RoomFact profile={profile} /></span>}
+            </li>
+            {pushes && (
+              <li className="ctl-fact">
+                <b>repository</b>
+                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i> : <code>{repositorySlug(repo)}</code>}
+              </li>
+            )}
           </ul>
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
@@ -996,10 +1020,17 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
   // "held down by X, 0 of 0 weighted units in use": that fraction is the live
   // "busy platform-wide. (0/0)" in this box's words. `blockerCeiling` decides
   // it from the blocker the server sent, not from the pool row.
+  //
+  // AND A LEAD WHOSE LIMIT IS BELOW ONE TASK (#66): a browser task under a
+  // limit of 1 read "held down by resource:browser, 0 of 1 weighted units in
+  // use" -- wait -- about a task no wait will admit. The weight is the class
+  // catalogue's (`/v1/resource-classes`); null until it answers, and then the
+  // box reads exactly as it did before.
+  const units = classUnits(useResourceClasses(), profile.resource_class)
   const lead =
-    room.blockers.find((b) => needsAPerson(blockerCeiling(b))) ??
+    room.blockers.find((b) => verdictNeedsAPerson(blockerVerdict(b, units))) ??
     room.blockers.find((b) => b.pool === room.binding)
-  const leadCopy = lead ? ceilingCopy(lead, lead.pool) : null
+  const leadCopy = lead ? verdictCopy(lead, units, lead.pool) : null
   const bindingName = lead?.pool ?? room.binding
   const binding = bindingName ? byName.get(bindingName) ?? null : null
   // headroomFor's contract: a profile's pool list is the CALLING TENANT'S, so
@@ -1069,9 +1100,9 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
           {room.blockers.map((b) => (
             <li key={b.pool} className="blocker-row">
               <span className="tags">
-                <CeilingTag blocker={b} />
+                <CeilingTag blocker={b} units={units} />
               </span>
-              <code>{b.pool}</code> — {ceilingFigure(b)}
+              <code>{b.pool}</code> — {ceilingFigure(b, units)}
             </li>
           ))}
         </ul>

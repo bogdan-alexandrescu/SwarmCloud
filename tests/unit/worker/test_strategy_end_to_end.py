@@ -35,8 +35,21 @@ import pytest
 
 from agent_worker import gitops, lifecycle, workspace as workspace_mod
 from agent_worker.forge import PullRequest, RepoAccess, RepoRef
+from conftest import record_as_earlier_attempt
 
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+@pytest.fixture(autouse=True)
+def _the_agent_titles_its_pull_request(monkeypatch):
+    """Since 2026-09-28 the platform invents no pull request title: the agent
+    writes `pr-title.txt`, or the step's `issue` input names one, or no pull
+    request is opened (`test_pull_request_text.py` pins that). These tests are
+    about strategy, pushing and credentials, not titles, so every attempt here
+    stands in for an agent that wrote one."""
+    monkeypatch.setattr(
+        lifecycle.Worker, "_generated_pull_request_title", lambda self: "The agent's title"
+    )
 
 
 # -- a real repository, and a real remote to push to ------------------------
@@ -939,7 +952,7 @@ def _head(repo: Path) -> str:
 
 
 def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_workspace_marker(
-    worker_factory, monkeypatch, origin, local_urls, forge
+    db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """The agent commits three times as Claude, writes its OWN third commit into
     the workspace's clone-base marker, and the attempt checkpoints. The next
@@ -963,7 +976,9 @@ def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_w
     second, config, _ = _attempt(
         worker_factory, monkeypatch, origin, task_id="t-forged-base", attempt=2, dispatch=dispatch
     )
-    second._restore_checkpoint(record.uri)
+    # Attempt 1 recorded it; the restore takes nothing else (#347).
+    record_as_earlier_attempt(db, record)
+    second._restore_checkpoint({"attempt_count": 2, "latest_checkpoint": record.uri})
     assert second._maybe_clone(task)["from_checkpoint"] is True
     repo = second.ws.work / lifecycle.REPO_DIR_NAME
     (repo / "c4.txt").write_text("commit 4, made as Claude after the resume\n")
@@ -978,7 +993,7 @@ def test_a_resumed_attempt_publishes_from_the_base_the_worker_recorded_not_the_w
 
 
 def test_a_checkpoint_that_records_no_clone_base_is_harvested_but_not_published(
-    worker_factory, monkeypatch, origin, local_urls, forge
+    db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
     """A checkpoint written before the worker recorded the base in its manifest
     carries only the workspace marker. The marker is good enough to DESCRIBE
@@ -998,7 +1013,9 @@ def test_a_checkpoint_that_records_no_clone_base_is_harvested_but_not_published(
     second, _, _ = _attempt(
         worker_factory, monkeypatch, origin, task_id="t-legacy-ckpt", attempt=2, dispatch=dispatch
     )
-    second._restore_checkpoint(record.uri)
+    # Attempt 1 recorded it; the restore takes nothing else (#347).
+    record_as_earlier_attempt(db, record)
+    second._restore_checkpoint({"attempt_count": 2, "latest_checkpoint": record.uri})
     assert second._maybe_clone(task)["from_checkpoint"] is True
 
     before = refs(origin)
@@ -1215,6 +1232,10 @@ def test_a_commit_the_worker_did_not_write_is_refused_at_the_push_even_without_t
     step -- and the push must refuse it rather than trust that nothing
     upstream of it ever regresses."""
     monkeypatch.setattr(lifecycle, "fold_agent_commits", lambda **kw: 0)
+    # And the rewrite that keeps each agent commit (#242), which is the other
+    # way the property is made. `raising=False` because it is added by the
+    # same change as this line.
+    monkeypatch.setattr(lifecycle, "replay_agent_commits", lambda **kw: 0, raising=False)
     before = refs(origin)
 
     _, _, out = run_attempt(
@@ -1249,13 +1270,14 @@ def empty_origin(tmp_path: Path) -> Path:
     [agent_edits_without_committing, agent_commits_with_claude_attribution],
     ids=["uncommitted-only", "committed-too"],
 )
-def test_work_in_an_empty_repository_is_one_parentless_worker_commit(
+def test_work_in_an_empty_repository_starts_from_one_parentless_worker_commit(
     worker_factory, monkeypatch, empty_origin, local_urls, forge, edit
 ):
     """`git clone` of an empty repository succeeds and lands on no commit, so
     there is no clone base -- but that is KNOWN, unlike a base a resumed
-    attempt lost. Everything the agent did is the agent's, and the worker
-    replaces it with one commit of its own that has no parent."""
+    attempt lost. Everything the agent did is the agent's: each of its commits
+    is rewritten as the worker's, the first with no parent, and one more
+    worker commit carries what it left uncommitted (#242)."""
     worker, config, task = _attempt(
         worker_factory, monkeypatch, empty_origin,
         task_id=f"t-empty-{edit.__name__.split('_')[1]}", attempt=1,
@@ -1271,9 +1293,13 @@ def test_work_in_an_empty_repository_is_one_parentless_worker_commit(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is True, out.get("publish_reason")
-    commits = pushed_commits(empty_origin, branch, since=None)
-    assert len(commits) == 1 and commits[0]["parents"] == [], (
-        f"expected one parentless commit, got {[c['parents'] for c in commits]}"
+    commits = list(reversed(pushed_commits(empty_origin, branch, since=None)))
+    # Uncommitted only: the worker's one commit. Committed too: the agent's
+    # commit, kept, then the worker's for `uncommitted.txt`.
+    expected_commits = 1 if edit is agent_edits_without_committing else 2
+    assert len(commits) == expected_commits and commits[0]["parents"] == [], (
+        f"expected {expected_commits} commit(s) from a parentless first, "
+        f"got {[c['parents'] for c in commits]}"
     )
     assert_only_the_worker_wrote(commits, config)
     assert expected <= tree_at(empty_origin, branch)

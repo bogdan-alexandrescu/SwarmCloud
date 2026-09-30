@@ -1,0 +1,48 @@
+{
+  "format_version": "1.2",
+  "terraform_version": "1.16.2",
+  "resource_changes": [
+    {
+      "address": "module.iam.google_project_iam_custom_role.job_dispatcher",
+      "module_address": "module.iam",
+      "mode": "managed",
+      "type": "google_project_iam_custom_role",
+      "name": "job_dispatcher",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["forget"],
+        "before": {
+          "deleted": false,
+          "description": "Start and inspect Cloud Run worker jobs.",
+          "id": "projects/saga-agents-staging/roles/swarmJobDispatcher",
+          "name": "projects/saga-agents-staging/roles/swarmJobDispatcher",
+          "permissions": ["run.executions.get", "run.jobs.get", "run.jobs.runWithOverrides"],
+          "project": "saga-agents-staging",
+          "role_id": "swarmJobDispatcher",
+          "stage": "GA",
+          "title": "Swarm Job Dispatcher"
+        },
+        "after": null,
+        "after_unknown": {},
+        "before_sensitive": {"permissions": []},
+        "after_sensitive": false
+      }
+    },
+    {
+      "address": "module.cloud_run[\"swarm-api\"].google_cloud_run_v2_service.this",
+      "module_address": "module.cloud_run[\"swarm-api\"]",
+      "mode": "managed",
+      "type": "google_cloud_run_v2_service",
+      "name": "this",
+      "provider_name": "registry.terraform.io/hashicorp/google",
+      "change": {
+        "actions": ["no-op"],
+        "before": {"name": "swarm-api", "project": "saga-agents-staging"},
+        "after": {"name": "swarm-api", "project": "saga-agents-staging"},
+        "after_unknown": {},
+        "before_sensitive": {},
+        "after_sensitive": {}
+      }
+    }
+  ]
+}

@@ -82,7 +82,7 @@ export type TopicId =
   | 'catalogue-from-route'
   | 'checkpoints'
   | 'clipboard-secure-context'
-  | 'cpu-not-sampled'
+  | 'cpu-figures'
   | 'credential-names-not-values'
   | 'credential-refresh-sweep'
   | 'credential-split'
@@ -153,6 +153,7 @@ export type TopicId =
   | 'what-a-pool-is'
   | 'what-sets-it-apart-is-arithmetic'
   | 'withheld-total'
+  | 'workflow-stages'
   | 'workspace-memory'
 
 /** The Help section's headings, in the order it renders them. */
@@ -357,14 +358,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
-  'cpu-not-sampled': {
+  // WAS `cpu-not-sampled`, "CPU is never sampled", and it stayed in the card
+  // foot's index directly under the two CPU rows it contradicted after #187
+  // started drawing them (#222, post-deploy QA of 2026-09-26). The worker
+  // measures CPU; this says what the two rows are.
+  'cpu-figures': {
     group: 'an-attempt',
-    title: 'CPU is never sampled',
+    title: 'CPU is peak and mean cores of the limit',
     short:
-      'The sampler measures memory and disk. The cpu bar is drawn with its request and a hatched track rather than left out, because a requested-against-used panel that silently drops part of the envelope reads as if cpu were known to be fine.',
+      'The worker samples the container’s CPU while the agent runs and writes the attempt’s figures on its own record: the busiest sampling interval (peak) and the CPU-seconds over the runner’s wall time (mean), both in cores, against the limit it read from the kernel or took from the class.',
     long: [
-      'The worker’s sampler records memory and disk. It does not record cpu.',
-      'The cpu bar is still drawn, with its requested figure and a hatched track. Omitting it would be worse: a panel headed “requested vs utilised” that quietly shows two of three dimensions invites the reader to conclude the third was fine, which is a conclusion nobody measured.',
+      'The figures are the attempt’s, every runner it started combined. Peak is the busiest sampling interval; mean is the CPU-seconds divided by the time the runners ran, so the setup, the clone and retry waits are not counted as idle.',
+      'The limit is the container’s cgroup `cpu.max` when the kernel says one (`cgroup limit`), else the catalogue cpu of the class the container was sized with. An attempt from before the limit’s source was recorded says `reported limit` when the figure is not its class’s.',
+      'While the attempt runs the figures are a live reading, rewritten with each periodic reading, and its age is the API’s own measure of when the worker last wrote it. An attempt from before that time was recorded says `age not recorded`. An em dash is a figure nobody measured, never a zero.',
     ],
   },
 
@@ -790,15 +796,19 @@ const SPECS: Record<TopicId, TopicSpec> = {
     ],
   },
 
+  // #126: the Runtimes screen's one always-present `?` opens this topic, so it
+  // answers both words a card draws that its own facts do not explain --
+  // `Sets it apart` and the `disabled` chip.
   'what-sets-it-apart-is-arithmetic': {
     group: 'the-catalogue',
-    title: 'What sets a runtime apart is arithmetic',
+    title: 'What sets a runtime apart, and what disabled means',
     short:
-      'Each line compares one runtime against the others in the same response. Nobody wrote a description of any runtime and nothing here knows what a name means, which is what keeps the comparison true for a catalogue that has changed since this screen was written.',
+      'Each "sets it apart" line is arithmetic against the rest of the catalogue in the same response: longest, heaviest, the only one of its kind. Nobody wrote it. A disabled runtime stays listed so work that names it still renders, but the platform refuses new work for it, and the card gives its reason.',
     long: [
       'The comparison is computed: largest, smallest, only one of its kind, different backend from the rest. It is derived from the same response the cards are drawn from.',
       'When the computation finds nothing, the card says so rather than reaching for a sentence somebody typed. "Nothing separates it from the rest" is a measured answer.',
       'A hand-written description would be the one thing on the Runtimes screen that could quietly stop being true.',
+      'Disabled is the catalogue’s own flag, not a reading of load. The runtime is still served because tasks already submitted under its name have to render, and the API refuses any new submission that names it. The reason printed on its card is the platform’s, and usually names the runtime to use instead.',
     ],
   },
 
@@ -895,6 +905,18 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'The input is a payload, not a command. The platform carries it and the agent decides what it means.',
       'That is why the input on the submit forms has no syntax help and no validation beyond a length: any check there would be this console guessing at a contract between a caller and an agent it cannot see.',
       'A refusal of the input therefore comes from the API and is shown exactly as the API worded it.',
+    ],
+  },
+
+  'workflow-stages': {
+    group: 'submitting-work',
+    title: 'How a workflow runs its steps',
+    short:
+      'Steps run in stages. A step starts when every step it depends on has succeeded, and steps with nothing left to wait for run at the same time. A failure cancels its dependants — every step waiting on the failed one, directly or through another — and the steps that do not depend on it carry on.',
+    long: [
+      'A stage on Submit a workflow is a default for what a step waits for: a step in a later stage waits for every step in the stage before it, unless it is narrowed to a chosen set of earlier steps. The platform receives only the dependencies; stages are how the form lays them out.',
+      'A step becomes eligible when every step it depends on has succeeded. Until then it holds no capacity and costs nothing. Steps whose dependencies have all succeeded run at the same time, within the ceilings of the pools they need.',
+      'When a step fails for good, its retries spent, the platform cancels every step that depends on it, directly or through another step, because none of them could ever start. A step that does not depend on the failed one is not touched and runs to its own end.',
     ],
   },
 

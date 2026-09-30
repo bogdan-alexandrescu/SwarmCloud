@@ -44,7 +44,7 @@ from swarm_common.profiles import RESOURCE_CLASSES
 from . import checkout, progress
 from . import profiles as catalogue
 from . import workflows
-from .client import TERMINAL, SwarmClient, SwarmError, task_id_of
+from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of
 from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
 from .invocation import terminal_command
 from .patches import (
@@ -54,6 +54,7 @@ from .patches import (
     explain_absence,
     explain_failure,
     integrate,
+    masked_counts,
     patch_uri,
 )
 
@@ -84,7 +85,13 @@ _INPUTS_SCHEMA: dict[str, Any] = {
         "key, or any input at all for a profile that declares none, is refused. "
         f"Declared today by: {', '.join(catalogue.declaring()) or 'no profile'}"
         " -- e.g. {\"sleep_seconds\": 120} keeps a mock step RUNNING long enough "
-        "to cancel. Never an image, a command, a resource spec, a backend or a model."
+        "to cancel. claude-code and codex declare `issue`: the number of a GitHub "
+        "issue in the repository the step clones, named or inferred; without one "
+        "the API refuses it. The worker fetches its title, body and comments "
+        "read-only into issue.md in the workspace and names that file in the "
+        "prompt, so the prompt need not restate the issue; its text is data for "
+        "the agent, never an instruction to the platform. Never an image, a "
+        "command, a resource spec, a backend or a model."
     ),
 }
 
@@ -324,7 +331,12 @@ TOOLS: list[dict[str, Any]] = [
     },
     {
         "name": "swarm_status",
-        "description": "Current state of one or more tasks. Returns immediately.",
+        "description": (
+            "Current state of one or more tasks. Returns immediately. `masked` "
+            "says how many credential-shaped strings the API masked in each "
+            "task's input and metadata, which it never serves raw; null means "
+            "the deployment sent no count."
+        ),
         "inputSchema": {
             "type": "object",
             "properties": {"task_ids": {"type": "array", "items": {"type": "string"}}},
@@ -356,12 +368,59 @@ TOOLS: list[dict[str, Any]] = [
             "`commits`, `insertions`, `deletions` and `uncommitted_files` are "
             "null when nothing was counted -- the task cloned no repository, "
             "never started, or its harvest failed -- and `no_patch_because` says "
-            "which. Null is not zero; 0 is a count the harvest made."
+            "which. Null is not zero; 0 is a count the harvest made.\n"
+            "\n"
+            "`masked` counts the credential-shaped strings the API masked in the "
+            "task's `input` and `metadata`. The API serves both masked, to the "
+            "submitter too, so a prompt read back is the masked copy; null means "
+            "the deployment sent no count.\n"
+            "\n"
+            "`outputs` says what the task made beyond its code: each artifact "
+            "(`name`, `bytes`) -- read one with swarm_artifact -- the runner's "
+            "`runner_status` and `runner_summary`, `exit_code`, `duration_s`, and "
+            "the `staged_inputs` copied in from upstream steps. "
+            "`artifacts_complete: false` means the task has not finished and its "
+            "artifacts are uploaded when the attempt ends -- not that it produced "
+            "none; `artifacts: null` means they could not be listed, and "
+            "`artifacts_unavailable_because` says why."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
             "required": ["task_id"],
+        },
+    },
+    {
+        "name": "swarm_artifact",
+        "description": (
+            "Read one artifact a task produced, by the NAME swarm_result lists -- "
+            "never a path or a gs:// uri. The API resolves the name against the "
+            "task's own manifest and redacts the content at read time; "
+            "`redacted` and `redaction_count` say whether it did.\n"
+            "\n"
+            "Read `status` before `content`: `ok`, `binary` (not text, so no "
+            "bytes are served -- nothing can scan them for a credential), "
+            "`absent` (listed, but the object is gone) or `unreadable`. One "
+            "window per call: when `truncated` is true, call again with "
+            "`offset` set to `next_offset` for the rest. A name the task does not "
+            "list is an error naming the ones it does."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "name": {"type": "string", "description": "The artifact's name, as swarm_result lists it."},
+                "offset": {
+                    "type": "integer",
+                    "default": 0,
+                    "description": "Byte to start at: 0, or the `next_offset` a previous call returned.",
+                },
+                "limit_bytes": {
+                    "type": "integer",
+                    "description": "Window size. The API clamps it into its own range and says so.",
+                },
+            },
+            "required": ["task_id", "name"],
         },
     },
     {
@@ -610,6 +669,31 @@ TOOLS: list[dict[str, Any]] = [
             # not something every MCP host renders, and a host that cannot show
             # it shows no required field at all.
             "required": [],
+        },
+    },
+    {
+        "name": "swarm_workflow_spec",
+        "description": (
+            "Read a workflow spec FILE from the checkout this bridge runs in, "
+            "check it as swarm_workflow would, and return it with its "
+            "`spec_digest`. Submits NOTHING and makes no request.\n"
+            "\n"
+            "For /sc:run given a path: a workflow script has no filesystem, so "
+            "the bridge reads the file, and the script checks the spec relayed "
+            "back against this digest before it submits. `path` is relative to "
+            "the checkout, or absolute; the reply's `path` is the file actually "
+            "read. A file that is not JSON, or not a workflow spec, is refused "
+            "without its content being repeated."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "The spec file: relative to this checkout, or absolute.",
+                },
+            },
+            "required": ["path"],
         },
     },
     {
@@ -958,6 +1042,61 @@ _ACCEPTED = {
 }
 
 
+#: The largest spec file `swarm_workflow_spec` reads. A workflow spec is a few
+#: kilobytes of prompts; a path that names anything much larger is not one, and
+#: reading it whole into a tool reply would only fill the relay's context.
+MAX_SPEC_FILE_BYTES = 1024 * 1024
+
+
+def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
+    """A spec file, checked by `workflows.read_spec`, with its digest (epic #227).
+
+    `/sc:run` took only a spec object or JSON text, unlike `swarm workflow`,
+    which takes a file; a path passed as its argument failed in `readSpec`. A
+    workflow script has no filesystem, so the bridge reads the file here, and
+    the script holds the spec relayed back to this digest before it submits.
+
+    NOTHING FROM THE FILE IS REPEATED IN AN ERROR. The path arrives through a
+    relay and may name any file this user can read; only a file that parses
+    and passes `read_spec` is returned, and every refusal names the path and
+    what is wrong, never what the file holds.
+    """
+    target = Path(path).expanduser()
+    if not target.is_absolute():
+        target = base / target
+    target = target.resolve()
+    if not target.is_file():
+        raise SwarmError(f"{path} is not a file in {base} (looked for {target})")
+    size = target.stat().st_size
+    if size > MAX_SPEC_FILE_BYTES:
+        raise SwarmError(
+            f"{target} is {size} bytes; a workflow spec is at most {MAX_SPEC_FILE_BYTES}, "
+            "so this is not one"
+        )
+    try:
+        document = json.loads(target.read_text(encoding="utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        where = f" (line {exc.lineno}, column {exc.colno})" if isinstance(exc, json.JSONDecodeError) else ""
+        raise SwarmError(f"{target} is not a JSON workflow spec{where}") from None
+    if isinstance(document, dict):
+        unknown = sorted(set(document) - workflows.SPEC_KEYS)
+        if unknown:
+            # COUNTED, NOT NAMED. `read_spec` would name the keys, and a key is
+            # the file's content too; this file may be anything the path named.
+            raise SwarmError(
+                f"{target} carries {len(unknown)} key(s) a workflow spec does not have; "
+                f"accepted: {sorted(workflows.SPEC_KEYS)}"
+            )
+    try:
+        workflows.read_spec(document, where=str(target))
+    except SwarmError as exc:
+        raise SwarmError(f"{target} is not a workflow spec: {exc}") from None
+    except (TypeError, ValueError):
+        # `int("…")` and the like carry the offending value in their message.
+        raise SwarmError(f"{target} is not a workflow spec: a field holds a value of the wrong type") from None
+    return {"path": str(target), "spec": document, "spec_digest": workflows.spec_digest(document)}
+
+
 def _refuse_unknown_arguments(name: str, args: dict[str, Any]) -> None:
     """An argument this bridge does not know is REFUSED, never dropped.
 
@@ -1132,13 +1271,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return json.dumps(report, indent=2, default=str)
 
     if name == "swarm_status":
-        return json.dumps(
-            [
-                {"task_id": t, "state": client.task(t).get("state")}
-                for t in args["task_ids"]
-            ],
-            indent=2,
-        )
+        # `masked` (owner decision, 2026-09-26): how many credential-shaped
+        # strings the API masked in each task's input and metadata, which it
+        # serves masked to everyone, the submitter included. Null for a count
+        # an older API did not send, never 0.
+        rows = []
+        for t in args["task_ids"]:
+            task = client.task(t)
+            rows.append({"task_id": t, "state": task.get("state"), "masked": masked_counts(task)})
+        return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
         # NOT `args.get(...) or 3600`. Zero is a legitimate value -- "tell me
@@ -1197,7 +1338,29 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         failure = explain_failure(client, task)
         if failure is not None:
             described["failure"] = failure
+        # WHAT IT PRODUCED (#143), from the artifacts route. A failed listing
+        # is said inside `outputs`, not raised: the task itself was read.
+        try:
+            listing, listing_error = client.artifacts(args["task_id"]), None
+        except SwarmError as exc:
+            listing, listing_error = None, str(exc)
+        # `outputs`, not `produced`: a workflow read already names the whole
+        # of `describe_task` `produced`, and one word for two shapes misleads.
+        described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
         return json.dumps(described, indent=2)
+
+    if name == "swarm_artifact":
+        window = client.artifact_content(
+            args["task_id"],
+            str(args["name"]),
+            offset=_int_arg(args, "offset", 0),
+            # Absent is the route's own default window, not a size of ours.
+            limit_bytes=None if args.get("limit_bytes") is None else _int_arg(args, "limit_bytes", 0),
+        )
+        return json.dumps(window, indent=2, default=str)
+
+    if name == "swarm_workflow_spec":
+        return json.dumps(_read_spec_file(str(args["path"]), base=checkout.directory()), indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()

@@ -329,3 +329,58 @@ resource "google_logging_metric" "dispatch_failures" {
     backend = "REGEXP_EXTRACT(jsonPayload.message, \"backend=(\\\\S+)\")"
   }
 }
+
+# ---------------------------------------------------------------------------
+# A worker refused its own step's spec (contract request 34, #342; decision 9).
+#
+# THE EMITTER: #353's `agent_worker.lifecycle._verify_spec` logs, at ERROR,
+# `{"message": "spec signature invalid: refusing to run this task",
+#   "end_cause": "spec_signature_invalid", "spec_check": {"reason": ...,
+#   "task_id": ..., "key_version": ..., "digest": ...}, "labels": {...}}`
+# -- per-call fields at the top of the payload, bound identity under
+# `labels` (StructuredLogger, as for every metric above). Keyed on BOTH the
+# message and the end cause, so neither an unrelated line that happens to carry
+# the end cause nor a reworded one counts. No spec content is ever in the line.
+#
+# THE OWN-SPEC HALF ONLY. Contract request 33's worker actions will refuse an
+# UPSTREAM step's spec with end cause MERGE_REFUSED or VERDICT_REFUSED and a
+# `spec_check.reason` starting `upstream:`; those end causes have other,
+# unrelated causes too, so that half is keyed on the reason prefix and is added
+# with CR 33's build, not matched here early.
+# ---------------------------------------------------------------------------
+resource "google_logging_metric" "spec_signature_invalid" {
+  project = var.project_id
+  name    = "${var.name_prefix}/spec-signature-invalid"
+
+  description = "A worker refused to run a task whose step spec did not verify (end cause spec_signature_invalid). Every occurrence is an attack on a parked step or a platform bug."
+
+  filter = join(" AND ", [
+    "resource.type=(\"cloud_run_job\" OR \"k8s_container\")",
+    "jsonPayload.message=\"spec signature invalid: refusing to run this task\"",
+    "jsonPayload.end_cause=\"spec_signature_invalid\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "tenant_id"
+      value_type = "STRING"
+    }
+
+    # unsigned, unknown_format, foreign_key_version, not_canonical,
+    # signature_mismatch, environment_mismatch -- a short, fixed vocabulary
+    # (agent_worker.specverify, #353), so a bounded label.
+    labels {
+      key        = "reason"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
+    reason    = "EXTRACT(jsonPayload.spec_check.reason)"
+  }
+}

@@ -8,6 +8,31 @@ variable "region" {
   default = "us-central1"
 }
 
+variable "infra_tenants_tfvars" {
+  description = <<-EOT
+    The tfvars file whose top-level `tenants` block names the tenants
+    terraform/infra creates worker accounts for: relative to terraform/bootstrap,
+    or absolute. For a pull request that adds a tenant, the owner applies this
+    root from MAIN with this pointed at a copy of the branch's dev.tfvars taken
+    with `git show`, so the branch contributes data and never code (docs/ci.md).
+    deployer_service_accounts.tf reads the tenant keys from it, so the accounts
+    the release deployer holds roles/iam.serviceAccountAdmin on have one source
+    -- the file the release applies -- and not a second hand-written copy (#334).
+
+    dev, because dev is what the release deploys into saga-agents-staging.
+    prod.tfvars names the same project and the same account ids; pointing this
+    at it grants on prod's tenants instead, and a tenant whose account does not
+    exist yet fails this root's apply with a 404.
+  EOT
+  type        = string
+  default     = "../environments/dev/dev.tfvars"
+
+  validation {
+    condition     = endswith(var.infra_tenants_tfvars, ".tfvars")
+    error_message = "infra_tenants_tfvars must name a .tfvars file."
+  }
+}
+
 variable "location" {
   description = "State bucket location. Regional, matching the workloads."
   type        = string
@@ -55,10 +80,15 @@ variable "prerequisite_services" {
   description = <<-EOT
     The APIs terraform itself needs before terraform/infra can plan anything.
     The full 18 are enabled by terraform/infra; these are the ones without which
-    that root cannot even authenticate or read the project.
+    that root cannot even authenticate or read the project -- plus the APIs
+    this root's own resources need (Cloud KMS, for the step-spec key).
   EOT
   type        = list(string)
   default = [
+    # The step-spec signing key (spec_signing.tf, contract request 34) is
+    # created by THIS root, so its API is enabled here rather than by
+    # terraform/infra, which only reads the key.
+    "cloudkms.googleapis.com",
     "cloudresourcemanager.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com",
@@ -151,8 +181,24 @@ variable "deployer_roles" {
 
     Every role here is granted project-wide until it is also named in
     deployer_scoped_roles. The six marked SCOPABLE below have a conditioned
-    grant waiting in deployer_conditions.tf; the ten marked UNSCOPABLE belong to
+    grant waiting in deployer_conditions.tf; the seven marked UNSCOPABLE belong to
     services IAM cannot name resources in, and that file records why for each.
+    roles/iam.serviceAccountCreator is project-wide because creating an account
+    is checked on the project.
+
+    roles/iam.serviceAccountAdmin is NOT here, and a validation below refuses
+    it (#334, owner decision 2026-09-29): it is granted on each account
+    terraform/infra manages instead (deployer_service_accounts.tf).
+
+    roles/iam.workloadIdentityPoolAdmin is NOT here, and a validation below
+    refuses it (#314, owner decision 2026-09-29): terraform/infra manages no
+    pool, and a provider CI adds to swarm-github escapes the WIF ref pin.
+
+    roles/iam.roleAdmin is NOT here, and a validation below refuses it (#79,
+    owner decision 2026-09-25): its iam.roles.update, which no condition can
+    scope, lets CI widen a custom role it holds and so bypass every condition
+    on its other grants. The custom roles it existed for are defined in
+    platform_roles.tf, which the owner applies.
   EOT
   type        = list(string)
   default = [
@@ -180,12 +226,38 @@ variable "deployer_roles" {
     "roles/container.admin",
     # SCOPABLE: per Firestore database.
     "roles/datastore.owner",
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.roleAdmin",
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.serviceAccountAdmin",
-    # UNSCOPABLE: IAM resources provide no resource name.
-    "roles/iam.workloadIdentityPoolAdmin",
+    # roles/iam.roleAdmin WAS HERE until 2026-09-25 (#79). Unscopable, and the
+    # one role that let CI rewrite the permissions behind its other grants.
+    # terraform/infra defines no custom role any more (platform_roles.tf), so CI
+    # needs no iam.roles.* permission at all.
+    #
+    # roles/iam.serviceAccountAdmin WAS HERE until 2026-09-29 (owner decision
+    # on #334, from the security review of contract request 30, #314).
+    # Project-wide it let CI set the IAM policy of every service account in the
+    # project -- the other team's, swarm-ci-fix's, its own -- and so act as any
+    # of them. No condition can narrow it: "the condition resource.name.endsWith
+    # == devResource never grants access to any IAM resource because IAM
+    # resources don't provide the resource name"
+    # (docs.cloud.google.com/iam/docs/conditions-attribute-reference, read
+    # 2026-09-28). It is granted instead ON EACH ACCOUNT terraform/infra
+    # manages, in deployer_service_accounts.tf, and a validation below refuses
+    # it here by name.
+    #
+    # PROJECT-WIDE BECAUSE CREATING HAS NO RESOURCE YET: iam.serviceAccounts.create
+    # is checked on the project, so a release adding an account needs this.
+    # It carries create, get and list and nothing else (roles/iam.serviceAccountCreator
+    # in docs.cloud.google.com/iam/docs/roles-permissions/iam, read 2026-09-28):
+    # no setIamPolicy, no update, no delete, and no log read.
+    "roles/iam.serviceAccountCreator",
+    # roles/iam.workloadIdentityPoolAdmin WAS HERE until 2026-09-29 (owner
+    # decision, security review of contract request 30, #314). terraform/infra
+    # manages no workload identity pool or provider -- the one pool it names is
+    # GKE's "<project>.svc.id.goog", a string inside a service-account binding's
+    # member -- so CI never used it, and holding it let CI add a provider to any
+    # pool in the project: swarm-github, minting tokens for swarm-ci-fix or for
+    # itself outside the WIF ref pin, or the other team's github-actions pool.
+    # A validation below refuses it by name.
+    #
     # SCOPABLE (partly): log buckets and views; sinks and exclusions stay wide.
     "roles/logging.configWriter",
     # UNSCOPABLE: Cloud Monitoring is not in IAM's resource-attribute list.
@@ -208,6 +280,25 @@ variable "deployer_roles" {
   validation {
     condition     = !contains(var.deployer_roles, "roles/owner") && !contains(var.deployer_roles, "roles/editor")
     error_message = "roles/owner and roles/editor are never granted to CI; enumerate the roles instead so the grant is reviewable."
+  }
+
+  # OWNER DECISION 2026-09-25 (#79). Said by name, although the reviewed-roles
+  # check below would also refuse it, so that the refusal explains itself.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.roleAdmin")
+    error_message = "roles/iam.roleAdmin is never granted to CI (#79): iam.roles.update cannot be conditioned, and with it CI can add resourcemanager.projects.setIamPolicy to a custom role it already holds and grant itself anything, so no condition on its other grants is ever evaluated. Custom roles are defined in terraform/bootstrap/platform_roles.tf, which the owner applies."
+  }
+
+  # OWNER DECISION 2026-09-29 (#334). Said by name for the same reason.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.serviceAccountAdmin")
+    error_message = "roles/iam.serviceAccountAdmin is never granted to CI on the project (#334): it would let CI set the IAM policy of every service account in saga-agents-staging, the other team's and its own included, and no IAM condition can narrow it. It is granted per account in terraform/bootstrap/deployer_service_accounts.tf."
+  }
+
+  # OWNER DECISION 2026-09-29 (#314). Said by name for the same reason.
+  validation {
+    condition     = !contains(var.deployer_roles, "roles/iam.workloadIdentityPoolAdmin")
+    error_message = "roles/iam.workloadIdentityPoolAdmin is never granted to CI (#314): terraform/infra manages no workload identity pool or provider, and with it CI can add a provider to swarm-github and mint tokens for swarm-ci-fix or swarm-tf-deployer outside the WIF ref pin. Pools and providers are made in terraform/bootstrap/wif.tf, which the owner applies."
   }
 
   # Every role here confers secretmanager.versions.access, directly or by
@@ -323,8 +414,11 @@ variable "deployer_scoped_roles" {
   # silently revoked. The allowed names are the keys of the conditions
   # themselves, not a second list of them.
   validation {
-    condition     = alltrue([for r in var.deployer_scoped_roles : contains(keys(local.deployer_conditions), r)])
-    error_message = "only a role with a conditioned grant in deployer_conditions.tf can be scoped; the others are unscopable, and deployer_conditions.tf records why for each."
+    condition = alltrue([
+      for r in var.deployer_scoped_roles :
+      contains(concat(keys(local.deployer_conditions), ["roles/resourcemanager.projectIamAdmin"]), r)
+    ])
+    error_message = "only a role with a conditioned grant in deployer_conditions.tf can be scoped; the others are unscopable, and deployer_conditions.tf records why for each. roles/resourcemanager.projectIamAdmin is scoped by its own chunked deployer_project_iam_admin_conditions, not by deployer_conditions."
   }
 
   # And only a role the deployer actually holds. Scoping a role that is not in
@@ -435,5 +529,124 @@ variable "frontend_iap_members" {
   validation {
     condition     = !contains(var.frontend_iap_members, "allUsers") && !contains(var.frontend_iap_members, "allAuthenticatedUsers")
     error_message = "allUsers and allAuthenticatedUsers defeat IAP entirely: allAuthenticatedUsers means ANY Google account on the internet, not any account in your organisation."
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The platform's custom roles and the broker's swarmSecretLister grant
+# (platform_roles.tf; #79, #69)
+# ---------------------------------------------------------------------------
+
+variable "adopt_from_infra_states" {
+  description = <<-EOT
+    terraform/infra state prefixes, in the state bucket this root creates, that
+    created the platform's eight custom roles and the quota broker's
+    swarmSecretLister grant before they moved here -- "infra/dev" for
+    saga-agents-staging, the prefix scripts/bootstrap.sh gives the dev root.
+
+    Non-empty does two things (platform_roles.tf):
+      * the `import` blocks adopt the nine live objects into this root's state;
+      * every plan reads each named state's outputs, and refuses to manage the
+        roles or the grant until that state's custom_roles_owner output reads
+        "terraform/bootstrap" -- the output the release writes in the same
+        apply that makes terraform/infra forget them. That is what stops this
+        root adopting a role terraform/infra still manages.
+
+    EMPTY on a fresh project, where nothing exists to adopt, and in tests.
+    Leaving it set after the adoption keeps the second check on every plan;
+    remove it if that infra state is ever destroyed, or the check fails.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for p in var.adopt_from_infra_states : can(regex("^infra/[a-z0-9-]+$", p))])
+    error_message = "each entry is a terraform/infra state prefix, infra/<environment>, e.g. infra/dev."
+  }
+}
+
+variable "grant_broker_secret_lister" {
+  description = <<-EOT
+    Grant swarm-quota-broker the swarmSecretLister role (platform_roles.tf).
+    terraform/infra creates that account, so on a FRESH project the first
+    bootstrap apply must run with this false -- a grant to an account that does
+    not exist yet is refused -- and the next one, after terraform/infra's first
+    apply, with it true. Everywhere else, true.
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "broker_secret_lister_project_wide_versions_add" {
+  description = <<-EOT
+    Keep secretmanager.versions.add in the project-wide swarmSecretLister role.
+
+    Moved here from terraform/modules/iam with the role (#79), with the same
+    default. The scoped grant that replaces it, terraform/infra's
+    broker_version_adder (modules/iam/custom_roles.tf), is already live, so
+    flipping this to false is the second of the two steps that comment
+    describes -- now an owner bootstrap apply rather than a release. Flip it
+    only once that grant has had at least 7 minutes to propagate; removing the
+    project-wide permission first risks refusing an account's rotated refresh
+    token, which strands the account (measurement in that comment).
+  EOT
+  type        = bool
+  default     = true
+}
+
+variable "image_puller_permissions" {
+  description = <<-EOT
+    The pull-only role's permission set (swarmImagePuller, platform_roles.tf):
+    roles/artifactregistry.reader minus every enumeration permission, and minus
+    everything that writes. Moved here from terraform/modules/artifact_registry's
+    `puller_permissions` with the role (#79), default and validations unchanged;
+    modules/artifact_registry's `pullers` says why enumeration is the line.
+
+    Verified against `gcloud iam list-testable-permissions` for this project on
+    2026-09-16 -- an invalid permission name fails at apply, not at plan, so
+    this list is checked against the API rather than remembered.
+  EOT
+  type        = list(string)
+  default = [
+    # Resolve the repository and the region.
+    "artifactregistry.repositories.get",
+    "artifactregistry.locations.get",
+    # Pull: the manifest, the version behind the tag, and the layers.
+    "artifactregistry.repositories.downloadArtifacts",
+    "artifactregistry.dockerimages.get",
+    "artifactregistry.packages.get",
+    "artifactregistry.tags.get",
+    "artifactregistry.versions.get",
+    "artifactregistry.files.get",
+    "artifactregistry.files.download",
+  ]
+
+  validation {
+    condition     = length(var.image_puller_permissions) > 0
+    error_message = "the pull-only role needs at least the download permissions, or every worker fails to start on an image pull."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.image_puller_permissions : startswith(p, "artifactregistry.")
+    ])
+    error_message = "this role covers Artifact Registry only; anything else belongs in a named role where it is visible."
+  }
+
+  # `.list`, `listEffectiveTags` and `listTagBindings` are all enumeration, and
+  # enumeration is the single property this role exists to withhold.
+  validation {
+    condition = alltrue([
+      for p in var.image_puller_permissions : !strcontains(lower(p), "list")
+    ])
+    error_message = "no enumeration permission may be added: the point of this role is that a tenant worker cannot discover an image name it was not given."
+  }
+
+  validation {
+    condition = alltrue([
+      for p in var.image_puller_permissions :
+      !can(regex("(create|update|delete|upload|export|setIamPolicy|createOnPush)", p))
+    ])
+    error_message = "the pull role is read-only: no runtime identity may push, delete or export an image."
   }
 }

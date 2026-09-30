@@ -677,3 +677,59 @@ resource "google_monitoring_alert_policy" "reconciler_blind" {
   # destroy` keys on even if a caller passes labels without it.
   user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
 }
+
+# ---------------------------------------------------------------------------
+# A step spec did not verify (contract request 34, decision 9).
+#
+# ONE IS ENOUGH. A refusal is either an agent rewriting a parked step's
+# document -- the attack #342 is about -- or a platform bug that fails real
+# work; neither is noise, and neither is fixed by waiting. Not pinned to
+# cloud_run_job: a GKE browser pod verifies the same way and its refusal pages
+# too (the metric's filter already names both workers' resource types).
+#
+# The upstream half (MERGE_REFUSED / VERDICT_REFUSED with an `upstream:`
+# reason) joins this policy as a second condition when contract request 33 is
+# built; see the metric.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "spec_signature_invalid" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-spec-signature-invalid"
+  combiner     = "OR"
+  severity     = "CRITICAL"
+
+  conditions {
+    display_name = "A worker refused a task whose step spec did not verify"
+
+    condition_threshold {
+      filter = "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_signature_invalid.name}\""
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.reason"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A worker refused to run a task because its step spec did not verify (end cause `spec_signature_invalid`). Every occurrence is an agent rewriting a parked step's task document or a platform bug. Read the worker's ERROR line (`spec signature invalid: refusing to run this task`): `spec_check.reason` says which check failed and `spec_check.task_id` which task. `unsigned` after the legacy window, or `foreign_key_version` right after a key rotation, is a rollout problem (docs/runbooks/spec-signing-rollout.md); `signature_mismatch` or `not_canonical` on a task nobody resubmitted is the attack -- look at who wrote the task document after its submission.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the policy above: this one must carry the
+  # marker `make destroy` keys on even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}

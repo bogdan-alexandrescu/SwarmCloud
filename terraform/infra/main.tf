@@ -73,8 +73,6 @@ module "artifact_registry" {
   repository_id  = var.artifact_registry_repository
   immutable_tags = var.immutable_image_tags
 
-  custom_role_suffix = var.custom_role_suffix
-
   # Two grants, not one, because the two sides need different things.
   #
   # The control plane may enumerate the repository: the reconciler compares what
@@ -182,7 +180,6 @@ module "iam" {
   firestore_database = var.firestore_database
   gke_enabled        = var.enable_gke_autopilot
   artifact_bucket    = module.storage.artifact_bucket_name
-  custom_role_suffix = var.custom_role_suffix
 
   # Named from configuration rather than read back from the cluster module: the
   # cluster is behind a `count`, and the IAM condition must be known at plan
@@ -199,7 +196,6 @@ module "tenancy" {
   project_id         = var.project_id
   firestore_database = var.firestore_database
   artifact_bucket    = module.storage.artifact_bucket_name
-  custom_role_suffix = var.custom_role_suffix
 
   workload_identity_pool = var.enable_gke_autopilot ? module.gke_autopilot[0].workload_identity_pool : ""
 
@@ -208,7 +204,10 @@ module "tenancy" {
   # Only the dispatcher and the reconciler may name a tenant SA on a Job.
   # The deployer is here because it DEPLOYS the tenant jobs that run as these
   # accounts, which needs actAs on each (see deployer.tf). Static key, so a new
-  # tenant gets the grant in the same apply that creates its account.
+  # tenant gets the grant in the same apply that creates its account -- which
+  # works only once the account exists and terraform/bootstrap's per-account
+  # serviceAccountAdmin grant on it is applied, since this binding is a
+  # setIamPolicy on the account (#334; modules/tenancy/main.tf has the order).
   dispatcher_members = merge(
     {
       scheduler  = module.iam.service_account_members["swarm-scheduler"]

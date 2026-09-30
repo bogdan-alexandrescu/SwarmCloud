@@ -453,7 +453,12 @@ spend one, and the step parked until cancelled, which is why 0.5.2 withheld
 both keys. `exit_code` refuses the codes the worker reads as a success, a rate
 limit, a refused credential and a cancellation. Every key's kind and bounds
 are in the table below, which is generated from the catalogue rather than
-restated here. `claude-code` and `codex` declare none and take only the prompt.
+restated here. `claude-code` and `codex` declare one input, `issue`: the
+number of a GitHub issue in the repository the step clones (contract request
+28). The worker fetches its title, body and comments read-only into
+`issue.md` in the workspace, beside the checkout and never among the
+artifacts, and names that file in the prompt, so a prompt need not restate
+the issue. A step that sends it with no repository is refused by the API.
 A key the profile does not declare is refused by name, never dropped, and
 never an image, a command, a resource spec, a backend or a model: the model a
 `claude-code` agent runs is its Job's own `MODEL`, set in Terraform, and the
@@ -461,14 +466,14 @@ runner reads no `input.model` (#226). The declarations are the frozen
 catalogue's own, `RunnerProfile.inputs` (contract request 25), and for a
 profile that declares, the API refuses an undeclared key with 422
 `invalid_input` whoever sends it, so the bridge's refusal is only the earlier
-of two identical answers. **`browser` and `generic` have not declared their
-inputs yet** ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
-each runner's work is its input (a url or actions, a command name), and
-nobody has decided which keys they take. The bridge sends them none; the API
-bounds what any other caller sends them by size alone, as it bounded every
-profile before 0.5.3.
+of two identical answers. **`browser` and `generic` declare too**, since
+contract request 32 ([#218](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/218)):
+`browser` takes a `url` and `actions`, and `generic` a required `command`
+from its runner's catalogue, so the bridge sends a browser task its page and
+steps, and refuses a private address, a missing `command` or an action its
+shape does not take before anything is dispatched.
 
-What `mock` declares, as `swarm_profiles` lists it:
+What each declaring profile takes, as `swarm_profiles` lists it:
 
 <!-- runner-inputs:mock generated from RUNNER_PROFILES["mock"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
 | input | kind and bounds | what the mock runner does with it |
@@ -484,6 +489,103 @@ What `mock` declares, as `swarm_profiles` lists it:
 | `quota_exhausted` | boolean | park the first attempt on a simulated provider rate limit; the next one runs |
 | `retry_after_seconds` | integer 1..3600 | the retry-after that simulated rate limit reports |
 <!-- /runner-inputs:mock -->
+
+<!-- runner-inputs:browser generated from RUNNER_PROFILES["browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the browser runner does with it |
+|---|---|---|
+| `url` | url | opened first, before any action |
+| `actions` | list of 0..200, each object, `type` one of goto \| click \| fill \| press \| wait_for \| wait \| screenshot \| extract | run in order, after `url` |
+| `actions` `goto` | `url` (required) url, `wait_until` string, one of load \| domcontentloaded \| networkidle \| commit | `url`: the page to open; `wait_until`: when the load counts as done; default load |
+| `actions` `click` | `selector` (required) string 0..4096 | `selector`: the element to click |
+| `actions` `fill` | `selector` (required) string 0..4096, `text` string 0..4096 | `selector`: the field to fill; `text`: what to type into it; default empty |
+| `actions` `press` | `selector` (required) string 0..4096, `key` string 0..4096 | `selector`: the element to press a key in; `key`: the key; default Enter |
+| `actions` `wait_for` | `selector` (required) string 0..4096, `timeout_ms` integer 1..300000 | `selector`: the element to wait for; `timeout_ms`: how long to wait; default the task's timeout_ms |
+| `actions` `wait` | `seconds` number 0..60 | `seconds`: how long to pause; default 1 |
+| `actions` `screenshot` | `name` filename, `full_page` boolean | `name`: the artifact's file name; default by position; `full_page`: the whole page, not the viewport; default true |
+| `actions` `extract` | `selector` string 0..4096, `name` filename | `selector`: the element whose text is kept; default body; `name`: the artifact's file name; default by position |
+| `timeout_ms` | integer 1..300000 | how long any one action may take; default 30000 |
+| `launch_timeout_ms` | integer 1..180000 | how long Chromium may take to start; default 60000 |
+| `viewport_width` | integer 320..3840 | pixels; default 1280 |
+| `viewport_height` | integer 240..2160 | pixels; default 900 |
+| `user_agent` | header 0..512 | the User-Agent sent; default Chromium's |
+| `extract_text` | boolean | keep the final page's text as page.txt; default true |
+| `screenshot` | boolean | keep a final full-page screenshot; default true |
+<!-- /runner-inputs:browser -->
+
+<!-- runner-inputs:generic generated from RUNNER_PROFILES["generic"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the generic runner does with it |
+|---|---|---|
+| `command` | string, one of make \| npm-build \| npm-ci \| npm-test \| pytest \| uv-sync, required | the platform catalogue entry to run; the platform owns its argv |
+| `paths` | list of 0..32, each argument | pytest only: what to run; default everything |
+| `target` | argument | make only: the target; default all |
+| `working_directory` | argument | a directory inside the workspace to run in; default the workspace |
+| `timeout_seconds` | number 1..3600 | lowers the command's wall clock |
+| `grace_seconds` | number 1..20 | lowers the wait between SIGTERM and SIGKILL |
+| `max_stdout_bytes` | integer 1..33554432 | lowers the stdout kept |
+| `max_stderr_bytes` | integer 1..8388608 | lowers the stderr kept |
+<!-- /runner-inputs:generic -->
+
+What `claude-code` and `codex` declare, as `swarm_profiles` lists it:
+
+<!-- runner-inputs:claude-code generated from RUNNER_PROFILES["claude-code"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code -->
+
+<!-- runner-inputs:codex generated from RUNNER_PROFILES["codex"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the codex runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:codex -->
+
+`--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
+on a step, points a `claude-code` step at an issue of its repository. The
+issue's text is data for the agent: the worker scrubs it of every secret the
+attempt holds and reads nothing in it as an instruction to the platform. The
+tenant's forge token is used for the fetch in the worker's memory only, as for
+the clone, and never reaches the workspace. A fetch that fails -- no such
+issue, a pull request's number, a repository the token cannot read -- fails
+the attempt before the agent starts, with `INPUTS_UNAVAILABLE`.
+
+## A task's input comes back masked
+
+The API serves a task's `input` and `metadata` masked at read time, to every
+caller, the submitter included (owner decision, 2026-09-26, on #184), with a
+count of what it masked. The bridge passes the count on and prints nothing of
+the input itself: `swarm status` ends each line with `masked N`, `swarm result`
+prints `masked 3  (input 2 · metadata 1)`, `swarm workflow-status` puts it on
+each step, and `swarm_status`, `swarm_result`, `swarm_wait` and
+`swarm_workflow_status` carry `masked: {input, metadata}`. A count the API did
+not send is `—` in the terminal and `null` in JSON, never 0: that deployment is
+older than the change and serves the input unmasked. The masking is at read
+time only; the runner still reads what was submitted.
+
+## What a task produced
+
+A step that clones no repository still produces something: the files it wrote
+into `$SWARM_ARTIFACTS_DIR`, and the runner's own summary. `swarm result`,
+`sc task` and `swarm_result` (its `outputs` block) list each artifact by name
+and size, the runner's summary, the exit code, the duration, and the inputs
+staged into the step from upstream ones — before the code, which is "this task cloned
+no repository" for such a step. They read the API's `/v1/tasks/{id}/artifacts`
+route, whose `complete` tells "uploaded when the attempt ends" (the task has not
+finished) from "no artifacts"; an unreadable listing is said, never shown as
+none.
+
+`swarm artifact <task> <name>` prints one of them, or writes it to a file
+with `-o <file>`; `swarm_artifact` is the same read for a session. Both go through
+`/v1/tasks/{id}/artifacts/content`: the name is matched against the task's own
+manifest (a path is never accepted), the content is redacted at read time, and
+a file larger than one window is read window by window from `next_offset` —
+the terminal command prints all of it; the tool returns one window and says
+where the next starts. An artifact that is not text is refused with a reason,
+not served: nothing can scan its bytes for a credential.
+
+`swarm tail` prints every event of every task it follows, each once. It read
+the task's oldest 50 events on every poll, so it printed no event after the
+50th (#164); it now reads newest first and pages back to the last event it
+printed, one request per poll while it keeps up.
 
 ## Running a Claude Code workflow's steps in SwarmCloud
 
@@ -557,15 +659,24 @@ with the requested object, the task could not be read (a 404 or 403, or three
 calls in a row that read nothing), or the sc plugin's server is not connected.
 
 **A whole SwarmCloud workflow: `/sc:run`.** Its argument is a SwarmCloud
-workflow spec — the same object `swarm workflow` reads. One `sc:workflow` agent
-submits it (phase `Submit`), and SwarmCloud owns the DAG from then on:
+workflow spec — the same object `swarm workflow` reads — as an object, as JSON
+text, or as the path of the spec file, relative to the session's checkout. A
+workflow script has no filesystem, so given a path one `sc:workflow` agent
+(label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
+which checks it as `swarm_workflow` would, submits nothing and returns the spec
+with its digest; the script submits the relayed spec only when it digests to
+what the bridge read. Text that begins like JSON and does not parse is reported
+as broken JSON, not looked for as a file. One `sc:workflow` agent then
+submits the spec (phase `Submit`), and SwarmCloud owns the DAG from then on:
 dependencies, `input_from` staging, `on_step_failure`, retries. The script
 starts one `sc:step` row per step, labelled with its `step_id`, under phase
 `Level N` — its depth in the DAG — or under the step's `stage` when the spec
 gives one (`stage` is display-only and never sent). A row follows its own task
 only, so it may start before its parents finish; it then says it is waiting,
 and why, in its first lines, and a waiting task holds no capacity. Each
-finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231`.
+finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced findings.md`,
+which names the artifacts the step produced, or says `produced no artifacts`
+for a success that made none.
 The run returns every step's result and the workflow's state as
 `swarm_workflow_status` reads it — derived by the server, never by the script.
 
@@ -586,7 +697,7 @@ is a different step.
 
 | `state` | What happened | What to do |
 |---|---|---|
-| `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; nothing was sent | fix what `error` names and run again |
+| `NOT_SUBMITTED` | `swarm_workflow` refused the spec, with `error`; or, given a path, the file could not be read as a spec, or the spec relayed from it does not digest to what the bridge read; nothing was sent | fix what `error` names and run again |
 | `SUBMISSION_UNKNOWN` | the Submit row stopped, failed, or answered with neither an id nor an error — possibly AFTER the workflow was created | look for it in the console's workflow list before running again: the API has no idempotency key, so a second run submits a second copy |
 | `SUBMITTED_UNVERIFIED` | SwarmCloud accepted workflow `workflow_id`, but the reply relayed back does not match the spec | it runs regardless: read it with `swarm_workflow_status`, or cancel it with `swarm_workflow_cancel` |
 
@@ -595,8 +706,8 @@ A Result row that fails does not lose the steps: the run returns every row with
 
 All three agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
-need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` submit
-and read — and only through the sc plugin's own server (above).
+need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
+spec file, submit and read — and only through the sc plugin's own server (above).
 
 ### What differs from a local step — read before swapping one in
 
@@ -649,7 +760,10 @@ are the same value.
   at (never the branch name, which can move after the call returns), the URL
   is made https and stripped of any credential, and the reply carries a
   `repository` block saying what will be cloned and how that was decided.
-* `swarm_follow` takes `since` — the cursor as one opaque token — and
+* `swarm_follow` takes `since` — the cursor as one opaque token, ending in a
+  dot and a CRC-32 checksum: a relay copies it by hand on every call, and a
+  token changed on the way back is refused with an error saying so, instead
+  of being read as a different position — and
   `format: "lines"`: claude-code's `stream-json` narrated as short lines,
   capped per call with the count left out stated, a `wait_seconds` window that
   returns early when a task finishes or starts, and, for a finished task, an
@@ -670,6 +784,10 @@ are the same value.
   same function the terminal uses, and infers the repository the same way.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
+* `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
+  returns it with its digest, submitting nothing — the half of `/sc:run` that
+  takes a path. A file that is not a spec is refused without its content being
+  repeated.
 * Every tool refuses an argument it does not declare, instead of ignoring it.
 * The stdio loop answers tool calls concurrently. It answered one at a time,
   so a single `swarm_wait` held every other call, and a dozen rows each
@@ -733,7 +851,10 @@ narrates each step in one line and returns the state SwarmCloud derived; that
 its spec digest is byte-for-byte the bridge's; that a reply missing a step,
 changing a dependency, reusing a task or carrying the wrong digest starts no
 row; that a stopped or failing Submit is reported as UNKNOWN, not as not
-submitted; and that a failing Result row keeps every step's result. CI fails
+submitted; that given a spec file's path it has the bridge read the file and
+submits nothing unless the relayed spec digests to what the bridge read; that
+each step's line names what it produced; and that a failing Result row keeps
+every step's result. CI fails
 rather than skips when node is missing. Claude Code's own frontmatter parser
 and workflow runtime are not run by any of this.
 

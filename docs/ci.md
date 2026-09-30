@@ -34,15 +34,17 @@ Three reasons, in the order they cost the most:
    `make test` is the whole offline suite; running it serialises against every
    other lane working in the same checkout.
 
-## The five workflows, and what each one is responsible for
+## The seven workflows, and what each one is responsible for
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
+| `application.yml` | push to `main`; pull requests touching `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `iam-refusal-probe.yml`, `ci-gate.yml` or the workflow itself | `shellcheck` · `release workflow wiring (actionlint)` (also lints `iam-refusal-probe.yml`) · `format / unit tests` · `swarm-ui typecheck / component tests` · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
-| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming a GitHub environment — prod waits here) · `promote` · `terraform apply` · `deploy and smoke` — the last three only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
+| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
+| `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
 Three details in that table are easy to misread and each has bitten someone:
 
@@ -294,8 +296,9 @@ would have asked twice — the second time
 after the apply had already changed prod, which made it a question with no
 decision left in it. Adding a third for the promotion would have put
 promotion behind a *different* approval from the apply, not "that same" one.
-So `approval` is the only job in `release.yml` that names an environment;
-`promote`, `terraform apply` and `deploy and smoke` name none. They run only
+So `approval` is the only job in `release.yml` that names `prod` (or `dev`);
+`promote`, `terraform apply` and `deploy and smoke` name none. The one other
+environment is `dev-iam`, named by a dev-only job ([below](#a-dev-release-that-changes-iam-waits-for-the-owner)). They run only
 if it **succeeded**, and on prod only in the attempt it succeeded in (see
 "A prod approval clears one attempt" below).
 
@@ -465,6 +468,163 @@ after a cancel (that is its documented behaviour, not observed here), or that
 a real prod release waits. The first prod dispatch after this lands is that
 proof.
 
+## A dev release that changes IAM waits for the owner
+
+**Owner decision, 2026-09-28 (#268).** Gate only IAM plans. A dev release
+whose Terraform plan touches IAM stops for the owner. Every other dev release
+applies un-gated, as it did before. Prod is unchanged: its one approval is
+`approval (prod)`, which already covers every plan.
+
+**Why IAM, and only IAM.** A dev apply runs in `saga-agents-staging`, which is
+shared with another team. Most dev plans move image digests or change a
+service's environment, and gating those would put the owner in front of every
+merge. An IAM change decides who can do what in that shared project, and that
+is the kind of change the owner wants to read before it lands. Ungating dev
+(2026-09-24) was a decision about routine releases, not about grants.
+
+**What this gate stops, and what it does not.** `dev-iam` catches an operator
+mistake — a plan that changes who can do what in a shared project, applied
+without anyone reading it — the same way `approval (prod)` does for prod. It
+is not a boundary against an attacker who can merge to `main`: as measured
+above for `approval (prod)`, `GCP_DEPLOY_SA` and `GCP_WIF_PROVIDER` are
+repository variables, not environment ones, and the workload identity pool
+does not pin the minted token's `sub` to the environment a job named
+(`terraform/bootstrap/wif.tf`). `infrastructure-iam` authenticates with
+exactly the same service account, through exactly the same provider, as
+`terraform apply (dev)` and `terraform apply (prod)` — naming `dev-iam` asks a
+human to look at the plan, but grants the job asking no identity that a plan
+merged straight past the review could not already reach. Whether this gate
+should also be a real identity boundary — for example, an attribute condition
+on the WIF binding scoped to the environment — is the owner's to decide.
+
+**What counts as an IAM change.** A resource change whose type is one of
+
+* `google_project_iam_custom_role`, `google_organization_iam_custom_role`
+* `google_*_iam_member`, `google_*_iam_binding`, `google_*_iam_policy`,
+  `google_*_iam_member_remove`, `google_*_iam_audit_config` (any resource
+  family the provider names one of these on, not only `project`)
+* `google_iam_workload_identity_pool`, `google_iam_workload_identity_pool_provider`
+* `google_iam_deny_policy`, `google_iam_principal_access_boundary_policy`
+* `google_service_account_key`
+* `google_service_account` -- but only `delete` or `forget`; its own `create`
+  and `update` grant nothing (what it can do comes from the `_iam_member` /
+  `_iam_binding` / `_iam_policy` resources already gated above), so only its
+  removal is an access change
+* `google_storage_bucket_acl`, `google_storage_bucket_access_control`
+* `google_bigquery_dataset_access`
+
+and whose actions include `create`, `update`, `delete` or `forget` (every
+family above except `google_service_account`, which is `delete` or `forget`
+only). A replace is `delete` + `create`, so it counts. `no-op` and `read` do
+not. The rule is [`scripts/lib/iam-plan.jq`](../scripts/lib/iam-plan.jq),
+stated there once, and it is reached only through
+`scripts/lib/plan-guard.sh --classify-iam`.
+
+**The second widening, 2026-09-28 (#274).** The `google_iam_workload_identity_pool`
+family, the deny and principal-access-boundary policies, a service account's key
+or deletion, the pre-IAM-conditions ACL mechanisms on a bucket or a BigQuery
+dataset, an organization-level custom role, an audit config and
+`_iam_member_remove` all decide who can do what, or what they can do it as, in
+`saga-agents-staging` exactly like the families #268 already gated -- so they
+gate the same way, through the same rule.
+
+**`forget` is the case that would be missed.** A `removed` block with
+`destroy = false` plans the action `forget`. Nothing live is deleted; the
+resource just leaves this root's state. That is how
+`terraform/infra/custom_roles_moved_to_bootstrap.tf` hands eight custom roles to
+the owner's bootstrap root. A filter that knew only create, update and delete
+would have waved it through. Who administers a role is an IAM decision.
+
+**How a dev release runs now.**
+
+1. `terraform apply (dev)` plans and saves `plan.tfplan`, as before, then runs
+   the shared-project guard.
+2. It classifies `terraform show -json plan.tfplan`. The answer is `true` or
+   `false`. A plan the classifier cannot read fails the job, so nothing is
+   applied. It never answers `false` for a plan it could not read.
+3. The IAM rows go to the job's summary, one table row per change: address,
+   type, actions, the resource the grant is on, and the role and member. The
+   reviewer reads them on the run's page while the next job waits.
+4. **`false`:** the same job applies `plan.tfplan`, exactly as before.
+   **`true`:** the job does not apply. It copies `plan.tfplan` to
+   `gs://<state bucket>/plans/dev/<run id>-<attempt>/plan.tfplan`, records its
+   sha256 as a job output, and ends.
+5. `terraform apply, IAM (dev-iam)` names the `dev-iam` environment, so GitHub
+   holds it until the owner approves. It then fetches the held plan, refuses it
+   if its sha256 differs from the one recorded, and applies **that file**. It
+   never plans, because a new plan would be one nobody reviewed. After a
+   successful apply it deletes the held plan.
+6. `deploy and smoke` runs after whichever apply ran. If the owner rejects
+   `dev-iam`, nothing deploys, and the run ends failed.
+
+**Why the state bucket and not a workflow artifact.** This repository is
+public, and a saved plan holds every planned value in plaintext. The state
+bucket already holds the same values in the state. It enforces public access
+prevention, and the deployer is `objectAdmin` on it (`terraform/bootstrap`,
+`deployer_state`), so this needs no new grant.
+
+**Staleness.** Terraform refuses to apply a saved plan once the state it was
+planned against has changed ("Saved plan is stale"). This is Terraform's
+documented behaviour; it has not been observed on this workflow. A dev-iam
+approval given hours later therefore either applies exactly what was
+reviewed, or fails without applying anything. It never applies something
+else. To retry after a stale refusal, re-run `terraform apply (dev)`. That
+re-plans, re-classifies, holds the new plan and asks again. Re-running the
+dev-iam job on its own asks again and re-applies the same held plan.
+
+**What waiting costs.** The run holds the `release-dev` concurrency group
+while `dev-iam` waits. So the next dev release queues behind it, and GitHub
+keeps only the newest pending run in a group. A rejected or abandoned IAM
+release therefore delays routine dev releases until it ends. Reject or cancel
+it, rather than leaving it waiting.
+
+**The environment is a repository setting the owner creates.** GitHub
+creates an environment a workflow names if it does not exist, with no
+protection at all. Until the commands below have run, `dev-iam` does not wait
+for anyone. `release.yml` cannot check this. To create it with the owner as
+required reviewer, restricted to `main` like `prod`:
+
+```bash
+owner_id="$(gh api users/bogdan-alexandrescu --jq .id)"
+printf '{"reviewers":[{"type":"User","id":%s}],"prevent_self_review":false,"deployment_branch_policy":{"protected_branches":false,"custom_branch_policies":true}}' "${owner_id}" \
+  | gh api --method PUT repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam --input -
+gh api --method POST repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam/deployment-branch-policies \
+  -f name=main -f type=branch
+```
+
+and to read it back:
+
+```bash
+gh api repos/bogdan-alexandrescu/SwarmCloud/environments/dev-iam \
+  --jq '{reviewers: [.protection_rules[] | select(.type == "required_reviewers") | .reviewers[].reviewer.login], branches: .deployment_branch_policy, can_admins_bypass}'
+```
+
+`prevent_self_review` is `false` for the same reason as on `prod`: the owner
+is the only reviewer, and a release started by their own merge must still be
+approvable. `can_admins_bypass` is left at GitHub's default, `true`, as it
+was measured on `prod`.
+
+**What a pull request proves about this, and what it cannot.**
+`tests/unit/scripts/test_plan_guard_iam_classification.py` runs
+`--classify-iam` on the fixtures in `tests/unit/scripts/fixtures/plans/`. A
+plan that forgets a custom role must be classified IAM, and a plan that only
+moves image digests must not. It also runs every owner-named family with every
+changing action, and inputs that must be refused rather than answered. The
+self-test (`plan-guard.sh --self-test`) carries the same cases.
+`tests/unit/scripts/test_release_dev_iam_gate.py` schedules `release.yml` with
+the model from `test_release_prod_gate.py`, trying every value the
+classification can write. It checks four things:
+
+* nothing applies or deploys after an IAM plan unless `dev-iam` is approved;
+* a routine plan flows through `dev` untouched;
+* an empty answer applies nowhere;
+* the dev-iam job never starts on prod, and applies the checksummed saved
+  plan without ever planning.
+
+It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
+that GitHub and Terraform behave as documented. The first dev release with an
+IAM change after this lands is that proof.
+
 ## The UI job's Node is read from the image, not pinned
 
 The `ui` job does not name a Node version. Its first step reads the major from
@@ -614,29 +774,218 @@ exercised, and this is what was found, not proof that there is nothing else.
 | # | route to every log in the project | closed by a condition? |
 |---|---|---|
 | 1 | The deployer holds `roles/iam.serviceAccountUser` on `209012342332-compute@developer` (`wif.tf`, what `gcloud builds submit` runs as). That account holds **`roles/editor`**, which carries `logging.logEntries.list`. A build step or a Cloud Run job running `gcloud logging read` as it reads everything. Needs nothing CI does not already hold. | **no** |
-| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`, not yet applied), or one of terraform/infra's six custom roles, which the scoped `projectIamAdmin` still lets it grant itself. | **no** |
-| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **no** |
+| 2 | `roles/iam.roleAdmin` (unscopable) carries `iam.roles.update`. CI can add `logging.logEntries.list` to a custom role it holds: `swarmSecretProvisioner` (its scoped type guard admits every non-secret resource), `swarmDeployerProjectBuckets` (always unconditioned in `wif.tf`), or one of the custom roles the scoped `projectIamAdmin` still lets it grant itself. | **not by a condition, which cannot scope `roleAdmin`; closed by removing it** (#79, owner decision 2026-09-25). `roleAdmin` is off `deployer_roles` and a validation refuses it, and every custom role is defined in [`terraform/bootstrap/platform_roles.tf`](../terraform/bootstrap/platform_roles.tf), which the owner applies, so CI can change no role's permissions. **Closed once applied:** open until the owner's bootstrap apply destroys the live binding ([runbook](runbooks/custom-roles-to-bootstrap.md), step 2). |
+| 3 | `roles/iam.serviceAccountAdmin` (unscopable) carries `iam.serviceAccounts.setIamPolicy`. CI can grant itself `serviceAccountTokenCreator` on an account that reads logs (the compute account above, or `209012342332@cloudbuild`, which holds `roles/cloudbuild.builds.builder`) and act as it. | **not by a condition, which cannot scope IAM resources; closed by granting the role per account** (#334, owner decision 2026-09-29): only on the accounts `terraform/infra` manages, none of which reads logs ([below](#the-deployers-service-account-grants)). **Closed once applied.** |
 | 4 | `roles/logging.configWriter` keeps sinks and exclusions project-wide even when scoped. A sink can route every log to a `swarm-` bucket (`storage.admin`) or a Pub/Sub topic (`pubsub.admin`) that CI reads. | **no** |
 | 5 | `roles/logging.configWriter` unconditioned holds `logging.views.update`: CI can rewrite this view's filter, or make another view, and read the result through the grant. | yes, once `roles/logging.configWriter` is in `deployer_scoped_roles` |
-| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. It is named in `deployer_scoped_roles` as of 2026-09-25 (#68). Once scoped, it may modify only the 15 roles terraform/infra grants, and none of them reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the six custom ones carried no `logging.` permission when read live on 2026-09-24. | **not yet**: it is still unconditioned in the live policy until the owner's targeted bootstrap apply lands. After that, yes for a direct grant, **but not route 2**, which reaches it two ways. `roles/iam.roleAdmin` can add `logging.logEntries.list` to any of the six custom roles on that list (`swarmJobDispatcher`, `swarmJobReaper`, `swarmSecretLister`, `swarmGkeDispatcher`, `swarmGkeReaper`, `swarmTenantWorkerFirestore`), and the scoped `projectIamAdmin` still lets CI grant that role to itself, because `hasOnly` limits which roles are modified, never whose members they gain. Or it can add `resourcemanager.projects.setIamPolicy`, which custom roles accept (measured 2026-09-25), to a custom role CI holds unconditioned (`swarmSecretProvisioner` today, `swarmDeployerProjectBuckets` once applied). Every later project `setIamPolicy`, `roles/logging.viewer` or `roles/owner` alike, is then authorised by that binding, and the condition is never evaluated (#79). |
+| 6 | `roles/resourcemanager.projectIamAdmin` unconditioned lets CI grant itself `roles/logging.viewer`, or any other role that reads logs. Scoped, it may modify only the roles terraform/infra grants: 14 since 2026-09-25, when `swarmSecretLister` left the list (#69) because its project-wide `secrets.setIamPolicy` reaches the other team's secrets and `terraform/bootstrap` now makes the broker's grant of it. None of the 14 reads a log entry: the nine predefined ones are absent from [`log-reading-roles.json`](../terraform/bootstrap/log-reading-roles.json), and the five custom ones carry no `logging.` permission ([`platform_roles.tf`](../terraform/bootstrap/platform_roles.tf)). | yes, once `roles/resourcemanager.projectIamAdmin` is in `deployer_scoped_roles` **and** route 2 is closed. Before route 2 closes, `roleAdmin` could widen one of the grantable custom roles, or add `resourcemanager.projects.setIamPolicy` to a role CI holds unconditioned, and the condition would never be evaluated. Route 2 closes with the owner's bootstrap apply in [the runbook](runbooks/custom-roles-to-bootstrap.md). |
 
-What bounds all six today is the ref pin, not IAM (route 6's direct grant moves to IAM when the bootstrap apply in #68 lands; route 2 still reaches around it): only a workflow on
-`refs/heads/main` can mint the deployer's token, so each route has to be merged
-to `main` first. Closing 1 means building as an account without `roles/editor`;
-2 and 3 mean taking `roles/iam.roleAdmin` and `roles/iam.serviceAccountAdmin`
-off the deployer or replacing them with resource-level grants on `swarm-*`
-roles and accounts; 4 means moving sink management out of CI. For
-`roleAdmin` no resource-level grant was found: a role carries no allow policy
-of its own (the project's testable permissions include no
-`iam.roles.setIamPolicy`, read 2026-09-25), so closing 2 means moving the
-custom roles terraform/infra defines out of CI (#79). Each changes what CI can
-do, none is made here, and which to make is the owner's decision.
+What bounds routes 1 and 4 today is the ref pin, not IAM: only a workflow
+on `refs/heads/main` can mint the deployer's token, so each route has to be
+merged to `main` first. The same held for 2, 3, 5 and 6 until each is applied.
+Closing 1 means building as an account without `roles/editor`; 4 means moving
+sink management out of CI. Each changes what CI can do, none is made here,
+and which to make is the owner's decision. Route 3 was closed by the owner's
+decision on #334: `roles/iam.serviceAccountAdmin` is granted on each
+`terraform/infra` account instead of the project. Route 2 was closed by the owner's decision on #79: no
+resource-level grant exists for `roleAdmin` to be narrowed to (a role carries
+no allow policy of its own; the project's testable permissions include no
+`iam.roles.setIamPolicy`, read 2026-09-25), so it came off the deployer and the
+custom roles moved to the root the owner applies.
+
+## The deployer's project-level roles
+
+`swarm-tf-deployer` holds these predefined roles project-wide
+(`deployer_roles` in
+[`terraform/bootstrap/variables.tf`](../terraform/bootstrap/variables.tf)).
+A role marked scopable has a conditioned grant waiting in
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) and
+switches to it when named in `deployer_scoped_roles`; the reasons each
+unscopable one stays wide are recorded there, with what sat in its reach.
+
+| role | scope |
+|---|---|
+| `roles/artifactregistry.admin` | unscopable: Artifact Registry is absent from IAM's resource-attribute list |
+| `roles/cloudbuild.builds.editor` | unscopable: builds are named by server-generated UUID |
+| `roles/cloudscheduler.admin` | unscopable |
+| `roles/compute.networkAdmin` | scopable in part |
+| `roles/compute.securityAdmin` | scopable in part |
+| `roles/container.admin` | scopable |
+| `roles/datastore.owner` | scopable |
+| `roles/iam.serviceAccountCreator` | unscopable: creating is checked on the project; create, get and list only |
+| `roles/logging.configWriter` | scopable in part |
+| `roles/monitoring.editor` | unscopable |
+| `roles/pubsub.admin` | unscopable |
+| `roles/resourcemanager.projectIamAdmin` | scopable, by the roles a change modifies |
+| `roles/run.admin` | unscopable |
+| `roles/serviceusage.serviceUsageAdmin` | unscopable: one set of services per project |
+
+**Not held, and refused by a validation:** `roles/owner`, `roles/editor`,
+`roles/iam.roleAdmin` (#79, 2026-09-25) and, since 2026-09-29,
+**`roles/iam.workloadIdentityPoolAdmin`** (owner decision, from the security
+review of contract request 30, #314). `terraform/infra` manages no workload
+identity pool or provider: the only pool it names is GKE's
+`<project>.svc.id.goog`, and only as a string inside the member of a
+service-account binding. So CI never used the role, and holding it let CI add
+a provider to `swarm-github` that mints tokens for `swarm-ci-fix`, or for the
+deployer itself, from outside the WIF ref pin, or to the other team's
+`github-actions` pool. Pools and providers are made in
+[`wif.tf`](../terraform/bootstrap/wif.tf), which the owner applies.
+
+**`roles/iam.serviceAccountAdmin` is also off the project** since 2026-09-29
+(owner decision on #334), and a validation refuses it in `deployer_roles`. See
+the next section.
+
+## The deployer's service-account grants
+
+Project-wide, `roles/iam.serviceAccountAdmin` let CI set the IAM policy of
+every service account in `saga-agents-staging` — the other team's eleven
+(`promptlab-runner` among them), `swarm-ci-fix`, and `swarm-tf-deployer`
+itself — and so grant itself `serviceAccountTokenCreator` on any of them and
+act as it. That was route 3 above, and the way out of the WIF pin the review of
+contract request 30 (#314) found.
+
+**A condition could not narrow it.** IAM does not evaluate a resource name for
+its own resources: *"the condition `resource.name.endsWith == devResource`
+never grants access to any IAM resource because IAM resources don't provide
+the resource name"*
+([conditions attribute reference](https://docs.cloud.google.com/iam/docs/conditions-attribute-reference),
+read 2026-09-28), and `iam.googleapis.com` is absent from the resource-service
+table in
+[conditions-resource-attributes](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes).
+A `resource.name` condition would have revoked the role, not narrowed it.
+
+**So it is granted per account.** The role can be granted on a single service
+account ([role reference](https://docs.cloud.google.com/iam/docs/roles-permissions/iam):
+"Lowest-level resources where you can grant this role: Service Account").
+[`deployer_service_accounts.tf`](../terraform/bootstrap/deployer_service_accounts.tf)
+grants it on each account `terraform/infra` manages and on nothing else, and
+the deployer holds `roles/iam.serviceAccountCreator` on the project instead —
+create, get and list, because creating is checked on the project, where the
+new account does not exist yet.
+
+| accounts the deployer administers | where the list comes from |
+|---|---|
+| `swarm-api`, `swarm-scheduler`, `swarm-quota-broker`, `swarm-reconciler`, `swarm-tick`, `swarm-verify` | [`terraform/modules/service_account_ids`](../terraform/modules/service_account_ids/main.tf), which `modules/iam`, `terraform/infra/verify.tf` and bootstrap all read |
+| `swarm-agent-worker-<tenant>`, one per tenant | the prefix from the same module; the tenant keys from the `tenants` block of [`dev.tfvars`](../terraform/environments/dev/dev.tfvars), read by bootstrap from the file (`infra_tenants_tfvars`) |
+| never `swarm-ci-fix` or `swarm-tf-deployer` | subtracted, and a precondition fails the plan if infra ever manages either |
+
+Nothing restates the list, so an account infra starts managing is an account
+bootstrap grants on at its next apply. The deployer's grant of `actAs` to itself
+([`terraform/infra/deployer.tf`](../terraform/infra/deployer.tf)) still works:
+every account in it is on the list. What admin on a listed account still
+allows — acting as `swarm-api`, say — is authority CI already had by deploying
+as it. Route 3 is closed once the owner applies this, because neither account
+it named (the compute account, `209012342332@cloudbuild`) is on the list, and
+no listed account reads logs.
+
+### A new account exists before the release that adds it
+
+The release sets a new account's IAM policy in the same apply that creates it:
+`modules/tenancy`'s `act_as` and `workload_identity`, and `deployer.tf`'s
+`actAs`, are `setIamPolicy` calls on the account. With the role per account,
+those need bootstrap's grant on it, and bootstrap cannot grant on an account
+that does not exist yet. So for a **new tenant**:
+
+1. `scripts/register-tenant.sh --group <group>` creates `swarm-agent-worker-<tenant>`
+   and checks the grant (step 2b). If the account **already existed**, step 2b
+   refuses to go on when it carries any IAM binding the platform does not make,
+   any conditioned binding, or a user-managed key — see "Adoption is limited to
+   the tenant worker" below.
+2. Add the tenant to the `tenants` block of `terraform/environments/dev/dev.tfvars`
+   on the pull request's branch, and push it.
+3. The owner applies bootstrap **from an up-to-date `main` checkout, never from
+   the branch.** The branch contributes one file, as data, copied out with
+   `git show`; every line of bootstrap code that runs is `main`'s:
+
+   ```bash
+   git fetch origin && git switch main && git pull --ff-only
+   git show origin/<branch>:terraform/environments/dev/dev.tfvars > /tmp/pr-dev.tfvars
+   grep -n '<<' /tmp/pr-dev.tfvars          # expect nothing inside the tenants block
+   terraform -chdir=terraform/bootstrap init
+   terraform -chdir=terraform/bootstrap plan -var infra_tenants_tfvars=/tmp/pr-dev.tfvars
+   ```
+
+   `terraform init` is needed before any bootstrap plan or targeted apply: this
+   root reads `modules/service_account_ids` and `modules/custom_role_ids`, and a
+   checkout that has not initialised them since they were added fails with
+   "Module not installed".
+
+   **Check the untargeted plan before applying anything**, and stop if any of
+   these does not hold:
+
+   * the `deployer_admin_accounts` output gains exactly the worker ids of the
+     tenants the pull request means to add, and loses none;
+   * the resource changes are exactly those tenants'
+     `google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]`,
+     and the summary reads **"N to add, 0 to change, 0 to destroy"**, N being
+     the number of new tenants;
+   * no heredoc is inside the file's tenants block. The plan also refuses one
+     (a precondition on `deployer_admin`), because a heredoc's body is free
+     text and a line in it shaped like `  name = {` would parse as a tenant.
+
+   Then apply only those grants, with the same `-var`:
+
+   ```bash
+   terraform -chdir=terraform/bootstrap apply -var infra_tenants_tfvars=/tmp/pr-dev.tfvars \
+     -target='google_service_account_iam_member.deployer_admin["swarm-agent-worker-<tenant>"]'
+   ```
+4. Merge. The release adopts the existing account (`create_ignore_already_exists`)
+   and sets its IAM.
+
+Removing a tenant is the reverse: the release destroys the account first, then
+bootstrap's next apply from `main` drops its grant.
+
+#### Adoption is limited to the tenant worker
+
+`create_ignore_already_exists` makes a create that meets a 409 take the
+existing account into state instead of failing. On an account somebody else
+made first, that is squatting: their IAM policy and their keys come with it.
+So only `modules/tenancy`'s worker sets it — the one account that is created
+before the release, by `register-tenant.sh`, which inspects an account it did
+not create and refuses one carrying anything the platform does not grant
+(tests/integration/test_register_tenant_squat.py). The platform accounts,
+`swarm-tick` and `swarm-verify` are in state already and do not adopt: a 409 on
+one of them fails the release. A **new platform account** is therefore created
+by the release itself, which then fails with a 403 on that account's
+`setIamPolicy`; the owner applies bootstrap's grant on it from `main` (its id
+comes from `modules/service_account_ids`, already on `main` after the merge) and
+re-runs the failed release job.
 
 ## The deployer's refusal is proven once, by a probe the owner dispatches
 
 Once PR #73's targeted apply lands, the deployer's `projectIamAdmin` carries the
 `modifiedGrantsByRole` condition in
-[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf).
+[`deployer_conditions.tf`](../terraform/bootstrap/deployer_conditions.tf) --
+as of #275, chunked into two bindings rather than one: `hasOnly()` refuses a
+list over 10 elements, and the fifteen grantable roles no longer fit in a
+single call. Every chunk still authorises only a `setIamPolicy` whose modified
+roles stay inside it, which is what each Terraform-issued call already does.
+
+**The live project also still holds the deployer's UNCONDITIONED
+`projectIamAdmin`, restored by hand and never re-entered into bootstrap
+state.** Owner decision, 2026-09-28: remove it by hand, and only after the
+chunks above are live, in this exact order:
+
+1. `DEPLOYER=$(terraform -chdir=terraform/bootstrap output -raw github_deployer_service_account)`
+2. `scripts/bootstrap.sh --target 'google_project_iam_member.deployer_project_iam_admin'`,
+   with the plan reading exactly "2 to add, 0 to change, 0 to destroy" --
+   abort on anything else.
+3. `gcloud projects get-iam-policy saga-agents-staging --flatten=bindings --filter="bindings.role=roles/resourcemanager.projectIamAdmin AND bindings.members:serviceAccount:${DEPLOYER}" --format='value(bindings.condition.title)'`,
+   expecting the two chunk titles plus one empty line (the unconditioned
+   grant, which carries no condition title).
+4. `gcloud projects remove-iam-policy-binding saga-agents-staging --member="serviceAccount:${DEPLOYER}" --role=roles/resourcemanager.projectIamAdmin --condition=None --format=none`.
+5. Re-run step 3, expecting exactly the two chunk titles.
+6. Prove the admitted side with a `terraform/infra` plan or a release apply.
+
+**Why this order and not one apply that imports and destroys the old
+grant.** CI never lacks `projectIamAdmin` for any interval this way, unlike
+#275's own one-minute gap between destroying the old single condition and
+creating the chunked ones. Importing the unconditioned grant into bootstrap
+state and targeting both it and the chunks in one apply would reintroduce
+that same race -- a parallel destroy and create of the same role, on the same
+principal, with no ordering between them.
+
 Releases then prove the **admitted** side. Every plan reads the project policy,
 and a release that adds a tenant writes it. Nothing in the pipeline asks for a
 role **off** the list. **Owner decision, 2026-09-25 (#68):** a deliberate
@@ -655,11 +1004,20 @@ reopened. The owner's steps, and what each outcome means, are in
 **What a pass proves.** One role the list does not name was refused under the
 condition, for a direct grant by the deployer to itself, at the time of the run.
 Preflight makes that the condition's refusal and nobody else's. The scoped
-binding is the only `projectIamAdmin` the deployer holds, and none of its other
-roles carries `resourcemanager.projects.setIamPolicy`. That check is limited to
-the roles preflight could read, which is all of them before step 4 (#150).
-`hasOnly` treats every unlisted role alike, so one refusal speaks for the
-expression. It is still one role, measured once.
+bindings are the only `projectIamAdmin` grants the deployer holds, and none of
+its other roles carries `resourcemanager.projects.setIamPolicy`. That check is
+limited to the roles preflight could read, which is all of them before step 4
+(#150). `hasOnly` treats every unlisted role alike, and a role absent from
+`deployer_grantable_project_roles` is absent from every chunk, so one refusal
+still speaks for all of them. It is still one role, measured once.
+
+**#275's chunking is not yet reflected in the probe script (#276).**
+[`iam-refusal-probe.sh`](../scripts/iam-refusal-probe.sh)'s preflight step
+still asserts *exactly one* conditioned `projectIamAdmin` binding
+(`bindings_for` on `SCOPED_ROLE`) and `die`s otherwise; after #275's apply it
+will find two and stop before asking IAM anything. Filed as #276 rather than
+fixed alongside #275, because the probe is `scripts/` (Track D) and #275's
+brief was terraform/tests/docs only.
 
 **What it cannot prove:**
 
@@ -690,6 +1048,317 @@ been seen on the runner. A wording change therefore costs a re-run, never a
 false pass. [`classify`](../scripts/iam-refusal-probe.sh) has the full rule.
 [`test_iam_refusal_probe.py`](../tests/unit/scripts/test_iam_refusal_probe.py)
 runs the script against a fake `gcloud`, and holds each case.
+
+## A ready pull request is merged by GitHub, not by a session
+
+Owner decision, 2026-09-28 (#262): **adding the `ready` label enables GitHub's
+native auto-merge**, and GitHub performs the squash merge once the base
+branch's required checks pass at the pull request's head. It used to take a
+merge watcher running in an operator's session, so a green, ready pull request
+waited for somebody's laptop. [`auto-merge.yml`](../.github/workflows/auto-merge.yml)
+is the whole mechanism; it waits for nothing and polls nothing.
+
+It refuses, with a comment on the pull request saying which and why:
+
+* **a title starting `[swarm] task_`** — the worker's placeholder. The squash
+  subject is the pull request's title plus `(#N)`, set explicitly, because a
+  one-commit squash otherwise takes the commit's own message: that is how #238
+  put `swarm: work from task_...` on main as a headline. Retitle it as a
+  fact-style headline, then remove and re-add `ready`;
+* **a base branch with no required status checks** — auto-merge would have
+  nothing to wait for and would merge at once, red or not;
+* **no merge App configured** — see the next paragraph;
+* **a check that already ran on the head commit and is failing or still
+  running** — even one that is not required. Branch protection below requires
+  only the checks that run on every pull request; a path-filtered workflow
+  (`application.yml`, `terraform.yml`) is not required, but when a pull
+  request's changes do trigger it, this still holds the merge on its result.
+
+If the pull request is already green when the label lands, GitHub will not
+*enable* auto-merge on it (its merge state is already `CLEAN`), so the
+workflow merges it directly with the same token, method and subject. Branch
+protection still decides; the App has no bypass.
+
+### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
+
+**A merge performed with the workflow's GITHUB_TOKEN starts no workflow.**
+GitHub drops every event that token causes except `workflow_dispatch` and
+`repository_dispatch`. The push to `main` would then run neither
+`application.yml` — whose `build images` job is the
+[one build of the commit](#images-are-built-once-per-commit-and-the-release-reuses-them)
+— nor `release.yml`, which waits for that build. Nothing would go red: main
+would silently stop being built and released.
+
+A `workflow_run` trigger or a second `push` workflow does not fix that. Both
+hang off an event the GITHUB_TOKEN merge never raised, and this workflow's own
+run finishes when auto-merge is *enabled*, typically long before GitHub
+merges. So auto-merge is enabled with a **GitHub App installation token**:
+GitHub attributes the eventual merge to whoever enabled auto-merge, and a push
+made by an App starts workflows the way a person's does. `release.yml` and
+`application.yml` are unchanged and fire on that push exactly as they do for a
+merge made by hand. The workflow never falls back to the GITHUB_TOKEN; without
+the App it refuses.
+
+The workflow's own GITHUB_TOKEN holds `contents: read` (to read the base
+branch's protection), `checks: read` (to read the head commit's check runs)
+and `pull-requests: write` (to comment on a refusal). The App token is minted
+after the gate passes, scoped to this repository and to `contents: write` +
+`pull-requests: write` + `workflows: write` — the last one so that a pull
+request touching `.github/workflows` auto-merges too (owner decision,
+2026-09-28). Requesting it on the token mint grants nothing by itself; nothing
+is granted until the owner creates the App with that permission (below). The
+job never checks out or runs the pull request's code, and the title reaches
+bash only through `env:`.
+
+**A leaked App private key could rewrite CI and release workflows** — the
+`workflows` permission is exactly the permission to change what
+`.github/workflows/*.yml` do on this repository's next push. That is why the
+key lives only in `secrets.MERGE_APP_PRIVATE_KEY` (never in a file, a log or a
+tfvars) and the App is installed on this repository only, not on the
+organization or another repository.
+[`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
+holds all of that and runs the gate against a fake `gh`.
+
+### What the owner applies, once
+
+These are repository settings. A workflow cannot apply them and no lane
+should; they are here so that applying them is copying three commands.
+
+**1. The merge App.** Create a GitHub App (Settings → Developer settings →
+GitHub Apps) with no webhook and exactly three repository permissions,
+**Contents: Read and write**, **Pull requests: Read and write** and
+**Workflows: Read and write**; install it on this repository only.
+
+**A leaked App private key could rewrite CI and release workflows.** The
+`workflows` permission is the permission to change what
+`.github/workflows/*.yml` do on the next push, so this key is more sensitive
+than the other two: it lives only in the `secrets.MERGE_APP_PRIVATE_KEY`
+Actions secret, never in this repository, a tfvars file, a Job environment or
+a log, and the App is installed on this repository only — never the
+organization, never another repository.
+
+Then:
+
+```bash
+gh variable set MERGE_APP_ID --repo bogdan-alexandrescu/SwarmCloud --body '<the App ID>'
+gh secret set MERGE_APP_PRIVATE_KEY --repo bogdan-alexandrescu/SwarmCloud < merge-app.private-key.pem
+rm merge-app.private-key.pem
+```
+
+The key lives only in that Actions secret: never in this repository, a tfvars
+file or a log. (It is not a tenant's forge token, which lives in Secret
+Manager as `swarm-tenant-<tenant>-git`; this key merges this repository's own
+pull requests and is read only by `auto-merge.yml`.)
+
+**2. Auto-merge allowed on the repository:**
+
+```bash
+gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=true
+```
+
+(Superseded on 2026-09-29 by the repository ruleset `main-protection`, which
+requires the same four checks; see [the ruleset on main](#the-ruleset-on-main-and-ci-gate).
+The command below is kept as the record of why each value is what it is.)
+
+**3. Branch protection on `main`**, requiring only the checks that run on
+**every** pull request — `security.yml`'s four jobs. `application.yml` and
+`terraform.yml` both have a `pull_request` path filter
+([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)), so
+none of their jobs — including `shellcheck` and
+`release workflow wiring (actionlint)` — report on a pull request that does
+not touch their paths. GitHub treats a required check whose workflow was
+skipped by a path filter as **pending, forever**, not as passed, so a required
+check list may hold only checks that report on every pull request:
+
+```bash
+gh api --method PUT \
+  repos/bogdan-alexandrescu/SwarmCloud/branches/main/protection \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "required_status_checks": {
+    "strict": false,
+    "checks": [
+      {"context": "trivy (repo)", "app_id": 15368},
+      {"context": "secret scan", "app_id": 15368},
+      {"context": "checkov (terraform + kubernetes)", "app_id": 15368},
+      {"context": "platform policy assertions", "app_id": 15368}
+    ]
+  },
+  "enforce_admins": false,
+  "required_pull_request_reviews": null,
+  "restrictions": null
+}
+JSON
+```
+
+Why each value:
+
+* **The four checks are exactly `security.yml`'s jobs that run on every pull
+  request.** Its fifth job, `trivy (published images)`, runs only on a
+  schedule or `workflow_dispatch`, never on a pull request, so it is not
+  listed for the same reason `build images` and `plan` are not: a required
+  check that is never reported holds the pull request forever.
+* **`shellcheck` and `release workflow wiring (actionlint)` are deliberately
+  left out**, even though they are useful signal. `application.yml`'s
+  `pull_request` path filter means they do not report on a pull request
+  outside its paths, and GitHub has no way to require a check "when its
+  workflow ran." `terraform.yml`'s jobs are excluded for the same reason.
+  `auto-merge.yml`'s gate (above) is what still holds the merge on these when
+  they DO run: it reads the head commit's check runs directly and refuses to
+  queue while any of them is failing or still in progress, required or not.
+* **`app_id: 15368`** is GitHub Actions. Pinning it means a check of the same
+  name posted by any other App or token cannot satisfy the rule.
+* **`strict: false`**: auto-merge never updates a branch, so "must be up to
+  date with main" would hold every pull request that fell behind main until a
+  person clicked *Update branch* — the session dependency this removes.
+* **`enforce_admins: false`** keeps the owner's manual merge as the emergency
+  path. The App is not an admin and cannot bypass.
+* **`required_pull_request_reviews: null`, `restrictions: null`**: the PUT
+  rejects a body without them; `ready` is the review decision here.
+
+`test_auto_merge_workflow.py` holds this command's check names to the jobs
+that exist and to the ones `security.yml` runs on every pull request, so
+renaming a job, adding a path filter to `security.yml`, or widening the
+required list past what always runs fails CI.
+
+## The ruleset on main, and ci-gate
+
+**Owner decision, 2026-09-29.** `main` is protected by a repository ruleset,
+**`main-protection` (id `24160219`)**, not by the classic branch protection
+in step 3 above. It forbids deleting `main` and force-pushing to it, requires
+a pull request (no approving review: `ready` is the review decision), and
+requires four status checks: `security.yml`'s `secret scan`, `trivy (repo)`,
+`checkov (terraform + kubernetes)` and `platform policy assertions`.
+
+### Why only security is required directly
+
+`security.yml` has no path filter, so its four jobs report on every pull
+request. `application.yml` and `terraform.yml` both carry a `pull_request`
+path filter ([table above](#the-seven-workflows-and-what-each-one-is-responsible-for)),
+and **GitHub holds a required check whose workflow was filtered out as
+pending, forever** — not skipped, not passed. Requiring `format / unit tests`
+directly would freeze every pull request that touches only `terraform/`;
+requiring `terraform test` would freeze every docs-only one. So before
+`ci-gate`, nothing *required* held a pull request on its unit tests, its
+integration tests or its terraform tests; only `auto-merge.yml`'s gate
+(which reads the head's check runs when `ready` lands) did.
+
+### What ci-gate does
+
+[`ci-gate.yml`](../.github/workflows/ci-gate.yml) runs one job, named exactly
+`ci-gate`, on **every** pull request and every push to `main` — it has no
+filter of its own, so it always reports. It runs
+[`scripts/ci-gate.sh wait`](../scripts/ci-gate.sh), which waits for the
+`application.yml` and `terraform.yml` runs at the same head commit and passes
+only when every one of them that ran passed:
+
+* **Did not run because the paths did not match: pass.** Which workflows a
+  change triggers is computed from the `pull_request.paths` lists **read out
+  of the workflow files themselves**, against `git diff base...head` (the
+  three-dot diff GitHub's filter uses). There is no second copy of those
+  lists to drift.
+* **Should have run, and its run does not exist yet: wait.** `ci-gate` starts
+  on the same event as the workflows it waits for, often before their runs are
+  created, and "no run yet" looks exactly like "not triggered" in the API.
+  An expected run that has not appeared after 10 minutes fails the gate by
+  name.
+* **Ran and failed, was cancelled, timed out, awaits approval or failed to
+  start: fail**, naming the job and its URL.
+* **A `skipped` job passes only inside a run that concluded `success`** — a
+  skip its own `if:` chose, like `build images` on a pull request or `plan`.
+  A run that failed to start (`startup_failure`), or whose jobs were skipped
+  because something they need failed, does not conclude `success`, and fails
+  the gate whatever its jobs say.
+* **A run the path model did not predict is still judged.** The gate looks
+  for at least a minute before it will pass, so a run that appears although
+  the paths said it would not — and fails — still fails the gate.
+* **An unreadable API is never a pass**, and a run still going after 90
+  minutes fails it with what was pending.
+
+It reads runs from the Actions API (`actions: read`), filtered by head sha
+and event, rather than matching check-run names: a check run is named by its
+job's `name:`, which is not unique across workflows and cannot say whether its
+workflow started at all. Its token holds `actions: read` and `contents: read`
+and nothing else; every value reaches the shell through `env:`.
+[`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) runs the real
+script against a fake `gh`, and holds the path lists it reads to what PyYAML
+reads from the same files.
+
+**Re-running a failed job does not re-run `ci-gate`.** Its run already
+failed; re-run it too (Actions → the `ci-gate` run → *Re-run jobs*) once the
+re-run is green.
+
+**What it does not stop.** `pull_request` runs the pull request's own copy of
+`ci-gate.yml` and `scripts/ci-gate.sh`, so a pull request that edits either can
+make its own gate pass. Review of those two files is the guard.
+
+### Owner step: require ci-gate, once it is on main
+
+**Not before it is on `main`**: until then no pull request reports a
+`ci-gate` check, and requiring it would hold every one of them forever. Once
+the pull request adding it has merged and `ci-gate` has reported green on a
+pull request, the owner (or the orchestrator, with the owner's go-ahead) adds
+it to the ruleset. The PUT replaces the ruleset whole, so the body restates
+every rule it has today (read on 2026-09-29) and adds only `ci-gate`. No check
+is pinned to an `integration_id` (owner decision, 2026-09-29), the four
+security checks included, as today:
+
+```bash
+gh api -X PUT repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 \
+  -H "Accept: application/vnd.github+json" \
+  --input - <<'JSON'
+{
+  "name": "main-protection",
+  "target": "branch",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {"include": ["~DEFAULT_BRANCH"], "exclude": []}
+  },
+  "bypass_actors": [
+    {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "pull_request"}
+  ],
+  "rules": [
+    {"type": "deletion"},
+    {"type": "non_fast_forward"},
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 0,
+        "dismiss_stale_reviews_on_push": false,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "require_last_push_approval": false,
+        "required_review_thread_resolution": false,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "required_status_checks",
+      "parameters": {
+        "strict_required_status_checks_policy": false,
+        "do_not_enforce_on_create": false,
+        "required_status_checks": [
+          {"context": "secret scan"},
+          {"context": "trivy (repo)"},
+          {"context": "checkov (terraform + kubernetes)"},
+          {"context": "platform policy assertions"},
+          {"context": "ci-gate"}
+        ]
+      }
+    }
+  ]
+}
+JSON
+```
+
+Then read it back and check the list:
+`gh api repos/bogdan-alexandrescu/SwarmCloud/rulesets/24160219 --jq '.rules[] | select(.type == "required_status_checks") | .parameters.required_status_checks'`.
+Before sending, compare the body with a fresh read of the ruleset: a rule
+added since 2026-09-29 that is not in this body would be removed by the PUT.
+[`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
+`security.yml`'s always-run jobs plus `ci-gate`, none pinned.
 
 ## The finishing sequence
 
