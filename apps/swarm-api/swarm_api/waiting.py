@@ -135,7 +135,7 @@ def waiting_for(
     pool was read and has no document. A required name absent from the map is
     unread when `listing_complete` is False and has no document when it is True.
     """
-    if task.state is not TaskState.READY:
+    if task.state not in (TaskState.READY, TaskState.LEASED):
         return None
     when = as_of or utcnow()
     need = required_pools(task)
@@ -191,7 +191,7 @@ def waiting_for(
     rows: list[dict[str, Any]] = []
     for name in required:
         if name in unread:
-            rows.append(_row(name, STATE_UNKNOWN, active_of.get(name), None, units, None))
+            rows.append(_row(name, STATE_UNKNOWN, active_of.get(name), 0, units, None))
             continue
         pool = readable.get(name)
         if pool is None:
@@ -211,7 +211,7 @@ def waiting_for(
         else:
             state = STATE_FULL
         rows.append(_row(name, state, blocker["active"], limit, units, reason))
-    rows.sort(key=lambda r: _TIER[r["state"]])
+    rows.sort(key=lambda r: required.index(r["pool"]))
 
     lead = next((r for r in rows if r["state"] != STATE_OPEN), None)
     if blockers:

@@ -2025,7 +2025,7 @@ export function waitingLead(w: WaitingFor | null | undefined): string | null {
   if (!lead) return null
   switch (lead.state) {
     case 'paused':
-      return `${lead.pool} paused`
+      return `${lead.pool}  ${lead.active}/${lead.limit} units`
     case 'unknown':
       return `${lead.pool}: limit unknown`
     case 'open':

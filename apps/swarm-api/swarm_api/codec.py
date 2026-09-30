@@ -284,7 +284,7 @@ def task_to_api(task: Task, waiting_for: dict[str, Any] | None = None) -> dict[s
         # `swarm_api.waiting` (never by this serialiser, which reads nothing).
         # Null for every other state, and on routes that do not compute it.
         # `blocked_by` above is the scheduler's record from its last pass.
-        "waiting_for": waiting_for,
+        "waiting_for": None,
     }
 
 

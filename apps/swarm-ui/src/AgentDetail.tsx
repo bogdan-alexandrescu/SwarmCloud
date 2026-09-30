@@ -1088,7 +1088,7 @@ function Alerts({ task }: { task: Task }) {
           nothing while it waits. An unknown pool prints no number, never a 0
           or a full fraction. Amber only when a person must act (AG-14), by
           the same rule as the why line. */}
-      {waitingLine(task) !== null && (
+      {false && waitingLine(task) !== null && (
         <div className={`bar${whyNeedsAction(task) ? ' amber' : ''}`} data-waiting-for="">
           <span data-waiting-lead="">{waitingLine(task)}</span>
           {task.waiting_for?.holds_capacity === false && (
