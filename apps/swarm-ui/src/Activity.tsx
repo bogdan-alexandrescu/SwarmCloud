@@ -494,15 +494,18 @@ const LEDGER_SECTIONS = ['buckets', 'totals', 'coverage', 'previous'] as const s
  * WHAT EACH CARD READS, AND NOTHING MORE (#377). Every card says how much of
  * the span it covers (`spanCoverage`), which is `totals` and `buckets`, so
  * every card asks for those two; the rest is the card's own block. "Time to
- * result" also prints `coverage.wait_excluded`. The route reads the span's
- * day documents once per request whatever it is asked for; only `previous`,
- * `coverage` and `workflows_failed` cost reads of their own
- * (`swarm_api.outcomes.Outcomes.read`), so no card asks for `previous`.
+ * result" prints `wait_excluded` from `latency`, which carries it so the card
+ * need not ask for all of `coverage` (a count() per terminal state per
+ * tenant). The route caches the FOLD, keyed by the query without its sections
+ * (the review of #391), so every card of one query in the same minute is a
+ * projection of one scan; only `previous`, `coverage` and `workflows_failed`
+ * cost reads of their own, once per fold (`swarm_api.outcomes.Outcomes.read`),
+ * so no card asks for `previous`.
  */
 const CARD_SECTIONS = {
   failures: ['buckets', 'totals'],
   retries: ['buckets', 'totals', 'retries'],
-  latency: ['buckets', 'totals', 'latency', 'coverage'],
+  latency: ['buckets', 'totals', 'latency'],
   reliability: ['buckets', 'totals', 'groups'],
   workflows: ['buckets', 'totals', 'workflows_failed'],
   cost: ['buckets', 'totals'],
