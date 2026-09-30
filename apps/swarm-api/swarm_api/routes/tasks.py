@@ -38,7 +38,6 @@ from ..deps import (
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_input import TaskMasking, input_copy, masking_for
-from ..waiting import waiting_for_page
 
 router = APIRouter(prefix="/v1/tasks", tags=["tasks"])
 
@@ -131,10 +130,8 @@ def list_tasks(
         page_token=page_token,
         submitted_by=submitted_by,
     )
-    # One read of the page's READY tasks' pools, de-duplicated (#362).
-    waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
     return {
-        "tasks": [task_to_api(task, waiting.get(task.id)) for task in page.items],
+        "tasks": [task_to_api(task) for task in page.items],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
@@ -147,9 +144,7 @@ def get_task(
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
-    waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
-    return {"task": task_to_api(task, waiting.get(task.id))}
+    return {"task": task_to_api(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))}
 
 
 @router.post("/{task_id}/cancel")

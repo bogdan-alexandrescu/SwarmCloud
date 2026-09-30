@@ -122,7 +122,7 @@ The primary screen of this section. One table, three tabs, no sub-pages.
 |---|---|---|---|
 | 1 | *(state)* | glyph + state word chip, coloured per §1.3 | `task.state` |
 | 2 | Agent | `runner_profile` in bold, `model` beneath in muted type, `id` last 8 chars in mono as a tertiary line | `task.runner_profile`, `task.model`, `task.id` |
-| 3 | Why | the derived one-liner (§2.3) — empty for `RUNNING` and `SUCCEEDED`; for a READY task the API served `waiting_for` on, its lead line (`waiting for: tenant:eng  20/20 units`, #362) | derived from `waiting_for` (READY), `park_reason`, `blocked_by`, `last_error`, `cancel_requested` |
+| 3 | Why | the derived one-liner (§2.3) — empty for `RUNNING` and `SUCCEEDED` | derived from `park_reason`, `blocked_by`, `last_error`, `cancel_requested` |
 | 4 | Owner | `submitted_by` local part, full address on hover | `task.submitted_by` |
 | 5 | Workflow | `step_id` as a pill linking to the DAG view; em-dash when standalone | `task.workflow_id`, `task.step_id` |
 | 6 | Elapsed | live ticking duration (§2.3) | derived from `created_at` / `started_at` / `completed_at` |

@@ -511,13 +511,6 @@ export interface Task {
    * field existed.
    */
   end_cause?: string | null
-  /**
-   * #362. Which pool refuses this READY task NOW, read live on the GET by
-   * `swarm_api/waiting.py` from the task's own pools. Null for every other
-   * state; OPTIONAL because an older API does not send it. `blocked_by` is
-   * the scheduler's record from its LAST pass; this is the current reading.
-   */
-  waiting_for?: WaitingFor | null
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
@@ -1980,81 +1973,6 @@ export interface BlockedEntry {
   [key: string]: unknown
 }
 
-/**
- * One required pool in `waiting_for.pools`, in lead order: `paused` (checked
- * first) > `unknown` > `zero` / `below_units` > `full`, then `open`.
- *
- * `unknown` means the pool was not read, or its document has no
- * `hard_limit`: `limit` is null, and it is NEVER drawn as 0 or as full. A
- * required pool with no document is uncapped and is not listed at all.
- */
-export type WaitingState = 'paused' | 'unknown' | 'zero' | 'below_units' | 'full' | 'open'
-
-export interface WaitingPool {
-  pool: string
-  state: WaitingState
-  active: number | null
-  limit: number | null
-  /** The task's weight -- `RESOURCE_CLASSES[task.resource_class].units`. */
-  units: number
-  /** `evaluate_capacity`'s reason for a refusing pool; null when open or unknown. */
-  reason: string | null
-}
-
-/** `waiting_for(...)` in swarm_api/waiting.py. */
-export interface WaitingFor {
-  as_of: string
-  /** null: an unknown pool could be the one refusing, so nothing is claimed. */
-  admissible_now: boolean | null
-  /** Always false: a READY task costs nothing (invariant 1). */
-  holds_capacity: boolean
-  lead: WaitingPool | null
-  pools: WaitingPool[]
-  complete: boolean
-}
-
-/**
- * The lead line: "tenant:eng  20/20 units", "tenant:eng paused",
- * "tenant:eng: limit unknown". Null when nothing refuses the task.
- *
- * An unknown pool prints no number at all -- not 0, and not a fraction that
- * would read as full -- because nothing was measured.
- */
-export function waitingLead(w: WaitingFor | null | undefined): string | null {
-  const lead = w?.lead
-  if (!lead) return null
-  switch (lead.state) {
-    case 'paused':
-      return `${lead.pool} paused`
-    case 'unknown':
-      return `${lead.pool}: limit unknown`
-    case 'open':
-      return null
-    default:
-      if (typeof lead.active === 'number' && typeof lead.limit === 'number') {
-        return `${lead.pool}  ${lead.active}/${lead.limit} units`
-      }
-      return `${lead.pool}: limit unknown`
-  }
-}
-
-/** The lead line as the "why" answer: "waiting for: tenant:eng  20/20 units". */
-export function waitingLine(task: Task): string | null {
-  if (task.state !== 'READY') return null
-  const lead = waitingLead(task.waiting_for)
-  return lead === null ? null : `waiting for: ${lead}`
-}
-
-/**
- * Whether the lead pool needs a person, by the same partition `needsAPerson`
- * keeps: a paused pool, one at 0, or one below the task's weight admits
- * nothing until somebody acts. Full clears by waiting; unknown claims nothing.
- */
-function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
-  const s = w?.lead?.state
-  return s === 'paused' || s === 'zero' || s === 'below_units'
-}
-
 /** `ParkReason`, states.py:125-137. All eight are really written. */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
@@ -2311,9 +2229,6 @@ function leadBlocker(
 
 /** The one-line "why is this not running" for a task, or null if it is. */
 export function whyNotRunning(task: Task): string | null {
-  // #362: the live reading, when the API served one, before the last pass's record.
-  const waiting = waitingLine(task)
-  if (waiting !== null) return waiting
   const first = leadBlocker(task.blocked_by)
   if (first?.reason) {
     const ceiling = ceilingCopy(first)
@@ -2381,10 +2296,6 @@ export function whyAgent(task: Task, units: number | null = null): string {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
   }
-  // #362: the live reading of the task's own pools wins over `blocked_by`,
-  // which is only as fresh as the scheduler's last pass over it.
-  const waiting = waitingLine(task)
-  if (waiting !== null) return waiting
   if (task.state === 'READY' && task.blocked_by?.length) {
     const b = leadBlocker(task.blocked_by, units)
     if (!b) return ''
@@ -2450,7 +2361,6 @@ export function whyNeedsAction(task: Task, units: number | null = null): boolean
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
   }
-  if (waitingLine(task) !== null) return waitingNeedsAPerson(task.waiting_for)
   if (task.state === 'READY' && task.blocked_by?.length) {
     const b = leadBlocker(task.blocked_by, units)
     if (!b) return false

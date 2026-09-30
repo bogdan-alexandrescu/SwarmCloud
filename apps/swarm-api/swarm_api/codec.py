@@ -170,7 +170,7 @@ def workflow_dispatch(tasks: Any) -> dict[str, Any]:
     }
 
 
-def task_to_api(task: Task, waiting_for: dict[str, Any] | None = None) -> dict[str, Any]:
+def task_to_api(task: Task) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
 
     THE INPUT AND THE METADATA ARE SERVED MASKED (owner decision, 2026-09-26,
@@ -280,11 +280,6 @@ def task_to_api(task: Task, waiting_for: dict[str, Any] | None = None) -> dict[s
         # sorting free-text `last_error` itself. SUCCEEDED, and a task that
         # ended before this field existed, both carry null.
         "end_cause": task.end_cause.value if isinstance(task.end_cause, EndCause) else task.end_cause,
-        # #362: which pool refuses a READY task, read live on the GET by
-        # `swarm_api.waiting` (never by this serialiser, which reads nothing).
-        # Null for every other state, and on routes that do not compute it.
-        # `blocked_by` above is the scheduler's record from its last pass.
-        "waiting_for": waiting_for,
     }
 
 
