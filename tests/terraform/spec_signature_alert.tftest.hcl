@@ -74,6 +74,17 @@ run "one_refusal_is_enough_to_alert" {
     error_message = "the alert must not be limited to Cloud Run Jobs; GKE workers verify the same way"
   }
 
+  # Run 36655830725 (main 4bb7564): "Error creating AlertPolicy: googleapi:
+  # Error 400: Field alert_policy.conditions[0].condition_threshold.filter had
+  # an invalid value ... must specify a restriction on resource.type".
+  # Monitoring requires a resource.type restriction on every log-based
+  # metric's condition filter; the sibling policies in this file
+  # (tasks_dead_lettered, generation_fenced, job_failures) all carry one.
+  assert {
+    condition     = strcontains(google_monitoring_alert_policy.spec_signature_invalid[0].conditions[0].condition_threshold[0].filter, "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")")
+    error_message = "the alert's filter must restrict resource.type (Monitoring rejects a log-based metric condition without one) while still covering both worker backends, matching the metric's own filter"
+  }
+
   assert {
     condition = (
       google_monitoring_alert_policy.spec_signature_invalid[0].conditions[0].condition_threshold[0].comparison == "COMPARISON_GT"

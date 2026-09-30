@@ -237,7 +237,12 @@ export interface Outcomes {
     not_final: { attempts: number; by_exit: Array<{ exit_code: number | null; label: string; n: number }> }
     admissions_without_attempt_doc: number
   }
-  latency: { percentile_method: string; by_profile: LatencyRow[] }
+  latency: {
+    percentile_method: string
+    by_profile: LatencyRow[]
+    /** The same number as `coverage.wait_excluded`, carried here so the latency card need not read `coverage` (the review of #391). */
+    wait_excluded: number
+  }
   groups: { by: GroupBy; rows_total: number; rows: GroupRow[] }
   workflows_failed: {
     applicable: boolean

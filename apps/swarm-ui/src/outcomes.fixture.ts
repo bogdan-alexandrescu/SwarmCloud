@@ -214,6 +214,7 @@ export function ledgerFixture(): Outcomes {
     },
     latency: {
       percentile_method: 'nearest_rank',
+      wait_excluded: 0,
       by_profile: [
         {
           runner_profile: 'mock',

@@ -129,11 +129,13 @@ from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
+from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
+from . import verdict as verdict_mod
 from . import workspace as workspace_mod
 from .accountlease import (
     ACCOUNT_TOKEN_ENV,
@@ -311,6 +313,11 @@ WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
 
+#: What `builds_on` may be (#264): a task id as `swarm_common.models.new_id`
+#: mints them, and nothing that could make the derived branch name a path
+#: (`..`, `/`) or an option (a leading `-`).
+_TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+
 #: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
 #: request's title and body (#214), so a platform pull request can say what it
 #: closes. Read without following a link, scrubbed, bounded, and refused -- in
@@ -326,6 +333,16 @@ PR_TITLE_MAX_CHARS = 256
 PR_BODY_MAX_BYTES = 60 * 1024
 #: How much of either file is read at all. Past this the text is cut anyway.
 PR_READ_LIMIT_BYTES = 256 * 1024
+
+#: The subjects of the worker's own commits -- the one holding what the agent
+#: left uncommitted, and the one a fold makes -- when the agent wrote no usable
+#: `pr-title.txt`. With one, that title is the subject instead
+#: (`Worker._worker_commit_message`). NEVER THE TASK ID (#361): the subject is
+#: the line a reviewer and `git log --oneline` read, and the owner's rule for
+#: pull request titles (2026-09-28) holds for it too. The task id goes in the
+#: body, where the provenance belongs.
+UNCOMMITTED_COMMIT_SUBJECT = "Commit the changes the agent left uncommitted"
+FOLDED_COMMIT_SUBJECT = "Everything the agent changed, as one commit"
 
 #: The retired generated title's shape, `[swarm] task_...`, in any case. A
 #: title that matches is treated as carrying the task id even when the id in
@@ -495,6 +512,9 @@ class Worker:
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # The verdict this step's gate read (#264), as `result_summary` and the
+        # pull request report it; None for a step with no gate.
+        self._verdict: dict[str, Any] | None = None
         # What this task's dependants will stage from it, per
         # `metadata.expected_outputs` (#149). Kept so `_finalise` can name any
         # the attempt did not upload; see `agent_worker.expected_outputs`.
@@ -975,6 +995,17 @@ class Worker:
         # And in the checkout, where a repository task's agent starts (#226).
         self._link_checkout_artifacts()
 
+        # ---- STEP 5d: the verdict gate (#264) -------------------------------
+        # After staging, which put the verdict file on disk. A verdict that
+        # does not name this step skips the AGENT, not the step: the step
+        # still finishes and publishes, because it is the one that opens the
+        # pull request. The generation is checked first, as it is before an
+        # agent starts, because that publish pushes.
+        if self._evaluate_verdict_gate(staged_inputs) is False:
+            self.phases.enter("revalidate_generation")
+            self.control.validate_generation()
+            return self._finish_without_agent
+
         # ---- runner input -----------------------------------------------
         payload = dict(task.get("input") or {})
         if repo_info:
@@ -1258,6 +1289,7 @@ class Worker:
             self._child_ended()
             self._checkpoint("cancellation")
             summary = self._upload_outputs()
+            self._add_runner_block(summary)
             self._export_metrics()
             self.control.finish(
                 state=TaskState.CANCELLED,
@@ -1502,27 +1534,11 @@ class Worker:
         missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
+        if self._verdict is not None:
+            summary["verdict_gate"] = dict(self._verdict)
         self._export_metrics()
 
-        runner_result = _read_json(ws.result_path)
-        if runner_result:
-            # The SAME figure `_record_spend` wrote onto the attempt (it ran
-            # inside `_upload_outputs` above): the attempt's total across every
-            # runner it started, so the summary a human reads and the typed
-            # fields a query reads cannot disagree after an in-place retry.
-            usage_summary = dict(self._spend)
-            summary["runner"] = self._scrub(
-                {
-                    "status": runner_result.get("status"),
-                    "summary": str(runner_result.get("summary", ""))[:4000],
-                    "output": _truncate_json(runner_result.get("output"), 8000),
-                    # Extracted BEFORE the line above discards it. See
-                    # _usage_summary: the truncation dropped token counts on
-                    # precisely the most expensive runs.
-                    "usage": usage_summary,
-                    "metrics": runner_result.get("metrics") or {},
-                }
-            )
+        runner_result = self._add_runner_block(summary)
 
         if result.timed_out:
             error = f"runner exceeded its {self.cfg.timeout_seconds}s timeout and was killed"
@@ -1584,6 +1600,41 @@ class Worker:
             result_summary=summary,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _add_runner_block(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        """Put the runner's own report into `summary["runner"]`; the result file, or None.
+
+        ON EVERY TERMINAL PATH WHERE THE RUNNER WROTE ITS RESULT FILE (#361):
+        the runner's end (`_finalise`), a requested cancel
+        (`_apply_control_signals`) and the crash path (`_safe_finish`). The
+        cancel path used to skip it, so a cancelled task's summary lost the
+        steps the runner reported and its spend -- the one record of how far
+        a stopped run got. Called after `_upload_outputs`, which records the
+        spend this block quotes.
+        """
+        ws = self.ws
+        if ws is None:
+            return None
+        runner_result = _read_json(ws.result_path)
+        if runner_result:
+            # The SAME figure `_record_spend` wrote onto the attempt (it ran
+            # inside `_upload_outputs`): the attempt's total across every
+            # runner it started, so the summary a human reads and the typed
+            # fields a query reads cannot disagree after an in-place retry.
+            usage_summary = dict(self._spend)
+            summary["runner"] = self._scrub(
+                {
+                    "status": runner_result.get("status"),
+                    "summary": str(runner_result.get("summary", ""))[:4000],
+                    "output": _truncate_json(runner_result.get("output"), 8000),
+                    # Extracted BEFORE the line above discards it. See
+                    # _usage_summary: the truncation dropped token counts on
+                    # precisely the most expensive runs.
+                    "usage": usage_summary,
+                    "metrics": runner_result.get("metrics") or {},
+                }
+            )
+        return runner_result
 
     # ------------------------------------------------------------------
     # pieces
@@ -2071,7 +2122,18 @@ class Worker:
                 "from_checkpoint": True,
                 "commit": self._clone_base,
             }
-        ref = self.cfg.repository_ref or task.get("repository_ref")
+        # A fix step clones the branch it continues (#263, continuation.py)
+        # first; failing that, a step that BUILDS ON an upstream step (#264)
+        # starts from the branch that step pushed, so a fix sees the code it
+        # is fixing. Either way the branch is derived from a task id with
+        # this worker's own prefix, never read as a name, exactly as the
+        # integrator's contributor branches are.
+        builds_on = self._dispatch_builds_on()
+        ref = (
+            continuation_mod.clone_ref(task.get("metadata"), self.cfg.git_branch_prefix)
+            or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
+            or (self.cfg.repository_ref or task.get("repository_ref"))
+        )
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
         # clones; a private one fails, and the error below says why.
@@ -2092,12 +2154,19 @@ class Worker:
                 token=None if refusal else self._git_token(),
             )
         except GitError as exc:
+            based = (
+                f"; this step builds on task {builds_on}, whose branch {ref} is "
+                "pushed when that step publishes -- it was not found or could "
+                "not be fetched"
+                if builds_on
+                else ""
+            )
             if refusal:
                 raise WorkerError(
-                    f"repository clone failed: {exc}; cloned without the tenant git "
-                    f"token because {refusal}"
+                    f"repository clone failed: {exc}{based}; cloned without the "
+                    f"tenant git token because {refusal}"
                 ) from exc
-            raise WorkerError(f"repository clone failed: {exc}") from exc
+            raise WorkerError(f"repository clone failed: {exc}{based}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
         # Known in this process, so trusted; and recorded in every checkpoint
@@ -2111,6 +2180,8 @@ class Worker:
             "ref": clone.ref,
             "commit": clone.commit,
         }
+        if builds_on:
+            info["builds_on"] = builds_on
         if refusal:
             info["git_token_refused"] = refusal
         return info
@@ -2162,6 +2233,88 @@ class Worker:
             files=[item.path for item in staged],
         )
         return staged
+
+    def _evaluate_verdict_gate(self, staged: list[inputs_mod.StagedInput]) -> bool | None:
+        """Read this step's verdict gate (#264). None: no gate. True/False: run the agent or not.
+
+        Raises `InputUnavailable` for a gate or a verdict file that cannot be
+        read, so the agent never starts and nothing is published; see
+        `agent_worker.verdict` for why neither is guessed at.
+        """
+        gate = verdict_mod.gate_from_dispatch(self._dispatch_block())
+        if gate is None:
+            return None
+        ws = self.ws
+        assert ws is not None
+        source = next((item for item in staged if item.upstream_task_id == gate.task_id), None)
+        if source is None:
+            raise InputUnavailable(
+                f"this step's verdict gate reads the verdict of task {gate.task_id}, "
+                "and this step stages no file from that task; the agent was not "
+                "started and nothing was published"
+            )
+        read = verdict_mod.read_verdict(
+            ws.work / source.path, task_id=gate.task_id, filename=source.filename
+        )
+        runs = read.verdict in gate.verdict_in
+        self._verdict = {
+            "task_id": gate.task_id,
+            "file": source.filename,
+            "verdict": read.verdict,
+            "verdict_in": list(gate.verdict_in),
+            "agent_ran": runs,
+            "findings": list(read.findings),
+            "findings_dropped": read.findings_dropped,
+        }
+        self.log.info(
+            "verdict gate read: the agent runs" if runs
+            else "verdict gate read: the agent does not run; the step still publishes",
+            verdict=read.verdict,
+            verdict_in=list(gate.verdict_in),
+            verdict_task_id=gate.task_id,
+            findings=len(read.findings) + read.findings_dropped,
+        )
+        return runs
+
+    def _finish_without_agent(self) -> Outcome:
+        """End a step whose verdict gate stayed shut: no agent, same ending (#264).
+
+        Through `_finalise`, the one ending a runner that exited on its own
+        gets, so the final checkpoint, the uploads, the publish, the missing-
+        output check and the lease release are the ones every other clean
+        attempt has. The result it reads is written here, in the runner's
+        shape, saying the agent was skipped and why.
+        """
+        ws = self.ws
+        assert ws is not None and self._verdict is not None
+        self._take_workdir_baseline()
+        ws.result_path.write_text(
+            json.dumps(
+                {
+                    "status": "skipped",
+                    "summary": (
+                        f"the review verdict was {self._verdict['verdict']}, and this "
+                        f"step's agent runs only on "
+                        f"{', '.join(self._verdict['verdict_in'])}; the agent was not "
+                        "started and the step published the reviewed work"
+                    ),
+                    "output": {"verdict_gate": self._verdict},
+                }
+            )
+        )
+        return self._finalise(
+            ChildResult(
+                exit_code=0,
+                term_signal=None,
+                timed_out=False,
+                killed=False,
+                duration_seconds=0.0,
+                stdout_bytes=0,
+                stderr_bytes=0,
+                stdout_truncated=False,
+                stderr_truncated=False,
+            )
+        )
 
     def _link_artifacts(self) -> None:
         """Step 5c: make `work/artifacts` the directory that is uploaded (#149).
@@ -4237,7 +4390,8 @@ class Worker:
         """The `task.metadata["dispatch"]` block, or an empty one.
 
         swarm-api writes four fields here -- strategy, carrier, role and
-        integrates (see DispatchOptions.to_metadata). For a long time this
+        integrates (see DispatchOptions.to_metadata) -- and, on a step that
+        declares them, `builds_on` and `verdict_gate` (#264). For a long time this
         worker read only the first, so `integrate` took the `direct-pr` path
         and every step of a workflow opened its own pull request against an
         API that had promised, in three places, to open exactly one.
@@ -4290,6 +4444,24 @@ class Worker:
         if not isinstance(raw, list):
             return []
         return [t.strip() for t in raw if isinstance(t, str) and t.strip()]
+
+    def _dispatch_builds_on(self) -> str:
+        """The upstream task id whose pushed branch this step clones (#264), or "".
+
+        A value that is not a task id is REFUSED rather than ignored: ignored,
+        the step would clone the default branch and its agent would fix code
+        that does not contain the change it was asked to fix.
+        """
+        raw = self._dispatch_block().get("builds_on")
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            return ""
+        if not isinstance(raw, str) or not _TASK_ID_RE.match(raw.strip()):
+            raise WorkerError(
+                f"this step's dispatch block names builds_on {str(raw)[:80]!r}, "
+                "which is not a task id; the branch to start from cannot be derived "
+                "from it, so nothing was cloned"
+            )
+        return raw.strip()
 
     def _dispatch_carrier(self) -> str:
         """Where a step's work is kept for the next step. Defaults to checkpoints.
@@ -4662,7 +4834,15 @@ class Worker:
             out["publish_reason"] = "no credential"
             return out
 
-        branch = f"{cfg.git_branch_prefix}{cfg.task_id}"
+        # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
+        try:
+            branch = continuation_mod.publish_branch(
+                (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+            )
+        except WorkerError as exc:
+            out["published"] = False
+            out["publish_reason"] = f"refusing to publish: {exc}"
+            return out
         protected = (access.default_branch,) if access.default_branch else ()
 
         role = self._dispatch_role() if strategy == "integrate" else ""
@@ -4774,11 +4954,11 @@ class Worker:
                 publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
             new_sha = commit_dirty(
                 repo=publish_repo,
-                message=(
-                    f"swarm: uncommitted changes from {cfg.task_id}\n\n"
+                message=self._worker_commit_message(
+                    UNCOMMITTED_COMMIT_SUBJECT,
                     "Staged by the worker at the end of the attempt so that work "
                     "the agent edited but did not commit is not lost between the "
-                    "workspace and this branch."
+                    "workspace and this branch.",
                 ),
                 author_name=cfg.git_author_name,
                 author_email=cfg.git_author_email,
@@ -4822,12 +5002,12 @@ class Worker:
                     repo=publish_repo,
                     base=self._publish_base,
                     keep=new_sha,
-                    message=(
-                        f"swarm: work from {cfg.task_id}\n\n"
+                    message=self._worker_commit_message(
+                        FOLDED_COMMIT_SUBJECT,
                         "Everything the agent changed in this attempt, committed or "
                         "not, as one commit made by the worker. The worker writes "
                         "every commit it pushes, so no author, trailer or footer "
-                        "added inside the agent's container reaches this branch."
+                        "added inside the agent's container reaches this branch.",
                     ),
                     author_name=cfg.git_author_name,
                     author_email=cfg.git_author_email,
@@ -5163,7 +5343,27 @@ class Worker:
                 ]
                 lines += [f"- missing: `{b}`" for b in merge.missing]
 
+        # THE REVIEW THIS PULL REQUEST PASSED THROUGH (#264), on the page the
+        # operator reads, so the verdict and what it found arrive with the
+        # work instead of from a reviewer after it opens.
+        if self._verdict is not None:
+            lines += verdict_mod.pull_request_lines(self._verdict)
+
         return "\n".join(lines)
+
+    def _worker_commit_message(self, fallback_subject: str, explanation: str) -> str:
+        """The message of a commit the worker makes on the published branch.
+
+        The subject is the agent's `pr-title.txt` when it wrote a usable one --
+        the file, and the checks, `_agent_title` applies for the pull request,
+        so the branch's own commit and its pull request say the same thing --
+        and otherwise `fallback_subject`, which names no task (#361). The task
+        id is in the body: a commit on the branch still says which task made
+        it, on a line nobody reads as the change's title.
+        """
+        subject = self._agent_title([]) or fallback_subject
+        # Prose, not a `Key: value` line, so nothing reads it as a trailer.
+        return f"{subject}\n\n{explanation}\n\nMade by the worker for task {self.cfg.task_id}."
 
     def _agent_pull_request_text(self) -> tuple[str | None, str | None, list[str]]:
         """The agent's pull request title and body, each usable or None (#214).
@@ -5940,6 +6140,7 @@ class Worker:
         """
         try:
             summary = self._upload_outputs()
+            self._add_runner_block(summary)
             if extra_summary:
                 summary = {**(summary or {}), **extra_summary}
             self._export_metrics()
@@ -6759,7 +6960,7 @@ def replay_agent_commits(
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
             text = message.replace("\x00", "").strip()
-            text = text or f"swarm: uncommitted changes from {task_id}"
+            text = text or UNCOMMITTED_COMMIT_SUBJECT
         else:
             kept += 1
             text = clean_commit_message(

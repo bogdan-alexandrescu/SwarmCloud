@@ -52,6 +52,9 @@ on:
       # request is the only place it is linted (actionlint below) and held to
       # its shape (tests/unit/scripts/test_iam_refusal_probe.py).
       - ".github/workflows/iam-refusal-probe.yml"
+      # The CI fixer runs only after a red CI on a swarm branch, so a PR is the
+      # only place it is linted and held to its shape (test_ci_fix.py).
+      - ".github/workflows/ci-fix.yml"
       # auto-merge.yml runs only on pull_request_target, from main's copy, so
       # a pull request changing it never runs it: this is the one place it is
       # linted and held to its shape (tests/unit/scripts/test_auto_merge_workflow.py).
@@ -113,7 +116,10 @@ jobs:
 
       - name: shellcheck
         # -x follows `source` directives so lib/common.sh is analysed in context.
-        run: shellcheck -x scripts/*.sh scripts/lib/*.sh
+        # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
+        # every group file, so the group files are analysed in that context
+        # as well as on their own.
+        run: shellcheck -x scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh
 
       - name: scripts are executable and strict
         # The property is "strict mode is on before anything runs", so the check
@@ -129,7 +135,7 @@ jobs:
         run: |
           set -euo pipefail
           fail=0
-          for f in scripts/*.sh scripts/lib/*.sh; do
+          for f in scripts/*.sh scripts/lib/*.sh scripts/acceptance/*.sh scripts/acceptance/groups/*.sh; do
             [ -x "$f" ] || { echo "::error file=$f::not executable"; fail=1; }
             first="$(awk 'NR==1 && /^#!/ {next} /^[[:space:]]*#/ {next} /^[[:space:]]*$/ {next} {print; exit}' "$f")"
             [ "$first" = "set -euo pipefail" ] \
@@ -242,7 +248,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, auto-merge.yml and ci-gate.yml
+      - name: actionlint release.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml, auto-merge.yml and ci-gate.yml
         run: |
           set -euo pipefail
           curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
@@ -251,8 +257,8 @@ jobs:
           "${RUNNER_TEMP}/actionlint" -version
           "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/application.yml \
-            .github/workflows/iam-refusal-probe.yml .github/workflows/auto-merge.yml \
-            .github/workflows/ci-gate.yml
+            .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
+            .github/workflows/auto-merge.yml .github/workflows/ci-gate.yml
 
   python:
     name: format / unit tests

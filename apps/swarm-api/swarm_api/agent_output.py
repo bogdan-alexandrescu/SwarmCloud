@@ -60,8 +60,9 @@ from .inspect import (
     manifest_attempt,
     parse_tail_header,
 )
+from .json_masking import context_before, redact_json_window
 from .objects import ObjectAbsent, ObjectReader, ObjectSlice, ObjectUnreadable
-from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail, redact_lines
+from .redaction import RULES as REDACTION_RULES, open_key_start, redact, redact_detail
 from .task_input import masking_for
 from .transcript import last_result_event, parse_window
 
@@ -385,16 +386,37 @@ class AgentOutputService:
         its structure too, exactly as `/artifacts/content` masks the same
         bytes -- window boundaries are unchanged, only what each window is
         masked with.
+
+        A JSON artifact stays JSON (#327, `json_masking`). A window that
+        starts and ends on a line break is scanned as a page of a JSON
+        document, with the end of the window before it as its context, so a
+        value one window opens and the next closes is masked whole across
+        both and the download still parses. A window cut anywhere else (the
+        `MAX_TEXT_CARRY` split) is masked by the text path.
         """
         total = first.total_bytes
         carry = b""
         piece = first
         at = first.end
+        # Whether the next window starts on a line, and the text before it.
+        on_line = True
+        before = b""
+
+        def window(data: bytes, *, ends_on_line: bool) -> bytes:
+            nonlocal on_line, before
+            fragment = on_line and ends_on_line
+            out = _scrub(
+                data, literals=literals, fragment=fragment, context=before if fragment else b""
+            )
+            before = context_before(data, starts_on_line=on_line) if ends_on_line else b""
+            on_line = ends_on_line
+            return out
+
         while True:
             buffer = carry + piece.data
             if at >= total:
                 if buffer:
-                    yield _scrub(buffer, literals=literals)
+                    yield window(buffer, ends_on_line=True)
                 return
             cut = _last_boundary(buffer)
             if cut >= 0:
@@ -403,11 +425,11 @@ class AgentOutputService:
                     # -1 when the key is all this window holds: carry it.
                     cut = _last_boundary(buffer[:begin])
             if cut >= 0:
-                yield _scrub(buffer[: cut + 1], literals=literals)
+                yield window(buffer[: cut + 1], ends_on_line=buffer[cut : cut + 1] == b"\n")
                 carry = buffer[cut + 1 :]
             elif len(buffer) >= MAX_TEXT_CARRY:
                 split = _char_boundary(buffer) or len(buffer)
-                yield _scrub(buffer[:split], literals=literals)
+                yield window(buffer[:split], ends_on_line=False)
                 carry = buffer[split:]
             else:
                 carry = buffer
@@ -820,6 +842,17 @@ class AgentOutputService:
         result = event.get("result")
         text = result if isinstance(result, str) else None
         scrubbed = redact(text, decoded=True, extra=literals) if text is not None else None
+        # The reason fields beside it, masked with the SAME literals (epic
+        # #227: they had the rules alone, so a value the task named as secret
+        # and the agent echoed into one was served under `content`'s mask) and
+        # counted with it, so `redacted` never says false over a mask.
+        reasons = {
+            field: _text_or_none(event.get(field), literals=literals)
+            for field in ("subtype", "stop_reason", "terminal_reason")
+        }
+        count = (scrubbed.count if scrubbed is not None else 0) + sum(
+            found for _, found in reasons.values()
+        )
         is_error = event.get("is_error")
         num_turns = event.get("num_turns")
         body.update(
@@ -830,23 +863,25 @@ class AgentOutputService:
             content=scrubbed.text if scrubbed is not None else None,
             complete=True if text is not None else None,
             is_error=is_error if isinstance(is_error, bool) else None,
-            subtype=_text_or_none(event.get("subtype")),
-            stop_reason=_text_or_none(event.get("stop_reason")),
-            terminal_reason=_text_or_none(event.get("terminal_reason")),
+            subtype=reasons["subtype"][0],
+            stop_reason=reasons["stop_reason"][0],
+            terminal_reason=reasons["terminal_reason"][0],
             num_turns=num_turns
             if isinstance(num_turns, int) and not isinstance(num_turns, bool)
             else None,
             bytes=len(text.encode("utf-8")) if text is not None else None,
-            redacted=bool(scrubbed and scrubbed.any),
-            redaction_count=scrubbed.count if scrubbed is not None else 0,
+            redacted=count > 0,
+            redaction_count=count,
             detail=None if text is not None else "the result event carries no result text",
         )
 
 
-def _text_or_none(value: Any) -> str | None:
+def _text_or_none(value: Any, *, literals: tuple[str, ...] = ()) -> tuple[str | None, int]:
+    """A result event's string field, masked with the task's literals, and its count."""
     if not isinstance(value, str) or not value:
-        return None
-    return redact(value, decoded=True).text
+        return None, 0
+    masked = redact(value, decoded=True, extra=literals)
+    return masked.text, masked.count
 
 
 def _capture_cut(*, seen: bool, declared: bool | None, whole: bool) -> bool | None:
@@ -946,7 +981,13 @@ def _align_lines(
     return raw, start, start + len(raw), False, None
 
 
-def _scrub(data: bytes, *, literals: tuple[str, ...] = ()) -> bytes:
+def _scrub(
+    data: bytes,
+    *,
+    literals: tuple[str, ...] = (),
+    fragment: bool = False,
+    context: bytes = b"",
+) -> bytes:
     """One window of a text download, redacted, every other byte exactly as stored.
 
     `surrogateescape` both ways (#188 review): a byte that is not UTF-8 becomes
@@ -958,9 +999,16 @@ def _scrub(data: bytes, *, literals: tuple[str, ...] = ()) -> bytes:
     a whole JSON line is masked by its structure too, exactly as
     `/artifacts/content` masks the same bytes, and `literals` -- this task's
     own learned literals -- are applied in every case, the same as there.
+
+    `json_masking.redact_json_window` in front of it (#327): a window that is
+    JSON -- a whole document, JSONL, or with `fragment` a page of one cut on
+    line breaks, `context` the text before it -- is masked by its tokens and
+    served as JSON; everything else goes to `redact_lines` as before.
     """
     text = data.decode("utf-8", errors="surrogateescape")
-    return redact_lines(text, literals=literals).text.encode("utf-8", errors="surrogateescape")
+    before = context.decode("utf-8", errors="surrogateescape")
+    masked = redact_json_window(text, literals=literals, fragment=fragment, context=before)
+    return masked.text.encode("utf-8", errors="surrogateescape")
 
 
 def _char_boundary(data: bytes) -> int:

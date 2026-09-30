@@ -606,6 +606,35 @@ TOOLS: list[dict[str, Any]] = [
                                 ),
                             },
                             "timeout_seconds": {"type": "integer"},
+                            "when": {
+                                "type": "object",
+                                "properties": {
+                                    "step": {"type": "string"},
+                                    "verdict_in": {
+                                        "type": "array",
+                                        "items": {"type": "string", "enum": ["MERGE", "NOT_YET"]},
+                                    },
+                                },
+                                "required": ["step", "verdict_in"],
+                                "description": (
+                                    "Run this step's agent only when the verdict "
+                                    "file it stages from `step` (through "
+                                    "input_from) says one of `verdict_in`. "
+                                    "Otherwise the step still runs and "
+                                    "publishes, without an agent. The review "
+                                    "writes {\"verdict\": \"MERGE\"|\"NOT_YET\", "
+                                    "\"findings\": [...]}."
+                                ),
+                            },
+                            "builds_on": {
+                                "type": "string",
+                                "description": (
+                                    "An upstream step id whose pushed branch "
+                                    "this step's checkout starts from, so a fix "
+                                    "sees the code it fixes. Needs strategy "
+                                    "`integrate` or `direct-pr`."
+                                ),
+                            },
                             "inputs": _INPUTS_SCHEMA,
                             "stage": {
                                 "type": "string",

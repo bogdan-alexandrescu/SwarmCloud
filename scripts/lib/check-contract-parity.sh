@@ -16,7 +16,8 @@
 # shell and jq copies in scripts/lib/common.sh (sections 1-4), and the copies
 # apps/swarm-ui/src/types.ts has to keep because a browser cannot import
 # Python (section 5). The TypeScript side reads the .ts as text and needs no
-# node toolchain, here or in CI.
+# node toolchain, here or in CI. Section 12 holds the shell redaction filter to
+# the API's, over one fixture file both are run on.
 #
 # Run by `make test` and by the `shell` job in .github/workflows/application.yml.
 # It needs no cloud credentials and no emulator.
@@ -1204,10 +1205,10 @@ verdict("worker GSA prefix", GSA,
                "python default"))),
         5, GSA_COST, normalise=lambda value: value.rstrip("-"))
 
-# The broker accepts a SET of prefixes, so the check is containment again. It is
-# reported rather than asserted equal because the second entry is a deliberate
-# migration allowance, and narrowing an accepted identity is a separate change
-# from keeping the copies in step.
+# The broker's allow-list must be EXACTLY the frozen module's prefix. It is an
+# authentication list, so an extra entry is not harmless slack: it is a
+# service-account name that authenticates as a tenant although no provisioning
+# path creates it. `swarm-t` sat here for that reason until #176.
 BROKER = TEXT["apps/quota-broker/quota_broker/main.py"]
 accepted = re.search(r"^WORKER_SA_PREFIXES\s*=\s*\(([^)]*)\)", BROKER, re.M)
 if not accepted:
@@ -1215,10 +1216,14 @@ if not accepted:
          "no `WORKER_SA_PREFIXES = (...)` in the quota broker; the restatement moved")
 else:
     values = set(re.findall(r"\"([^\"]+)\"", accepted.group(1)))
-    if GSA in values:
+    if values == {GSA}:
         emit("OK", "WORKER_SA_PREFIXES",
-             "accepts %s, which is what the frozen module derives (also accepts %s)"
-             % (GSA, " ".join(sorted(values - {GSA})) or "nothing else"))
+             "accepts only %s, which is what the frozen module derives" % GSA)
+    elif GSA in values:
+        emit("DRIFT", "WORKER_SA_PREFIXES",
+             "accepts %s as well as %s; no provisioning path creates those, so "
+             "an account made by hand under that name authenticates as a tenant"
+             % (" ".join(sorted(values - {GSA})), GSA))
     else:
         emit("DRIFT", "WORKER_SA_PREFIXES",
              "accepts %s and NOT %s, so every worker token is refused and no "
@@ -1550,6 +1555,49 @@ def script_default(text, var):
     return found.group(1) if found else None
 
 
+def enclosing_object_start(text, pos):
+    """The offset of the `{` that opens the object the key at POS sits in.
+
+    Scanned backward: a CLOSER seen first means its OPENER belongs to a
+    balanced sibling value (an array, a nested object) and must be walked
+    past rather than mistaken for the object enclosing POS, so a closer
+    pushes the depth up and its matching opener brings it back down. The
+    first opener found at depth zero is the one that actually encloses POS.
+    """
+    depth = 0
+    i = pos - 1
+    while i >= 0:
+        ch = text[i]
+        if ch in CLOSERS:
+            depth += 1
+        elif ch in OPENERS:
+            if depth == 0:
+                return i
+            depth -= 1
+        i -= 1
+    return None
+
+
+RUNNER_PROFILE_KEY = re.compile(
+    "runner_profile:\\s*" + chr(34) + "([a-z][a-z0-9-]*)" + chr(34)
+)
+
+
+def sibling_runner_profile(text, pos):
+    """The `runner_profile: "name"` literal declared in the same jq object
+    as the key at POS -- a workflow step like
+    `{step_id: "a", runner_profile: "mock", input: {...}}`, where each step
+    names its own profile rather than a script-wide PROFILE variable. None
+    when the enclosing object cannot be found or names none, including when
+    it is a jq variable (`runner_profile: $profile`) rather than a literal.
+    """
+    start = enclosing_object_start(text, pos)
+    if start is None:
+        return None
+    found = RUNNER_PROFILE_KEY.search(text, start, pos)
+    return found.group(1) if found else None
+
+
 if "inputs" not in getattr(frozen_profiles.RunnerProfile, "__dataclass_fields__", {}):
     emit("MISSING", "RunnerProfile.inputs",
          "the frozen catalogue declares no runner inputs, so there is nothing "
@@ -1581,6 +1629,19 @@ else:
         for call in re.finditer(r"\bsubmit_task\s+(\S+)\s+(.*)", logical):
             where = "%s, at: %s" % (rel, call.group(0)[:72])
             token, rest = call.group(1).strip("\""), call.group(2)
+            if token == "$" + "@":
+                # A forwarder, not a call: acc_submit in
+                # scripts/acceptance/lib.sh shifts off its own VAR argument
+                # and passes the rest straight through
+                # ("submit_task \"$@\""). This exact line names no profile
+                # and sends no input of its own, so there is nothing to
+                # compare here -- unlike a real call, skipping it hides no
+                # restatement, because it restates nothing itself. Its own
+                # callers (acc_submit VAR PROFILE INPUT EXTRA) are a
+                # distinct spelling this scan does not parse yet; teaching
+                # it that shape is separate follow-up work, not a silent
+                # gap introduced by this line.
+                continue
             if token.startswith("$" + "{"):
                 token = script_default(text, token[2:].split("}")[0].split(":")[0])
             if rest.startswith(SUBSHELL + "profile_input"):
@@ -1598,7 +1659,17 @@ else:
         for step in re.finditer(r"\binput:\s*[{]", text):
             where = "%s:%d" % (rel, line_of(text, step.start()))
             keys = top_level_keys(text[step.end() - 1:])
-            profile = script_default(text, "PROFILE")
+            # A workflow step names its own profile as a sibling key --
+            # `{step_id: "a", runner_profile: "mock", input: {...}}`, as the
+            # jq bodies in the acceptance suite do, one workflow naming
+            # several profiles in a single call -- so that literal is
+            # checked FIRST.
+            # Only when the step carries no such literal (a jq variable like
+            # `runner_profile: $profile`, filled from a script-wide PROFILE
+            # the old e2e-test.sh shape uses) does this fall back to that.
+            profile = sibling_runner_profile(text, step.start())
+            if profile is None:
+                profile = script_default(text, "PROFILE")
             if keys is None or profile is None:
                 unread.append(where)
                 continue
@@ -1622,10 +1693,14 @@ else:
         else:
             unread.append(where)
 
-    # The floor is what this scan found when it was written: eleven
-    # submit_task calls, four workflow steps in e2e-test.sh and the two
-    # branches of profile_input. Fewer means a site moved out of its sight.
-    SITE_FLOOR = 17
+    # The floor is what this scan found the last time it was widened: the
+    # original eleven submit_task calls, four workflow steps in e2e-test.sh
+    # and the two branches of profile_input (17), plus the twelve step
+    # objects the acceptance suite names its own runner_profile on directly
+    # -- two in scripts/acceptance/groups/mock.sh, ten in
+    # scripts/acceptance/groups/workflow.sh. Fewer means a site moved out of
+    # its sight.
+    SITE_FLOOR = 29
     compared = 0
     drift = []
     for where, profile, keys in sites:
@@ -1783,6 +1858,123 @@ else
   if [[ "${MIRROR_SEEN}" -eq 0 ]]; then
     err "the mirrored-value probe printed no assertions at all; nothing was checked"
     FAILED=1
+  fi
+fi
+
+# --------------------------------------------------------------------------
+# 12. THE REDACTION FILTER, stated twice: `redact()` in common.sh and
+#     `swarm_api.redaction.redact`.
+# --------------------------------------------------------------------------
+# Not the frozen contract, and restated for the same reason everything above
+# is: sed cannot import Python. The terminal and the browser are meant to show
+# an operator the same masked line, and the two have drifted every time they
+# were compared -- #206 (the shell masked a plain-text private key's BEGIN
+# line and printed its body), #224 (both served `AWS_SECRET_ACCESS_KEY=`), and
+# `X-API-KEY:`, masked by the API and printed by the terminal (epic #227).
+#
+# ONE FIXTURE SET DRIVES BOTH: tests/fixtures/redaction-parity.json, which the
+# unit suite (tests/unit/control_plane/test_log_redaction.py) reads too. Every
+# case goes through both filters here and each must give the fixture's
+# `expected` exactly, with none of its `never` substrings left. Counted and
+# printed, for the reason section 6 gives.
+step "Redaction-filter parity"
+
+REDACT_FIXTURE="${REPO_ROOT}/tests/fixtures/redaction-parity.json"
+if [[ ! -s "${REDACT_FIXTURE}" ]]; then
+  err "the redaction parity fixture is missing: ${REDACT_FIXTURE}"
+  FAILED=1
+else
+  REDACT_CASES="$(jq '.cases | length' "${REDACT_FIXTURE}")"
+
+  # The shell half: redact() as this file sourced it from common.sh.
+  REDACT_SEEN=0
+  REDACT_DRIFT=0
+  REDACT_AT=0
+  while [[ "${REDACT_AT}" -lt "${REDACT_CASES}" ]]; do
+    R_NAME="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].name' "${REDACT_FIXTURE}")"
+    R_TEXT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].text' "${REDACT_FIXTURE}")"
+    R_WANT="$(jq -r --argjson i "${REDACT_AT}" '.cases[$i].expected' "${REDACT_FIXTURE}")"
+    R_GOT="$(printf '%s\n' "${R_TEXT}" | redact)"
+    R_LEFT=""
+    while IFS= read -r R_NEVER; do
+      [[ -n "${R_NEVER}" ]] || continue
+      [[ "${R_GOT}" != *"${R_NEVER}"* ]] || R_LEFT="${R_NEVER}"
+    done < <(jq -r --argjson i "${REDACT_AT}" '.cases[$i].never[]' "${REDACT_FIXTURE}")
+    if [[ -n "${R_LEFT}" ]]; then
+      err "redact() in common.sh printed what case '${R_NAME}' must never show: ${R_LEFT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    elif [[ "${R_GOT}" != "${R_WANT}" ]]; then
+      err "redact() in common.sh has DRIFTED on case '${R_NAME}':"
+      err "    expected : ${R_WANT}"
+      err "    got      : ${R_GOT}"
+      REDACT_DRIFT=$(( REDACT_DRIFT + 1 ))
+    fi
+    REDACT_SEEN=$(( REDACT_SEEN + 1 ))
+    REDACT_AT=$(( REDACT_AT + 1 ))
+  done
+  if [[ "${REDACT_SEEN}" -eq 0 ]]; then
+    err "the redaction fixture holds no cases; nothing was compared"
+    FAILED=1
+  elif [[ "${REDACT_DRIFT}" -gt 0 ]]; then
+    err "${REDACT_DRIFT} of ${REDACT_SEEN} redaction cases differ in the shell filter"
+    FAILED=1
+  else
+    ok "redact() in common.sh gives the fixture's output on all ${REDACT_SEEN} cases"
+  fi
+
+  # The Python half: the API's filter, over the same file.
+  if ! REDACT_PY="$(python3 - "${REPO_ROOT}" "${REDACT_FIXTURE}" 2>&1 <<'PY'
+import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "swarm-api"))
+# swarm_api.redaction re-exports the rules from swarm_redaction (#259).
+sys.path.insert(0, str(Path(sys.argv[1]) / "apps" / "redaction"))
+from swarm_api.redaction import redact
+
+for case in json.loads(Path(sys.argv[2]).read_text())["cases"]:
+    got = redact(case["text"])
+    left = [n for n in case["never"] if n in got.text]
+    if left:
+        print("DRIFT|%s|served what it must never show: %s" % (case["name"], left[0]))
+    elif got.text != case["expected"] or got.count != case["count"]:
+        print("DRIFT|%s|expected %r (count %d), got %r (count %d)" % (
+            case["name"], case["expected"], case["count"], got.text, got.count))
+    else:
+        print("OK|%s|" % case["name"])
+PY
+)"; then
+    err "the Python half of the redaction parity check failed to run:"
+    printf '%s\n' "${REDACT_PY}" | sed 's/^/     /' >&2
+    FAILED=1
+  else
+    PY_SEEN=0
+    PY_DRIFT=0
+    while IFS='|' read -r P_STATUS P_NAME P_DETAIL; do
+      [[ -n "${P_STATUS}" ]] || continue
+      PY_SEEN=$(( PY_SEEN + 1 ))
+      case "${P_STATUS}" in
+        OK) ;;
+        DRIFT)
+          err "swarm_api.redaction has DRIFTED on case '${P_NAME}': ${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+        *)
+          err "unexpected redaction parity output: ${P_STATUS}|${P_NAME}|${P_DETAIL}"
+          PY_DRIFT=$(( PY_DRIFT + 1 ))
+          ;;
+      esac
+    done <<<"${REDACT_PY}"
+    if [[ "${PY_SEEN}" -ne "${REDACT_CASES}" ]]; then
+      err "the Python half reported ${PY_SEEN} of ${REDACT_CASES} cases; the rest were not compared"
+      FAILED=1
+    elif [[ "${PY_DRIFT}" -gt 0 ]]; then
+      err "${PY_DRIFT} of ${PY_SEEN} redaction cases differ in swarm_api.redaction"
+      FAILED=1
+    else
+      ok "swarm_api.redaction gives the fixture's output on all ${PY_SEEN} cases"
+    fi
   fi
 fi
 
