@@ -1325,6 +1325,10 @@ body {
        `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
        longest known value is a truncation with no width band to blame. */
     [step] minmax(0, 120px)
+    /* #376: the start, with the submit time on a second line under it.
+       13ch is `never started`, the longest thing the cell prints; the
+       `MM-DD HH:MM` form is 11 and `sub MM-DD HH:MM` is the micro line. */
+    [started] minmax(0, 15ch)
     /* 19ch, NOT 76px (AG-11). At 1440 76px cut every waiting row to
        "queued 1…", which is the one fact the Waiting tab exists to show.
        `ch` rather than px because the cell is `tabular-nums`, so a digit IS
@@ -1341,6 +1345,10 @@ body {
        `shell.test.tsx` derives the floor from `elapsed()` itself, over every
        state, started or not. */
     [age] minmax(0, 19ch)
+    /* #379: the account. 16ch is `not assigned yet`; a swap's
+       `acct-eng-01 → 02 (swapped: unreadable)` ellipses and is whole in the
+       cell's title. */
+    [account] minmax(0, 16ch)
     [try] 44px
     [class] minmax(0, 116px)
     [flags] minmax(0, 0.85fr);
@@ -1435,6 +1443,10 @@ body {
 .app.has-inspector .row .owner,
 .app.has-inspector .row .try,
 .app.has-inspector .row .class,
+/* The start and the account go with them (#376, #379): both are in the open
+   inspector's header two inches to the right. */
+.app.has-inspector .row .started,
+.app.has-inspector .row .acct,
 /* The model goes for the same reason the three columns do: it is the line
    under the run id in the panel that is open. What is left in `[name]` is the
    profile and the id, which is what you match a row against. Truncating BOTH
@@ -1645,6 +1657,10 @@ body {
     [shape] minmax(0, 0.9fr)
     [mix] minmax(0, 1.1fr)
     [spend] 96px
+    /* `[started]` (#376) is added between here and `[age]` only in a row at
+       least 720px wide -- the `@container wf-row` rule below. One more track
+       is one more column gap, and at a 620px row that gap alone put the caret
+       7px outside the row (workflow.board.test.tsx). */
     [age] max-content
     /* RESERVED, NOT CONTENT-SIZED (WF-16). `minmax(0, auto)` sized this track
        per row to whatever the row carried, and each row is its own grid -- so
@@ -1683,6 +1699,28 @@ body {
    media query fires for that. */
 @container wf-row (min-width: 620px) {
   .wf-bar { --wf-progress-floor: 33ch; }
+}
+/* THE WORKFLOW'S START (#376), where the row has room for it: the template
+   above with one track more, `[started]`, the start derived from the earliest
+   step over the submit time. A 0 floor, so it is the track that yields first;
+   the open card states both whole at every width. Every other track is the
+   template above's -- change one, change both. */
+@container wf-row (min-width: 720px) {
+  .wf-bar {
+    grid-template-columns:
+      [state] 10px
+      [name] minmax(0, 1.3fr)
+      [word] max-content
+      [progress] minmax(var(--wf-progress-floor, 12ch), 1.2fr)
+      [shape] minmax(0, 0.9fr)
+      [mix] minmax(0, 1.1fr)
+      [spend] 96px
+      [started] minmax(0, max-content)
+      [age] max-content
+      [flags] minmax(0, 140px)
+      [actions] 16px;
+  }
+  .wf-bar .wf-started { display: flex; }
 }
 /* HUELESS ON HOVER (§1.3). The accent already carries the link colour, the
    focus ring and a live state on this same row; spending it on "the cursor is
@@ -1911,6 +1949,17 @@ body {
 }
 .wf-spend.absent { color: var(--text-faint); font-style: italic; }
 .wf-spend-cov { color: var(--text-faint); margin-left: 5px; }
+
+/* #376: the workflow's start over its submit time. The start is in the row's
+   ink; the submit is the age column's faint micro. */
+/* Not drawn below a 720px row, which has no `[started]` track (above). */
+.wf-started {
+  display: none; flex-direction: column; align-items: flex-end; min-width: 0; overflow: hidden;
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  white-space: nowrap; font-variant-numeric: tabular-nums;
+}
+.wf-started-sub { color: var(--text-faint); }
+.wf-times { margin-bottom: var(--ctl-s2); }
 
 .wf-when {
   font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
@@ -2665,7 +2714,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
        is easier to hit is not a row that needs bigger text. */
     min-height: 44px;
   }
-  .wf-state, .wf-mix, .wf-spend, .wf-when, .wf-flags, .wf-progress-text, .wf-pr { display: none; }
+  .wf-state, .wf-mix, .wf-spend, .wf-started, .wf-when, .wf-flags, .wf-progress-text, .wf-pr { display: none; }
   /* The open body loses the chrome padding it does not have room for; the
      canvas inside it keeps its own computed width and scrolls, and is NOT
      scaled to fit. Scaling a twenty-step graph onto a 358px column turns
@@ -2687,7 +2736,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
       [age] 56px
       [actions] 16px;
   }
-  .wf-mix, .wf-spend, .wf-flags, .wf-pr { display: none; }
+  .wf-mix, .wf-spend, .wf-started, .wf-flags, .wf-pr { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -3249,6 +3298,17 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .row .wf { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row .wf .dash { color: var(--text-faint); }
 .row .when.ticking { color: var(--text-dim); }
+/* #376: the start over its submit time, both tabular, the submit one step
+   quieter. `never started` is a fact, not a gap, so it keeps full ink. */
+.row .started { display: flex; flex-direction: column; min-width: 0; font-variant-numeric: tabular-nums; }
+.row .started > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .started-sub { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.row .acct { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .acct.is-none { color: var(--text-faint); }
+/* The STARTED head is a button for its sort; it reads as the head label it
+   replaces, with the pointer the only difference. */
+.row .ag-sort { all: unset; cursor: pointer; }
+.row .ag-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 .section.group > h2 { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
 /* The reason a run of the group's rows shares, said once under the header
@@ -3323,7 +3383,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   /* The id survives and the model goes. On a phone the id is what somebody is
      matching against the one in their terminal; the model is on the detail. */
   .row .agent .model { display: none; }
-  .row .owner, .row .try, .row .class, .row .wf { display: none; }
+  .row .owner, .row .try, .row .class, .row .wf, .row .started, .row .acct { display: none; }
   /* THE DISPATCH FLAG IS NOT TRUNCATED, IT IS MOVED. `integrate/contributor`
      is 21 characters and it is the row's most consequential fact -- this step
      is going to write to a repository. Ellipsing it to `integrate/contrib…`
@@ -11068,6 +11128,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-inspect-wf { display: flex; flex-direction: column; flex-basis: 100%; min-width: 0; }
 .wf-inspect-label { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-inspect-wf.has-label > .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+/* #376: the workflow's start and submit, under its id, in the same register. */
+.wf-inspect-times { flex-basis: 100%; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
 .wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-inspect-run { margin-left: auto; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .wf-inspect-close {
