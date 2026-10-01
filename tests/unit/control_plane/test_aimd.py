@@ -382,25 +382,47 @@ def test_a_disabled_tenant_does_not_hold_the_shared_pool_open(broker, db):
 
 # -- the caller's service account is pinned to THIS project -----------------
 
-def test_a_lookalike_service_account_in_another_project_is_not_a_tenant():
-    """A service account named `swarm-agent-worker-eng` in an ATTACKER'S own
-    project produces a genuine Google-signed OIDC token. With the project
-    unpinned it satisfied the pattern and was authorized as tenant `eng`, able
-    to report rate limits and exhaustion against them."""
+def _authenticated_tenant(caller: str) -> str | None:
+    """The tenant the broker authenticates `caller` as, or None if refused."""
     from quota_broker.main import worker_sa_pattern
 
-    pattern = worker_sa_pattern(PROJECT)
-    assert pattern.match(
-        f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
-    ).group("tenant") == "eng"
-    # The other provisioning path's spelling is real too.
-    assert pattern.match(
-        f"swarm-t-eng@{PROJECT}.iam.gserviceaccount.com"
-    ).group("tenant") == "eng"
+    match = worker_sa_pattern(PROJECT).match(caller)
+    return match.group("tenant") if match else None
 
-    assert pattern.match("swarm-agent-worker-eng@evil-project.iam.gserviceaccount.com") is None
-    assert pattern.match("swarm-t-eng@evil-project.iam.gserviceaccount.com") is None
-    assert pattern.match(f"someone-else@{PROJECT}.iam.gserviceaccount.com") is None
+
+def test_a_tenant_worker_in_this_project_is_authenticated_as_its_tenant():
+    """`swarm-agent-worker-<tenant>` is the identity terraform/modules/tenancy
+    and scripts/register-tenant.sh both create, and the one every worker runs
+    as."""
+    assert _authenticated_tenant(
+        f"swarm-agent-worker-eng@{PROJECT}.iam.gserviceaccount.com"
+    ) == "eng"
+
+
+@pytest.mark.parametrize(
+    "caller",
+    [
+        # register-tenant.sh's retired spelling. No provisioning path creates it
+        # any more, so an account by that name is one somebody made by hand
+        # (#176), and it must not be able to act as tenant `eng`.
+        f"swarm-t-eng@{PROJECT}.iam.gserviceaccount.com",
+        # A look-alike prefix: the tenant family is `swarm-agent-worker-`, not
+        # anything that merely starts with those letters.
+        f"swarm-agent-workerx-eng@{PROJECT}.iam.gserviceaccount.com",
+        f"swarm-agent-worker@{PROJECT}.iam.gserviceaccount.com",
+        # The right name in an ATTACKER'S own project produces a genuine
+        # Google-signed OIDC token. With the project unpinned it was authorized
+        # as tenant `eng`, able to report rate limits and exhaustion for them.
+        "swarm-agent-worker-eng@evil-project.iam.gserviceaccount.com",
+        "swarm-t-eng@evil-project.iam.gserviceaccount.com",
+        # Some other service account of this project, and a human.
+        f"someone-else@{PROJECT}.iam.gserviceaccount.com",
+        "swarm-agent-worker-eng@saga.xyz",
+        "alice@saga.xyz",
+    ],
+)
+def test_only_a_tenant_worker_of_this_project_is_authenticated(caller):
+    assert _authenticated_tenant(caller) is None
 
 
 def test_the_pattern_refuses_to_be_built_without_a_project():

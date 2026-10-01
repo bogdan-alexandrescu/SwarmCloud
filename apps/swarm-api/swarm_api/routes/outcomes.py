@@ -22,6 +22,11 @@ ONE ERROR SHAPE. Every query parameter is declared as `str | None` or
 differently shaped 422 body on this route; the `{code, message, detail}`
 envelope is the only one a caller has to parse. A `tenant_id` in the query
 string is not a parameter and is ignored.
+
+`section` (#377) is validated there too, so an unknown one is the same 422 --
+and only after the gate: naming a section never changes who may read what.
+With no `section` the response is exactly what it was before the parameter
+existed; `Outcomes.read` says what a single section still reads.
 """
 
 from __future__ import annotations
@@ -54,6 +59,10 @@ def get_outcomes(
     kind: str | None = Query(default=None, description="all | standalone | steps"),
     group: str | None = Query(default=None, description="runner_profile | submitted_by | tenant_id"),
     compare: str | None = Query(default=None, description="none | previous"),
+    section: list[str] = Query(
+        default=[],
+        description="repeatable; the response keys wanted (outcomes.SECTIONS); none is all of them",
+    ),
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
@@ -72,6 +81,7 @@ def get_outcomes(
         "kind": kind,
         "group": group,
         "compare": compare,
+        "section": section,
     }
     if platform_requested(raw):
         require_admin(auth, PLATFORM_ROUTE)

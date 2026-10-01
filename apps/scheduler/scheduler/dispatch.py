@@ -339,6 +339,31 @@ def job_id_for(tenant_id: str, profile_name: str, resource_class: str | None = N
     return sanitize_name("swarm", "job", tenant_id, profile_name)
 
 
+#: The worker's step-spec verification settings (contract request 34). Only
+#: the PLATFORM sets them -- terraform on its Jobs and in the GKE ConfigMap,
+#: this scheduler on the Jobs it creates, from its own settings. `worker_env`,
+#: shaped by a task, must never carry one: a tenant-writable document would
+#: then choose the keys it is checked against. A test holds both dispatchers.
+SPEC_SETTING_NAMES = (
+    "SPEC_VERIFY_KEYS", "SPEC_SIGNING_KEY", "SPEC_SIGNATURE_MODE", "SPEC_LEGACY_CUTOVER",
+)
+#: The ConfigMap terraform renders into each tenant's namespace, and where a
+#: GKE worker pod mounts it read-only (`agent_worker.specverify.VERIFY_KEYS_MOUNT`).
+SPEC_VERIFY_KEYS_CONFIG_MAP = "swarm-spec-verify-keys"
+SPEC_VERIFY_KEYS_MOUNT = "/etc/swarm/spec-verify-keys"
+
+
+def spec_job_env(settings: Any) -> dict[str, str]:
+    """The verification settings for a Job this scheduler creates; absent when unset."""
+    values = {
+        "SPEC_VERIFY_KEYS": getattr(settings, "spec_verify_keys", ""),
+        "SPEC_SIGNING_KEY": getattr(settings, "spec_signing_key", ""),
+        "SPEC_SIGNATURE_MODE": getattr(settings, "spec_signature_mode", ""),
+        "SPEC_LEGACY_CUTOVER": getattr(settings, "spec_legacy_cutover", ""),
+    }
+    return {name: str(value) for name, value in values.items() if value}
+
+
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """The ONLY thing the environment carries is identifiers and endpoints.
 
@@ -609,6 +634,12 @@ class CloudRunJobDispatcher:
         model = self._model_for(profile)
         if model:
             env.append(run_v2.EnvVar(name="MODEL", value=model))
+        # THE STEP-SPEC VERIFICATION SETTINGS, ON THE JOB (contract request 34),
+        # for the same reason as MODEL: a Job terraform creates carries them
+        # from `local.spec_worker_env`; this one gets the scheduler's copy of
+        # the same values. On the Job, never in `worker_env`.
+        for name, value in spec_job_env(self._settings).items():
+            env.append(run_v2.EnvVar(name=name, value=value))
         # THE SAME QUESTION ADMISSION ASKED, of the same pool list
         # (credentials.py, #169). This used to be a private rule of its own,
         # `_pool_can_serve`: "the deployment has a broker and the tenant has no
@@ -776,7 +807,18 @@ class CloudRunJobDispatcher:
         # next image change. Same rebuild, same single write.
         wanted_model = self._model_for(profile)
         current_model = _plain_env_value(container, "MODEL")
-        if current == wanted and current_model == wanted_model:
+        # AND ITS STEP-SPEC SETTINGS (contract request 34; #353 security
+        # review, M1). `_build_job` bakes SPEC_* from this scheduler's own
+        # settings, so a tfvars-only change -- the cutover, the move to
+        # enforce, a rotated or revoked key -- must rebuild the Jobs this
+        # dispatcher created (every self-service `u-*` tenant, every
+        # non-default class), or they keep verifying against the old values.
+        wanted_spec = spec_job_env(self._settings)
+        spec_drift = sorted(
+            name for name in SPEC_SETTING_NAMES
+            if _plain_env_value(container, name) != wanted_spec.get(name)
+        )
+        if current == wanted and current_model == wanted_model and not spec_drift:
             return False
         job = self._build_job(profile, tenant, resource_class)
         job.name = name
@@ -789,9 +831,12 @@ class CloudRunJobDispatcher:
                 f"to {wanted}: {exc}",
                 code="cloud_run_update_job_failed",
             ) from exc
+        # Names only: the values are public keys and a mode, but the log line
+        # needs no more than which settings moved.
         log.info(
-            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s)",
+            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
+            ", ".join(spec_drift) or "none",
         )
         return True
 
@@ -1289,15 +1334,19 @@ class GkeJobDispatcher:
         # Secret Manager itself under the identity this pod's KSA assumes.
         # `gke_worker_env`, not `worker_env`: the GKE pod also names the
         # metadata server by address, and only the GKE pod (see its docstring).
+        job_name = sanitize_name("swarm", task.id.replace("task_", ""), str(lease.generation))
         env = [{"name": k, "value": v} for k, v in
                gke_worker_env(task=task, lease=lease, tenant=tenant,
                               settings=self._settings).items()]
+        # The Job's own name, for the worker's check 5 (contract request 34).
+        # FROM THIS SAME RENDER, so the comparison proves only that this
+        # dispatcher agrees with itself; GKE injects no Job name of its own.
+        env.append({"name": "RUNNER_JOB_NAME", "value": job_name})
         resources = {
             "cpu": str(int(rc.cpu)),
             "memory": f"{rc.memory_gib}Gi",
             "ephemeral-storage": f"{rc.disk_gib}Gi",
         }
-        job_name = sanitize_name("swarm", task.id.replace("task_", ""), str(lease.generation))
         labels = {
             "managed-by": "swarm-scheduler",
             "swarm-tenant": sanitize_name(tenant.tenant_id),
@@ -1383,6 +1432,14 @@ class GkeJobDispatcher:
                                 "volumeMounts": [
                                     {"name": "workspace", "mountPath": WORKSPACE_MOUNT},
                                     {"name": "dshm", "mountPath": "/dev/shm"},
+                                    # The step-spec public keys (contract
+                                    # request 34), terraform's ConfigMap in
+                                    # this namespace. READ-ONLY, and never in
+                                    # `env`: a template placeholder away from
+                                    # a tenant-writable copy.
+                                    {"name": "spec-verify-keys",
+                                     "mountPath": SPEC_VERIFY_KEYS_MOUNT,
+                                     "readOnly": True},
                                     # readOnlyRootFilesystem means every path the
                                     # runtime writes to needs a volume: /tmp, and
                                     # a HOME for tool caches and crash dumps.
@@ -1401,6 +1458,14 @@ class GkeJobDispatcher:
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": "2Gi"}},
                             {"name": "home", "emptyDir": {"sizeLimit": "4Gi"}},
+                            # `optional`: a namespace whose ConfigMap has not
+                            # been applied yet still starts its pod, and the
+                            # worker then exits CANNOT_START for every task,
+                            # signed or not (no keys, and no mode or cutover
+                            # either) -- loud, and never an unverified run.
+                            {"name": "spec-verify-keys", "configMap": {
+                                "name": SPEC_VERIFY_KEYS_CONFIG_MAP,
+                                "optional": True}},
                         ],
                     },
                 },

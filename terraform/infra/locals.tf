@@ -403,13 +403,6 @@ locals {
       # and the subscription were always correct.
       DISPATCH_TOPIC = local.wake_topic
 
-      # SPEC_SIGNING_KEY_VERSION (contract request 34) is NOT set here yet, on
-      # purpose: scripts/lib/check-env-parity.sh refuses a variable no code
-      # reads, and today's swarm-api reads none. #353 adds
-      # `SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version` here in
-      # the same change as the code that reads it (owner decision 2026-09-29),
-      # so the hardened swarm-api never ships without it.
-
       # Neither name appeared anywhere in terraform, so swarm_api.settings read
       # empty tuples, resolve_tenant() had no groups to check, and EVERY caller
       # fell through to the personal `u-<email>` tenant.
@@ -483,6 +476,15 @@ locals {
       ADMIN_USERS             = join(",", sort(var.admin_users))
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
+
+      # The step-spec key version every submission is signed with (contract
+      # request 34). A full version name, because an asymmetric key has no
+      # primary version: local.spec_signing_key_version, derived in
+      # spec_signing.tf (#354) from var.spec_signing_key_version. Set in the
+      # same change as its reader (swarm_api.settings, swarm_api.specsigning),
+      # which refuses to start outside local development without it, so
+      # scripts/lib/check-env-parity.sh never sees one without the other.
+      SPEC_SIGNING_KEY_VERSION = local.spec_signing_key_version
 
       # The verification job's identity, admitted past the domain check.
       #

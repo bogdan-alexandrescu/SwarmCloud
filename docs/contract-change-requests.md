@@ -37,12 +37,15 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 24 | `profiles.py`: whether a profile's cost is declared rather than measured is named outside the catalogue | ACCEPTED 2026-09-25 (#185, decision 9), applied in PR #217 |
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
+| 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | ACCEPTED 2026-09-28 by the owner on #245, applied in PR #245 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342; amendment proposed 2026-09-30 (#364) |
-| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews |
+| 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | PROPOSED 2026-09-29 |
+| 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
 
 ---
 
@@ -713,6 +716,37 @@ writer cannot produce, with a test holding it in place, is a trap set for
 whoever wires it up. Everything else keeps working by convention, re-parsed in
 three places, with the frozen contract silent about a four-field block that
 decides whether a workflow opens one pull request or five.
+
+### A fifth field, 2026-09-28 (#263): `continues`
+
+The CI fixer needed a step to push to an EXISTING swarm branch rather than its
+own, and it was added the way this entry's "if it is declined" path allows:
+inside the block, with no change to `apps/common/swarm_common/`. So the block
+now has five fields, and this request covers all five.
+
+* **What it is.** A task id. swarm-api writes it only on the one step of a
+  `direct-pr` workflow submitted with `continues_task`, after checking the task
+  is the caller's own, was itself `direct-pr`, and is in the same repository,
+  and after resolving a chain of continuations to its root
+  (`swarm_api/continuation.py`). The worker derives `<prefix><id>` from it,
+  clones that branch and pushes onto it (`agent_worker/continuation.py`).
+* **Why not a typed field.** The same reason as the other four, and the same
+  rollout trap in its mildest form: a worker older than the API ignores the
+  key, pushes `swarm/<its own id>` and opens a second pull request. That is
+  wrong but not unsafe -- no branch is overwritten, and `push_branch` never
+  forces either way.
+* **The parity it relies on** is a test, as for the others:
+  `tests/unit/worker/test_continue_swarm_branch.py` builds the block with
+  swarm-api's own `DispatchOptions(continues=new_id("task")).to_metadata()`
+  and asserts the worker derives the branch from it, and that the worker's
+  task-id pattern accepts every id `new_id("task")` mints. The pattern is
+  restated in both components because neither can import the other;
+  `swarm_common.models` exporting it beside `new_id` is the frozen-contract
+  change that would remove the copy. **Requested, not made.**
+
+`codec.dispatch_of` does not serve `continues`: the workflow create response
+echoes it as `dispatch.continues_task`, and adding it to every task's
+`dispatch` would change a response shape several clients hold exactly.
 
 ---
 
@@ -2833,6 +2867,48 @@ figures are not dated, and a limit is never attributed to the kernel.
   UI's `limitSource`; compare request #20.
 
 
+## 27. `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists
+
+**Status: ACCEPTED, accepted by the owner 2026-09-28 on #245 and applied in
+PR #245.** Recorded 2026-09-28 by the #176 lane.
+
+### What is true today
+
+`apps/common/swarm_common/identity.py`, `_slug`'s docstring, LENGTH bullet:
+"A long group name yields an id no GCP service account can be named for,
+because `swarm-t-<id>` must fit in 30 characters." The code under it is right:
+`_MAX_TENANT_ID` is computed from `_GSA_PREFIX = "swarm-agent-worker-"`, and the
+comment on `_GSA_PREFIX` itself says the `swarm-t-` prefix "no longer exists".
+So the frozen module contradicts itself about which identity the cap is for.
+
+That contradiction is how #176 survived: the quota broker's comment said
+register-tenant.sh writes `swarm-t-<tenant>`, and accepted it as a worker
+identity, long after nothing created one. The broker no longer accepts it; this
+docstring is the one live statement left in the repository that `swarm-t-<id>`
+is the name a tenant's worker must fit.
+
+### The requested change
+
+Docstring only: `swarm-t-<id>` becomes `swarm-agent-worker-<id>` in that
+sentence. No code, no value, no type.
+
+### What it would break if accepted
+
+Nothing. No code reads a docstring, and `check-contract-parity.sh` compares
+`_GSA_PREFIX`, not prose.
+
+### If it is declined
+
+The frozen module keeps telling its reader that tenant ids are sized for an
+identity nothing creates, and the next restatement copied from that sentence
+reintroduces #176.
+
+### Applied, 2026-09-28 (PR #245)
+
+`_slug`'s LENGTH docstring bullet now reads `swarm-agent-worker-<id>` in place
+of `swarm-t-<id>`, matching `_GSA_PREFIX` and the comment already on it.
+
+
 ## 28. `profiles.py`: claude-code and codex declare an `issue` runner input
 
 **Status: ACCEPTED, accepted by the owner 2026-09-28** (recorded on #265), and
@@ -4330,6 +4406,59 @@ the implementing branch and must fail there before the change lands on
   still a group (or a user), and its listed accounts are members by
   declaration rather than by directory.
 Applied by #343 (accepted by the owner 2026-09-29).
+---
+
+## 31. `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on`
+
+**Status:** open, recorded 2026-09-29 from #264. If another branch has taken
+31 by the time this merges, renumber this one.
+
+### What is true today
+
+#264 added two workflow step fields, `when` (`{"step", "verdict_in"}`: run
+this step's agent only on an upstream review's verdict) and `builds_on` (an
+upstream step whose pushed branch this step clones). They are accepted by
+`WorkflowStepCreate`, checked by `validation.validate_step_routing`, and
+stored where the worker reads them: `task.metadata["dispatch"]`, as
+`verdict_gate: {"task_id", "verdict_in"}` and `builds_on: <task id>`, keyed by
+task id the way `integrates` is. That block is already reserved, so no new
+reserved key was needed and nothing frozen was edited.
+
+The frozen `WorkflowStep` has no field for either, so the workflow document
+does not record them. `GET /v1/workflows/{id}` shows a gated step exactly as
+it shows an ungated one; a reader has to open the step's task to see the gate
+(`GET /v1/tasks/{id}`, `dispatch.verdict_gate`). The declaration as the caller
+wrote it, keyed by step id, is not stored anywhere.
+
+### The requested change
+
+Two optional fields on `WorkflowStep`, both defaulting to "absent", so every
+stored workflow reads back unchanged:
+
+```python
+#: {"step": upstream step_id, "verdict_in": [...]} -- run this step's agent
+#: only on those verdicts (#264).
+when: dict[str, Any] | None = None
+#: An upstream step_id whose pushed branch this step's checkout starts from.
+builds_on: str | None = None
+```
+
+And, with them, `REVIEW_VERDICTS = ("MERGE", "NOT_YET")` in `models.py`, which
+is today written out twice (`swarm_api.validation.REVIEW_VERDICTS` and
+`agent_worker.verdict.REVIEW_VERDICTS`) and held equal only by
+tests/unit/worker/test_verdict_gate.py.
+
+### What it would break if accepted
+
+Nothing stored: both fields default to absent. `SubmissionService.submit_workflow`
+would copy them onto the `WorkflowStep` it already builds, and the workflow
+codec and the UI's step rows would start showing them.
+
+### If it is declined
+
+The gate stays visible only on the task, and the verdict vocabulary stays in
+two copies behind a parity test. That test lives in the unit suite, so it
+protects the repository, not a worker image built from an older commit.
 ---
 
 ## 32. `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none
@@ -6179,6 +6308,9 @@ issue #364 for the full finding.
 ## 34. `models.py` / a new `specsign.py`: a step's spec is signed by swarm-api and verified by every worker
 
 **Status: ACCEPTED 2026-09-29 by the owner after three security reviews.**
+Applied by #353 (accepted by the owner 2026-09-29): `swarm_common/specsign.py`
+and the three signature fields and `EndCause.SPEC_SIGNATURE_INVALID` in
+`swarm_common/models.py`; the Terraform half by #354.
 Recorded from #342 (S0), which the round-3 security re-review of #316
 (contract request 33, the merge step) found the same day. This entry went
 through three rounds of joint review with contract request 33 on 2026-09-29 --
@@ -7311,6 +7443,45 @@ cost.
     key never leaves Cloud KMS either way, and the threat here is who may call
     `AsymmetricSign`, which IAM decides, not extraction of the key.
 
+### Addendum 2026-09-29: corrections after acceptance
+
+The accepted text above is left as the owner accepted it. Three statements in
+it were found wrong while building it (#353, #354), and one decision was added:
+
+1. **The GKE Job name is derived from the task, not the tenant and profile.**
+   Requested change item 5 says the worker compares its identity against "the
+   Job name the scheduler derived from `tenant_id` and `runner_profile` (one
+   Job per tenant per profile)". That is Cloud Run's rule
+   (`swarm-job-<tenant>-<profile>`). `GkeJobDispatcher` creates one Job per
+   attempt, named `sanitize_name("swarm", <task id without "task_">,
+   <generation>)`, that is `swarm-<hex>-<gen>`
+   (`apps/scheduler/scheduler/dispatch.py`), and the worker checks
+   `RUNNER_JOB_NAME` against `specverify.gke_job_name(task_id, generation)`.
+   The weaker-claim paragraph about GKE still holds: the name and the
+   environment come from one render.
+2. **`cloudkms.googleapis.com` is enabled in bootstrap, not in
+   `terraform/infra/main.tf`.** The key ring and key live in
+   `terraform/bootstrap/spec_signing.tf` (#354), which enables the API and adds
+   it to `prerequisite_services`; `terraform/infra` only reads the key's
+   versions. Section 3's first bullet names the wrong root.
+3. **A GKE worker reads the signature mode and the legacy cutover from the
+   ConfigMap mount too** (owner decision, 2026-09-29). The text above has the
+   GKE mount carrying only `SPEC_VERIFY_KEYS` and `SPEC_SIGNING_KEY`, which
+   left a GKE worker in `enforce` from its first day while Cloud Run ran
+   `legacy`. The `swarm-spec-verify-keys` ConfigMap rendered by
+   `kubernetes/render.py` (#354) carries `SPEC_SIGNATURE_MODE` and
+   `SPEC_LEGACY_CUTOVER` as files beside the keys, and the worker reads each
+   of the four from its environment first and from
+   `/etc/swarm/spec-verify-keys` where the environment has none. GKE therefore
+   follows the legacy window exactly as Cloud Run does, including
+   `SPEC_LEGACY_UNTIL`.
+4. **A worker with no keys at all is CANNOT_START for every task, signed or
+   not.** The key check now runs before the legacy rule, so a GKE pod whose
+   namespace has no ConfigMap (the volume is `optional`) can neither admit an
+   unsigned task through a mode it could not read nor refuse a tenant's task
+   as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
+   loudly.
+
 ---
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
@@ -7668,3 +7839,118 @@ cannot be enabled for any tenant without this either.
   as **OPEN**, not closed by this request. This request narrows what the
   grant can do (create-only, no update, no delete, scoped to one prefix); it
   does not make the grant non-portable, and does not claim to.
+
+
+---
+
+## 37. `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read
+
+**Status: ACCEPTED, accepted by the owner 2026-09-30, applied by this PR
+(#404).** The owner decided the value (480 s) and that it goes through this
+file, on #401, after #402 lengthened the worker's startup read. Numbered 37
+because 35 and 36 are taken on an open branch
+(`docs/cr35-cr36-merge-step-followons`); if another branch has taken 37 by the
+time this merges, renumber this one.
+
+### What is true today
+
+The lease's dispatch deadline is 300 s, stated three times inside the frozen
+contract:
+
+* `swarm_common/config.py`, `Settings.dispatch_timeout_seconds: int = 300`;
+* `swarm_common/config.py`, `Settings.from_env`, the fallback of
+  `DISPATCH_TIMEOUT_SECONDS`, `300`;
+* `swarm_common/admission.py`, `AdmissionConfig.dispatch_timeout_seconds: int = 300`.
+
+Admission writes `lease.dispatch_deadline = now + dispatch_timeout_seconds`
+(`admission.py`, `acquire_lease_in_transaction`). Where it is read:
+
+* **the scheduler** passes its setting into `AdmissionConfig`
+  (`apps/scheduler/scheduler/loop.py`), and into
+  `backend_deadline_seconds` for every Cloud Run and GKE dispatch
+  (`apps/scheduler/scheduler/dispatch.py`): the backend's hard deadline is the
+  task timeout + the dispatch timeout + `WORKER_FINALISE_BUDGET_SECONDS` (300);
+* **the reconciler** judges a lease that has never heartbeated by
+  `dispatch_deadline` alone (`detect_stale_leases`, `reconciler/detect.py`),
+  and `MISSING_EXECUTION_GRACE_SECONDS` defaults to it
+  (`reconciler/config.py`);
+* **`kubernetes/render.py`** reads the dataclass default for the GKE Job
+  templates' `activeDeadlineSeconds`, and takes `--dispatch-timeout-seconds`
+  where a deployment overrides it.
+
+No Terraform module sets `DISPATCH_TIMEOUT_SECONDS`; every deployed service
+runs on the default. (`grep -rn "dispatch_timeout_seconds\|DISPATCH_TIMEOUT_SECONDS"`,
+2026-09-30, over the whole tree.)
+
+### The requested change
+
+`dispatch_timeout_seconds` is 480 s in all three places. Nothing else in the
+contract changes: not the field, not the env var, not the lease document.
+
+Why 480. #401 (owner decision 2026-09-30) asked the worker's generation check
+to keep asking for about 180 s, because fresh Cloud Run instances were measured
+getting no reply from Google APIs for 30 to 90 s after starting, and two
+attempts were lost to it under a ~90 s schedule (2026-09-25
+`swarm-job-eng-mock-9ngvq`, 2026-09-26 `r7ff9`). #402 built it: the read now
+spans ~180 s and its worst case, every try hanging its whole call timeout, is
+200 s (`agent_worker.startup.CONTROL_PLANE_READ_WINDOW_SECONDS`). The deadline
+counts from dispatch, and the cold starts measured on 2026-09-25 were 103 s and
+195 s from dispatch to the worker's first line
+(`docs/incidents/2026-09-25-worker-startup-network.md`). At 300 s, a worker
+that cold-started in 195 s and met an API that did not answer was fenced by the
+reconciler before its own last attempt ended: the retry the owner asked for was
+cut off by the platform's own deadline, and the attempt was lost exactly as it
+was before #401. 195 + 200 = 395 s; with 60 s of margin for the first heartbeat
+after the verdict, and because 195 s is the slower of two samples rather than a
+bound, 455 s; 480 is the round figure above it.
+
+`tests/unit/worker/test_control_plane_read_retries.py`
+(`test_the_dispatch_deadline_outlasts_the_slowest_cold_start_plus_the_worst_read`)
+holds the three numbers to each other, imports the worker's window rather than
+restating it, and holds all three frozen statements of the default equal.
+
+### What it would break if accepted
+
+* **A genuinely lost dispatch is detected 3 minutes later.** A Job that was
+  never created, an image that never pulled, a worker that died before its first
+  heartbeat and whose execution the ended-at-startup rule cannot see: the
+  reconciler reclaims each at the deadline, now 480 s instead of 300 s. For
+  those 180 s the lease is held, and with it the concurrency slot and the
+  capacity units across every pool. **Invariants 1 and 3 still hold** (a
+  `LEASED`/`DISPATCHED` task is demand and counts toward concurrency, as it
+  must); what changes is how long a dead one is counted. At the 100-agent
+  ceiling, a burst of lost dispatches holds its slots up to 8 minutes rather
+  than 5. The ended-at-startup rule (#198), on a `*/1` tick, still requeues
+  any attempt whose execution has visibly ended within 30 to 90 s of the end,
+  so the longer wait is paid only by dispatches that left no ended execution
+  behind.
+* **The backend's hard deadline grows by 180 s** for every attempt
+  (`backend_deadline_seconds`). A wedged lifecycle stops heartbeating and is
+  reclaimed by the heartbeat rule long before either deadline, so this is the
+  ceiling for a hung pod, not its expected life. The largest task timeout the
+  API accepts (86 400 s) plus 480 + 300 s stays far inside Cloud Run's task
+  timeout limit.
+* **The overview's workflow-stall threshold (600 s, `apps/swarm-ui/src/checks.ts`)**
+  stays above the deadline and above the p90 cold start, the two bounds its
+  tests hold, but no longer above their sum (about 700 s). It was left at 600
+  by this change.
+* **The reconciler's `missing_execution_grace_seconds`** defaults to the same
+  setting, so an execution missing from the backend listing is also given
+  480 s. Its dataclass default in `reconciler/config.py`, which tests that do
+  not pass the field use, moves to 480 with it.
+
+### If it is declined
+
+The worker's startup read stays at ~180 s (200 s worst) and a cold start
+slower than about 94 s from dispatch (300 - 200 - 6) that meets an API with no
+reply is fenced before its verdict. The alternative is shortening #402's
+schedule back toward ~90 s, which is what lost the two attempts #401 recorded.
+
+### Invariants
+
+1. Demand is still only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING`; the change
+   lengthens how long a dead dispatch is counted, stated above.
+2. All-or-nothing reservation: unchanged.
+3. Concurrency counts from `LEASED`: unchanged.
+5. Fencing: a worker that starts after the deadline is still fenced; the
+   deadline is later.

@@ -41,6 +41,10 @@ dev = [
     # cleanly: 566s -> 66s on eight cores.
     "pytest-xdist>=3.6",
     "httpx>=0.27",
+    # A test-only oracle for swarm_common.specsign's RFC 8785 encoding
+    # (tests/unit/common/test_specsign.py). Never a runtime dependency:
+    # swarm_common declares none (contract request 34, decision 3).
+    "rfc8785>=0.1.4",
 ]
 
 [tool.pytest.ini_options]

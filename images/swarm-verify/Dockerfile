@@ -57,7 +57,20 @@ FROM alpine:3.20
 # jq because the scripts parse every API response with it.
 # curl because that is how they talk to the API and to the metadata server.
 # coreutils for the GNU `date`/`timeout` semantics the scripts assume.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates
+# python3 (standard library only, no pip) for scripts/acceptance/pngcheck.py,
+# which decodes a browser task's screenshot and asserts it is not blank --
+# the check that would have caught every "successful" browser task that
+# screenshotted about:blank (owner decision on #358, 2026-09-29). Without it
+# the acceptance suite's pixel checks SKIP in the release.
+# git because scripts/acceptance/groups/claude-code.sh applies the collected
+# patch with `git apply`, falling back to `patch -p1` only when git is
+# missing. Without either binary that fallback itself fails closed with
+# "patch: command not found", so the check never gets to say whether the
+# agent's patch was right -- release run 36738557395 (31be425) caught this:
+# the fixture patch was byte-correct and still reported FAIL. This is not the
+# gcloud/Cloud-SDK tradeoff above: git alone, with no Python dependency chain,
+# carries no comparable CVE surface.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git
 
 WORKDIR /swarm
 

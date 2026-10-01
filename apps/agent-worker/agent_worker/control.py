@@ -511,6 +511,20 @@ class ControlPlane:
             snap.to_dict() or {}, kind="task", document_id=self.task_id
         )
 
+    def fetch_task_snapshot(self) -> tuple[dict[str, Any], Any]:
+        """`fetch_task`, and beside the dict the snapshot's Firestore `create_time`.
+
+        Contract request 34's legacy window admits an unsigned task only if
+        Firestore created it before SPEC_LEGACY_CUTOVER. `create_time` is set
+        by Firestore and no client can write it, so stripping the signature
+        off a newer task does not qualify it. None when the client gives none.
+        """
+        snap = self._task_ref().get(**self.call_options())
+        if not snap.exists:
+            raise FencedError(self.generation, -1, "task document no longer exists")
+        doc = self._assert_tenant(snap.to_dict() or {}, kind="task", document_id=self.task_id)
+        return doc, getattr(snap, "create_time", None)
+
     def fetch_attempt(self, attempt_id: str) -> dict[str, Any] | None:
         """Another attempt's document, by id; None when there is none.
 

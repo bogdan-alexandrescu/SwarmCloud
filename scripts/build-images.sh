@@ -305,7 +305,8 @@ fi
 # One row per image, in parallel indexed arrays (bash 3.2 has no associative
 # ones). T_STATE is pending -> running -> ok | failed, or pending -> skipped
 # for an image that was never submitted.
-T_NAME=(); T_CONFIG=(); T_SUBS=(); T_STATE=(); T_PID=(); T_START=(); T_NOTE=()
+# T_RETRIED is 1 once an image has been rebuilt after a pull that got no answer.
+T_NAME=(); T_CONFIG=(); T_SUBS=(); T_STATE=(); T_PID=(); T_START=(); T_NOTE=(); T_RETRIED=()
 
 # Row of an image in T_NAME, or failure if it is not part of this run.
 row_of() {
@@ -357,7 +358,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
   esac
 
   T_NAME+=("${target}"); T_CONFIG+=("${config}"); T_SUBS+=("${subs}")
-  T_STATE+=(pending); T_PID+=(""); T_START+=(0); T_NOTE+=("")
+  T_STATE+=(pending); T_PID+=(""); T_START+=(0); T_NOTE+=(""); T_RETRIED+=("")
 done
 
 # ---------------------------------------------------------------------------
@@ -476,6 +477,28 @@ launch_build() {
   info "${target}: submitted to Cloud Build (${CLOUDBUILD_REGION}), tag ${TAG}; output in ${log#"${REPO_ROOT}/"}"
 }
 
+# Whether a failed build's output shows a pull that NEVER GOT AN ANSWER.
+#
+# Owner decision, 2026-09-30, after the build images job failed one image with
+#   Get "https://ghcr.io/v2/.../manifests/sha256:..": dial tcp ...:443: i/o timeout
+# while pulling its base image: an image whose build failed because a registry
+# never answered is rebuilt ONCE; every other failure fails as it did.
+#
+# WHY ONLY THESE STRINGS. Each is Go's net package (docker and buildkit are Go)
+# reporting that the connection itself failed -- the dial did not complete
+# (`dial tcp`, `i/o timeout`) or the TLS handshake did not (`TLS handshake
+# timeout`). `connection reset` is deliberately left out: a reset can follow a
+# connection that succeeded, and the owner's rule (2026-09-30) is to retry only
+# when no answer came back at all. None of these can come
+# from a registry that answered: a missing tag is `manifest unknown`, a refused
+# pull is `denied`/`unauthorized`, and a broken Dockerfile is a RUN step's exit
+# code. Rebuilding those would spend a second build to be told the same thing
+# and would report a real defect minutes later than it could have.
+pull_got_no_answer() {
+  [[ -s "$1" ]] || return 1
+  grep -qF -e 'i/o timeout' -e 'dial tcp' -e 'TLS handshake timeout' "$1"
+}
+
 finish_build() {
   local i="$1" rc="$2" why="${3:-}"
   local target="${T_NAME[$i]}" log="${LOG_DIR}/${T_NAME[$i]}.log"
@@ -485,6 +508,21 @@ finish_build() {
   # A status that is not a number is a failure. `[[ x -eq 0 ]]` would read a
   # non-number as the arithmetic value 0 and call it a success.
   [[ "${rc}" =~ ^[0-9]+$ ]] || rc=1
+  if [[ "${rc}" -ne 0 && -z "${T_RETRIED[$i]}" && -z "${ABORT}" ]] \
+    && pull_got_no_answer "${log}"; then
+    # The rebuild tarballs the working directory again, so the dirty-tree
+    # guard every submission passes is passed by this one too.
+    if git_dirty && [[ -z "${ALLOW_DIRTY_BUILD:-}" ]]; then
+      why="${why:+${why}, }not rebuilt after a pull with no answer: the working tree went dirty"
+    else
+      T_RETRIED[i]=1
+      warn "${target}: failed after ${took} on a pull that got no answer (exit ${rc}${id:+, build ${id}}); rebuilding it once"
+      show_log "${target}" "${log}" open
+      mv -f "${log}" "${log%.log}.first-attempt.log"
+      launch_build "${i}"
+      return 0
+    fi
+  fi
   if [[ "${rc}" -eq 0 ]]; then
     T_STATE[i]=ok
     ok "${target}: built in ${took}${id:+ (build ${id})}"

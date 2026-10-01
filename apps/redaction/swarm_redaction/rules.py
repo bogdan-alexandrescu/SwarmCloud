@@ -23,13 +23,16 @@ below are the same families, in the same order, with the same `\\1********`
 shape, so an operator reading a redacted log in the terminal and a user reading
 one in the browser see the same thing.
 
-They are deliberately NOT identical: `KEY_VALUE` here accepts a prefix on the
-key name, so `ANTHROPIC_API_KEY=...` and `GH_TOKEN=...` are caught where the
-shell rule -- which anchors the name to the bare word -- lets them through. The
-relation this module promises is a SUPERSET: everything the shell filter
-redacts, this redacts, and possibly more. `tests/unit/control_plane/
-test_log_redaction.py` pins both halves, including a drift check that fails
-when a rule is added to the shell filter and not here.
+THEY GIVE THE SAME OUTPUT, held by ONE FIXTURE SET (wave 2026-09-27):
+`tests/fixtures/redaction-parity.json` is run through both filters by
+`tests/unit/control_plane/test_log_redaction.py` and by section 12 of
+`scripts/lib/check-contract-parity.sh`, and each must give every case's
+`expected` text exactly. This used to be described as a SUPERSET -- this
+module masking everything the shell's did "and possibly more" -- and the gap
+it allowed was measured three times: a plain-text private key the terminal
+printed after its BEGIN line (#206), `X-API-KEY:` (#227), and names like
+`AWS_SECRET_ACCESS_KEY=` that both let through (#224). The drift check that
+fails when a rule is added to the shell filter and not here stays too.
 
 THE KEY/VALUE RULE IS ONE RULE IN BOTH PLACES FOR JSON TEXT (#221, owner
 decision 2026-09-26). A quote inside a JSON string is written `\\"`, so a
@@ -107,7 +110,8 @@ def _rule(name: str, shell_marker: str, expression: str, flags: int = 0) -> Rule
 #
 # THE HOLE THIS CLOSES (#188 review). The shell filter's rule masks the BEGIN
 # marker's line from the marker on, and sed is line-at-a-time, so nothing
-# after that line. On a raw NDJSON line that is the whole key: JSON writes the
+# after that line (#206; the shell filter now masks the same blocks, with an
+# awk stage that holds lines back -- `redact` in scripts/lib/common.sh). On a raw NDJSON line that is the whole key: JSON writes the
 # key's newlines as the two characters `\n`, so the key IS one line. Once
 # DECODED they are real newlines, and the same rule masked the BEGIN line and
 # served the base64 body in clear: `/transcript` and `/answer`, which redact
@@ -258,7 +262,15 @@ def _start_of_line(text: str, at: int, floor: int) -> int | None:
 
 
 def _tail_start(text: str, marker_start: int, floor: int) -> int:
-    """(c): the first character of the key material above an END marker with no BEGIN."""
+    """(c): the first character of the key material above an END marker with no BEGIN.
+
+    Lines above are taken no further than `PEM_BLOCK_MAX_CHARS` from the
+    marker, the reach a BEGIN has to find its END (wave 2026-09-27): a key's
+    body is under 13 KB, so base64 further up is not that key's. The bound is
+    also what lets the shell filter (`redact` in scripts/lib/common.sh),
+    which streams, hold the lines an END may yet claim -- it cannot hold an
+    unbounded run -- and the two filters agree only because both keep it.
+    """
     at = marker_start
     while at > floor and text[at - 1] in _PEM_INLINE_BODY:
         at -= 1
@@ -269,6 +281,8 @@ def _tail_start(text: str, marker_start: int, floor: int) -> int:
     while line_end >= floor:
         above = _start_of_line(text, line_end, floor)
         if above is None or _body_line(text[above:line_end], headers_allowed=False) != "base64":
+            break
+        if marker_start - above > PEM_BLOCK_MAX_CHARS:
             break
         at = above
         line_end = above - 1
@@ -370,20 +384,31 @@ def _private_key_rule() -> Rule:
     )
 
 
-#: THE ENVIRONMENT-DUMP RULE, and the one that is deliberately wider than the
-#: shell's. `[A-Za-z0-9_.-]*` in front of the name is what turns `api_key=`
-#: into `ANTHROPIC_API_KEY=`, `GH_TOKEN=` and `db.password:`, and `api[-_]?key`
-#: is what catches `x-api-key:` (the shell rule's `api_?key` does not take a
-#: hyphen, so its filter lets that header through; the superset relation this
-#: module promises still holds). An agent that prints its own environment is
-#: the single most likely way a credential reaches a log object, and the shell
-#: rule as written does not catch the shape `env` actually produces.
+#: THE ENVIRONMENT-DUMP RULE. `[A-Za-z0-9_.-]*` in front of the name is what
+#: turns `api_key=` into `ANTHROPIC_API_KEY=`, `GH_TOKEN=` and `db.password:`,
+#: and `api[-_]?key` is what catches `x-api-key:`. An agent that prints its own
+#: environment is the single most likely way a credential reaches a log object.
+#: The shell filter reaches the same names by not anchoring at all, and since
+#: wave 2026-09-27 takes `api[-_]?key` too: it spelled it `api_?key`, so it
+#: printed `X-API-KEY: <v>` and `api-key=<v>` that this rule masked (#227).
 #:
-#: WHAT IT STILL DOES NOT CATCH, because the keyword must END the name:
-#: `AWS_SECRET_ACCESS_KEY=`, `private_key:`, `password_hash:` and plurals such
-#: as `secrets:`. A JSON document's keys are read by `JsonMasker`, which knows
-#: where a key ends and matches the keyword anywhere in it; in free text the
-#: rule would need a boundary it cannot see.
+#: NAMES THE KEYWORD DOES NOT END (#224). The rule served `AWS_SECRET_ACCESS_KEY=`,
+#: `private_key:`, `password_hash:` and plural names such as `secrets:` in clear,
+#: because the keyword had to END the name. In free text the name's end IS
+#: visible -- it is the separator -- but "the keyword anywhere in the name"
+#: would take `secret_name:`, `token_count=` and `password_file:` too, so the
+#: rule names what may FOLLOW the keyword instead: `private[-_]?key` joins the
+#: keywords, and after any keyword may come a plural `s` and one of the
+#: suffixes `key`, `access_key` and `hash` (group `wide`). That is
+#: `SECRET_KEY`, `AWS_SECRET_ACCESS_KEY`, `password_hash`, `api_keys`, `tokens`.
+#:
+#: A COUNT UNDER A WIDER NAME IS A COUNT. `max_tokens=4096`, `"input_tokens":
+#: 10` and `"output_tokens":5}` are usage figures in every agent's stream-json
+#: log. So under a `wide` name the value must hold a character that is not a
+#: digit, a `.` or a closing bracket; under a name the keyword ENDS
+#: (`password: 12345678`) a number is still masked. That is the line
+#: `JsonMasker` draws for a JSON key (`_masks_whole`: a number only when the
+#: credential word ends the key), drawn in text.
 #:
 #: ANCHORED TO THE START OF THE NAME (PR #210 re-review). Unanchored, the name
 #: prefix was rescanned from every position of a long run of name characters:
@@ -439,14 +464,283 @@ def _private_key_rule() -> Rule:
 #: expressions -- the escaped form, then the plain one -- because sed has no
 #: conditional group. `tests/unit/control_plane/test_log_redaction.py` runs both
 #: over the same lines and holds their output equal.
+#:
+#: A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (#260). The
+#: wide group used to be one alternative, `s` or `s?[-_](access-key|key|hash)`,
+#: and both took the same lenient value class -- a run of digits alone is a
+#: count, not a credential (`max_tokens=4096`, `"output_tokens":5}`), so it was
+#: left alone. That is right for a bare plural (`tokens`, `secrets`, `keys`
+#: counted): `secrets: 3` and `max_tokens=4096` must stay counts. It is wrong
+#: for a name that ends in `_key`, `_access_key` or `_hash` -- `SECRET_KEY`,
+#: `API_ACCESS_KEY`, `PASSWORD_HASH` -- which name a credential exactly as a
+#: singular one does, digits and all: `SECRET_KEY=1234567` is a leak. `plural`
+#: and `keysuffix` are now two named groups, not one; a key-suffixed name falls
+#: through to the same (always-mask) branch a singular name already used.
+#:
+#: A PLURAL OR WIDE NAME FOLLOWED BY `: ` DOES NOT TAKE A CAPITALISED ENGLISH
+#: WORD OR A STATUS WORD AS ITS VALUE (#260). gcloud's `...your current auth
+#: tokens: Reauthentication required.` masked `Reauthentication` -- a wide name
+#: happened to precede an ordinary sentence, not a credential -- and `Found 3
+#: secrets: none leaked` masked `none`. Before a value is taken under a wide
+#: name reached by `: ` (never `=`, where a capitalised word is at least as
+#: likely to be a real credential), a negative lookahead refuses a status word
+#: (`not set`, `unset`, `set`, `none`, `(none)`, `missing`) or a capitalised
+#: word (`[A-Z][a-z]+`) that runs to a boundary. Singular names are untouched:
+#: the shell filter alone passes a status word through for those (see above),
+#: and that gap is unaffected here.
+_STATUS_OR_CAPITALISED_WORD = (
+    r"(?:not set|unset|missing|\(none\)|none|set|[A-Z][a-z]+)(?=[\"\\,\s]|$)"
+)
+
+#: CODE IS NOT A CREDENTIAL (#370). `swarm artifact <task> swarm-work.patch`
+#: served a patch that no longer applied: this rule masked the value of
+#: `_TOKEN = re.compile(...)`, `_MASK_TOKEN = json.dumps(MASK)`,
+#: `token: str | None` and `f(token=token_var)`, so the `-` and context lines
+#: of every hunk touching them no longer matched the file. A value that is an
+#: EXPRESSION names a credential without holding one, and is now left alone.
+#: A LITERAL is still masked: a quoted string, a bare token-shaped value, and
+#: every `KEY=value` line of an environment dump or an INI file.
+#:
+#: What counts as an expression is decided by the SHAPE of the value, case
+#: sensitively, never by guessing at the language:
+#:
+#:   * after `:` -- a builtin or typing name, `null`, a dotted name, an empty
+#:     `${NAME:-}`, and except under `password`/`passwd` a PascalCase or
+#:     dotted TYPE where a type ends and a closed call (`_COLON_VALUE`). A
+#:     YAML `secret: missing_link_42` and a JSON `"secret":true` are literals
+#:     and stay masked;
+#:   * after `=` -- `_EXPRESSION`, but ONLY when the name holds a lowercase
+#:     letter or a space precedes the `=`. `GITHUB_TOKEN=unset_me_now_123` is
+#:     an environment dump, where every value is a literal, so an all-capitals
+#:     name glued to its `=` gets no exemption at all;
+#:   * anywhere -- a shell substitution, `$(cmd ...)`, `${NAME}`, an empty
+#:     `${NAME:-}` or `${{ ... }}`, quoted or not.
+#:
+#: THE THREE WAYS THE FIRST ATTEMPT AT THIS WENT WRONG (review of
+#: task_a2068d6586ec441fa6e3), and what stops each:
+#:
+#:   1. A bare name was exempt whatever it looked like, so `TOKEN = <36 random
+#:      letters>`, a dotted random value and an INI `password = <word>` were
+#:      served whole. A single bare word is now exempt only when it is a
+#:      credential keyword itself (`token=token`, `secrets = _secrets`) or
+#:      `None`/`True`/`False`/`null`/`undefined`. A multi-word name must be
+#:      CONVENTIONAL -- all-lowercase snake_case, all-capitals SNAKE_CASE,
+#:      camelCase or PascalCase, with words of at most 16 characters -- which
+#:      a random value almost never is: it mixes cases inside a word and runs
+#:      two capitals together. A dotted name must start with `self`/`cls`/
+#:      `this` or END in a multi-word, underscored or keyword name, so
+#:      `correct.horse.battery` stays masked.
+#:   2. Under `password`/`passwd` a value is a human's choice, and
+#:      `my_dog_rex` or `myDogRex` is a plausible one. So under those names a
+#:      bare multi-word name is NOT exempt (`_EXPRESSION_PASSWORD`), and
+#:      neither is a call or a PascalCase "type"; a dotted name, a keyword
+#:      (`password=password`) and `None` still are.
+#:   3. Typed parameters (`token: str | None = None`) and keyword arguments
+#:      (`f(token=token_var)`) are the commonest shapes in this repository;
+#:      both are covered above, and the git-apply test changes both.
+#:
+#: THE #403 SECURITY REVIEW then measured three shapes the first version
+#: served and main masked, each fixed below where it is defined: a call
+#: (`_CLOSED_CALL`), a PascalCase or dotted type (`_TYPE_END`), and a dotted
+#: name starting with one character (`_FIRST_PART`). With them, a random
+#: 12-20 character symbol password is served whole under `password:`,
+#: `password =`, `db_password =` or `api_key:` in 0.00-0.03% of samples (main
+#: 0%, the first version about 6%), and a Vault `s.`/`hvb.` token in none.
+#: The #403 re-review then found literals riding inside an exempt call
+#: (`api_key = SecretStr('<v>')`); a call now exempts its callee, never an
+#: argument that is a secret run (`_SECRET_RUN`). And the owner decided on
+#: 2026-09-30 that a multi-word name under a non-password key is code only
+#: when one of its words is a credential word (`_CREDENTIAL_NAME`). What is
+#: left: a random no-digit value that reads as camelCase inside a call's
+#: arguments (about 0.03% of 16-28 character base62 values), a PascalCase
+#: "type" before ` | <Type>` or ` = `, and random symbol strings that parse
+#: as a closed call inside a keyword argument (under 0.1%).
+#:
+#: Every group the decision reads is POSSESSIVE (`?+`), so a refused
+#: exemption cannot backtrack into a different parse of the name -- dropping
+#: `lc` would turn `token=a_b` into an environment line and mask it.
+#:
+#: THE SHELL FILTER HAS THE SAME EXEMPTIONS (`redact` in scripts/lib/common.sh),
+#: as rules that mark the name before the main rules run; the parity fixture
+#: holds both to one output.
+_KV_WORDS = (
+    r"api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization"
+)
+#: A SECRET RUN (the #403 re-review). An exemption below exempts the SHAPE
+#: of code -- a callee, an attribute, a name -- never a literal riding inside
+#: it: `api_key = SecretStr('<v>')`, `secret_key = Fernet(<v>)` and
+#: `token = environ[<v>]` were served whole because the call around `<v>`
+#: was exempt. So no exempt span may hold the START of a run of 16 or more
+#: of `[A-Za-z0-9+/=_-]` that mixes a digit with a letter, or that has no
+#: digit, a lowercase letter, and does not read as a name (`_NAME_RUN`) -- a
+#: random base62 or base64 value, a hex digest. `r"[a-z]+"`, `MASK`, `"GH_TOKEN"`, a
+#: snake_case or camelCase name are not runs like that. A run starts where
+#: the character before it is not one of those; `_NO_SECRET` is checked at
+#: every place an exempt span can hold such a start. The shell filter marks
+#: these runs with a byte its exemption rules cannot match across.
+_RUN = r"A-Za-z0-9+/=_-"
+#: A run with no digit is a NAME when every capital in it starts a hump of
+#: two lowercase letters (or is `Id`), bar one at its end: `nextPageToken`,
+#: `MetadataIdToken`, `promoted_credentials`. A random letters-only value
+#: almost never reads that way.
+_NAME_RUN = (
+    r"(?:[A-Z][a-z][a-z+/=_-]|Id|[a-z+/=_-])*+(?:[A-Z][a-z]?)?(?![" + _RUN + r"])"
+)
+_SECRET_RUN = (
+    r"(?-i:(?<![" + _RUN + r"])(?=[" + _RUN + r"]{16})"
+    r"(?:(?=[" + _RUN + r"]*[0-9])(?=[" + _RUN + r"]*[A-Za-z])"
+    r"|(?![" + _RUN + r"]*[0-9])(?=[" + _RUN + r"]*[a-z])(?!" + _NAME_RUN + r")))"
+)
+_NO_SECRET = r"(?!" + _SECRET_RUN + r")"
+_DOT = r"\." + _NO_SECRET
+#: The end of a bare value: what may follow a name in code.
+#: A closing bracket ends a value only when the brackets run out at a
+#: separator or the end of the line -- `f(token=None)`, `{"a": page.token},`
+#: -- so `<random>)}%Y` is not read as code (the #403 security review).
+_END = r"(?=[\s,;]|$|[)\]}]+(?:[\s,;]|$))"
+_KEYWORD_WORD = r"_*(?i:" + _KV_WORDS + r")(?i:s)?"
+#: A camelCase hump: a capital and two lowercase letters or more, or `Id`.
+_HUMP = r"(?:[A-Z][a-z]{2,15}|Id)[0-9]{0,3}"
+#: A MULTI-WORD NAME IS CODE ONLY WHEN IT NAMES A CREDENTIAL (owner decision,
+#: 2026-09-30, on the #403 re-review). `token=fetch_token`,
+#: `secret=secret_name`, `client_secret=env_secret`, `page_token=page_token`
+#: and `token = nextPageToken` stay exempt; `api_key = correct_horse_battery`,
+#: `TOKEN = a_b`, `--token=a_b_c` and `token = zebraQuokkaTundra` are a
+#: passphrase as easily as a name, and are masked. A credential word is
+#: one whole snake_case word or camelCase hump: token, secret, key,
+#: password, passwd, credential, auth or api (a plural `s` allowed) --
+#: `monkey_business` does not name a key.
+_CRED_LC = r"(?:token|secret|key|password|passwd|credential|auth|api)s?"
+_CRED_UC = r"(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?"
+_CRED_CAP = r"(?:Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?"
+_CREDENTIAL_NAME = (
+    r"(?:_*(?:[a-z][a-z0-9]{0,15}_)*" + _CRED_LC + r"(?:_[a-z0-9]{1,16})*_*"
+    r"|_*(?:[A-Z][A-Z0-9]{0,15}_)*" + _CRED_UC + r"(?:_[A-Z0-9]{1,16})*_*"
+    r"|_*[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*"
+    r"|_*" + _CRED_LC + r"[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|_*(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*)"
+)
+_PART = (
+    r"_*(?:[a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}"
+    r"|[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|(?:" + _HUMP + r")+)"
+)
+#: The first part of a dotted name has two characters or more: `s.<base62>`
+#: is a legacy Vault token, not an attribute (the #403 security review).
+_FIRST_PART = (
+    r"_*(?:[a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}"
+    r"|[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|(?:" + _HUMP + r")+)"
+)
+#: A dotted name starts `self`/`cls`/`this`, or ends in a name that names a
+#: credential, an underscored name or a credential keyword:
+#: `page.next_page_token`, `settings.client_secret`, `self._x`, `args.token`.
+_DOTTED = (
+    r"(?:(?:self|cls|this)(?:" + _DOT + _PART + r")+"
+    r"|" + _FIRST_PART + r"(?:" + _DOT + _PART + r")*" + _DOT + r"(?:" + _CREDENTIAL_NAME
+    + r"|_+" + _PART + r"|" + _KEYWORD_WORD + r"))"
+)
+#: A CALL OR SUBSCRIPT, CLOSED ON ITS LINE, OF A CONVENTIONAL NAME (the #403
+#: security review). The first version took any identifier followed by `(`
+#: or `[`, which served 5.6-6.4% of random 12-20 character symbol passwords
+#: (`password: aB3x(9k...`). Now the callee must be a conventional name, the
+#: argument list must close on the same line -- with at most two nested
+#: calls inside, each bounded, so the scan stays linear -- no argument may
+#: hold a secret run (`_NO_SECRET`), and what follows must end an
+#: expression. Under `password` and `passwd` no call is exempt at all:
+#: `password = getpass.getpass(` stays masked, a price paid for a human's
+#: choice of value.
+_CALLEE = _FIRST_PART + r"(?:" + _DOT + _PART + r")*"
+#: An argument is made of what code arguments are made of -- names,
+#: numbers, quotes, `.,:=*+/%\\-[]` and spaces -- never `!?#@|&<>^~$;{}`,
+#: which a random symbol password holds and a call's arguments rarely do.
+_ARG = r"(?:" + _NO_SECRET + r"[A-Za-z0-9_.,:=*'\" +/%\\\[\]-])"
+#: A subscript is an index, a name or a quoted key -- `tokens[0]`,
+#: `os.environ["GH_TOKEN"]`.
+_ARGUMENTS = (
+    r"(?:\(" + _ARG + r"{0,160}(?:\(" + _ARG + r"{0,160}\)" + _ARG + r"{0,160}){0,2}\)"
+    r"|\[" + _NO_SECRET + r"(?:-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}"
+    r"|\"(?:" + _NO_SECRET + r"[^\"\n]){0,128}\"|'(?:" + _NO_SECRET + r"[^'\n]){0,128}')\])"
+)
+_CLOSED_CALL = (
+    _CALLEE + _ARGUMENTS + r"(?=[\s,;]|$|[)\]}]+(?:[\s,;]|$)|" + _DOT + r"[a-z_])"
+)
+#: A shell substitution: `$(command ...)`, `${NAME}`, an empty `${NAME:-}` (a
+#: default VALUE is a literal: `${TOKEN:-<v>}`), or a
+#: GitHub Actions `${{ expression }}` -- never `$` and any character.
+_SHELL_SUBSTITUTION = (
+    r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}[ )]"
+    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )"
+)
+_EXPRESSION_PASSWORD = (
+    r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
+    + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"
+    + _END + r")"
+)
+_EXPRESSION = (
+    r"(?-i:" + _EXPRESSION_PASSWORD + r"|" + _CLOSED_CALL + r"|" + _CREDENTIAL_NAME + _END + r")"
+)
+#: A PascalCase or dotted type is a type only where a type ends: before
+#: ` = `, or ` | ` and another type (spaced, which no value this rule takes
+#: can hold), a `)` that
+#: closes a parameter list (then `->`, or a `:` or nothing to the end of the
+#: line), or a `[` opening a generic of a name: `_token: _Token | None`,
+#: `credential: Credential) -> str:`, `pattern: re.Pattern[str]`. At the end
+#: of a line or before a comma it is as likely a YAML value -- `password:
+#: MyDogRex`, `vault_token: s.<base62>` -- and stays masked (the #403
+#: security review: these were served whatever followed them). The builtin
+#: and typing names may end anywhere.
+_TYPE_END = (
+    r"(?=[ \t]+=[ \t]|[ \t]+\|[ \t]+(?:None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])"
+    r"|\)[ \t]*(?:->|:?$)"
+    r"|\[(?:str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}(?:[A-Z][a-z]{1,15}){0,3})[\],])"
+)
+_BUILTIN_TYPE = (
+    r"(?-i:(?:str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown"
+    r"|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence"
+    r"|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)"
+    r"(?=[\s,;)\]}|=>\[]|$))"
+)
+_ANNOTATION = (
+    r"(?-i:(?:_*(?:" + _HUMP + r")+"
+    r"|[a-z_][a-z0-9_]{0,31}" + _DOT + r"(?:" + _HUMP + r")+)"
+    + _TYPE_END + r")"
+)
+#: After `:` -- a type annotation (under `password`/`passwd` only a builtin
+#: or typing name: `password: Summer)` is a value), a dotted name (a dict
+#: literal's `"next_page_token": page.next_page_token`), the end of a shell
+#: `${NAME:-}`, and, except under `password`/`passwd`, a closed call. Never
+#: a bare word: `secret: missing_link_42` is YAML.
+_COLON_VALUE_PASSWORD = (
+    r"(?-i:" + _BUILTIN_TYPE + r"|" + _DOTTED + _END + r"|[-+=?]\}(?=[\"\s]|$))"
+)
+_COLON_VALUE = r"(?-i:" + _COLON_VALUE_PASSWORD + r"|" + _ANNOTATION + r"|" + _CLOSED_CALL + r")"
+#: Not masked when the value starts with one of these (see above), and does
+#: not itself start a secret run.
+_NOT_A_LITERAL = (
+    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION
+    + r"|(?(colon)(?(pw)" + _COLON_VALUE_PASSWORD + r"|" + _COLON_VALUE + r")"
+    + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
+    r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!)))))"
+)
 KEY_VALUE = _rule(
     "key_value_assignment",
-    "api_?key",
+    "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
-    r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
-    r"(?:api[-_]?key|apikey|password|passwd|secret|token|credential|authorization)"
-    r"(?:\\*\")?[ \t]*[:=][ \t]*(?:\[[ \t]*)?(?:(\\+\")|\"?))"
-    r"(?(2)[^\"\\,\s]+|(?:\\+[^\",\s\\]|[^\",\s\\])[^\",\s]*)",
+    r"((?:\\{0,15}\")?(?P<lc>(?=(?-i:[A-Z0-9_.-]*[a-z])))?+[A-Za-z0-9_.-]*"
+    r"(?:(?P<pw>password|passwd)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
+    r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
+    r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
+    r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?(esc)"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)[0-9.)\]}]*[^0-9.)\]}\"\\,\s][^\"\\,\s]*|[^\"\\,\s]+)"
+    r"|"
+    r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
+    r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
+    r"(?(plural)(?:\\+[^\",\s\\]|[0-9.)\]}]*[^0-9.)\]}\",\s\\])|(?:\\+[^\",\s\\]|[^\",\s\\]))"
+    r"[^\",\s]*)",
     re.IGNORECASE,
 )
 
@@ -454,20 +748,44 @@ KEY_VALUE = _rule(
 #: rule runs before the broad key/value rule, so `api_key=sk-live-...` is
 #: reduced by the `sk-` rule first and the survivor is masked by the second.
 #:
-#: ONE EXCEPTION: the private-key block runs FIRST here. A key's base64 body
-#: is full of runs other rules match by chance (`ey` and eight more characters
-#: is a JWT to the JWT rule), and masking pieces of a body before the block
-#: rule sees it only adds counts for one leak.
+#: The private-key block runs FIRST, in both filters (the shell's is an awk
+#: stage in front of its sed, since #206). A key's base64 body is full of
+#: runs other rules match by chance (`ey` and eight more characters is a JWT
+#: to the JWT rule), and masking pieces of a body before the block rule sees
+#: it only adds counts for one leak -- and, in the shell, would change the
+#: body lines the block is recognised by.
 #:
 #: `.` never matches a newline in any pattern here (no re.DOTALL).
+#:
+#: AN IDENTIFIER IS NEVER CUT MID-WORD (#370). `ey` and eight more characters
+#: took `key_withheld` as `k` + a JWT, served `key_withhel********`, and broke
+#: the patch holding it; `KeyboardInterrupt` and `KeychainStore` went the same
+#: way, and the `sk-` rule cut `task-bbbbbbbb`. So both rules now start only
+#: where a word starts -- after a character that is not a letter, digit or
+#: `_` -- and a JWT must start `eyJ`, which every JWT does (it is base64 of
+#: `{"`). A token GLUED onto a word is still masked when it is long enough
+#: that no identifier is: `eyJ` and 37 more characters (dots counted -- a JWT
+#: header alone can be 36), `sk-` and 32 more.
+#: The shell filter states each as two expressions, since sed has no
+#: look-around; tests/unit/control_plane/test_patch_artifact_applies.py holds
+#: the four to one output (its values are assembled, so they are not in the
+#: fixture file).
 RULES: tuple[Rule, ...] = (
     _private_key_rule(),
-    _rule("openai_key", "sk-", r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+"),
+    _rule(
+        "openai_key",
+        "sk-",
+        r"(?:(?<![A-Za-z0-9_])|(?=sk-[A-Za-z0-9_-]{32}))(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+",
+    ),
     _rule("google_oauth_access_token", "ya29", r"(ya29\.)[A-Za-z0-9._-]+"),
     # Any JWT: a Google ID token, an IAP assertion, a session cookie. This is
     # the one most likely to appear in a log this platform serves, because it
     # is what every caller of this very API holds.
-    _rule("jwt", "ey", r"(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+"),
+    _rule(
+        "jwt",
+        "ey",
+        r"(?:(?<![A-Za-z0-9_])|(?=eyJ[A-Za-z0-9._-]{37}))(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]+",
+    ),
     _rule("google_api_key", "AIza", r"(AIza)[A-Za-z0-9_-]{20,}"),
     _rule("github_token", "gh[pousr]_", r"(gh[pousr]_)[A-Za-z0-9]{8,}"),
     _rule("github_pat", "github_pat_", r"(github_pat_)[A-Za-z0-9_]{8,}"),
@@ -479,6 +797,35 @@ RULES: tuple[Rule, ...] = (
         "http_authorization",
         "[Bb]earer",
         r"((?:[Bb]earer|[Bb]asic)[ \t]+)[A-Za-z0-9._~+/-]{12,}=*",
+    ),
+    # `Authorization: token <x>` -- GitHub's own scheme word -- served <x> in
+    # both filters (epic #227): the rule above knows only `Bearer` and `Basic`,
+    # and the key/value rule masks the first word after `Authorization:`,
+    # which is the scheme. So after a header NAMED `authorization`, the value
+    # after a known scheme word is masked, whatever its length. Only after
+    # that name: `token` followed by a word is ordinary prose anywhere else.
+    # A value that starts with `*` is one the rule above already masked. The
+    # key/value rule then masks the scheme word, as it always has `Bearer`.
+    #
+    # THE PROVIDER PREFIX SURVIVES, IN BOTH FILTERS (#260). `Authorization:
+    # Bearer ya29.a0...` already has its value masked to `ya29.********` by
+    # `google_oauth_access_token` above -- this rule ran anyway, took the
+    # WHOLE masked value (its class does not exclude `*`) and served a second,
+    # provider-blind `********`; the key/value rule then masked the scheme
+    # word too, and the line read `Authorization: ******** ********`, not the
+    # house style's `Authorization: ******** ya29.********`. A value already
+    # holding `********` is left alone: a negative lookahead refuses to take
+    # this rule's value at all when the mask marker is somewhere in the run
+    # ahead, so the scheme word is still masked by the key/value rule and the
+    # provider-tagged value it left behind is not touched a second time.
+    _rule(
+        "http_authorization_scheme",
+        "(token|bearer|basic|digest",
+        r"(authorization(?:\\*\")?[ \t]*[:=][ \t]*(?:\\*\")?"
+        r"(?:token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[ \t]+)"
+        r"(?![^\"\\,\s]*\*\*\*\*\*\*\*\*)"
+        r"[^*\"\\,\s][^\"\\,\s]*",
+        re.IGNORECASE,
     ),
     KEY_VALUE,
 )

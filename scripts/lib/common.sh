@@ -613,9 +613,29 @@ access_token() {
       # account's access token rather than the operator's own. gcloud's
       # `--impersonate-service-account` is the one way to get one without a key
       # file, which this repository does not issue.
-      _ACCESS_TOKEN="$(gcloud auth print-access-token \
-        --impersonate-service-account="${SWARM_IMPERSONATE_SA}" 2>/dev/null)" \
-        || die "could not mint an access token by impersonating ${SWARM_IMPERSONATE_SA}; you need roles/iam.serviceAccountTokenCreator on it"
+      #
+      # UNLESS the active gcloud account already IS that service account: a
+      # caller can now federate directly as SWARM_IMPERSONATE_SA (ci-fix.yml,
+      # terraform/bootstrap/ci_fix.tf, since #273) rather than reaching it
+      # through the deployer. `--impersonate-service-account` naming the
+      # account gcloud is already signed in as asks it to impersonate itself,
+      # which is refused without roles/iam.serviceAccountTokenCreator on
+      # itself -- a grant nobody holds and self-impersonation would never
+      # need. Compared case-insensitively: IAM service account emails are not
+      # case-sensitive, and `gcloud config get-value account` echoes back
+      # whatever case a caller's `gcloud auth login`/ADC used to set it.
+      local active active_lc sa_lc
+      active="$(gcloud config get-value account 2>/dev/null)"
+      active_lc="$(printf '%s' "${active}" | tr '[:upper:]' '[:lower:]')"
+      sa_lc="$(printf '%s' "${SWARM_IMPERSONATE_SA}" | tr '[:upper:]' '[:lower:]')"
+      if [[ -n "${active}" && "${active_lc}" == "${sa_lc}" ]]; then
+        _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
+          || die "could not mint an access token for the active account ${active}"
+      else
+        _ACCESS_TOKEN="$(gcloud auth print-access-token \
+          --impersonate-service-account="${SWARM_IMPERSONATE_SA}" 2>/dev/null)" \
+          || die "could not mint an access token by impersonating ${SWARM_IMPERSONATE_SA}; you need roles/iam.serviceAccountTokenCreator on it"
+      fi
     else
       _ACCESS_TOKEN="$(gcloud auth print-access-token 2>/dev/null)" \
         || die "no gcloud credentials; run: gcloud auth login"
@@ -1463,6 +1483,79 @@ fs_field_filter() {
     '{fieldFilter:{field:{fieldPath:$f},op:$o,value:$v}}'
 }
 
+#: curl_retry_no_answer OUT CURL_ARGS...
+#:
+#: Run `curl CURL_ARGS...` with its stdout and stderr written to OUT, and while
+#: it gets NO ANSWER AT ALL -- curl exit 28 (timed out) or 7 (could not
+#: connect) -- wait SWARM_NO_ANSWER_RETRY_DELAY seconds (10) and run it again,
+#: OUT rewritten, until SWARM_NO_ANSWER_BUDGET_SECONDS (120) are spent. Returns
+#: the exit code of the last attempt.
+#:
+#: WHY A BUDGET AND NOT ONE RETRY (#401, owner decision 2026-09-30). #398
+#: retried once after 5 s, and the next release still died: swarm-verify-fg44d
+#: timed out at 22:24:06 and its retry timed out too, ending 22:25:11. The
+#: subnet's flow logs show some fresh Cloud Run instances getting no reply at
+#: all from Google API addresses for 30 to 90 s after they start, while the
+#: same address answers other instances. A retry inside that window meets the
+#: same silence, so the retries have to outlast the window.
+#:
+#: THE BUDGET IS THE WHOLE TIME, curl's own --max-time included. A retry is
+#: started only if it could END inside the budget: elapsed + delay + the
+#: --max-time in CURL_ARGS <= budget. So with the defaults and a 30 s
+#: --max-time, timeouts are asked at 0, 40 and 80 s and the verdict comes by
+#: 110 s; refused connects (instant) are asked every 10 s up to 90 s. Nothing
+#: here runs past 120 s. Without a --max-time in CURL_ARGS it counts as 0, and
+#: a single hung attempt is then bounded only by curl itself -- every caller
+#: passes one. A delay of 0 with instant failures asks as fast as curl fails,
+#: still for no longer than the budget.
+#:
+#: ONLY THOSE TWO EXITS. Owner decision, 2026-09-30: a network call is retried
+#: when nothing answered, never on an HTTP status. A 403, a 404 or a 503 is
+#: the server answering; asking again gets the same answer and costs only
+#: time, and a retried 403 is a refusal reported late. Other curl failures
+#: (6, could not resolve; 35, TLS) are as often configuration as a blip, and
+#: were not what failed. Without `-f` an HTTP error status exits 0 anyway, so
+#: it never reaches this test; with `-f` it exits 22, which is not retried.
+#:
+#: OUT is rewritten per attempt rather than appended to, so a caller reading a
+#: response body after a retried success reads that body alone and not the
+#: first attempt's `curl: (28)` line in front of it.
+#:
+#: The clock is `date +%s`, not bash's SECONDS, so a test can drive it.
+curl_retry_no_answer() {
+  local out="$1" rc=0 started now elapsed max_time=0 prev=""
+  local delay="${SWARM_NO_ANSWER_RETRY_DELAY:-10}"
+  local budget="${SWARM_NO_ANSWER_BUDGET_SECONDS:-120}"
+  shift
+  local arg
+  for arg in "$@"; do
+    case "${prev}" in
+      --max-time|-m) max_time="${arg%%.*}" ;;
+    esac
+    case "${arg}" in
+      --max-time=*) max_time="${arg#--max-time=}"; max_time="${max_time%%.*}" ;;
+    esac
+    prev="${arg}"
+  done
+  [[ "${max_time}" =~ ^[0-9]+$ ]] || max_time=0
+  started="$(date +%s)"
+  while :; do
+    rc=0
+    curl "$@" >"${out}" 2>&1 || rc=$?
+    case "${rc}" in
+      7|28) ;;
+      *) return "${rc}" ;;
+    esac
+    now="$(date +%s)"
+    elapsed=$(( now - started ))
+    if (( elapsed + ${delay%%.*} + max_time > budget )); then
+      return "${rc}"
+    fi
+    warn "no answer (curl exit ${rc}) ${elapsed}s after the first request; asking again in ${delay}s (budget ${budget}s)"
+    sleep "${delay}"
+  done
+}
+
 #: Whether the Firestore database exists.
 #:
 #: THREE ANSWERS, NOT TWO. The exit code is the answer:
@@ -1500,10 +1593,14 @@ fs_database_exists() {
   # names, in code written to fix a different instance of it.
   local token
   token="$(access_token)" || return 2
-  curl -sS --max-time "${HTTP_TIMEOUT:-30}" \
+  # Through curl_retry_no_answer: on 2026-09-30 the release's acceptance
+  # pre-flight died here on one `curl: (28) Connection timed out` against a
+  # database that was there. Only no answer at all is asked again; a 403 or a
+  # 404 is Firestore answering, and is read below exactly as before.
+  curl_retry_no_answer "${out}" -sS --max-time "${HTTP_TIMEOUT:-30}" \
     -H "Authorization: Bearer ${token}" \
     "https://firestore.googleapis.com/v1/projects/${PROJECT_ID}/databases/${FIRESTORE_DATABASE}" \
-    >"${out}" 2>&1 || rc=$?
+    || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     err "could not ask whether Firestore database ${FIRESTORE_DATABASE} exists:"
     redact <"${out}" | head -n 3 | sed 's/^/     /' >&2
@@ -1677,26 +1774,340 @@ iso_now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 # rule), so a password holding one prints from there. `/logs` decodes a line
 # that is a JSON document and masks it by its structure instead
 # (`swarm_api.redaction.redact_lines`).
+#
+# A PRIVATE KEY IS A BLOCK, NOT A LINE (#206). The rule here was
+# `s/(BEGIN marker).*/\1********/`, and sed is line-at-a-time, so a key
+# printed as text -- `cat id_rsa`, a generated fixture -- had its BEGIN line
+# masked and its base64 body printed underneath. The API's filter has masked a
+# key as a block since #188 (`swarm_api.redaction.mask_private_keys`); this
+# filter now does the same, in the awk stage below, and gives the same output
+# (tests/fixtures/redaction-parity.json, run through both). In short: a BEGIN
+# whose END comes within 64 KiB is masked through the END's line, whatever is
+# between; one with no END in reach is masked through the base64, header and
+# blank lines under it; an END with no BEGIN masks the key material before it
+# on its line and the base64 lines above it, up to 64 KiB. sed cannot look
+# ahead or back, so awk HOLDS lines: at most 64 KiB after a BEGIN until its
+# END is found or out of reach, and a run of base64-shaped lines (a bare word
+# is one) until the line after it. That is a delay on a live `make logs`
+# stream only while one of those is open, and the only way a streaming filter
+# can mask what comes BEFORE an END. Lengths are counted in bytes here and in
+# characters by the API; the two differ only on non-ASCII text within 64 KiB
+# of a marker.
+#
+# NAMES THE KEYWORD DOES NOT END (#224), `api-key` (#227). The assignment rule
+# took the keyword only as the END of the name, so `AWS_SECRET_ACCESS_KEY=`,
+# `private_key:`, `password_hash:`, `SECRET_KEY=` and plurals (`secrets:`,
+# `api_keys=`) printed their values; and it spelled the first keyword
+# `api_?key`, so `X-API-KEY: <v>` and `api-key=<v>` printed theirs while the
+# API masked them. `private[-_]?key` is a keyword now, `api[-_]?key` takes a
+# hyphen, and after any keyword may come a plural `s` and one of the suffixes
+# `key`, `access_key`, `hash` -- one expression per case, beside each of the
+# two above, because sed has no conditional group. Under such a WIDER name a
+# value made only of digits, dots and closing brackets is a count, not a
+# credential (`max_tokens=4096`, `"output_tokens":5}`), and is left alone.
+#
+# `Authorization: token <x>` (#227). The `Bearer` rule knows `Bearer` and
+# `Basic`; the assignment rule masks the first word after `Authorization:`,
+# which is the scheme; so GitHub's `token <x>` printed <x>. After a header
+# NAMED authorization, the value after a known scheme word is masked.
+#
+# A PLURAL NAME IS A COUNT, A KEY-SUFFIXED NAME IS A CREDENTIAL (#260). The
+# wide suffix used to be one alternative -- `s` or `s?[-_](access-key|key|hash)`
+# -- and both took the SAME lenient value class, so `SECRET_KEY=1234567` was
+# left alone exactly like `max_tokens=4096` is meant to be: a run of digits is
+# a count for a bare plural (`tokens`, `secrets`, `keys` counted), never for a
+# name that ENDS in `_key`, `_access_key` or `_hash`, which names a credential
+# as plainly as a singular one does. The plural `s` alternative is now its own
+# suffix on the two "wide" rules below (still lenient on digits); the
+# key/hash suffix moved onto the two SINGULAR rules instead, as an optional
+# group, so `SECRET_KEY=`, `API_ACCESS_KEY=` and `PASSWORD_HASH=` mask a
+# digit-only value exactly as `password=` already does.
+#
+# A PLURAL OR WIDE NAME FOLLOWED BY `: ` DOES NOT TAKE A CAPITALISED ENGLISH
+# WORD OR A STATUS WORD AS ITS VALUE (#260). gcloud's `...your current auth
+# tokens: Reauthentication required.` masked `Reauthentication`, and `Found 3
+# secrets: none leaked` masked `none` (in the Python filter; `none` was
+# already a status word this filter passed through). Neither is a credential:
+# a wide name happened to sit before an ordinary sentence. `$wide_key` is
+# `$key` with its suffix made MANDATORY (a plural or a key/hash name, never a
+# bare singular), and a new exception rule marks a capitalised word
+# (`[A-Z][a-z]+`) safe after `: ` the same way the rule above marks a status
+# word safe -- never after `=`, where a capitalised run is at least as likely
+# to be a real credential.
+#
+# THE PROVIDER PREFIX SURVIVES `Authorization: Bearer ya29...` (#260). The
+# scheme-word rule's value class does not exclude `*`, so once
+# `google_oauth_access_token` (above) had already reduced the token to
+# `ya29.********`, this rule took the WHOLE masked value and served a second,
+# provider-blind `********` -- the line read `Authorization: ******** ********`,
+# not the house style's `Authorization: ******** ya29.********`. sed has no
+# lookahead, so a value that already holds `********` is protected the same
+# way a status word is: a rule ahead of the scheme-word rule matches the same
+# prefix plus a value containing the mask marker and inserts $keep between the
+# delimiter and the scheme word, which breaks the scheme-word rule's own
+# adjacency requirement and leaves the value untouched; the bare key/value
+# rule below still masks the scheme word on its own.
 redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
   local keep=$'\001'
-  local key='"?(api_?key|apikey|password|passwd|secret|token|credential|authorization)"?'
-  sed -E \
+  local key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))?"?'
+  # A PLURAL OR WIDE NAME FOLLOWED BY ": " is a mandatory-suffix variant of the
+  # above, used only to spot a capitalised English word standing in for a
+  # value (#260, below).
+  local wide_key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))"?'
+  # CODE IS NOT A CREDENTIAL (#370): `swarm_redaction.rules._NOT_A_LITERAL`,
+  # restated. sed has no look-ahead, so -- like the status words above -- an
+  # exempt value is MARKED: $keep goes between the name and its separator,
+  # where no assignment rule can match across it. Each piece below is the
+  # Python one of the same name, character for character; the value classes
+  # are CASE-SENSITIVE (a random value is told from a name by its case), so
+  # these expressions run without the I flag and spell the key words in both
+  # cases instead. An all-capitals name glued to its `=` is an environment
+  # dump, where every value is a literal: $envname marks it first so the code
+  # rules pass it by, and the mark comes out before the assignment rules run.
+  local envname=$'\002'
+  # A SECRET RUN (`swarm_redaction.rules._SECRET_RUN`): 16 or more of
+  # [A-Za-z0-9+/=_-] holding a digit and a letter, or -- with no digit -- a
+  # lowercase letter and a shape no name has (`_NAME_RUN`: every capital
+  # starts a hump of two lowercase letters, or is `Id`, bar one at the end). sed cannot look ahead, so every
+  # run of 16 is marked with $secretrun, the marks on runs that are not one
+  # come off again, and no exemption rule matches across a mark.
+  local secretrun=$'\003'
+  local ci_kw='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
+  # The same words without `password`/`passwd`, whose values are a human's
+  # choice: under those, a bare multi-word name is not exempt.
+  local ci_kw_np='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
+  local ci_suf='([Ss]|[Ss]?[-_]([Aa][Cc][Cc][Ee][Ss][Ss][-_]?[Kk][Ee][Yy]|[Kk][Ee][Yy]|[Hh][Aa][Ss][Hh]))?'
+  local up_name='[A-Z0-9_.-]*(API[-_]?KEY|APIKEY|PRIVATE[-_]?KEY|PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|AUTHORIZATION)(S|S?[-_](ACCESS[-_]?KEY|KEY|HASH))?'
+  # ANY name, not only a credential's: marking a name no assignment rule
+  # would match changes nothing, and the key words spelled out would push
+  # these expressions past the 2048 bytes BSD sed takes for one (macOS; the
+  # GNU sed in CI has no such limit, so a test holds every one under it).
+  # Two groups, so the separator and value are \3. The rules for a call, a
+  # PascalCase or dotted type and a multi-word name must tell `password` from
+  # the other key words (none of them is exempt under `password`/`passwd`),
+  # so they name the others: five groups, value \6. Each exemption is its own
+  # expression, which keeps every one well under the BSD limit.
+  local code_key='([A-Za-z0-9_.-]+(\\*")?[[:blank:]]*)'
+  local code_key_np="((${ci_kw_np})${ci_suf}(\\\\*\")?[[:blank:]]*)"
+  local v_end='([,;[:space:]]|$|[])}]+([,;[:space:]]|$))'
+  local v_kwword="_*(${ci_kw})[Ss]?"
+  # A camelCase hump: a capital and two lowercase letters or more, or `Id`.
+  # A repeated group is written `(G)(G)*`, never `(G)+`: macOS sed matched
+  # `self(\.(...|[a-z]{1,16}(H)+|(H)+))+$` against `self.` and 38 lowercase
+  # letters, which no part of it can match (measured 2026-09-30); the
+  # unrolled form is the same language and BSD sed gets it right.
+  local v_hump='([A-Z][a-z]{2,15}|Id)[0-9]{0,3}'
+  # A multi-word name is exempt only when one of its words is a credential
+  # word (`_CREDENTIAL_NAME`; owner decision 2026-09-30).
+  local v_cred="(_*([a-z][a-z0-9]{0,15}_)*(token|secret|key|password|passwd|credential|auth|api)s?(_[a-z0-9]{1,16})*_*|_*([A-Z][A-Z0-9]{0,15}_)*(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?(_[A-Z0-9]{1,16})*_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*|_*(token|secret|key|password|passwd|credential|auth|api)s?[0-9]{0,3}(${v_hump})(${v_hump})*|_*(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*)"
+  local v_part="_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
+  local v_first="_*([a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
+  # `_DOTTED`, in two expressions -- its `self.` branch and the rest -- so
+  # each fits BSD sed.
+  local v_dotted_self="(self|cls|this)(\\.${v_part})(\\.${v_part})*"
+  local v_dotted_tail="${v_first}(\\.${v_part})*\\.(${v_cred}|_+${v_part}|${v_kwword})"
+  # What an argument may be made of (`_ARG`), plus $keep: an argument list
+  # may hold a keyword argument an earlier rule here already marked
+  # (`light=theme == "x"`). The call rules use `#` as the s-command
+  # delimiter: this class holds a `/`.
+  local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
+  local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
+  local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
+  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
+  local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
+  local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
+  local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
+  local v_word='(={1,2}[[:blank:]]|(await|new|not)[[:blank:]]|(None|True|False|null|undefined|\{\}|\[\]|\(\))([,;[:space:]]|$|[])}]+([,;[:space:]]|$)))'
+  # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
+  # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
+  # an END below may still claim; BL the blank lines inside a key's body, kept
+  # only if the body ends before more of it.
+  # shellcheck disable=SC2016  # an awk program: its $ are awk's
+  local pem='
+    BEGIN {
+      MAX = 65536; SCAN = 4096; MASK = "********"; ARROW = "\342\206\222"
+      BEGRE = "-----BEGIN [A-Z ]*PRIVATE KEY-----"
+      ENDRE = "-----END [A-Z ]*PRIVATE KEY-----"
+      B64 = "^[A-Za-z0-9+/=*]+$"
+      HDR = "^[A-Za-z][A-Za-z0-9-]*:"
+      KEYCH = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/=*\\"
+      qh = qt = hh = ht = 1
+    }
+    function numpre(s,    n) {
+      if (!match(s, /^[0-9]+/) || RLENGTH > 9) return 0
+      n = RLENGTH
+      if (substr(s, n + 1, 1) == "\t") n++
+      else if (substr(s, n + 1, 3) == ARROW) n += 3
+      else return 0
+      match(substr(s, n + 1), /^[ \t]*/)
+      return n + RLENGTH
+    }
+    function b64(s,    n) {
+      if (s ~ B64) return 1
+      n = numpre(s)
+      return n > 0 && substr(s, n + 1) ~ B64
+    }
+    function header(s,    n) {
+      if (s ~ HDR) return 1
+      n = numpre(s)
+      return n > 0 && substr(s, n + 1) ~ HDR
+    }
+    function shape(line, headers,    s) {
+      s = line
+      sub(/^[ \t\r]+/, "", s)
+      sub(/[ \t\r]+$/, "", s)
+      if (s == "") return "blank"
+      if (b64(s)) return "base64"
+      if (headers && header(s)) return "header"
+      return ""
+    }
+    function prefixok(p,    n) {
+      sub(/^[ \t\r]+/, "", p)
+      if (p == "") return 1
+      n = numpre(p)
+      return n > 0 && n == length(p)
+    }
+    function hold(line, nr) {
+      H[ht] = line; HN[ht] = nr; ht++
+      hsum += length(line) + 1
+      while (hsum > MAX && hh < ht) {
+        print H[hh]
+        hsum -= length(H[hh]) + 1
+        delete H[hh]; delete HN[hh]; hh++
+      }
+    }
+    function drop(    i) {
+      for (i = hh; i < ht; i++) { delete H[i]; delete HN[i] }
+      hh = ht = 1; hsum = 0
+    }
+    function flush(    i) {
+      for (i = hh; i < ht; i++) print H[i]
+      drop()
+    }
+    function orphan(s, nr,    out, pos, scan, m, ml, at, i, top, cum) {
+      out = ""; pos = 1; scan = 1
+      while (match(substr(s, scan), ENDRE)) {
+        m = scan + RSTART - 1; ml = RLENGTH
+        at = m
+        while (at > pos && index(KEYCH, substr(s, at - 1, 1)) > 0) at--
+        top = 0
+        if (hh < ht && pos == 1 && at - 1 <= (nr == 1 ? SCAN : SCAN - 1) && prefixok(substr(s, 1, at - 1))) {
+          cum = 0
+          for (i = ht - 1; i >= hh; i--) {
+            if (length(H[i]) > (HN[i] == 1 ? SCAN : SCAN - 1)) break
+            cum += length(H[i]) + 1
+            if (cum + m - 1 > MAX) break
+            top = i
+          }
+        }
+        if (top) {
+          for (i = hh; i < top; i++) print H[i]
+          drop()
+          out = MASK; pos = m
+        } else {
+          flush()
+          if (at < m) { out = out substr(s, pos, at - pos) MASK; pos = m }
+        }
+        scan = m + ml
+      }
+      flush()
+      return out substr(s, pos)
+    }
+    function plain(line, nr) {
+      if (shape(line, 0) == "base64") { hold(line, nr); return }
+      if (match(line, ENDRE)) { print orphan(line, nr); return }
+      flush()
+      print line
+    }
+    function decide(rest, eof) {
+      if (!waiting) {
+        if (match(rest, ENDRE)) return (RSTART - 1 <= MAX) ? qh : -1
+        wk = qh + 1; wd = length(rest) + 1; waiting = 1
+      }
+      for (; wk < qt; wk++) {
+        if (wd > MAX) { waiting = 0; return -1 }
+        if (match(Q[wk], ENDRE)) { waiting = 0; return (wd + RSTART - 1 <= MAX) ? wk : -1 }
+        wd += length(Q[wk]) + 1
+      }
+      if (wd > MAX || eof) { waiting = 0; return -1 }
+      return 0
+    }
+    function take() { delete Q[qh]; delete QN[qh]; qh++ }
+    function drain(eof,    line, nr, s, b, bl, k, i) {
+      while (qh < qt) {
+        line = Q[qh]; nr = QN[qh]
+        if (body) {
+          s = shape(line, !seen)
+          if (s == "blank") { bn++; BL[bn] = line; BLN[bn] = nr; take(); continue }
+          if (s != "") { if (s == "base64") seen = 1; bn = 0; take(); continue }
+          body = 0
+          for (i = bn; i >= 1; i--) { qh--; Q[qh] = BL[i]; QN[qh] = BLN[i] }
+          bn = 0
+          continue
+        }
+        if (!match(line, BEGRE)) { plain(line, nr); take(); continue }
+        b = RSTART; bl = RLENGTH
+        k = decide(substr(line, b + bl), eof)
+        if (k == 0) return
+        print orphan(substr(line, 1, b - 1), nr) substr(line, b, bl) MASK
+        if (k > 0) { while (qh <= k) take() }
+        else { take(); body = 1; seen = 0; bn = 0 }
+      }
+    }
+    { Q[qt] = $0; QN[qt] = NR; qt++; drain(0); fflush() }
+    END { drain(1); flush(); for (i = 1; i <= bn; i++) print BL[i] }
+  '
+  # mawk reads a pipe a buffer at a time unless told otherwise, which would hold
+  # a `make logs` tail back by kilobytes; gawk and the BSD awk read what is there.
+  local awk_opts=()
+  case "$(awk -W version 2>&1 </dev/null)" in
+    *mawk*) awk_opts=(-W interactive) ;;
+  esac
+  LC_ALL=C awk ${awk_opts[@]+"${awk_opts[@]}"} "${pem}" | sed -E \
     -e "s/${keep}//g" \
-    -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1********/g' \
+    -e "s/${envname}//g" \
+    -e "s/${secretrun}//g" \
+    -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{26}[A-Za-z0-9_-]*/\1********/g' \
+    -e 's/(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1\2********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
-    -e 's/(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+/\1********/g' \
+    -e 's/(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]{30}[A-Za-z0-9._-]*/\1********/g' \
+    -e 's/(^|[^A-Za-z0-9_])(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]+/\1\2********/g' \
     -e 's/(AIza)[A-Za-z0-9_-]{20,}/\1********/g' \
     -e 's/(gh[pousr]_)[A-Za-z0-9]{8,}/\1********/g' \
     -e 's/(github_pat_)[A-Za-z0-9_]{8,}/\1********/g' \
     -e 's/(xox[abprs]-)[A-Za-z0-9-]{8,}/\1********/g' \
     -e 's/((AKIA|ASIA)[A-Z0-9]{4})[A-Z0-9]+/\1********/g' \
-    -e 's/(-----BEGIN [A-Z ]*PRIVATE KEY-----).*/\1********/g' \
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
-    -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\3\\4/Ig" \
-    -e 's/((\\*")?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/("?(api_?key|apikey|password|passwd|secret|token|credential|authorization)(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e "s/(authorization(\\*\")?[[:space:]]*[:=][[:space:]]*)((\\*\")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\3/Ig" \
+    -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
+    -e "s/(${wide_key})([[:space:]]*:[[:space:]]*\"?)(([A-Z][a-z]+)([\"\\,[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
+    -e "s#(^|[^A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{16,})#\\1${secretrun}\\2#g" \
+    -e "s#${secretrun}(([A-Z][a-z][a-z+/=_-]|Id|[a-z+/=_-])*([A-Z][a-z]?)?)([^A-Za-z0-9+/=_-]|\$)#\\1\\4#g" \
+    -e "s#${secretrun}([A-Z+/=_-]*)([^A-Za-z0-9+/=_-]|\$)#\\1\\2#g" \
+    -e "s#${secretrun}([0-9+/=_-]*)([^A-Za-z0-9+/=_-]|\$)#\\1\\2#g" \
+    -e "s/${code_key}([:=][[:blank:]]*${v_shell})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_builtin})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_dotted_self}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_dotted_tail}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*[-+=?]\\}(\"|[[:space:]]|\$))/\\1${keep}\\3/g" \
+    -e "s/${code_key_np}(:[[:blank:]]*${v_annotation})/\\1${keep}\\6/g" \
+    -e "s#${code_key_np}(:[[:blank:]]*${v_call})#\\1${keep}\\6#g" \
+    -e "s/(^|[^A-Za-z0-9_.-])(${up_name}(\\\\*\")?)=/\\1\\2${envname}=/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_word})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_dotted_self}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_dotted_tail}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_kwword}${v_end})/\\1${keep}\\3/g" \
+    -e "s#${code_key_np}(=[[:blank:]]*${v_call})#\\1${keep}\\6#g" \
+    -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
+    -e "s/${envname}//g" \
+    -e "s/${secretrun}//g" \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 

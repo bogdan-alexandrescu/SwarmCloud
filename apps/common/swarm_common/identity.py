@@ -129,7 +129,7 @@ def _slug(principal: str, prefix: str = "") -> str:
         artifacts -- the exact cross-tenant merge the whole design exists to
         prevent.
       * LENGTH. A long group name yields an id no GCP service account can be
-        named for, because `swarm-t-<id>` must fit in 30 characters. Silently
+        named for, because `swarm-agent-worker-<id>` must fit in 30 characters. Silently
         truncating reintroduces collisions at the truncation boundary.
 
     So whenever the slug is not a faithful, short-enough rendering of the local

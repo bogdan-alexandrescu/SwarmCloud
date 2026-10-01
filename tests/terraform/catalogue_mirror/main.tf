@@ -55,11 +55,18 @@ locals {
 
   # --- RUNNER_PROFILES -----------------------------------------------------
   #
-  # Cut the dict literal out first: from `RUNNER_PROFILES: dict` up to the next
-  # top-level `def`, which is resolve_backend(). Without that cut the last chunk
-  # would run to the end of the file and pick up identifiers out of the function
-  # body.
-  runner_section = local.source == "" ? "" : split("\ndef ", split("RUNNER_PROFILES: dict", local.source)[1])[0]
+  # Cut the dict literal out first: from `_GENERIC_PROFILE = ` up to the next
+  # top-level `def`, which is resolve_backend(). The cut starts at
+  # `_GENERIC_PROFILE`, not `RUNNER_PROFILES: dict`, because "generic" is not a
+  # literal `RunnerProfile(...)` call inside that dict -- it is
+  # `"generic": replace(_GENERIC_PROFILE, inputs=_GENERIC_INPUTS)`, built from
+  # `_GENERIC_PROFILE`'s own constructor call ABOVE the dict, so it has to be
+  # in scope before the chunk split below. Splitting on `_GENERIC_PROFILE = `
+  # (not `_GENERIC_PROFILE = RunnerProfile(`) leaves the `RunnerProfile(` text
+  # itself in the section, which the split on the next line needs. Without the
+  # tail cut at `\ndef `, the last chunk would run to the end of the file and
+  # pick up identifiers out of the function bodies.
+  runner_section = local.source == "" ? "" : split("\ndef ", split("_GENERIC_PROFILE = ", local.source)[1])[0]
 
   # Each entry is a multi-line RunnerProfile(...) call, so the section is split
   # on the constructor and element 0 (everything before the first one) dropped.

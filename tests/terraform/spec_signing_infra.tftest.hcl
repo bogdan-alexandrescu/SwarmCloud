@@ -17,6 +17,17 @@
 #
 # The versions come from override_data, so "enabled only" is a statement about
 # a list holding a DISABLED version, not about an empty one.
+#
+# NONE OF THESE THREE CARRY public_key. Verified against the provider's own
+# source (v6.50.0, google/services/kms/data_source_google_kms_crypto_key_versions.go,
+# flattenKMSCryptoKeyVersionsList): a `google_kms_crypto_key_versions` list
+# entry is never given a `public_key` -- that field is set exactly once, as
+# the data source's OWN top-level attribute, for versions[0] only. Giving
+# every mocked entry here a public_key (as this file did before) made the
+# test lie: it could not have caught #354's apply-time discovery that
+# local.spec_verify_keys comes back empty in real CI. Each ENABLED version's
+# key now comes from its own google_kms_crypto_key_version, mocked below by
+# the address the module opens it at.
 
 mock_provider "google" {}
 
@@ -32,7 +43,7 @@ override_data {
         state            = "ENABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-ONE" }]
+        public_key       = []
       },
       {
         id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/2"
@@ -42,7 +53,7 @@ override_data {
         state            = "DISABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-TWO-REVOKED" }]
+        public_key       = []
       },
       {
         id               = "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/3"
@@ -52,9 +63,29 @@ override_data {
         state            = "ENABLED"
         protection_level = "SOFTWARE"
         algorithm        = "EC_SIGN_P256_SHA256"
-        public_key       = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-THREE" }]
+        public_key       = []
       },
     ]
+  }
+}
+
+# The per-version reads the fix adds (terraform/modules/spec_signing_key):
+# only the two ENABLED versions get one, keyed by version number.
+override_data {
+  target = module.spec_signing_key.data.google_kms_crypto_key_version.enabled["1"]
+  values = {
+    version    = 1
+    state      = "ENABLED"
+    public_key = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-ONE" }]
+  }
+}
+
+override_data {
+  target = module.spec_signing_key.data.google_kms_crypto_key_version.enabled["3"]
+  values = {
+    version    = 3
+    state      = "ENABLED"
+    public_key = [{ algorithm = "EC_SIGN_P256_SHA256", pem = "PEM-THREE" }]
   }
 }
 
@@ -148,11 +179,16 @@ run "workers_trust_every_enabled_version_and_no_other" {
   }
 
   # swarm-api signs with one named version -- an asymmetric key has no primary.
-  # The value is derived here; #353 puts it in swarm-api's environment next to
-  # the code that reads it (check-env-parity.sh refuses it any earlier).
+  # The value is derived here, and swarm-api carries it (#353, beside the code
+  # that reads it): a hardened swarm-api without it refuses to start.
   assert {
     condition     = output.spec_signing_key_version == "projects/saga-agents-staging/locations/us-central1/keyRings/swarm-dev-specs/cryptoKeys/step-spec/cryptoKeyVersions/1"
     error_message = "the signing version must be a full version name of this environment's step-spec key"
+  }
+
+  assert {
+    condition     = lookup(output.spec_service_env["swarm-api"], "SPEC_SIGNING_KEY_VERSION", "") == output.spec_signing_key_version
+    error_message = "swarm-api must carry SPEC_SIGNING_KEY_VERSION as the full signing version name; a hardened swarm-api without it refuses to start"
   }
 
   # swarm-api signs; it has no business holding the verification map.
@@ -236,4 +272,52 @@ run "an_unknown_mode_is_refused" {
   }
 
   expect_failures = [var.spec_signature_mode]
+}
+
+# An untrusted signing version ships workers that refuse every task after
+# #353 (agent_worker.specverify: foreign_key_version). check
+# "spec_signing_version_is_trusted" only warns, in every environment; dev
+# additionally blocks the plan, because dev is where this gets caught before
+# the same mistake reaches prod.
+run "dev_blocks_the_plan_on_an_untrusted_signing_version" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment              = "dev"
+    spec_signing_key_version = 2 # DISABLED: not a key in local.spec_verify_keys
+  }
+
+  # Both fire on the same untrusted version: the check (a warning everywhere)
+  # and, in dev only, the output precondition that blocks the plan.
+  expect_failures = [check.spec_signing_version_is_trusted, output.spec_verify_keys_configmap]
+}
+
+run "prod_only_warns_on_the_same_untrusted_version" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    environment              = "prod"
+    spec_signing_key_version = 2 # DISABLED, same as above
+  }
+
+  # check "spec_signing_version_is_trusted" still fires here too -- it is
+  # unconditional, so a real `terraform plan` warns in every environment and
+  # only dev's output precondition actually blocks. `terraform test` itself
+  # has no notion of "warning": it surfaces ANY failing check as an error
+  # unless expect_failures names it, in every environment, so this run must
+  # list it even though prod's own plan would exit clean.
+  expect_failures = [check.spec_signing_version_is_trusted]
+
+  assert {
+    condition     = !contains(keys(output.spec_verify_keys), output.spec_signing_key_version)
+    error_message = "the control for this run: version 2 must actually be untrusted, or the run above proves nothing"
+  }
 }

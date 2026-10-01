@@ -328,6 +328,14 @@ class ApiSettings:
     #: `namespace_prefix` default.
     tenant_namespace_prefix: str = "swarm-tenant-"
 
+    #: The Cloud KMS key VERSION that signs every step spec, named in full
+    #: (projects/.../cryptoKeys/step-spec/cryptoKeyVersions/<n>), contract
+    #: request 34. A version, not a key: an asymmetric key has no primary.
+    #: Empty only in local development; `build_context` refuses every
+    #: deployed environment without it, dev included
+    #: (`specsigning.signer_from_settings`).
+    spec_signing_key_version: str = ""
+
     #: Whether the deployment actually SAID which environment this is.
     #:
     #: The frozen `Settings.from_env` defaults ENVIRONMENT to "dev" when the
@@ -410,6 +418,7 @@ class ApiSettings:
                 "TENANT_NAMESPACE_PREFIX", "swarm-tenant-"
             ).strip()
             or "swarm-tenant-",
+            spec_signing_key_version=os.environ.get("SPEC_SIGNING_KEY_VERSION", "").strip(),
             # Read beside `Settings.from_env`, which reads the same variable and
             # substitutes "dev" when it is absent. Blank counts as absent: a
             # variable that exists and says nothing has declared nothing.

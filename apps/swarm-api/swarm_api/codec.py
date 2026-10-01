@@ -115,7 +115,17 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         result_summary=data.get("result_summary"),
         latest_checkpoint=data.get("latest_checkpoint"),
         end_cause=_end_cause(data.get("end_cause")),
+        # Contract request 34. Read back so a task this service decodes and
+        # writes again keeps the signature swarm-api put on it at submission.
+        spec_signature=data.get("spec_signature") or None,
+        spec_key_version=data.get("spec_key_version") or None,
+        spec_format=_spec_format(data.get("spec_format")),
     )
+
+
+def _spec_format(value: Any) -> int | None:
+    # `bool` is an `int`; a stored True is not format 1.
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def dispatch_of(task: Task) -> dict[str, Any]:
@@ -130,13 +140,20 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     """
     raw = task.metadata.get(DISPATCH_METADATA_KEY)
     block = raw if isinstance(raw, dict) else {}
-    return {
+    out = {
         "strategy": block.get("strategy") or DEFAULT_STRATEGY,
         "carrier": block.get("carrier") or DEFAULT_CARRIER,
         # None on everything but an `integrate` workflow's steps.
         "role": block.get("role"),
         "integrates": list(block.get("integrates") or ()),
     }
+    # A step's base and verdict gate (#264), only on a step that has them, so
+    # every other task reads back exactly as it did before they existed.
+    if block.get("builds_on"):
+        out["builds_on"] = block["builds_on"]
+    if isinstance(block.get("verdict_gate"), dict):
+        out["verdict_gate"] = dict(block["verdict_gate"])
+    return out
 
 
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:
@@ -163,7 +180,12 @@ def workflow_dispatch(tasks: Any) -> dict[str, Any]:
     }
 
 
-def task_to_api(task: Task) -> dict[str, Any]:
+def task_to_api(
+    task: Task,
+    waiting_for: dict[str, Any] | None = None,
+    *,
+    account: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
 
     THE INPUT AND THE METADATA ARE SERVED MASKED (owner decision, 2026-09-26,
@@ -273,6 +295,16 @@ def task_to_api(task: Task) -> dict[str, Any]:
         # sorting free-text `last_error` itself. SUCCEEDED, and a task that
         # ended before this field existed, both carry null.
         "end_cause": task.end_cause.value if isinstance(task.end_cause, EndCause) else task.end_cause,
+        # #362: which pool refuses a READY task, read live on the GET by
+        # `swarm_api.waiting` (never by this serialiser, which reads nothing).
+        # Null for every other state, and on routes that do not compute it.
+        # `blocked_by` above is the scheduler's record from its last pass.
+        "waiting_for": waiting_for,
+        # #379: the subscription account the LATEST attempt runs on, derived
+        # by `swarm_api.task_accounts` from this task's own account events
+        # (never by this serialiser, which reads nothing). Null on routes that
+        # do not read it; `status` says why there is no account otherwise.
+        "account": account,
     }
 
 

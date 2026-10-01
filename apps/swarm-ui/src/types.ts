@@ -511,6 +511,20 @@ export interface Task {
    * field existed.
    */
   end_cause?: string | null
+  /**
+   * #362. Which pool refuses this READY task NOW, read live on the GET by
+   * `swarm_api/waiting.py` from the task's own pools. Null for every other
+   * state; OPTIONAL because an older API does not send it. `blocked_by` is
+   * the scheduler's record from its LAST pass; this is the current reading.
+   */
+  waiting_for?: WaitingFor | null
+  /**
+   * #379. The subscription account the LATEST attempt runs on, derived by
+   * `swarm_api/task_accounts.py` from this task's own account events. OPTIONAL
+   * and nullable: an older API does not send it, and a route that did not
+   * read it sends null. Read it through `accountText`, never raw.
+   */
+  account?: TaskAccount | null
 
   /**
    * THE FENCING GENERATION. `models.py:177`, now served by `task_to_api`.
@@ -1398,6 +1412,12 @@ export interface AttemptRow {
   cpu_measured_at?: string | null
   cpu_limit_source?: string | null
   cpu_reading_age_seconds?: number | null
+  /**
+   * #379. THIS attempt's account and the accounts it gave back. Served beside
+   * the rows as `accounts_by_attempt` (so a row stays `GET /v1/attempts`'s
+   * shape) and joined on by `loadAgentRun`. Absent: not read.
+   */
+  account?: TaskAccount | null
 }
 
 // --------------------------------------------------------------------------
@@ -1973,6 +1993,81 @@ export interface BlockedEntry {
   [key: string]: unknown
 }
 
+/**
+ * One required pool in `waiting_for.pools`, in lead order: `paused` (checked
+ * first) > `unknown` > `zero` / `below_units` > `full`, then `open`.
+ *
+ * `unknown` means the pool was not read, or its document has no
+ * `hard_limit`: `limit` is null, and it is NEVER drawn as 0 or as full. A
+ * required pool with no document is uncapped and is not listed at all.
+ */
+export type WaitingState = 'paused' | 'unknown' | 'zero' | 'below_units' | 'full' | 'open'
+
+export interface WaitingPool {
+  pool: string
+  state: WaitingState
+  active: number | null
+  limit: number | null
+  /** The task's weight -- `RESOURCE_CLASSES[task.resource_class].units`. */
+  units: number
+  /** `evaluate_capacity`'s reason for a refusing pool; null when open or unknown. */
+  reason: string | null
+}
+
+/** `waiting_for(...)` in swarm_api/waiting.py. */
+export interface WaitingFor {
+  as_of: string
+  /** null: an unknown pool could be the one refusing, so nothing is claimed. */
+  admissible_now: boolean | null
+  /** Always false: a READY task costs nothing (invariant 1). */
+  holds_capacity: boolean
+  lead: WaitingPool | null
+  pools: WaitingPool[]
+  complete: boolean
+}
+
+/**
+ * The lead line: "tenant:eng  20/20 units", "tenant:eng paused",
+ * "tenant:eng: limit unknown". Null when nothing refuses the task.
+ *
+ * An unknown pool prints no number at all -- not 0, and not a fraction that
+ * would read as full -- because nothing was measured.
+ */
+export function waitingLead(w: WaitingFor | null | undefined): string | null {
+  const lead = w?.lead
+  if (!lead) return null
+  switch (lead.state) {
+    case 'paused':
+      return `${lead.pool} paused`
+    case 'unknown':
+      return `${lead.pool}: limit unknown`
+    case 'open':
+      return null
+    default:
+      if (typeof lead.active === 'number' && typeof lead.limit === 'number') {
+        return `${lead.pool}  ${lead.active}/${lead.limit} units`
+      }
+      return `${lead.pool}: limit unknown`
+  }
+}
+
+/** The lead line as the "why" answer: "waiting for: tenant:eng  20/20 units". */
+export function waitingLine(task: Task): string | null {
+  if (task.state !== 'READY') return null
+  const lead = waitingLead(task.waiting_for)
+  return lead === null ? null : `waiting for: ${lead}`
+}
+
+/**
+ * Whether the lead pool needs a person, by the same partition `needsAPerson`
+ * keeps: a paused pool, one at 0, or one below the task's weight admits
+ * nothing until somebody acts. Full clears by waiting; unknown claims nothing.
+ */
+function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
+  const s = w?.lead?.state
+  return s === 'paused' || s === 'zero' || s === 'below_units'
+}
+
 /** `ParkReason`, states.py:125-137. All eight are really written. */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
@@ -2229,6 +2324,9 @@ function leadBlocker(
 
 /** The one-line "why is this not running" for a task, or null if it is. */
 export function whyNotRunning(task: Task): string | null {
+  // #362: the live reading, when the API served one, before the last pass's record.
+  const waiting = waitingLine(task)
+  if (waiting !== null) return waiting
   const first = leadBlocker(task.blocked_by)
   if (first?.reason) {
     const ceiling = ceilingCopy(first)
@@ -2296,6 +2394,10 @@ export function whyAgent(task: Task, units: number | null = null): string {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
     return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
   }
+  // #362: the live reading of the task's own pools wins over `blocked_by`,
+  // which is only as fresh as the scheduler's last pass over it.
+  const waiting = waitingLine(task)
+  if (waiting !== null) return waiting
   if (task.state === 'READY' && task.blocked_by?.length) {
     const b = leadBlocker(task.blocked_by, units)
     if (!b) return ''
@@ -2361,6 +2463,7 @@ export function whyNeedsAction(task: Task, units: number | null = null): boolean
   if (task.state === 'PARKED') {
     return task.park_reason !== null && PARK_NEEDS_A_PERSON.has(String(task.park_reason))
   }
+  if (waitingLine(task) !== null) return waitingNeedsAPerson(task.waiting_for)
   if (task.state === 'READY' && task.blocked_by?.length) {
     const b = leadBlocker(task.blocked_by, units)
     if (!b) return false
@@ -3144,6 +3247,219 @@ export function ageSpan(ms: number): string {
   const h = Math.round(s / 3600)
   if (h < 48) return `${h}h`
   return `${Math.round(h / 24)}d`
+}
+
+// --------------------------------------------------------------------------
+// When it started, and on which account (#376, #379)
+// --------------------------------------------------------------------------
+
+/**
+ * An instant as a reader scans a list for it: LOCAL wall-clock time,
+ * `HH:MM:SS` when it is today and `MM-DD HH:MM` when it is older, with the
+ * full ISO UTC timestamp and its age (`timeAgo`) for the hover.
+ *
+ * ONE FORMATTER for every start and submit time on the Agents list, the agent
+ * inspector, the workflow board and the step inspector (#376), so a row and
+ * the drawer beside it can never print the same instant two ways. Null for a
+ * missing or unparseable value: the caller says what the absence means
+ * ("never started"), this never invents a time.
+ */
+export function clockTime(
+  iso: string | null | undefined,
+  now: number = Date.now(),
+): { text: string; title: string } | null {
+  if (!iso) return null
+  const t = new Date(iso)
+  if (!Number.isFinite(t.getTime())) return null
+  const pad = (n: number) => String(n).padStart(2, '0')
+  const today = new Date(now)
+  const sameDay =
+    t.getFullYear() === today.getFullYear() && t.getMonth() === today.getMonth() && t.getDate() === today.getDate()
+  const text = sameDay
+    ? `${pad(t.getHours())}:${pad(t.getMinutes())}:${pad(t.getSeconds())}`
+    : `${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
+  return { text, title: `${t.toISOString()} (${timeAgo(t.getTime(), now)})` }
+}
+
+/**
+ * When a task started, with when it was submitted (#376).
+ *
+ * `started_at` is written at each attempt's DISPATCHED -> STARTING, so on a
+ * retried task it is the LATEST attempt's start; the hover says so rather than
+ * calling it the first. A task with none reads `never started` -- finished,
+ * cancelled or still waiting -- and its submit time is still beside it: never
+ * blank, never a time made up from another field.
+ */
+export function startedOf(
+  task: Pick<Task, 'started_at' | 'created_at' | 'attempt_count'>,
+  now: number = Date.now(),
+): { text: string; title: string; never: boolean; submitted: string; submittedTitle: string } {
+  const sub = clockTime(task.created_at, now)
+  const submitted = sub?.text ?? 'not recorded'
+  const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
+  const start = clockTime(task.started_at, now)
+  if (start === null) {
+    return { text: 'never started', title: `never started; ${submittedTitle}`, never: true, submitted, submittedTitle }
+  }
+  const which = task.attempt_count > 1 ? `latest attempt (of ${task.attempt_count}) started` : 'started'
+  return { text: start.text, title: `${which} ${start.title}; ${submittedTitle}`, never: false, submitted, submittedTitle }
+}
+
+/**
+ * The Agents list's STARTED sort (#376): started rows by their start, newest
+ * first unless `asc`; rows that never started always after them, newest
+ * submitted first, so flipping the order never buries the started ones.
+ */
+export function compareStarted(a: Task, b: Task, asc = false): number {
+  const sa = a.started_at ? Date.parse(a.started_at) : NaN
+  const sb = b.started_at ? Date.parse(b.started_at) : NaN
+  const ha = Number.isFinite(sa)
+  const hb = Number.isFinite(sb)
+  if (ha !== hb) return ha ? -1 : 1
+  if (ha && hb && sa !== sb) return asc ? sa - sb : sb - sa
+  return Date.parse(b.created_at) - Date.parse(a.created_at)
+}
+
+/** `swarm_api/task_accounts.py`'s statuses. */
+export type TaskAccountStatus =
+  | 'assigned'
+  | 'not_assigned_yet'
+  | 'not_assigned'
+  | 'no_model_call'
+  | 'not_pooled'
+  | 'unread'
+
+/** One account an attempt was handed and gave back (#379). */
+export interface AccountSwap {
+  account_id: string
+  /** `unreadable`: the worker could not read the account's credential. */
+  cause: string
+}
+
+/** `task.account` and each `accounts_by_attempt` entry (#379). No credential, ever. */
+export interface TaskAccount {
+  status: TaskAccountStatus | string
+  account_id: string | null
+  provider: string | null
+  attempt_id: string | null
+  generation: number | null
+  /** The account given back immediately before `account_id`, or null. */
+  swapped_from: string | null
+  swaps: AccountSwap[]
+}
+
+const ACCOUNT_WORDS: Readonly<Record<string, string>> = {
+  not_assigned_yet: 'not assigned yet',
+  not_assigned: 'not assigned',
+  no_model_call: 'no model call',
+  not_pooled: 'not on the pool',
+  unread: 'not read',
+}
+
+/**
+ * `acct-eng-02` after `acct-eng-01` prints as `02`: the part after their
+ * shared prefix, cut back to a `-` so a number is never split.
+ */
+function accountTail(from: string, to: string): string {
+  let i = 0
+  while (i < from.length && i < to.length && from[i] === to[i]) i++
+  const cut = to.lastIndexOf('-', i - 1)
+  return cut >= 0 && cut < to.length - 1 ? to.slice(cut + 1) : to
+}
+
+/**
+ * What an account cell says, and its hover (#379).
+ *
+ * `acct-eng-02`; after a swap `acct-eng-01 → 02 (swapped: unreadable)`. The
+ * words for every other status are the API's answer, never a guess: `no model
+ * call` (the profile calls none), `not assigned yet` (this attempt has asked
+ * for nothing yet), `not assigned` (it ended without one), `not on the pool`
+ * (the profile never asks the pool), `not read` (the read failed or stopped
+ * short, or the API did not send the field).
+ */
+export function accountText(account: TaskAccount | null | undefined): { text: string; title: string; known: boolean } {
+  if (account === null || account === undefined) {
+    return { text: 'not read', title: 'The account was not read on this request.', known: false }
+  }
+  const swaps = account.swaps ?? []
+  const swapNote = swaps.length > 0 ? ` Gave back: ${swaps.map((s) => `${s.account_id} (${s.cause})`).join(', ')}.` : ''
+  if (account.status === 'assigned' && account.account_id) {
+    const id = account.account_id
+    const from = account.swapped_from
+    const cause = swaps.at(-1)?.cause ?? 'swapped'
+    const text = from ? `${from} → ${accountTail(from, id)} (swapped: ${cause})` : id
+    const gen = account.generation !== null ? ` on attempt generation ${account.generation}` : ''
+    return { text, title: `Running on ${id}${account.provider ? ` (${account.provider})` : ''}${gen}.${swapNote}`, known: true }
+  }
+  const words = ACCOUNT_WORDS[account.status] ?? account.status.replace(/_/g, ' ')
+  return { text: words, title: `${words}.${swapNote}`.trim(), known: false }
+}
+
+/**
+ * A workflow's start, DERIVED from its earliest step's `started_at` (#376) --
+ * the workflow document records none.
+ *
+ *   started   the earliest start among the step tasks read; `partial` when a
+ *             step's task was not in the read, so an earlier start may exist;
+ *   never     every step's task was read and none has started;
+ *   unread    no step task was read, so nothing can be said.
+ */
+export function workflowStart(
+  workflow: Pick<Workflow, 'steps'>,
+  taskById: ReadonlyMap<string, Pick<Task, 'started_at' | 'state'>> | null,
+):
+  | { kind: 'started'; at: string; partial: boolean }
+  | { kind: 'never'; settled: boolean }
+  | { kind: 'unread' } {
+  if (taskById === null) return { kind: 'unread' }
+  let earliest: string | null = null
+  let earliestMs = Infinity
+  let read = 0
+  let missing = 0
+  let live = 0
+  for (const step of workflow.steps) {
+    const task = step.task_id ? taskById.get(step.task_id) : undefined
+    if (task === undefined) {
+      missing++
+      continue
+    }
+    read++
+    if (!TERMINAL_STATES.has(task.state)) live++
+    const ms = task.started_at ? Date.parse(task.started_at) : NaN
+    if (Number.isFinite(ms) && ms < earliestMs) {
+      earliestMs = ms
+      earliest = task.started_at
+    }
+  }
+  if (earliest !== null) return { kind: 'started', at: earliest, partial: missing > 0 }
+  if (read === 0 || missing > 0) return { kind: 'unread' }
+  // `settled`: every step has finished, so nothing will start -- `never
+  // started`. While a step is still live it is `not started yet`, which is
+  // what the step inspector says of a dispatched attempt (U2).
+  return { kind: 'never', settled: live === 0 }
+}
+
+/** A workflow's start and submit, as the row and the open card print them (#376). */
+export function workflowStartText(
+  workflow: Pick<Workflow, 'steps' | 'created_at'>,
+  taskById: ReadonlyMap<string, Pick<Task, 'started_at' | 'state'>> | null,
+  now: number = Date.now(),
+): { text: string; title: string; submitted: string; submittedTitle: string } {
+  const sub = clockTime(workflow.created_at, now)
+  const submitted = sub?.text ?? 'not recorded'
+  const submittedTitle = sub ? `submitted ${sub.title}` : 'no submit time was recorded'
+  const start = workflowStart(workflow, taskById)
+  if (start.kind === 'never') {
+    const text = start.settled ? 'never started' : 'not started yet'
+    return { text, title: `no step has started; ${submittedTitle}`, submitted, submittedTitle }
+  }
+  if (start.kind === 'unread') {
+    return { text: 'start not read', title: `the step tasks were not read, so the start is unknown; ${submittedTitle}`, submitted, submittedTitle }
+  }
+  const at = clockTime(start.at, now)
+  const text = at?.text ?? 'start not read'
+  const partial = start.partial ? ' among the steps read (some were not)' : ''
+  return { text, title: `first step started ${at?.title ?? start.at}${partial}; ${submittedTitle}`, submitted, submittedTitle }
 }
 
 /**

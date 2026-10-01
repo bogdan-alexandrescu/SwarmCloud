@@ -62,11 +62,16 @@ terraform plan \
   -target='google_kms_crypto_key.step_spec' \
   -target='google_kms_crypto_key_iam_member.swarm_api_signer' \
   -target='google_kms_crypto_key_iam_member.deployer_key_readers' \
-  -target='data.google_kms_crypto_key_versions.step_spec' \
   -out=spec-signing.tfplan
 terraform apply spec-signing.tfplan
 terraform output spec_signing_keys
-terraform output spec_verify_keys      # one PEM per environment: version 1
+# version 1's public key, per environment (dev shown). Bootstrap no longer
+# renders the PEMs itself: it creates the key, and reading each version's key
+# in the same plan that creates it is a for_each over values unknown until
+# apply, which fails the plan (#360). terraform/infra renders them, as
+# `terraform output spec_verify_keys`, from its first release on.
+gcloud kms keys versions get-public-key 1 --key step-spec \
+  --keyring swarm-dev-specs --location us-central1
 ```
 
 Read the plan for: two key rings and two keys (`dev`, `prod`), each key

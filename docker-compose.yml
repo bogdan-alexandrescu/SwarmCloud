@@ -139,6 +139,13 @@ services:
   # -------------------------------------------------------------------------
   api:
     <<: *app
+    environment:
+      <<: *common-env
+      # `local`, not `dev`: a swarm-api that DECLARES dev is a deployed one and
+      # refuses to start without SPEC_SIGNING_KEY_VERSION (contract request 34,
+      # swarm_api.specsigning.signer_from_settings). There is no Cloud KMS
+      # here, so this one writes unsigned tasks and says so in its log.
+      ENVIRONMENT: local
     ports:
       - "127.0.0.1:8000:8000"
     depends_on:

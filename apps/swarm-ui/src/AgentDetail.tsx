@@ -34,18 +34,22 @@ import {
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
+  accountText,
   ageSpan,
   artifactKind,
   attemptOutcome,
   bytesLabel,
   checkpointsFor,
+  clockTime,
   dispatchOf,
   elapsed,
   newestHeartbeat,
   reasonCopy,
   restoredFrom,
+  startedOf,
   stateTone,
   usageOf,
+  waitingLine,
   whyAgent,
   whyNeedsAction,
   type ArtifactContent,
@@ -592,6 +596,9 @@ function Headline({
 }) {
   const { task, events } = run
   const el = elapsed(task, now)
+  const start = startedOf(task, now)
+  const ended = clockTime(task.completed_at, now)
+  const account = accountText(task.account)
 
   return (
     <section className="section panel">
@@ -676,6 +683,31 @@ function Headline({
             {el.text}
           </li>
         )}
+        {/* WHEN IT STARTED, WITH WHEN IT WAS SUBMITTED BESIDE IT (#376), and
+            when it ended. One formatter (`clockTime`): local time, the UTC
+            instant and its age in the hover. `never started` is a value --
+            a cancelled or failed task that never ran says so -- and the
+            submit time is there either way. */}
+        <li className="ctl-fact" title={start.title}>
+          <b>started</b>
+          {start.text}
+        </li>
+        <li className="ctl-fact" title={start.submittedTitle}>
+          <b>submitted</b>
+          {start.submitted}
+        </li>
+        {ended !== null && (
+          <li className="ctl-fact" title={`ended ${ended.title}`}>
+            <b>ended</b>
+            {ended.text}
+          </li>
+        )}
+        {/* THE ACCOUNT THE LATEST ATTEMPT RUNS ON (#379). Each attempt's own,
+            and the accounts it gave back, are on its card below. */}
+        <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+          <b>account</b>
+          <span className="mono">{account.text}</span>
+        </li>
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -1080,6 +1112,22 @@ function Alerts({ task }: { task: Task }) {
         </div>
       )}
 
+      {/* #362: WHICH POOL REFUSES IT NOW. `waiting_for` is read live on the
+          GET from this task's own pools (swarm_api/waiting.py); the bar below
+          it is the scheduler's record from its last pass, which can be older
+          or absent. "Holds no capacity" is invariant 1: a READY task costs
+          nothing while it waits. An unknown pool prints no number, never a 0
+          or a full fraction. Amber only when a person must act (AG-14), by
+          the same rule as the why line. */}
+      {waitingLine(task) !== null && (
+        <div className={`bar${whyNeedsAction(task) ? ' amber' : ''}`} data-waiting-for="">
+          <span data-waiting-lead="">{waitingLine(task)}</span>
+          {task.waiting_for?.holds_capacity === false && (
+            <span className="blocker-copy">(holds no capacity)</span>
+          )}
+        </div>
+      )}
+
       {/* NOT the same thing as park_reason, and this is the case a header that
           only renders park_reason gets wrong. record_blockers writes
           blocked_by while deliberately leaving the task READY -- the platform
@@ -1087,7 +1135,8 @@ function Alerts({ task }: { task: Task }) {
           no park reason is the commonest "why is nothing happening", and it
           would otherwise show as a bare READY chip with no explanation. */}
       {task.blocked_by && task.blocked_by.length > 0 && (
-        <div className="bar amber">
+        <div className="bar amber" data-blocked-by="">
+          <span className="blocker-copy">last scheduler pass</span>
           {task.blocked_by.map((b, i) => (
             <div className="blocker" key={`${b.reason}-${i}`}>
               {b.pool && <code>{b.pool}</code>} <strong>{b.reason}</strong>
@@ -1174,6 +1223,9 @@ function Why({
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
+  // #362: the "waiting for" bar in `Alerts` already prints this line, with
+  // "(holds no capacity)" beside it; once is enough, as for `last_error`.
+  if (why === waitingLine(task)) return null
   // ONCE, NOT THREE TIMES (AG-7). For a FAILED task `whyAgent` IS
   // `last_error`, and the error banner directly below prints that same text
   // in full -- so a failed agent's reason stood here, then in the banner, then
@@ -1498,6 +1550,22 @@ function AttemptLegend() {
   )
 }
 
+/**
+ * An attempt's account fact (#379). The row's own `account`, joined on from
+ * `accounts_by_attempt` by `loadAgentRun`; absent means not read. Whether an
+ * attempt with none is `not assigned yet` or `not assigned` is the API's
+ * answer (`task_accounts.accounts_for_attempts`); this only prints it.
+ */
+function AttemptAccount({ a }: { a: AttemptRow }) {
+  const account = accountText(a.account)
+  return (
+    <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+      <b>account</b>
+      <span className="mono">{account.text}</span>
+    </li>
+  )
+}
+
 function AttemptCard({
   a,
   ordinal,
@@ -1586,6 +1654,9 @@ function AttemptCard({
             <b>end</b>
             {a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}
           </li>
+          {/* THIS ATTEMPT'S ACCOUNT (#379), swaps included:
+              `acct-eng-01 → 02 (swapped: unreadable)`. */}
+          <AttemptAccount a={a} />
           {/* `ran` ONLY BESIDE ANOTHER ATTEMPT (#102). With one attempt it
               is the Elapsed tile's figure a second time -- measured between
               the attempt's instants rather than the task's, so the two read

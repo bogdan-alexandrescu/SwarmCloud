@@ -20,6 +20,11 @@ dependencies = [
     "google-cloud-storage>=2.18",
     "google-cloud-secret-manager>=2.20",
     "google-cloud-monitoring>=2.22",
+    # Verifies swarm-api's P-256 signature over each step's canonical spec
+    # (contract request 34, agent_worker.specverify). Declared explicitly,
+    # not left to arrive transitively: the worker's refusal to run a
+    # rewritten spec must not depend on another package's dependency list.
+    "cryptography>=42",
 ]
 
 [project.scripts]

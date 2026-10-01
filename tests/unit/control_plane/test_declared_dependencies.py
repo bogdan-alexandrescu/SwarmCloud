@@ -52,6 +52,8 @@ DISTRIBUTION = {
     "monitoring_v3": "google-cloud-monitoring",
     "logging": "google-cloud-logging",
     "container_v1": "google-cloud-container",
+    # Contract request 34: swarm-api signs step specs with Cloud KMS.
+    "kms": "google-cloud-kms",
 }
 
 _IMPORT = re.compile(r"^\s*from google\.cloud import ([a-z_0-9]+)", re.MULTILINE)

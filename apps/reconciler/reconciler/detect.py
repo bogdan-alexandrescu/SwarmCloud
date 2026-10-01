@@ -290,8 +290,9 @@ def detect_stale_leases(
     `created_at + lease_timeout_seconds` (120) -- are not measuring silence at
     all. There is no process alive to be silent. They are measuring how long the
     dispatch has been in flight, which is exactly what `dispatch_deadline`
-    (`created_at + dispatch_timeout_seconds`, 300) is for. The two answers
-    disagree by 180 seconds, and the shorter one was winning.
+    (`created_at + dispatch_timeout_seconds`, 300 when this was written, 480
+    since contract request 37) is for. The two answers disagreed by 180
+    seconds, and the shorter one was winning.
 
     Measured 2026-09-22 from the live event streams, `dispatched` -> the
     worker's first control-plane write, Cloud Run Jobs:

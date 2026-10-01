@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, Query, Response, status
 
 from ..auth import AuthContext
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
+from ..task_accounts import accounts_for
 from ..deps import (
     AppContext,
     current_auth,
@@ -69,6 +70,13 @@ def create_workflow(
             "strategy": submission.dispatch.strategy,
             "carrier": submission.dispatch.carrier,
             "integrator_step_id": submission.integrator_step_id,
+            # Only when set, and as RESOLVED: a continuation of a continuation
+            # names the original task, whose branch is the one pushed to.
+            **(
+                {"continues_task": submission.dispatch.continues}
+                if submission.dispatch.continues
+                else {}
+            ),
         },
     }
 
@@ -129,6 +137,7 @@ def get_workflow(
     result = ctx.rollups.for_workflow_from_tasks(
         workflow, tasks.items, complete=tasks.next_page_token is None
     )
+    accounts = accounts_for(ctx.db, tenant_id, tasks.items)
 
     return {
         # The step copies of each input are masked by the tasks' own maskers,
@@ -141,7 +150,8 @@ def get_workflow(
         # frozen `Workflow` dataclass has no metadata field to hold them. The
         # list route has no equivalent because it loads no tasks.
         "dispatch": workflow_dispatch(tasks.items),
-        "tasks": [task_to_api(t) for t in tasks.items],
+        # #379: each step's account, one bounded query per 30 steps.
+        "tasks": [task_to_api(t, account=accounts.get(t.id)) for t in tasks.items],
     }
 
 

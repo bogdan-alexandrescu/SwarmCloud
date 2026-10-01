@@ -486,7 +486,7 @@ function failureCheck(tasks: Result<TaskPage>): Check {
 
 /**
  * HOW LONG A WORKFLOW MAY SIT WITH NOTHING IN FLIGHT before this screen calls
- * it stalled. Ten minutes.
+ * it stalled. Twelve minutes.
  *
  * THE NUMBER IS MEASURED, NOT CHOSEN. Three figures bound it from below and
  * every one of them is a real number from this platform:
@@ -494,27 +494,36 @@ function failureCheck(tasks: Result<TaskPage>): Check {
  *   - DISPATCHED -> STARTING was measured at p50 122.6s and p90 159.0s across
  *     231 tasks. Anything under about 160s fires on an ordinary cold start,
  *     which would make this check's first lesson "ignore me".
- *   - `dispatch_timeout_seconds` is 300 (apps/common/swarm_common/config.py:52).
- *     That is the platform's OWN deadline for a LEASED task to reach a backend,
- *     and `leaseCheck` above already reports a lease that misses it. A workflow
- *     threshold at or below 300 would restate the lease check's finding in a
- *     second voice, on the same screen, five rows apart.
+ *   - `dispatch_timeout_seconds` is 480 (apps/common/swarm_common/config.py;
+ *     300 until contract request 37, 2026-09-30). That is the platform's OWN
+ *     deadline for a LEASED task to reach a backend, and `leaseCheck` above
+ *     already reports a lease that misses it. A workflow threshold at or below
+ *     480 would restate the lease check's finding in a second voice, on the
+ *     same screen, five rows apart.
  *   - the scheduler notices an eligible step on a loop bounded at
  *     `max_run_seconds` 45 with an aging tick of `aging_interval_seconds` 60
  *     (apps/scheduler/scheduler/settings.py:72,79), so "eligible" and "picked
  *     up" are a pass apart even when everything is healthy.
  *
- * 300 + 159 + a scheduler pass is a little over 500s, so 600 is the first round
- * number clear of all three. It is also well inside the twenty-minute stall the
- * UI audit watched go entirely unreported, which is the failure this exists to
- * end.
+ * When the deadline was 300, 300 + 159 + a scheduler pass was a little over
+ * 500s, and 600 was the first round number clear of all three. Contract
+ * request 37 (#404) raised the deadline to 480: 600 stayed above it and above
+ * the p90 cold start individually, the two bounds
+ * tests/unit/control_plane/test_overview_workflow_checks.py holds, but was no
+ * longer above their sum (about 639s) -- a workflow could then read as
+ * stalled before a lease that merely missed the 480s deadline on a slow cold
+ * start could have been fenced and redispatched. #404 left the number at 600
+ * and called raising it a separate decision; this is that decision. 720 is
+ * clear of 480 + 159 with margin, and still well inside the twenty-minute
+ * stall the UI audit watched go entirely unreported, which is the failure
+ * this exists to end.
  *
  * The gate below matters as much as the number: a workflow with ANY step
  * LEASED, DISPATCHED, STARTING or RUNNING is never stalled however long it has
  * been at it, because an agent that runs for forty minutes is doing its job.
  * Without that gate no threshold could be both useful and quiet.
  */
-const WORKFLOW_STALL_SECONDS = 600
+const WORKFLOW_STALL_SECONDS = 720
 
 /** For the copy, so the sentence and the constant can never disagree. */
 const WORKFLOW_STALL_MINUTES = Math.round(WORKFLOW_STALL_SECONDS / 60)

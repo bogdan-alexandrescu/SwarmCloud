@@ -703,7 +703,17 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
     display_name = "A worker refused a task whose step spec did not verify"
 
     condition_threshold {
-      filter = "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_signature_invalid.name}\""
+      # Run 36655830725 (main 4bb7564): "Error creating AlertPolicy: googleapi:
+      # Error 400: ... must specify a restriction on resource.type". Monitoring
+      # requires one on every log-based metric's condition; naming only one
+      # type would silently drop the other worker (the tasks_dead_lettered
+      # policy above explains the same requirement). Both types here match the
+      # metric's own filter (metrics.tf), so a version signed by either
+      # backend still pages.
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_signature_invalid.name}\"",
+      ])
 
       comparison      = "COMPARISON_GT"
       threshold_value = 0

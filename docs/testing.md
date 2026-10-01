@@ -92,6 +92,7 @@ gets you an HTTP 404 on `/readyz`, not a result.
 | `race` | `scripts/verify-remote.sh race-test` | The last free slot goes to exactly one task | Any runner profile but `mock` (refused by design, see below) |
 | `failure` | `scripts/failure-test.sh` | Failure, cancellation and malformed input leak no capacity | — |
 | `e2e` | `scripts/verify-remote.sh e2e-test` | **The seams**: workflow handoff on the BYTES, artifact provenance, spend through the API, sign-in, state agreement across Firestore/API/Cloud Run | The `mock` profile's runner **is** its own workload, so it cannot distinguish a file written by an agent child process from one the runner wrote. That exact distinction is proved offline in `tests/unit/worker/test_agent_seam_end_to_end.py` |
+| `acceptance` | `scripts/verify-remote.sh acceptance/<group>` (groups `mock`, `generic`, `claude-code`, `workflow`, `browser`) | Real tasks judged by their **outputs**: a screenshot's pixels, a patch's lines, staged bytes, a pull request's title, the door's refusals. See [acceptance.md](acceptance.md) | Anything its SKIPs name; it spends subscription quota and opens real pull requests, so it runs on dev only |
 | `load`, `quota` | `scripts/load-test.sh`, `scripts/quota-test.sh` | Sustained-load percentiles; provider exhaustion parks rather than pays to wait | — |
 
 `make e2e-test` and the rest run directly **from inside** the VPC or the verify

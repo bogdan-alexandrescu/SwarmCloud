@@ -13,7 +13,7 @@ import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AttemptRow, TaskAccount, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -1563,12 +1563,20 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
     // #15). The `include=usage` this read used to send asked the server for
     // #188's interim reading off the task's events, which the typed fields
     // replaced; nothing extra is asked for now.
-    read<{ attempts: AttemptRow[] }>(
+    read<{ attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }>(
       route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
       (d) => d.attempts.length === 0,
     ),
     loadResourceClasses(),
   ])
+
+  // #379: each attempt's account is served BESIDE the rows, keyed by attempt
+  // id, so a row stays the shape `GET /v1/attempts` serves; joined on here so
+  // the attempt card reads it off its own row. Absent on an older API.
+  const withAccounts = (d: { attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }) =>
+    d.accounts_by_attempt === undefined
+      ? d.attempts
+      : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading' || task.status === 'error') return task
   if (task.status === 'empty') {
@@ -1593,8 +1601,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   // `empty` is a real answer here and collapses to [], which is NOT the same
   // as the null a failure produces. The screen prints two different sentences.
   const attemptList =
-    attempts.status === 'ok' ? attempts.data.attempts
-    : attempts.status === 'stale' ? attempts.data.attempts
+    attempts.status === 'ok' ? withAccounts(attempts.data)
+    : attempts.status === 'stale' ? withAccounts(attempts.data)
     : attempts.status === 'empty' ? []
     : null
 
@@ -4566,10 +4574,43 @@ async function fixtureSpendAttempts(task: Task): Promise<Result<{ attempts: Atte
  * happened in these fourteen days" is fourteen drawn zeroes, not an empty
  * state.
  */
-export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
-  if (USE_FIXTURES) return fixtureOutcomes(query)
-  return read<Outcomes>(route('/v1/outcomes', {}, query), () => false)
+export async function loadOutcomes(query: URLSearchParams): Promise<Result<Outcomes>>
+export async function loadOutcomes<S extends OutcomeSection>(
+  query: URLSearchParams,
+  sections: readonly S[],
+): Promise<Result<OutcomesPart<S>>>
+export async function loadOutcomes(
+  query: URLSearchParams,
+  sections: readonly OutcomeSection[] = [],
+): Promise<Result<Outcomes | OutcomesPart<OutcomeSection>>> {
+  const q = new URLSearchParams(query)
+  for (const s of sections) q.append('section', s)
+  if (USE_FIXTURES) return fixtureOutcomes(q)
+  return read<Outcomes>(route('/v1/outcomes', {}, q), () => false)
 }
+
+/**
+ * THE PARTS OF THE LEDGER ONE READ MAY ASK FOR (#377): `section`, repeatable,
+ * names the response keys wanted -- `swarm_api.outcomes.SECTIONS`, in its
+ * order, which `test_outcomes_sections.py` holds this list to. Everything
+ * else in the payload (the resolved range, scope, filters, vocab, reads,
+ * cached, generated_at) is the envelope and comes with every section. No
+ * section is the whole payload, as it always was.
+ */
+export const OUTCOME_SECTIONS = [
+  'buckets',
+  'totals',
+  'retries',
+  'latency',
+  'groups',
+  'workflows_failed',
+  'coverage',
+  'previous',
+] as const
+export type OutcomeSection = (typeof OUTCOME_SECTIONS)[number]
+
+/** A sectioned payload: the envelope, and only the sections `S` that were asked for. */
+export type OutcomesPart<S extends OutcomeSection> = Omit<Outcomes, OutcomeSection> & Pick<Outcomes, S>
 
 async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>> {
   await new Promise((r) => setTimeout(r, 260))
@@ -4589,7 +4630,14 @@ async function fixtureOutcomes(query: URLSearchParams): Promise<Result<Outcomes>
     }
   }
   noteFixtureProbe(target, 260, true)
-  return { status: 'ok', fetchedAt: Date.now(), data: ledgerFixture() }
+  // A sectioned read carries the envelope and its sections only, as the route
+  // serves it, so a card that reads a key it did not ask for fails here too.
+  const asked = query.getAll('section')
+  const whole: Record<string, unknown> = { ...ledgerFixture() }
+  if (asked.length > 0) {
+    for (const s of OUTCOME_SECTIONS) if (!asked.includes(s)) delete whole[s]
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: whole as unknown as Outcomes }
 }
 
 /**
