@@ -1481,3 +1481,75 @@ def test_a_stub_marker_and_a_certificate_with_a_context_sequence_in_tests_passes
     cert = _der(0x30, tbs + _RNG.randbytes(100))
     text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
     assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+# --- #411 fourth review: headers and ciphertext away from the markers --------
+#
+# A traditional encrypted PEM's headers may sit in a variable defined before
+# the BEGIN, or further than the window after it; an orphan END may have only
+# its ciphertext lines above it. Main refuses all of these.
+
+
+def _trad_parts() -> tuple[str, str]:
+    hdr = "Proc-Type: 4,ENCRYPTED\\nDEK-Info: AES-128-CBC," + _RNG.randbytes(16).hex().upper() + "\\n\\n"
+    return hdr, _b64(_RNG.randbytes(300))
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_with_headers_defined_before_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    text = (f'HDR = "{hdr}"\nBODY = "{body}"\n'
+            f'K = f"{_begin(" RSA")}\\n{{HDR}}{{BODY}}\\n{_end(" RSA")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_by_percent_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    text = (f'HDR = "{hdr}"\nBODY = "{body}"\n'
+            f'K = "{_begin(" RSA")}\\n%s%s\\n{_end(" RSA")}" % (HDR, BODY)\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_with_headers_far_after_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    filler = "".join(f"# filler line number {i} of padding text\n" for i in range(200))
+    text = (f'K = f"{_begin(" RSA")}\\n{{HDR}}{{BODY}}\\n{_end(" RSA")}"\n'
+            f'{filler}HDR = "{hdr}"\nBODY = "{body}"\n')
+    assert len(filler) > 4096
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def _cipher_lines(raw_len: int = 300) -> list[str]:
+    cipher = _b64(_RNG.randbytes(raw_len))
+    return [cipher[i : i + 64] for i in range(0, len(cipher), 64)]
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_an_orphan_end_with_ciphertext_lines_above_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    text = "\n".join([*_cipher_lines(), _end(" RSA")]) + "\n"
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def test_a_stub_marker_and_a_certificate_blob_in_tests_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    cert = _der(0x30, _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300)) + _RNG.randbytes(100))
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+def test_a_stub_marker_and_a_random_blob_in_a_quoted_variable_in_tests_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nBLOB = "{_b64(_RNG.randbytes(500))}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+def test_an_orphan_end_preceded_by_a_non_base64_line_in_tests_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    text = "\n".join([*_cipher_lines(), "# not part of any key", _end(" RSA")]) + "\n"
+    assert _rule_for(worker, "tests/test_x.py", text) is None
