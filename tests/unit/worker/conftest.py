@@ -28,7 +28,13 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_bac
 from swarm_common.states import TaskState
 
 import spec_keys
-from fakes import FakeFirestore, FakeSecretClient, FakeTransactionRunner, RecordingExporter
+from fakes import (
+    FakeFirestore,
+    FakeSecretClient,
+    FakeTransactionRunner,
+    RecordingExporter,
+    RecordingQuotaReporter,
+)
 
 TENANT = "eng"
 PROJECT = "saga-agents-staging"
@@ -331,6 +337,7 @@ def build_worker(
     txn_runner: Any | None = None,
     reap_before_publish: Any | None = None,
     sign_spec: bool = True,
+    quota_reporter: Any | None = None,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -379,6 +386,9 @@ def build_worker(
         # transaction whose commit is refused because a document it read was
         # changed underneath it (tests/unit/worker/test_fenced_sigterm.py).
         txn_runner=txn_runner or FakeTransactionRunner(db),
+        # Never the environment's broker: a test's provider outcomes are
+        # recorded, and read back through `control.quota_reporter`.
+        quota_reporter=quota_reporter or RecordingQuotaReporter(),
     )
     exporter = RecordingExporter()
     deps = WorkerDeps(

@@ -48,10 +48,15 @@ def test_quota_park_releases_the_lease(db, store, worker_factory):
     for pool in lease["pools"]:
         assert db.doc(f"pools/{pool}")["active"] == 3, pool
 
-    # What the worker learned about the provider is published for the broker.
-    quota = db.doc(f"quota/anthropic:{TENANT}")
-    assert quota["state"] == ProviderState.EXHAUSTED.value
-    assert quota["retry_after_seconds"] == 1800
+    # What the worker learned about the provider is REPORTED to the broker,
+    # once, as a 429 -- the broker applies AIMD and is the only writer of the
+    # quota document, so the worker leaves none behind.
+    # ONCE: the runner loop reports the 429 and the park reports it again,
+    # and the second is the same window, not a second halving.
+    reports = worker.control.quota_reporter.reports
+    assert [(p, t, r) for p, t, r, _ in reports] == [("anthropic", TENANT, "rate-limit")], reports
+    assert reports[0][3]["retry_after_seconds"] == 1800
+    assert f"quota/anthropic:{TENANT}" not in db.documents
 
     types = db.event_types("task_1")
     assert EventType.QUOTA_EXHAUSTED.value in types
@@ -138,6 +143,9 @@ def test_backpressure_from_the_control_plane_parks_a_running_task(db, worker_fac
     assert db.doc("leases/lease_1")["released_at"] is not None
     parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value][0]
     assert parked["detail"]["park_phase"] in ("preflight", "backpressure")
+    # The stop was the broker's own, read back; parking on it is not a new
+    # 429, and reporting it would halve the target the broker already cut.
+    assert worker.control.quota_reporter.reports == []
     assert parked["detail"]["source"] == "control_plane"
 
 
