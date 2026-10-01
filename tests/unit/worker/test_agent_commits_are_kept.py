@@ -405,10 +405,11 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         # rule alone would read `eyword_only_args` as a token.
         ("+++ b/api.py\n@@ -0,0 +1 @@\n+def f(*, keyword_only_args=None): pass\n", False),
         # Assembled, so no secret scanner reads this file as holding a key.
-        # A marker over a STUB body is not a key (owner decision, 2026-09-30,
-        # #373): only a body of about 100 high-entropy base64 characters is.
+        # A marker over a STUB body IS refused: private keys follow main's
+        # rule exactly, in every path (owner decision, 2026-10-01, #411),
+        # after four review rounds found regressions in every relaxation.
         ("+++ b/key.pem\n@@ -0,0 +2 @@\n+" + "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----"
-         + "\n+MIIEowIBAAKCAQEA\n", False),
+         + "\n+MIIEowIBAAKCAQEA\n", True),
         ("+++ b/key.pem\n@@ -0,0 +4 @@\n+" + "\n+".join(_pem_lines(200)) + "\n", True),
         # The key/value rule counts only for a LITERAL (owner decision,
         # 2026-09-28): a quoted string, or a bare credential-shaped token.
@@ -1432,15 +1433,10 @@ def test_a_marker_followed_by_dek_info_alone_is_refused(worker_factory, path):
     assert _rule_for(worker, path, text) == "private_key_block"
 
 
-@pytest.mark.parametrize("path", OUTSIDE_PATHS)
-@pytest.mark.parametrize("which", sorted(KEY_BODIES))
-def test_an_orphan_end_with_a_split_begin_is_refused(worker_factory, path, which):
-    worker, _, _ = worker_factory()
-    body = _b64(KEY_BODIES[which]())
-    text = (f'HEAD = "-----BEGIN" + " RSA PRIVATE" + " KEY-----"\n'
-            f'BODY = "{body}"\n'
-            f'TAIL = "{_end(" RSA")}"\n')
-    assert _rule_for(worker, path, text) == "private_key_block"
+# An orphan END whose BEGIN is split across string pieces is not refused: it
+# is refused only where main's private-key rule refuses it, and main does not
+# (owner decision, 2026-10-01: private keys follow main's rule exactly; the
+# parity test above pins that). The gap predates #411 and is on epic #361.
 
 
 # --- #411 fourth review: headers and ciphertext away from the markers --------
