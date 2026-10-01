@@ -70,7 +70,9 @@ key material at all and the pod's KSA-to-GSA binding is what grants access.
 from __future__ import annotations
 
 import base64
+import copy
 import logging
+import math
 import re
 import tempfile
 from dataclasses import dataclass
@@ -148,6 +150,36 @@ WORKER_HOME = "/home/swarm"
 WORKSPACE_MOUNT = "/workspace"
 WORKER_ARTIFACTS_DIR = f"{WORKSPACE_MOUNT}/artifacts"
 
+#: THE CLOUD RUN WORKSPACE IS A TMPFS, sized as terraform sizes it.
+#:
+#: terraform/modules/cloud_run_jobs/main.tf gives its Jobs `empty_dir { medium =
+#: "MEMORY" }` on launch stage GA, because the provider cannot express Cloud
+#: Run's disk-backed ephemeral volume (Preview, and it disables live
+#: migration) -- CONTRACT.md, "Correction (workspace storage)". The Jobs
+#: `_build_job` creates on a 404 -- every tenant terraform does not list, every
+#: pool-served tenant, every non-default resource class -- asked for that
+#: Preview volume on BETA until 2026-10-01 (gap audit D7), so the same profile
+#: ran on two different storage models depending on who had created its Job.
+#:
+#: A memory-medium volume is charged against the container's memory limit, so
+#: it is capped below it: a full workspace then fails a write with ENOSPC,
+#: which the worker can checkpoint through, instead of OOM-killing the agent
+#: (a SIGKILL: no checkpoint, no park). 0.5 is `var.workspace_memory_fraction`'s
+#: default, which terraform/infra does not override.
+#: tests/unit/scheduler/test_scheduler_job_matches_terraform_job.py reads the
+#: module and fails if the fraction, the formula, the medium or the launch
+#: stage moves on either side alone.
+WORKSPACE_MEMORY_FRACTION = 0.5
+
+
+def workspace_size_gib(rc: Any) -> int:
+    """terraform's `local.workspace_gib` for one resource class, in GiB.
+
+    `max(1, min(rc.disk_gib, floor(rc.memory_gib * var.workspace_memory_fraction)))`
+    """
+    return max(1, min(rc.disk_gib, math.floor(rc.memory_gib * WORKSPACE_MEMORY_FRACTION)))
+
+
 #: Pod hardening. kubernetes/namespaces/tenant-namespace.yaml holds Pod Security
 #: Admission at `enforce: baseline` rather than `restricted` precisely because
 #: the manifest this module builds carried no securityContext at all, so
@@ -178,6 +210,46 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
     "runAsUser": WORKER_UID,
     "capabilities": {"drop": ["ALL"]},
     "seccompProfile": {"type": "RuntimeDefault"},
+}
+
+#: THE POD'S RESOLVER, WITHOUT THE CLUSTER'S SEARCH PATH (#341; owner decision
+#: 2026-09-29).
+#:
+#: Under GKE's default `dnsPolicy: ClusterFirst` a pod gets `ndots:5` and the
+#: search list `<ns>.svc.cluster.local svc.cluster.local cluster.local ...`, so
+#: a short name a browser task opens -- `kubernetes.default`,
+#: `swarm-api.swarm-system` -- is tried under every cluster suffix and reaches a
+#: cluster Service. `url_refusal` cannot close that: it sees the string a caller
+#: typed, never what the pod's resolver does with it.
+#:
+#: `ndots:1` and `searches: []` alone would not do it either. Under
+#: ClusterFirst (and Default) a pod's `searches` are APPENDED to the policy's
+#: own, so `[]` removes nothing, and ndots only orders the tries: the absolute
+#: `kubernetes.default.` fails, and the resolver falls back to the search list.
+#: `None` is the one policy under which this dnsConfig is the WHOLE resolver,
+#: and the API server then requires a nameserver.
+#:
+#: The nameserver is NodeLocal DNSCache's address, 169.254.20.10: what a
+#: ClusterFirst pod on swarm-autopilot is ALREADY given (measured 2026-09-24,
+#: kubernetes/network-policies/allow-egress.yaml), which GKE Autopilot always
+#: runs ("enabled by default, and you can't disable it"), and which the tenant
+#: egress policy's rule 1b opens on 53/UDP+TCP. So a fully qualified name --
+#: an internet host, `firestore.googleapis.com`, or a cluster name spelled out
+#: as `kube-dns.kube-system.svc.cluster.local` -- goes to exactly the resolver
+#: it went to before, and only the search-path trial is gone.
+#:
+#: Every GKE profile, deliberately: browser is the only one today, and any
+#: future GKE profile runs tenant code in the same cluster, so it gets the same
+#: resolver (test_gke_browser_pod_dns.py parametrises over all of them).
+#: GKE pods only: Cloud Run has no cluster search path. Mirrored field for
+#: field in kubernetes/worker-templates/worker-job-browser.yaml, and held there
+#: by tests/unit/scheduler/test_gke_browser_pod_dns.py.
+GKE_NODE_LOCAL_DNS_IP = "169.254.20.10"
+GKE_POD_DNS_POLICY = "None"
+GKE_POD_DNS_CONFIG: dict[str, Any] = {
+    "nameservers": [GKE_NODE_LOCAL_DNS_IP],
+    "searches": [],
+    "options": [{"name": "ndots", "value": "1"}],
 }
 
 #: THE BACKEND'S DEADLINE IS A BACKSTOP, AND IT MUST FIRE AFTER THE LIFECYCLE'S.
@@ -581,6 +653,39 @@ def _plain_env_value(container: Any, name: str) -> str | None:
     return None
 
 
+def _workspace_drift(existing: Any, rc: Any) -> list[str]:
+    """Which of launch stage, workspace medium and size `existing` has wrong.
+
+    Compared with what `_build_job` writes for resource class `rc`, without
+    building one: building a Job also asks the account pool who serves the
+    tenant (`credential_for`), which deciding whether to rebuild must not.
+    Read defensively: `existing` is whatever `get_job` returned, and a Job with
+    no template or no workspace volume is drift, not a crash.
+    """
+    from google.api import launch_stage_pb2
+    from google.cloud import run_v2
+
+    drift: list[str] = []
+    # UNSPECIFIED counts as GA: it is what a Job created without the field
+    # reads back as, and treating it as drift would rewrite every such Job
+    # once per scheduler process. Only a pre-GA stage (BETA, ALPHA, ...) is
+    # the Preview volume's mark.
+    if getattr(existing, "launch_stage", None) not in (
+        launch_stage_pb2.LaunchStage.GA,
+        launch_stage_pb2.LaunchStage.LAUNCH_STAGE_UNSPECIFIED,
+    ):
+        drift.append("launch_stage")
+    try:
+        have = next(v for v in existing.template.template.volumes if v.name == "workspace")
+    except (AttributeError, StopIteration):
+        return [*drift, "workspace volume"]
+    if have.empty_dir.medium != run_v2.EmptyDirVolumeSource.Medium.MEMORY:
+        drift.append("workspace medium")
+    if have.empty_dir.size_limit != f"{workspace_size_gib(rc)}Gi":
+        drift.append("workspace size_limit")
+    return drift
+
+
 class CloudRunJobDispatcher:
     def __init__(
         self, settings: Any, *, client: Any | None = None, pool: AccountPool | None = None
@@ -707,20 +812,19 @@ class CloudRunJobDispatcher:
 
         volume = run_v2.Volume(
             name="workspace",
-            # MEDIUM_UNSPECIFIED is the disk-backed ephemeral volume (Preview).
-            # MEMORY would charge the workspace against the container's RAM and
-            # OOM-kill long agent runs, which is exactly what the sizing work
-            # was meant to prevent.
+            # MEMORY, capped below the memory limit: exactly terraform's
+            # workspace volume. See WORKSPACE_MEMORY_FRACTION for why not the
+            # Preview disk-backed volume (MEDIUM_UNSPECIFIED) this used to ask for.
             empty_dir=run_v2.EmptyDirVolumeSource(
-                medium=run_v2.EmptyDirVolumeSource.Medium.MEDIUM_UNSPECIFIED,
-                size_limit=f"{rc.disk_gib}Gi",
+                medium=run_v2.EmptyDirVolumeSource.Medium.MEMORY,
+                size_limit=f"{workspace_size_gib(rc)}Gi",
             ),
         )
 
         return run_v2.Job(
-            # Ephemeral disk is a Preview feature, so the resource must declare
-            # a pre-GA launch stage or the API rejects it.
-            launch_stage=launch_stage_pb2.LaunchStage.BETA,
+            # GA, as terraform's Jobs are: nothing on this Job is a pre-GA
+            # feature now that the workspace is a tmpfs.
+            launch_stage=launch_stage_pb2.LaunchStage.GA,
             labels={
                 "managed-by": "swarm-scheduler",
                 "swarm-tenant": sanitize_name(tenant.tenant_id),
@@ -820,7 +924,16 @@ class CloudRunJobDispatcher:
             name for name in SPEC_SETTING_NAMES
             if _plain_env_value(container, name) != wanted_spec.get(name)
         )
-        if current == wanted and current_model == wanted_model and not spec_drift:
+        # AND ITS WORKSPACE (gap audit D7). A Job this dispatcher created
+        # before 2026-10-01 carries the Preview disk-backed volume on BETA;
+        # `_build_job` no longer writes either, but only a rebuild moves a Job
+        # that already exists, and without this one waited for the next image
+        # change to happen to rebuild it.
+        storage_drift = _workspace_drift(
+            existing, RESOURCE_CLASSES[resource_class or profile.resource_class]
+        )
+        if (current == wanted and current_model == wanted_model and not spec_drift
+                and not storage_drift):
             return False
         job = self._build_job(profile, tenant, resource_class)
         job.name = name
@@ -836,9 +949,10 @@ class CloudRunJobDispatcher:
         # Names only: the values are public keys and a mode, but the log line
         # needs no more than which settings moved.
         log.info(
-            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s",
+            "cloud run job %s moved from %s (MODEL %s) to %s (MODEL %s); SPEC_* changed: %s; "
+            "workspace changed: %s",
             name, current or "?", current_model or "unset", wanted, wanted_model or "unset",
-            ", ".join(spec_drift) or "none",
+            ", ".join(spec_drift) or "none", ", ".join(storage_drift) or "none",
         )
         return True
 
@@ -1411,6 +1525,10 @@ class GkeJobDispatcher:
                         # The worker checkpoints on SIGTERM; killing it at the
                         # 30s default would lose the workspace it was uploading.
                         "terminationGracePeriodSeconds": 120,
+                        # No cluster search path; see GKE_POD_DNS_CONFIG (#341).
+                        # Copies, so no manifest shares the module's dict.
+                        "dnsPolicy": GKE_POD_DNS_POLICY,
+                        "dnsConfig": copy.deepcopy(GKE_POD_DNS_CONFIG),
                         "securityContext": POD_SECURITY_CONTEXT,
                         "containers": [
                             {
