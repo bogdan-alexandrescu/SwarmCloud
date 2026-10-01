@@ -159,10 +159,13 @@ describe('both Submit forms pick a runner from the same picker', () => {
     const ga = a!.querySelector<HTMLInputElement>('input[type="radio"]')!.name
     const gb = b!.querySelector<HTMLInputElement>('input[type="radio"]')!.name
     expect(ga).not.toBe(gb)
+    // #118: neither step starts with a runner.
+    fireEvent.click(row(a!, 'browser', ga).querySelector('input')!)
     fireEvent.click(row(b!, 'mock', gb).querySelector('input')!)
     expect(row(a!, 'mock', ga).querySelector('input')!.checked).toBe(false)
     expect(row(a!, 'browser', ga).querySelector('input')!.checked).toBe(true)
     expect(row(b!, 'mock', gb).querySelector('input')!.checked).toBe(true)
+    expect(row(b!, 'browser', gb).querySelector('input')!.checked).toBe(false)
   })
 })
 
@@ -232,12 +235,21 @@ describe('the workflow send panel lists what the click commits to', () => {
   it('sums the units over every step and counts the steps in each stage', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
-    // One step of the first offered runner: browser, two units.
-    expect(valueOf(fact(container, 'units'))).toBe('2 units in total')
+    // #118: no runner yet, so no weight to add -- unknown, never zero.
+    expect(fact(container, 'units')!.classList.contains('is-absent')).toBe(true)
+    expect(valueOf(fact(container, 'units'))).not.toMatch(/\d/)
     expect(valueOf(fact(container, 'stages'))).toBe('1 · 1 step')
+    const pickIn = (step: HTMLElement, name: string) => {
+      const group = step.querySelector<HTMLInputElement>('input[type="radio"]')!.name
+      fireEvent.click(row(step, name, group).querySelector('input')!)
+    }
+    // One browser step: two units.
+    pickIn(container.querySelector<HTMLElement>('.wfb-step')!, 'browser')
+    expect(valueOf(fact(container, 'units'))).toBe('2 units in total')
     fireEvent.click(container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!)
     const second = container.querySelectorAll<HTMLElement>('.wfb-stage')[1]!
-    fireEvent.click(second.querySelector<HTMLButtonElement>('.wfb-steps > button.wfb-add')!)
+    fireEvent.click(second.querySelector<HTMLButtonElement>('.wfb-steps > button.sbf-addstep')!)
+    for (const s of [...second.querySelectorAll<HTMLElement>('.wfb-step')]) pickIn(s, 'browser')
     expect(valueOf(fact(container, 'units'))).toBe('6 units in total')
     // A mock step weighs one: the sum follows the runner, not the step count.
     const last = [...container.querySelectorAll<HTMLElement>('.wfb-step')].at(-1)!

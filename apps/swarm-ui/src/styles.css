@@ -12975,6 +12975,53 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Submit task (submit.html): one page, sticky summary, stages -------- */
 /* ======================================================================== */
+/* "+ Add setting ▾" (#119): one control that says what it does, and the keys
+   behind it, each with the runner's note. In flow rather than floated, so
+   inside a 370px workflow step it pushes the step taller instead of covering
+   the step below. */
+.sbf-addset { display: flex; flex-direction: column; align-items: flex-start; gap: var(--ctl-s1); margin-top: var(--ctl-s2); }
+.sbf-addset-btn {
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  padding: 4px var(--ctl-s3);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+.sbf-addset-btn:hover { background: color-mix(in srgb, var(--surface) 88%, var(--text)); }
+.sbf-addset-btn[aria-expanded='true'] { border-color: var(--info); }
+.sbf-addset-list {
+  display: flex; flex-direction: column; gap: 1px;
+  width: min(320px, 100%);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); box-shadow: var(--ctl-shadow-pop);
+  padding: var(--ctl-s1);
+}
+.sbf-addset-item {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--ctl-s3);
+  border: 0; border-radius: 6px; background: transparent; color: var(--text);
+  padding: 6px var(--ctl-s2); text-align: left;
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.sbf-addset-item:hover, .sbf-addset-item:focus-visible { background: color-mix(in srgb, var(--info) 14%, transparent); }
+.sbf-addset-item em { font-style: normal; color: var(--text-dim); text-align: right; }
+.sbf-addset-item.is-own > span { color: var(--text-dim); }
+
+/* Stages top to bottom, a drawn arrow between them (#118). */
+.sbf-flow { display: flex; justify-content: center; color: var(--text-dim); padding: var(--ctl-s1) 0; }
+.sbf-flow svg { width: 22px; height: 26px; }
+/* A full tile at the end of a stage's row: dashed, in the accent, the height
+   of a short step, so it fills its grid cell instead of wrapping into one. */
+.sbf-addstep {
+  display: flex; align-items: center; justify-content: center; align-self: stretch;
+  min-height: 60px;
+  border: 1.5px dashed color-mix(in srgb, var(--info) 55%, transparent); border-radius: var(--ctl-radius-sm);
+  background: transparent; color: var(--info-ink);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.sbf-addstep:not(:disabled):hover { background: color-mix(in srgb, var(--info) 10%, transparent); }
+.sbf-addstep:disabled { opacity: .55; }
+@media (max-width: 560px) {
+  .sbf-addset-btn, .sbf-addset-item, .sbf-addstep { min-height: 44px; }
+}
 /* (Submit rules go above this line.) */
 
 
