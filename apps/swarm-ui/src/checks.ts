@@ -486,7 +486,7 @@ function failureCheck(tasks: Result<TaskPage>): Check {
 
 /**
  * HOW LONG A WORKFLOW MAY SIT WITH NOTHING IN FLIGHT before this screen calls
- * it stalled. Ten minutes.
+ * it stalled. Twelve minutes.
  *
  * THE NUMBER IS MEASURED, NOT CHOSEN. Three figures bound it from below and
  * every one of them is a real number from this platform:
@@ -506,20 +506,24 @@ function failureCheck(tasks: Result<TaskPage>): Check {
  *     up" are a pass apart even when everything is healthy.
  *
  * When the deadline was 300, 300 + 159 + a scheduler pass was a little over
- * 500s, and 600 was the first round number clear of all three. Since contract
- * request 37 the deadline is 480: 600 is still above it and above the p90 cold
- * start, the two bounds tests/unit/control_plane/test_overview_workflow_checks.py
- * holds, but no longer above their sum (about 700s). The number was left at 600
- * by that change; raising it is a separate decision. It is also well inside the twenty-minute stall the
- * UI audit watched go entirely unreported, which is the failure this exists to
- * end.
+ * 500s, and 600 was the first round number clear of all three. Contract
+ * request 37 (#404) raised the deadline to 480: 600 stayed above it and above
+ * the p90 cold start individually, the two bounds
+ * tests/unit/control_plane/test_overview_workflow_checks.py holds, but was no
+ * longer above their sum (about 639s) -- a workflow could then read as
+ * stalled before a lease that merely missed the 480s deadline on a slow cold
+ * start could have been fenced and redispatched. #404 left the number at 600
+ * and called raising it a separate decision; this is that decision. 720 is
+ * clear of 480 + 159 with margin, and still well inside the twenty-minute
+ * stall the UI audit watched go entirely unreported, which is the failure
+ * this exists to end.
  *
  * The gate below matters as much as the number: a workflow with ANY step
  * LEASED, DISPATCHED, STARTING or RUNNING is never stalled however long it has
  * been at it, because an agent that runs for forty minutes is doing its job.
  * Without that gate no threshold could be both useful and quiet.
  */
-const WORKFLOW_STALL_SECONDS = 600
+const WORKFLOW_STALL_SECONDS = 720
 
 /** For the copy, so the sentence and the constant can never disagree. */
 const WORKFLOW_STALL_MINUTES = Math.round(WORKFLOW_STALL_SECONDS / 60)
