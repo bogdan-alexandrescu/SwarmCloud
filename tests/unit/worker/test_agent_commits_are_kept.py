@@ -1106,6 +1106,65 @@ def test_a_private_key_marker_over_a_stub_body_passes(worker_factory, path):
     assert _rule_for(worker, path, _pem_marker("BEGIN") + "\n") is None
 
 
+def _der_key_body(prefix_hex: str, random_len: int) -> str:
+    """A PKCS#8-shaped body: a fixed DER prefix plus random bytes, base64.
+    Built at run time, so no key-shaped literal sits in the repository."""
+    return base64.b64encode(bytes.fromhex(prefix_hex) + _RNG.randbytes(random_len)).decode()
+
+
+def _pkcs8(body: str, kind: str = "") -> str:
+    return "\n".join(
+        [_shape("-----", "BEGIN", kind, " PRIVATE", " KEY", "-----"), body,
+         _shape("-----", "END", kind, " PRIVATE", " KEY", "-----")]
+    ) + "\n"
+
+
+def _ed25519_body() -> str:
+    # 302e020100300506032b657004220420 + 32 random bytes: a 64-character body.
+    body = _der_key_body("302e020100300506032b657004220420", 32)
+    assert len(body) == 64
+    return body
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/unit/test_x.py"])
+def test_a_short_pkcs8_ed25519_key_is_refused_in_every_path(worker_factory, path):
+    """BLOCKER: a 64-character body sat under the 100-character floor."""
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _pkcs8(_ed25519_body())) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/unit/test_x.py"])
+def test_a_json_escaped_short_key_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    escaped = json.dumps(_pkcs8(_ed25519_body()))
+    assert _rule_for(worker, path, f"data = {escaped}\n") == "private_key_block"
+
+
+def test_an_rsa_2048_key_split_into_short_quoted_pieces_is_refused_from_src(worker_factory):
+    """MAJOR: no piece reached 16 characters, so no run counted."""
+    worker, _, _ = worker_factory()
+    body = "".join(_RNG.choice(_ALNUM + "+/") for _ in range(1600))
+    pieces = [body[i : i + 15] for i in range(0, len(body), 15)]
+    lines = [_shape('    "', piece, '" +') for piece in pieces]
+    text = "\n".join(
+        ["KEY = (", f'    "{_pem_marker("BEGIN")}\\n" +', *lines, f'    "{_pem_marker("END")}"', ")"]
+    ) + "\n"
+    assert _rule_for(worker, "src/keys.py", text) == "private_key_block"
+
+
+@pytest.mark.parametrize("kind", ["", " EC", " RSA"])
+def test_a_der_shaped_key_of_any_size_is_refused(worker_factory, kind):
+    worker, _, _ = worker_factory()
+    # SEQUENCE, long-form length 0x0140 = 320, then 320 random bytes.
+    body = _der_key_body("30820140", 320)
+    assert _rule_for(worker, "src/k.py", _pkcs8(body, kind)) == "private_key_block"
+
+
+def test_a_sixteen_character_stub_between_markers_under_tests_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/unit/test_x.py", _pkcs8("MIIEowIBAAKCAQEA")) is None
+
+
 @pytest.mark.parametrize("path", EVERYWHERE)
 def test_an_ey_run_that_is_not_a_jwt_passes(worker_factory, path):
     """`ey` and eight characters is the read-time rule's JWT; a header that
