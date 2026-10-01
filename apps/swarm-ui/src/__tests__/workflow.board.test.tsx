@@ -27,7 +27,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
-import { WorkflowCard, WorkflowsScreen } from '../Workflows'
+import { WorkflowBoardScreen, WorkflowCard, WorkflowsScreen } from '../Workflows'
 import {
   CANVAS_COLUMN,
   CANVAS_HEIGHT,
@@ -426,10 +426,24 @@ describe('the collapsed row', () => {
   it('is what the board lands on, before anything is clicked', async () => {
     // Through the real screen and the real fixture, so "collapsed by default"
     // is a property of the product rather than of a prop passed in a test.
-    render(<WorkflowsScreen />)
+    render(<WorkflowBoardScreen />)
     await screen.findByText('wf_audit_01', {}, { timeout: 4000 })
     await waitFor(() => expect(document.querySelectorAll('.wf-bar').length).toBeGreaterThan(0))
     expect(document.querySelector('.wf-canvas')).toBeNull()
+  })
+
+  it('V2: /workflows lands on the full-width list, one row per workflow and no canvas', async () => {
+    // Workflows V2 (owner's pick, 2026-10-01): the console's /workflows is the
+    // list; a workflow's graph is on its own page.
+    render(<WorkflowsScreen />)
+    await screen.findByText('wf_audit_01', {}, { timeout: 4000 })
+    const rows = document.querySelectorAll('.wfl-table tbody tr')
+    expect(rows.length).toBeGreaterThan(0)
+    expect(document.querySelector('.wf-canvas')).toBeNull()
+    // Each row links to that workflow's page.
+    const row = document.querySelector('.wfl-table tr[data-workflow="wf_audit_01"]')
+    expect(row, 'no row for wf_audit_01').toBeTruthy()
+    expect(row!.querySelector('.wfl-name > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
   })
 })
 
@@ -910,8 +924,9 @@ describe('a stage too wide to draw', () => {
     // Visually distinguishable WITHOUT being expanded and without being read:
     // somebody scanning for what broke must not have to open four bands.
     expect(band.className).toContain('has-failure')
-    // And not by colour alone.
-    expect(band.querySelector('.wf-band-count.is-bad .ctl-dot.is-bad')).toBeTruthy()
+    // And not by colour alone: the brand's failed mark (the solid diamond),
+    // in the failure hue (marks.tsx; rebrand 2026-10-01).
+    expect(band.querySelector('.wf-band-count.is-bad [data-mark="failed"][data-hue="bad"]')).toBeTruthy()
     expect(band.getAttribute('aria-label')).toContain('1 failed and 1 cancelled.')
 
     // THE MODIFIER MEANS SOMETHING ONLY IF A CLEAN STAGE DOES NOT CARRY IT.
@@ -1326,7 +1341,7 @@ describe('semantic zoom', () => {
     // THREE CHANNELS, NONE OF THEM COLOUR ALONE, at the tier that draws least:
     // the card's own accent class, the mark in its tone, and the word.
     expect(failed.className).toContain('bad')
-    expect(failed.querySelector('.ctl-dot.is-bad')).toBeTruthy()
+    expect(failed.querySelector('[data-mark="failed"][data-hue="bad"]')).toBeTruthy()
     expect(failed.querySelector('.node-state')!.textContent).toBe('failed')
 
     const cancelled = nodeNamed(container, 'scan-3')

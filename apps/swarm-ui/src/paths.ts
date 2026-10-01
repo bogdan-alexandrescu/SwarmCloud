@@ -70,6 +70,9 @@ function isAgentTab(s: string | undefined): s is AgentTab {
  * (`/agents/<tab>/<id>`), which the address does not carry; it defaults to
  * `live`, the list a pasted agent link is most often from.
  */
+/** The panes of one workflow that are a path segment: `/workflows/<id>/<pane>`. */
+export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
+
 export function addressToPath(address: string, agentTab: AgentTab = 'live'): string {
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
@@ -89,8 +92,14 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const params = new URLSearchParams(query)
     const wf = params.get('wf')
     params.delete('wf')
+    // One workflow's Table or Timeline tab is a path segment of its own:
+    // `/workflows/<id>/timeline` (workflows.html, section F). Only on a workflow.
+    const tab = params.get('tab')
+    const hasWf = wf !== null && wf !== ''
+    const pane = hasWf && tab !== null && WORKFLOW_PANES.includes(tab) ? `/${tab}` : ''
+    if (pane !== '') params.delete('tab')
     const rest = params.toString()
-    const base = wf === null || wf === '' ? '/workflows' : `/workflows/${encodeURIComponent(wf)}`
+    const base = wf !== null && wf !== '' ? `/workflows/${encodeURIComponent(wf)}${pane}` : '/workflows'
     return rest === '' ? base : `${base}?${rest}`
   }
   // Help: a topic lands at its group's page, scrolled to it; a group is a page.
@@ -137,10 +146,15 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   }
 
   if (seg[0] === 'workflows' && seg.length >= 2) {
-    // `wf` first, then the filters in the order the path carried them, which is
-    // the order `addressToPath` took them off: the two stay exact inverses.
-    const params = new URLSearchParams({ wf: decodeURIComponent(seg.slice(1).join('/')) })
-    for (const [k, v] of new URLSearchParams(query)) if (k !== 'wf') params.append(k, v)
+    // `wf`, then the tab a trailing `/table` or `/timeline` names, then the
+    // filters in the order the path carried them, which is the order
+    // `addressToPath` took them off: the two stay exact inverses.
+    const last = seg[seg.length - 1] ?? ''
+    const pane = seg.length >= 3 && WORKFLOW_PANES.includes(last) ? last : null
+    const idSegs = pane === null ? seg.slice(1) : seg.slice(1, -1)
+    const params = new URLSearchParams({ wf: decodeURIComponent(idSegs.join('/')) })
+    if (pane !== null) params.append('tab', pane)
+    for (const [k, v] of new URLSearchParams(query)) if (k !== 'wf' && (pane === null || k !== 'tab')) params.append(k, v)
     return plain(`work/workflows?${params.toString()}`)
   }
 
