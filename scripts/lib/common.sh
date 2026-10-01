@@ -1837,20 +1837,28 @@ redact() {
   # would match changes nothing, and the key words spelled out would push
   # these expressions past the 2048 bytes BSD sed takes for one (macOS; the
   # GNU sed in CI has no such limit, so a test holds every one under it).
-  # Two groups, so the separator and value are \3. The multi-word rule must
-  # tell `password` from the other key words, so it names them: five groups,
-  # value \6.
+  # Two groups, so the separator and value are \3. The rules for a call, a
+  # PascalCase or dotted type and a multi-word name must tell `password` from
+  # the other key words (none of them is exempt under `password`/`passwd`),
+  # so they name the others: five groups, value \6. Each exemption is its own
+  # expression, which keeps every one well under the BSD limit.
   local code_key='([A-Za-z0-9_.-]+(\\*")?[[:blank:]]*)'
   local code_key_np="((${ci_kw_np})${ci_suf}(\\\\*\")?[[:blank:]]*)"
-  local v_end='([],;)}[:space:]]|$)'
+  local v_end='([,;[:space:]]|$|[])}]+([,;[:space:]]|$))'
   local v_kwword="_*(${ci_kw})[Ss]?"
-  local v_multi='(_*[a-z][a-z0-9]{0,15}(_[a-z0-9]{1,16})+_*|_*[A-Z][A-Z0-9]{0,15}(_[A-Z0-9]{1,16})+_*|_*[a-z]{1,16}[0-9]{0,3}([A-Z][a-z]{1,15}[0-9]{0,3})+|_*[A-Z][a-z]{1,15}[0-9]{0,3}([A-Z][a-z]{1,15}[0-9]{0,3})+)'
-  local v_part='_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}([A-Z][a-z]{1,15}[0-9]{0,3})+|[A-Z][a-z]{1,15}[0-9]{0,3}([A-Z][a-z]{1,15}[0-9]{0,3})*)'
-  local v_dotted="((self|cls|this)(\\.${v_part})+|${v_part}(\\.${v_part})*\\.(${v_multi}|_+${v_part}|${v_kwword}))"
-  local v_call='[A-Za-z_$][A-Za-z0-9_$]{0,63}(\.[A-Za-z_$][A-Za-z0-9_$]{0,63})*[([]'
-  local v_expr_pw="(=|(await|new|not)[[:blank:]]|${v_call}|(None|True|False|null|undefined|\\{\\}|\\[\\]|\\(\\)|${v_dotted}|${v_kwword})${v_end})"
-  local v_annotation='((str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise|_*[A-Z][a-z]{1,15}[0-9]{0,3}([A-Z][a-z]{1,15}[0-9]{0,3})+|[a-z_][a-z0-9_]{0,31}\.[A-Z][A-Za-z0-9]{0,63})([],;)}|=>[:space:][]|$)|_*[A-Z][a-z]{1,15}[0-9]{0,3}[[:blank:]]*[]=)|[])'
-  local v_colon="(${v_annotation}|${v_call}|${v_dotted}${v_end}|[-+=?]\\})"
+  # A camelCase hump: a capital and two lowercase letters or more, or `Id`.
+  local v_hump='([A-Z][a-z]{2,15}|Id)[0-9]{0,3}'
+  local v_multi="(_*[a-z][a-z0-9]{0,15}(_[a-z0-9]{1,16})+_*|_*[A-Z][A-Z0-9]{0,15}(_[A-Z0-9]{1,16})+_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})+|_*${v_hump}(${v_hump})+)"
+  local v_part="_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})+|${v_hump}(${v_hump})*)"
+  local v_first="_*([a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})+|${v_hump}(${v_hump})*)"
+  local v_dotted="((self|cls|this)(\\.${v_part})+|${v_first}(\\.${v_part})*\\.(${v_multi}|_+${v_part}|${v_kwword}))"
+  local v_args="(\\([^(){};]{0,160}(\\([^(){};]{0,160}\\)[^(){};]{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_.]{0,63}|\"[^\"]{0,128}\"|'[^']{0,128}')\\])"
+  local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
+  local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
+  local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
+  local v_type_end='([[:blank:]]+[|=][[:blank:]]|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
+  local v_annotation="(_*${v_hump}(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.${v_hump}(${v_hump})*)${v_type_end}"
+  local v_word='(={1,2}[[:blank:]]|(await|new|not)[[:blank:]]|(None|True|False|null|undefined|\{\}|\[\]|\(\))([,;[:space:]]|$|[])}]+([,;[:space:]]|$)))'
   # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
   # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
   # an END below may still claim; BL the blank lines inside a key's body, kept
@@ -2014,10 +2022,17 @@ redact() {
     -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
     -e "s/(${wide_key})([[:space:]]*:[[:space:]]*\"?)(([A-Z][a-z]+)([\"\\,[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
-    -e "s/${code_key}([:=][[:blank:]]*\"?[$][({])/\\1${keep}\\3/g" \
-    -e "s/${code_key}(:[[:blank:]]*${v_colon})/\\1${keep}\\3/g" \
+    -e "s/${code_key}([:=][[:blank:]]*${v_shell})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_builtin})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_dotted}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*[-+=?]\\}(\"|[[:space:]]|\$))/\\1${keep}\\3/g" \
+    -e "s/${code_key_np}(:[[:blank:]]*${v_annotation})/\\1${keep}\\6/g" \
+    -e "s/${code_key_np}(:[[:blank:]]*${v_call})/\\1${keep}\\6/g" \
     -e "s/(^|[^A-Za-z0-9_.-])(${up_name}(\\\\*\")?)=/\\1\\2${envname}=/g" \
-    -e "s/${code_key}(=[[:blank:]]*${v_expr_pw})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_word})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_dotted}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_kwword}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key_np}(=[[:blank:]]*${v_call})/\\1${keep}\\6/g" \
     -e "s/${code_key_np}(=[[:blank:]]*${v_multi}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
