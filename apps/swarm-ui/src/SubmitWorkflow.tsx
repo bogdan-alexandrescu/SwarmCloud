@@ -351,6 +351,13 @@ function Form({ sources }: { sources: FormSources }) {
   // profile in its first step rather than render a step with no runner.
   const firstProfile = (offered[0] ?? sources.profiles[0])?.[0] ?? ''
   const [nextKey, setNextKey] = useState(2)
+  // submit.html (decided 2026-10-01): what a failed step does to the rest,
+  // and the workflow's priority -- both schemas.WorkflowCreate fields, sent
+  // only when they differ from the API's own defaults.
+  const [onFailure, setOnFailure] = useState<'fail_workflow' | 'continue'>('fail_workflow')
+  const [priority, setPriority] = useState('0')
+  const priorityN = Number(priority)
+  const priorityOk = priority.trim() !== '' && Number.isInteger(priorityN) && priorityN >= -100 && priorityN <= 100
   const [steps, setSteps] = useState<StepDraft[]>(() => [{
     key: 1, id: `${firstProfile}-1`, profile: firstProfile, stage: 0,
     after: null, input: seedFields([], requiredInputKeys(byName.get(firstProfile))), from: {},
@@ -435,6 +442,7 @@ function Form({ sources }: { sources: FormSources }) {
     // invariant, and a disabled attribute is only one way of keeping it.
     const { problems, body } = planOf(steps, byName)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
+    if (!priorityOk) return
     setSub({ kind: 'sending' })
     const repo = dispatch.repositoryUrl.trim()
     void postWorkflow({
@@ -444,6 +452,8 @@ function Form({ sources }: { sources: FormSources }) {
       strategy: dispatch.strategy,
       carrier: dispatch.carrier,
       ...(repo === '' ? {} : { repository_url: repo }),
+      ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
+      ...(priorityN === 0 ? {} : { priority: priorityN }),
     }).then(setSub)
   }
 
@@ -573,7 +583,31 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
-          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked} onClick={send}>
+          <fieldset className="sbf-wf-opts">
+            <legend>If a step fails</legend>
+            <label>
+              <input type="radio" name="on-step-failure" checked={onFailure === 'fail_workflow'} onChange={() => setOnFailure('fail_workflow')} />
+              Fail the workflow <span className="ctl-em">(default: steps not yet started are cancelled)</span>
+            </label>
+            <label>
+              <input type="radio" name="on-step-failure" checked={onFailure === 'continue'} onChange={() => setOnFailure('continue')} />
+              Continue <span className="ctl-em">(steps that do not depend on it still run)</span>
+            </label>
+          </fieldset>
+          <label className="sbf-wf-opts">
+            <span>Priority</span>
+            <input
+              type="number"
+              min={-100}
+              max={100}
+              step={1}
+              value={priority}
+              aria-invalid={!priorityOk}
+              onChange={(e) => setPriority(e.target.value)}
+            />
+            <span className="ctl-em">{priorityOk ? 'an integer from −100 to 100; 0 is the default' : 'must be a whole number from −100 to 100'}</span>
+          </label>
+          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
             {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
           </button>
         </div>

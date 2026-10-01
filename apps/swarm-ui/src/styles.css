@@ -12948,3 +12948,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-list { list-style: none; margin: 0; padding: 0; }
 .ov-list-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); color: inherit; text-decoration: none; }
 .ov-list-why { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); }
+
+/* --- Submit a workflow: If a step fails, Priority (submit.html) ---------- */
+.sbf-wf-opts { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 var(--ctl-gutter); font-size: var(--t-meta); }
+.sbf-wf-opts legend { padding: 0; margin-bottom: 4px; color: var(--text-dim); }
+.sbf-wf-opts input[type='number'] { width: 7em; font: var(--t-body)/var(--lh-body) var(--mono); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
