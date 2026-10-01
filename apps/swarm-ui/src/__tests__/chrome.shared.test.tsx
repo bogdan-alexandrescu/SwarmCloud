@@ -258,7 +258,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {
       succeeded!.click()
     })
-    await waitFor(() => expect(window.location.hash).toBe('#work/running/recent/succeeded'))
+    await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=succeeded'))
     await act(async () => {})
     expect(listReads, 'the click read the list again; the check would prove nothing').toBe(readsBefore)
     expect(pending).toBe(0)
@@ -417,41 +417,30 @@ function shownAt(el: Element, env: CascadeEnv): boolean {
 describe('CH-21: below 900px the strip is two rows, and a position means one thing', () => {
   const ROUTES = SECTIONS.flatMap((s) => s.tabs.map((t) => `#${s.id}/${t.id}`))
 
-  it('holds the same row-1 items, in the same order, on every section route', () => {
-    // Row 1 is the sections and the utility corner. The open section's tabs
-    // used to be inserted INLINE, so every section after it moved.
-    // MUTATION: draw the open section's tabs inside row 1 again.
+  // THE SKY SPINE REPLACED THE TWO-ROW STRIP (rebrand 2026-10-01). The
+  // property CH-21 bought is kept, on the new chrome: a position means one
+  // thing, on every route. The CSS fragment tests below still hold the old
+  // strip's rules, which stay in the sheet until it is pruned.
+  it('holds the same spine items, in the same order, on every section route', () => {
     expect(ROUTES.length, 'the sweep is not every section route').toBeGreaterThanOrEqual(15)
     let first: string[] | null = null
     for (const hash of ROUTES) {
-      window.location.hash = hash
+      window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      const main = container.querySelector('.ctl-rail-main')
-      const items = main === null
-        ? []
-        : [...main.querySelectorAll('button')].filter((b) => shownAt(b, PHONE)).map((b) => (b.textContent ?? '').trim())
+      const items = [...container.querySelectorAll('.sk-spine button')].map((b) => (b.textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: row 1 holds fewer than four sections and two utilities`).toBeGreaterThanOrEqual(6)
+      expect(items.length, `${hash}: the spine holds fewer than Submit, four sections and two utilities`).toBe(7)
       if (first === null) first = items
-      expect(items, `${hash}: row 1 is not the row every other route draws`).toEqual(first)
+      expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }
   })
 
-  it("draws row 2 only for a section with more than one tab, holding that section's tabs", () => {
-    window.location.hash = '#overview/now'
-    const over = render(<App />)
-    expect(over.container.querySelector('.ctl-rail-sub'), 'Overview has one pane and draws no second row').toBeNull()
-    over.unmount()
-
-    window.location.hash = '#capacity/accounts'
+  it("lists the open section's pages in the panel, and lights the open one", () => {
+    window.history.replaceState(null, '', '/capacity/accounts')
     const { container } = render(<App />)
-    const sub = container.querySelector('.ctl-rail-sub')
-    expect(sub, 'no second row for Capacity').not.toBeNull()
-    expect(sub!.getAttribute('role')).toBe('tablist')
-    const tabs = [...sub!.querySelectorAll('[role="tab"]')].map((b) => (b.firstChild?.textContent ?? '').trim())
-    const capacity = SECTIONS.find((s) => s.id === 'capacity')!
-    expect(tabs).toEqual(capacity.tabs.map((t) => t.label))
-    expect(sub!.querySelector('[aria-selected="true"]')?.firstChild?.textContent?.trim()).toBe('Accounts')
+    const on = container.querySelector('.sk-panel .sk-pk.is-on')
+    expect(on?.textContent?.trim()).toBe('Accounts')
+    expect(container.querySelector('.sk-panel .sk-kid.is-on')?.textContent).toBe('Subscription accounts')
   })
 
   const STRIP =

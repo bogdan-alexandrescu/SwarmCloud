@@ -507,7 +507,8 @@ describe('the badge shouts only where shouting is a safety signal', () => {
     // override, so strict costs nothing.
     const style = withStyles()
     render(<App />)
-    const label = document.querySelector('.brand-env-name')
+    // The frame's badge is the Sky spine panel's environment pill now.
+    const label = document.querySelector('.sk-panel .sk-pill')
     expect(label, 'the frame rendered no environment badge').toBeTruthy()
     // Walking the real frame, not a badge on its own, is what makes the
     // ancestor half of this claim true.

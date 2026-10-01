@@ -135,20 +135,20 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
     const panes = [...drawer!.querySelectorAll('[role="tab"]')].map((b) => b.textContent?.trim())
-    // #184: `Details` (was `Detail`) and a third pane, `Artifacts`.
-    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts'])
+    // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
+    // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
+    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
       drawer!.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
     ).toBe('Attempts')
 
-    // And it is NOT in the rail: a section tab pointing at it would make it a
-    // destination again. (test_nav_headings_agree.py holds the other half of
-    // this -- every SectionBody case must have a tab, and vice versa.)
-    const railTabs = [...document.querySelectorAll('.ctl-rail [role="tab"]')].map((b) =>
-      (b.firstChild?.textContent ?? '').trim(),
+    // And it is NOT in the spine or the panel: a nav entry pointing at it would
+    // make it a destination again. (test_nav_headings_agree.py holds the other
+    // half of this -- every SectionBody case must have a tab, and vice versa.)
+    const nav = [...document.querySelectorAll('.sk-spine button, .sk-panel button')].map((b) =>
+      (b.textContent ?? '').trim(),
     )
-    expect(railTabs).not.toContain('Attempts')
-    window.location.hash = ''
+    expect(nav).not.toContain('Attempts')
   })
 })
 
@@ -166,98 +166,26 @@ describe('B2: provenance is context, not a destination', () => {
 // §B3 -- layout: regions, with widths
 // ===========================================================================
 
-describe('B3: the rail', () => {
-  it('is a 200px grid column, and the page keeps its gutter tokens', () => {
+describe('B3: the work area, now beside the Sky spine', () => {
+  it('is one grid column with the agent as a second, and keeps its gutter tokens', () => {
+    // The rail column went with the rebrand (2026-10-01): the spine and the
+    // panel are the shell's (Spine.tsx), outside `.app`. Their order, pages,
+    // collapse and lock are asserted in rebrand.test.tsx.
     const style = withStyles()
     const { container } = render(<div className="app" />)
     const app = getComputedStyle(container.querySelector('.app')!)
-
     expect(app.display).toBe('grid')
-    expect(app.gridTemplateColumns).toContain('var(--rail-w)')
-    expect(token('--rail-w')).toBe('200px')
-
-    // Still the content column the product header lines its wordmark up with.
-    expect(app.maxWidth).toBe('var(--app-max)')
+    expect(app.gridTemplateColumns).not.toContain('var(--rail-w)')
     expect(app.padding).toContain('var(--app-pad)')
     style.remove()
-  })
-
-  it('renders the three sections under Overview AND every section tab, at all times', () => {
-    render(<App />)
-    const rail = document.querySelector('.ctl-rail')
-    expect(rail, 'no rail').not.toBeNull()
-
-    // Four rail entries, in one fixed order, so a position means one thing.
-    const sections = [...rail!.querySelectorAll('.ctl-rail-group > .ctl-nav-link')].map(
-      (b) => b.textContent?.trim(),
-    )
-    // THREE SECTIONS AND A LANDING SCREEN, not six sections. `Runtimes` became
-    // a pane of Capacity and `History` dissolved -- Timeline into Work,
-    // Platform counts into Admin. The measurement behind it is ux-plan.md
-    // §1.4: fifteen screens grouped by which subsystem owned the data, so four
-    // of a reader's five questions were spread over ten destinations.
-    //
-    // WHAT THIS ASSERTION IS FOR IS THE ORDER AND THE COUNT, not the collapse.
-    // The rail's whole value is that a position means one thing, so a section
-    // appearing, disappearing or moving has to be a decision someone took
-    // rather than a diff nobody read.
-    //
-    // `Work` and `Capacity`, not `Agents` and `Pools`. Both of those named the
-    // section after its own first tab, and because both sections have more
-    // than one tab the rail drew the name twice -- `Agents > Agents`,
-    // `Pools > Pools` -- and so did the breadcrumb. The assertion below on
-    // `Holders` is the other half: the tab could drop the word `Capacity` only
-    // once the section carried it.
-    expect(sections).toEqual(['Overview', 'Work', 'Capacity', 'Admin'])
-
-    // NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS. The regression this
-    // file exists to catch, stated as the rule rather than as one spelling of
-    // it, so a future section cannot reintroduce it under a different name.
-    const railGroups = [...rail!.querySelectorAll('.ctl-rail-group')]
-    for (const g of railGroups) {
-      const name = g.querySelector('.ctl-nav-link')?.textContent?.trim()
-      const own = [...g.querySelectorAll('[role="tab"]')].map((b) =>
-        (b.firstChild?.textContent ?? '').trim(),
-      )
-      expect(own, `section "${name}" is named after one of its own tabs`).not.toContain(name)
-    }
-
-    // THE PROPERTY THAT MATTERS: the second level does not appear on demand.
-    // Capacity's six tabs are in the DOM while Overview is the open section,
-    // so the rail's geometry is a constant rather than something you re-read.
-    // The first text node, not `textContent`: an admin-gated tab appends the
-    // word "admin" as a marker span, and folding that into the label would
-    // make this assert on the marker rather than on the name.
-    const tabs = [...rail!.querySelectorAll('[role="tab"]')].map((b) =>
-      (b.firstChild?.textContent ?? '').trim(),
-    )
-    // THE THREE PANES THE COLLAPSE MOVED, each named here rather than left to
-    // the count below: a screen that loses its tab is still reachable by hash
-    // and still passes every routing test, so the only thing that notices is
-    // an assertion that says the tab exists.
-    expect(tabs, 'Runtimes lost its tab when its section dissolved').toContain('Runtimes')
-    expect(tabs, 'Timeline lost its tab when History dissolved').toContain('Timeline')
-    expect(tabs, 'Platform counts lost its tab when History dissolved').toContain('Platform counts')
-    // "Profile headroom", not "Runner profiles". The rename is what pays for
-    // Runtimes and this pane sharing a section: two adjacent tabs with
-    // near-synonymous labels is how a reader takes a per-tenant figure for a
-    // platform one, and the old pair was exactly that. Asserting the NEW name
-    // here is also what stops a revert being silent -- `Runner profiles` would
-    // otherwise route, render and read fine.
-    expect(tabs).toContain('Profile headroom')
-    expect(tabs).not.toContain('Runner profiles')
-    expect(tabs).toContain('Holders')
-    expect(tabs).toContain('Tenants')
-    // Work(5) + Capacity(6) + Admin(3). Overview has one pane and draws no
-    // second level -- one tab under one section is a duplicate of the section.
-    expect(tabs.length).toBe(14)
   })
 
   it('keeps the utility corner the heading test reads', () => {
     render(<App />)
     const util = document.querySelector('.ctl-nav-util')
     expect(util, 'tests/unit/control_plane/test_nav_headings_agree.py finds the utility button by this class').not.toBeNull()
-    expect(util!.querySelector('button')?.textContent?.trim()).toBe('API reads')
+    const labels = [...util!.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels).toEqual(['Help', 'API reads'])
   })
 })
 

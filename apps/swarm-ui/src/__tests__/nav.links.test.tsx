@@ -254,6 +254,6 @@ describe('the links the frame draws itself', () => {
     await act(async () => {
       close!.click()
     })
-    expect(window.location.hash, 'the drawer closed to a different list').toBe('#work/running/recent/failed')
+    expect(window.location.pathname + window.location.search, 'the drawer closed to a different list').toBe('/agents/recent?state=failed')
   })
 })

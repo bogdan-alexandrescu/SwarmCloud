@@ -20,14 +20,15 @@ import { App } from '../App'
 describe('the shell mounts the frame it was built with', () => {
   it('renders the product header, not just a nav row', () => {
     render(<App />)
-    // Deleting <ProductHeader/> from App.tsx must turn this red. Before this
-    // test it did not.
-    expect(document.querySelector('.brand')).not.toBeNull()
+    // Deleting the shell from App.tsx must turn this red. The product header
+    // became the Sky spine's panel head (rebrand 2026-10-01): the wordmark
+    // and the measured environment pill.
+    expect(document.querySelector('.sk-ph .sk-wm')?.textContent).toBe('SwarmCloud')
   })
 
   it('names the environment somewhere a reader will see it', () => {
     render(<App />)
-    const header = document.querySelector('.brand-row, .brand')
+    const header = document.querySelector('.sk-ph')
     expect(header).not.toBeNull()
     // Every treatment classifyEnvironment can produce. The guarantee is that
     // the frame NAMES the environment -- an operator must be able to tell which

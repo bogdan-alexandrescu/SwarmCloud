@@ -694,7 +694,7 @@ describe('the expanded canvas', () => {
     // Drawn at the `details` tier rather than collapsed -- see the first case in
     // this block.
     expect(container.querySelectorAll('.node')).toHaveLength(7)
-    const before = window.location.hash
+    const before = window.location.href
     const node = nodeNamed(container, 'scan-a')
     // A CONTROL, NOT A LINK: nothing on the card navigates.
     expect(node.tagName, 'the node is still a link that leaves the workflow').toBe('BUTTON')
@@ -705,7 +705,7 @@ describe('the expanded canvas', () => {
     expect(container.querySelector('.wf-inspect')).toBeNull()
 
     fireEvent.click(node)
-    expect(window.location.hash, 'clicking a node navigated').toBe(before)
+    expect(window.location.href, 'clicking a node navigated').toBe(before)
     expect(nodeNamed(container, 'scan-a').getAttribute('aria-pressed')).toBe('true')
     const inspector = container.querySelector<HTMLElement>('.wf-inspect')
     expect(inspector, 'clicking a node did not fill the inspector').toBeTruthy()

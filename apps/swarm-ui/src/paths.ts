@@ -137,8 +137,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   }
 
   if (seg[0] === 'workflows' && seg.length >= 2) {
-    const params = new URLSearchParams(query)
-    params.set('wf', decodeURIComponent(seg.slice(1).join('/')))
+    // `wf` first, then the filters in the order the path carried them, which is
+    // the order `addressToPath` took them off: the two stay exact inverses.
+    const params = new URLSearchParams({ wf: decodeURIComponent(seg.slice(1).join('/')) })
+    for (const [k, v] of new URLSearchParams(query)) if (k !== 'wf') params.append(k, v)
     return plain(`work/workflows?${params.toString()}`)
   }
 
