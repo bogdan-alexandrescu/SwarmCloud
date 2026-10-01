@@ -33,9 +33,11 @@ export type { Result, ApiError } from './fetch'
  *  flag rather than restating the expression. */
 export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
-export async function loadCapacity(): Promise<Result<Capacity>> {
+export async function loadCapacity(options: { frame?: boolean } = {}): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
-  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0)
+  // `frame`: the shell's capacity meter reads this too, as the FRAME's read
+  // (CH-2), so its age never stands in for the page's own.
+  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0, { frame: options.frame === true })
 }
 
 /**

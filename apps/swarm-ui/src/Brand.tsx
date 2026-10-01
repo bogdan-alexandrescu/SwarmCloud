@@ -58,7 +58,7 @@
 // exists to prevent, so it may not be produced by a copy of somebody else's
 // variable.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useId, useState } from 'react'
 import { loadMe } from './api'
 import { errorHeading, type Result } from './fetch'
 import { Id } from './Shell'
@@ -92,71 +92,101 @@ import type { Me } from './types'
  * hardcoded hex in this component, so there is no ground it can fail on that
  * text would not fail on too.
  */
-export const MARK_COMPACT_MAX = 22
+export const MARK_COMPACT_MAX = 24
 
-/** Centre, and the six vertex angles of a pointy-top hexagon. */
-const C = 12
-const ANGLES = [-90, -30, 30, 90, 150, 210] as const
-
-function verts(radius: number): { x: number; y: number }[] {
-  return ANGLES.map((a) => ({
-    x: round2(C + radius * Math.cos((a * Math.PI) / 180)),
-    y: round2(C + radius * Math.sin((a * Math.PI) / 180)),
-  }))
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
+/**
+ * THE HIVE, REFINED (rebrand, owner's pick 2026-10-01; brand.html). A 32-unit
+ * grid, a pointy-top hexagon with six vertex agents and a core.
+ *
+ *   FULL (24px and up)    a faint ring (opacity .5, 1.6 stroke), THREE spokes
+ *                         from the core (up, lower right, lower left), six
+ *                         vertex discs and the core.
+ *   COMPACT (below 24px)  the ring and the spokes go and the seven dots grow,
+ *                         because a 1px spoke at 16px is a grey smear. This is
+ *                         the favicon and the phone header's cut.
+ */
+const HEX = [
+  [16, 4],
+  [26.39, 10],
+  [26.39, 22],
+  [16, 28],
+  [5.61, 22],
+  [5.61, 10],
+] as const
+const HEX_COMPACT = [
+  [16, 5.2],
+  [25.35, 10.6],
+  [25.35, 21.4],
+  [16, 26.8],
+  [6.65, 21.4],
+  [6.65, 10.6],
+] as const
+/** The three spokes the full cut draws: to the top, lower-right and lower-left vertex. */
+const SPOKES = [HEX[0], HEX[2], HEX[4]] as const
 
 /** The small-size geometry. index.html's favicon draws these same numbers. */
-export const COMPACT = { ring: 7.6, vertex: 2.4, core: 3.5 } as const
+export const COMPACT = { vertex: 3.3, core: 4.9, centre: 16 } as const
 /** The large-size geometry. */
-const FULL = { ring: 8.6, vertex: 1.9, core: 3 } as const
+const FULL = { vertex: 2.6, core: 4.6 } as const
 
-export function SwarmMark({ size = 28, title }: { size?: number; title?: string }) {
+/**
+ * `paint` is `currentColor` by default, which is how the mark works on both
+ * grounds without a token. `sky` is the spine's cut: a white -> #7dd3fc
+ * gradient on the deep-blue spine (white 11.05:1, #7dd3fc 6.63:1 on #0b3a7a),
+ * the same in both themes because the spine is.
+ */
+export function SwarmMark({
+  size = 28,
+  title,
+  paint = 'current',
+}: {
+  size?: number
+  title?: string
+  paint?: 'current' | 'sky'
+}) {
   const compact = size < MARK_COMPACT_MAX
-  const g = compact ? COMPACT : FULL
-  const points = verts(g.ring)
+  const gid = useId().replace(/:/g, '')
+  const fill = paint === 'sky' ? `url(#hive-${gid})` : 'currentColor'
+  const dots = compact ? HEX_COMPACT : HEX
+  const r = compact ? COMPACT.vertex : FULL.vertex
 
   return (
     <svg
       className="brand-mark"
       width={size}
       height={size}
-      viewBox="0 0 24 24"
+      viewBox="0 0 32 32"
       role={title ? 'img' : 'presentation'}
       aria-label={title}
       aria-hidden={title ? undefined : true}
       focusable="false"
     >
+      {paint === 'sky' && (
+        <defs>
+          <linearGradient id={`hive-${gid}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#ffffff" />
+            <stop offset="1" stopColor="#7dd3fc" />
+          </linearGradient>
+        </defs>
+      )}
       {!compact && (
         <>
           <polygon
-            points={points.map((p) => `${p.x},${p.y}`).join(' ')}
+            points={HEX.map(([x, y]) => `${x},${y}`).join(' ')}
             fill="none"
-            stroke="currentColor"
-            strokeWidth={1.1}
-            opacity={0.3}
+            stroke={fill}
+            strokeWidth={1.6}
+            opacity={0.5}
           />
-          {points.map((p) => (
-            <line
-              key={`s${p.x}-${p.y}`}
-              x1={C}
-              y1={C}
-              x2={p.x}
-              y2={p.y}
-              stroke="currentColor"
-              strokeWidth={1}
-              opacity={0.55}
-            />
+          {SPOKES.map(([x, y]) => (
+            <line key={`s${x}-${y}`} x1={16} y1={16} x2={x} y2={y} stroke={fill} strokeWidth={1.3} opacity={0.5} />
           ))}
         </>
       )}
-      {points.map((p) => (
-        <circle key={`v${p.x}-${p.y}`} cx={p.x} cy={p.y} r={g.vertex} fill="currentColor" />
+      {dots.map(([x, y]) => (
+        <circle key={`v${x}-${y}`} cx={x} cy={y} r={r} fill={fill} />
       ))}
-      <circle cx={C} cy={C} r={g.core} fill="currentColor" />
+      <circle cx={16} cy={16} r={compact ? COMPACT.core : FULL.core} fill={fill} />
     </svg>
   )
 }

@@ -16,8 +16,8 @@ import { AdminSettingsScreen } from './AdminSettings'
 import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
 import { ArtifactsScreen } from './Artifacts'
+import { CheckpointsPane } from './CheckpointsPane'
 import { AttemptTimelineScreen } from './AttemptTimeline'
-import { ProductHeader } from './Brand'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -32,6 +32,8 @@ import {
 import { isOverlay, nudgePane, trapTab } from './focus'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
+import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
+import { Icon, SkyShell, type SpineSection } from './Spine'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -432,6 +434,9 @@ export const SECTIONS: SectionDef[] = [
  */
 const REFERENCE = 'reference'
 
+/** The Submit chooser's address (`/submit`). Not a section, like Help. */
+const SUBMIT = SUBMIT_ADDRESS
+
 /**
  * The utility button's label AND the heading of the screen it opens. One
  * constant, used in both places, because they are two renderings of one name.
@@ -597,15 +602,31 @@ const SECTION_ALIASES: Record<string, string> = {
 export const INTERNAL_LINKS_MAY_NOT_USE_ALIASES = Object.keys(SECTION_ALIASES)
 
 /**
+ * Every head an OLD `#...` address can start with: the sections, their
+ * aliases, the eleven-item nav's LEGACY hashes, Help and API reads. A fragment
+ * whose head is one of these is a route from the hash router and is redirected
+ * to its path once (`fromLocation`, `App`); any other fragment is an anchor.
+ */
+export const LEGACY_HEADS: readonly string[] = [
+  ...SECTIONS.map((s) => s.id),
+  ...Object.keys(SECTION_ALIASES),
+  ...Object.keys(LEGACY),
+  ...Object.keys(MOVED_PANES).map((k) => k.split('/')[0]!),
+  HELP_ROUTE,
+  REFERENCE,
+  SUBMIT_ADDRESS,
+]
+
+/**
  * Which pane of one agent is open. `artifacts` (#184) is what the agent took
  * in and what it produced -- inputs, the answer and every file, and its logs
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'attempts' | 'artifacts'
+export type TaskPane = 'detail' | 'attempts' | 'artifacts' | 'checkpoints'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['attempts', 'artifacts']
+const PANE_SEGMENTS: readonly TaskPane[] = ['attempts', 'artifacts', 'checkpoints']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -652,11 +673,32 @@ function firstTab(s: SectionDef): string {
  * the reader who followed it. `tests/route.test.ts` drives it directly.
  */
 export function fromHash(): Route {
+  return fromAddress(window.location.hash.replace(/^#/, ''))
+}
+
+/**
+ * The route the window's location names: a legacy `#...` fragment if it
+ * carries one (resolved once, then rewritten to its path by `App`), otherwise
+ * the real path (paths.ts).
+ */
+export function fromLocation(): Route {
+  const { pathname, search, hash } = window.location
+  if (isLegacyHash(hash, LEGACY_HEADS)) return fromHash()
+  const p = pathToAddress(pathname, search, hash)
+  if (p === null) return fromAddress('')
+  const r = fromAddress(p.address)
+  return p.agentTab === null || r.taskId === null ? r : { ...r, list: { tab: p.agentTab, state: null } }
+}
+
+/**
+ * An address (paths.ts), resolved to a route: the old hash router's grammar,
+ * aliases and moved panes included, so every saved hash still lands.
+ */
+export function fromAddress(full: string): Route {
   // THE QUERY IS NOT PART OF THE PATH (#185). The Timeline writes its view as
   // `#work/timeline?span=30d`; left on the path, `timeline?span=30d` matched
   // no tab and the Work fallback below read it as a TASK ID, opening an
   // inspector for an agent called "timeline?span=30d".
-  const full = window.location.hash.replace(/^#/, '')
   const queryAt = full.indexOf('?')
   const hash = queryAt === -1 ? full : full.slice(0, queryAt)
   const query = queryAt === -1 ? '' : full.slice(queryAt + 1)
@@ -685,6 +727,9 @@ export function fromHash(): Route {
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
+  // The Submit chooser (/submit): two large choices, opened by the spine's
+  // Submit and by N.
+  if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
 
   // The tail is a topic id and is carried VERBATIM, including one this build
   // does not have: HelpScreen says which topic was asked for and lists what it
@@ -735,6 +780,11 @@ export function fromHash(): Route {
     if (tab && section.id === WORK && tab.id === 'timeline' && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
+    // The Workflows list's filters and its open workflow (`wf=<id>`) ride on
+    // its address the same way: `/workflows/<id>?owner=me` (paths.ts).
+    if (tab && section.id === WORK && tab.id === 'workflows' && query !== '') {
+      return { sectionId: section.id, tab: tab.id, ...blank, view: query }
+    }
     // THE ROW A LINK NAMED rides on Pool limits' address (#134): the Tenants
     // roster links each Enforced figure to `#admin/limits?pool=tenant:<id>`.
     // Dropped here, the normalise effect rewrote the address to
@@ -776,6 +826,7 @@ export function canonical(r: Route): string {
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
+  if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
@@ -786,6 +837,9 @@ export function canonical(r: Route): string {
   // page (#185). Written only for that route: no other screen reads a query.
   if (r.sectionId === WORK && r.tab === 'timeline' && r.view) {
     return `${WORK}/timeline?${r.view}`
+  }
+  if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
+    return `${WORK}/workflows?${r.view}`
   }
   // And Pool limits' linked row, for the same reason (#134).
   if (r.sectionId === ADMIN_SECTION && r.tab === LIMITS_TAB && r.view) {
@@ -816,83 +870,109 @@ function readsKey(r: Route): string {
 }
 
 export function App() {
-  const [at, setAt] = useState<Route>(fromHash)
+  const [at, setAt] = useState<Route>(fromLocation)
 
-  // The hash IS the router. A real router earns its place when there are
-  // nested layouts or loaders; today it would be a dependency that does
-  // nothing forty lines cannot, and back/forward already work — including out
-  // of the detail drawer, which is why the drawer is a route rather than
-  // component state.
-  useEffect(() => {
-    const onHash = () => setAt(fromHash())
-    window.addEventListener('hashchange', onHash)
-    return () => window.removeEventListener('hashchange', onHash)
-  }, [])
+  // THE LIST ADDRESS THE AGENT WAS OPENED FROM (OV-10). Opening an agent
+  // replaces the list address with the agent's, so without this the agent
+  // closed to bare `/agents` while the list behind it still showed, say,
+  // Recent · failed. Written during render, so the close address is never one
+  // route behind; the write is idempotent, so a double render is harmless.
+  const lastList = useRef<AgentList | null>(at.list ?? null)
+  if (at.taskId === null) lastList.current = at.list ?? null
 
-  // NORMALISE, WITHOUT ADDING HISTORY. An old hash resolves to a new route and
-  // the address bar is rewritten in place, so copying the link afterwards
-  // yields the current spelling. `replaceState` rather than assigning to
-  // `location.hash`: the latter pushes an entry, and Back would then walk the
-  // user through every alias they never typed.
+  /** The path a route is written as: an open agent sits under its list's tab. */
+  const pathFor = useCallback(
+    (r: Route) => addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
+    [],
+  )
+
+  // REAL ROUTES (rebrand 2026-10-01). Back and forward are `popstate`; an
+  // old `#...` address -- typed, pasted, or an in-app `href="#..."` -- is
+  // resolved by the hash router's grammar and then rewritten to its path.
+  const go = useCallback(
+    (to: string) => {
+      let r: Route
+      if (to.startsWith('/')) {
+        const u = new URL(to, window.location.origin)
+        const p = pathToAddress(u.pathname, u.search, u.hash)
+        r = p === null ? fromAddress('') : fromAddress(p.address)
+        if (p !== null && p.agentTab !== null) r = { ...r, list: { tab: p.agentTab, state: null } }
+      } else {
+        r = fromAddress(to.replace(/^#/, ''))
+      }
+      const path = pathFor(r)
+      if (here() !== path) window.history.pushState(null, '', path)
+      setAt(r)
+    },
+    [pathFor],
+  )
+
   useEffect(() => {
-    const want = canonical(at)
-    if (window.location.hash.replace(/^#/, '') !== want) {
-      window.history.replaceState(null, '', `#${want}`)
+    const onPop = () => setAt(fromLocation())
+    const onHash = () => {
+      if (isLegacyHash(window.location.hash, LEGACY_HEADS)) setAt(fromHash())
     }
-  }, [at])
+    // A click on an old-style `href="#work/..."` link, or on a same-origin
+    // path, is a navigation: pushed, so Back returns to where it was made.
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const target = e.target as Element | null
+      const a = target?.closest?.('a[href]') ?? null
+      if (a === null || a.getAttribute('target') === '_blank' || a.hasAttribute('download')) return
+      const href = a.getAttribute('href') ?? ''
+      if (href.startsWith('#') && isLegacyHash(href, LEGACY_HEADS)) {
+        e.preventDefault()
+        go(href.slice(1))
+      } else if (/^\/(?!\/|v1\/)/.test(href) && pathToAddress(href.split(/[?#]/)[0] ?? '') !== null) {
+        e.preventDefault()
+        go(href)
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    window.addEventListener('hashchange', onHash)
+    document.addEventListener('click', onClick)
+    return () => {
+      window.removeEventListener('popstate', onPop)
+      window.removeEventListener('hashchange', onHash)
+      document.removeEventListener('click', onClick)
+    }
+  }, [go])
+
+  // NORMALISE, WITHOUT ADDING HISTORY. An old hash, an alias or a bare path
+  // resolves to a route and the address bar is rewritten in place to the one
+  // path that route has -- the ONE-TIME REDIRECT of every legacy hash. Copying
+  // the link afterwards yields the current spelling, and Back does not walk
+  // the reader through every alias they never typed.
+  useEffect(() => {
+    const want = pathFor(at)
+    if (here() !== want) window.history.replaceState(null, '', want)
+  }, [at, pathFor])
 
   // A NEW SCREEN'S READS START FROM NOTHING (CH-2). A LAYOUT effect, so it has
-  // run before any screen's own `useEffect` issues a read: React runs every
-  // layout effect of a commit before the first passive one, parent or child.
-  // Keyed by the canonical route, so opening an agent over the list, or
-  // switching its pane, is a new screen too -- what the head then reports is
-  // what that view has read, not what the list read before it.
-  //
-  // AND THE LIST UNDER IT IS NAMED (CH-2): `pageKey` is the route with its task
-  // removed, the page the inspector is drawn over. That page never unmounts
-  // while the inspector opens, switches pane and closes, so its reads carry on
-  // across all three -- closing the inspector used to begin an empty scope
-  // beside a fully drawn list, and the head said "reading…" with nothing being
-  // read.
-  //
-  // THE LIST'S TAB AND STATE ARE NOT A NEW SCREEN (OV-10): both keys are
-  // `readsKey`, the route with the list address removed -- see there.
+  // run before any screen's own `useEffect` issues a read. `pageKey` is the
+  // route with its agent removed -- the list the agent is drawn beside, whose
+  // reads carry on while the agent opens, switches tab and closes. The list's
+  // own tab and state are not a new screen (OV-10); see `readsKey`.
   const screenKey = readsKey(at)
   const pageKey = at.taskId === null ? null : readsKey({ ...at, taskId: null })
   useLayoutEffect(() => {
     beginScreenReads(screenKey, pageKey)
   }, [screenKey, pageKey])
 
-  const go = (to: string) => {
-    window.location.hash = to
-  }
-
-  // THE LIST ADDRESS THE DRAWER WAS OPENED FROM (OV-10). Opening an agent
-  // replaces the list address with the drawer's, so without this the drawer
-  // closed to bare `work/running` while the list behind it still showed, say,
-  // Recent · failed -- the address bar and the visible list disagreeing the
-  // moment it shut. Updated from every route that is not a drawer, and from
-  // the list's own clicks (which can happen with the drawer open). Written
-  // during render rather than in an effect, so the close address below is
-  // never one route behind; the write is idempotent, so a double render is
-  // harmless.
-  const lastList = useRef<AgentList | null>(at.list ?? null)
-  if (at.taskId === null) lastList.current = at.list ?? null
-
-  // A TAB OR SEGMENT CLICK IS A ROUTE CHANGE, and the normalise effect above
-  // writes it with `replaceState` -- so clicks add no history entries, and
-  // Agents.tsx never writes the hash itself.
+  // A TAB OR SEGMENT CLICK IS A ROUTE CHANGE, written by the normalise effect
+  // with `replaceState`, so list clicks add no history entries.
   const onList = useCallback((list: AgentList) => {
     lastList.current = list
     setAt((r) => ({ ...r, list }))
   }, [])
 
-  // THE TIMELINE'S FILTERS ARE A ROUTE CHANGE TOO (#185), written the same way:
-  // the normalise effect above puts the view in the address with
-  // `replaceState`, so a filter click adds no history entry.
+  // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
+  // (#185), written the same way.
   const onView = useCallback((view: string) => {
     setAt((r) => ({ ...r, view: view === '' ? null : view }))
   }, [])
+
+  const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
   const section = sectionOf(at.sectionId)
   const inspector = at.taskId !== null
@@ -903,309 +983,154 @@ export function App() {
     taskPane: 'detail',
     list: lastList.current,
   })
+  const tabDef = section?.tabs.find((t) => t.id === at.tab) ?? null
+  const title =
+    at.sectionId === SUBMIT
+      ? 'Submit'
+      : at.sectionId === HELP
+        ? 'Help'
+        : at.sectionId === REFERENCE
+          ? REFERENCE_LABEL
+          : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
 
   return (
-    // THE FRAME (§3.4, §11.3). Two rows: everything that scrolls, then the
-    // dock. The dock USED to be `position: fixed` over a document that
-    // scrolled under it, and an opaque bar over a scrolling document has
-    // content behind it at some scroll offset -- always, by construction. Two
-    // passes tried to buy that back with reservations (`.app`'s bottom
-    // padding, then `scroll-padding-bottom`) and neither could work: bottom
-    // padding only clears the END of the document and scroll-padding only
-    // affects scrolls the browser performs. At rest, at scrollY=0, the bar
-    // still painted over whatever happened to land under it -- which at
-    // 390x844 was the row the owner screenshotted.
-    //
-    // Making it a ROW removes the class of bug instead of the instances:
-    // there is no offset at which a grid row overlaps its sibling, so there is
-    // nothing left to reserve and nothing left to tune.
+    // THE FRAME: everything that scrolls, then the dock as a ROW of its own
+    // (§3.4, §11.3) -- a bar that occupies its height rather than painting over
+    // whatever lands under it.
     <div className="ctl-frame">
-      {/* THE SCROLLER. The header travels with the content on purpose -- the
-          rail's `position: sticky; top: 0` pins it once the header has
-          scrolled away, and that behaviour is unchanged because the header is
-          still inside the same scrolling box the rail is. */}
       <div className="ctl-scroll">
-        {/* OUTSIDE `.app`, DELIBERATELY. The header's environment bar is 3px
-            tall and spans the full viewport width -- that full width is what
-            makes it readable in peripheral vision and in a scaled-down
-            screenshot, and an element inside `.app` stops at the content
-            gutter. The bar's own padding uses the same `--app-pad` token
-            `.app` does, so the wordmark still lines up with the nav below it
-            at every breakpoint. */}
-        <ProductHeader />
-        <div className={`app${inspector ? ' has-inspector' : ''}`}>
-          <Rail at={at} go={go} />
+        <SkyShell
+          section={spineOf(at.sectionId)}
+          tab={at.tab}
+          title={title}
+          go={go}
+          helpGroup={at.sectionId === HELP ? (helpGroupOf(at.tab) ?? (at.tab === '' ? null : at.tab)) : null}
+          apiFailuresOnly={apiFailuresOnly}
+          onApiFilter={setApiFailuresOnly}
+          foot={
+            // THE UTILITY CORNER: Help and API reads at the spine's foot.
+            // `ctl-nav-util` is load-bearing: test_nav_headings_agree.py reads
+            // this element to find the API reads button and its label.
+            <div className="ctl-nav-util sk-foot">
+              <button
+                type="button"
+                className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
+                aria-current={at.sectionId === HELP ? 'page' : undefined}
+                onClick={() => go(HELP)}
+              >
+                <Icon name="help" />
+                <small>Help</small>
+              </button>
+              <button
+                type="button"
+                className={`sk-ri${at.sectionId === REFERENCE ? ' is-on' : ''}`}
+                aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
+                onClick={() => go(REFERENCE)}
+              >
+                <Icon name="api" />{REFERENCE_LABEL}</button>
+            </div>
+          }
+        >
+          <div className={`app${inspector ? ' has-inspector' : ''}`}>
+            <main className="work">
+              <Head at={at} section={section} />
 
-          {/* THE WORK AREA (§B3). A grid column, `min-width: 0`, no max-width.
-              Its own head sits inside it rather than above the rail, because
-              the head names the PAGE and the rail names the product. */}
-          <main className="work">
-            <Head at={at} section={section} />
-
-            {section === null ? (
-              at.sectionId === HELP ? (
-                <HelpScreen topic={at.tab} />
+              {section === null ? (
+                at.sectionId === HELP ? (
+                  <HelpScreen topic={at.tab} />
+                ) : at.sectionId === SUBMIT ? (
+                  <SubmitChooser go={go} />
+                ) : (
+                  <ReferenceScreen failuresOnly={apiFailuresOnly} />
+                )
               ) : (
-                <ReferenceScreen />
-              )
-            ) : (
-              // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
-              // inspector is open over it (`RoutedPage` in Shell.tsx).
-              <RoutedPage.Provider value={true}>
-                <SectionBody
-                  sectionId={section.id}
-                  tab={at.tab}
-                  taskId={at.taskId}
-                  list={at.list ?? null}
-                  onList={onList}
-                  view={at.view ?? null}
-                  onView={onView}
-                  go={go}
-                />
-              </RoutedPage.Provider>
-            )}
-          </main>
+                // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
+                // agent is open beside it (`RoutedPage` in Shell.tsx).
+                <RoutedPage.Provider value={true}>
+                  <SectionBody
+                    sectionId={section.id}
+                    tab={at.tab}
+                    taskId={at.taskId}
+                    list={at.list ?? null}
+                    onList={onList}
+                    view={at.view ?? null}
+                    onView={onView}
+                    go={go}
+                  />
+                </RoutedPage.Provider>
+              )}
+            </main>
 
-          {at.taskId !== null && (
-            <AgentDrawer taskId={at.taskId} pane={at.taskPane} closeTo={listAddress} go={go} />
-          )}
-        </div>
+            {at.taskId !== null && (
+              <AgentDrawer taskId={at.taskId} pane={at.taskPane} closeTo={listAddress} go={go} />
+            )}
+          </div>
+        </SkyShell>
       </div>
 
-      {/* THE DOCK (§B3), A SIBLING OF THE SCROLLER RATHER THAN A LAYER OVER
-          IT. It is still outside `.app`, still spans the viewport, and still
-          survives navigation within the session -- it is rendered here, above
-          the routed body, exactly as before. What changed is that it now
-          OCCUPIES its height instead of borrowing it. */}
       <Dock />
     </div>
   )
 }
 
-/**
- * THE RAIL (§B3): 200px fixed, down the left, and it never reorders.
- *
- * WHY A RAIL AND NOT THE TWO HORIZONTAL STRIPS IT REPLACES. The console had a
- * section bar and a tab strip stacked above every screen, and between them
- * they spent about 64px of vertical on every one of fifteen routes -- on the
- * 900px-tall laptops these screens are actually read on, that is 7% of the
- * glass, permanently, to display navigation that does not change. Horizontal
- * is also the axis this product has least of: the work area wants every pixel
- * of width for tables and for the workflow graph, and has vertical to spare.
- *
- * IT NEVER REORDERS, which is the property the whole thing is for. After a
- * week you go to a POSITION rather than reading a label, and that only works
- * if the position is a constant -- so every section's tabs are drawn at all
- * times, indented, rather than appearing when their section is opened. A
- * second-level list that materialises under the cursor is a list whose
- * geometry you have to re-read on every visit.
- *
- * THE UTILITY CORNER stays in the rail, at the bottom, and keeps its
- * `ctl-nav-util` class: the API reads page and Help are things you look up
- * once, not things you work in, and putting them among the sections is the
- * mistake the eleven-item nav made eleven times over.
- * `tests/unit/control_plane/test_nav_headings_agree.py` reads that class name
- * to find the utility button, so it is load-bearing rather than decorative.
- *
- * BELOW 900px IT IS TWO ROWS (CH-21). Two hundred pixels of a 390pt phone is
- * half the screen, so the column becomes a strip -- and it used to be ONE
- * scrolling row with the open section's tabs inserted inline, which moved the
- * position of every section after the open one. That broke the property this
- * whole component exists for (§6.14: a position means one thing). So:
- *
- *   row 1  `.ctl-rail-main`  the sections and the utility corner, identical on
- *                            every route
- *   row 2  `.ctl-rail-sub`   the open section's tabs, only when it has more
- *                            than one, each row scrolling on its own
- *
- * The open section's tabs are therefore drawn TWICE, by one component
- * (`RailTabs`): inline for the desktop column and as row 2 for the phone.
- * The sheet displays exactly one copy at any width (`.ctl-rail-main` is
- * `display: contents` above 900px, so the desktop column is unchanged). And
- * the two levels stop looking alike: a section's selection is a 2px `--text`
- * RULE and a tab's is a `--surface-2` FILL -- the phone case of §1.3's
- * "surface step plus a 2px rule", split between the two levels, so they
- * differ in greyscale and need no hue.
- *
- * WHAT WAS NOT BUILT, AND WHY IT IS NOT A 56px ICON RAIL BELOW 1280px. §B3
- * asks for icon-only at 56px. This product has no icon set, and a single
- * letter is not an icon -- it is a label with everything but the first
- * character deleted, which is a thing you decode rather than recognise.
- *
- * THAT ARGUMENT USED TO REST ON A COINCIDENCE, and the collapse to three
- * sections removed the coincidence: the rail said Agents and Admin, two
- * identical marks in a list whose whole value is that a position means one
- * thing. It now says Overview, Work, Capacity, Admin -- four distinct letters
- * -- so the collision is gone and the argument is NOT. A four-letter rail is
- * still four things to decode, and the tabs underneath (which is most of the
- * rail's height and all of its usefulness) have no initials at all. It narrows
- * to 152px instead.
- *
- * THE LONGEST TAB LABEL IS NOW "Profile headroom", one character longer than
- * the "Runner profiles" the 152px measurement was taken against. Nothing in
- * this repository measures rendered text at a width -- jsdom implements no
- * layout -- so that is a reason for someone to LOOK at 1279px, not a claim
- * that it fits, and it is written here rather than left for the reader who
- * finds it wrapped.
- */
-function Rail({ at, go }: { at: Route; go: (to: string) => void }) {
-  const rail = useRef<HTMLElement>(null)
+/** Where the address bar is now, in the form `pathFor` writes. */
+function here(): string {
+  return window.location.pathname + window.location.search + window.location.hash
+}
 
-  /*
-   * THE CURRENT ITEM IS BROUGHT INTO VIEW ON EVERY ROUTE CHANGE (CH-14).
-   *
-   * Below 900px the rail is a strip that scrolls sideways, and nothing ever
-   * scrolled it: measured at 390px, `#work/new`, `#admin/tenants` and `#help`
-   * all opened with the current tab -- or the Help button -- past the right
-   * edge, so the one item that says where the reader is was the one they
-   * could not see.
-   *
-   * WHICH ITEM, IN THIS ORDER, and the order is why these are three queries
-   * rather than one selector list: a list returns the first match in DOCUMENT
-   * order, and a section button always precedes its own tabs, so `#admin/
-   * counts` would have scrolled to "Admin" and left "Platform counts" off
-   * screen. The selected tab if there is one; the on-state utility button for
-   * API reads and Help; the section itself for a one-pane section.
-   *
-   * `nearest` ON BOTH AXES, so an item already in view does not move. On the
-   * desktop column the rail is sticky and always on screen, so this only ever
-   * scrolls the rail's own overflow, on a viewport too short to hold it.
-   * BELOW 900px IT CAN SCROLL THE PAGE. The strip is `position: static`
-   * there, inside `.ctl-scroll` (styles.css), so after a reader scrolls down
-   * and follows an in-content link to another section, `block: nearest`
-   * scrolls `.ctl-scroll` up just far enough to show the strip. That puts
-   * them at the top of the screen they just opened rather than part-way down
-   * it; nothing else resets the scroll position on a route change.
-   * `scroll-margin-inline-end` (styles.css) keeps the item clear of the fade
-   * at the strip's end. jsdom implements no `scrollIntoView`, hence the guard.
-   */
-  useEffect(() => {
-    const root = rail.current
-    if (root === null) return
-    // THE VISIBLE COPY OF THE SELECTED TAB (CH-21). The open section's tabs
-    // are drawn twice -- inline for the desktop column, and as row 2 below
-    // 900px -- and the sheet displays one. Scrolling the hidden copy moves
-    // nothing, so the one with a box is chosen; where nothing has a box
-    // (jsdom has no layout) it is row 2's, the copy that scrolls.
-    const tabs = [
-      ...root.querySelectorAll<HTMLElement>('.ctl-rail-sub [role="tab"][aria-selected="true"]'),
-      ...root.querySelectorAll<HTMLElement>('.ctl-rail-group [role="tab"][aria-selected="true"]'),
-    ]
-    const shown = tabs.find((el) => typeof el.getClientRects === 'function' && el.getClientRects().length > 0)
-    const current =
-      shown ??
-      tabs[0] ??
-      root.querySelector<HTMLElement>('.ctl-nav-util .is-on') ??
-      root.querySelector<HTMLElement>('.ctl-nav-link.is-on')
-    if (current !== null && current !== undefined && typeof current.scrollIntoView === 'function') {
-      current.scrollIntoView({ inline: 'nearest', block: 'nearest' })
-    }
-  }, [at.sectionId, at.tab])
-
-  const open = SECTIONS.find((s) => s.id === at.sectionId) ?? null
-
-  return (
-    <nav className="ctl-rail" aria-label="Sections" ref={rail}>
-      {/* ROW 1 BELOW 900px, and `display: contents` above it, so the desktop
-          column is exactly what it was: the sections, then the utility corner
-          at the foot. */}
-      <div className="ctl-rail-main">
-        <div className="ctl-rail-sections">
-          {SECTIONS.map((s) => {
-            const on = at.sectionId === s.id
-            return (
-              <div key={s.id} className={`ctl-rail-group${on ? ' is-on' : ''}`}>
-                <button
-                  className={`ctl-nav-link${on ? ' is-on' : ''}`}
-                  aria-current={on ? 'page' : undefined}
-                  title={s.question}
-                  onClick={() => go(`${s.id}/${firstTab(s)}`)}
-                >
-                  {s.label}
-                </button>
-                {/* A single-pane section draws no second level: one tab under
-                    one section is a duplicate of the section. Drawn for every
-                    section at all times on the desktop column; hidden below
-                    900px, where row 2 carries the open section's. */}
-                {s.tabs.length > 1 && <RailTabs section={s} at={at} go={go} className="ctl-rail-tabs" />}
-              </div>
-            )
-          })}
-        </div>
-
-        <div className="ctl-nav-util">
-          <button
-            className={at.sectionId === REFERENCE ? 'is-on' : ''}
-            aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
-            onClick={() => go(REFERENCE)}
-          >
-            {REFERENCE_LABEL}
-          </button>
-          {/* THE RAIL'S `?`, which this comment used to call "the head `?`" --
-              it is not (AH-5). The head `?` is `SectionQuestion`, in `Head`
-              below, and it is the way into Help that ui-audit §B7.2/§B7.3
-              describe: its card now ends in a link here. This button is the
-              other way in, always in the same place, for a reader with no
-              screen-level `?` in front of them. A glyph and an accessible name,
-              not the word "Help" -- the rail is the product's three questions
-              over a landing screen, and a fifth word beside them reads as a
-              fifth section. */}
-          <button
-            className={at.sectionId === HELP ? 'is-on' : ''}
-            aria-current={at.sectionId === HELP ? 'page' : undefined}
-            aria-label="Help"
-            title="Help"
-            onClick={() => go(HELP)}
-          >
-            ?
-          </button>
-        </div>
-      </div>
-
-      {/* ROW 2 BELOW 900px: the open section's tabs, on a row of their own so
-          nothing in row 1 moves when a section opens. Not drawn for a
-          one-pane section (the rule the inline tabs already follow), and not
-          displayed at all above 900px, where the inline copy is. */}
-      {open !== null && open.tabs.length > 1 && (
-        <RailTabs section={open} at={at} go={go} className="ctl-rail-tabs ctl-rail-sub" />
-      )}
-    </nav>
-  )
+/** The spine section a route belongs to. Submit belongs to none of them. */
+function spineOf(sectionId: string): SpineSection {
+  switch (sectionId) {
+    case 'overview':
+      return 'overview'
+    case WORK:
+      return 'work'
+    case CAPACITY:
+      return 'capacity'
+    case ADMIN_SECTION:
+      return 'admin'
+    case HELP:
+      return 'help'
+    case REFERENCE:
+      return 'api'
+    default:
+      return null
+  }
 }
 
 /**
- * One section's tabs, the one way they are drawn -- used for the inline copy
- * on the desktop column and for row 2 of the phone strip (CH-21), so the two
- * cannot drift. `.ctl-rail-tabs` on both is what gives row 2 every tab rule the
- * inline tabs have, the 44px phone target included; `.ctl-rail-sub` is only
- * what places it.
+ * THE SUBMIT CHOOSER (/submit; submit.html, the owner's pick). Two large
+ * choices, opened by the spine's Submit button and by N. Recent submissions
+ * are NOT listed: no route serves "what did I submit", so the empty state
+ * says so rather than inventing a list from the task feed.
  */
-function RailTabs({
-  section,
-  at,
-  go,
-  className,
-}: {
-  section: SectionDef
-  at: Route
-  go: (to: string) => void
-  className: string
-}) {
-  const on = at.sectionId === section.id
+function SubmitChooser({ go }: { go: (to: string) => void }) {
   return (
-    <div className={className} role="tablist" aria-label={`${section.label} views`}>
-      {section.tabs.map((t) => (
-        <button
-          key={t.id}
-          role="tab"
-          aria-selected={on && at.tab === t.id}
-          onClick={() => go(`${section.id}/${t.id}`)}
-        >
-          {t.label}
-          {t.admin && <span className="ctl-subnav-admin">admin</span>}
+    <section className="sk-chooser" aria-labelledby="submit-h">
+      <h1 id="submit-h">Submit</h1>
+      <div className="sk-choices">
+        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new`)}>
+          <b>A task</b>
+          <span>
+            One agent, one runner profile, one prompt. It is created READY or PARKED and holds no capacity until it
+            is leased.
+          </span>
+          <em>/submit/task</em>
         </button>
-      ))}
-    </div>
+        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new-workflow`)}>
+          <b>A workflow</b>
+          <span>Stages of steps, top to bottom, each step an agent; a step starts when the steps it names have finished.</span>
+          <em>/submit/workflow</em>
+        </button>
+      </div>
+      <div className="sk-recent-empty">
+        <b>Recent submissions</b>
+        <p>
+          Not listed. No route serves what you submitted, so this page does not guess it from the task feed; the
+          Agents list&rsquo;s Waiting and Recent tabs show every task in your tenant.
+        </p>
+      </div>
+    </section>
   )
 }
 
@@ -1790,11 +1715,20 @@ function AgentDrawer({
         >
           Artifacts
         </button>
+        <button
+          role="tab"
+          aria-selected={pane === 'checkpoints'}
+          onClick={() => go(`${base}/checkpoints`)}
+        >
+          Checkpoints
+        </button>
       </div>
       {pane === 'detail' ? (
         <AgentDetailScreen taskId={taskId} onClose={close} />
       ) : pane === 'attempts' ? (
         <AttemptTimelineScreen taskId={taskId} />
+      ) : pane === 'checkpoints' ? (
+        <CheckpointsPane taskId={taskId} />
       ) : (
         <ArtifactsScreen taskId={taskId} />
       )}
@@ -1816,12 +1750,14 @@ function AgentDrawer({
  * It fetches nothing of its own. Opening it first therefore shows an empty
  * registry, and the empty state says exactly that rather than "no routes".
  */
-function ReferenceScreen() {
+function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boolean }) {
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   // The ages are the point, so they move on their own rather than only when a
   // fetch happens to land -- on the shared clock the head and the dock read.
   const now = useNow(AGE_TICK_MS)
-  const [failuresOnly, setFailuresOnly] = useState(false)
+  // The panel's "Failures only" row sets this too (Sky spine, API reads).
+  const [failuresOnly, setFailuresOnly] = useState(asked)
+  useEffect(() => setFailuresOnly(asked), [asked])
   const ordered = referenceOrder(probes)
   const shown = failuresOnly ? ordered.filter(failing) : ordered
 

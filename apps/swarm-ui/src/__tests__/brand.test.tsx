@@ -111,9 +111,10 @@ describe('the SwarmCloud mark', () => {
     const { container } = render(<SwarmMark size={28} />)
     const svg = container.querySelector('svg')!
     expect(svg.querySelectorAll('circle')).toHaveLength(7)
-    // Six spokes from the centre and the hexagon they end on: the part that
-    // says "coordinated" rather than merely "several".
-    expect(svg.querySelectorAll('line')).toHaveLength(6)
+    // Three spokes from the centre (the refined Hive, 2026-10-01) and the
+    // hexagon they end on: the part that says "coordinated" rather than
+    // merely "several".
+    expect(svg.querySelectorAll('line')).toHaveLength(3)
     expect(svg.querySelectorAll('polygon')).toHaveLength(1)
   })
 
@@ -128,7 +129,7 @@ describe('the SwarmCloud mark', () => {
     const under = render(<SwarmMark size={MARK_COMPACT_MAX - 1} />)
     expect(under.container.querySelectorAll('line')).toHaveLength(0)
     const at = render(<SwarmMark size={MARK_COMPACT_MAX} />)
-    expect(at.container.querySelectorAll('line')).toHaveLength(6)
+    expect(at.container.querySelectorAll('line')).toHaveLength(3)
   })
 
   it('paints only in currentColor, which is how it works on both grounds', () => {
@@ -172,7 +173,7 @@ describe('the SwarmCloud mark', () => {
 
     expect(faviconCircles).toEqual(componentCircles)
     // And it is the compact geometry, not some third set of numbers.
-    expect(componentCircles).toContain(`12,12,${COMPACT.core}`)
+    expect(componentCircles).toContain(`${COMPACT.centre},${COMPACT.centre},${COMPACT.core}`)
   })
 
   it('and the favicon carries its own answer for a dark tab bar', () => {

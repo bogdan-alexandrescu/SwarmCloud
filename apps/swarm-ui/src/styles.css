@@ -2,9 +2,9 @@
    Light mode follows the system. Everything is a token so a design pass changes
    one block rather than forty rules. */
 :root {
-  --bg: #0b0d10;
-  --surface: #14181d;
-  --surface-2: #1b2027;
+  --bg: #06101e; /* Open sky, deep navy (rebrand 2026-10-01); was #0b0d10 */
+  --surface: #0c1a2e; /* was #14181d */
+  --surface-2: #11233b; /* was #1b2027 */
 
   /* TWO LINE WEIGHTS, AND THE MARK IS WHERE THEY COME FROM.
      ------------------------------------------------------------------
@@ -65,8 +65,8 @@
   --line: #5f7087;
   --line-soft: #37414e;
 
-  --text: #e8ecf1;
-  --text-dim: #93a0b0;
+  --text: #eef4fa; /* was #e8ecf1 */
+  --text-dim: #9fb0c4; /* was #93a0b0 */
   /* Raised from #64707e, which measured 3.24:1 against --surface-2 and 3.53:1
      against --surface -- both below the 4.5:1 WCAG AA floor for normal text,
      and this token is used almost exclusively at 10.5-12px where the
@@ -101,7 +101,7 @@
   --ok: #58c668;      /* L .4346 -- was #3fb950, L .3633 */
   --warn: #ffd60a;    /* L .6938 -- was #d29922, L .3660 (1.006:1 from --ok) */
   --bad: #f85149;     /* L .2632 -- unchanged; a brighter red is a pink */
-  --info: #58a6ff;    /* L .3657 -- the link accent, NOT a severity state */
+  --info: #7cc8f8;    /* the Open sky accent (dark); the link accent, NOT a severity state. Was #58a6ff */
   --paused: #b288f8;  /* L .3385 -- was #a371f7, L .2631: 1.000:1 from --bad,
                          i.e. PARKED and FAILED were the same tone exactly */
 
@@ -128,7 +128,7 @@
   --ok-ink: #42bf53;
   --warn-ink: #d29922;
   --bad-ink: #fa7872;
-  --info-ink: #6fb2ff;
+  --info-ink: #b9e3fc; /* #7cc8f8 moved along its hue to clear 5:1 on its 22% tint; was #6fb2ff */
   --paused-ink: #b892f9;
 
   --radius: 10px;
@@ -143,15 +143,17 @@
      that renders. `stylesheet.gate.test.ts` fails on a token declared in two
      `:root` blocks. */
   --measure: 74ch;
-  --font: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  /* SELF-HOSTED (main.tsx imports the @fontsource packages, so Vite bundles
+     the woff2 files): the console makes no request to Google Fonts. */
+  --font: "Inter Tight Variable", "Inter Tight", ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --mono: "DM Mono", ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
 }
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme='dark']) {
-    --bg: #f6f8fa;
+    --bg: #f3f6f9; /* Open sky (rebrand 2026-10-01); was #f6f8fa */
     --surface: #ffffff;
-    --surface-2: #f0f3f6;
+    --surface-2: #eef4fa; /* was #f0f3f6 */
     /* The same two weights, measured against every ground a border is actually
        drawn on in this theme -- which is not the same list as the three
        surface tokens. The probe reported failures at #e5e7ea and #e3e4e6,
@@ -168,8 +170,8 @@
        #a9b7c4  2.05 / 1.92 / 1.84 / 1.65 / 1.61 */
     --line: #698198;
     --line-soft: #a9b7c4;
-    --text: #1f2328;
-    --text-dim: #59636e;
+    --text: #0d1724; /* was #1f2328 */
+    --text-dim: #4f5d6e; /* was #59636e */
     /* Darkened from #818b98, which measured 3.10:1 at worst against the light
        surfaces -- below the 4.5:1 AA floor, and this token is used at
        10.5-12px throughout. Now 4.93:1 at worst. Light mode was the failing
@@ -197,7 +199,7 @@
     --ok: #1a7f37;      /* L .1567 -- unchanged; already at the AA cap */
     --warn: #6e4a00;    /* L .0821 -- was #9a6700, L .1657 and 4.37:1 on --surface-2 */
     --bad: #681117;     /* L .0341 -- was #cf222e, L .1461 */
-    --info: #0969da;    /* L .1522 -- the link accent, NOT a severity state */
+    --info: #0369a1;    /* the Open sky accent (light); the link accent, NOT a severity state. Was #0969da */
     --paused: #7139db;  /* L .1155 -- was #8250df, L .1581: 1.001:1 from --ok */
 
     /* (2) INK, for TEXT ON A TINT OF ITS OWN ACCENT -- a different failure
@@ -215,7 +217,7 @@
     --ok-ink: #15662c;
     --warn-ink: #805500;
     --bad-ink: #a71b25;
-    --info-ink: #0751a9;
+    --info-ink: #075985; /* was #0751a9 */
     --paused-ink: #6629d8;
   }
 }
@@ -619,7 +621,9 @@ body {
   margin: 0 auto;
   padding: 0 var(--app-pad) 48px;
   display: grid;
-  grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr);
+  /* The rail column went with the Sky spine (rebrand 2026-10-01): the spine
+     and panel are the shell's, outside `.app`. */
+  grid-template-columns: [work] minmax(0, 1fr);
   align-items: start;
   /* §B5.1: the gutter, and the whole of it is between the two regions. */
   gap: 0 var(--ctl-gutter);
@@ -7933,7 +7937,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `role="dialog"` and all. */
 @media (min-width: 1100px) {
   .app.has-inspector {
-    grid-template-columns: [rail] var(--rail-w) [work] minmax(0, 1fr) [inspector] var(--inspector-w);
+    grid-template-columns: [work] minmax(0, 1fr) [inspector] var(--inspector-w);
   }
   .app.has-inspector > .ctl-drawer {
     position: sticky;
@@ -12725,3 +12729,182 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   border-radius: var(--ctl-radius-sm);
   background-color: var(--surface-2);
 }
+
+
+/* =========================================================================
+   THE SKY SPINE SHELL AND THE BRAND VOCABULARY (rebrand, owner decisions
+   2026-10-01). Sizes are bound to this sheet's type scale (typescale.test.ts:
+   the 12px floor, no capitals, no positive tracking, no raw leading), so the
+   mock-ups' 9.5-11px uppercase eyebrows are drawn at --t-micro in sentence
+   case -- the 2026-09-24 decision those gates hold, which the mock-ups did
+   not revisit. Values are the mock-ups' own: spine.py SPINE_CSS, common.py
+   FRAME_CSS (FL light / FD dark) and MARKS. The spine is the same deep blue
+   in both themes; the panel follows the theme.
+   ========================================================================= */
+:root {
+  --sk-spine-top: #0b3a7a;
+  --sk-spine-foot: #06101e;
+  --sk-spine-ink: #bcd6ee;
+  --sk-sky: #38bdf8;
+  --sk-sky-line: #7cc8f8;
+  --sk-prod: #c81e1e;
+  --sk-ac: #7cc8f8;
+  --sk-acs: #10294a;
+  --sk-acl: #1f4a7a;
+  --sk-hv: #11233b;
+  --s-live: #4cd9a0;
+  --s-liveb: #0d2e25;
+  --s-park: #b69cf5;
+  --s-parkb: #251a45;
+  --s-bad: #ff8a80;
+  --s-badb: #3a1512;
+  --s-warn: #f5c451;
+  --s-warnb: #3a2a0c;
+  --s-neu: #9aa8b8;
+  --s-neub: #16263b;
+  --sk-sh: 0 10px 30px rgba(0, 0, 0, .5);
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --sk-ac: #0369a1;
+    --sk-acs: #e5f3fc;
+    --sk-acl: #b6daf2;
+    --sk-hv: #eef4fa;
+    --s-live: #0a7a55;
+    --s-liveb: #e3f5ee;
+    --s-park: #6b46c1;
+    --s-parkb: #efeafc;
+    --s-bad: #b42318;
+    --s-badb: #fdecea;
+    --s-warn: #8a5a00;
+    --s-warnb: #fdf3dc;
+    --s-neu: #5b6878;
+    --s-neub: #eef1f5;
+    --sk-sh: 0 10px 30px rgba(11, 58, 122, .12);
+  }
+}
+
+/* --- the frame ---------------------------------------------------------- */
+.sk-app { display: flex; min-height: 100%; position: relative; background: var(--bg); color: var(--text); font-family: var(--font); }
+.sk-prodbar { position: fixed; left: 0; right: 0; top: 0; height: 3px; background: var(--sk-prod); z-index: 30; }
+.sk-side { display: flex; flex: none; position: sticky; top: 0; height: 100vh; height: 100dvh; z-index: 10; }
+.sk-main { flex: 1; min-width: 0; }
+.sk-main > .app { max-width: none; padding-top: 16px; }
+
+/* --- the spine: 84px, the same deep blue in both themes ------------------ */
+.sk-spine { width: 84px; flex: none; background: linear-gradient(180deg, var(--sk-spine-top), var(--sk-spine-foot)); color: var(--sk-spine-ink); display: flex; flex-direction: column; align-items: center; padding: 16px 0 12px; gap: 2px; overflow-y: auto; }
+.sk-hive { display: flex; padding: 2px 0 14px; color: #fff; }
+.sk-ri { width: 70px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0; border: 0; border-radius: 10px; background: none; color: var(--sk-spine-ink); position: relative; cursor: pointer; font: 500 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; }
+.sk-ri small { font-size: inherit; }
+.sk-ri:hover { background: rgba(124, 200, 248, .12); color: #fff; }
+.sk-ri.is-on { background: rgba(124, 200, 248, .2); color: #fff; }
+.sk-ri.is-on::before { content: ""; position: absolute; left: -6px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--sk-sky-line); }
+.sk-ri.sk-cta { background: var(--sk-sky); color: var(--sk-spine-foot); width: 52px; border-radius: 12px; font-weight: 600; }
+.sk-ri.sk-cta:hover { background: #7dd3fc; color: var(--sk-spine-foot); }
+.sk-ri:focus-visible, .sk-pk:focus-visible, .sk-kid:focus-visible, .sk-ibtn:focus-visible { outline: 2px solid var(--sk-sky-line); outline-offset: 2px; }
+.sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
+.sk-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.sk-ri > .sk-ic { width: 20px; height: 20px; }
+.sk-ri > .sk-lkd { position: absolute; top: 5px; right: 13px; width: 10px; height: 10px; opacity: .8; }
+.sk-rsep { width: 32px; height: 1px; background: rgba(255, 255, 255, .16); margin: 6px 0; }
+.sk-grow { flex: 1; }
+.sk-foot { display: contents; }
+.sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, var(--sk-sky), var(--sk-spine-top)); color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
+
+/* --- the panel: 236px ---------------------------------------------------- */
+.sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
+.sk-ph { display: flex; align-items: center; gap: 8px; padding: 2px 10px 12px 16px; }
+.sk-wm { font-weight: 650; font-size: var(--t-lead); letter-spacing: -.015em; white-space: nowrap; }
+.sk-wm span { color: var(--sk-ac); }
+.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); padding: 4px 7px; border-radius: 99px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
+.sk-pill.is-prod { background: var(--sk-prod); color: #fff; border-color: var(--sk-prod); }
+.sk-pill.is-mini { font-size: var(--t-micro); padding: 3px 4px; margin-left: 0; }
+.sk-ibtn { border: 0; background: none; color: var(--text-dim); padding: 5px; border-radius: 6px; display: inline-flex; cursor: pointer; }
+.sk-ibtn:hover { background: var(--sk-hv); color: var(--text); }
+.sk-tenant { display: flex; align-items: center; gap: 9px; margin: 0 10px 8px; padding: 8px 10px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); }
+.sk-tg { width: 24px; height: 24px; border-radius: 7px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
+.sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
+.sk-cp { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 4px; padding: 0 4px; background: none; cursor: pointer; }
+.sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.sk-pscroll { flex: 1; overflow-y: auto; min-height: 0; }
+.sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
+.sk-pk { display: flex; align-items: center; gap: 9px; padding: 7px 9px; margin: 0 10px; width: calc(100% - 20px); border: 0; border-radius: 8px; background: none; color: var(--text-dim); white-space: nowrap; position: relative; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; }
+.sk-pk .sk-pl { color: var(--text); opacity: .86; flex: 1; }
+.sk-pk:hover { background: var(--sk-hv); }
+.sk-pk.is-on { background: var(--sk-acs); color: var(--sk-ac); }
+.sk-pk.is-on .sk-pl { color: var(--sk-ac); opacity: 1; font-weight: 600; }
+.sk-pk.is-on::before { content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--sk-ac); }
+.sk-pk.is-dis, .sk-pk:disabled { opacity: .5; cursor: not-allowed; }
+.sk-lk { width: 12px; height: 12px; }
+.sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--line-soft); padding-left: 8px; display: flex; flex-direction: column; }
+.sk-kid { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border: 0; border-radius: 7px; background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
+.sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
+.sk-recent { margin: 2px 10px 6px 38px; font-size: var(--t-micro); color: var(--text-dim); }
+.sk-recent summary { cursor: pointer; padding: 4px 0; }
+.sk-pnote { margin: 6px 18px 0; font-size: var(--t-micro); color: var(--text-dim); display: flex; gap: 6px; }
+.sk-meter { margin: 8px 10px 4px; padding: 9px 10px; border-radius: 10px; background: var(--sk-hv); display: flex; flex-direction: column; gap: 6px; }
+.sk-mh { display: flex; justify-content: space-between; font-size: var(--t-micro); color: var(--text-dim); }
+.sk-mh b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.sk-bar { height: 5px; border-radius: 3px; background: var(--line-soft); overflow: hidden; display: flex; }
+.sk-bar i { display: block; height: 100%; background: var(--sk-ac); }
+.sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
+.sk-pfoot { border-top: 1px solid var(--line-soft); padding: 10px 16px 0; display: flex; flex-direction: column; }
+.sk-pfrow { display: flex; align-items: center; gap: 6px; }
+.sk-pfoot b { font-size: var(--t-micro); }
+.sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 4px; }
+
+/* --- collapsed: the spine alone, a flyout per section -------------------- */
+.sk-flyout { position: fixed; left: 90px; top: 150px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
+.sk-flyout.is-capacity { top: 210px; }
+.sk-flyout.is-admin { top: 270px; }
+.sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px 4px; color: var(--text-dim); }
+.sk-flyout button { padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
+.sk-flyout button:hover { background: var(--sk-hv); }
+.sk-flyout button.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.sk-flyout em { font-size: var(--t-micro); color: var(--text-dim); padding: 6px 8px 0; font-style: normal; }
+
+/* --- the phone: a 44px header in the spine's colour, a drawer ----------- */
+.sk-pbar { display: none; }
+.sk-scrim { position: fixed; inset: 0; background: rgba(6, 16, 30, .5); z-index: 25; }
+@media (max-width: 759px) {
+  .sk-app { flex-direction: column; }
+  .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
+  .sk-pbar .sk-ibtn { color: #eef4fa; }
+  .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
+  .sk-pbar .sk-pill:not(.is-prod) { background: rgba(124, 200, 248, .18); color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
+  .sk-side { display: none; }
+  .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
+  .sk-app.has-drawer .sk-spine { width: 66px; }
+  .sk-app.has-drawer .sk-ri { width: 58px; font-size: var(--t-micro); }
+  .sk-app.has-drawer .sk-panel { flex: 1; width: auto; }
+  .sk-app.has-drawer .sk-collapse { display: none; }
+  .sk-flyout { display: none; }
+}
+
+/* --- the Submit chooser (/submit) ---------------------------------------- */
+.sk-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
+.sk-chooser h1 { margin: 0; font-size: var(--t-title); letter-spacing: -.015em; }
+.sk-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
+.sk-choice { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 20px; border: 1px solid var(--line-soft); border-radius: 12px; background: var(--surface); color: var(--text); cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
+.sk-choice:hover { border-color: var(--sk-ac); }
+.sk-choice b { font-size: var(--t-lead); }
+.sk-choice span { color: var(--text-dim); }
+.sk-choice em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); }
+.sk-recent-empty { border: 1px dashed var(--line-soft); border-radius: 12px; padding: 14px 16px; }
+.sk-recent-empty p { margin: 4px 0 0; color: var(--text-dim); font-size: var(--t-micro); }
+
+/* --- the state marks: one mark and one hue per state (marks.tsx) -------- */
+.sk-st { display: inline-flex; align-items: center; gap: 7px; }
+.sk-st svg { width: 12px; height: 12px; flex: none; }
+.sk-st.is-live { color: var(--s-live); }
+.sk-st.is-park { color: var(--s-park); }
+.sk-st.is-bad { color: var(--s-bad); }
+.sk-st.is-warn { color: var(--s-warn); }
+.sk-st.is-neu { color: var(--s-neu); }
+.sk-st-w { color: var(--text); font-size: var(--t-micro); }
+.sk-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
