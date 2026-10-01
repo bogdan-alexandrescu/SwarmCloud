@@ -35,10 +35,18 @@ from urllib.parse import urlparse
 from swarm_common.models import EndCause, utcnow
 from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
 
-from .backends import Backend, NamespacedBackend, NamespacedListing, Probe, ProbeOutcome
+from .backends import (
+    Backend,
+    NamespacedBackend,
+    NamespacedListing,
+    Probe,
+    ProbeOutcome,
+    is_placeholder_execution_name,
+)
 from .checkpoints import CheckpointCollector, CheckpointStore
 from .config import ReconcilerConfig
 from .detect import (
+    CLOUD_RUN,
     ENDED_AT_STARTUP_STATES,
     WORKER_EXIT_CANNOT_START,
     Finding,
@@ -86,6 +94,10 @@ NOT_REPAIRING = "not repairing: the backend that would hold this execution was u
 #: filter (docs/runbooks/browser-eviction.md). The persisted pass carries the
 #: same outcome.
 EVICTED = "evicted a GKE job"
+#: The same line for a stalled Cloud Run attempt fenced by the no-progress
+#: rule (D5). Its own message, so the GKE filter above still finds exactly the
+#: GKE Jobs it always did and a Cloud Run fence is never reported as one.
+FENCED_STALLED_CLOUD_RUN = "fenced a Cloud Run attempt that made no progress"
 
 #: Findings repaired by terminating a Job and never by fencing it.
 _TERMINATE_ONLY = (FindingKind.LEFT_RUNNING,)
@@ -391,6 +403,13 @@ class Reconciler:
         self._backends = backends
         self._config = config
         self._log = logger
+        for variable in getattr(config, "ignored_stuck_overrides", ()):
+            # Once, here, at startup: `ReconcilerConfig.from_env` cannot log,
+            # and the variable is inert, so this line is the only sign of it.
+            self._log.warning(
+                "ignoring a stall threshold override that names no runner profile",
+                variable=variable,
+            )
         # Who gives back a fenced attempt's account holds (#380). Built from
         # the environment unless a caller supplies one; None means this
         # deployment has no broker, and the holds age out on their TTL.
@@ -762,10 +781,16 @@ class Reconciler:
     ) -> None:
         """Read the progress evidence of every attempt the stuck rule could act on.
 
-        Only attempts `stuck_candidates` names: running on GKE, on the current
-        generation, with a heartbeating lease, and running longer than the
-        threshold. A read that fails leaves that attempt unassessed, which the
-        rule treats as "not judged" -- never as "no progress".
+        Only attempts `stuck_candidates` names: running on GKE or Cloud Run
+        (each behind its own switch), on the current generation, with a
+        heartbeating lease, and running longer than the threshold. A read that
+        fails leaves that attempt unassessed, which the rule treats as "not
+        judged" -- never as "no progress".
+
+        The threshold is the attempt's PROFILE's (`config.stuck_after_for`, S27),
+        the same call `detect._stuck_subject` makes, so the clock that decided
+        the attempt was old enough to read is the clock it is judged by. The
+        verdict records it (`Assessment.stuck_after_seconds`).
         """
         now = snapshot.taken_at
         for subject in stuck_candidates(snapshot, executions, self._config, now):
@@ -787,7 +812,7 @@ class Reconciler:
                 generation=subject.lease.generation,
                 started_at=subject.started_at,
                 now=now,
-                stuck_after_seconds=self._config.stuck_after_seconds,
+                stuck_after_seconds=self._config.stuck_after_for(subject.task.runner_profile),
                 cpu_floor_cores=self._config.stuck_cpu_floor_cores,
                 max_gap_seconds=self._config.stuck_evidence_max_gap_seconds,
             )
@@ -1004,7 +1029,8 @@ class Reconciler:
         suppressed. `_DISPROVED` means a probe showed the finding was wrong,
         and it is dropped without either.
         """
-        if self._is_actionable(finding, snapshot, sight):
+        actionable = self._is_actionable(finding, snapshot, sight)
+        if actionable and not self._must_confirm_by_name(finding, snapshot, sight):
             return finding
         probed = self._probe(finding, snapshot, sight)
         if probed is not None:
@@ -1020,10 +1046,53 @@ class Reconciler:
         )
         return None
 
+    #: Absence findings that, on a backend listed in one call, stand only once
+    #: the attempt's own execution has been asked for by name (#372). These two
+    #: are raised because an attempt was absent from the listing's
+    #: attribution, which is exactly what failed on 2026-09-30. The others in
+    #: `_ABSENCE_KINDS` are not: a dead worker carries its execution, and a
+    #: leaseless task is judged on the task, not on one attempt's listing.
+    _CONFIRMED_BY_NAME = (FindingKind.MISSING_EXECUTION, FindingKind.STALE_LEASE)
+
+    def _must_confirm_by_name(
+        self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
+    ) -> bool:
+        """True when a finding the listing supports still needs a GET to stand (#372).
+
+        A Cloud Run listing that SUCCEEDS and does not attribute an execution
+        to its attempt used to be read as proof that nothing runs for it, and
+        a live claude-code attempt was fenced as missing on that reading. So on
+        a backend listed in one call that can be asked by name (Cloud Run Jobs),
+        an absence finding about an attempt that records its execution is
+        confirmed by `_probe` before it is repaired: ABSENT or FINISHED lets it
+        stand, ACTIVE gets the verdict the listing would have reached with the
+        execution in hand, UNREADABLE holds it back.
+
+        An attempt that records no execution name -- or only the dispatcher's
+        placeholder, which no GET can answer -- has nothing to ask for, and
+        keeps the rule it always had. GKE is unchanged: its listing is read
+        namespace by namespace, and a namespace read is complete.
+        """
+        if finding.kind not in self._CONFIRMED_BY_NAME or finding.execution is not None:
+            return False
+        attempt = snapshot.attempts.get(finding.attempt_id or "")
+        if attempt is None or not attempt.execution_name:
+            return False
+        if is_placeholder_execution_name(attempt.execution_name):
+            return False
+        backend = sight.handles.get(attempt.backend)
+        if backend is None or _is_namespaced(backend):
+            return False
+        return callable(getattr(backend, "probe", None))
+
     def _probe(
         self, finding: Finding, snapshot: ControlSnapshot, sight: _Sight
     ) -> Finding | _Disproved | None:
-        """Ask for THIS attempt's execution by name when its list was unreadable.
+        """Ask for THIS attempt's execution by name.
+
+        Called when its list was unreadable, and on Cloud Run also when the
+        list was read but an absence finding needs confirming
+        (`_must_confirm_by_name`, #372).
 
         The list and the name are different questions. The 2026-09-24 leases
         each named their Job exactly (`swarm-tenant-eng/swarm-<task>-1`), the
@@ -1643,8 +1712,9 @@ class Reconciler:
         return outcome
 
     def _log_eviction(self, finding: Finding, outcome: RepairOutcome) -> None:
+        on_cloud_run = finding.execution is not None and finding.execution.backend == CLOUD_RUN
         self._log.info(
-            EVICTED,
+            FENCED_STALLED_CLOUD_RUN if on_cloud_run else EVICTED,
             kind=finding.kind.value,
             task_id=finding.task_id,
             tenant_id=finding.tenant_id,

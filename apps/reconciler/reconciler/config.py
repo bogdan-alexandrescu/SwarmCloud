@@ -9,9 +9,10 @@ execution it exists to prevent.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
+from swarm_common.profiles import RUNNER_PROFILES
 
 
 def _int(name: str, default: int) -> int:
@@ -39,6 +40,46 @@ def _float(name: str, default: float) -> float:
         return float(raw)
     except ValueError as exc:
         raise ValueError(f"{name} must be a number, got {raw!r}") from exc
+
+
+#: The per-profile stall threshold variables are this prefix plus the profile
+#: name upper-cased with `-` as `_` (S27). The global `STUCK_AFTER_SECONDS` has
+#: no trailing underscore, so it is never read as an override of anything.
+STUCK_AFTER_PROFILE_PREFIX = "STUCK_AFTER_SECONDS_"
+
+
+def stuck_after_env_name(runner_profile: str) -> str:
+    """The variable that overrides one profile's stall threshold."""
+    return STUCK_AFTER_PROFILE_PREFIX + runner_profile.upper().replace("-", "_")
+
+
+def _stuck_after_overrides() -> tuple[dict[str, int], tuple[str, ...]]:
+    """Per-profile stall thresholds from the environment, and the names ignored.
+
+    The profile names are `swarm_common.profiles.RUNNER_PROFILES`, imported,
+    never restated. A variable naming no profile is returned as ignored and
+    applies to nothing: it must not fail startup (a typo should not take the
+    reconciler down) and must not be guessed at. A KNOWN profile's value that
+    is not a positive integer fails startup, as `_int` does for the global: a
+    threshold of zero would fence every attempt the moment it was judged.
+    """
+    known = {stuck_after_env_name(name): name for name in RUNNER_PROFILES}
+    overrides: dict[str, int] = {}
+    ignored: list[str] = []
+    for name in sorted(os.environ):
+        if not name.startswith(STUCK_AFTER_PROFILE_PREFIX):
+            continue
+        profile = known.get(name)
+        if profile is None:
+            ignored.append(name)
+            continue
+        if not os.environ[name].strip():
+            continue  # set but empty: unset, as `_int` reads it
+        value = _int(name, 0)
+        if value <= 0:
+            raise ValueError(f"{name} must be a positive integer, got {value}")
+        overrides[profile] = value
+    return overrides, tuple(ignored)
 
 
 #: Upper bound on `STARTUP_REFUND_LIMIT` (#67, security review, PR #290). The
@@ -121,6 +162,47 @@ class ReconcilerConfig:
     #: touch, and at 30 minutes an attempt that wedged early gives back at
     #: least an hour of it.
     stuck_after_seconds: int = 1800
+
+    #: Per-runner-profile overrides of `stuck_after_seconds` (S27, owner
+    #: decision 2026-10-01): a browser pod and a claude-code run that
+    #: legitimately thinks for twenty minutes should not have to share one
+    #: clock. Read from `STUCK_AFTER_SECONDS_<PROFILE>`, the profile name
+    #: upper-cased with `-` as `_` (claude-code -> STUCK_AFTER_SECONDS_CLAUDE_CODE).
+    #:
+    #: EMPTY ON PURPOSE. No environment, tfvars or Terraform sets one, so every
+    #: profile resolves to the global 1800 until the owner chooses otherwise.
+    #: Always read through `stuck_after_for`, the one place detect.py and
+    #: repair.py both ask, so the two can never judge an attempt by different
+    #: clocks.
+    stuck_after_seconds_by_profile: dict[str, int] = field(default_factory=dict)
+    #: `STUCK_AFTER_SECONDS_<X>` variables whose <X> named no runner profile.
+    #: Ignored -- never applied to anything -- and logged once when the
+    #: `Reconciler` is built, so a typo is visible rather than silently inert.
+    ignored_stuck_overrides: tuple[str, ...] = ()
+
+    #: Run the no-progress rule on Cloud Run attempts too (D5; BUILD_PROMPT_V2
+    #: 2.9 asks for the signal on every runner profile, and the four
+    #: non-browser profiles run on Cloud Run Jobs). Same rule, same threshold,
+    #: same action as on GKE: fence only.
+    #:
+    #: A SEPARATE SWITCH from `enable_gke_eviction` because that flag is more
+    #: than the GKE half of this rule: it also turns off the left-running rule
+    #: that DELETES GKE Jobs and the by-id task read behind it. An operator who
+    #: needs to stop the Cloud Run fence must not have to take GKE Job deletion
+    #: with it, nor the other way round. Default on: the rule acts only on
+    #: positive evidence of quiet (`progress.py`), and only fences.
+    enable_cloud_run_stall_guard: bool = True
+
+    def stuck_after_for(self, runner_profile: str | None) -> int:
+        """The no-progress threshold for one runner profile, in seconds.
+
+        The profile's override when one is set, otherwise the global
+        `stuck_after_seconds`. The ONE resolver: `detect._stuck_subject` and
+        `repair.Reconciler._read_progress` both call it.
+        """
+        return self.stuck_after_seconds_by_profile.get(
+            runner_profile or "", self.stuck_after_seconds
+        )
 
     #: Mean CPU, in cores, below which a heartbeat interval counts as quiet.
     #:
@@ -276,6 +358,7 @@ class ReconcilerConfig:
     @classmethod
     def from_env(cls, settings: Settings | None = None) -> "ReconcilerConfig":
         settings = settings or Settings.from_env()
+        stuck_by_profile, ignored_stuck = _stuck_after_overrides()
         return cls(
             project_id=settings.project_id,
             region=settings.region,
@@ -293,6 +376,9 @@ class ReconcilerConfig:
             empty_namespace_ttl_seconds=_int("EMPTY_NAMESPACE_TTL_SECONDS", 24 * 3600),
             enable_gke_eviction=_bool("RECONCILER_ENABLE_GKE_EVICTION", True),
             stuck_after_seconds=_int("STUCK_AFTER_SECONDS", 1800),
+            stuck_after_seconds_by_profile=stuck_by_profile,
+            ignored_stuck_overrides=ignored_stuck,
+            enable_cloud_run_stall_guard=_bool("RECONCILER_ENABLE_CLOUD_RUN_STALL_GUARD", True),
             stuck_cpu_floor_cores=_float("STUCK_CPU_FLOOR_CORES", 0.05),
             stuck_evidence_max_gap_seconds=_int("STUCK_EVIDENCE_MAX_GAP_SECONDS", 600),
             left_running_grace_seconds=_int("LEFT_RUNNING_GRACE_SECONDS", 300),

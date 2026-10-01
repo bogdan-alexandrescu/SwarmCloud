@@ -61,7 +61,7 @@ import hashlib
 import os
 import re
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Iterable, Protocol
@@ -126,6 +126,20 @@ WORKER_CONTAINER = "worker"
 #: `batch.kubernetes.io/job-name` since Kubernetes 1.27; `job-name` before it,
 #: and still set alongside it.
 JOB_NAME_POD_LABELS = ("batch.kubernetes.io/job-name", "job-name")
+
+
+#: What the dispatcher records as a Cloud Run attempt's `execution_name` when
+#: the run operation's metadata named no execution:
+#: `f"{job}/executions/pending-{attempt_id}"` (`scheduler.dispatch`,
+#: `CloudRunJobDispatcher.dispatch`). RESTATED, because the reconciler's image
+#: carries only `apps/common` and `apps/reconciler`. It is not a name Cloud Run
+#: knows, so a GET of it proves nothing either way.
+PLACEHOLDER_EXECUTION_MARKER = "/executions/pending-"
+
+
+def is_placeholder_execution_name(name: str | None) -> bool:
+    """True for the dispatcher's stand-in, which no backend can be asked about."""
+    return PLACEHOLDER_EXECUTION_MARKER in str(name or "")
 
 
 def managed_marker(labels: dict[str, Any] | None) -> str | None:
@@ -542,6 +556,7 @@ class CloudRunBackend:
     # -- reads ----------------------------------------------------------
     def list_executions(self) -> list[ExecutionView]:
         views: list[ExecutionView] = []
+        unattributed: set[str] = set()
         for job in self._list_jobs():
             job_name = getattr(job, "name", "")
             if not self._is_managed(job):
@@ -552,12 +567,116 @@ class CloudRunBackend:
             # as, and is what an execution's own claim is checked against.
             owner = _first(self._labels(job), TENANT_LABELS)
             for execution in self._executions_client().list_executions(parent=job_name):
-                views.append(
-                    self._execution_view(
-                        execution, job_name, job_tenant=str(owner) if owner else None
-                    )
+                view = self._execution_view(
+                    execution, job_name, job_tenant=str(owner) if owner else None
                 )
+                views.append(view)
+                if not view.attempt_id and view.name not in unattributed:
+                    unattributed.add(view.name)
+                    self._log_unattributed(execution, view, job_name)
         return views
+
+    def _log_unattributed(self, execution: Any, view: ExecutionView, job_name: str) -> None:
+        """Say which identifiers an execution under a `swarm-` job came back without (#372).
+
+        An execution the listing cannot tie to an attempt is invisible to every
+        rule keyed by attempt: on 2026-09-30 that made a live claude-code
+        attempt look "missing" while its execution ran. Why it came back
+        without one -- the overrides absent from `template`, the labels never
+        written -- is what this line exists to show next time, so it names each
+        identifier that neither the environment nor a label supplied.
+
+        Once per execution per listing, and so once per pass. It never carries
+        an environment VALUE other than the swarm ids already on the view: the
+        template's environment holds the worker's whole configuration.
+        """
+        if self._log is None:
+            return
+        labels = dict(getattr(execution, "labels", {}) or {})
+        env = self._env_from_template(execution)
+        missing = [
+            env_name
+            for env_name, label_names in (
+                (TASK_ENV, TASK_LABELS),
+                (ATTEMPT_ENV, ATTEMPT_LABELS),
+                (TENANT_ENV, TENANT_LABELS),
+                (GENERATION_ENV, GENERATION_LABELS),
+            )
+            if not env.get(env_name) and _first(labels, label_names) is None
+        ]
+        template = getattr(execution, "template", None)
+        self._log.warning(
+            "cloud run execution under a swarm- job carries no attempt id",
+            execution=view.name,
+            job=job_name,
+            phase=view.phase.value,
+            missing=missing,
+            task_id=view.task_id,
+            generation=view.generation,
+            template_containers=len(getattr(template, "containers", []) or []),
+            template_env_entries=len(env),
+            labels_present=sorted(labels),
+        )
+
+    def probe(self, execution_name: str) -> Probe:
+        """Read ONE execution by its full name, whatever the listing said (#372).
+
+        A listing that succeeds and does not attribute an execution to its
+        attempt is not proof that nothing runs for that attempt, so an absence
+        finding on Cloud Run is confirmed here before it is repaired
+        (`repair.Reconciler._admit`). What each answer proves:
+
+        * NotFound -- Cloud Run has no such execution: ABSENT.
+        * an execution Cloud Run's own record shows over -- FINISHED, by
+          `execution_is_finished`, the same test a confirmed stop passes.
+        * any other execution -- ACTIVE, and read as running whatever its
+          counters say, which is the direction that holds the slot.
+        * anything else, including a name that is not a platform execution in
+          this project and region or a Job not ours by label -- UNREADABLE.
+
+        `run.executions.get` and `run.jobs.get` are already exercised by
+        `_confirmed_finished` and `delete_job_resource`.
+        """
+        from google.api_core import exceptions as gapi_exceptions
+
+        name = str(execution_name or "").strip()
+        job_name, marker, short = name.rpartition("/executions/")
+        job_id = job_name.rsplit("/", 1)[-1]
+        if not marker or not short or not job_name.startswith(f"{self.parent}/jobs/"):
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: not an execution of {self.parent}")
+        if not job_id.startswith(self._prefix):
+            return Probe(
+                ProbeOutcome.UNREADABLE,
+                detail=f"{name}: job {job_id} is outside the prefix {self._prefix!r}",
+            )
+        if is_placeholder_execution_name(name):
+            # The dispatcher's stand-in for a name the run operation did not
+            # return. A GET of it answers NotFound whether or not the real
+            # execution runs, so it must never read as absence.
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: a placeholder, not a name")
+        try:
+            execution = self._executions_client().get_execution(name=name)
+        except gapi_exceptions.NotFound:
+            return Probe(ProbeOutcome.ABSENT, detail=f"{name}: not found")
+        except Exception as exc:
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{name}: {_describe(exc)}")
+        try:
+            job = self._jobs_client().get_job(name=job_name)
+        except Exception as exc:
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: {_describe(exc)}")
+        if not self._is_managed(job):
+            return Probe(ProbeOutcome.UNREADABLE, detail=f"{job_name}: not a platform-managed job")
+        owner = _first(self._labels(job), TENANT_LABELS)
+        view = self._execution_view(execution, job_name, job_tenant=str(owner) if owner else None)
+        if execution_is_finished(execution):
+            return Probe(
+                ProbeOutcome.FINISHED, execution=view, detail=f"{name}: {view.phase.value.lower()}"
+            )
+        return Probe(
+            ProbeOutcome.ACTIVE,
+            execution=replace(view, phase=ExecutionPhase.RUNNING),
+            detail=f"{name}: active",
+        )
 
     def _list_jobs(self) -> list[Any]:
         return [
