@@ -73,11 +73,8 @@ import {
   boardResultNote,
   failureGroups,
   failureCause,
-  isChain,
   nodeNote,
   parentsDoneOf,
-  rememberChainsOnly,
-  rememberedChainsOnly,
   sameStepAcross,
   shapeSignature,
   stateRankOf,
@@ -85,8 +82,6 @@ import {
   stepTimes,
   stepWhy,
   tokenPairCell,
-  VIEW_LABEL,
-  WORKFLOW_VIEWS,
   workflowLabel,
   workflowPullRequest,
   type BoardTelemetryGap,
@@ -227,8 +222,6 @@ function useBoardStores() {
   // ABOVE THE `key`, DELIBERATELY. `reloads` remounts `Screen`, so anything
   // held inside it is lost on every stop-and-reload; a board that snapped every
   // open workflow shut the moment you stopped one step would be unusable.
-  const [mode, setMode] = useState<BoardMode>('collapsed')
-  const [open, setOpen] = useState<Record<string, boolean>>({})
   // WHICH STAGES THE READER HAS OPENED, and it is up here for a stronger
   // version of the same reason. A card can be re-opened with one click; a
   // stage you opened, scrolled sideways through and then lost because the
@@ -249,33 +242,11 @@ function useBoardStores() {
   // workflow's own widest stage.
   const [zooms, setZooms] = useState<Record<string, ZoomChoice>>({})
 
-  // WHICH VIEW EACH OPEN WORKFLOW IS DRAWN IN, on the board form. One
-  // workflow's page takes its view from its address instead.
-  const [views, setViews] = useState<Record<string, WorkflowView>>({})
-
   // THE PICKED STEP, ONE FOR THE WHOLE BOARD. Board-wide because the second
   // scrubber MOVES it between workflows; `focus` says which scrub control the
   // inspector should take focus on when it arrives.
   const [pick, setPick] = useState<PickedStep | null>(null)
 
-  // HIDE THE ONE-STEP WRAPPERS (#330), remembered per viewer, OFF by default.
-  const [chainsOnly, setChainsOnly] = useState<boolean>(rememberedChainsOnly)
-  const chooseChainsOnly = useCallback((on: boolean) => {
-    setChainsOnly(on)
-    rememberChainsOnly(on)
-  }, [])
-
-  // A board-wide instruction overrules the per-card ones; it does not touch
-  // `stages` or the pick (what a reader opened or inspects is not a layout).
-  const chooseMode = useCallback((m: BoardMode) => {
-    setMode(m)
-    setOpen({})
-    setViews({})
-  }, [])
-
-  const chooseView = useCallback((id: string, v: WorkflowView) => setViews((s) => ({ ...s, [id]: v })), [])
-  const openCard = useCallback((id: string) => setOpen((o) => ({ ...o, [id]: true })), [])
-  const toggle = useCallback((id: string, expanded: boolean) => setOpen((o) => ({ ...o, [id]: !expanded })), [])
   const toggleStage = useCallback(
     (key: string, expanded: boolean) => setStages((s) => ({ ...s, [key]: !expanded })),
     [],
@@ -285,21 +256,12 @@ function useBoardStores() {
   return {
     reloads,
     reload,
-    mode,
-    chooseMode,
-    open,
-    toggle,
     openStages: stages,
     toggleStage,
     zooms,
     chooseZoom,
-    views,
-    chooseView,
     pick,
     choosePick: setPick,
-    openCard,
-    chainsOnly,
-    chooseChainsOnly,
   }
 }
 
@@ -413,54 +375,6 @@ async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard>> {
   }
 }
 
-/**
- * THE PRE-V2 BOARD: every workflow as a row that opens in place, under a
- * Rows / Graph / Timeline / Table control. The console's `/workflows` is the
- * V2 list and page now; this form is kept because one workflow's page IS this
- * board focused on one workflow (`Board`'s `focus`), and the board's
- * cross-workflow behaviours -- the same-step scrubber, chains only -- are
- * pinned by tests through it.
- */
-export function WorkflowBoardScreen() {
-  const stores = useBoardStores()
-  return (
-    <Screen
-      key={stores.reloads}
-      title="Workflows"
-      help="absent-vs-zero"
-      load={loadWorkflowBoard}
-      summary={(d) => `${d.workflows.length} workflow${d.workflows.length === 1 ? '' : 's'}`}
-      empty={{
-        heading: 'No workflows',
-        body: 'Individually submitted tasks appear under Agents.',
-      }}
-    >
-      {(d) => <Board board={d} {...boardProps(stores)} />}
-    </Screen>
-  )
-}
-
-function boardProps(s: BoardStores) {
-  return {
-    mode: s.mode,
-    chooseMode: s.chooseMode,
-    open: s.open,
-    toggle: s.toggle,
-    openStages: s.openStages,
-    toggleStage: s.toggleStage,
-    zooms: s.zooms,
-    chooseZoom: s.chooseZoom,
-    views: s.views,
-    chooseView: s.chooseView,
-    pick: s.pick,
-    choosePick: s.choosePick,
-    openCard: s.openCard,
-    chainsOnly: s.chainsOnly,
-    chooseChainsOnly: s.chooseChainsOnly,
-    reload: s.reload,
-  }
-}
-
 /** The step the inspector is on, and how it got there. */
 interface PickedStep {
   readonly workflowId: string
@@ -479,64 +393,24 @@ interface PickedStep {
  */
 function Board({
   board,
-  mode,
-  chooseMode,
-  open,
-  toggle,
-  openStages,
-  toggleStage,
-  zooms,
-  chooseZoom,
-  views,
-  chooseView,
-  pick,
-  choosePick,
-  openCard,
-  chainsOnly,
-  chooseChainsOnly,
-  reload,
-  focus = null,
+  stores,
+  focus,
 }: {
   board: WorkflowBoard
-  mode: BoardMode
-  chooseMode: (m: BoardMode) => void
-  open: Record<string, boolean>
-  toggle: (id: string, expanded: boolean) => void
-  openStages: Record<string, boolean>
-  toggleStage: (key: string, expanded: boolean) => void
-  zooms: Record<string, ZoomChoice>
-  chooseZoom: (id: string, choice: ZoomChoice) => void
-  views: Record<string, WorkflowView>
-  chooseView: (id: string, v: WorkflowView) => void
-  pick: PickedStep | null
-  choosePick: (p: PickedStep | null) => void
-  openCard: (id: string) => void
-  chainsOnly: boolean
-  chooseChainsOnly: (on: boolean) => void
-  reload: () => void
+  stores: BoardStores
   /** One workflow's page (Workflows V2): draw only it, open, in its address's view. */
-  focus?: BoardFocus | null
+  focus: BoardFocus
 }) {
-  // THE ROWS ON SCREEN. Everything below that draws or counts a card reads
-  // this, so the sample mark cannot describe a card the toggle has hidden.
-  // On one workflow's page that is the one workflow, whatever the toggle says.
-  const focusId = focus === null ? null : focus.id
-  const shown = useMemo(
-    () =>
-      focusId !== null
-        ? board.workflows.filter((w) => w.workflow_id === focusId)
-        : chainsOnly
-          ? board.workflows.filter(isChain)
-          : board.workflows,
-    [focusId, chainsOnly, board.workflows],
-  )
-  // WHERE THE SAME-STEP SCRUBBER MAY LAND: the rows on screen, or -- on one
-  // workflow's page -- every workflow read, since a scrub there opens the
-  // other workflow's own page.
-  const scrubbable = focusId !== null ? board.workflows : shown
-  const hidden = board.workflows.length - shown.length
-  // A PICK IN A ROW THE TOGGLE HID IS PUT DOWN. Otherwise the selection lives
-  // on in a card nobody can see, and the scrubber keeps stepping from it.
+  const { openStages, toggleStage, zooms, chooseZoom, pick, choosePick, reload } = stores
+  // THE CARD ON SCREEN: the page's one workflow. Everything below that draws
+  // or counts a card reads this, so the sample mark describes only it.
+  const focusId = focus.id
+  const shown = useMemo(() => board.workflows.filter((w) => w.workflow_id === focusId), [focusId, board.workflows])
+  // WHERE THE SAME-STEP SCRUBBER MAY LAND: every workflow read, since a scrub
+  // opens the other workflow's own page.
+  const scrubbable = board.workflows
+  // A PICK IN A WORKFLOW NOT ON SCREEN IS PUT DOWN. Otherwise the selection
+  // lives on in a card nobody can see, and the scrubber keeps stepping from it.
   useEffect(() => {
     if (pick !== null && !shown.some((w) => w.workflow_id === pick.workflowId)) choosePick(null)
   }, [pick, shown, choosePick])
@@ -553,7 +427,6 @@ function Board({
   // a differently shaped workflow is a different job, not a comparison.
   const siblings = useMemo(() => {
     if (pick === null) return { refs: [] as SiblingRef[], ids: [] as string[] }
-    // Over the rows ON SCREEN: a scrub may not land in a card `chains only` hid.
     const anchor = scrubbable.find((w) => w.workflow_id === pick.workflowId)
     if (anchor === undefined) return { refs: [] as SiblingRef[], ids: [] as string[] }
     const found = sameStepAcross(scrubbable, pick.stepId, shapeSignature(anchor.steps))
@@ -576,15 +449,10 @@ function Board({
     [pick, choosePick],
   )
 
-  // MOVING THE SELECTION TO ANOTHER WORKFLOW OPENS THAT WORKFLOW. Under Rows its
-  // card may be closed, and an inspector that moved into a closed card would be
-  // a selection nobody can see.
-  //
-  // AND IT OPENS IN THE VIEW THE READER WAS IN (WF-10, epic #83). It opened in
-  // whatever that card's own default was -- the Graph, under Rows -- so a reader
-  // comparing one step's attempts across workflows in the Table was put back on
-  // a canvas at every press, with the step folded into a stage band. The view
-  // they chose is carried with the step they picked; a band holding the step is
+  // MOVING THE SELECTION TO ANOTHER WORKFLOW OPENS THAT WORKFLOW'S PAGE, IN
+  // THE VIEW THE READER WAS IN (WF-10, epic #83): a reader comparing one step's
+  // attempts across workflows in the Table is not put back on a canvas at every
+  // press, with the step folded into a stage band. A band holding the step is
   // marked and opens to it (`WorkflowGraph`).
   const onSibling = useCallback(
     (delta: -1 | 1) => {
@@ -592,18 +460,10 @@ function Board({
       const at = siblings.ids.indexOf(pick.workflowId)
       const target = siblings.ids[at + delta]
       if (at < 0 || target === undefined) return
-      // `viewOf` below, spelled inline because this callback is memoised on
-      // the stores it reads rather than on a closure rebuilt every render.
-      const from: WorkflowView =
-        focus !== null ? focus.view : (views[pick.workflowId] ?? (mode === 'collapsed' ? 'graph' : mode))
-      if (focus !== null) focus.onOpen(target, from)
-      else {
-        chooseView(target, from)
-        openCard(target)
-      }
+      focus.onOpen(target, focus.view)
       choosePick({ workflowId: target, stepId: pick.stepId, focus: delta < 0 ? 'newer' : 'older' })
     },
-    [pick, siblings, views, mode, chooseView, openCard, choosePick, focus],
+    [pick, siblings, choosePick, focus],
   )
 
   const onFocused = useCallback(() => {
@@ -612,22 +472,19 @@ function Board({
 
   // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
   // and caps; the order decides which steps fall inside the cap, so it is the
-  // board's own order rather than a set's iteration order -- except that one
-  // workflow's page puts its own workflow first, so its steps are never the
-  // ones the cap leaves out.
+  // board's own order rather than a set's iteration order -- except that the
+  // page puts its own workflow first, so its steps are never the ones the cap
+  // leaves out.
   //
   // AS ONE KEY, because the page now polls (every 10s while a workflow runs):
   // each poll is a new array, and re-reading every step's attempts on every
   // poll -- and blanking every figure to `reading` meanwhile -- would make the
   // figures flicker for no new information. A changed set of tasks re-reads.
   const taskKey = useMemo(() => {
-    const ordered =
-      focusId === null
-        ? board.workflows
-        : [
-            ...board.workflows.filter((w) => w.workflow_id === focusId),
-            ...board.workflows.filter((w) => w.workflow_id !== focusId),
-          ]
+    const ordered = [
+      ...board.workflows.filter((w) => w.workflow_id === focusId),
+      ...board.workflows.filter((w) => w.workflow_id !== focusId),
+    ]
     return ordered
       .flatMap((w) => w.steps.map((s) => s.task_id ?? null).filter((id): id is string => id !== null))
       .join('\n')
@@ -669,27 +526,21 @@ function Board({
     }
   }, [taskKey])
 
-  // WHAT EACH CARD IS DRAWING, stated once. The cards below are handed exactly
-  // these, and the sample mark asks the same questions of them -- a second
-  // spelling of "is this card open, and in which view" is how the mark and the
-  // cards would come to disagree about what is on screen.
-  const expandedOf = (id: string): boolean => (focus !== null ? true : (open[id] ?? mode !== 'collapsed'))
-  const viewOf = (id: string): WorkflowView =>
-    focus !== null ? focus.view : (views[id] ?? (mode === 'collapsed' ? 'graph' : mode))
+  // WHAT THE CARD IS DRAWING, stated once. The card below is handed exactly
+  // these, and the sample mark asks the same questions of it -- a second
+  // spelling of "in which view" is how the mark and the card would come to
+  // disagree about what is on screen.
+  const viewOf = (): WorkflowView => focus.view
   const zoomOf = (id: string): ZoomChoice => zooms[id] ?? 'auto'
 
   // THE SAMPLE MARK DESCRIBES THE STEP FIGURES, SO IT SHOWS ONLY WHERE THEY ARE
   // DRAWN. `n/m sampled` is the coverage of the per-step attempt read -- the
   // cost, tokens and checkpoints on a Figures-tier node and in the Table's
-  // columns. Under Rows no step figure is on screen at all, and the row's
-  // spend carries its own coverage and says how much of it came from results
-  // (WF-5); the mark there was a caveat about figures nobody could see,
-  // sitting beside figures it did not qualify. The Timeline
+  // columns. The Timeline
   // draws times from the task read, and a Graph below the Figures tier draws no
   // figure either.
   const figuresDrawn = shown.some((w) => {
-    if (!expandedOf(w.workflow_id)) return false
-    const view = viewOf(w.workflow_id)
+    const view = viewOf()
     if (view === 'table') return true
     if (view !== 'graph') return false
     const zoom = zoomOf(w.workflow_id)
@@ -704,9 +555,7 @@ function Board({
           replaces were full-width panels that pushed the first row of actual
           data below the fold on a laptop. */}
       <div className="ctl-toolbar wf-chrome">
-        {/* ONE WORKFLOW'S PAGE HAS NO BOARD CONTROLS: its view is its address. */}
-        {focus === null && <ModeControl mode={mode} onChoose={chooseMode} />}
-        {focus === null && <ChainsOnly on={chainsOnly} hidden={hidden} onChoose={chooseChainsOnly} />}
+        {/* NO BOARD CONTROLS: the page's view is its address. */}
         <span className="is-end wf-caveats">
           {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
           {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
@@ -718,14 +567,6 @@ function Board({
         </span>
       </div>
       <div className="wf-board">
-        {focus === null && shown.length === 0 && hidden > 0 && (
-          <span
-            className="ctl-mark is-absent wf-chains-none"
-            aria-label={`Every workflow on this board is a single step, and chains only is on. Turn it off to see the ${hidden}.`}
-          >
-            no chains
-          </span>
-        )}
         {shown.map((w) => {
           // The selection, only when it is in THIS workflow. Every other card
           // gets null and draws no inspector.
@@ -735,15 +576,13 @@ function Board({
               key={w.workflow_id}
               workflow={w}
               taskById={board.taskById}
-              expanded={expandedOf(w.workflow_id)}
-              onToggle={toggle}
               openStages={openStages}
               onToggleStage={toggleStage}
               zoom={zoomOf(w.workflow_id)}
               onZoom={chooseZoom}
-              view={viewOf(w.workflow_id)}
-              onView={focus !== null ? (_id: string, v: WorkflowView) => focus?.onView(v) : chooseView}
-              page={focus !== null}
+              view={viewOf()}
+              onView={(_id: string, v: WorkflowView) => focus.onView(v)}
+              page
               picked={mine === null ? null : mine.stepId}
               onPick={onPick}
               siblings={mine === null ? undefined : siblings.refs}
@@ -769,77 +608,6 @@ interface BoardFocus {
   readonly onView: (v: WorkflowView) => void
   /** Open another workflow's page, in a view: what the same-step scrubber does there. */
   readonly onOpen: (id: string, v: WorkflowView) => void
-}
-
-/**
- * `collapsed` is Rows: every workflow a one-line bar. The other three open every
- * workflow in that view. It was `'full'` for the graph when there was only one
- * way to draw an open workflow.
- */
-type BoardMode = 'collapsed' | WorkflowView
-
-/**
- * The board-wide default, as `.ctl-seg` rather than two standalone pills.
- *
- * ONE BORDERED GROUP, AND THE SELECTION IS HUELESS (design-system.md §6.11 and
- * §1.3). `.wf-mode.is-on` filled itself with 12% `--info` -- the same accent a
- * LIVE step is drawn in three rows below -- which is how a reader learns to
- * stop trusting colour as a state channel. The active segment is now a surface
- * step plus weight, and it costs no hue at all.
- *
- * The labels are one word each. "Collapsed"/"Full DAG" named the mechanism;
- * `Rows`/`Graph` name what you get, which is the thing being chosen.
- *
- * TIMELINE AND TABLE SIT BESIDE THEM (redesign-v2 §2.3, "one object, several
- * view modes"). Same object, different question: the graph is what depended on
- * what, the timeline is where the time went, the table is which step is the
- * outlier. Built from `WORKFLOW_VIEWS` so a view added there gets a segment
- * here and on every card's own control at once.
- */
-function ModeControl({ mode, onChoose }: { mode: BoardMode; onChoose: (m: BoardMode) => void }) {
-  const options: ReadonlyArray<readonly [BoardMode, string]> = [
-    ['collapsed', 'Rows'],
-    ...WORKFLOW_VIEWS.map((v) => [v, VIEW_LABEL[v]] as const),
-  ]
-  return (
-    <div className="ctl-seg" role="group" aria-label="How to show each workflow">
-      {options.map(([value, label]) => (
-        <button
-          key={value}
-          type="button"
-          aria-pressed={mode === value}
-          onClick={() => onChoose(value)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-/**
- * `chains only` (#330): hide the one-step workflows direct dispatch wraps each
- * task in. A checkbox, because it is a yes/no about the board and not a fourth
- * way of drawing it. While it is on, how many rows it is hiding sits beside it
- * as a mark, so a reader never mistakes a filtered board for a quiet one.
- */
-function ChainsOnly({ on, hidden, onChoose }: { on: boolean; hidden: number; onChoose: (on: boolean) => void }) {
-  return (
-    <span className="wf-chains">
-      <label>
-        <input type="checkbox" checked={on} onChange={(e) => onChoose(e.target.checked)} />
-        chains only
-      </label>
-      {on && hidden > 0 && (
-        <span
-          className="ctl-mark wf-chains-hidden"
-          aria-label={`${hidden} one-step workflow${hidden === 1 ? ' is' : 's are'} hidden by chains only.`}
-        >
-          {hidden} one-step hidden
-        </span>
-      )}
-    </span>
-  )
 }
 
 /**
@@ -907,7 +675,7 @@ interface Rollup {
   /**
    * What the steps ENDED as, when the workflow has ended -- null while it has
    * not, or when the census is not trustworthy. A terminal row draws this
-   * instead of a progress meter (WF-1, settled on #83): see `Progress`.
+   * instead of a progress meter (WF-1, settled on #83).
    */
   outcomes: Outcomes | null
 }
@@ -926,14 +694,14 @@ interface Outcomes {
 }
 
 /**
- * The composition's segments, in the order the owner's settlement names them,
- * each with the class its TS-4 form is drawn by and the word the census uses.
+ * The outcomes, in the order the owner's settlement names them, each with the
+ * word the census uses.
  */
-const OUTCOME_SEGMENTS: readonly { key: keyof Outcomes; cls: string; word: string }[] = [
-  { key: 'succeeded', cls: 'succeeded', word: 'succeeded' },
-  { key: 'failed', cls: 'failed', word: 'failed' },
-  { key: 'cancelled', cls: 'cancelled', word: 'cancelled' },
-  { key: 'deadLettered', cls: 'dead-lettered', word: 'dead_lettered' },
+const OUTCOME_SEGMENTS: readonly { key: keyof Outcomes; word: string }[] = [
+  { key: 'succeeded', word: 'succeeded' },
+  { key: 'failed', word: 'failed' },
+  { key: 'cancelled', word: 'cancelled' },
+  { key: 'deadLettered', word: 'dead_lettered' },
 ]
 
 function rollupLine(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null = null): Rollup {
@@ -981,7 +749,7 @@ function rollupLine(workflow: Workflow, taskById: ReadonlyMap<string, Task> | nu
   // the same states, so one step reads the same at every level of the board.
   // Whether a finished row should still draw a progress meter was a separate
   // question (design-system.md §6.4), settled on #83: it should not -- see
-  // `outcomes` below and `Progress`.
+  // `outcomes` below.
   const done = roll.counts.SUCCEEDED ?? 0
   const failed = roll.counts.FAILED ?? 0
   const deadLettered = roll.counts.DEAD_LETTERED ?? 0
@@ -1136,9 +904,7 @@ function StateDrift({ drift }: { drift: WorkflowDrift | undefined }) {
 export function WorkflowCard({
   workflow,
   taskById,
-  expanded,
   usage,
-  onToggle,
   openStages,
   onToggleStage,
   zoom = 'auto',
@@ -1158,9 +924,7 @@ export function WorkflowCard({
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
-  expanded: boolean
   usage: UsageRead
-  onToggle: (id: string, expanded: boolean) => void
   /**
    * Which stages are open, keyed by `stageKey`. PASSED IN, never owned here:
    * the store lives above the `key` that a stop-and-reload bumps, so the card
@@ -1207,29 +971,19 @@ export function WorkflowCard({
    */
   classes?: ResourceClasses | null
   /**
-   * ONE WORKFLOW'S PAGE (Workflows V2). The page draws its own head, so the
-   * card draws no row and is always open; under the Graph it also draws the
-   * step table, which the page shows below the graph and the step card.
+   * ONE WORKFLOW'S PAGE (Workflows V2): under the Graph the card also draws
+   * the step table, which the page shows below the graph and the step card.
+   * The card has no row of its own and is always open -- the page draws the
+   * workflow's head (`WorkflowHead`), and the list is `WorkflowList`.
    */
   page?: boolean
 }) {
   const roll = rollupLine(workflow, taskById)
-  const shape = shapeOf(workflow.steps)
-  // THE SAME PER-STEP FIGURES THE NODES AND THE TABLE DRAW (WF-5): the attempt
-  // telemetry where the board read it, the result's where it did not. The row
-  // summed results alone, so it disagreed with its own nodes.
-  const spend = workflowSpend(
-    workflow.steps,
-    taskById,
-    usage.kind === 'ready' && usage.usage !== null ? usage.usage.byTaskId : null,
-  )
-  const header = workflowHeaderState(workflow)
   // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
   // workflow document records no start -- with `created_at` as its submit.
   const started = workflowStartText(workflow, taskById)
-  const bodyId = `wf-body-${workflow.workflow_id}`
-  // WHAT THE ROW IS CALLED AND WHAT IT OPENED (#330), both off the step tasks
-  // the board already joined -- see `workflowLabel` and `workflowPullRequest`.
+  // WHAT THE WORKFLOW IS CALLED AND WHAT IT OPENED (#330), both off the step
+  // tasks the board already joined -- see `workflowLabel` and `workflowPullRequest`.
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
@@ -1279,215 +1033,96 @@ export function WorkflowCard({
   return (
     <section
       ref={sectionRef}
-      className={`section wf-card${expanded ? ' is-open' : ''}${pr !== null ? ' has-pr' : ''}${page ? ' is-page' : ''}`}
+      className={`section wf-card is-open${pr !== null ? ' has-pr' : ''}${page ? ' is-page' : ''}`}
     >
-      {!page && (
-      <>
-      {/* STILL AN <h2>, and the button is inside it rather than around it. The
-          bar is this panel's heading -- it is how the workflow is named on the
-          board -- and demoting it to a bare <button> would take the row out of
-          the document outline that every other section is in. `.section > h2`
-          uppercases, so `.wf-bar` turns that off again for its own contents;
-          B17's rule on `.id` is what keeps the id itself lowercase either
-          way, and it is asserted on the rendered style in brand.test.tsx. */}
-      <h2 className="wf-h">
-        <button
-          type="button"
-          className="wf-bar"
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          onClick={() => onToggle(workflow.workflow_id, expanded)}
-        >
-          {/* THE MARK, AT `[state]`, AND IT NEVER DROPS (design-system.md
-              §6.8). 8px of shape at the left edge is what makes a list of ten
-              workflows scannable without reading a word of it, and it is the
-              one column that survives to 390px along with the name and the
-              caret. `dotClass` is where the two absences finally stop drawing
-              alike: `state not derived` is a ring with a bar through it and
-              `state unread` is a hollow ring, where the old row gave both the
-              same grey `?`. */}
-          <i className={dotClass(header)} aria-hidden />
-          {/* B17. This id is lowercase everywhere it actually lives --
-              Firestore, the API, the logs and the `#work/task/<id>` address.
-              Printed as WF_BCDC9180… it cannot be pasted anywhere, which is
-              the only thing an id is for. */}
-          {/* THE TITLE IS THE WHOLE ID, and that is inventory F11's last
-              unpaid line on this row. `.wf-bar .id` ellipses at 390px, where
-              `[name]` is the column every other field takes its pixels from --
-              `wf_5e5ad3b6f7da4299a839` loses its tail. An ellipsed id cannot be
-              pasted anywhere, which is the only thing an id is for (B17), so
-              the complete value has to survive somewhere on the row itself
-              rather than only in the open card. */}
-          {/* THE LABEL LEADS, THE ID IS THE SECOND LINE (#330). A wf_ id is
-              how a workflow is pasted, not how it is recognised: ten rows of
-              `wf_5e5a…` are ten rows nobody can tell apart without opening.
-              The spec's label, when the submission gave one, is the name; the
-              id stays on the row, whole in its title, one line down. No label
-              and the id leads alone, exactly as before. */}
-          <span className={`wf-name${label !== null ? ' has-label' : ''}`}>
-            {label !== null && (
-              <span className="wf-label" title={label}>
-                {label}
-              </span>
-            )}
-            <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>
-          </span>
-          {/* `workflowHeaderState`, NOT `workflow.state`. The same field name
-              carries two different meanings depending on which server answered:
-              derived from the step tasks on this read, or the Firestore cache
-              that nothing advanced before rollup.py existed and which therefore
-              reads QUEUED for a workflow's whole life. Printing it raw is how
-              this card came to say "queued" in its heading while the step chips
-              under it read succeeded and failed -- one card, one typeface, and
-              nothing saying which to believe. An underived read claims no state
-              at all and names the stored copy as a stored copy. */}
-          {/* THE WORD STAYS, and the glyph went with the dot that replaced it.
-              A chip carrying a mark AND a glyph AND a word said the same thing
-              three times in 104px. */}
-          <span className={`wf-state ${header.tone}`} title={header.title}>
-            {header.word}
-          </span>
-          <Progress roll={roll} />
-          <Shape shape={shape} />
-          <Mix steps={workflow.steps} />
-          <Spend spend={spend} />
-          {/* STARTED, AND SUBMITTED UNDER IT (#376). Derived from the step
-              tasks the board joined; `start not read` when it read none,
-              `never started` when it read them all and none has. */}
-          <span className="wf-started" title={started.title}>
-            <span className="wf-started-at">{started.text}</span>
-            <span className="wf-started-sub" title={started.submittedTitle}>
-              sub {started.submitted}
-            </span>
-          </span>
-          <span className="wf-when" title={`Last state change: ${workflow.updated_at}`}>
-            {timeAgo(workflow.updated_at)}
-          </span>
-          {/* ALWAYS RENDERED, empty or not. `.wf-bar` is a grid with one column
-              per field, and a conditionally-absent child would shift every
-              field after it into the wrong column on exactly the rows that
-              have something to say. */}
-          <span className="wf-flags">
-            {/* Still a separate annotation, not folded into the state above.
-                `cancel_requested` is a REQUEST: a step holding a lease keeps it
-                until the worker or the reconciler releases it, so between the
-                request and the release the workflow really is still running.
-
-                AND ONLY THEN. The flag is never cleared, so it rode along on
-                workflows that had finished cancelled a day earlier -- a tag
-                saying something is pending, on a row where nothing is. Agents'
-                `cancelling` chip has the same rule for the same flag on a task:
-                shown while the state is not terminal. */}
-            {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
-          </span>
-          {/* `[actions]`, AT THE RIGHT EDGE, 20px, AND IT NEVER DROPS EITHER.
-              It was the first column: a caret on the left pushes the id -- the
-              thing a reader scans down -- off the row's own left edge, so ten
-              rows have ten ragged starts. Railway, Northflank and Vercel all
-              put the disclosure last for that reason. */}
-          <span className="wf-caret" aria-hidden>
-            {expanded ? '▾' : '▸'}
-          </span>
-        </button>
-        {/* THE PULL REQUEST, ON THE ROW (#330), AND OUTSIDE THE BUTTON: an
-            anchor inside a <button> is invalid HTML and a click on it would
-            toggle the card as well as follow the link. It is laid over the
-            reserved `[flags]` track instead (styles.css `.wf-pr`). */}
-        {pr !== null && <PullRequestLink pr={pr} className="wf-pr" />}
-      </h2>
-      </>
-      )}
-
-      {(expanded || page) && (
-        <div className="wf-body" id={bodyId}>
-          {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
-              instant and age in each hover. */}
-          <ul className="ctl-facts wf-times">
-            <li className="ctl-fact" title={started.title}>
-              <b>started</b>
-              {started.text}
-            </li>
-            <li className="ctl-fact" title={started.submittedTitle}>
-              <b>submitted</b>
-              {started.submitted}
-            </li>
-          </ul>
-          <CensusFact roll={roll} />
-          <StateDrift drift={workflow.drift} />
-          <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
-          {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
-              and the one mark that belongs to the workflow rather than to any
-              view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
-          <div className="wf-viewbar">
-            <ViewControl view={view} onChoose={chooseView} />
-            <StrayMark strays={straysOf(workflow, taskById)} />
-            <UnreadableMark counts={unreadableOf(workflow, taskById)} />
-          </div>
-          {view === 'graph' ? (
-            // THE GRAPH AND ITS PANEL, SIDE BY SIDE (#330, owner request
-            // 2026-09-29). The inspector sat under the canvas, which on a
-            // tall graph is a screen away from the node that opened it. It is
-            // a column on the right now, the graph narrows to make room, and
-            // at phone width it is a bottom sheet (styles.css `.wf-split`).
-            <div className={`wf-split${picked !== null ? ' has-panel' : ''}`}>
-              <div className="wf-split-main">
-                <WorkflowGraph
-                  workflow={workflow}
-                  taskById={taskById}
-                  classes={classes}
-                  usage={usage}
-                  openStages={openStages}
-                  onToggleStage={onToggleStage}
-                  zoom={zoom}
-                  onZoom={onZoom}
-                  picked={picked}
-                  onPick={pickStep}
-                  reload={reload}
-                />
-              </div>
-              {picked !== null && (
-                <StepPanel
-                  key={`${workflow.workflow_id}/${picked}`}
-                  onClose={() => closePanel(picked)}
-                >
-                  {inspector(picked, () => closePanel(picked))}
-                </StepPanel>
-              )}
-            </div>
-          ) : null}
-          {/* ONE WORKFLOW'S PAGE: THE STEP TABLE UNDER THE GRAPH (workflows.html
-              B). The same rows the Table tab sorts, and a row picks the same
-              step into the card beside the graph. */}
-          {page && view === 'graph' && (
-            <div className="wfp-steps">
-              <h3 className="wfp-eyb">Steps</h3>
-              <WorkflowSteps
-                workflow={workflow}
-                taskById={taskById}
-                classes={classes}
-                usage={usage}
-                view="table"
-                picked={picked}
-                onPick={pickStep}
-              />
-            </div>
-          )}
-          {view === 'graph' ? null : (
-            <>
-              <WorkflowSteps
-                workflow={workflow}
-                taskById={taskById}
-                classes={classes}
-                usage={usage}
-                view={view}
-                picked={picked}
-                onPick={pickStep}
-              />
-              {picked !== null && inspector(picked, () => pickStep(picked))}
-            </>
-          )}
+      <div className="wf-body">
+        {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
+            instant and age in each hover. */}
+        <ul className="ctl-facts wf-times">
+          <li className="ctl-fact" title={started.title}>
+            <b>started</b>
+            {started.text}
+          </li>
+          <li className="ctl-fact" title={started.submittedTitle}>
+            <b>submitted</b>
+            {started.submitted}
+          </li>
+        </ul>
+        <CensusFact roll={roll} />
+        <StateDrift drift={workflow.drift} />
+        <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
+        {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
+            and the one mark that belongs to the workflow rather than to any
+            view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
+        <div className="wf-viewbar">
+          <ViewControl view={view} onChoose={chooseView} />
+          <StrayMark strays={straysOf(workflow, taskById)} />
+          <UnreadableMark counts={unreadableOf(workflow, taskById)} />
         </div>
-      )}
+        {view === 'graph' ? (
+          // THE GRAPH AND ITS PANEL, SIDE BY SIDE (#330, owner request
+          // 2026-09-29). The inspector sat under the canvas, which on a
+          // tall graph is a screen away from the node that opened it. It is
+          // a column on the right now, the graph narrows to make room, and
+          // at phone width it is a bottom sheet (styles.css `.wf-split`).
+          <div className={`wf-split${picked !== null ? ' has-panel' : ''}`}>
+            <div className="wf-split-main">
+              <WorkflowGraph
+                workflow={workflow}
+                taskById={taskById}
+                classes={classes}
+                usage={usage}
+                openStages={openStages}
+                onToggleStage={onToggleStage}
+                zoom={zoom}
+                onZoom={onZoom}
+                picked={picked}
+                onPick={pickStep}
+                reload={reload}
+              />
+            </div>
+            {picked !== null && (
+              <StepPanel
+                key={`${workflow.workflow_id}/${picked}`}
+                onClose={() => closePanel(picked)}
+              >
+                {inspector(picked, () => closePanel(picked))}
+              </StepPanel>
+            )}
+          </div>
+        ) : null}
+        {/* ONE WORKFLOW'S PAGE: THE STEP TABLE UNDER THE GRAPH (workflows.html
+            B). The same rows the Table tab sorts, and a row picks the same
+            step into the card beside the graph. */}
+        {page && view === 'graph' && (
+          <div className="wfp-steps">
+            <h3 className="wfp-eyb">Steps</h3>
+            <WorkflowSteps
+              workflow={workflow}
+              taskById={taskById}
+              classes={classes}
+              usage={usage}
+              view="table"
+              picked={picked}
+              onPick={pickStep}
+            />
+          </div>
+        )}
+        {view === 'graph' ? null : (
+          <>
+            <WorkflowSteps
+              workflow={workflow}
+              taskById={taskById}
+              classes={classes}
+              usage={usage}
+              view={view}
+              picked={picked}
+              onPick={pickStep}
+            />
+            {picked !== null && inspector(picked, () => pickStep(picked))}
+          </>
+        )}
+      </div>
     </section>
   )
 }
@@ -1610,97 +1245,14 @@ export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): 
 }
 
 /**
- * PROGRESS, and the reason the bar is sometimes hatched rather than absent.
- *
- * A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
- * server reports `complete: false` the census failed, and drawing "2 of 6" as
- * a two-thirds-empty bar would turn a failed read into a measurement -- the
- * exact substitution this console exists to refuse. That has not changed: no
- * `.wf-meter-fill` is rendered on that path, and there is no width to read.
- *
- * WHAT CHANGED IS THE OTHER HALF. The untrusted case used to draw NO track at
- * all and lean entirely on amber words -- and `.wf-progress-text` is one of
- * the columns that drops at 560px, so at 390px an unreadable census showed as
- * an empty cell, which is the strongest possible way of saying "nothing is
- * wrong here". It now draws `.wf-meter.is-unknown`: hatched, no fill, and no
- * axis, because there is no scale to start (design-system.md §6.4). That mark
- * survives every breakpoint, survives greyscale, and cannot be mistaken for a
- * 0% bar because a 0% bar has an axis tick and this has none.
- *
- * THE SENTENCE CARRIES ITSELF IN ITS `title` (#222). `.wf-progress-text` is
- * contained in its column and ends in an ellipsis where the column is
- * narrower than the census. At 1440 the sentence gets 208.2px beside the
- * meter since `[progress]`'s floor went to 33ch in a row at least 620px wide
- * (#223): the running forms up to "12/30 done · 18 not started" (195px) are
- * whole, and a failed or cancelled clause -- "10/30 done · 1 failed · 19
- * cancelled" is 260px -- is cut, as is every census in a narrower row, where
- * the floor is 12ch and the sentence has 36px (styles.css, the `[progress]`
- * note). So the whole sentence is on the element that was cut, for a
- * pointer, and the open card states it whole for everyone else
- * (`CensusFact`).
- */
-function Progress({ roll }: { roll: Rollup }) {
-  if (!roll.trustworthy) {
-    return (
-      <span className="wf-progress untrusted">
-        <span className="ctl-track wf-meter is-unknown" role="img" aria-label={roll.why} />
-        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
-      </span>
-    )
-  }
-  // A FINISHED ROW DRAWS ITS OUTCOME COMPOSITION, NOT A PROGRESS METER (WF-1,
-  // settled on #83, 2026-09-25). `9/30 done` drawn as a 30% bar says the work
-  // is still going on a workflow that is over. The same 8px track -- §6.4's
-  // one proportion primitive -- carries one segment per outcome, each its
-  // share of the steps, in TS-4's forms (styles.css `.wf-seg`): succeeded
-  // solid, failed and dead-lettered solid with the 2px rule, cancelled the
-  // flat 'ended' bars. An outcome no step ended in draws nothing, because the
-  // four together are every step. A row that has not ended keeps the meter.
-  if (roll.outcomes !== null) {
-    const outcomes = roll.outcomes
-    return (
-      <span className="wf-progress">
-        <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
-          {OUTCOME_SEGMENTS.filter((s) => outcomes[s.key] > 0).map((s) => (
-            <i
-              key={s.cls}
-              className={`wf-seg ${s.cls}`}
-              style={{ width: `${+((outcomes[s.key] / roll.total) * 100).toFixed(4)}%` }}
-            />
-          ))}
-        </span>
-        <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
-      </span>
-    )
-  }
-  const pct = roll.total === 0 ? 0 : Math.round((roll.done / roll.total) * 100)
-  return (
-    <span className="wf-progress">
-      <span className="ctl-track wf-meter" role="img" aria-label={roll.why} title={roll.text}>
-        <span className="ctl-util-fill wf-meter-fill" style={{ width: `${pct}%` }} />
-      </span>
-      <span className="wf-progress-text" title={roll.text}>{roll.text}</span>
-    </span>
-  )
-}
-
-/**
  * THE CENSUS, WHOLE, AS THE OPEN CARD'S FIRST FACT (#223, owner decision
  * 2026-09-26).
  *
- * The row cuts the census where `[progress]` is narrower than the sentence
- * (at 1440, anything longer than the two-digit running form's 27
- * characters; in a row under 620px, where it has 36px, every one) and
- * draws no sentence at all at 560px and below. The cut text keeps the whole
- * sentence in its `title`, but a `title` is whole on hover only, and a phone
- * has no hover. design-system.md §7.3's rule for a cut value is cut on
- * screen, whole somewhere a reader can get to without a pointer: here, the
- * card the reader opened to see more of this workflow.
+ * The page states the census whole, as a fact, rather than in a cut cell.
  *
- * `progress`, because it is the row's `[progress]` cell said whole. The same
- * `roll.text` the row prints, so the two cannot disagree. A plain value, not a
- * `.ctl-mark`: an unread census already says so in its own words ("2 of 6
- * steps unread"), and the hatch on the row is its mark.
+ * `roll.text`, the same sentence the page head's facts print, so the two
+ * cannot disagree. A plain value, not a `.ctl-mark`: an unread census already
+ * says so in its own words ("2 of 6 steps unread").
  */
 function CensusFact({ roll }: { roll: Rollup }) {
   return (
@@ -4264,9 +3816,9 @@ function RowWhyLine({ why }: { why: RowWhy }) {
 
 /**
  * STEPS DONE, as a bar in the workflow's own hue and `n/m`. An untrusted
- * census draws no fill -- a hatched track and the census's own words -- for
- * the reason `Progress` gives: a filled meter is a claim the numbers are a
- * census.
+ * census draws no fill -- a hatched track and the census's own words --
+ * because a filled meter is a claim the numbers are a census, and a failed
+ * read turned into a width would be a measurement of a census that failed.
  */
 function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
   if (!roll.trustworthy) {
@@ -4355,7 +3907,7 @@ function WorkflowPage({
   return (
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} />
-      <Board board={board} {...boardProps(stores)} focus={focus} />
+      <Board board={board} stores={stores} focus={focus} />
     </div>
   )
 }
