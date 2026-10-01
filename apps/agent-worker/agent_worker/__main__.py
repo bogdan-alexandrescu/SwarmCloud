@@ -17,7 +17,7 @@ code is the contract with the dispatcher and the reconciler:
         generation check or after it. At the generation check it is also
         every API error that is not a refusal named under 78, and it comes
         only after every scheduled attempt of the check failed, over about
-        90 s (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`, #198). The task, the
+        180 s (`startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`, #198, #401). The task, the
         lease and the event stream were not written. After the generation
         check, the attempt's own document records the phase and the error,
         when Firestore took it. The next attempt may not meet the outage, so
