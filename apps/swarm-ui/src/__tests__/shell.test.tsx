@@ -221,7 +221,8 @@ describe('B3: the inspector is a column, not an overlay, where two panes fit', (
 
     const text = media.map((m) => [...m.cssRules].map((r) => r.cssText).join('\n')).join('\n')
     expect(text).toContain('has-inspector')
-    expect(text).toContain('var(--inspector-w)')
+    // Agents V1 (2026-10-01): the list is the snapped column, the agent the rest.
+    expect(text).toContain('var(--list-w, 380px)')
     // Below it, the drawer stays the fixed overlay it already draws, which is
     // the right answer where two panes genuinely do not fit.
     expect(text).toContain('position: sticky')

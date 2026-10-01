@@ -9,7 +9,6 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { agentListPath, parseAgentList, type AgentList } from './agentlist'
-import { INSPECTOR, clampPane, readPane, writePane } from './panes'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -29,11 +28,11 @@ import {
   type ProbeRecord,
   type ScreenReads,
 } from './fetch'
-import { isOverlay, nudgePane, trapTab } from './focus'
+import { isOverlay, trapTab } from './focus'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
-import { Icon, SkyShell, type SpineSection } from './Spine'
+import { Icon, SkyShell, readPref, writePref, type SpineSection } from './Spine'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -1523,6 +1522,32 @@ function SectionBody({
  * element that has to react to it is `.app`'s grid template, which is this
  * element's parent.
  */
+/** The three stops the agent list's divider snaps to (agents.html V1). */
+type ListSnap = 'strip' | 'list' | 'half'
+const SNAPS: readonly ListSnap[] = ['strip', 'list', 'half']
+const SNAP_WIDTH: Readonly<Record<ListSnap, string>> = { strip: '64px', list: '380px', half: '50%' }
+const SNAP_TEXT: Readonly<Record<ListSnap, string>> = {
+  strip: 'list folded to a 64px strip',
+  list: 'compact list, 380px',
+  half: 'list at half the width',
+}
+const LIST_SNAP_KEY = 'swarm.agents.list'
+
+function readSnap(): ListSnap {
+  const v = readPref(LIST_SNAP_KEY)
+  return v === 'strip' || v === 'half' ? v : 'list'
+}
+
+/** The stop nearest a pointer `x` pixels into a work area `w` pixels wide. */
+export function nearestSnap(x: number, w: number): ListSnap {
+  const stops: [ListSnap, number][] = [
+    ['strip', 64],
+    ['list', 380],
+    ['half', w / 2],
+  ]
+  return stops.reduce((best, s) => (Math.abs(s[1] - x) < Math.abs(best[1] - x) ? s : best))[0]
+}
+
 function AgentDrawer({
   taskId,
   pane,
@@ -1549,7 +1574,10 @@ function AgentDrawer({
   // update it either.
   const base = `${WORK}/task/${encodeURIComponent(taskId)}`
   const close = () => go(closeTo)
-  const [width, setWidth] = useState(() => readPane(INSPECTOR))
+  // AGENTS V1 (agents.html, decided 2026-10-01): the divider snaps the LIST
+  // to 64px (a strip of marks), 380px (the compact list) or half the width,
+  // remembered per browser; `«` and `[` fold the list to the strip and back.
+  const [snap, setSnap] = useState<ListSnap>(readSnap)
   const dragging = useRef(false)
   const panel = useRef<HTMLDivElement>(null)
   /** The element that was focused when this opened. Where Escape puts you back. */
@@ -1557,11 +1585,29 @@ function AgentDrawer({
 
   useEffect(() => {
     const root = document.documentElement
-    root.style.setProperty('--inspector-w', `${width}px`)
+    root.style.setProperty('--list-w', SNAP_WIDTH[snap])
+    root.dataset.agentList = snap
     return () => {
-      root.style.removeProperty('--inspector-w')
+      root.style.removeProperty('--list-w')
+      delete root.dataset.agentList
     }
-  }, [width])
+  }, [snap])
+
+  const choose = useCallback((next: ListSnap) => {
+    setSnap(next)
+    writePref(LIST_SNAP_KEY, next)
+  }, [])
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return
+      const el = e.target as HTMLElement | null
+      if (el !== null && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
+      choose(snap === 'strip' ? 'list' : 'strip')
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [snap, choose])
 
   /*
    * FOCUS, ON THE WAY IN AND ON THE WAY OUT.
@@ -1614,14 +1660,16 @@ function AgentDrawer({
 
   const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (!dragging.current) return
-    // The inspector is anchored to the right edge, so its width is the
-    // distance from the pointer to that edge.
-    setWidth(clampPane((globalThis.innerWidth || 0) - e.clientX, INSPECTOR.min, INSPECTOR.max))
+    // The list's width is the distance from the work area's left edge to the
+    // pointer, snapped to the nearest stop.
+    const app = panel.current?.closest('.app')?.getBoundingClientRect()
+    if (app === undefined) return
+    setSnap(nearestSnap(e.clientX - app.left, app.width))
   }
   const endDrag = () => {
     if (!dragging.current) return
     dragging.current = false
-    writePane(INSPECTOR, width)
+    writePref(LIST_SNAP_KEY, snap)
   }
 
   return (
@@ -1652,7 +1700,7 @@ function AgentDrawer({
         className="ctl-inspector-grip"
         role="separator"
         aria-orientation="vertical"
-        aria-label="Resize the inspector"
+        aria-label="Resize the agent list"
         /*
          * A CONTROL THE MOUSE COULD REACH AND THE KEYBOARD COULD NOT. This was
          * four pointer handlers on a `<div>`: no `tabindex`, no key handling,
@@ -1668,15 +1716,16 @@ function AgentDrawer({
          * the pointer drag already does.
          */
         tabIndex={0}
-        aria-valuenow={width}
-        aria-valuemin={INSPECTOR.min}
-        aria-valuemax={INSPECTOR.max}
+        aria-valuenow={SNAPS.indexOf(snap)}
+        aria-valuemin={0}
+        aria-valuemax={SNAPS.length - 1}
+        aria-valuetext={SNAP_TEXT[snap]}
         onKeyDown={(e) => {
-          const next = nudgePane(width, e.key, INSPECTOR, 'ArrowLeft')
-          if (next === null) return
+          const i = SNAPS.indexOf(snap)
+          const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
+          if (step === 0) return
           e.preventDefault()
-          setWidth(next)
-          writePane(INSPECTOR, next)
+          choose(SNAPS[Math.max(0, Math.min(SNAPS.length - 1, i + step))]!)
         }}
         onPointerDown={(e) => {
           dragging.current = true
@@ -1688,6 +1737,15 @@ function AgentDrawer({
       />
       <button className="drawer-close" onClick={close} aria-label="Close">
         ✕
+      </button>
+      <button
+        type="button"
+        className="ctl-list-snap btn ghost"
+        aria-pressed={snap === 'strip'}
+        title="Fold the list to a strip, or open it again ([)"
+        onClick={() => choose(snap === 'strip' ? 'list' : 'strip')}
+      >
+        {snap === 'strip' ? '»' : '«'} <kbd>[</kbd>
       </button>
       {/* THE ONE SEGMENTED CONTROL, NOT TWO PILLS. `.ctl-subnav` drew the
           panes as 999px pills with a filled, bordered selection -- the shape

@@ -7937,7 +7937,10 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `role="dialog"` and all. */
 @media (min-width: 1100px) {
   .app.has-inspector {
-    grid-template-columns: [work] minmax(0, 1fr) [inspector] var(--inspector-w);
+    /* Agents V1 (agents.html, decided 2026-10-01): the LIST is the fixed
+       column -- 64px strip, 380px compact list or half the width, snapped
+       and remembered (App.tsx `AgentDrawer`) -- and the agent takes the rest. */
+    grid-template-columns: [work] var(--list-w, 380px) [inspector] minmax(0, 1fr);
   }
   .app.has-inspector > .ctl-drawer {
     position: sticky;
@@ -12921,3 +12924,13 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ctl-chip[data-hue='park'] > i { color: var(--s-park); }
 .ctl-chip[data-hue='bad'] > i { color: var(--s-bad); }
 .ctl-chip[data-hue='neu'] > i { color: var(--s-neu); }
+
+/* --- Agents V1: the 64px strip (the list collapsed by « or [) ----------- */
+@media (min-width: 1100px) {
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row > :not(.ctl-chip) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row { grid-template-columns: 1fr; justify-items: center; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-chip { font-size: 0; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work > :not(.rows):not(.ctl-head) { display: none; }
+}
+.ctl-list-snap { display: inline-flex; gap: 6px; align-items: center; }
+.ctl-list-snap kbd { font: var(--t-micro)/var(--lh-micro) var(--mono); border: 1px solid var(--line-soft); border-radius: 4px; padding: 0 4px; color: var(--text-dim); }
