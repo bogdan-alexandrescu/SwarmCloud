@@ -41,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -201,10 +202,19 @@ def _run_smoke(tmp_path: Path, present: list[str], hold_on: str) -> subprocess.C
     bin_dir = tmp_path / "bin"
     _fake_tools(bin_dir, present)
     script = _substitute_args(_shell_text(_smoke_step()), {HOLD_ARG: hold_on})
-    # The stand-ins first, then only what sh itself needs; a real gh or
-    # terraform on this machine must not satisfy the check.
-    sys_bins = [d for d in ("/usr/bin", "/bin") if os.path.isdir(d)]
-    env = {"PATH": os.pathsep.join([str(bin_dir), *sys_bins]), "HOME": str(tmp_path)}
+    # The stand-ins first, then ONLY the plumbing the step itself uses, linked
+    # into a private directory. Putting /usr/bin on PATH would let a runner's own
+    # gh, kubectl, make or docker satisfy the check, and the missing-tool case
+    # for each of them would have to be skipped (CI's runner carries several).
+    plumbing = bin_dir.parent / "plumbing"
+    plumbing.mkdir(exist_ok=True)
+    for tool in ("mktemp", "rm", "head"):
+        real = shutil.which(tool)
+        assert real, f"{tool} is needed by the smoke step and was not found"
+        link = plumbing / tool
+        if not link.exists():
+            link.symlink_to(real)
+    env = {"PATH": os.pathsep.join([str(bin_dir), str(plumbing)]), "HOME": str(tmp_path)}
     return subprocess.run(
         [*_shell_for(_smoke_step()), script], capture_output=True, text=True, env=env, check=False
     )
@@ -242,14 +252,12 @@ def test_the_smoke_step_fails_the_build_when_any_tool_is_missing(
     expected = always + (held if hold_on == "1" else [])
     visited = 0
     for absent in expected:
-        if Path("/usr/bin", absent).exists() or Path("/bin", absent).exists():
-            continue  # this machine's copy would satisfy it; covered where absent
         case = tmp_path / absent
         proc = _run_smoke(case, [t for t in expected if t != absent], hold_on)
         assert proc.returncode != 0, f"build passed with {absent} missing:\n{proc.stdout}"
         assert absent in proc.stdout + proc.stderr, "the failure must name the missing tool"
         visited += 1
-    assert visited >= len(expected) - 2, f"only {visited} of {len(expected)} cases ran"
+    assert visited == len(expected), f"only {visited} of {len(expected)} cases ran"
 
 
 def test_the_smoke_step_runs_as_the_agent_user_and_nothing_installs_after_it() -> None:
