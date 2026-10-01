@@ -19,6 +19,7 @@ at run time, it is caught only after every upstream step has spent its compute.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
@@ -225,8 +226,96 @@ def validate_input_size(payload: Any, max_bytes: int, *, label: str = "input") -
     return size
 
 
+#: The label a task's runner `input` is walked under, and so the one whose
+#: non-finite refusal is `InvalidInput`.
+PROMPT_INPUT_LABEL = "input"
+
+
+def _non_finite_token(value: float) -> str:
+    """The token the caller sent: Python's JSON reader is how the value got here."""
+    if math.isnan(value):
+        return "NaN"
+    return "Infinity" if value > 0 else "-Infinity"
+
+
+def _non_finite_refusal(
+    path: str,
+    value: float,
+    step_id: str | None,
+    *,
+    key: Any = None,
+    error: type[ValidationFailed] = ValidationFailed,
+) -> ValidationFailed:
+    token = _non_finite_token(value)
+    message = (
+        f"{path} is {token}, which is not a finite number. JSON has no such value "
+        "(Python's reader accepts the token, the standard does not), and every "
+        "reader of a stored task that counts with it would fail; send a finite "
+        "number, or a string if the text is what you mean"
+    )
+    detail: dict[str, Any] = {"path": path, "value": token}
+    if key is not None:
+        detail["key"] = key
+    if step_id is not None:
+        detail["step_id"] = step_id
+        message = f"step {step_id!r}: {message}"
+    return error(message, detail=detail)
+
+
+def reject_non_finite(
+    payload: Any,
+    *,
+    label: str = "input",
+    step_id: str | None = None,
+    error: type[ValidationFailed] | None = None,
+) -> None:
+    """Refuse NaN, Infinity or -Infinity anywhere in `payload`, naming the path (#294, S0).
+
+    THE DEFECT. `json.loads` -- what reads every request body here -- accepts
+    the bare tokens `NaN`, `Infinity` and `-Infinity`, and a task's `input` and
+    `metadata` are `dict[str, Any]`, so nothing refused them and Firestore
+    stored them. Any control-plane reader that later counts with such a value
+    raises (`int(float("inf"))` is an `OverflowError`, `int(float("nan"))` a
+    `ValueError`), and a reader inside a platform-wide loop stops that loop
+    for every tenant: one poisoned task, every tenant's pass. The readers are
+    made total too (`reconciler.store.ControlStore.snapshot`); this is the
+    door, so a new one does not have to be.
+
+    Run on a task's input and metadata and on every workflow step's input and
+    metadata, BEFORE the runner-input declaration is checked, so the refusal
+    names the path and the value rather than "undeclared key" or a bound a NaN
+    compares false against. `validate_storable` checks the same, so a caller
+    of that alone is covered as well.
+
+    THE CODE A CALLER BRANCHES ON IS KEPT. A runner `input` was already
+    refused for a NaN at a DECLARED key, as 422 `invalid_input` naming the key
+    (test_runner_inputs_by_declaration.py), so a refusal in `input` is still
+    `InvalidInput` and its detail still carries `key` -- the top-level key the
+    value sits under -- beside the new `path`. Metadata answers
+    `validation_failed`, as its other storability refusals do.
+
+    Walked with a stack, not recursion, for the reason `validate_storable` is.
+    """
+    if error is None:
+        error = InvalidInput if label == PROMPT_INPUT_LABEL else ValidationFailed
+    # (path, the top-level key it sits under, value)
+    stack: list[tuple[str, Any, Any]] = [(label, None, payload)]
+    while stack:
+        path, top, value = stack.pop()
+        if isinstance(value, float):
+            if not math.isfinite(value):
+                raise _non_finite_refusal(path, value, step_id, key=top, error=error)
+        elif isinstance(value, Mapping):
+            stack.extend(
+                (f"{path}.{key}", key if top is None else top, item)
+                for key, item in value.items()
+            )
+        elif isinstance(value, (list, tuple)):
+            stack.extend((f"{path}[{index}]", top, item) for index, item in enumerate(value))
+
+
 def validate_storable(payload: Any, *, label: str = "input", step_id: str | None = None) -> None:
-    """Refuse an integer, anywhere in `payload`, that Firestore cannot store.
+    """Refuse an integer Firestore cannot store, or a non-finite float, anywhere in `payload`.
 
     Python reads a JSON integer of any length, and Firestore stores a signed
     64-bit one, so `{"n": 10**30}` passed every check this module made and
@@ -247,7 +336,12 @@ def validate_storable(payload: Any, *, label: str = "input", step_id: str | None
         path, value = stack.pop()
         if isinstance(value, bool):
             continue
-        if isinstance(value, int):
+        if isinstance(value, float):
+            # Firestore stores NaN and Infinity; every reader that counts with
+            # them does not survive them (#294). See `reject_non_finite`.
+            if not math.isfinite(value):
+                raise _non_finite_refusal(path, value, step_id)
+        elif isinstance(value, int):
             if not INT64_MIN <= value <= INT64_MAX:
                 message = (
                     f"{path} is a {len(str(abs(value)))}-digit integer, outside the "
@@ -423,6 +517,26 @@ DISPATCH_METADATA_KEY = "dispatch"
 #: does not read would refuse nothing that matters. Defined once, here, beside
 #: the other reserved keys, and `submit_workflow` writes under it.
 INPUT_FROM_METADATA_KEY = "input_from"
+
+#: The key inside a workflow's or a step's `metadata` choosing where that
+#: step's `input_from` files land (#75, owner decision 2026-10-01, option (b)).
+#: NOT reserved: the caller writes it, and it is stored on the step's task as
+#: written. What the worker acts on is `DispatchOptions.input_parents`, which
+#: this service derives from it into the signed dispatch block.
+#:
+#:   by_name    the filename is the path, exactly as before #75. The default,
+#:              so no existing prompt's paths change.
+#:   by_parent  each file lands at `<parent_step_id>/<filename>`, so two parents
+#:              that both write `notes.md` can feed one step.
+#:
+#: Carried in metadata rather than as a field on the step because
+#: `WorkflowStep.input_from` is the frozen contract's `dict[str, str]` and a
+#: new field there would be a frozen change.
+INPUT_LAYOUT_METADATA_KEY = "input_layout"
+INPUT_LAYOUT_BY_NAME = "by_name"
+INPUT_LAYOUT_BY_PARENT = "by_parent"
+INPUT_LAYOUTS = (INPUT_LAYOUT_BY_NAME, INPUT_LAYOUT_BY_PARENT)
+DEFAULT_INPUT_LAYOUT = INPUT_LAYOUT_BY_NAME
 
 #: The key inside `task.metadata` naming the files a workflow step's dependants
 #: stage from it (#149). Written by workflow expansion only, on each UPSTREAM
@@ -638,6 +752,14 @@ class DispatchOptions:
     #: decides whether this step's agent runs, and the verdicts that run it.
     gate_task_id: str | None = None
     gate_verdicts: tuple[str, ...] = ()
+    #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
+    #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
+    #: worker sees only task ids in `metadata.input_from`; this is how it learns
+    #: the step id to stage each file under. In the dispatch block because the
+    #: spec signature covers it (`swarm_common.specsign.SIGNED_METADATA_KEYS`)
+    #: and because `input_from`'s `{task id: filename}` shape is read as such by
+    #: the UI and the masking.
+    input_parents: tuple[tuple[str, str], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -669,6 +791,10 @@ class DispatchOptions:
             gate_verdicts=tuple(gate_verdicts) if gate_task_id else (),
         )
 
+    def with_input_parents(self, parents: Mapping[str, str]) -> "DispatchOptions":
+        """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
+        return replace(self, input_parents=tuple(sorted(parents.items())))
+
     def to_metadata(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""
         block: dict[str, Any] = {"strategy": self.strategy, "carrier": self.carrier}
@@ -687,6 +813,11 @@ class DispatchOptions:
                 "task_id": self.gate_task_id,
                 "verdict_in": list(self.gate_verdicts),
             }
+        # Absent unless the step opted in (#75), so a step that did not stores
+        # exactly the block it stored before. The worker spells the key
+        # `agent_worker.inputs.PARENTS_KEY`.
+        if self.input_parents:
+            block["input_parents"] = dict(self.input_parents)
         return block
 
 
@@ -1022,6 +1153,9 @@ class StepSpec:
     when_verdicts: tuple[str, ...] = ()
     #: `builds_on` as submitted (#264): an upstream step id, or None.
     builds_on: str | None = None
+    #: Where this step's `input_from` files land (#75): `INPUT_LAYOUTS`,
+    #: already resolved by `resolve_input_layout`.
+    input_layout: str = DEFAULT_INPUT_LAYOUT
 
 
 class DagError(ValidationFailed):
@@ -1055,8 +1189,9 @@ def validate_dag(steps: Sequence[StepSpec], *, max_steps: int) -> list[str]:
       4. every `depends_on` names a step IN THIS WORKFLOW
       5. every `input_from` source is also an upstream dependency
       6. every `input_from` filename is a relative path inside the workspace,
-         within the worker's name bound, and no two parents of one step stage
-         the same one, or one a directory of the other
+         within the worker's name bound, and -- unless the step stages by
+         parent (#75) -- no two parents of one step stage the same one, or one
+         a directory of the other
       7. the graph is acyclic
 
     Returns a topological order, which the caller uses to create tasks parent
@@ -1262,6 +1397,10 @@ def validate_staged_filenames(step: StepSpec) -> None:
       `outline.md` are two siblings. The worker's `_assert_distinct_destinations`
       compares names only; it stays the backstop for the same-name case.
 
+    A step that opted in to `input_layout: "by_parent"` (#75) is checked for
+    the first refusal only: its files land under their parents' step ids, so
+    the clashes cannot happen.
+
     Filenames are compared after `.strip()`, which is what the worker compares.
     The problems with one filename are reported first, then a same-name clash,
     then a directory clash.
@@ -1287,6 +1426,15 @@ def validate_staged_filenames(step: StepSpec) -> None:
                 },
             )
         landing.setdefault(filename, []).append(source)
+
+    if step.input_layout == INPUT_LAYOUT_BY_PARENT:
+        # Every file lands at `<parent step id>/<filename>` (#75). A parent
+        # appears once in `input_from`, step ids are unique and are one path
+        # segment each (`WorkflowStepCreate.step_id`'s pattern), so no two
+        # destinations can be equal or one a directory of another: the two
+        # clash rules below have nothing left to find. The worker still checks
+        # destinations (`_assert_distinct_destinations`) as defence in depth.
+        return
 
     for filename, sources in landing.items():
         if len(sources) < 2:
@@ -1339,6 +1487,56 @@ def validate_staged_filenames(step: StepSpec) -> None:
                     "colliding_upstream_steps": sorted({outer_source, inner_source}),
                 },
             )
+
+
+def input_layout_in(
+    metadata: Mapping[str, Any] | None, *, path: str, step_id: str | None = None
+) -> str | None:
+    """The `input_layout` a metadata block sets, None when it sets none; refused if invalid.
+
+    PRESENT IS A CHOICE, whatever the value, so `null` is refused like a typo
+    rather than read as "unset": a caller who wrote the key meant something,
+    and the only safe reading of a value that is not one of `INPUT_LAYOUTS` is
+    none. The refusal names the path and every accepted value.
+    """
+    if not metadata or INPUT_LAYOUT_METADATA_KEY not in metadata:
+        return None
+    value = metadata[INPUT_LAYOUT_METADATA_KEY]
+    if isinstance(value, str) and value in INPUT_LAYOUTS:
+        return value
+    detail: dict[str, Any] = {"path": path, "accepted": list(INPUT_LAYOUTS)}
+    message = (
+        f"{path} is {_short_echo(value)}; accepted values are "
+        + ", ".join(repr(v) for v in INPUT_LAYOUTS)
+        + f". {INPUT_LAYOUT_BY_PARENT!r} stages each input_from file at "
+        "<parent step id>/<filename>; "
+        f"{INPUT_LAYOUT_BY_NAME!r}, the default, at the filename"
+    )
+    if step_id is not None:
+        detail["step_id"] = step_id
+        message = f"step {step_id!r}: {message}"
+    raise DagError(message, detail=detail)
+
+
+def resolve_input_layout(
+    workflow_metadata: Mapping[str, Any] | None,
+    step_metadata: Mapping[str, Any] | None,
+    *,
+    step_id: str,
+) -> str:
+    """A step's `input_layout`: its own, else the workflow's, else `DEFAULT_INPUT_LAYOUT`.
+
+    The step's own wins because the workflow's value is copied onto every
+    step's task and the step's is merged over it -- this is the value the
+    step's task stores.
+    """
+    workflow = input_layout_in(workflow_metadata, path=f"metadata.{INPUT_LAYOUT_METADATA_KEY}")
+    own = input_layout_in(
+        step_metadata,
+        path=f"steps[{step_id}].metadata.{INPUT_LAYOUT_METADATA_KEY}",
+        step_id=step_id,
+    )
+    return own or workflow or DEFAULT_INPUT_LAYOUT
 
 
 def find_cycle(steps: Iterable[StepSpec]) -> list[str] | None:
