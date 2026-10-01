@@ -371,7 +371,7 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
     registered secrets. A key the agent pasted into an `.env` is registered
     by no one; kept one by one, the first commit's tree would publish it.
 
-    MUTATION: drop `_holds_a_credential` from `Worker._leaks_in_added_text` and
+    MUTATION: drop `_credential_in` from `Worker._leaks_in_added_text` and
     this history is kept as two commits, the first carrying the key."""
     def edit(repo: Path) -> None:
         (repo / ".env").write_text(f"AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n")
@@ -554,7 +554,7 @@ def test_a_list_that_skips_a_commit_counts_as_a_hit(tmp_path, origin):
 
     def first(listed: list[str]) -> int | None:
         return lifecycle._first_leaking_commit(
-            shas=listed, keep=None, leaks=lambda text: False, git=["git"], repo=repo,
+            shas=listed, keep=None, leaks=lambda _path, _text: None, git=["git"], repo=repo,
             private_dir=tmp_path, logs_dir=tmp_path / "logs", timeout_seconds=60,
             logger=_QuietLog(), floor=base,
         )
