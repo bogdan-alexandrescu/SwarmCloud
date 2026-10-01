@@ -14,7 +14,7 @@
 // test are Results and driving them through HTTP would test `read` again.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { RuntimeTopology } from '../api'
@@ -570,13 +570,19 @@ describe('the capacity board as a whole', () => {
     expect(scopeCell('provider:anthropic:tenant:research')).toBe('tenant research')
   })
 
-  it('carries the same scope on every card in the Cards view (CP-2)', async () => {
+  // The Cards view was the alternative set aside on 2026-10-01 (capacity.html);
+  // its scope test went with it. The Scope column above is the one place the
+  // scope is drawn, on every row, including the "Needs a look" group's.
+  it('declares scope on a row the "Needs a look" group took out of its family', async () => {
     renderCapacity(
-      capacity({ tenant_id: 'eng', pools: [pool({ name: 'global' }), pool({ name: 'tenant:research' })] }),
+      capacity({
+        tenant_id: 'eng',
+        pools: [pool({ name: 'global' }), pool({ name: 'tenant:research', active: 8, available: 0 })],
+      }),
     )
-    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
-    expect(poolCard('global').querySelector('.cap-pool-scope')?.textContent).toBe('platform')
-    expect(poolCard('tenant:research').querySelector('.cap-pool-scope')?.textContent).toBe('tenant research')
+    await screen.findByText('Global')
+    expect(familyRow('tenant:research').closest('.cap-needs'), 'a full pool is not in Needs a look').not.toBeNull()
+    expect(scopeCell('tenant:research')).toBe('tenant research')
   })
 
   it('marks a pool carrying more than its ceiling as drift rather than as full', async () => {
@@ -680,14 +686,6 @@ function familyRow(name: string): HTMLElement {
   return th!.closest('tr') as HTMLElement
 }
 
-/** One tile in Pools' Cards view. */
-function poolCard(name: string): HTMLElement {
-  const card = [...document.querySelectorAll('.cap-pool')].find(
-    (p) => p.querySelector('.cap-pool-name')?.getAttribute('title') === name,
-  )
-  expect(card, `the Cards view draws no tile for ${name}`).toBeTruthy()
-  return card as HTMLElement
-}
 
 /** The state marks a Pools row or tile draws, as `word|modifier` pairs. */
 function chipsOf(el: Element): string[] {
@@ -885,19 +883,19 @@ describe('Profile headroom carries its scope as a card note, not paragraphs (CP-
 })
 
 describe('units are named on every column that counts them (CP-24)', () => {
-  it('Pools: Weight, In use and Ceiling all carry (units), stacked keys too', async () => {
+  it('Pools: Weight, Leased and Ceiling all carry (units), stacked keys too', async () => {
     renderCapacity(
       capacity({ pools: [pool({ name: 'global' })], runner_profiles: { 'claude-code': profile({ admission: admission({}) }) } }),
     )
     await screen.findByRole('rowheader', { name: 'claude-code' })
     const heads = [...document.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
-    for (const name of ['Weight', 'In use', 'Ceiling']) {
+    for (const name of ['Weight', 'Leased', 'Ceiling']) {
       const found = heads.filter((h) => h.startsWith(name))
       expect(found.length, `no ${name} column`).toBeGreaterThan(0)
       for (const h of found) expect(h, `${name} does not say its unit`).toContain('(units)')
     }
     const keyed = [
-      ...document.querySelectorAll('td[data-label^="Weight"], td[data-label^="In use"], td[data-label^="Ceiling"]'),
+      ...document.querySelectorAll('td[data-label^="Weight"], td[data-label^="Leased"], td[data-label^="Ceiling"]'),
     ]
     expect(keyed.length).toBeGreaterThan(0)
     for (const td of keyed) expect(td.getAttribute('data-label')).toContain('(units)')
@@ -1189,7 +1187,7 @@ describe('Profile headroom draws the counterfactual as a column (CP-6)', () => {
   })
 })
 
-describe('Pools draws one classification in its table and its cards (CP-14)', () => {
+describe('Pools draws one classification in its chip, its row and its track (CP-14)', () => {
   /**
    * `global` is healthy. `resource:browser` was set to 0 by a person and
    * `provider:anthropic:tenant:eng` was zeroed by its quota; neither is paused
@@ -1216,25 +1214,16 @@ describe('Pools draws one classification in its table and its cards (CP-14)', ()
     expect(chipsOf(familyRow('global'))).toEqual(['ok|is-ok'])
   })
 
-  it('the Cards view draws the ok chip for a healthy pool and limit 0 for a pool at 0', async () => {
-    renderCapacity(board())
-    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
-    expect(chipsOf(poolCard('global'))).toEqual(['ok|is-ok'])
-    expect(chipsOf(poolCard('resource:browser'))).toEqual(['limit 0|is-paused'])
-    expect(chipsOf(poolCard('provider:anthropic:tenant:eng'))).toEqual(['limit 0|is-bad'])
-  })
-
   it('draws a full pool as warn in the chip, the row and the track', async () => {
     renderCapacity(board())
     await screen.findByText('Global')
     expect(chipsOf(familyRow('runner:claude-code'))).toEqual(['full|is-warn'])
     expect(familyRow('runner:claude-code').className).toContain('is-warn')
 
-    fireEvent.click(screen.getByRole('button', { name: 'Cards' }))
-    const tile = poolCard('runner:claude-code')
-    expect(chipsOf(tile)).toEqual(['full|is-warn'])
-    expect(tile.querySelector('.ctl-util-fill.is-warn'), 'the full tile’s track is not warn').not.toBeNull()
-    expect(tile.querySelector('.ctl-util-fill.is-bad'), 'the full tile’s track is bad').toBeNull()
+    // The Use column's track, which the Cards view used to carry.
+    const row = familyRow('runner:claude-code')
+    expect(row.querySelector('.ctl-util-fill.is-warn'), 'the full row’s track is not warn').not.toBeNull()
+    expect(row.querySelector('.ctl-util-fill.is-bad'), 'the full row’s track is bad').toBeNull()
   })
 
   /**
@@ -1246,19 +1235,19 @@ describe('Pools draws one classification in its table and its cards (CP-14)', ()
    */
   it('draws a pool at a ceiling of 0 with a measured track in its chip’s tone, never the not-measured hatch', async () => {
     renderCapacity(board())
-    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }))
+    await screen.findByText('Global')
     for (const [name, tone] of [
       ['resource:browser', 'is-paused'],
       ['provider:anthropic:tenant:eng', 'is-bad'],
     ] as const) {
-      const tile = poolCard(name)
+      const tile = familyRow(name)
       const track = tile.querySelector('.ctl-util-track')
       expect(track, `${name} draws no track`).not.toBeNull()
       expect(track!.className, `${name}: a ceiling that was read is drawn as not measured`).not.toContain('is-unknown')
       expect(tile.querySelector(`.ctl-util-fill.${tone}`), `${name}: the track does not take its chip’s ${tone}`).not.toBeNull()
     }
     // Control: the healthy tile's track is a plain measured fill.
-    expect(poolCard('global').querySelector('.ctl-util-track.is-unknown')).toBeNull()
+    expect(familyRow('global').querySelector('.ctl-util-track.is-unknown')).toBeNull()
   })
 })
 

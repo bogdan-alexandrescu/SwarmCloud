@@ -1358,6 +1358,13 @@ export interface RuntimeTopology {
   /** null means the capacity read FAILED. An empty array means there are none. */
   pools: Pool[] | null
   poolsDetail: string | null
+  /**
+   * The pools each runtime must clear, by runner-profile name: the same
+   * `/v1/capacity` read's `runner_profiles[name].pools`, which the server
+   * builds with `pool_names_for` for the calling tenant. Absent or null when
+   * that read failed -- never rebuilt here from a naming rule.
+   */
+  profilePools?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1385,6 +1392,11 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
     data: {
       runtimes: runtimes.data.runtimes,
       pools: poolsOk ? capacity.data.pools : null,
+      profilePools: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
       poolsDetail: poolsOk
         ? null
         : capacity.status === 'error'

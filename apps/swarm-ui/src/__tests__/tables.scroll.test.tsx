@@ -193,29 +193,24 @@ function board(accounts: Account[]): AccountsBoard {
   } as AccountsBoard
 }
 
-describe("CH-13: an expanded account's detail stays inside what the phone shows", () => {
-  it('holds the detail at the left of the scrolling table, one scrollport wide, and wraps its prose', async () => {
-    // MUTATION: drop the detail's sticky rule or its width, or let the
-    // held-column rule claim the detail's spanning cell again.
+describe("CH-13: a chosen account's detail stays inside what the phone shows", () => {
+  /**
+   * SPLIT VIEW RE-POINT (capacity.html §D, decided 2026-10-01). The detail was
+   * a row spanning the 909px scrolling table, held at the scrollport's left by
+   * a sticky rule. It is now the pane beside the list, so the property this
+   * guarded -- the detail never scrolls away with the table's columns -- holds
+   * by construction: the detail is not inside the scroller at all.
+   * MUTATION: render the detail back inside the table as a spanning row.
+   */
+  it('draws the detail beside the scrolling table, never inside it', async () => {
     api.loadAccountsBoard.mockResolvedValue(ok(board([account()])))
     render(<AccountsScreen />)
     const open = await screen.findByRole('button', { name: /laptop/ }, WAIT)
     if (open.getAttribute('aria-expanded') !== 'true') fireEvent.click(open)
 
-    const cell = document.querySelector('.table-wrap.is-scroll tr.acct-detail-row > td[colspan]')
-    expect(cell, 'the account did not open into a detail row').not.toBeNull()
-    // The spanning cell is not the held column: a 909px sticky cell covers
-    // the scrollport at every offset.
-    expect(painted(cell!, 'position', PHONE), 'the detail row became the held column').not.toBe('sticky')
-
-    const detail = cell!.querySelector('.acct-detail')!
-    expect(detail, 'no .acct-detail').not.toBeNull()
-    expect(painted(detail, 'position', PHONE), 'the detail scrolls away with the columns').toBe('sticky')
-    expect(painted(detail, 'left', PHONE)).toBe('0')
-    // One scrollport wide: the viewport less the page's two gutters and the
-    // wrapper's two 1px borders. MUTATION: any width that is not the scrollport.
-    expect(painted(detail, 'width', PHONE)).toBe('calc(100vw - 2 * var(--app-pad) - 2px)')
-    // `table.pools td` is nowrap and a cell's descendants inherit it.
-    expect(painted(detail, 'white-space', PHONE), 'the detail prose is one line per sentence').toBe('normal')
+    const detail = document.querySelector('.acct-pane .acct-detail')
+    expect(detail, 'the chosen account drew no detail in the pane').not.toBeNull()
+    expect(detail!.closest('.table-wrap'), 'the detail is inside the scrolling table').toBeNull()
+    expect(document.querySelector('tr.acct-detail-row'), 'a spanning detail row came back').toBeNull()
   })
 })

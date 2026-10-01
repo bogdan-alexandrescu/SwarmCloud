@@ -154,7 +154,7 @@ function Topology({ data }: { data: RuntimeTopology }) {
 
       <div className="ctl-cards">
         {runtimes.map((r) => (
-          <RuntimeCard key={r.name} runtime={r} all={runtimes} />
+          <RuntimeCard key={r.name} runtime={r} all={runtimes} pools={poolsOf(data, r.name)} />
         ))}
       </div>
 
@@ -523,7 +523,29 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   return facts
 }
 
-function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
+/**
+ * The pools a runtime must clear, as the capacity read's runner profile lists
+ * them (`pool_names_for`, the calling tenant's): an array, `null` when that
+ * read failed, or `undefined` when the response carries no list for this name.
+ * Never rebuilt from a naming rule here -- that would be a second copy of the
+ * contract's pool naming, which is how drift starts.
+ */
+function poolsOf(data: RuntimeTopology, name: string): string[] | null | undefined {
+  if (data.profilePools === undefined) return undefined
+  if (data.profilePools === null) return null
+  return data.profilePools[name]
+}
+
+function RuntimeCard({
+  runtime,
+  all,
+  pools,
+}: {
+  runtime: Runtime
+  all: Runtime[]
+  /** See `poolsOf`. */
+  pools: string[] | null | undefined
+}) {
   const facts = distinguishing(runtime, all)
   // A profile that let the platform choose is the case this exists for: the
   // declared value and the resolved one then answer different questions, and
@@ -649,6 +671,27 @@ function RuntimeCard({ runtime, all }: { runtime: Runtime; all: Runtime[] }) {
             <Credential runtime={runtime} />
           </li>
         </ul>
+
+        {/* POOLS IT MUST CLEAR (capacity.html §C, decided 2026-10-01). A task
+            of this runtime is admitted only when every one of these has room,
+            all at once, so this is the list to read when it does not start.
+            Each one links to the Ceilings table that draws it. */}
+        {pools !== undefined && (
+          <div className="rt-pools">
+            <span className="ctl-eyebrow">Pools it must clear</span>
+            {pools === null ? (
+              <span className="ctl-mark is-unread" title="The capacity read failed, so the pools this runtime clears are not known.">not read</span>
+            ) : (
+              <span className="rt-pool-chips">
+                {pools.map((p) => (
+                  <a key={p} className="rt-pool-chip mono" href="#capacity/pools" title={p}>
+                    {p}
+                  </a>
+                ))}
+              </span>
+            )}
+          </div>
+        )}
 
         <div className="rt-apart">
           {/* "Sets it apart FROM THE REST OF THE CATALOGUE" is what the `?`

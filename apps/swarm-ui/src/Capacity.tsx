@@ -1,8 +1,8 @@
-import { useState } from 'react'
 import { loadCapacity } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
+import { POOLS_POLL_MS } from './capacityPoll'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import { blockerVerdict, classUnits, headroomFigure, useResourceClasses, verdictCopy, verdictNeedsAPerson } from './Blockers'
@@ -22,7 +22,6 @@ import {
   type Capacity,
   type Headroom,
   type Pool,
-  type PoolKind,
 } from './types'
 
 /**
@@ -70,8 +69,6 @@ import {
  * `#help/absent-vs-zero`, which is where they were already written down.
  */
 export function CapacityScreen() {
-  const [asTable, setAsTable] = useState(true)
-
   return (
     <Screen
       // "Pools", not "Capacity". The tab that leads here says Pools, the
@@ -82,6 +79,9 @@ export function CapacityScreen() {
       // OBJECTS, not the question they answer) decides which side gives way.
       title="Pools"
       load={loadCapacity}
+      // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
+      // pauses the timer while the tab is hidden.
+      pollMs={POOLS_POLL_MS}
       summary={(d) => {
         const paused = d.pools.filter(isPaused).length
         const over = d.pools.filter(overCeiling).length
@@ -109,34 +109,13 @@ export function CapacityScreen() {
         <>
           <Headroom capacity={d} />
 
-          {/* §6.11: THE ONLY CHROME A DATA SCREEN GETS ABOVE ITS CONTENT. The
-              toggle was a pair of bare buttons under a paragraph; it is now
-              the segmented control, right-aligned, with no words around it.
-              It is promoted above every family rather than sitting between
-              two of them, because it governs all of them. */}
-          <div className="ctl-toolbar">
-            <span className="ctl-eyebrow cap-eyebrow">Pools by family</span>
-            <div className="ctl-seg is-end">
-              <button type="button" aria-pressed={asTable} onClick={() => setAsTable(true)}>
-                Table
-              </button>
-              <button type="button" aria-pressed={!asTable} onClick={() => setAsTable(false)}>
-                Cards
-              </button>
-            </div>
-          </div>
-
-          <div className="cap-families">
-            {POOL_FAMILY_ORDER.map((kind) => {
-              const pools = d.pools
-                .filter((p) => poolKind(p.name) === kind)
-                .sort((a, b) => a.name.localeCompare(b.name))
-              if (pools.length === 0) return null
-              return (
-                <Family key={kind} kind={kind} pools={pools} asTable={asTable} viewer={viewerOf(d)} />
-              )
-            })}
-          </div>
+          {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
+              one table per family, with a "Needs a look" group ahead of them
+              holding every pool that is full, over its ceiling, at limit 0,
+              paused or lowered below its configured limit. A pool appears
+              once: the top group takes it out of its family. The Cards view
+              was the alternative set aside and is gone. */}
+          <CeilingTables pools={d.pools} viewer={viewerOf(d)} />
 
           <HelpLinks topics={CAPACITY_TOPICS} />
         </>
@@ -438,15 +417,46 @@ function HeldBackBy({ h, units }: { h: Headroom; units: number | null }) {
   )
 }
 
+/**
+ * True when a pool belongs in "Needs a look": anything the classification
+ * marks (paused, over ceiling, limit 0, full), or a ceiling lowered below its
+ * configured limit by AIMD or by provider quota (#125).
+ */
+export function needsALook(pool: Pool): boolean {
+  return classifyPool(pool).row !== undefined || pool.effective_limit < pool.hard_limit
+}
+
+/**
+ * The Ceilings tab: "Needs a look" first, then one table per family, each
+ * holding only the pools the top group did not take.
+ */
+function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
+  const byName = (a: Pool, b: Pool) => a.name.localeCompare(b.name)
+  const look = pools.filter(needsALook).sort(byName)
+  const rest = pools.filter((p) => !needsALook(p))
+  return (
+    <div className="cap-families">
+      {look.length > 0 && (
+        <Family title={`Needs a look · ${look.length}`} className="cap-needs" pools={look} viewer={viewer} />
+      )}
+      {POOL_FAMILY_ORDER.map((kind) => {
+        const family = rest.filter((p) => poolKind(p.name) === kind).sort(byName)
+        if (family.length === 0) return null
+        return <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} />
+      })}
+    </div>
+  )
+}
+
 function Family({
-  kind,
+  title,
+  className,
   pools,
-  asTable,
   viewer,
 }: {
-  kind: PoolKind
+  title: string
+  className?: string
   pools: Pool[]
-  asTable: boolean
   /** The tenant this read is scoped to, for the rows' `this tenant`. */
   viewer: string | undefined
 }) {
@@ -457,26 +467,19 @@ function Family({
   // every tenant's pool for an admin, and Providers holds the shared pool
   // beside per-tenant slices. The note is removed, as the owner decided.
   return (
-    <section className="ctl-card">
+    <section className={className === undefined ? 'ctl-card' : `ctl-card ${className}`}>
       <div className="ctl-card-head">
-        <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
+        <h2 className="ctl-card-title">{title}</h2>
       </div>
-      {asTable ? (
-        <div className="ctl-card-body is-flush">
-          <PoolTable pools={pools} viewer={viewer} />
-        </div>
-      ) : (
-        <div className="ctl-card-body">
-          <div className="cap-pool-grid">
-            {pools.map((p) => (
-              <PoolCard key={p.name} pool={p} scope={scopeWord(p.name, viewer)} />
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="ctl-card-body is-flush">
+        <PoolTable pools={pools} viewer={viewer} />
+      </div>
     </section>
   )
 }
+
+const LEASED = 'Leased (units)'
+const CEILING = 'Ceiling (units)'
 
 function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
   return (
@@ -490,21 +493,18 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
                 this screen a row's numbers may be compared with. */}
             <th role="columnheader" scope="col">Scope</th>
             {/* "units", never "agents". Trap A: admission increments by the
-                resource class's units (1, 2 or 4), so active: 8 may be two
-                large agents or eight standard ones. §8.4(3) again: the caveat
-                is in the column name, where it cannot be scrolled away from
-                the figures it governs. B7.4 deleted the `?` that repeated it --
-                the parenthetical IS the caveat, and it is already in the one
-                place a reader cannot scroll past it. */}
-            <th role="columnheader" scope="col" className="is-num">In use (units)</th>
-            {/* THE CEILING IS UNITS TOO, and it says so (CP-24). This column
-                was bare while Pool limits wrote `Ceiling (units)` and a bare
-                `In use` -- the same two figures, each screen labelling the
-                other half. Both now say it on both. */}
-            <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
-            <th role="columnheader" scope="col" className="is-num">Headroom</th>
+                resource class's units (1, 2 or 4), so 8 leased may be two
+                large agents or eight standard ones. The caveat is in the
+                column name, where it cannot be scrolled away from the
+                figures it governs. "Leased" because concurrency counts from
+                LEASED (invariant 3), not from RUNNING. */}
+            <th role="columnheader" scope="col" className="is-num">{LEASED}</th>
+            {/* THE CEILING IS UNITS TOO, and it says so (CP-24). */}
+            <th role="columnheader" scope="col" className="is-num">{CEILING}</th>
+            <th role="columnheader" scope="col">Use</th>
+            <th role="columnheader" scope="col">State</th>
             <th role="columnheader" scope="col">Set by</th>
-            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col" aria-label="Links" />
           </tr>
         </thead>
         <tbody role="rowgroup">
@@ -520,6 +520,13 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
 function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
   const marks = classifyPool(pool)
   const by = setBy(pool)
+  const limit = pool.effective_limit
+  // UNROUNDED for the track: 1 unit of 300 is 0.3%, and rounding it to 0
+  // would hand the track a measured zero for a pool that holds something. A
+  // ceiling of 0 leaves no room at all, so the track is full in the
+  // classification's tone (#159 review of CP-14), never the not-measured hatch.
+  const pct = limit > 0 ? Math.min(100, (pool.active / limit) * 100) : 100
+  const shown = limit > 0 ? `${Math.round((pool.active / limit) * 100)}%` : 'no room'
 
   return (
     <tr role="row" className={marks.row}>
@@ -528,21 +535,44 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="Scope">{scope}</td>
-      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
-      <td role="cell" data-label="Ceiling (units)" className="is-num">
-        {pool.effective_limit}
-        {pool.effective_limit < pool.hard_limit && (
+      <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
+      <td role="cell" data-label={CEILING} className="is-num">
+        {limit}
+        {limit < pool.hard_limit && (
           <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
             /{pool.hard_limit}
           </span>
         )}
       </td>
-      <td role="cell" data-label="Headroom" className="is-num">{pool.available}</td>
-      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
-      <td role="cell" data-label="Status">
+      <td role="cell" data-label="Use">
+        <span className="cap-use">
+          <UtilTrack
+            pct={pct}
+            tone={marks.track}
+            meter={{
+              label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units leased`,
+              now: pool.active,
+              max: limit,
+            }}
+          />
+          <span className="cap-use-pct">{shown}</span>
+        </span>
+      </td>
+      <td role="cell" data-label="State">
         <span className="cap-marks">
           <PoolMarks marks={marks} />
         </span>
+      </td>
+      {/* SET BY ONLY WHEN IT IS NOT "configured" (#125): the configured limit
+          is what applies to almost every row, and a column repeating it hid
+          the two rows where AIMD or quota had lowered it. */}
+      <td role="cell" data-label="Set by" title={by.detail}>
+        {by.term === 'configured' ? '' : by.term}
+      </td>
+      <td role="cell" data-label="Links" className="cap-links">
+        <a className="ctl-link" href="#capacity/holders">holders</a>
+        {' · '}
+        <a className="ctl-link" href="#admin/limits">limit</a>
       </td>
     </tr>
   )
@@ -643,75 +673,6 @@ function PoolMarks({ marks }: { marks: PoolClass }) {
         </span>
       ))}
     </>
-  )
-}
-
-/**
- * One pool as a card: the proportion IS the card, so the figure gets the
- * figure tier (§6.3) rather than sitting at body size under a 30px number
- * that says the same thing.
- */
-function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
-  const limit = pool.effective_limit
-  const ratio = limit > 0 ? Math.min(1, pool.active / limit) : 0
-  const marks = classifyPool(pool)
-
-  return (
-    <div className="cap-pool">
-      <span className="cap-pool-name" title={pool.name}>
-        {poolLabel(pool.name)}
-      </span>
-
-      <b className="ctl-figure cap-pool-figure">
-        {pool.active}
-        {/* `/ 0` FOR A CEILING OF ZERO, not "no ceiling" (CP-14). A pool at 0
-            has a ceiling, and it is zero -- the `limit 0` mark below says so,
-            and a unit reading "no ceiling" beside it contradicted the mark. */}
-        <span className="ctl-figure-unit">{`/ ${limit}`}</span>
-      </b>
-
-      {/* THE ONE TRACK (§6.4), and it is the shared one (./primitives.tsx):
-          this card drew its own until the tracks were collapsed. A measured
-          nought draws the origin tick, which is what makes it different from
-          a widget that failed to paint.
-
-          NEVER THE NOT-MEASURED HATCH ON THIS CARD (#159 review of CP-14).
-          Every pool here carries an `effective_limit` the read returned, so
-          there is no unread ceiling for the hatch to stand for. It used to
-          pass `null` for a ceiling of 0, and the shared track drew that as
-          `is-unknown` beside `/ 0` and a `limit 0` mark, which say the
-          ceiling WAS read, and ignored the tone that mark carries. A ceiling
-          of 0 leaves no room at all, so the track is drawn full, in the
-          classification's tone: paused when a person set it, bad when quota
-          zeroed it -- the same answer as the chip beside it.
-
-          HELD AT 100, as it always was: an over-ceiling pool is said by the
-          `over ceiling` chip beside the track and by the bad fill, not by an
-          overflow segment. And UNROUNDED, which it was not: 1 unit of 300 is
-          0.3%, and rounding it to 0 would have handed the track a measured
-          zero for a pool that has something in it. */}
-      {/* THE TONE IS THE CLASSIFICATION'S (CP-14), so the track says what
-          the chip and the table's row say: a full pool is warn here too, not
-          bad, and there is no 80% band of this card's own. */}
-      <UtilTrack
-        pct={limit > 0 ? ratio * 100 : 100}
-        tone={marks.track}
-        meter={{
-          /* "units", not "agents": admission counts weighted units, so 8 may
-             be two large agents or eight standard ones. */
-          label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`,
-          now: pool.active,
-          max: limit,
-        }}
-      />
-
-      {/* The scope first, then the same marks the table draws -- `ok`
-          included, which this card used to leave out (CP-2, CP-14). */}
-      <span className="cap-marks">
-        <span className="cap-pool-scope">{scope}</span>
-        <PoolMarks marks={marks} />
-      </span>
-    </div>
   )
 }
 
