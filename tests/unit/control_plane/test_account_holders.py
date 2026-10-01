@@ -114,6 +114,9 @@ class FakeBroker:
             SOLO: {"account_id": SOLO, "owner_tenant": "eng", "lend_to": []},
         }
         self.calls: list[tuple] = []
+        #: When set, `hold_history` answers from it by the cursor asked for
+        #: (None for the first page) instead of from SPANS.
+        self.history_script: dict[str | None, dict] | None = None
 
     def list_accounts(self, tenant_id: str) -> dict:
         return {"accounts": [
@@ -128,6 +131,11 @@ class FakeBroker:
 
     def hold_history(self, account_id: str, *, start, end, cursor) -> dict:
         self.calls.append(("hold_history", account_id, start, end, cursor))
+        if self.history_script is not None:
+            page = self.history_script[cursor]
+            return {"account_id": account_id, "from": start or "", "to": end or "",
+                    "spans": [dict(s) for s in page["spans"]],
+                    "next_cursor": page["next_cursor"]}
         return {"account_id": account_id, "from": start or _iso(NOW - timedelta(days=7)),
                 "to": end or _iso(NOW), "spans": [dict(s) for s in SPANS[account_id]],
                 "next_cursor": "2026-09-30T12:00:00+00:00|1"}
@@ -239,16 +247,97 @@ def test_the_admin_sees_every_hold_with_the_unverified_claim_flagged(client):
     }
 
 
-def test_history_anonymises_others_by_viewer(client):
+def test_history_owner_keeps_per_span_detail_with_the_borrowing_tenant(client):
     owner = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice")).json()
-    borrower = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
 
     theirs = [s for s in owner["spans"] if not s["mine"]]
     assert {s["tenant"] for s in theirs} == {"research"}
     assert all("task_id" not in s for s in theirs)
-    others = [s for s in borrower["spans"] if not s["mine"]]
-    assert others and all(set(s) == {"since", "until", "end", "mine"} for s in others)
+    assert all(s["since"] and "until" in s and "end" in s for s in theirs)
+    assert {s["end"] for s in theirs} == {"released", "unusable"}
     assert owner["next_cursor"] == "2026-09-30T12:00:00+00:00|1"
+
+
+def _row(tenant: str, task: str, *, hours_ago: int, end: str | None = "released") -> dict:
+    return _span(tenant, task, hours_ago=hours_ago, end=end)
+
+
+def _everything_foreign_to_research(rows: list[dict]) -> list[str]:
+    """Every timestamp string another tenant's rows carry."""
+    out: list[str] = []
+    for r in rows:
+        if r["tenant_id"] != "research":
+            out += [r[k] for k in ("assigned_at", "released_at", "hold_expires_at") if r[k]]
+    return out
+
+
+def test_a_borrower_is_served_none_of_another_tenants_times_or_ends(client, broker):
+    rows = [_row("research", "research-task-1", hours_ago=1),
+            _row("eng", "eng-task-1", hours_ago=3),
+            _row("eng", "eng-task-2", hours_ago=4, end="unusable")]
+    # The broker's cursor points at the LAST row of the page: an eng row.
+    last = rows[-1]["assigned_at"]
+    broker.history_script = {None: {"spans": rows, "next_cursor": f"{last}|1"}}
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    text = json.dumps(body)
+    for stamp in _everything_foreign_to_research(rows):
+        assert stamp not in text, f"another tenant's timestamp {stamp} reached the borrower"
+    assert "unusable" not in text
+    assert [s["mine"] for s in body["spans"]] == [True]
+    assert all(set(s) <= {"since", "until", "end", "mine", "recorded", "verified",
+                          "task_id", "attempt"} for s in body["spans"])
+    assert body["others"] == 0
+
+
+def test_a_borrowers_cursor_points_only_at_its_own_row(client, broker):
+    rows = [_row("research", "research-task-1", hours_ago=1),
+            _row("eng", "eng-task-1", hours_ago=3)]
+    broker.history_script = {None: {"spans": rows, "next_cursor": f"{rows[-1]['assigned_at']}|1"}}
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    assert body["next_cursor"] == f"{rows[0]['assigned_at']}|1"
+
+
+def test_a_borrower_counts_the_others_in_the_window_and_pages_past_them(client, broker):
+    page1 = [_row("eng", "eng-task-1", hours_ago=1), _row("eng", "eng-task-2", hours_ago=2)]
+    page2 = [_row("eng", "eng-task-3", hours_ago=3, end="unusable"),
+             _row("research", "research-task-1", hours_ago=4)]
+    broker.history_script = {
+        None: {"spans": page1, "next_cursor": f"{page1[-1]['assigned_at']}|1"},
+        f"{page1[-1]['assigned_at']}|1": {"spans": page2, "next_cursor": None},
+    }
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    assert len(body["spans"]) == 1 and body["spans"][0]["mine"] is True
+    assert body["others"] == 3
+    assert body["next_cursor"] is None
+    text = json.dumps(body)
+    for stamp in _everything_foreign_to_research(page1 + page2):
+        assert stamp not in text
+
+
+def test_the_owner_is_still_served_borrower_spans_with_the_tenant_name(client, broker):
+    rows = [_row("research", "research-task-1", hours_ago=1, end="unusable"),
+            _row("eng", "eng-task-1", hours_ago=3)]
+    broker.history_script = {None: {"spans": rows, "next_cursor": None}}
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice")).json()
+
+    theirs = [s for s in body["spans"] if not s["mine"]]
+    assert [(s["tenant"], s["end"]) for s in theirs] == [("research", "unusable")]
+    assert theirs[0]["since"] and theirs[0]["until"]
+
+
+def test_an_oversized_cursor_is_a_422_before_the_broker_is_asked(client, broker):
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
+                          params={"cursor": "2026-09-30T12:00:00+00:00|" + "9" * 50})
+
+    assert response.status_code == 422
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
 
 
 def test_an_open_span_past_its_deadline_is_served_as_expired(client):
@@ -261,10 +350,10 @@ def test_an_open_span_past_its_deadline_is_served_as_expired(client):
 def test_history_passes_the_window_through_to_the_broker(client, broker):
     client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
                params={"from": "2026-09-29T00:00:00Z", "to": "2026-09-30T00:00:00Z",
-                       "cursor": "c|1"})
+                       "cursor": "2026-09-30T00:00:00Z|1"})
 
     assert ("hold_history", SHARED, "2026-09-29T00:00:00Z",
-            "2026-09-30T00:00:00Z", "c|1") in broker.calls
+            "2026-09-30T00:00:00Z", "2026-09-30T00:00:00Z|1") in broker.calls
 
 
 def test_an_empty_history_is_an_empty_list_not_an_error(client):

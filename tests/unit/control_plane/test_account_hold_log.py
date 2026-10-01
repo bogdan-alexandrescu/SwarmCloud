@@ -368,6 +368,93 @@ def test_history_pages_without_losing_spans_that_share_an_instant(client, db):
     assert sorted(seen) == ["t0", "t1", "t2"]
 
 
+def _history(client, **params):
+    return client.get(f"/v1/accounts/{ACCOUNT}/holds/history", params=params)
+
+
+_WINDOW = {"from": "2026-09-29T00:00:00+00:00", "to": "2026-10-01T00:00:00+00:00"}
+_AT = "2026-09-30T12:00:00+00:00"
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [
+        f"{_AT}|" + "9" * 50,        # a forged skip: 10**50 - 1
+        f"{_AT}|2147483648",         # one past int32
+        f"{_AT}|501",                # one past HISTORY_PAGE_MAX
+        f"{_AT}|abc",                # not a number
+        f"{_AT}|-1",
+        f"{_AT}|\u0663",            # an Arabic-Indic digit: isdigit() but not ASCII
+        f"{_AT}|",
+        "no-separator",
+        "not-a-time|1",
+    ],
+)
+def test_a_malformed_or_oversized_cursor_is_a_422_never_a_500(client, db, cursor):
+    """The cursor's skip count used to size the Firestore read
+    (`limit + skip + 1`), so a forged one read an account's whole hold log, and
+    past int32 it was an unhandled 500."""
+    client.identity.as_platform()
+
+    response = _history(client, cursor=cursor, **_WINDOW)
+
+    assert response.status_code == 422, (cursor, response.status_code, response.text[:200])
+
+
+def test_a_window_longer_than_the_retention_is_a_422(client, db):
+    """No record outlives HOLD_LOG_RETENTION (90 days); a longer window can
+    only be a scan of everything."""
+    client.identity.as_platform()
+
+    over = _history(client, **{"from": "2026-01-01T00:00:00+00:00", "to": "2026-09-30T00:00:00+00:00"})
+    exact = _history(client, **{"from": "2026-07-02T00:00:00+00:00", "to": "2026-09-30T00:00:00+00:00"})
+
+    assert over.status_code == 422, over.text[:200]
+    assert exact.status_code == 200, exact.text[:200]
+
+
+def test_a_from_older_than_the_retention_with_no_to_is_a_422(client, db):
+    client.identity.as_platform()
+
+    response = _history(client, **{"from": "2020-01-01T00:00:00+00:00"})
+
+    assert response.status_code == 422, response.text[:200]
+
+
+def test_history_returns_every_row_exactly_once_across_pages_with_shared_instants(client, db):
+    """Seven spans, four sharing one instant, two sharing another, paged three
+    at a time: every row once, none twice, in newest-first order."""
+    base = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    instants = [base] * 4 + [base - timedelta(minutes=5)] * 2 + [base - timedelta(minutes=9)]
+    for i, at in enumerate(instants):
+        db.docs[f"{HOLD_LOG_COLLECTION}/h{i}"] = {
+            "account_id": ACCOUNT, "tenant_id": ENG, "task_id": f"t{i}",
+            "attempt_id": None, "assigned_at": at, "released_at": None,
+            "end": None, "hold_expires_at": at + DEFAULT_HOLD_TTL,
+            "expires_at": at + HOLD_LOG_RETENTION,
+        }
+    client.identity.as_platform()
+
+    seen: list[str] = []
+    cursor = None
+    pages = 0
+    while pages < 10:
+        params = {"limit": 3, **_WINDOW}
+        if cursor:
+            params["cursor"] = cursor
+        response = _history(client, **params)
+        assert response.status_code == 200, response.text[:200]
+        body = response.json()
+        seen.extend(s["task_id"] for s in body["spans"])
+        cursor = body["next_cursor"]
+        pages += 1
+        if cursor is None:
+            break
+
+    assert sorted(seen) == [f"t{i}" for i in range(7)], seen
+    assert len(seen) == len(set(seen)) == 7
+
+
 def test_history_is_scoped_to_the_account_and_the_window(client, db):
     inside = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
     for doc_id, account_id, at in [
