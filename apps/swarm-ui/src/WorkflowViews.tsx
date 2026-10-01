@@ -874,7 +874,6 @@ function scrubKeys(prev: (() => void) | null, next: (() => void) | null) {
 export function StepInspector({
   workflowId,
   workflowLabel = null,
-  workflowStarted = null,
   row,
   taskState,
   siblings,
@@ -894,12 +893,6 @@ export function StepInspector({
    * with no label draws the id alone.
    */
   workflowLabel?: string | null
-  /**
-   * The workflow's start, derived from its earliest step (#376), and its
-   * submit time, as `workflowStartText` prints them. OPTIONAL: a caller with
-   * no step tasks to derive it from draws the head without it.
-   */
-  workflowStarted?: { text: string; title: string; submitted: string; submittedTitle: string } | null
   row: StepRowModel
   /**
    * The step's task's state, or null when the task was not in the read. With
@@ -999,13 +992,6 @@ export function StepInspector({
           )}
           <Id title={workflowId}>{workflowId}</Id>
         </span>
-        {/* THE WORKFLOW'S START AND SUBMIT (#376), on their own line under
-            its name: derived from the earliest step, as the row prints it. */}
-        {workflowStarted !== null && (
-          <span className="wf-inspect-times" title={workflowStarted.title}>
-            started {workflowStarted.text} · sub {workflowStarted.submitted}
-          </span>
-        )}
         <i className={row.look.dot} aria-hidden />
         <span className="wf-inspect-id">{row.step.step_id}</span>
         <span className="wf-inspect-state" title={row.look.title}>
