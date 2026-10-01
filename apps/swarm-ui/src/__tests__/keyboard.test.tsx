@@ -55,6 +55,7 @@ import {
   type Finding,
 } from './keyboard'
 import { resolveSheet } from './spaceprobe'
+import { PANEL_PAGES } from '../Spine'
 
 /**
  * Every route the rail can reach, DERIVED rather than restated.
@@ -202,6 +203,45 @@ function helpTriggersInSource(): number {
   return n
 }
 
+/**
+ * The shell's controls on one rendered route, read off the shell itself.
+ *
+ * `all` is what the shell drew; `reachable` is the part of it that should be
+ * a Tab stop. The two differ only for the panel's locked Admin rows, which a
+ * non-admin is shown DISABLED on purpose (Spine.tsx: a hidden page is
+ * indistinguishable from one that does not exist) and which are therefore not
+ * stops.
+ */
+function shellControls(root: Element): Record<string, { all: Element[]; reachable: Element[] }> {
+  const spine = root.querySelector('.sk-spine')
+  const panel = root.querySelector('.sk-panel')
+  const of = (els: Element[]) => ({ all: els, reachable: els })
+  const pages = panel === null ? [] : [...panel.querySelectorAll('.sk-pscroll button')]
+  return {
+    'spine section': of(spine === null ? [] : [...spine.querySelectorAll(':scope > button.sk-ri:not(.sk-cta)')]),
+    'Submit button': of(spine === null ? [] : [...spine.querySelectorAll(':scope > button.sk-cta')]),
+    'panel page': { all: pages, reachable: pages.filter((el) => !(el as HTMLButtonElement).disabled) },
+    'footer control': of([
+      ...(spine === null ? [] : [...spine.querySelectorAll('.sk-foot button')]),
+      ...(panel === null ? [] : [...panel.querySelectorAll('.sk-ph button, .sk-pfoot button')]),
+    ]),
+  }
+}
+
+/**
+ * The panel pages its model names that the rendered panel does not draw. The
+ * panel renders `PANEL_PAGES[section]` for Work, Capacity and Admin; the
+ * section is read off the panel's own title, so this holds the rendered rows
+ * to the model rather than to a count.
+ */
+function panelModelMissing(root: Element): string[] {
+  const title = (root.querySelector('.sk-panel .sk-pt')?.textContent ?? '').trim()
+  const sec = title === 'Work' ? 'work' : title === 'Capacity' ? 'capacity' : title === 'Admin' ? 'admin' : null
+  if (sec === null) return []
+  const drawn = new Set([...root.querySelectorAll('.sk-panel .sk-pk .sk-pl')].map((el) => (el.textContent ?? '').trim()))
+  return PANEL_PAGES[sec].map((p) => p.label).filter((label) => !drawn.has(label))
+}
+
 let sheet: HTMLStyleElement
 
 describe('keyboard traversal', () => {
@@ -290,6 +330,8 @@ describe('keyboard traversal', () => {
     const findings: Finding[] = []
     const unsupported = new Set<string>()
     const swallowers: string[] = []
+    const shellRendered: { route: string; what: string; count: number }[] = []
+    const shellMissing: string[] = []
     let stops = 0
     let ringed = 0
     let helps = 0
@@ -315,6 +357,18 @@ describe('keyboard traversal', () => {
       })
       findings.push(...r.findings.map((f) => ({ ...f, where: `${route} ${f.where}` })))
       for (const u of r.unsupported) unsupported.add(u)
+
+      // EVERY SHELL CONTROL IS A TAB STOP: each spine section, the Submit
+      // button, each panel page and the footer controls (the spine's Help and
+      // API reads, the panel's collapse and the theme switch).
+      const stopSet = new Set<Element>(r.stopElements)
+      for (const [what, group] of Object.entries(shellControls(container))) {
+        shellRendered.push({ route, what, count: group.all.length })
+        for (const el of group.reachable) {
+          if (!stopSet.has(el)) shellMissing.push(`${route} ${what}: ${signature(el)} "${(el.textContent ?? '').trim()}"`)
+        }
+      }
+      for (const label of panelModelMissing(container)) shellMissing.push(`${route} panel page not rendered: ${label}`)
       stops += r.stops
       ringed += r.ringed
 
@@ -396,6 +450,7 @@ describe('keyboard traversal', () => {
         ),
         ...findings.map((f) => `    ${f.kind} ${f.where} — ${f.detail}`),
         ...swallowers.map((s) => `    swallowed Tab: ${s}`),
+        ...shellMissing.map((s) => `    shell control not reached: ${s}`),
         ...[...unsupported].map((s) => `    unsupported selector: ${s}`),
       ].join('\n'),
     )
@@ -407,18 +462,17 @@ describe('keyboard traversal', () => {
     expect(per.length, 'the sweep rendered a different number of routes than the rail has').toBe(
       ROUTES.length,
     )
-    for (const p of per) {
-      // The Sky spine alone is more than ten stops on every route -- its seven
-      // buttons (Submit, the four sections, Help, API reads), the collapse and
-      // the theme switch, before the open section's pages in the panel. The old
-      // rail was 20 (4 sections + 14 tabs + 2 utility); the spine folded the
-      // tabs into a panel that lists one section's pages, so Admin as a
-      // non-admin -- three disabled rows and a locked screen -- measured 17.
-      // This proves the SHELL rendered rather than the screen. What notices a
-      // screen going empty is the total below and the per-route numbers in the
-      // log.
-      expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(10)
+    // THE SHELL'S OWN STOPS, EACH ONE, NOT A COUNT (owner decision 2026-10-01).
+    // This was `p.stops > 10` per route: a floor any ten controls cleared, so
+    // a spine section, a panel page or the theme switch could drop out of the
+    // Tab order and the floor still held. The property is that every one of
+    // them is a stop, and the list is read off the shell each route rendered
+    // (and the panel's against `PANEL_PAGES`, the model it renders from), so
+    // no count is written here to go stale.
+    for (const s of shellRendered) {
+      expect(s.count, `${s.route}: the shell rendered no ${s.what}`).toBeGreaterThan(0)
     }
+    expect(shellMissing, 'shell controls the Tab order does not reach').toEqual([])
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)
 
     // EVERY CARD FOUND WAS EXERCISED. Not a threshold on how many exist -- see
