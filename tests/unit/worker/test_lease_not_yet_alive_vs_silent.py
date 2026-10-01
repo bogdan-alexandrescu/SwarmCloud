@@ -6,8 +6,9 @@ window between admission and the worker's first control-plane write BOTH
 liveness clocks -- `heartbeat_grace_seconds` (90) and `expires_at`
 (`created_at + lease_timeout_seconds`, 120) -- are really measuring how long
 the dispatch has been in flight. That is what `dispatch_deadline`
-(`created_at + dispatch_timeout_seconds`, 300) exists to measure, and the two
-answers disagree by 180 seconds.
+(`created_at + dispatch_timeout_seconds`, 300 when this was written, 480 since
+contract request 37) exists to measure, and the two answers disagreed by 180
+seconds.
 
 MEASURED, 2026-09-22, from the live Firestore event streams in
 saga-agents-staging: `dispatched` -> `starting` (the worker's first

@@ -124,7 +124,7 @@ DNS_PREFLIGHT_BUDGET_SECONDS = 10.0
 #: THE WINDOW, `DNS_PREFLIGHT_WINDOW_SECONDS`, is the worst case: the last
 #: attempt starts at 30 s and uses its whole 10 s budget, 40 s in all. Lookups
 #: that fail at once give their verdict at 30 s. Both are inside the 30-45 s
-#: the owner asked for, and far inside the lease's 300 s dispatch deadline.
+#: the owner asked for, and far inside the lease's 480 s dispatch deadline.
 #: That matters: a worker that has not heartbeated is judged by that deadline
 #: alone, and the worker's own 78, with its cause, has to arrive before the
 #: reconciler reclaims the lease as silent.
@@ -233,17 +233,20 @@ FIRESTORE_STARTUP_CALL_SECONDS = 10.0
 #: THE WORST CASE, `CONTROL_PLANE_READ_WINDOW_SECONDS`, is every try hanging
 #: for its whole 10 s. Each attempt then costs 40 s and starts as soon as the
 #: one before it ends, or at its scheduled time if that is later, and the
-#: verdict comes at 200 s (it was 120 s). THIS NOW REACHES THE DISPATCH
-#: DEADLINE for slow cold starts. The lease's 300 s
-#: (`dispatch_timeout_seconds`, frozen in swarm_common) counts from dispatch,
-#: and on 2026-09-25 the incident's two executions started their workers 103 s
-#: and 195 s after dispatch. A worker that cold-started in 195 s and is still
-#: asking at 180 s is past the deadline. The reconciler then fences the
-#: attempt and stops the execution. That happens at 90 s too when the cold
-#: start is slower, and either way the attempt is lost where it used to be
-#: lost. A SIGTERM between attempts exits 143 at once having written nothing,
-#: as it does during a read. Nothing is written until the check passes,
-#: whichever comes first.
+#: verdict comes at 200 s (it was 120 s). THE DISPATCH DEADLINE WAS RAISED
+#: TO FIT IT. The lease's deadline (`dispatch_timeout_seconds`, frozen in
+#: swarm_common) counts from dispatch, and on 2026-09-25 the incident's two
+#: executions started their workers 103 s and 195 s after dispatch. At the
+#: old 300 s a worker that cold-started in 195 s and was still asking at 180 s
+#: was past the deadline and fenced. Contract request 37 (accepted by the
+#: owner 2026-09-30) made it 480 s: 195 + 200 + 60 s margin.
+#: tests/unit/worker/test_control_plane_read_retries.py holds the three
+#: numbers to each other. A cold start slower than about 274 s (480 - 200 - 6
+#: s from `Started` to the check) that also meets an API with no reply for
+#: the whole window is still fenced, and that attempt is lost where it used to
+#: be lost. A SIGTERM between attempts exits 143 at once having written
+#: nothing, as it does during a read. Nothing is written until the check
+#: passes, whichever comes first.
 #:
 #: NOT RETRIED: a refusal (78, `lifecycle._refusal_cause`), a fence (70) and a
 #: tenant mismatch (79). Each is an answer, and the next attempt would get the

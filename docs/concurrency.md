@@ -235,7 +235,7 @@ below the new ceiling. Draining is the deliberate, non-destructive shape — see
 
 | Setting | Default | What it protects |
 |---|---|---|
-| `dispatch_timeout_seconds` | 300 | A lease that never became an execution. The reconciler reclaims it. |
+| `dispatch_timeout_seconds` | 480 | A lease that never became an execution. The reconciler reclaims it. 480, not 300, since contract request 37: a 195 s cold start plus the worker's 200 s worst-case startup read has to fit inside it. |
 | `lease_timeout_seconds` | 120 | A worker that stopped heartbeating. |
 | `heartbeat_interval_seconds` | 30 | How often a live worker proves it. |
 

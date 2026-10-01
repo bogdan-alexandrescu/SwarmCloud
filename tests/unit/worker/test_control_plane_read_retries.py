@@ -69,8 +69,9 @@ DIRECT_VPC_STARTUP_DELAY_SECONDS = 60
 CONTROL_PLANE_READ_SPAN_SECONDS = 180
 
 #: The worst case (every try hanging its whole call timeout) the schedule may
-#: reach. Past it, more of the measured cold starts (103 and 195 s, dispatch to
-#: worker) would meet the lease's 300 s dispatch deadline before the verdict.
+#: reach. Past it, the slower measured cold start (195 s, dispatch to worker)
+#: would meet the lease's 480 s dispatch deadline before the verdict (contract
+#: request 37, and the test at the end of this file).
 CONTROL_PLANE_READ_WORST_CASE_SECONDS = 200
 
 
@@ -291,10 +292,11 @@ def test_the_retries_outlast_the_documented_direct_vpc_delay_and_stay_bounded():
 
     The worst case is every try hanging for its whole call timeout, so each
     attempt costs the full startup budget plus one call. Before #401 the bound
-    was 120 s, inside the lease's 300 s dispatch deadline for both cold starts
-    measured on 2026-09-25 (dispatch to first line: 103 s and 195 s). The
-    longer schedule #401 asked for keeps it inside for the 103 s one only; the
-    reconciler fences a worker that is still asking past the deadline.
+    was 120 s, inside the lease's then 300 s dispatch deadline for both cold
+    starts measured on 2026-09-25 (dispatch to first line: 103 s and 195 s).
+    The longer schedule #401 asked for fit inside it for the 103 s one only,
+    so contract request 37 raised the deadline to 480 s; the reconciler still
+    fences a worker that is asking past it.
     """
     from agent_worker import startup
 
@@ -398,3 +400,60 @@ def test_the_dns_preflight_and_the_control_plane_read_share_one_retry_loop(
         tuple(startup.DNS_PREFLIGHT_SCHEDULE_SECONDS),
         tuple(startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS),
     ], schedules
+
+
+# ---------------------------------------------------------------------------
+# the dispatch deadline the schedule has to fit inside (contract request 37)
+# ---------------------------------------------------------------------------
+
+#: The slowest cold start measured on 2026-09-25, dispatch to the worker's first
+#: line (the incident's two executions: 103 s and 195 s).
+SLOWEST_MEASURED_COLD_START_SECONDS = 195
+
+#: What the deadline must leave after the slowest cold start plus the worst
+#: case of the read: the worker's first heartbeat after its verdict, and the
+#: fact that 195 s is the slower of two samples, not a bound.
+DISPATCH_DEADLINE_MARGIN_SECONDS = 60
+
+
+def test_the_dispatch_deadline_outlasts_the_slowest_cold_start_plus_the_worst_read(monkeypatch):
+    """Contract request 37 (owner, 2026-09-30): the lease's dispatch deadline is 480 s.
+
+    #402 made the generation check keep asking for ~180 s, 200 s at worst
+    (`CONTROL_PLANE_READ_WINDOW_SECONDS`). At the old 300 s a worker that
+    cold-started in 195 s and met a Google API that did not answer was fenced
+    by the reconciler before its own last attempt ended: the retry #401 asked
+    for was cut off by the platform's own deadline. 195 + 200 + 60 = 455, and
+    480 is the round figure above it.
+
+    The default is stated three times in the frozen contract -- the dataclass,
+    `from_env`'s fallback, and `AdmissionConfig` -- and all three must move
+    together, or the scheduler and the reconciler disagree about one lease.
+    """
+    import dataclasses
+
+    from agent_worker import startup
+    from swarm_common.admission import AdmissionConfig
+    from swarm_common.config import Settings
+
+    default = {f.name: f.default for f in dataclasses.fields(Settings)}[
+        "dispatch_timeout_seconds"
+    ]
+    monkeypatch.delenv("DISPATCH_TIMEOUT_SECONDS", raising=False)
+    monkeypatch.setenv("PROJECT_ID", "p")
+
+    assert default == 480, default
+    assert Settings.from_env().dispatch_timeout_seconds == default
+    assert AdmissionConfig().dispatch_timeout_seconds == default
+
+    needed = (
+        SLOWEST_MEASURED_COLD_START_SECONDS
+        + startup.CONTROL_PLANE_READ_WINDOW_SECONDS
+        + DISPATCH_DEADLINE_MARGIN_SECONDS
+    )
+    assert default >= needed, (
+        f"the dispatch deadline ({default}s) fences a worker that cold-started in "
+        f"{SLOWEST_MEASURED_COLD_START_SECONDS}s and is still in its "
+        f"{startup.CONTROL_PLANE_READ_WINDOW_SECONDS:g}s startup read; it needs "
+        f"at least {needed:g}s"
+    )

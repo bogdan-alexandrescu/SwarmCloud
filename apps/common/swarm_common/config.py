@@ -49,7 +49,14 @@ class Settings:
     # Admission
     max_active_agents: int = 100
     global_capacity_units: int = 200
-    dispatch_timeout_seconds: int = 300
+    # 480, not 300: contract request 37, accepted by the owner 2026-09-30
+    # (#401). The worker's startup control-plane read now keeps asking for
+    # ~180 s, 200 s at worst (#402), and cold starts were measured at 103 and
+    # 195 s from dispatch on 2026-09-25. At 300 s a slow cold start plus a
+    # Google API that did not answer was fenced before its last attempt ended.
+    # 195 + 200 + 60 s margin = 455. The cost: a genuinely lost dispatch holds
+    # its lease and capacity 180 s longer before the reconciler reclaims it.
+    dispatch_timeout_seconds: int = 480
     lease_timeout_seconds: int = 120
     heartbeat_interval_seconds: int = 30
 
@@ -112,7 +119,7 @@ class Settings:
             api_audience=os.environ.get("API_AUDIENCE", ""),
             max_active_agents=_int("MAX_ACTIVE_AGENTS", 100),
             global_capacity_units=_int("GLOBAL_CAPACITY_UNITS", 200),
-            dispatch_timeout_seconds=_int("DISPATCH_TIMEOUT_SECONDS", 300),
+            dispatch_timeout_seconds=_int("DISPATCH_TIMEOUT_SECONDS", 480),
             lease_timeout_seconds=_int("LEASE_TIMEOUT_SECONDS", 120),
             heartbeat_interval_seconds=_int("HEARTBEAT_INTERVAL_SECONDS", 30),
             max_in_worker_retry_delay_seconds=_int("MAX_IN_WORKER_RETRY_DELAY_SECONDS", 45),

@@ -41,7 +41,9 @@ class AdmissionDenied(Exception):
 
 @dataclass(frozen=True)
 class AdmissionConfig:
-    dispatch_timeout_seconds: int = 300
+    # Settings.dispatch_timeout_seconds, which says why it is 480 (contract
+    # request 37). The scheduler passes its setting; this default must match.
+    dispatch_timeout_seconds: int = 480
     lease_timeout_seconds: int = 120
     heartbeat_interval_seconds: int = 30
 

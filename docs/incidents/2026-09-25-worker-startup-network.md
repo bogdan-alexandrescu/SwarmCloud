@@ -22,6 +22,14 @@ swarm's network removes it, for the reasons in §3. The worker now asks again fo
 about 90 s before it gives up (PR #200), and Google's own mitigation is the same
 thing: test a connection, with retries, before doing work.
 
+> **Note, 2026-09-30.** The figures in this document are as of 2026-09-25 and
+> are left as written. Since then #402 (issue #401) made the worker keep
+> asking for about 180 s, 200 s at worst
+> (`agent_worker.startup.CONTROL_PLANE_READ_SCHEDULE_SECONDS`), and contract
+> request 37 raised the lease's dispatch deadline from 300 s to 480 s so that
+> window fits after a 195 s cold start. Where a passage below says 90 s, 120 s
+> or 300 s, read 180 s, 200 s and 480 s for the platform as it is now.
+
 Everything below was read on 2026-09-25, with the read-only commands in §6.
 
 ---
@@ -112,6 +120,12 @@ the reconciler's tick:
   pass: for the incident's own timeline the rule would have been eligible at
   about 20:39:31 and acted at the 20:40 pass, the same pass that reclaimed it.
   For this exit the rule mostly improves `last_error`.
+
+  *Note, 2026-09-30:* with #402's ~180 s of attempts and the 480 s deadline
+  of contract request 37, the execution ends about cold start + 185 s after
+  dispatch, and for the same two cold starts the rule is eligible about 160
+  to 70 s before the deadline. The reconciler now ticks `*/1` (PR #202), so
+  the rule, not the deadline, is what requeues this exit.
 * **A worker that dies in its first seconds** (an exit 1, a 143) is eligible
   65 to 155 s before the deadline, so a `*/5` pass falls between the two more
   often, and when it does the task is requeued five minutes sooner.
@@ -164,6 +178,13 @@ still lists (400, 2026-09-16 to 2026-09-25):
   plane for all of them is reclaimed at the deadline before its last attempt
   ends. The reconciler then stops the execution and the worker exits 143
   having written nothing, which is the same outcome as a 69, one pass later.
+
+  *Note, 2026-09-30:* #402 made the worst case of the attempts 200 s and
+  contract request 37 made the deadline 480 s, so the threshold above is now
+  about 274 s from creation (480 - 200 - 6), not 174 s. The 376 s cold start
+  of 2026-09-19 would now start inside the deadline and run if its control
+  plane answered. How many of the 400 executions took longer than 274 s was
+  not counted from this data.
 
 ## 6. How to repeat the measurements
 

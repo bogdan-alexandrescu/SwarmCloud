@@ -137,7 +137,7 @@ An agent that hangs costs money until something stops it:
 | Setting | Default | Cost if wrong |
 |---|---|---|
 | `RunnerProfile.timeout_seconds` | 600–7200 | a hung agent bills to the ceiling |
-| `dispatch_timeout_seconds` | 300 | a slot reserved for an execution that never started |
+| `dispatch_timeout_seconds` | 480 | a slot reserved for an execution that never started, for up to 8 minutes (it was 5 until contract request 37) |
 | `lease_timeout_seconds` | 120 | a dead worker's slot, until the reconciler sweeps |
 | `max_in_worker_retry_delay_seconds` | 45 | **the expensive one** — see below |
 
