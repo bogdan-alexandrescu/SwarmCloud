@@ -713,6 +713,126 @@
         "plain-default"
       ],
       "count": 1
+    },
+    {
+      "name": "kv-literal-call-argument-quoted-403r",
+      "text": "api_key = SecretStr('q8Zr7Lm2Xv9TbQwErTyU')",
+      "expected": "api_key = ********",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-call-argument-bare-403r",
+      "text": "secret_key = Fernet(q8Zr7Lm2Xv9TbQwErTyU)",
+      "expected": "secret_key = ********",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-call-keyword-argument-403r",
+      "text": "token = Token(value=q8Zr7Lm2Xv9TbQwErTyU)",
+      "expected": "token = ********",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-subscript-run-403r",
+      "text": "token = environ[q8Zr7Lm2Xv9TbQwErTyU]",
+      "expected": "token = ********",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-call-then-attribute-403r",
+      "text": "token = sha(q8Zr7Lm2Xv9TbQwErTyU).hex",
+      "expected": "token = ********",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-colon-call-hex-403r",
+      "text": "secret: hmac(0123456789abcdef0123456789abcdef)",
+      "expected": "secret: ********",
+      "never": [
+        "0123456789abcdef0123"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-annotation-position-call-403r",
+      "text": "token: fn(q8Zr7Lm2Xv9TbQwErTyU) | x",
+      "expected": "token: ******** | x",
+      "never": [
+        "q8Zr7Lm2Xv9TbQwErTyU"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-snake-passphrase-403r",
+      "text": "api_key = correct_horse_battery",
+      "expected": "api_key = ********",
+      "never": [
+        "correct_horse"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-snake-pair-403r",
+      "text": "TOKEN = a_b",
+      "expected": "TOKEN = ********",
+      "never": [
+        "a_b"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-snake-flag-403r",
+      "text": "--token=a_b_c",
+      "expected": "--token=********",
+      "never": [
+        "a_b_c"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-camel-passphrase-403r",
+      "text": "token = zebraQuokkaTundra",
+      "expected": "token = ********",
+      "never": [
+        "zebraQuokka"
+      ],
+      "count": 1
+    },
+    {
+      "name": "code-credential-named-values-403r",
+      "text": "f(token=fetch_token, secret=secret_name, client_secret=env_secret, page_token=page_token)",
+      "expected": "f(token=fetch_token, secret=secret_name, client_secret=env_secret, page_token=page_token)",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-credential-named-camel-403r",
+      "text": "token = nextPageToken; api_key = settings.api_key",
+      "expected": "token = nextPageToken; api_key = settings.api_key",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-call-arguments-without-a-secret-run-403r",
+      "text": "token = os.environ[\"GH_TOKEN\"]; secret = issue(ref, MASK)",
+      "expected": "token = os.environ[\"GH_TOKEN\"]; secret = issue(ref, MASK)",
+      "never": [],
+      "count": 0
     }
   ]
 }

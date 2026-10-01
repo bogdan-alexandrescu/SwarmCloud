@@ -238,7 +238,41 @@ LITERALS = [
     ("token: ${TOKEN:-plain-default-91}", "plain-default"),
     # A value that starts with `=` is not a comparison.
     ("password = " + _shape("=e/~r.", "fhAeG&xu@S"), "fhAeG"),
+    # The #403 re-review: a literal riding inside an exempt call or
+    # subscript. The call exempts its callee, never its arguments.
+    ("api_key = SecretStr('" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + "')", "q8Zr7Lm2Xv"),
+    ("api_key = SecretStr(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("secret_key = Fernet(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("token = Token(value=" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("token = Token(value='" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + "')", "q8Zr7Lm2Xv"),
+    ("token = Bearer(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("secret = decode(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("secret: base64decode(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ")", "q8Zr7Lm2Xv"),
+    ("secret: hmac(" + _shape("0123456789abcdef", "0123456789abcdef") + ")", "0123456789abcdef0"),
+    ("token = environ[" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + "]", "q8Zr7Lm2Xv"),
+    ("token = sha(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ").hex", "q8Zr7Lm2Xv"),
+    ("token: fn(" + _shape("q8Zr7Lm2Xv", "9TbQwErTyU") + ") | x", "q8Zr7Lm2Xv"),
+    # Owner decision 2026-09-30: a multi-word name under a non-password key
+    # is code only when one of its words is a credential word.
+    ("api_key = correct_horse_battery", "correct_horse"),
+    ("TOKEN = a_b", "a_b"),
+    ("--token=a_b_c", "a_b_c"),
+    ("token = zebraQuokkaTundra", "zebraQuokka"),
 ]
+
+#: Code the owner decision keeps exempt: each value names a credential.
+CREDENTIAL_NAMED = [
+    "f(token=fetch_token, secret=secret_name, client_secret=env_secret, page_token=page_token)",
+    "token = nextPageToken",
+    "api_key = settings.api_key",
+    'token = os.environ["GH_TOKEN"]; secret = issue(ref, MASK)',
+]
+
+
+@pytest.mark.parametrize("line", CREDENTIAL_NAMED)
+def test_a_value_that_names_a_credential_is_still_code(line):
+    assert redact(line).text == line
+    assert _house_filter_text(line) == line
 
 
 def test_a_literal_secret_in_a_patch_is_still_masked(client, db, objects) -> None:
@@ -278,6 +312,7 @@ def test_both_filters_mask_each_literal(line, secret):
 #: 0.00-0.03% (symbol passwords) and 0 (Vault), on 40,000 samples a shape.
 _B62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 _SYMBOLS = _B62 + "!@#$%^&*()-_=+[]{};:.<>?/~"
+_LOWER_SNAKE = "abcdefghijklmnopqrstuvwxyz_"
 RANDOM_SHAPES = [
     ("password: {}", _SYMBOLS, "", (12, 16, 20)),
     ("password = {}", _SYMBOLS, "", (12, 16, 20)),
@@ -287,6 +322,16 @@ RANDOM_SHAPES = [
     ("vault_token: {}", _B62, "s.", (24,)),
     ("vault_token = {}", _B62, "s.", (24,)),
     ("vault_token: {}", _B62, "hvb.", (40,)),
+    # The #403 re-review: a random value as a call's argument or subscript.
+    ("api_key = SecretStr('{}')", _B62, "", (16, 20, 28)),
+    ("secret_key = Fernet({})", _B62, "", (16, 20, 28)),
+    ("token = Token(value={})", _B62, "", (16, 20, 28)),
+    ("token = environ[{}]", _B62, "", (16, 20, 28)),
+    ("secret: hmac({})", "0123456789abcdef", "", (32, 40, 64)),
+    # Owner decision 2026-09-30: random snake_case under a non-password key.
+    ("api_key = {}", _LOWER_SNAKE, "", (12, 16, 20)),
+    ("token = {}", _LOWER_SNAKE, "", (12, 16, 20)),
+    ("--token={}", _LOWER_SNAKE, "", (12, 16, 20)),
 ]
 
 
