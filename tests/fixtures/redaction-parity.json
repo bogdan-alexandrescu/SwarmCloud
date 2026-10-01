@@ -458,6 +458,189 @@
         "1234567890abcdefghijklmnop"
       ],
       "count": 2
+    },
+    {
+      "name": "code-call-assignment-370",
+      "text": "_TOKEN = re.compile(r\"[a-z]+\")",
+      "expected": "_TOKEN = re.compile(r\"[a-z]+\")",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-json-dumps-assignment-370",
+      "text": "_MASK_TOKEN = json.dumps(MASK)",
+      "expected": "_MASK_TOKEN = json.dumps(MASK)",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-identifier-not-cut-mid-word-370",
+      "text": "withheld = withheld or key_withheld",
+      "expected": "withheld = withheld or key_withheld",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-identifiers-starting-ey-370",
+      "text": "eye_tracking = True; eyebrow_raise = 0",
+      "expected": "eye_tracking = True; eyebrow_raise = 0",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-keyboard-interrupt-370",
+      "text": "except KeyboardInterrupt: return KeychainStore()",
+      "expected": "except KeyboardInterrupt: return KeychainStore()",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-typed-parameters-370",
+      "text": "def probe(*, url: str, token: str | None = None, secret: SecretStr = DEFAULT, credential: Credential) -> str:",
+      "expected": "def probe(*, url: str, token: str | None = None, secret: SecretStr = DEFAULT, credential: Credential) -> str:",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-keyword-arguments-370",
+      "text": "fetch(url, token=token_value, secret=self._secret, password=password, api_key=None)",
+      "expected": "fetch(url, token=token_value, secret=self._secret, password=password, api_key=None)",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-dict-literal-expressions-370",
+      "text": "{\"next_page_token\": page.next_page_token, \"secret\": None, \"token\": issue(ref)}",
+      "expected": "{\"next_page_token\": page.next_page_token, \"secret\": None, \"token\": issue(ref)}",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-attribute-and-subscript-370",
+      "text": "token = self._token or tokens[0]; tenant.credentials = promoted_credentials",
+      "expected": "token = self._token or tokens[0]; tenant.credentials = promoted_credentials",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-comparison-370",
+      "text": "if token === \"\" || secret == None:",
+      "expected": "if token === \"\" || secret == None:",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-shell-substitution-370",
+      "text": "TOKEN=\"$(gh auth token)\"; SECRET=\"${SWARM_SECRET:-}\"",
+      "expected": "TOKEN=\"$(gh auth token)\"; SECRET=\"${SWARM_SECRET:-}\"",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "code-ts-annotation-370",
+      "text": "function f(token: string | null, secrets: string[]): Promise<void>",
+      "expected": "function f(token: string | null, secrets: string[]): Promise<void>",
+      "never": [],
+      "count": 0
+    },
+    {
+      "name": "kv-literal-letters-after-spaced-equals-370",
+      "text": "TOKEN = qZrLmXvTbQwErTyUiOpAsDfGhJkLzXcVbNmP",
+      "expected": "TOKEN = ********",
+      "never": [
+        "qZrLmXvTbQwErTy"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-ini-password-word-370",
+      "text": "password = hunter",
+      "expected": "password = ********",
+      "never": [
+        "hunter"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-password-snake-370",
+      "text": "password = my_dog_rex",
+      "expected": "password = ********",
+      "never": [
+        "my_dog_rex"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-password-camel-kwarg-370",
+      "text": "password=myDogRex",
+      "expected": "password=********",
+      "never": [
+        "myDogRex"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-dotted-words-370",
+      "text": "password = correct.horse.battery",
+      "expected": "password = ********",
+      "never": [
+        "horse"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-dotted-random-370",
+      "text": "token = q8Zr7Lm2Xv9T.aB3cD4eF5gH6",
+      "expected": "token = ********",
+      "never": [
+        "q8Zr7Lm2Xv9T"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-env-snake-370",
+      "text": "GITHUB_TOKEN=unset_me_now_123",
+      "expected": "GITHUB_TOKEN=********",
+      "never": [
+        "unset_me_now"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-yaml-snake-370",
+      "text": "secret: missing_link_42",
+      "expected": "secret: ********",
+      "never": [
+        "missing_link"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-yaml-capitalised-370",
+      "text": "password: Summer2024",
+      "expected": "password: ********",
+      "never": [
+        "Summer2024"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-single-word-kwarg-370",
+      "text": "--token=abcdefghqrst",
+      "expected": "--token=********",
+      "never": [
+        "abcdefghqrst"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-quoted-370",
+      "text": "REFRESH_TOKEN = \"plain-quoted-literal-77\"",
+      "expected": "REFRESH_TOKEN = \"********\"",
+      "never": [
+        "plain-quoted"
+      ],
+      "count": 1
     }
   ]
 }
