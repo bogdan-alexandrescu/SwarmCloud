@@ -283,11 +283,21 @@ def _row(tenant: str, task: str, *, hours_ago: int, end: str | None = "released"
 
 
 def _everything_foreign_to_research(rows: list[dict]) -> list[str]:
-    """Every timestamp string another tenant's rows carry."""
+    """Every timestamp string another tenant's rows carry, except one that a
+    research row also carries.
+
+    The fixture's times are all NOW minus whole hours, so a foreign
+    `hold_expires_at` (assigned + 3h) can equal an own `assigned_at`. A string
+    the borrower legitimately sees on its own span is not a leak, and asserting
+    it absent made this test depend on the fixture's arithmetic. The property is
+    that no foreign time appears except where an own span shares it.
+    """
+    stamps = ("assigned_at", "released_at", "hold_expires_at")
+    own = {r[k] for r in rows if r["tenant_id"] == "research" for k in stamps if r[k]}
     out: list[str] = []
     for r in rows:
         if r["tenant_id"] != "research":
-            out += [r[k] for k in ("assigned_at", "released_at", "hold_expires_at") if r[k]]
+            out += [r[k] for k in stamps if r[k] and r[k] not in own]
     return out
 
 
@@ -355,8 +365,9 @@ def _eng_pages(n_pages: int, per_page: int) -> tuple[dict, int]:
     return script, count
 
 
-def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_cursor(client, broker):
+def test_a_borrower_scan_with_no_own_row_in_5_pages_stops_limited_with_no_cursor(client, broker):
     script, count = _eng_pages(20, 2)  # a broker that would serve 20 pages
+    assert count == 40
     broker.history_script = script
 
     body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
@@ -364,7 +375,6 @@ def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_curso
     assert body["spans"] == []
     assert body["scan_limited"] is True
     assert body.get("next_cursor") is None
-    assert count == 10
     # Five broker pages, the first and four followed, and no more.
     assert len([c for c in broker.calls if c[0] == "hold_history"]) == 5
     # A count over a partial scan is not over the window: not served.
@@ -372,7 +382,7 @@ def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_curso
     assert "task_id" not in json.dumps(body)
 
 
-def test_own_page_stops_at_20_pages_and_marks_the_scan_limited():
+def test_own_page_stops_at_5_pages_and_marks_the_scan_limited():
     from swarm_api.accountholds import own_page
 
     script, count = _eng_pages(25, 3)
@@ -384,11 +394,11 @@ def test_own_page_stops_at_20_pages_and_marks_the_scan_limited():
 
     served = own_page(script[None], tenant_id="research", cursor=None, fetch=fetch)
 
-    assert len(fetched) == 19  # the first page was already in hand: 20 pages in all
+    assert len(fetched) == 4  # the first page was already in hand: 5 pages in all
     assert served["scan_limited"] is True
     assert served["next_cursor"] is None
-    assert len(served["spans"]) == 20 * 3
-    assert 20 * 3 < count
+    assert len(served["spans"]) == 5 * 3
+    assert 5 * 3 < count
 
 
 def test_the_owner_is_still_served_borrower_spans_with_the_tenant_name(client, broker):
