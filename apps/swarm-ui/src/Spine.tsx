@@ -27,7 +27,8 @@ import { loadCapacity, loadMe } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import type { Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS } from './help'
-import type { Capacity, Me } from './types'
+import { MarkGlyph, STATE_MARK } from './marks'
+import type { Capacity, Me, TaskState } from './types'
 
 export type SpineSection = 'overview' | 'work' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -129,20 +130,56 @@ const COLLAPSED_KEY = 'swarm.shell.collapsed'
 /** The Workflows panel's Recent (5) switcher, per browser. */
 export const RECENT_WORKFLOWS_KEY = 'swarm.workflows.recent'
 
-export function recentWorkflows(): string[] {
+/** The event `rememberWorkflow` raises, so the panel redraws without a reload. */
+export const RECENT_WORKFLOWS_EVENT = 'swarm:recent-workflows'
+
+/**
+ * One remembered workflow: its id and the state it was last read in (null when
+ * that read derived none), so the switcher draws its mark without a read of
+ * its own. Remembered PER BROWSER: there is no per-person store in the API yet
+ * (workflows.html F, "still open").
+ */
+export interface RecentWorkflow {
+  readonly id: string
+  readonly state: TaskState | null
+}
+
+function isTaskState(v: unknown): v is TaskState {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(STATE_MARK, v)
+}
+
+export function recentWorkflows(): RecentWorkflow[] {
   const raw = readPref(RECENT_WORKFLOWS_KEY)
   if (raw === null) return []
   try {
     const v: unknown = JSON.parse(raw)
-    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string').slice(0, 5) : []
+    if (!Array.isArray(v)) return []
+    const out: RecentWorkflow[] = []
+    for (const x of v) {
+      // The first form of this store held bare ids; they still open, unmarked.
+      if (typeof x === 'string') out.push({ id: x, state: null })
+      else if (typeof x === 'object' && x !== null && typeof (x as { id?: unknown }).id === 'string') {
+        const st = (x as { state?: unknown }).state
+        out.push({ id: (x as { id: string }).id, state: isTaskState(st) ? st : null })
+      }
+    }
+    return out.slice(0, 5)
   } catch {
     return []
   }
 }
 
-export function rememberWorkflow(id: string): void {
-  const next = [id, ...recentWorkflows().filter((x) => x !== id)].slice(0, 5)
+/** Put a workflow first in Recent (5), with the state it was read in. */
+export function rememberWorkflow(id: string, state: TaskState | null = null): void {
+  const before = recentWorkflows()
+  const next = [{ id, state }, ...before.filter((x) => x.id !== id)].slice(0, 5)
+  if (JSON.stringify(next) === JSON.stringify(before)) return
   writePref(RECENT_WORKFLOWS_KEY, JSON.stringify(next))
+  try {
+    globalThis.dispatchEvent?.(new Event(RECENT_WORKFLOWS_EVENT))
+  } catch {
+    /* no event target here; the panel reads the store on its next render */
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -677,20 +714,67 @@ function PanelPages({
   )
 }
 
-/** The Workflows row's Recent (5) switcher: the last five opened in this browser. */
+/**
+ * THE WORKFLOWS ROW'S RECENT (5) SWITCHER (owner's pick, 2026-10-01;
+ * workflows.html C): the five workflows last opened in this browser, each with
+ * its state mark, the open one highlighted, then "All workflows →". It costs
+ * no read: the marks are the states the workflows were read in when opened.
+ */
 function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
-  const ids = recentWorkflows()
-  if (ids.length === 0) return null
+  const [items, setItems] = useState<RecentWorkflow[]>(recentWorkflows)
+  useEffect(() => {
+    const again = () => setItems(recentWorkflows())
+    globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
+    return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
+  }, [])
+  if (items.length === 0) return null
+  const open = openWorkflowId()
   return (
-    <details className="sk-recent">
-      <summary>Recent ({ids.length})</summary>
-      {ids.map((id) => (
-        <button key={id} type="button" className="sk-kid" onClick={() => nav(`work/workflows?wf=${encodeURIComponent(id)}`)}>
-          <span className="id">{id}</span>
-        </button>
-      ))}
-    </details>
+    <div className="sk-kids sk-recent" role="group" aria-label="Recent workflows">
+      <span className="sk-recent-h">Recent</span>
+      {items.map((w) => {
+        const look = w.state === null ? null : STATE_MARK[w.state]
+        const word = w.state === null ? 'state not recorded' : w.state.toLowerCase().replace('_', '-')
+        return (
+          <button
+            key={w.id}
+            type="button"
+            className={`sk-kid sk-recent-kid${w.id === open ? ' is-on' : ''}`}
+            aria-current={w.id === open ? 'page' : undefined}
+            onClick={() => nav(`work/workflows?wf=${encodeURIComponent(w.id)}`)}
+          >
+            <span className="sk-recent-row">
+              <span
+                className={`sk-st is-${look === null ? 'neu' : look.hue}`}
+                data-mark={look === null ? 'none' : look.mark}
+                title={word}
+              >
+                <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+                  {look !== null && <MarkGlyph mark={look.mark} />}
+                </svg>
+                <span className="sk-vh">{word}</span>
+              </span>
+              <span className="sk-recent-id">{w.id}</span>
+            </span>
+          </button>
+        )
+      })}
+      <button type="button" className="sk-kid sk-recent-all" onClick={() => nav('work/workflows')}>
+        All workflows →
+      </button>
+    </div>
   )
+}
+
+/** The workflow the address names (`/workflows/<id>[/<pane>]`), or null. */
+function openWorkflowId(): string | null {
+  const m = /^\/workflows\/([^/?#]+)/.exec(globalThis.location?.pathname ?? '')
+  if (m === null || m[1] === undefined) return null
+  try {
+    return decodeURIComponent(m[1])
+  } catch {
+    return m[1]
+  }
 }
 
 function Flyout({

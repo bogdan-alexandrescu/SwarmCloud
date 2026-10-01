@@ -44,7 +44,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
+const { WorkflowCard, WorkflowBoardScreen } = await import('../Workflows')
 const { inputsByStep, layoutOf, stepDuration } = await import('../dag')
 
 // ---------------------------------------------------------------------------
@@ -274,7 +274,7 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 async function landed(): Promise<void> {
-  render(<WorkflowsScreen />)
+  render(<WorkflowBoardScreen />)
   await screen.findByText('wf_new')
   // The attempt read the board starts once it has landed; its figures are what
   // the table's cost column sorts on.
@@ -1937,7 +1937,7 @@ describe('#330: the chains-only toggle', () => {
       data: { ...b, workflows: [] },
       fetchedAt: T0,
     } satisfies Result<WorkflowBoard>)
-    const empty = render(<WorkflowsScreen />)
+    const empty = render(<WorkflowBoardScreen />)
     await waitFor(() => expect(toggle().checked).toBe(true))
     // An empty board with the toggle on hides nothing, so there is no
     // "turn it off to see the 0".
@@ -1949,7 +1949,7 @@ describe('#330: the chains-only toggle', () => {
       data: { ...b, workflows: [single('wf_one_a')] },
       fetchedAt: T0,
     } satisfies Result<WorkflowBoard>)
-    render(<WorkflowsScreen />)
+    render(<WorkflowBoardScreen />)
     const mark = await waitFor(() => {
       const m = document.querySelector('.wf-chains-none')
       expect(m).toBeTruthy()

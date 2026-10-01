@@ -1253,6 +1253,46 @@ export interface CancelResult {
   released_immediately: boolean
 }
 
+/**
+ * CANCEL ONE WORKFLOW. `POST /v1/workflows/{id}/cancel`
+ * (apps/swarm-api/swarm_api/routes/workflows.py `cancel_workflow`).
+ *
+ * The server sets `cancel_requested` on the workflow and asks every step that
+ * has a task to stop (`Store.cancel_workflow`): a step that holds no capacity
+ * goes straight to CANCELLED, a running one keeps its lease until its worker
+ * acts on the flag, and a step that has not been created yet never will be.
+ * The caller confirms first -- see `CancelWorkflow` in Workflows.tsx, the only
+ * thing that calls this -- and re-reads the board rather than trusting an echo.
+ */
+export async function cancelWorkflow(workflowId: string): Promise<Result<CancelWorkflowResult>> {
+  if (USE_FIXTURES) return fixtureCancelWorkflow(workflowId)
+  return write(route('/v1/workflows/{id}/cancel', { id: workflowId }), 'POST') as Promise<
+    Result<CancelWorkflowResult>
+  >
+}
+
+/** Only what this client reads of the cancel response (store.py `cancel_workflow`). */
+export interface CancelWorkflowResult {
+  workflow_id: string
+  /** Task ids whose cancel was recorded. */
+  tasks_cancelled: string[]
+  /** Task ids that had already ended (or were not found), so nothing was asked of them. */
+  tasks_already_terminal: string[]
+}
+
+async function fixtureCancelWorkflow(workflowId: string): Promise<Result<CancelWorkflowResult>> {
+  await new Promise((r) => setTimeout(r, 60))
+  // The same `route()` call as the live path, so the fixture lands in the same
+  // registry record a live write would (CH-18). It reports no task ids: a
+  // fixture that invented which tasks it cancelled would be fabricating data.
+  noteFixtureProbe(route('/v1/workflows/{id}/cancel', { id: workflowId }), 60, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { workflow_id: workflowId, tasks_cancelled: [], tasks_already_terminal: [] },
+  }
+}
+
 async function fixtureArtifactContent(
   taskId: string,
   name: string,

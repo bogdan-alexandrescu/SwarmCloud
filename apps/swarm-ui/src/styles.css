@@ -12359,6 +12359,80 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Workflows V2 (workflows.html): list, one workflow, switcher -------- */
 /* ======================================================================== */
+/* STEP TINTS IN THE BRAND VOCABULARY (owner, 2026-10-01; supersedes #405's
+   hues). A pale tint of the state's own hue across the card and a 4px edge in
+   that hue: teal for the four states that hold capacity, violet for parked,
+   red for failed and dead-lettered, grey for the rest. The pairs are the brand
+   tokens `--s-<hue>b` / `--s-<hue>`, so dark mode gets the deep tints with no
+   second declaration here. An unread step keeps `.node.unknown`'s dashed amber. */
+.node.t-live { background: var(--s-liveb); border-left: 4px solid var(--s-live); }
+.node.t-park { background: var(--s-parkb); border-left: 4px solid var(--s-park); }
+.node.t-bad { background: var(--s-badb); border-left: 4px solid var(--s-bad); }
+.node.t-neu { background: var(--s-neub); border-left: 4px solid var(--s-neu); }
+.node-line > .wf-mk { align-self: center; }
+.wf-band-count .wf-mk { margin-right: 4px; vertical-align: -1px; }
+.wf-mk { display: inline-flex; }
+
+/* The list, full width (workflows.html A). */
+.wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
+.wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wfl-n { margin-left: 6px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
+.wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
+.wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
+.wfl-scroll { overflow-x: auto; }
+.wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
+.wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.wfl-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
+.wfl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.wfl-row.is-failed td { background: color-mix(in srgb, var(--s-badb) 55%, transparent); }
+.wfl-name { display: flex; flex-direction: column; gap: 2px; min-width: 14em; }
+.wfl-name > a { color: var(--text); font-weight: 600; text-decoration: none; }
+.wfl-name > a:hover, .wfl-name > a:focus-visible { text-decoration: underline; }
+.wfl-why { font-size: var(--t-micro); color: var(--text-dim); }
+.wfl-why.is-bad { color: var(--s-bad); }
+.wfl-why.is-warn { color: var(--s-warn); }
+.wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wfl-bar { display: inline-flex; width: 96px; height: 6px; border-radius: 3px; overflow: hidden; background: var(--line-soft); }
+.wfl-bar > i { display: block; height: 100%; background: var(--s-neu); }
+.wfl-bar.t-live > i { background: var(--s-live); }
+.wfl-bar.t-park > i { background: var(--s-park); }
+.wfl-bar.t-bad > i { background: var(--s-bad); }
+.wfl-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--line-soft) 0 3px, transparent 3px 6px); }
+.wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
+.wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.wfl-clear { font: inherit; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
+.wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* One workflow (workflows.html B): the back link, the head, the confirm. */
+.wfp-back { display: inline-block; margin-bottom: 6px; font-size: var(--t-meta); color: var(--sk-ac); text-decoration: none; }
+.wfp-back:hover, .wfp-back:focus-visible { text-decoration: underline; }
+.wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
+.wfp-head { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-start; justify-content: space-between; }
+.wfp-head-l { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.wfp-chip { font-size: var(--t-micro); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; }
+.wfp-label { font-size: var(--t-lead); }
+.wfp-facts { font-size: var(--t-meta); color: var(--text-dim); }
+.wfp-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: flex-start; }
+.wfp-btn { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 5px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); cursor: pointer; }
+.wfp-btn.danger { color: var(--s-bad); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
+.wfp-btn:disabled { opacity: .6; cursor: default; }
+.wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }
+.wfp-confirm p { margin: 0; }
+.wfp-confirm-err { color: var(--s-bad); }
+.wfp-confirm-do { display: flex; flex-wrap: wrap; gap: 8px; }
+.wfp-steps { display: flex; flex-direction: column; gap: 6px; margin-top: var(--ctl-gutter); }
+.wfp-eyb { margin: 0; font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
+.wfp-missing { color: var(--text-dim); }
+.wf-card.is-page { border: 0; padding: 0; background: none; }
+
+/* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
+.sk-recent-h { padding: 2px 10px; font-size: var(--t-micro); color: var(--text-faint); }
+.sk-recent-row { display: flex; gap: 6px; align-items: center; min-width: 0; }
+.sk-recent-id { overflow: hidden; text-overflow: ellipsis; }
+.sk-recent-all { color: var(--sk-ac); }
 /* (Workflows V2 rules go above this line.) */
 
 

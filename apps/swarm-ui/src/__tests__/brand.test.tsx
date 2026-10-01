@@ -37,7 +37,7 @@ import {
 } from '../Brand'
 import { App } from '../App'
 import { Screen } from '../Shell'
-import { WorkflowsScreen } from '../Workflows'
+import { WorkflowBoardScreen } from '../Workflows'
 import type { Me } from '../types'
 import { flatRules, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -803,7 +803,7 @@ describe('CH-20: the identity at phone width', () => {
 describe('B17: an identifier is never restyled', () => {
   it('leaves the workflow id alone inside the section heading', async () => {
     const style = withStyles()
-    render(<WorkflowsScreen />)
+    render(<WorkflowBoardScreen />)
 
     // The real screen, the real fixture id, the real stylesheet.
     const id = await screen.findByText('wf_audit_01', {}, { timeout: 4000 })

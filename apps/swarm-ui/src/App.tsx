@@ -1439,7 +1439,7 @@ function SectionBody({
     case 'work/running':
       return <AgentsScreen {...agentsProps} />
     case 'work/workflows':
-      return <WorkflowsScreen />
+      return <WorkflowsScreen view={view} onView={onView} />
     case 'work/timeline':
       return <ActivityScreen view={view} onView={onView} />
     case 'work/new':
