@@ -11,7 +11,7 @@ Nothing imports this module; it lives outside tests/unit and is never collected.
 
 
 def add(a, b):
-    return a - b
+    return a + b
 
 
 def multiply(a, b):
