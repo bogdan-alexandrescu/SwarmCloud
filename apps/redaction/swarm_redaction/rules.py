@@ -491,14 +491,247 @@ def _private_key_rule() -> Rule:
 _STATUS_OR_CAPITALISED_WORD = (
     r"(?:not set|unset|missing|\(none\)|none|set|[A-Z][a-z]+)(?=[\"\\,\s]|$)"
 )
+
+#: CODE IS NOT A CREDENTIAL (#370). `swarm artifact <task> swarm-work.patch`
+#: served a patch that no longer applied: this rule masked the value of
+#: `_TOKEN = re.compile(...)`, `_MASK_TOKEN = json.dumps(MASK)`,
+#: `token: str | None` and `f(token=token_var)`, so the `-` and context lines
+#: of every hunk touching them no longer matched the file. A value that is an
+#: EXPRESSION names a credential without holding one, and is now left alone.
+#: A LITERAL is still masked: a quoted string, a bare token-shaped value, and
+#: every `KEY=value` line of an environment dump or an INI file.
+#:
+#: What counts as an expression is decided by the SHAPE of the value, case
+#: sensitively, never by guessing at the language:
+#:
+#:   * after `:` -- a builtin or typing name, `null`, a dotted name, an empty
+#:     `${NAME:-}`, and except under `password`/`passwd` a PascalCase or
+#:     dotted TYPE where a type ends and a closed call (`_COLON_VALUE`). A
+#:     YAML `secret: missing_link_42` and a JSON `"secret":true` are literals
+#:     and stay masked;
+#:   * after `=` -- `_EXPRESSION`, but ONLY when the name holds a lowercase
+#:     letter or a space precedes the `=`. `GITHUB_TOKEN=unset_me_now_123` is
+#:     an environment dump, where every value is a literal, so an all-capitals
+#:     name glued to its `=` gets no exemption at all;
+#:   * anywhere -- a shell substitution, `$(cmd ...)`, `${NAME}`, an empty
+#:     `${NAME:-}` or `${{ ... }}`, quoted or not.
+#:
+#: THE THREE WAYS THE FIRST ATTEMPT AT THIS WENT WRONG (review of
+#: task_a2068d6586ec441fa6e3), and what stops each:
+#:
+#:   1. A bare name was exempt whatever it looked like, so `TOKEN = <36 random
+#:      letters>`, a dotted random value and an INI `password = <word>` were
+#:      served whole. A single bare word is now exempt only when it is a
+#:      credential keyword itself (`token=token`, `secrets = _secrets`) or
+#:      `None`/`True`/`False`/`null`/`undefined`. A multi-word name must be
+#:      CONVENTIONAL -- all-lowercase snake_case, all-capitals SNAKE_CASE,
+#:      camelCase or PascalCase, with words of at most 16 characters -- which
+#:      a random value almost never is: it mixes cases inside a word and runs
+#:      two capitals together. A dotted name must start with `self`/`cls`/
+#:      `this` or END in a multi-word, underscored or keyword name, so
+#:      `correct.horse.battery` stays masked.
+#:   2. Under `password`/`passwd` a value is a human's choice, and
+#:      `my_dog_rex` or `myDogRex` is a plausible one. So under those names a
+#:      bare multi-word name is NOT exempt (`_EXPRESSION_PASSWORD`), and
+#:      neither is a call or a PascalCase "type"; a dotted name, a keyword
+#:      (`password=password`) and `None` still are.
+#:   3. Typed parameters (`token: str | None = None`) and keyword arguments
+#:      (`f(token=token_var)`) are the commonest shapes in this repository;
+#:      both are covered above, and the git-apply test changes both.
+#:
+#: THE #403 SECURITY REVIEW then measured three shapes the first version
+#: served and main masked, each fixed below where it is defined: a call
+#: (`_CLOSED_CALL`), a PascalCase or dotted type (`_TYPE_END`), and a dotted
+#: name starting with one character (`_FIRST_PART`). With them, a random
+#: 12-20 character symbol password is served whole under `password:`,
+#: `password =`, `db_password =` or `api_key:` in 0.00-0.03% of samples (main
+#: 0%, the first version about 6%), and a Vault `s.`/`hvb.` token in none.
+#: The #403 re-review then found literals riding inside an exempt call
+#: (`api_key = SecretStr('<v>')`); a call now exempts its callee, never an
+#: argument that is a secret run (`_SECRET_RUN`). And the owner decided on
+#: 2026-09-30 that a multi-word name under a non-password key is code only
+#: when one of its words is a credential word (`_CREDENTIAL_NAME`). What is
+#: left: a random no-digit value that reads as camelCase inside a call's
+#: arguments (about 0.03% of 16-28 character base62 values), a PascalCase
+#: "type" before ` | <Type>` or ` = `, and random symbol strings that parse
+#: as a closed call inside a keyword argument (under 0.1%).
+#:
+#: Every group the decision reads is POSSESSIVE (`?+`), so a refused
+#: exemption cannot backtrack into a different parse of the name -- dropping
+#: `lc` would turn `token=a_b` into an environment line and mask it.
+#:
+#: THE SHELL FILTER HAS THE SAME EXEMPTIONS (`redact` in scripts/lib/common.sh),
+#: as rules that mark the name before the main rules run; the parity fixture
+#: holds both to one output.
+_KV_WORDS = (
+    r"api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization"
+)
+#: A SECRET RUN (the #403 re-review). An exemption below exempts the SHAPE
+#: of code -- a callee, an attribute, a name -- never a literal riding inside
+#: it: `api_key = SecretStr('<v>')`, `secret_key = Fernet(<v>)` and
+#: `token = environ[<v>]` were served whole because the call around `<v>`
+#: was exempt. So no exempt span may hold the START of a run of 16 or more
+#: of `[A-Za-z0-9+/=_-]` that mixes a digit with a letter, or that has no
+#: digit, a lowercase letter, and does not read as a name (`_NAME_RUN`) -- a
+#: random base62 or base64 value, a hex digest. `r"[a-z]+"`, `MASK`, `"GH_TOKEN"`, a
+#: snake_case or camelCase name are not runs like that. A run starts where
+#: the character before it is not one of those; `_NO_SECRET` is checked at
+#: every place an exempt span can hold such a start. The shell filter marks
+#: these runs with a byte its exemption rules cannot match across.
+_RUN = r"A-Za-z0-9+/=_-"
+#: A run with no digit is a NAME when every capital in it starts a hump of
+#: two lowercase letters (or is `Id`), bar one at its end: `nextPageToken`,
+#: `MetadataIdToken`, `promoted_credentials`. A random letters-only value
+#: almost never reads that way.
+_NAME_RUN = (
+    r"(?:[A-Z][a-z][a-z+/=_-]|Id|[a-z+/=_-])*+(?:[A-Z][a-z]?)?(?![" + _RUN + r"])"
+)
+_SECRET_RUN = (
+    r"(?-i:(?<![" + _RUN + r"])(?=[" + _RUN + r"]{16})"
+    r"(?:(?=[" + _RUN + r"]*[0-9])(?=[" + _RUN + r"]*[A-Za-z])"
+    r"|(?![" + _RUN + r"]*[0-9])(?=[" + _RUN + r"]*[a-z])(?!" + _NAME_RUN + r")))"
+)
+_NO_SECRET = r"(?!" + _SECRET_RUN + r")"
+_DOT = r"\." + _NO_SECRET
+#: The end of a bare value: what may follow a name in code.
+#: A closing bracket ends a value only when the brackets run out at a
+#: separator or the end of the line -- `f(token=None)`, `{"a": page.token},`
+#: -- so `<random>)}%Y` is not read as code (the #403 security review).
+_END = r"(?=[\s,;]|$|[)\]}]+(?:[\s,;]|$))"
+_KEYWORD_WORD = r"_*(?i:" + _KV_WORDS + r")(?i:s)?"
+#: A camelCase hump: a capital and two lowercase letters or more, or `Id`.
+_HUMP = r"(?:[A-Z][a-z]{2,15}|Id)[0-9]{0,3}"
+#: A MULTI-WORD NAME IS CODE ONLY WHEN IT NAMES A CREDENTIAL (owner decision,
+#: 2026-09-30, on the #403 re-review). `token=fetch_token`,
+#: `secret=secret_name`, `client_secret=env_secret`, `page_token=page_token`
+#: and `token = nextPageToken` stay exempt; `api_key = correct_horse_battery`,
+#: `TOKEN = a_b`, `--token=a_b_c` and `token = zebraQuokkaTundra` are a
+#: passphrase as easily as a name, and are masked. A credential word is
+#: one whole snake_case word or camelCase hump: token, secret, key,
+#: password, passwd, credential, auth or api (a plural `s` allowed) --
+#: `monkey_business` does not name a key.
+_CRED_LC = r"(?:token|secret|key|password|passwd|credential|auth|api)s?"
+_CRED_UC = r"(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?"
+_CRED_CAP = r"(?:Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?"
+_CREDENTIAL_NAME = (
+    r"(?:_*(?:[a-z][a-z0-9]{0,15}_)*" + _CRED_LC + r"(?:_[a-z0-9]{1,16})*_*"
+    r"|_*(?:[A-Z][A-Z0-9]{0,15}_)*" + _CRED_UC + r"(?:_[A-Z0-9]{1,16})*_*"
+    r"|_*[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*"
+    r"|_*" + _CRED_LC + r"[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|_*(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*)"
+)
+_PART = (
+    r"_*(?:[a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}"
+    r"|[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|(?:" + _HUMP + r")+)"
+)
+#: The first part of a dotted name has two characters or more: `s.<base62>`
+#: is a legacy Vault token, not an attribute (the #403 security review).
+_FIRST_PART = (
+    r"_*(?:[a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}"
+    r"|[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")+"
+    r"|(?:" + _HUMP + r")+)"
+)
+#: A dotted name starts `self`/`cls`/`this`, or ends in a name that names a
+#: credential, an underscored name or a credential keyword:
+#: `page.next_page_token`, `settings.client_secret`, `self._x`, `args.token`.
+_DOTTED = (
+    r"(?:(?:self|cls|this)(?:" + _DOT + _PART + r")+"
+    r"|" + _FIRST_PART + r"(?:" + _DOT + _PART + r")*" + _DOT + r"(?:" + _CREDENTIAL_NAME
+    + r"|_+" + _PART + r"|" + _KEYWORD_WORD + r"))"
+)
+#: A CALL OR SUBSCRIPT, CLOSED ON ITS LINE, OF A CONVENTIONAL NAME (the #403
+#: security review). The first version took any identifier followed by `(`
+#: or `[`, which served 5.6-6.4% of random 12-20 character symbol passwords
+#: (`password: aB3x(9k...`). Now the callee must be a conventional name, the
+#: argument list must close on the same line -- with at most two nested
+#: calls inside, each bounded, so the scan stays linear -- no argument may
+#: hold a secret run (`_NO_SECRET`), and what follows must end an
+#: expression. Under `password` and `passwd` no call is exempt at all:
+#: `password = getpass.getpass(` stays masked, a price paid for a human's
+#: choice of value.
+_CALLEE = _FIRST_PART + r"(?:" + _DOT + _PART + r")*"
+#: An argument is made of what code arguments are made of -- names,
+#: numbers, quotes, `.,:=*+/%\\-[]` and spaces -- never `!?#@|&<>^~$;{}`,
+#: which a random symbol password holds and a call's arguments rarely do.
+_ARG = r"(?:" + _NO_SECRET + r"[A-Za-z0-9_.,:=*'\" +/%\\\[\]-])"
+#: A subscript is an index, a name or a quoted key -- `tokens[0]`,
+#: `os.environ["GH_TOKEN"]`.
+_ARGUMENTS = (
+    r"(?:\(" + _ARG + r"{0,160}(?:\(" + _ARG + r"{0,160}\)" + _ARG + r"{0,160}){0,2}\)"
+    r"|\[" + _NO_SECRET + r"(?:-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}"
+    r"|\"(?:" + _NO_SECRET + r"[^\"\n]){0,128}\"|'(?:" + _NO_SECRET + r"[^'\n]){0,128}')\])"
+)
+_CLOSED_CALL = (
+    _CALLEE + _ARGUMENTS + r"(?=[\s,;]|$|[)\]}]+(?:[\s,;]|$)|" + _DOT + r"[a-z_])"
+)
+#: A shell substitution: `$(command ...)`, `${NAME}`, an empty `${NAME:-}` (a
+#: default VALUE is a literal: `${TOKEN:-<v>}`), or a
+#: GitHub Actions `${{ expression }}` -- never `$` and any character.
+_SHELL_SUBSTITUTION = (
+    r"\"?\$(?:\(" + _NO_SECRET + r"[a-z][a-z0-9_-]{0,31}[ )]"
+    r"|\{" + _NO_SECRET + r"[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )"
+)
+_EXPRESSION_PASSWORD = (
+    r"(?-i:={1,2}[ \t]|(?:await|new|not)[ \t]"
+    + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"
+    + _END + r")"
+)
+_EXPRESSION = (
+    r"(?-i:" + _EXPRESSION_PASSWORD + r"|" + _CLOSED_CALL + r"|" + _CREDENTIAL_NAME + _END + r")"
+)
+#: A PascalCase or dotted type is a type only where a type ends: before
+#: ` = `, or ` | ` and another type (spaced, which no value this rule takes
+#: can hold), a `)` that
+#: closes a parameter list (then `->`, or a `:` or nothing to the end of the
+#: line), or a `[` opening a generic of a name: `_token: _Token | None`,
+#: `credential: Credential) -> str:`, `pattern: re.Pattern[str]`. At the end
+#: of a line or before a comma it is as likely a YAML value -- `password:
+#: MyDogRex`, `vault_token: s.<base62>` -- and stays masked (the #403
+#: security review: these were served whatever followed them). The builtin
+#: and typing names may end anywhere.
+_TYPE_END = (
+    r"(?=[ \t]+=[ \t]|[ \t]+\|[ \t]+(?:None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])"
+    r"|\)[ \t]*(?:->|:?$)"
+    r"|\[(?:str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}(?:[A-Z][a-z]{1,15}){0,3})[\],])"
+)
+_BUILTIN_TYPE = (
+    r"(?-i:(?:str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown"
+    r"|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence"
+    r"|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)"
+    r"(?=[\s,;)\]}|=>\[]|$))"
+)
+_ANNOTATION = (
+    r"(?-i:(?:_*(?:" + _HUMP + r")+"
+    r"|[a-z_][a-z0-9_]{0,31}" + _DOT + r"(?:" + _HUMP + r")+)"
+    + _TYPE_END + r")"
+)
+#: After `:` -- a type annotation (under `password`/`passwd` only a builtin
+#: or typing name: `password: Summer)` is a value), a dotted name (a dict
+#: literal's `"next_page_token": page.next_page_token`), the end of a shell
+#: `${NAME:-}`, and, except under `password`/`passwd`, a closed call. Never
+#: a bare word: `secret: missing_link_42` is YAML.
+_COLON_VALUE_PASSWORD = (
+    r"(?-i:" + _BUILTIN_TYPE + r"|" + _DOTTED + _END + r"|[-+=?]\}(?=[\"\s]|$))"
+)
+_COLON_VALUE = r"(?-i:" + _COLON_VALUE_PASSWORD + r"|" + _ANNOTATION + r"|" + _CLOSED_CALL + r")"
+#: Not masked when the value starts with one of these (see above), and does
+#: not itself start a secret run.
+_NOT_A_LITERAL = (
+    _NO_SECRET + r"(?:" + _SHELL_SUBSTITUTION
+    + r"|(?(colon)(?(pw)" + _COLON_VALUE_PASSWORD + r"|" + _COLON_VALUE + r")"
+    + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
+    r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!)))))"
+)
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
-    r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
-    r"(?:api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)"
+    r"((?:\\{0,15}\")?(?P<lc>(?=(?-i:[A-Z0-9_.-]*[a-z])))?+[A-Za-z0-9_.-]*"
+    r"(?:(?P<pw>password|passwd)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
-    r"(?:\\*\")?[ \t]*(?:(?P<colon>:)|=)[ \t]*(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
+    r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
     r"(?(esc)"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
@@ -523,14 +756,36 @@ KEY_VALUE = _rule(
 #: body lines the block is recognised by.
 #:
 #: `.` never matches a newline in any pattern here (no re.DOTALL).
+#:
+#: AN IDENTIFIER IS NEVER CUT MID-WORD (#370). `ey` and eight more characters
+#: took `key_withheld` as `k` + a JWT, served `key_withhel********`, and broke
+#: the patch holding it; `KeyboardInterrupt` and `KeychainStore` went the same
+#: way, and the `sk-` rule cut `task-bbbbbbbb`. So both rules now start only
+#: where a word starts -- after a character that is not a letter, digit or
+#: `_` -- and a JWT must start `eyJ`, which every JWT does (it is base64 of
+#: `{"`). A token GLUED onto a word is still masked when it is long enough
+#: that no identifier is: `eyJ` and 37 more characters (dots counted -- a JWT
+#: header alone can be 36), `sk-` and 32 more.
+#: The shell filter states each as two expressions, since sed has no
+#: look-around; tests/unit/control_plane/test_patch_artifact_applies.py holds
+#: the four to one output (its values are assembled, so they are not in the
+#: fixture file).
 RULES: tuple[Rule, ...] = (
     _private_key_rule(),
-    _rule("openai_key", "sk-", r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+"),
+    _rule(
+        "openai_key",
+        "sk-",
+        r"(?:(?<![A-Za-z0-9_])|(?=sk-[A-Za-z0-9_-]{32}))(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+",
+    ),
     _rule("google_oauth_access_token", "ya29", r"(ya29\.)[A-Za-z0-9._-]+"),
     # Any JWT: a Google ID token, an IAP assertion, a session cookie. This is
     # the one most likely to appear in a log this platform serves, because it
     # is what every caller of this very API holds.
-    _rule("jwt", "ey", r"(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+"),
+    _rule(
+        "jwt",
+        "ey",
+        r"(?:(?<![A-Za-z0-9_])|(?=eyJ[A-Za-z0-9._-]{37}))(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]+",
+    ),
     _rule("google_api_key", "AIza", r"(AIza)[A-Za-z0-9_-]{20,}"),
     _rule("github_token", "gh[pousr]_", r"(gh[pousr]_)[A-Za-z0-9]{8,}"),
     _rule("github_pat", "github_pat_", r"(github_pat_)[A-Za-z0-9_]{8,}"),
