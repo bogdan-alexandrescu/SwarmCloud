@@ -61,6 +61,18 @@ INTERRUPTED = 143
 #: take "a minute or more" to pass traffic after an instance starts.
 DIRECT_VPC_STARTUP_DELAY_SECONDS = 60
 
+#: How long the generation check must keep asking (#401, owner decision
+#: 2026-09-30). Fresh Cloud Run instances were measured getting no reply from
+#: Google APIs for 30 to 90 s after starting, and two attempts were lost to it
+#: (2026-09-25 swarm-job-eng-mock-9ngvq, 2026-09-26 r7ff9) under a schedule
+#: that spanned about 90 s. Twice that is the owner's margin.
+CONTROL_PLANE_READ_SPAN_SECONDS = 180
+
+#: The worst case (every try hanging its whole call timeout) the schedule may
+#: reach. Past it, more of the measured cold starts (103 and 195 s, dispatch to
+#: worker) would meet the lease's 300 s dispatch deadline before the verdict.
+CONTROL_PLANE_READ_WORST_CASE_SECONDS = 200
+
 
 class FakeTime:
     """A clock that moves only when the worker sleeps, so a test never waits."""
@@ -275,12 +287,14 @@ def test_a_fenced_attempt_is_not_retried(db, worker_factory):
 
 
 def test_the_retries_outlast_the_documented_direct_vpc_delay_and_stay_bounded():
-    """Starts at 0, keeps asking past a minute, and gives its verdict within two.
+    """Starts at 0, keeps asking past a minute, and gives a bounded verdict.
 
     The worst case is every try hanging for its whole call timeout, so each
-    attempt costs the full startup budget plus one call. The bound keeps the
-    verdict well inside the lease's 300 s dispatch deadline for the cold starts
-    measured on 2026-09-25 (dispatch to first line: 103 s and 195 s).
+    attempt costs the full startup budget plus one call. Before #401 the bound
+    was 120 s, inside the lease's 300 s dispatch deadline for both cold starts
+    measured on 2026-09-25 (dispatch to first line: 103 s and 195 s). The
+    longer schedule #401 asked for keeps it inside for the 103 s one only; the
+    reconciler fences a worker that is still asking past the deadline.
     """
     from agent_worker import startup
 
@@ -293,7 +307,60 @@ def test_the_retries_outlast_the_documented_direct_vpc_delay_and_stay_bounded():
     for start in schedule:
         end = max(start, end) + per_attempt
     assert startup.CONTROL_PLANE_READ_WINDOW_SECONDS == end
-    assert end <= 120, end
+    assert end <= CONTROL_PLANE_READ_WORST_CASE_SECONDS, end
+
+
+def test_the_schedule_keeps_asking_for_180_seconds_with_backoff():
+    """#401: the read is still being tried 180 s after the worker first asked.
+
+    The span is the last attempt's start plus its own retry budget: an attempt
+    whose tries each fail at once (nothing answers) still retries for that long.
+    The gaps between attempts grow, so the early retries are quick and the late
+    ones do not hammer an API that is merely slow.
+    """
+    from agent_worker import startup
+
+    schedule = _schedule()
+    span = schedule[-1] + startup.FIRESTORE_STARTUP_RETRY_SECONDS
+    assert span >= CONTROL_PLANE_READ_SPAN_SECONDS, (
+        f"the generation check stops asking {span}s after it starts; #401 lost "
+        f"attempts to a no-reply window, and the owner asked for {CONTROL_PLANE_READ_SPAN_SECONDS}s"
+    )
+    gaps = _gaps(schedule)
+    assert gaps == sorted(gaps) and gaps[-1] > gaps[0], f"no backoff between attempts: {gaps}"
+
+
+def test_a_read_that_fails_for_150_seconds_then_answers_still_starts(
+    db, worker_factory, log_stream, monkeypatch
+):
+    """#401's window, outlasted: no reply for the first 150 s, then Firestore answers."""
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    fake = _scheduled(worker)
+
+    original = FakeDocumentRef.get
+    first_read: list[float] = []
+    failed_at: list[float] = []
+
+    def get(self: FakeDocumentRef, *args: Any, **kwargs: Any) -> Any:
+        if self.path == "tasks/task_1":
+            if not first_read:
+                first_read.append(fake.now)
+            if fake.now - first_read[0] < 150:
+                failed_at.append(fake.now - first_read[0])
+                raise _unavailable()
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(FakeDocumentRef, "get", get)
+
+    assert worker.run() == ExitCode.OK, f"reads failed at {failed_at}s and the attempt was lost"
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+    assert failed_at and max(failed_at) < 150, failed_at
+    errors = [
+        r for r in _records(log_stream)
+        if r["severity"] == "ERROR" and r.get("phase") == "validate_generation"
+    ]
+    assert errors == [], errors
 
 
 def test_the_dns_preflight_and_the_control_plane_read_share_one_retry_loop(
