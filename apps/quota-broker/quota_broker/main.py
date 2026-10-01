@@ -53,6 +53,7 @@ from .accounts import (
     HOLD_END_RELEASED,
     HOLD_END_UNUSABLE,
     HOLD_LOG_COLLECTION,
+    HOLD_LOG_RETENTION,
     AccountState,
     Hold,
     Unavailable,
@@ -870,11 +871,25 @@ def _instant(raw: str, name: str) -> datetime:
 
 
 def _history_cursor(raw: str) -> tuple[datetime, int]:
-    """`<instant>|<n served at that instant>`, as the previous page minted it."""
+    """`<instant>|<n served at that instant>`, as the previous page minted it.
+
+    `n` is BOUNDED by `HISTORY_PAGE_MAX`. It sizes the Firestore read
+    (`limit + n + 1`), so an unbounded one let a forged cursor read an
+    account's whole hold log, and past int32 it was an unhandled 500. A page
+    never serves more than `HISTORY_PAGE_MAX` rows, and the account holds a
+    handful of concurrent holds, so a genuine `n` never nears the bound.
+
+    NOT a (assigned_at, document id) cursor, though that would need no count:
+    the document id IS the assignment id, which authorises a release, and a
+    cursor is handed to the caller.
+    """
     instant, sep, count = raw.rpartition("|")
-    if not sep or not count.isdigit():
+    if not sep or not (count.isascii() and count.isdigit()) or len(count) > 4:
         raise BrokerValidationError("the cursor is not one this route issued")
-    return _instant(instant, "cursor"), int(count)
+    skip = int(count)
+    if skip > HISTORY_PAGE_MAX:
+        raise BrokerValidationError("the cursor is not one this route issued")
+    return _instant(instant, "cursor"), skip
 
 
 def quota_to_api(state: QuotaState) -> dict[str, Any]:
@@ -2397,6 +2412,12 @@ def create_app(
         since = _instant(start, "from") if start else until - HISTORY_DEFAULT_SPAN
         if since >= until:
             raise BrokerValidationError("`from` must be earlier than `to`")
+        if until - since > HOLD_LOG_RETENTION:
+            # No record outlives its TTL, so a longer window can only be a scan
+            # of everything the index holds.
+            raise BrokerValidationError(
+                f"the window `from`..`to` may span at most {HOLD_LOG_RETENTION.days} days"
+            )
         position = _history_cursor(cursor) if cursor else None
         if position is not None and position[0] >= until:
             raise BrokerValidationError("the cursor is outside the window")

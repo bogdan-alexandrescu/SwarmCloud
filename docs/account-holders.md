@@ -74,6 +74,14 @@ A history cursor is `<instant>|<n>`: the last `assigned_at` served and how
 many rows at that instant were served. A cursor meaning "strictly before the
 last instant" would drop every other span taken in the same instant.
 
+The cursor and the window are bounded, because `n` sizes the Firestore read
+(`limit + n + 1`): `n` above the page maximum (500), a non-ASCII-digit or
+non-numeric `n`, and a `from`..`to` span longer than the 90-day retention are
+each a 422, never a 500 and never a scan of the account's whole log. Paging on
+(`assigned_at`, document id) would need no count, but the document id is the
+assignment id, which authorises a release, and a cursor is handed to the
+caller.
+
 Neither route serves the assignment id, because it authorises a release.
 Neither serves the secret name, either.
 
@@ -90,6 +98,15 @@ Any other caller gets a 404, the same answer an unknown id gets.
 | any tenant | task link, attempt number, since when | — |
 | owner of a lent account | (as above) | `N agents · <tenant>`; no task or attempt id |
 | borrower | (as above) | a count only; no tenant name |
+
+In the **history**, the same split holds span by span (owner decision
+2026-10-01). A borrower is served only its own spans, in full, plus `others`:
+how many other tenants' spans the page covered, with no time, outcome or
+tenant. The owner of a lent account keeps each borrower's spans with times,
+outcome and tenant name. A borrower's `next_cursor` is rebuilt from its own
+last row on the page (swarm-api cuts the page there; the rows cut come back,
+counted, on the next page), because the broker's cursor is the last row's
+`assigned_at`, and that row can be another tenant's.
 | admin (`?scope=platform`, `require_admin` first) | everything | everything |
 
 **A task id is checked before anyone is shown it.** The task id on a hold is

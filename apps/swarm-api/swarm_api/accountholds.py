@@ -18,7 +18,11 @@ owner, never from the request:
                    attempt id. The owner decided to lend; it may know to whom.
   borrower         on holds that are not its own: a COUNT and nothing else, no
                    tenant name. Borrowing an account does not entitle a tenant
-                   to learn who else does.
+                   to learn who else does. In the HISTORY the same: its own
+                   spans in full, and every other tenant's collapsed into
+                   `others`, with no time and no outcome (owner decision
+                   2026-10-01). The owner of a lent account keeps per-span
+                   detail on the borrowers: times, outcome and tenant.
   platform         an admin, behind `require_admin`: everything.
 
 WHY A TASK ID IS VERIFIED BEFORE IT IS SHOWN
@@ -220,8 +224,14 @@ def history_view(
                     for r in rows if r.get("tenant_id") == tenant_id)
 
     spans: list[dict[str, Any]] = []
+    others = 0
     for r in rows:
         tenant = str(r.get("tenant_id") or "")
+        if viewer == "borrower" and tenant != tenant_id:
+            # Counted, and nothing else of it is read: not its times, not its
+            # outcome, not its tenant.
+            others += 1
+            continue
         since = _instant(r.get("assigned_at"))
         until = _instant(r.get("released_at"))
         end = r.get("end") if r.get("end") in _ENDS else None
@@ -246,7 +256,7 @@ def history_view(
         spans.append(span)
 
     cursor = payload.get("next_cursor")
-    return {
+    out: dict[str, Any] = {
         "account_id": str(payload.get("account_id") or ""),
         "viewer": viewer,
         "from": _text(payload.get("from")),
@@ -254,6 +264,79 @@ def history_view(
         "spans": spans,
         "next_cursor": cursor if isinstance(cursor, str) and cursor else None,
     }
+    if viewer == "borrower":
+        out["others"] = others
+        if payload.get("scan_limited"):
+            out["scan_limited"] = True
+    return out
 
 
-__all__ = ["TaskCheck", "Viewer", "history_view", "holders_view", "viewer_of"]
+#: How many broker pages a borrower's read may walk to find one of its own rows.
+_OWN_SCAN_PAGES = 20
+
+
+def _cursor_skip(cursor: str | None) -> tuple[datetime | None, int]:
+    """The (instant, skip) of a cursor this service minted, or (None, 0)."""
+    if not cursor:
+        return None, 0
+    instant, _, count = cursor.rpartition("|")
+    return (_instant(instant), int(count)) if count.isdigit() else (None, 0)
+
+
+def own_page(
+    payload: dict[str, Any],
+    *,
+    tenant_id: str | None,
+    cursor: str | None,
+    fetch: Callable[[str | None], dict[str, Any]],
+) -> dict[str, Any]:
+    """A borrower's page: it ends at a row of its own, so its cursor can.
+
+    The broker's cursor is the instant of the LAST row on the page, and when
+    that row is another tenant's the cursor is that tenant's `assigned_at` --
+    a timestamp a borrower is not shown. So the page is cut after the
+    borrower's last own row and the cursor is rebuilt from THAT row, which the
+    borrower may know. The rows cut are served again, counted, on the next
+    page. A page with no row of the borrower's at all is followed (at most
+    `_OWN_SCAN_PAGES` pages) until one has, because there is no cursor to hand
+    back otherwise; past that bound the scan stops, says so, and offers none.
+    """
+    rows = [r for r in payload.get("spans") or [] if isinstance(r, dict)]
+    broker_cursor = payload.get("next_cursor")
+    more = isinstance(broker_cursor, str) and bool(broker_cursor)
+    pages = 1
+
+    def mine(r: dict[str, Any]) -> bool:
+        return r.get("tenant_id") == tenant_id
+
+    while more and not any(mine(r) for r in rows) and pages < _OWN_SCAN_PAGES:
+        page = fetch(broker_cursor)
+        rows += [r for r in page.get("spans") or [] if isinstance(r, dict)]
+        broker_cursor = page.get("next_cursor")
+        more = isinstance(broker_cursor, str) and bool(broker_cursor)
+        pages += 1
+
+    served = dict(payload)
+    if not more:
+        served["spans"] = rows
+        served["next_cursor"] = None
+        return served
+    last = max((i for i, r in enumerate(rows) if mine(r)), default=None)
+    if last is None:
+        served["spans"] = rows
+        served["next_cursor"] = None
+        served["scan_limited"] = True
+        return served
+    kept = rows[: last + 1]
+    stamp = kept[-1].get("assigned_at")
+    at = _instant(stamp)
+    n = sum(1 for r in kept if _instant(r.get("assigned_at")) == at)
+    from_at, from_skip = _cursor_skip(cursor)
+    if from_at is not None and from_at == at:
+        n += from_skip
+    served["spans"] = kept
+    served["next_cursor"] = f"{stamp}|{n}" if isinstance(stamp, str) and stamp else None
+    return served
+
+
+__all__ = ["TaskCheck", "Viewer", "history_view", "holders_view", "own_page", "viewer_of"]

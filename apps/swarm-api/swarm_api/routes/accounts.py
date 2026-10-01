@@ -78,7 +78,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from ..accountholds import TaskCheck, Viewer, history_view, holders_view, viewer_of
+from ..accountholds import TaskCheck, Viewer, history_view, holders_view, own_page, viewer_of
 from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
 from ..deps import AppContext, current_auth, get_context
@@ -462,12 +462,18 @@ def account_holders(
     )
 
 
+#: What the broker's history cursor looks like -- `<instant>|<skip>`, the skip
+#: at most three digits (the broker's page is at most 500). The broker enforces
+#: the value; this refuses a forged one before a broker call is made.
+_CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
+
+
 @router.get("/{account_id}/history")
 def account_history(
     account_id: str,
     start: str | None = Query(default=None, alias="from", max_length=64),
     end: str | None = Query(default=None, alias="to", max_length=64),
-    cursor: str | None = Query(default=None, max_length=80),
+    cursor: str | None = Query(default=None, max_length=80, pattern=_CURSOR_SHAPE),
     scope: str | None = Query(default=None, description="tenant | platform"),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
@@ -475,13 +481,20 @@ def account_history(
 ) -> dict:
     """Recorded spans on this account in [from, to), newest first, paged.
 
-    The caller's own spans name their task; other tenants' are anonymised --
-    by tenant for the owner, not at all for a borrower. The broker validates
+    The caller's own spans name their task. The owner of a lent account sees
+    every borrower's spans with times, outcome and tenant; a borrower sees only
+    its own, and a count of everyone else's. The broker validates
     the window and the cursor and answers a bad one with a 422 that names it.
     """
     viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE)
+    def fetch(at: str | None) -> dict:
+        return pool.hold_history(account_id, start=start, end=end, cursor=at)
+
+    payload = fetch(cursor)
+    if viewer == "borrower":
+        payload = own_page(payload, tenant_id=tenant_id, cursor=cursor, fetch=fetch)
     return history_view(
-        pool.hold_history(account_id, start=start, end=end, cursor=cursor),
+        payload,
         viewer=viewer,
         tenant_id=tenant_id,
         check=_check(ctx),
