@@ -125,8 +125,8 @@ variable "reconciler_schedule" {
     added, which requeues a task whose execution ended before its runner
     started, waits 30 s past the execution's end and then for the next
     pass: at */5 that was up to five and a half minutes, no sooner than the
-    300 s dispatch deadline it replaces. At */1 it is about a minute and a
-    half.
+    then 300 s dispatch deadline it replaces (480 s since contract request
+    37). At */1 it is about a minute and a half.
 
     What a pass costs, measured over the 300 passes of 2026-09-24/25: p50
     3.0 s, p90 8.7 s, max 111 s. A pass that runs past the next tick makes

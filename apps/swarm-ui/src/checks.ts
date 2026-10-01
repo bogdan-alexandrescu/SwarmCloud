@@ -494,18 +494,23 @@ function failureCheck(tasks: Result<TaskPage>): Check {
  *   - DISPATCHED -> STARTING was measured at p50 122.6s and p90 159.0s across
  *     231 tasks. Anything under about 160s fires on an ordinary cold start,
  *     which would make this check's first lesson "ignore me".
- *   - `dispatch_timeout_seconds` is 300 (apps/common/swarm_common/config.py:52).
- *     That is the platform's OWN deadline for a LEASED task to reach a backend,
- *     and `leaseCheck` above already reports a lease that misses it. A workflow
- *     threshold at or below 300 would restate the lease check's finding in a
- *     second voice, on the same screen, five rows apart.
+ *   - `dispatch_timeout_seconds` is 480 (apps/common/swarm_common/config.py;
+ *     300 until contract request 37, 2026-09-30). That is the platform's OWN
+ *     deadline for a LEASED task to reach a backend, and `leaseCheck` above
+ *     already reports a lease that misses it. A workflow threshold at or below
+ *     480 would restate the lease check's finding in a second voice, on the
+ *     same screen, five rows apart.
  *   - the scheduler notices an eligible step on a loop bounded at
  *     `max_run_seconds` 45 with an aging tick of `aging_interval_seconds` 60
  *     (apps/scheduler/scheduler/settings.py:72,79), so "eligible" and "picked
  *     up" are a pass apart even when everything is healthy.
  *
- * 300 + 159 + a scheduler pass is a little over 500s, so 600 is the first round
- * number clear of all three. It is also well inside the twenty-minute stall the
+ * When the deadline was 300, 300 + 159 + a scheduler pass was a little over
+ * 500s, and 600 was the first round number clear of all three. Since contract
+ * request 37 the deadline is 480: 600 is still above it and above the p90 cold
+ * start, the two bounds tests/unit/control_plane/test_overview_workflow_checks.py
+ * holds, but no longer above their sum (about 700s). The number was left at 600
+ * by that change; raising it is a separate decision. It is also well inside the twenty-minute stall the
  * UI audit watched go entirely unreported, which is the failure this exists to
  * end.
  *

@@ -150,10 +150,11 @@ test('MUTATION GUARD: the threshold is crossed at exactly 600 seconds', () => {
 
 test('MUTATION GUARD: the threshold is above the measured cold start', () => {
   // dispatched -> starting was p50 122.6s / p90 159.0s over 231 tasks, and
-  // `dispatch_timeout_seconds` is 300. A threshold lowered into that range
-  // fires on healthy work, so a workflow quiet for 300s must stay clear.
+  // `dispatch_timeout_seconds` is 480 (contract request 37; it was 300). A
+  // threshold lowered into that range fires on healthy work, so a workflow
+  // quiet for 480s must stay clear.
   const checks = deriveChecks(
-    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 300 })])) }),
+    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 480 })])) }),
     NOW,
   )
   assert.equal(checkNamed(checks, 'Workflows').status, 'clear')

@@ -732,7 +732,7 @@ def test_the_retries_span_thirty_to_forty_five_seconds_however_the_lookups_fail(
     that fail at once spent nothing and spanned 7 s (review of PR #59).
 
     And the verdict comes by 45 s, far inside the lease's dispatch deadline.
-    A worker that has not heartbeated is judged by that deadline alone, 300 s
+    A worker that has not heartbeated is judged by that deadline alone, 480 s
     after admission (`reconciler.detect.detect_stale_leases`). The worker's
     own "cannot start" has to arrive long before it, or the reconciler
     reclaims the lease as silent and the cause is lost again.

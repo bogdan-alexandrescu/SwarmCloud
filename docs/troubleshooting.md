@@ -89,7 +89,8 @@ gcloud scheduler jobs run swarm-reconciler-tick --project "$PROJECT_ID" --locati
 
 The reconciler deliberately does **not** treat "LEASED with a fresh lease and no
 execution yet" as a fault — dispatch takes time and image pulls take minutes.
-A task becomes a finding only after `dispatch_timeout_seconds` (300).
+A task becomes a finding only after `dispatch_timeout_seconds` (480; it was 300
+until contract request 37 made room for the worker's 200 s startup read).
 
 If the reconciler is running and the task stays stuck, there are two causes, and
 both are the reconciler **refusing on purpose**: it will not release a slot it

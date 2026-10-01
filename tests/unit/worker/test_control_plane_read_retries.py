@@ -69,8 +69,9 @@ DIRECT_VPC_STARTUP_DELAY_SECONDS = 60
 CONTROL_PLANE_READ_SPAN_SECONDS = 180
 
 #: The worst case (every try hanging its whole call timeout) the schedule may
-#: reach. Past it, more of the measured cold starts (103 and 195 s, dispatch to
-#: worker) would meet the lease's 300 s dispatch deadline before the verdict.
+#: reach. Past it, the slower measured cold start (195 s, dispatch to worker)
+#: would meet the lease's 480 s dispatch deadline before the verdict (contract
+#: request 37, and the test at the end of this file).
 CONTROL_PLANE_READ_WORST_CASE_SECONDS = 200
 
 
@@ -291,10 +292,11 @@ def test_the_retries_outlast_the_documented_direct_vpc_delay_and_stay_bounded():
 
     The worst case is every try hanging for its whole call timeout, so each
     attempt costs the full startup budget plus one call. Before #401 the bound
-    was 120 s, inside the lease's 300 s dispatch deadline for both cold starts
-    measured on 2026-09-25 (dispatch to first line: 103 s and 195 s). The
-    longer schedule #401 asked for keeps it inside for the 103 s one only; the
-    reconciler fences a worker that is still asking past the deadline.
+    was 120 s, inside the lease's then 300 s dispatch deadline for both cold
+    starts measured on 2026-09-25 (dispatch to first line: 103 s and 195 s).
+    The longer schedule #401 asked for fit inside it for the 103 s one only,
+    so contract request 37 raised the deadline to 480 s; the reconciler still
+    fences a worker that is asking past it.
     """
     from agent_worker import startup
 

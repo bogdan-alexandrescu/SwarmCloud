@@ -43,6 +43,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
 | 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342 |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
+| 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
 
 ---
 
@@ -7426,3 +7427,117 @@ it were found wrong while building it (#353, #354), and one decision was added:
    unsigned task through a mode it could not read nor refuse a tenant's task
    as a signature failure: it exits `ExitCode.CONFIG`, the operator's fault,
    loudly.
+
+---
+
+## 37. `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read
+
+**Status: ACCEPTED, accepted by the owner 2026-09-30, applied by this PR
+(#404).** The owner decided the value (480 s) and that it goes through this
+file, on #401, after #402 lengthened the worker's startup read. Numbered 37
+because 35 and 36 are taken on an open branch
+(`docs/cr35-cr36-merge-step-followons`); if another branch has taken 37 by the
+time this merges, renumber this one.
+
+### What is true today
+
+The lease's dispatch deadline is 300 s, stated three times inside the frozen
+contract:
+
+* `swarm_common/config.py`, `Settings.dispatch_timeout_seconds: int = 300`;
+* `swarm_common/config.py`, `Settings.from_env`, the fallback of
+  `DISPATCH_TIMEOUT_SECONDS`, `300`;
+* `swarm_common/admission.py`, `AdmissionConfig.dispatch_timeout_seconds: int = 300`.
+
+Admission writes `lease.dispatch_deadline = now + dispatch_timeout_seconds`
+(`admission.py`, `acquire_lease_in_transaction`). Where it is read:
+
+* **the scheduler** passes its setting into `AdmissionConfig`
+  (`apps/scheduler/scheduler/loop.py`), and into
+  `backend_deadline_seconds` for every Cloud Run and GKE dispatch
+  (`apps/scheduler/scheduler/dispatch.py`): the backend's hard deadline is the
+  task timeout + the dispatch timeout + `WORKER_FINALISE_BUDGET_SECONDS` (300);
+* **the reconciler** judges a lease that has never heartbeated by
+  `dispatch_deadline` alone (`detect_stale_leases`, `reconciler/detect.py`),
+  and `MISSING_EXECUTION_GRACE_SECONDS` defaults to it
+  (`reconciler/config.py`);
+* **`kubernetes/render.py`** reads the dataclass default for the GKE Job
+  templates' `activeDeadlineSeconds`, and takes `--dispatch-timeout-seconds`
+  where a deployment overrides it.
+
+No Terraform module sets `DISPATCH_TIMEOUT_SECONDS`; every deployed service
+runs on the default. (`grep -rn "dispatch_timeout_seconds\|DISPATCH_TIMEOUT_SECONDS"`,
+2026-09-30, over the whole tree.)
+
+### The requested change
+
+`dispatch_timeout_seconds` is 480 s in all three places. Nothing else in the
+contract changes: not the field, not the env var, not the lease document.
+
+Why 480. #401 (owner decision 2026-09-30) asked the worker's generation check
+to keep asking for about 180 s, because fresh Cloud Run instances were measured
+getting no reply from Google APIs for 30 to 90 s after starting, and two
+attempts were lost to it under a ~90 s schedule (2026-09-25
+`swarm-job-eng-mock-9ngvq`, 2026-09-26 `r7ff9`). #402 built it: the read now
+spans ~180 s and its worst case, every try hanging its whole call timeout, is
+200 s (`agent_worker.startup.CONTROL_PLANE_READ_WINDOW_SECONDS`). The deadline
+counts from dispatch, and the cold starts measured on 2026-09-25 were 103 s and
+195 s from dispatch to the worker's first line
+(`docs/incidents/2026-09-25-worker-startup-network.md`). At 300 s, a worker
+that cold-started in 195 s and met an API that did not answer was fenced by the
+reconciler before its own last attempt ended: the retry the owner asked for was
+cut off by the platform's own deadline, and the attempt was lost exactly as it
+was before #401. 195 + 200 = 395 s; with 60 s of margin for the first heartbeat
+after the verdict, and because 195 s is the slower of two samples rather than a
+bound, 455 s; 480 is the round figure above it.
+
+`tests/unit/worker/test_control_plane_read_retries.py`
+(`test_the_dispatch_deadline_outlasts_the_slowest_cold_start_plus_the_worst_read`)
+holds the three numbers to each other, imports the worker's window rather than
+restating it, and holds all three frozen statements of the default equal.
+
+### What it would break if accepted
+
+* **A genuinely lost dispatch is detected 3 minutes later.** A Job that was
+  never created, an image that never pulled, a worker that died before its first
+  heartbeat and whose execution the ended-at-startup rule cannot see: the
+  reconciler reclaims each at the deadline, now 480 s instead of 300 s. For
+  those 180 s the lease is held, and with it the concurrency slot and the
+  capacity units across every pool. **Invariants 1 and 3 still hold** (a
+  `LEASED`/`DISPATCHED` task is demand and counts toward concurrency, as it
+  must); what changes is how long a dead one is counted. At the 100-agent
+  ceiling, a burst of lost dispatches holds its slots up to 8 minutes rather
+  than 5. The ended-at-startup rule (#198), on a `*/1` tick, still requeues
+  any attempt whose execution has visibly ended within 30 to 90 s of the end,
+  so the longer wait is paid only by dispatches that left no ended execution
+  behind.
+* **The backend's hard deadline grows by 180 s** for every attempt
+  (`backend_deadline_seconds`). A wedged lifecycle stops heartbeating and is
+  reclaimed by the heartbeat rule long before either deadline, so this is the
+  ceiling for a hung pod, not its expected life. The largest task timeout the
+  API accepts (86 400 s) plus 480 + 300 s stays far inside Cloud Run's task
+  timeout limit.
+* **The overview's workflow-stall threshold (600 s, `apps/swarm-ui/src/checks.ts`)**
+  stays above the deadline and above the p90 cold start, the two bounds its
+  tests hold, but no longer above their sum (about 700 s). It was left at 600
+  by this change.
+* **The reconciler's `missing_execution_grace_seconds`** defaults to the same
+  setting, so an execution missing from the backend listing is also given
+  480 s. Its dataclass default in `reconciler/config.py`, which tests that do
+  not pass the field use, moves to 480 with it.
+
+### If it is declined
+
+The worker's startup read stays at ~180 s (200 s worst) and a cold start
+slower than about 94 s from dispatch (300 - 200 - 6) that meets an API with no
+reply is fenced before its verdict. The alternative is shortening #402's
+schedule back toward ~90 s, which is what lost the two attempts #401 recorded.
+
+### Invariants
+
+1. Demand is still only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING`; the change
+   lengthens how long a dead dispatch is counted, stated above.
+2. All-or-nothing reservation: unchanged.
+3. Concurrency counts from `LEASED`: unchanged.
+5. Fencing: a worker that starts after the deadline is still fenced; the
+   deadline is later.
