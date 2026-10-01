@@ -1,13 +1,13 @@
 """Which repository and ref a dispatch clones, when the caller did not say.
 
 WHY THIS EXISTS (owner decision, 2026-09-26). A Claude Code workflow step can
-now run in SwarmCloud instead of locally (`sc:remote`, `/sc:run`). A local step
+now run in SwarmCloud instead of locally (`sc:remote`, `/sc:SwarmCloud`). A local step
 works on the checkout in front of it without being told which one; a remote
 step that had to be handed a repository URL and a branch by every caller would
 make "run this step remotely" a different, fussier act than "run this step".
 So `swarm_dispatch` and `swarm_workflow` infer both from the git checkout the
 bridge runs in -- but only when the caller passes `infer: true`. That opt-in
-was added the SAME day this module was: `sc:remote` and `/sc:run` pass it on
+was added the SAME day this module was: `sc:remote` and `/sc:SwarmCloud` pass it on
 every call; a plain `swarm_dispatch` or `swarm_workflow` call goes back to
 what it did before this module existed -- a repository only when `repo` is
 named -- unless it opts in too. What travels for an inferred repository is the
@@ -216,7 +216,7 @@ def resolve(
     Owner decision, 2026-09-26: inference is OPT-IN. `swarm_dispatch` and
     `swarm_workflow` go back to their pre-PR behaviour -- a repository only
     when `repo` is given -- unless the caller passes `infer: true`. `sc:remote`
-    and `/sc:run` are the two callers that pass it on every call; anything
+    and `/sc:SwarmCloud` are the two callers that pass it on every call; anything
     else naming neither `repo` nor `infer` gets `source: "none"`, exactly as
     before this PR, and git is never even consulted.
 

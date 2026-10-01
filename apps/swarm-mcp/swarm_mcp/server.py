@@ -41,7 +41,7 @@ from typing import Any
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from . import checkout, progress
+from . import checkout, compact, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of
@@ -219,7 +219,17 @@ TOOLS: list[dict[str, Any]] = [
             "stream's `status` -- `absent`, `unreadable` and `up_to_date` are "
             "three different facts and none of them mean 'the agent is idle'.\n"
             "\n"
-            "FOR AN AGENT THAT IS THE ROW OF A WORKFLOW (`sc:remote`, `sc:step`), "
+            "FOR A WORKFLOW STEP'S ROW (`sc:step`), pass `format: \"progress\"`: "
+            "no log lines at all, one short line per task only when it changed "
+            "(state; elapsed; attempt n/m; last checkpoint age; tokens and cost "
+            "so far; what a waiting task waits for), the state `transitions` "
+            "since `since`, `changed`, and a finished task's `outcome` -- a few "
+            "hundred bytes a call. A call holds up to `wait_seconds` (max "
+            f"{compact.MAX_WAIT_SECONDS}) and returns early when a task's state, "
+            "attempt or wait reason changes. Measured 2026-10-01: rows following "
+            "`lines` cost 5-16 KB a reply and 4.0M tokens for one row.\n"
+            "\n"
+            "FOR AN AGENT THAT RELAYS A REMOTE AGENT'S WORK (`sc:remote`), "
             "pass `format: \"lines\"`: the answer is then short narrated lines -- "
             "what the remote agent said, which tools it called, where a waiting "
             "task is waiting and why -- plus an opaque `since` token to pass back "
@@ -288,22 +298,28 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "format": {
                     "type": "string",
-                    "enum": ["json", "lines"],
+                    "enum": ["json", "lines", "progress"],
                     "default": "json",
                     "description": (
                         "`json` (default): the full report. `lines`: short "
-                        "narrated lines, a `since` token and, for a finished task, "
-                        "its `outcome` -- the shape a workflow row reads."
+                        "narrated lines of the agent's log, a `since` token and, "
+                        "for a finished task, its `outcome`. `progress`: no log "
+                        "at all -- one progress line per task when it changed, "
+                        "the state transitions, `since` and `outcome`; the "
+                        "shape a workflow step's row reads."
                     ),
                 },
                 "wait_seconds": {
                     "type": "integer",
                     "default": 0,
                     "description": (
-                        "`lines` only: gather for up to this many seconds (max "
-                        "300) before returning; returns early when every task has "
-                        "finished, a task starts, or the read budget is spent. A "
-                        "call without `since` always returns at once."
+                        "`lines` and `progress` only: gather for up to this many "
+                        "seconds (max 300 for `lines`, "
+                        f"{compact.MAX_WAIT_SECONDS} for `progress`) before "
+                        "returning; returns early when every task has finished or "
+                        "a task starts (`progress`: or its attempt or wait reason "
+                        "changes), or the read budget is spent. A call without "
+                        "`since` always returns at once."
                     ),
                 },
                 "max_lines": {
@@ -318,7 +334,7 @@ TOOLS: list[dict[str, Any]] = [
                 "step_id": {
                     "type": "string",
                     "description": (
-                        "`lines` only, with exactly ONE task id: the workflow step "
+                        "`lines` or `progress` only, with exactly ONE task id: the workflow step "
                         "that task must be. A task that is a different step is not "
                         "followed -- the reply says `stop: true` and why -- so a "
                         "mis-copied task id cannot report another step's work under "
@@ -526,7 +542,7 @@ TOOLS: list[dict[str, Any]] = [
                         "A whole workflow spec -- the file the terminal's workflow "
                         "command reads -- instead of `steps` and the "
                         "parameters beside it. A step may carry `stage`, the group "
-                        "/sc:run shows it under; it is never sent."
+                        "/sc:SwarmCloud shows it under; it is never sent."
                     ),
                 },
                 "spec_digest": {
@@ -639,7 +655,7 @@ TOOLS: list[dict[str, Any]] = [
                             "stage": {
                                 "type": "string",
                                 "description": (
-                                    "Display only: the group /sc:run shows this "
+                                    "Display only: the group /sc:SwarmCloud shows this "
                                     "step under. Never sent to the platform."
                                 ),
                             },
@@ -707,7 +723,7 @@ TOOLS: list[dict[str, Any]] = [
             "check it as swarm_workflow would, and return it with its "
             "`spec_digest`. Submits NOTHING and makes no request.\n"
             "\n"
-            "For /sc:run given a path: a workflow script has no filesystem, so "
+            "For /sc:SwarmCloud given a path: a workflow script has no filesystem, so "
             "the bridge reads the file, and the script checks the spec relayed "
             "back against this digest before it submits. `path` is relative to "
             "the checkout, or absolute; the reply's `path` is the file actually "
@@ -1080,7 +1096,7 @@ MAX_SPEC_FILE_BYTES = 1024 * 1024
 def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
     """A spec file, checked by `workflows.read_spec`, with its digest (epic #227).
 
-    `/sc:run` took only a spec object or JSON text, unlike `swarm workflow`,
+    `/sc:SwarmCloud` took only a spec object or JSON text, unlike `swarm workflow`,
     which takes a file; a path passed as its argument failed in `readSpec`. A
     workflow script has no filesystem, so the bridge reads the file here, and
     the script holds the spec relayed back to this digest before it submits.
@@ -1223,8 +1239,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             indent=2,
         )
 
-    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines"):
-        raise SwarmError(f"unknown format {args.get('format')!r}; swarm_follow takes json or lines")
+    if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress"):
+        raise SwarmError(
+            f"unknown format {args.get('format')!r}; swarm_follow takes json, lines or progress"
+        )
 
     if name == "swarm_follow" and args.get("since") not in (None, "") and args.get("cursor"):
         raise SwarmError(
@@ -1235,11 +1253,29 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     expected_step = args.get("step_id") if name == "swarm_follow" else None
     if expected_step is not None and (not isinstance(expected_step, str) or not expected_step.strip()):
         raise SwarmError("`step_id` must be the step's id, a non-empty string")
-    if expected_step is not None and args.get("format") != "lines":
+    if expected_step is not None and args.get("format") not in ("lines", "progress"):
         # Refused, not ignored: a caller that asked for the check and did not
         # get it would believe the task it followed was its step.
         raise SwarmError(
-            "`step_id` is checked only with `format: \"lines\"`; pass that, or no `step_id`"
+            "`step_id` is checked only with `format: \"lines\"` or `format: \"progress\"`; "
+            "pass one, or no `step_id`"
+        )
+
+    if name == "swarm_follow" and args.get("format") == "progress":
+        # The slim row view (`compact.watch_progress`, owner decision
+        # 2026-10-01): no log, one line per task when it changed, compact
+        # JSON -- every byte here is re-read on each of the row's turns.
+        return json.dumps(
+            compact.watch_progress(
+                client,
+                list(args["task_ids"]),
+                since=args.get("since"),
+                wait_seconds=_int_arg(args, "wait_seconds", 0),
+                step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+            ),
+            separators=(",", ":"),
+            ensure_ascii=False,
+            default=str,
         )
 
     if name == "swarm_follow" and args.get("format") == "lines":
@@ -1431,7 +1467,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     "those itself. Pass the whole spec, or `steps` with the parameters "
                     "beside it -- not both"
                 )
-            # THE DIGEST OF WHAT ARRIVED, before anything else reads it. /sc:run
+            # THE DIGEST OF WHAT ARRIVED, before anything else reads it. /sc:SwarmCloud
             # hands the spec to a relay that retypes it into this call; the
             # digest the script computed is the only thing that can show the
             # relay dropped a step or "tidied" a prompt, and it is checked

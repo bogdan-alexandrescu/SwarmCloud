@@ -1,6 +1,6 @@
 export const meta = {
-  name: 'run',
-  description: 'Run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a running agent with its live progress',
+  name: 'SwarmCloud',
+  description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a [SwarmCloud] row per step, by stage, with a short progress line when its state changes',
   whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely. Pass the spec object, its JSON text, or the path of the spec file as args.',
   phases: [
     { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow, checked against the digest this script computed' },
@@ -8,14 +8,22 @@ export const meta = {
   ],
 }
 
-// /sc:run -- a SwarmCloud workflow, shown as a Claude Code workflow.
+// /sc:SwarmCloud -- a SwarmCloud workflow, shown as a Claude Code workflow.
+// (Named `run` until 2026-10-01; the owner asked that it read as SwarmCloud
+// in /workflows, and that every row carry a `[SwarmCloud]` prefix.)
 //
 // Every step EXECUTES in SwarmCloud: one agent submits the whole spec, and
 // SwarmCloud owns the DAG from then on -- dependencies, input_from staging,
 // on_step_failure, retries. Each step is then SHOWN here by one sc:step agent
 // that follows that step's task until it finishes, so /workflows lists a row
-// per step with its phase, its state, its elapsed time and a transcript of
-// what the remote agent is doing.
+// per step with its phase, its state and its elapsed time. Each row is
+// labelled `[SwarmCloud] <spec label or workflow id> · stage <n> · <step>`.
+//
+// A ROW SHOWS PROGRESS, NOT THE LOG (owner decision, 2026-10-01). Rows
+// followed `format: "lines"` until then: 5-16 KB of the remote agent's
+// narrated log per reply, re-read on every turn -- 4.0M tokens for one row,
+// ~22M for six three-step workflows. A row now follows `format: "progress"`
+// and writes one short line only when its task's state or progress changes.
 //
 // A step's row waits for its OWN task only. It may start before its parents
 // finish and will say that it is waiting, and why, in its first lines; that
@@ -132,7 +140,7 @@ const WORKFLOW_STATE = {
   required: ['state', 'state_note', 'steps'],
 }
 
-// What /sc:run was given: { spec } for a spec object or its JSON text, or
+// What /sc:SwarmCloud was given: { spec } for a spec object or its JSON text, or
 // { path } for anything else -- the path of a spec file, which the bridge
 // reads (the READ SPEC row below). Text that begins like JSON is JSON with a mistake
 // in it, and is reported as that rather than looked for as a file.
@@ -145,7 +153,7 @@ function readSpec(given) {
     try {
       spec = JSON.parse(text)
     } catch (error) {
-      throw new Error('/sc:run takes a SwarmCloud workflow spec object, its JSON text, or the path of a spec file; its argument begins like JSON and is not JSON: ' + error.message)
+      throw new Error('/sc:SwarmCloud takes a SwarmCloud workflow spec object, its JSON text, or the path of a spec file; its argument begins like JSON and is not JSON: ' + error.message)
     }
     if (typeof spec === 'string' && spec.trim()) return { path: spec.trim() }
   }
@@ -158,7 +166,7 @@ function checkSpec(given) {
     spec = spec.spec
   }
   if (!spec || typeof spec !== 'object' || Array.isArray(spec) || !Array.isArray(spec.steps) || spec.steps.length === 0) {
-    throw new Error('/sc:run takes a SwarmCloud workflow spec: an object with a non-empty `steps` list, the shape `swarm workflow` reads')
+    throw new Error('/sc:SwarmCloud takes a SwarmCloud workflow spec: an object with a non-empty `steps` list, the shape `swarm workflow` reads')
   }
   return spec
 }
@@ -245,6 +253,18 @@ function pullRequest(url) {
 function clip(text, limit) {
   const flat = String(text).split('\n').join(' ')
   return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…'
+}
+
+// Every row's label: `[SwarmCloud] <name> · <suffix>`, at most LABEL_CHARS.
+// The NAME is cut, never the suffix, so a long workflow label still shows
+// which stage and which step the row is.
+const LABEL_PREFIX = '[SwarmCloud] '
+const LABEL_CHARS = 80
+
+function rowLabel(name, suffix) {
+  const tail = ' · ' + suffix
+  const room = Math.max(8, LABEL_CHARS - LABEL_PREFIX.length - tail.length)
+  return LABEL_PREFIX + clip(name, room) + tail
 }
 
 function failureText(error) {
@@ -349,7 +369,7 @@ if (given.path) {
   let readFailure = null
   try {
     read = await agent('READ SPEC\npath: ' + given.path, {
-      label: 'read spec',
+      label: rowLabel(given.path, 'read spec'),
       phase: 'Submit',
       agentType: 'sc:workflow',
       schema: READ,
@@ -370,7 +390,7 @@ if (given.path) {
   const relayed = specDigest(spec)
   if (relayed !== read.spec_digest) {
     return notSubmitted(
-      'the bridge read ' + (read.path || given.path) + ' with digest ' + (read.spec_digest || 'none') + ', and the spec relayed from it has digest ' + relayed + ': it was changed on the way, so nothing was submitted. Run /sc:run again, or pass the spec object itself.',
+      'the bridge read ' + (read.path || given.path) + ' with digest ' + (read.spec_digest || 'none') + ', and the spec relayed from it has digest ' + relayed + ': it was changed on the way, so nothing was submitted. Run /sc:SwarmCloud again, or pass the spec object itself.',
     )
   }
   log('read the spec from ' + (read.path || given.path) + ' · ' + relayed)
@@ -387,7 +407,7 @@ let submitted = null
 let submitFailure = null
 try {
   submitted = await agent(submitPrompt(spec, digest), {
-    label: 'submit',
+    label: rowLabel(specLabel || 'workflow', 'submit'),
     phase: 'Submit',
     agentType: 'sc:workflow',
     schema: SUBMITTED,
@@ -402,7 +422,7 @@ if (!submitted || (!submitted.workflow_id && !submitted.error)) {
     : submitted
       ? 'the submitting row answered with neither a workflow id nor an error'
       : 'the submitting row stopped before it answered'
-  const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:run again, which would submit a second copy.'
+  const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:SwarmCloud again, which would submit a second copy.'
   log('submission outcome unknown · ' + clip(why, 200))
   return { workflow_id: null, state: 'SUBMISSION_UNKNOWN', error: error, steps: [] }
 }
@@ -432,13 +452,15 @@ for (const note of submitted.repository_notes || []) log(submitted.workflow_id +
 const depth = levelsOf(submitted.steps)
 const ordered = submitted.steps.slice().sort((a, b) => (depth[a.step_id] || 0) - (depth[b.step_id] || 0))
 
+const workflowName = specLabel || submitted.workflow_id
+
 const rows = await pipeline(
   ordered,
   async (step) => {
     if (!step.task_id) return { row_error: 'SwarmCloud named no task for this step' }
     try {
       return await agent(stepPrompt(submitted.workflow_id, step), {
-        label: step.step_id,
+        label: rowLabel(workflowName, 'stage ' + (stages[step.step_id] || (depth[step.step_id] || 0) + 1) + ' · ' + step.step_id),
         phase: stages[step.step_id] || 'Level ' + (depth[step.step_id] || 0),
         agentType: 'sc:step',
         schema: STEP_RESULT,
@@ -466,7 +488,7 @@ let final = null
 let finalFailure = null
 try {
   final = await agent('STATUS\nworkflow_id: ' + submitted.workflow_id, {
-    label: 'workflow state',
+    label: rowLabel(workflowName, 'result'),
     phase: 'Result',
     agentType: 'sc:workflow',
     schema: WORKFLOW_STATE,

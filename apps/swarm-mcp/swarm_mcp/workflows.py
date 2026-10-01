@@ -92,9 +92,9 @@ _STEP_KEYS = frozenset(
 
 #: A step key that is READ HERE AND NEVER SENT. `stage` names the group a step
 #: is shown under in Claude Code's `/workflows` when the spec is run with
-#: `/sc:run`; the platform has no such field (`WorkflowStepCreate` forbids
+#: `/sc:SwarmCloud`; the platform has no such field (`WorkflowStepCreate` forbids
 #: extras) and nothing executes from it. Accepted rather than refused so one
-#: spec file serves `/sc:run` and `swarm workflow` alike -- and named here, so
+#: spec file serves `/sc:SwarmCloud` and `swarm workflow` alike -- and named here, so
 #: it is the one key this module drops knowingly.
 DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
 
@@ -278,7 +278,7 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 )
             step["builds_on"] = raw["builds_on"]
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
-            raise SwarmError(f"{where}: stage must be a string -- the group /sc:run shows it under")
+            raise SwarmError(f"{where}: stage must be a string -- the group /sc:SwarmCloud shows it under")
         steps.append(step)
     return steps
 
@@ -302,9 +302,9 @@ def _canonical_numbers(value: Any) -> Any:
 
 
 def spec_digest(spec: Any) -> str:
-    """`fnv1a32:<8 hex>` of a spec, the digest `/sc:run` computes in its script.
+    """`fnv1a32:<8 hex>` of a spec, the digest `/sc:SwarmCloud` computes in its script.
 
-    WHY A DIGEST. `/sc:run` cannot call a tool: it hands the spec to an agent
+    WHY A DIGEST. `/sc:SwarmCloud` cannot call a tool: it hands the spec to an agent
     (`sc:workflow`, haiku) that RETYPES it into `swarm_workflow`. A dropped
     step, two swapped prompts or a "tidied" instruction would be submitted and
     run with no layer noticing. The script computes this digest over the spec
