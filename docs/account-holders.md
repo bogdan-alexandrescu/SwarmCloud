@@ -107,6 +107,29 @@ outcome and tenant name. A borrower's `next_cursor` is rebuilt from its own
 last row on the page (swarm-api cuts the page there; the rows cut come back,
 counted, on the next page), because the broker's cursor is the last row's
 `assigned_at`, and that row can be another tenant's.
+
+**A borrower's window is on a UTC hour grid.** swarm-api snaps a borrower's
+`from` DOWN and `to` UP to whole UTC hours before asking the broker (an absent
+`to` is the next whole hour, an absent `from` is seven days before `to`), and
+the response echoes the snapped window. Owner and platform windows are not
+snapped. Why: an exact `others` count per window let a borrower recover another
+tenant's start time to the microsecond by halving windows until the count
+flipped (re-review of #413, 2026-10-01). On the grid the finest question a
+borrower can ask is "how many in this hour".
+
+`others` is served only when the page is the whole snapped window: no cursor in,
+none out, scan not limited. A page cut at the borrower's own row, or a
+continuation page, counts rows bounded by an instant rather than by the grid,
+and the difference of two such counts would reopen the same probe, so `others`
+is omitted there. (The alternative, serving it over hour-aligned bounds on
+continuation pages, would need the whole window walked; omitting leaks less.)
+
+A borrower's cursor is accepted only if its instant is the `assigned_at` of one
+of THIS tenant's own spans on the account, checked with one bounded broker
+lookup; any other cursor is a 422 with no page read. Without that, `T|0` for any
+T was a precision probe of its own. The scan for a first own row follows at most
+`OWN_PAGE_SCAN_MAX` = 5 broker pages (about 500 Firestore reads per request);
+past that the response says `scan_limited` and offers no cursor.
 | admin (`?scope=platform`, `require_admin` first) | everything | everything |
 
 **A task id is checked before anyone is shown it.** The task id on a hold is

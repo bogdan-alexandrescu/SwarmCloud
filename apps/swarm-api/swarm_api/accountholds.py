@@ -208,8 +208,16 @@ def history_view(
     tenant_id: str | None,
     check: TaskCheck,
     now: datetime,
+    continued: bool = False,
 ) -> dict[str, Any]:
     """`GET /v1/accounts/{id}/history` for one viewer: spans, newest first.
+
+    A borrower's `others` is served only when the page IS the whole hour-aligned
+    window: no cursor in (`continued` False), none out, and the scan not
+    limited. On any other page the count is bounded by a row's own instant (the
+    page was cut at the borrower's own row) rather than by the hour grid, and
+    differencing two such counts reads when another tenant held the account
+    more finely than an hour. Omitting it leaks less than serving it.
 
     An OPEN record whose hold has passed its deadline is served as ended
     `expired` at that deadline -- the counter stopped including it then, and
@@ -265,14 +273,18 @@ def history_view(
         "next_cursor": cursor if isinstance(cursor, str) and cursor else None,
     }
     if viewer == "borrower":
-        out["others"] = others
         if payload.get("scan_limited"):
             out["scan_limited"] = True
+        elif not continued and out["next_cursor"] is None:
+            out["others"] = others
     return out
 
 
 #: How many broker pages a borrower's read may walk to find one of its own rows.
-_OWN_SCAN_PAGES = 20
+#: Five pages of at most 100 rows each is about 500 Firestore reads per
+#: borrower request at most (owner decision 2026-10-01); it was 20, which let
+#: one borrower request cost about 2,000.
+OWN_PAGE_SCAN_MAX = 5
 
 
 def _cursor_skip(cursor: str | None) -> tuple[datetime | None, int]:
@@ -298,7 +310,7 @@ def own_page(
     borrower's last own row and the cursor is rebuilt from THAT row, which the
     borrower may know. The rows cut are served again, counted, on the next
     page. A page with no row of the borrower's at all is followed (at most
-    `_OWN_SCAN_PAGES` pages) until one has, because there is no cursor to hand
+    `OWN_PAGE_SCAN_MAX` pages) until one has, because there is no cursor to hand
     back otherwise; past that bound the scan stops, says so, and offers none.
     """
     rows = [r for r in payload.get("spans") or [] if isinstance(r, dict)]
@@ -309,7 +321,7 @@ def own_page(
     def mine(r: dict[str, Any]) -> bool:
         return r.get("tenant_id") == tenant_id
 
-    while more and not any(mine(r) for r in rows) and pages < _OWN_SCAN_PAGES:
+    while more and not any(mine(r) for r in rows) and pages < OWN_PAGE_SCAN_MAX:
         page = fetch(broker_cursor)
         rows += [r for r in page.get("spans") or [] if isinstance(r, dict)]
         broker_cursor = page.get("next_cursor")

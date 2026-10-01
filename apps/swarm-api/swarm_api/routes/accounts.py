@@ -511,6 +511,19 @@ def _check_range(raw: str | None, name: str, now: datetime) -> datetime | None:
     return value
 
 
+#: The broker's default window when `from` is absent (HISTORY_DEFAULT_SPAN).
+_HISTORY_DEFAULT_SPAN = timedelta(days=7)
+
+
+def _floor_hour(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
+def _ceil_hour(value: datetime) -> datetime:
+    floor = _floor_hour(value)
+    return floor if floor == value else floor + timedelta(hours=1)
+
+
 def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime) -> None:
     """A borrower's cursor must be the `assigned_at` of one of ITS OWN spans.
 
@@ -560,6 +573,21 @@ def account_history(
             raise ValidationFailed("the cursor is not one this route issued to you")
         _require_own_cursor(pool, account_id, tenant_id, at_cursor)
 
+    if viewer == "borrower":
+        # THE UTC HOUR GRID. A borrower is told how many other agents held the
+        # account in its window, and an exact count per window let it halve the
+        # window until one other tenant's start time was pinned to the
+        # microsecond. So `from` snaps DOWN and `to` UP to whole UTC hours, here,
+        # before the broker is asked, and the response echoes the snapped window.
+        # Absent bounds are made explicit so the broker's own defaults (an
+        # un-snapped `now`) never apply.
+        hi_raw, lo_raw = _check_range(end, "to", now), _check_range(start, "from", now)
+        if (end and hi_raw is None) or (start and lo_raw is None):
+            raise ValidationFailed("`from` and `to` must be ISO 8601 instants with an offset")
+        hi = _ceil_hour(hi_raw or now)
+        lo = _floor_hour(lo_raw or hi - _HISTORY_DEFAULT_SPAN)
+        start, end = lo.isoformat(), hi.isoformat()
+
     def fetch(at: str | None) -> dict:
         return pool.hold_history(account_id, start=start, end=end, cursor=at)
 
@@ -572,4 +600,5 @@ def account_history(
         tenant_id=tenant_id,
         check=_check(ctx),
         now=datetime.now(timezone.utc),
+        continued=bool(cursor),
     )
