@@ -93,10 +93,22 @@ Call `StructuredOutput` with these fields, read from `tasks[0].outcome` of the
 last reply and copied, never estimated:
 
 * `state` — `outcome.state`
-* `answer_excerpt` — `outcome.answer_excerpt` (null when it is null)
+* `answer_excerpt` — `outcome.answer_excerpt` (null when it is null), copied
+  VERBATIM, character for character. The bridge already made it JSON-safe:
+  it holds no newline, backslash, double quote or backtick, so it goes into
+  the JSON string exactly as given. Never retype, reformat, summarise,
+  escape or "fix" it -- `********` masks and paths in it are meant to be
+  there
 * `cost_usd` — `outcome.cost_usd`. **null stays null: it means not recorded,
   and is never 0**
 * `duration_s` — `outcome.duration_s`
 * `pr_url` — `outcome.pr_url`
 * `artifacts` — `outcome.artifacts`, the artifact names, as given
 * `last_error` — `outcome.last_error`
+
+If `StructuredOutput` refuses an answer, call it again with
+`answer_excerpt: null` and every other field unchanged -- never with the
+excerpt rewritten. The step's `state` is what this row exists to return: a
+relay that spent its attempts retyping an answer once turned a task that had
+SUCCEEDED into `state: null` (#285). The whole answer stays the task's, in
+the console.

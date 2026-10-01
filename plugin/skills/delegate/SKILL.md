@@ -11,6 +11,8 @@ allowed-tools:
   - mcp__swarmcloud__swarm_follow
   - mcp__swarmcloud__swarm_status
   - mcp__swarmcloud__swarm_wait
+  - mcp__swarmcloud__swarm_collect
+  - mcp__swarmcloud__swarm_debug
   - mcp__swarmcloud__swarm_result
   - mcp__swarmcloud__swarm_artifact
   - mcp__swarmcloud__swarm_apply
@@ -30,6 +32,8 @@ allowed-tools:
   - mcp__plugin_sc_swarmcloud__swarm_follow
   - mcp__plugin_sc_swarmcloud__swarm_status
   - mcp__plugin_sc_swarmcloud__swarm_wait
+  - mcp__plugin_sc_swarmcloud__swarm_collect
+  - mcp__plugin_sc_swarmcloud__swarm_debug
   - mcp__plugin_sc_swarmcloud__swarm_result
   - mcp__plugin_sc_swarmcloud__swarm_artifact
   - mcp__plugin_sc_swarmcloud__swarm_apply
@@ -77,19 +81,50 @@ replaces. Delegation nobody was told about is worse than no delegation at all.
 
 ## The decision, in one table
 
-| What is in front of you | Where it runs |
-|---|---|
-| Three or more units that do not read each other's output | **remote**, one agent each |
-| One unit whose output would fill this session with transcript | **remote** — the context cost lands there, not here |
-| Anything the developer would rather not sit and watch | **remote**, then hand the terminal back |
-| More parallel work than this machine will run at once | **remote** — that is the whole point |
-| One small edit you can make in a tool call or two | **local** |
-| Anything that reads uncommitted work, or the local filesystem | **local** — see below; this is the surprising one |
-| Anything needing the developer's own credentials or logins | **local** — the agent runs as its own tenant identity |
-| Anything needing git history: blame, bisect, "when did this break" | **local** — the remote clone is `--depth 1` |
+| What is in front of you | Where it runs | Under `hybrid` |
+|---|---|---|
+| Three or more units that do not read each other's output | **remote**, one agent each | cloud — one `swarm_dispatch` with `tasks` |
+| One unit whose output would fill this session with transcript | **remote** — the context cost lands there, not here | cloud |
+| Anything the developer would rather not sit and watch | **remote**, then hand the terminal back | cloud |
+| More parallel work than this machine will run at once | **remote** — that is the whole point | cloud |
+| One small edit you can make in a tool call or two | **local** | local — do not call a dispatch tool at all |
+| Anything that reads uncommitted work, or the local filesystem | **local** — see below; this is the surprising one | local — declare `needs_local: ["filesystem"]` |
+| Anything needing the developer's own credentials or logins | **local** — the agent runs as its own tenant identity | local — declare `needs_local: ["keychain"]` |
+| Anything that needs the developer to answer as it runs | **local** | local — declare `needs_local: ["interactive"]` |
+| Anything needing git history: blame, bisect, "when did this break" | **local** — the remote clone is `--depth 1` | local — do not call a dispatch tool at all |
 
 Two or more of these can be true at once. When they are, the local row wins:
 work that cannot see what it needs does not become right by being parallel.
+The third column is what the bridge enforces: under `hybrid` a unit that names
+a runner profile is dispatched, and one whose call declares `needs_local` is
+refused with the reason and nothing is sent. The bridge cannot see what a
+prompt needs, so **declaring it is your job**: when a row above says
+`needs_local`, pass it, and when the refusal comes back, do the work here.
+A unit that omits `runner_profile` counts as naming `claude-code`, the
+tools' declared default, so under `hybrid` it goes to the cloud too: omitting
+the profile is not a way to keep work local. Only `needs_local` is.
+
+## Where work goes: the session target, and the per-call override
+
+Every dispatching tool — `swarm_dispatch` (one task or `tasks`) and
+`swarm_workflow` — sends work according to a **target**:
+
+* `cloud` — dispatch it, whatever the call declares.
+* `local` — send **nothing**. The tool answers with a refusal saying the work
+  is to run locally in this session, naming the target and where it came from.
+  Do the work here; do not retry with another target unless the developer
+  asked for it to be dispatched.
+* `hybrid` — the rule above: a unit naming a runner profile goes to the cloud
+  unless the call's `needs_local` lists `filesystem`, `keychain` or
+  `interactive`.
+
+The **session default** is the plugin's `default_target` setting
+(`/plugin configure sc@swarmcloud`), `hybrid` unless the developer changed it;
+in a terminal, `default_target` in the bridge's config file. A call's own
+`target` overrides it **for that call only**. Every dispatch answer carries
+`target`: `applied`, `from` (this call, or which setting), and `sent_to`. When
+you report a dispatch, say which target applied if it was not the default.
+The developer's `sc config` prints the session's target and where it was set.
 
 ## The clean-checkout rule — this is the part that matters
 
@@ -166,9 +201,12 @@ succeeded.
 |---|---|
 | which profiles may I name? | `swarm_profiles` |
 | run one unit remotely | `swarm_dispatch` |
+| run several independent units remotely, in one request | `swarm_dispatch` with `tasks` |
 | is it done yet? | `swarm_status` |
 | block until it is done, then tell me what it made | `swarm_wait` |
+| wait for several, then each one's state and result in one reply | `swarm_collect` |
 | what did it produce — and if nothing, why | `swarm_result` |
+| why did this one task fail — attempts, events, the log's tail | `swarm_debug` |
 | read one file it produced | `swarm_artifact` |
 | put one agent's changes in my tree | `swarm_apply` |
 | put several agents' work on one branch | `swarm_integrate` |
@@ -190,10 +228,21 @@ time, and one call is one window — when `truncated` is true, call again with
 `offset` set to `next_offset`.
 
 `swarm_dispatch` takes `prompt`, `profile`, `repo`, `ref`, `infer`,
-`strategy`, `label` and `inputs`. The profile is a **name** from the frozen
-catalogue, and the image, command and resource class come from the name. There
-is no parameter for an image, a command or a model, and asking for one is not
-a thing a caller may do.
+`strategy`, `label` and `inputs` — or, for several independent units at once,
+`tasks`: a list of `{prompt, runner_profile, repo, ref, infer, strategy,
+label, inputs}`, sent as ONE request and answered with every `task_ids` in the
+order given. A list longer than the API's `max_batch_size` (its `/v1/stats`
+limits) is refused before anything is sent, and so is a list holding the same
+task twice. Both forms take `target` and `needs_local` (above). The profile is
+a **name** from the frozen catalogue, and the image, command and resource
+class come from the name. There is no parameter for an image, a command or a
+model, and asking for one is not a thing a caller may do.
+
+`swarm_collect` waits for a list of tasks as `swarm_wait` does and then
+returns each one's state and, for each that FINISHED, what `swarm_result`
+says it produced. A task still running when the wait ends comes back
+`finished: false` with its state and no result — report it as unfinished,
+never as an outcome.
 
 `strategy` is how the work comes back: `collect` (the default) harvests a patch
 and pushes nothing — bring it in with `swarm_apply`; `direct-pr` pushes the

@@ -1064,3 +1064,70 @@ def test_the_step_row_follows_the_progress_format_and_never_streams():
     assert "`wait_seconds: 600`" in flat, "a waiting step makes one long call per turn"
     for field in ("state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error"):
         assert f"`{field}`" in flat, f"step.md no longer answers with {field}"
+
+
+_STATUS_NAMING_JOIN = {
+    "state": "SUCCEEDED",
+    "state_note": None,
+    "steps": [
+        {"step_id": "scan-01", "state": "SUCCEEDED"},
+        {"step_id": "scan-02", "state": "SUCCEEDED"},
+        {"step_id": "join", "state": "SUCCEEDED"},
+        {"step_id": "report", "state": "SUCCEEDED"},
+    ],
+}
+
+
+def test_a_failed_relay_row_takes_its_state_from_the_workflow_status(tmp_path):
+    """#285: the join row's relay failed to retype the answer into its
+    StructuredOutput five times, but the task SUCCEEDED. The workflow status
+    read after the rows names the step's state, so the row reports it -- with
+    the row's own error kept beside it and where the state came from."""
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": _STATUS_NAMING_JOIN})
+
+    assert "error" not in got, got.get("error")
+    rows = {row["step_id"]: row for row in got["result"]["steps"]}
+    join = rows["join"]
+    assert join["state"] == "SUCCEEDED"
+    assert "validation" in join["row_error"], "the row's own failure is kept beside the state"
+    assert "workflow status" in join["state_from"]
+    # Only a recovered row carries the field: a row that answered keeps the
+    # STEP_RESULT shape, and its own state, not the status's.
+    assert "state_from" not in rows["scan-01"] and "state_from" not in rows["scan-02"]
+    assert rows["scan-02"]["state"] == "FAILED"
+    assert any(
+        line.startswith("join SUCCEEDED (from the workflow status; its row failed: ")
+        and "validation" in line
+        for line in got["logs"]
+    ), got["logs"]
+    assert got["logs"][-1] == "wf_1 SUCCEEDED"
+
+
+def test_a_failed_relay_row_stays_null_when_the_status_read_fails_too(tmp_path):
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": {"__throw": "StructuredOutput failed validation after 5 attempts"}})
+
+    assert "error" not in got, got.get("error")
+    join = {row["step_id"]: row for row in got["result"]["steps"]}["join"]
+    assert join["state"] is None and "validation" in join["row_error"]
+    assert "state_from" not in join
+
+
+def test_a_failed_relay_row_stays_null_when_the_status_gives_its_step_no_state(tmp_path):
+    steps = [{"step_id": "join", "state": None}, {"step_id": "scan-01", "state": "SUCCEEDED"}]
+    got = _run(tmp_path, _SPEC, {**_ANSWERS, "STATUS": {**_STATUS_NAMING_JOIN, "steps": steps}})
+
+    join = {row["step_id"]: row for row in got["result"]["steps"]}["join"]
+    assert join["state"] is None and "state_from" not in join
+
+
+def test_the_step_relay_copies_the_answer_excerpt_verbatim_and_never_retypes_it():
+    """#285: the relay retyped the raw excerpt into JSON and failed five times
+    on backticks, quotes, masks, paths and backslashes. The bridge now serves
+    it JSON-safe; the relay copies it, and on a refused StructuredOutput sends
+    null for it rather than rewriting it, so the state still arrives."""
+    _, body = _load(_PLUGIN / "agents" / "step.md")
+    flat = " ".join(body.split()).lower()
+    assert "verbatim" in flat and "character for character" in flat
+    assert "json-safe" in flat
+    assert "never retype" in flat
+    assert "`answer_excerpt: null`" in flat or "`answer_excerpt` set to null" in flat

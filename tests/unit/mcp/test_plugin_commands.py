@@ -406,6 +406,11 @@ def _leaves(parser: argparse.ArgumentParser) -> list[list[str]]:
 #: dispatch to another cluster, and `sc context remove` deletes a context's
 #: refresh token and client secret. The read-only skill may still TELL the
 #: developer to run them -- it may not be allowed to run them itself.
+#:
+#: `sc account ...` (S10) is here for the same reason and one more: it WRITES
+#: TO THE CLUSTER -- pausing, draining or removing an account in the shared
+#: pool, or signing a new one in through a browser -- so no skill may be
+#: granted it, and a grant for the `sc accounts` view must not reach it.
 _DEVELOPER_STATE = frozenset(
     {
         "sc.cmd_login",
@@ -413,6 +418,9 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_context_add",
         "sc.cmd_context_use",
         "sc.cmd_context_remove",
+        "sc.cmd_account_state",
+        "sc.cmd_account_remove",
+        "sc.cmd_account_add",
     }
 )
 

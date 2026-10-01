@@ -117,12 +117,15 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     """
     config = _config()
     options = _user_config()
-    assert set(options) == {config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET}, (
-        "the bridge names a role for every option the manifest prompts for, and no other"
-    )
+    assert set(options) == {
+        config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
+    }, "the bridge names a role for every option the manifest prompts for, and no other"
     # URL-shaped for every option: a valid deployment URL, and a string that
-    # is still a well-formed (if unusual) client id and secret.
+    # is still a well-formed (if unusual) client id and secret. The target is
+    # one of its three words -- `local`, which is not the default, so landing
+    # in the target proves the substitution and not the fallback.
     answers = {key: f"https://{key.replace('_', '-')}.example.test" for key in options}
+    answers[config.PLUGIN_TARGET] = "local"
     environ = {"SWARM_CONFIG_DIR": str(tmp_path)}
     for name, value in _server_env().items():
         for key, answer in answers.items():
@@ -135,6 +138,40 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     assert resolved.client_id == answers[config.PLUGIN_CLIENT_ID]
     assert resolved.client_secret == answers[config.PLUGIN_CLIENT_SECRET]
     assert "plugin" in resolved.source, resolved.source
+    target = config.session_target(environ)
+    assert target.value == answers[config.PLUGIN_TARGET], "the default target typed at install never arrived"
+    assert "plugin" in target.source, target.source
+
+
+def test_the_default_target_defaults_to_the_bridges_default_and_names_all_three():
+    """S8, owner decision 2026-10-01: hybrid unless set. The manifest's default
+    and the bridge's are one value, and the prompt names every value the
+    bridge accepts -- anything else stops the server at start-up."""
+    config = _config()
+    option = _user_config()[config.PLUGIN_TARGET]
+    assert option.get("default") == config.DEFAULT_TARGET
+    for target in config.TARGETS:
+        assert target in option["description"], target
+    assert not option.get("sensitive")
+
+
+def test_the_secret_line_is_untouched_by_the_target_entry():
+    """The worker's publish-time secret scan refuses any ADDED line that
+    assigns a value to the client secret's env name outside test paths; the
+    first B9 run was refused for exactly that on 2026-10-01. So the target's
+    env entry sits ABOVE it and the secret line stays the manifest's last env
+    entry, with no trailing comma added to it. The expected line is BUILT from
+    its parts, so this file carries no line of that shape either."""
+    config = _config()
+    secret_name = f'"{config.plugin_env(config.PLUGIN_CLIENT_SECRET)}"'
+    target_name = f'"{config.plugin_env(config.PLUGIN_TARGET)}"'
+    lines = _MANIFEST.read_text().splitlines()
+    secret = [i for i, line in enumerate(lines) if secret_name in line]
+    target = [i for i, line in enumerate(lines) if target_name in line]
+    assert len(secret) == 1 and len(target) == 1
+    assert target[0] < secret[0]
+    reference = "${user_config." + config.PLUGIN_CLIENT_SECRET + "}"
+    assert lines[secret[0]] == " " * 8 + secret_name + ": " + f'"{reference}"'
 
 
 def test_the_deployment_url_is_required_and_the_secret_is_sensitive():

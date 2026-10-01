@@ -7,6 +7,12 @@ never cancels anything. Keeping the two apart means `sc` can be reached for
 without reading the flags first, which is the only way a status command gets
 used at the moment it is needed.
 
+THE ONE EXCEPTION IS `sc account ...` (S10, owner decision 2026-10-01): pause,
+resume, drain and remove one of your own accounts, and add one through the
+API's browser sign-in. The API served those routes and nothing reached them.
+They are a separate subcommand, never a view, held out of every skill's grant
+by `test_plugin_commands.py`, and `remove` takes the label typed back.
+
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
 half: which deployment this machine talks to (config.py) and the developer's
@@ -65,7 +71,7 @@ from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 from . import render
 from .client import SwarmClient, SwarmError, outputs_of
 from .invocation import help_command, terminal_command
-from .patches import explain_absence, patch_uri
+from .patches import explain_absence, masked_counts, patch_uri
 from .render import Finding, Snapshot, Style
 
 #: THE EXIT CODES ARE THE MACHINE-READABLE HALF OF THIS SURFACE, so all five
@@ -638,6 +644,510 @@ def _dump(snap: Snapshot, out) -> None:
 
 
 # --------------------------------------------------------------------------
+# The account verbs (S10, BUILD_PROMPT_V2 2.6.1)
+# --------------------------------------------------------------------------
+#
+# THE ONE PLACE `sc` WRITES TO THE CLUSTER, by owner decision (2026-10-01): the
+# API already served `PUT /v1/accounts/{id}/state` and `DELETE
+# /v1/accounts/{id}` and nothing in the CLI, MCP or plugin reached them, so
+# pausing an account meant the console or curl. They live under `sc account`
+# (singular), apart from the `sc accounts` VIEW, so a grant for the view can
+# never match them; `test_plugin_commands.py` holds every handler below out of
+# every skill's grant, as it holds `sc login`.
+#
+# NO CREDENTIAL CROSSES HERE. The state and removal routes take an id and a
+# word; `account add` drives the API's own browser sign-in and never sees a
+# token -- only the one-time code the callback page shows, which is sent once
+# and printed never.
+
+#: What each verb asks the broker for. The broker owns the state machine
+#: (`quota_broker.accounts.AccountState`) and answers an unknown word with a
+#: 422, so these are the three words the owner decided the CLI says, not a
+#: copy of that machine.
+ACCOUNT_VERBS = {"pause": "PAUSED", "resume": "AVAILABLE", "drain": "DRAINING"}
+
+#: WHAT DRAINING DOES, said in ONE place: printed by `sc account drain`, and
+#: returned by `swarm_account_drain` as `what_draining_does`. The broker
+#: defines DRAINING as "running agents are being moved off"
+#: (quota_broker/accounts.py); the move itself is the hot swap built by lane
+#: B11. Change the wording here and both surfaces change with it.
+DRAINING_MEANS = (
+    "DRAINING stops new assignments to this account, and agents already running "
+    "on it move to another account at their next turn boundary (hot swap). An "
+    "agent with no other account available checkpoints and parks until one is."
+)
+
+
+def resolve_account(client: SwarmClient, ref: str) -> dict[str, Any]:
+    """The caller's OWN account named `ref`, by id or by label, from `GET /v1/accounts`.
+
+    OWN ONLY. The listing also carries accounts lent TO the caller, which it
+    may run on and may not change: the API answers 404 for them (`_owned`),
+    and a label that matched one would send a request bound to fail -- or,
+    worse, pause the caller's own account of the same name instead of the one
+    they were looking at. So a lent match is refused with whose it is.
+
+    AN AMBIGUOUS LABEL IS REFUSED, never resolved to the first: two accounts
+    may share a label, and the one an operator meant is not decidable from the
+    word. The refusal names every id it could be, which is what to pass.
+    """
+    text = (ref or "").strip()
+    if not text:
+        raise SwarmError(
+            f"name the account by its label or id, as `{terminal_command('sc accounts')}` lists it"
+        )
+    listing = fetch_accounts(client)
+    tenant = getattr(listing, "tenant_id", None)
+    if not tenant:
+        raise SwarmError(
+            "the accounts listing did not say which tenant it answered for, so your own "
+            "accounts cannot be told from accounts lent to you; nothing was sent"
+        )
+    own = [a for a in listing if a.get("owner_tenant") == tenant]
+    by_id = [a for a in own if a.get("account_id") == text]
+    if by_id:
+        return by_id[0]
+    by_label = [a for a in own if a.get("label") == text]
+    if len(by_label) == 1:
+        return by_label[0]
+    if len(by_label) > 1:
+        ids = ", ".join(str(a.get("account_id")) for a in by_label)
+        raise SwarmError(
+            f"{len(by_label)} of your accounts are labelled {text!r} ({ids}); name the one "
+            "you mean by its id. Nothing was sent"
+        )
+    lent = [a for a in listing if text in (a.get("account_id"), a.get("label")) and a not in own]
+    if lent:
+        raise SwarmError(
+            f"{text!r} is lent to you by tenant {lent[0].get('owner_tenant')!r}; only its owner "
+            "can change it. Nothing was sent"
+        )
+    labels = ", ".join(sorted({str(a.get("label")) for a in own})) or "none"
+    raise SwarmError(f"no account of yours is labelled or numbered {text!r} (yours: {labels})")
+
+
+def set_account_state(client: SwarmClient, account: dict[str, Any], state: str, reason: str = "") -> Any:
+    """`PUT /v1/accounts/{id}/state`: the broker's answer, as it gave it."""
+    account_id = urllib.parse.quote(str(account["account_id"]), safe="")
+    return client.request(
+        "PUT", f"/v1/accounts/{account_id}/state", payload={"state": state, "reason": reason or ""}
+    )
+
+
+def remove_account(client: SwarmClient, account: dict[str, Any]) -> Any:
+    """`DELETE /v1/accounts/{id}`: the broker's answer, which says the secret is kept."""
+    account_id = urllib.parse.quote(str(account["account_id"]), safe="")
+    return client.request("DELETE", f"/v1/accounts/{account_id}")
+
+
+def change_account_state(client: SwarmClient, ref: str, verb: str, reason: str = "") -> dict[str, Any]:
+    """One state verb, end to end: resolve, one PUT, and what came back.
+
+    The MCP tools and `sc account <verb>` both answer with this, so the two
+    cannot describe the same change differently.
+    """
+    state = ACCOUNT_VERBS[verb]
+    account = resolve_account(client, ref)
+    answer = set_account_state(client, account, state, reason)
+    out: dict[str, Any] = {
+        "account_id": account.get("account_id"),
+        "label": account.get("label"),
+        "requested_state": state,
+        # VERBATIM: the broker owns the state machine, and its answer is the
+        # fact; a summary of it here would be a second opinion.
+        "broker_answer": answer,
+    }
+    if state == "DRAINING":
+        out["what_draining_does"] = DRAINING_MEANS
+    return out
+
+
+def _ask(prompt: str) -> str:
+    """One line typed at the terminal, the prompt on stderr so stdout stays data."""
+    sys.stderr.write(prompt)
+    sys.stderr.flush()
+    return (sys.stdin.readline() if sys.stdin is not None else "").rstrip("\n")
+
+
+def cmd_account_state(client: SwarmClient, args, out) -> int:
+    done = change_account_state(client, args.account, args.verb, args.reason or "")
+    if args.json:
+        out.write(json.dumps(done, indent=2, default=str) + "\n")
+        return EXIT_OK
+    out.write(
+        f"asked for {done['requested_state']} on {done['label']} ({done['account_id']}); "
+        "the broker answered:\n"
+    )
+    out.write(json.dumps(done["broker_answer"], indent=2, default=str) + "\n")
+    if "what_draining_does" in done:
+        out.write(done["what_draining_does"] + "\n")
+    return EXIT_OK
+
+
+def cmd_account_remove(client: SwarmClient, args, out) -> int:
+    """Remove an account, after its label is TYPED back.
+
+    SWARM_ASSUME_YES IS IGNORED (CLAUDE.md: anything destructive takes a typed
+    confirmation). Removing an account drops it from the pool for every
+    tenant it is lent to; the broker keeps its secret, so it is recoverable,
+    but every agent that would have run on it now will not.
+    """
+    account = resolve_account(client, args.account)
+    label = str(account.get("label") or "")
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; removing an account is typed\n")
+    typed = _ask(
+        f"remove {label} ({account.get('account_id')}) from the pool? Type its label to confirm: "
+    )
+    if not label or typed.strip() != label:
+        raise SwarmError(f"the label typed was not {label!r}; nothing was removed")
+    answer = remove_account(client, account)
+    if args.json:
+        out.write(json.dumps({"account_id": account.get("account_id"), "label": label,
+                              "broker_answer": answer}, indent=2, default=str) + "\n")
+        return EXIT_OK
+    out.write(f"removed {label} ({account.get('account_id')}); the broker answered:\n")
+    out.write(json.dumps(answer, indent=2, default=str) + "\n")
+    return EXIT_OK
+
+
+def _open_browser(url: str) -> bool:
+    """Open `url` in the default browser; False where that is not possible."""
+    import webbrowser
+
+    try:
+        return bool(webbrowser.open(url))
+    except webbrowser.Error:
+        return False
+
+
+def _read_code(prompt: str) -> str:
+    """The pasted code, read with NO ECHO: it is a one-time credential, and a
+    terminal that echoed it would leave it in a scrollback and a screen share."""
+    import getpass
+
+    return getpass.getpass(prompt)
+
+
+def _masked(text: str, secrets: Sequence[str]) -> str:
+    """`text` with every secret in `secrets` -- and each part of a pasted
+    `code#state` -- replaced. Longest first, so a part inside a whole is not
+    left half-shown."""
+    parts: set[str] = set()
+    for secret in secrets:
+        if secret:
+            parts.add(secret)
+            parts.update(piece for piece in secret.split("#") if len(piece) >= 4)
+    for secret in sorted(parts, key=len, reverse=True):
+        text = text.replace(secret, "****")
+    return text
+
+
+def cmd_account_add(client: SwarmClient, args, out) -> int:
+    """Add a subscription account through the API's OWN browser sign-in.
+
+    THE FLOW IS THE ONE THE CONSOLE USES (owner decision 2026-10-01):
+    `POST /v1/accounts/authorize` with the label returns the URL to open and
+    the `state` that keys the pending sign-in; the operator signs in with
+    Anthropic, the callback page shows a code, and `POST
+    /v1/accounts/exchange` with the state and the pasted code registers the
+    account into the caller's own tenant (the API takes the tenant from the
+    verified token, never from here). It never calls `POST /v1/accounts`, the
+    credential-upload route, and never reads or writes a credential file.
+
+    THE CODE AND THE STATE ARE PRINTED NOWHERE. The code is read without
+    echo, sent once in the exchange body, and masked out of any error the
+    exchange raises -- a 422 can quote what it was given. The authorize URL
+    is printed, for a machine whose browser cannot be opened, and it carries
+    the OAuth `state` as a query parameter because Anthropic's page requires
+    it there; it is not printed anywhere else.
+    """
+    label = (args.label or "").strip()
+    if not label:
+        raise SwarmError("`--label` names the account in the pool; give one. Nothing was sent")
+    lend_to = [t.strip() for t in (args.lend_to or []) if t and t.strip()]
+    started = client.request(
+        "POST", "/v1/accounts/authorize", payload={"label": label, "lend_to": lend_to}
+    )
+    url = started.get("authorize_url") if isinstance(started, dict) else None
+    state = started.get("state") if isinstance(started, dict) else None
+    if not url or not state:
+        raise SwarmError("the API began no sign-in: its answer named no URL to open")
+    opened = _open_browser(url)
+    sys.stderr.write(
+        ("opened your browser to sign in. " if opened else "could not open a browser. ")
+        + f"If it did not open, visit:\n  {url}\n"
+    )
+    minutes = started.get("expires_in_seconds")
+    if isinstance(minutes, int):
+        sys.stderr.write(f"the sign-in expires in {minutes // 60} minutes\n")
+    code = _read_code("paste the code the page shows (it is not echoed): ").strip()
+    if not code:
+        raise SwarmError("no code was pasted; nothing was registered. Run it again to start over")
+    try:
+        created = client.request(
+            "POST", "/v1/accounts/exchange", payload={"state": state, "code": code}
+        )
+    except SwarmError as exc:
+        raise SwarmError(_masked(str(exc), [code, state]), status=exc.status, edge=exc.edge) from None
+    account = created.get("account") if isinstance(created, dict) else None
+    account = account if isinstance(account, dict) else {}
+    out.write(f"label       {account.get('label') or '(not reported)'}\n")
+    out.write(f"account     {account.get('account_id') or '(not reported)'}\n")
+    out.write(f"state       {account.get('state') or '(not reported)'}\n")
+    if isinstance(created, dict) and created.get("note"):
+        out.write(f"note        {created['note']}\n")
+    return EXIT_OK
+
+
+# --------------------------------------------------------------------------
+# One task's diagnosis (`sc debug`)
+# --------------------------------------------------------------------------
+
+#: How many newest events, and how many lines of the newest attempt's agent
+#: log, `sc debug` shows. Bounded so one command's answer fits on a screen and
+#: in a tool reply; the whole log stays readable with `swarm tail`.
+DEBUG_EVENTS = 10
+DEBUG_LOG_LINES = 40
+
+#: How far back from the end of the log the tail read starts. A log line is
+#: rarely longer than a few hundred bytes; this holds DEBUG_LOG_LINES of them
+#: with room, without reading a whole log to show its last lines.
+_DEBUG_TAIL_BYTES = 16_000
+
+#: The agent's own streams first, then the runner's, for a runner with no
+#: agent CLI (the logs route answers `not_applicable` for those).
+_DEBUG_STREAMS = ("agent_stderr", "agent_stdout", "stderr", "stdout")
+
+_WITHHELD = "withheld: the API did not say it masked this"
+
+
+def _section(value: Any = None, error: Exception | str | None = None) -> dict[str, Any]:
+    if error is not None:
+        return {"value": None, "not_read_because": str(error)}
+    return {"value": value}
+
+
+def _shown(text: Any, count: Any) -> Any:
+    """A free-text string the API served, ONLY if the API counted its masking.
+
+    Every free-text field the API serves comes with a `*_redaction_count`
+    beside it -- `last_error`, an attempt's `error`, an event's `detail` --
+    and a deployment that did not mask it sends no count. The bridge has no
+    masker of its own (`patches.masked_counts` reports the API's counts), so
+    a string the API did not say it masked is WITHHELD rather than printed:
+    printing it would trust that a deployment old enough not to count also
+    masked, which is exactly the deployment that did not.
+    """
+    if text is None:
+        return None
+    if isinstance(count, int) and not isinstance(count, bool):
+        return text
+    return _WITHHELD
+
+
+def _log_tail(client: SwarmClient, task_id: str, attempt_id: str | None, lines: int) -> dict[str, Any]:
+    """The last `lines` lines of the newest attempt's log, through the logs route.
+
+    `attempt_id` None asks the route for its own choice, the newest attempt --
+    what is left when the attempts could not be listed, so a failed attempts
+    read does not also cost the log.
+
+    Two reads per stream: one to learn the object's size, one window ending
+    at it. The route masks every window at read time and says so in
+    `redaction.applied_at_read_time`; a window without that statement is
+    withheld. Streams are tried agent-first; one that is absent or not
+    applicable is skipped, one that is unreadable is reported.
+    """
+    problems: list[str] = []
+    for stream in _DEBUG_STREAMS:
+        probe = client.logs(task_id, attempt_id=attempt_id, stream=stream, limit_bytes=1)
+        entry = next((s for s in probe.get("streams") or [] if isinstance(s, dict)), None)
+        if entry is None or entry.get("status") != "ok":
+            status = entry.get("status") if entry else "absent"
+            if status == "unreadable":
+                problems.append(f"{stream}: unreadable: {entry.get('detail')}")
+            continue
+        total = entry.get("total_bytes")
+        offset = max(0, int(total) - _DEBUG_TAIL_BYTES) if isinstance(total, int) else 0
+        window = client.logs(task_id, attempt_id=attempt_id, stream=stream, offset=offset)
+        entry = next((s for s in window.get("streams") or [] if isinstance(s, dict)), {})
+        attempt_id = window.get("attempt_id") or attempt_id
+        statement = window.get("redaction") if isinstance(window.get("redaction"), dict) else {}
+        if statement.get("applied_at_read_time") is not True:
+            return {"stream": stream, "attempt_id": attempt_id, "lines": [], "withheld": _WITHHELD,
+                    "masked": None}
+        text = entry.get("content") or ""
+        kept = text.splitlines()
+        if offset > 0 and kept:
+            kept = kept[1:]  # the first line of a window that starts mid-log is partial
+        return {
+            "stream": stream,
+            "attempt_id": attempt_id,
+            "lines": kept[-lines:] if lines > 0 else [],
+            "total_bytes": total,
+            "masked": entry.get("redaction_count"),
+        }
+    reason = "; ".join(problems) or "the attempt has no log on any stream yet"
+    raise SwarmError(reason)
+
+
+def debug_report(
+    client: SwarmClient, task_id: str, *, events: int = DEBUG_EVENTS, log_lines: int = DEBUG_LOG_LINES
+) -> dict[str, Any]:
+    """One task's diagnosis from the API's own reads, and nothing else.
+
+    `SwarmClient.task`, `attempts`, `events_page` and `logs` -- every one
+    served masked by the API. Never GCS, never Cloud Logging: a direct read
+    would skip the tenant check and the read-time masking those routes apply.
+    EACH READ IS ITS OWN SECTION, so a failed one is printed as not read with
+    its reason and the others still print: a diagnosis that died on its
+    first failing read would fail exactly when one is needed.
+    """
+    report: dict[str, Any] = {"task_id": task_id}
+    task, failure = _attempt(lambda: client.task(task_id))
+    if task is None:
+        report["task"] = _section(error=failure)
+    else:
+        report["task"] = _section({
+            "state": task.get("state"),
+            "runner_profile": task.get("runner_profile"),
+            "last_error": _shown(task.get("last_error"), task.get("last_error_redaction_count")),
+            "end_cause": task.get("end_cause"),
+        })
+
+    attempts, failure = _attempt(lambda: client.attempts(task_id))
+    if attempts is None:
+        report["attempts"] = _section(error=failure)
+    else:
+        report["attempts"] = _section([
+            {
+                "attempt_id": a.get("attempt_id"),
+                "generation": a.get("generation"),
+                "started_at": a.get("started_at"),
+                "completed_at": a.get("completed_at"),
+                # NULL IS NOT RECORDED, never 0 -- see `swarm_result`.
+                "exit_code": a.get("exit_code"),
+                "error": _shown(a.get("error"), a.get("error_redaction_count")),
+            }
+            for a in attempts
+        ])
+
+    page, failure = _attempt(lambda: client.events_page(task_id, limit=max(1, events), newest_first=True))
+    if page is None:
+        report["events"] = _section(error=failure)
+    else:
+        rows, _, paged = page
+        report["events"] = _section([
+            {
+                "type": e.get("type"),
+                "at": e.get("at"),
+                "attempt_id": e.get("attempt_id"),
+                "detail": _shown(e.get("detail"), e.get("detail_redaction_count")),
+            }
+            for e in rows[: max(1, events)]
+        ])
+        if not paged:
+            report["events"]["note"] = (
+                "this API does not page events, so these are its OLDEST, not its newest"
+            )
+
+    newest = next((a for a in attempts or [] if a.get("attempt_id")), None)
+    if attempts is not None and newest is None:
+        report["log_tail"] = _section(error="the task has no attempt yet, so it has no log")
+    else:
+        # The attempts list is newest first; unread, the route picks the newest.
+        chosen = str(newest["attempt_id"]) if newest is not None else None
+        tail, failure = _attempt(lambda: _log_tail(client, task_id, chosen, log_lines))
+        report["log_tail"] = _section(tail, failure) if tail is None else _section(tail)
+
+    # WHAT WAS MASKED, from the API's own counts: the task's input and
+    # metadata (`masked_counts`, as every other surface prints them), and each
+    # section's. None is "this deployment sent no count", never 0.
+    def _count(rows: Any, key: str) -> int | None:
+        known = [r.get(key) for r in rows or [] if isinstance(r.get(key), int)]
+        return sum(known) if known else None
+
+    report["masked"] = {
+        **(masked_counts(task) if task is not None else {"input": None, "metadata": None}),
+        "last_error": task.get("last_error_redaction_count") if task is not None else None,
+        "attempt_errors": _count(attempts, "error_redaction_count"),
+        "event_details": _count(page[0] if page is not None else None, "detail_redaction_count"),
+        "log_tail": (report["log_tail"]["value"] or {}).get("masked"),
+    }
+    return report
+
+
+def _debug_lines(report: dict[str, Any]) -> list[str]:
+    def problem(section: dict[str, Any]) -> str:
+        return f"  not read: {section['not_read_because']}"
+
+    lines = [f"task {report['task_id']}"]
+    task = report["task"]
+    if task["value"] is None:
+        lines.append(problem(task))
+    else:
+        t = task["value"]
+        lines.append(f"  state       {t['state']}")
+        lines.append(f"  profile     {t['runner_profile']}")
+        lines.append(f"  last error  {t['last_error'] if t['last_error'] is not None else '(none)'}")
+        if t.get("end_cause"):
+            lines.append(f"  end cause   {t['end_cause']}")
+    masked = report["masked"]
+    lines.append(
+        "  masked      "
+        + "  ".join(f"{k.replace('_', ' ')} {'—' if v is None else v}" for k, v in masked.items())
+    )
+    lines.append("attempts")
+    attempts = report["attempts"]
+    if attempts["value"] is None:
+        lines.append(problem(attempts))
+    elif not attempts["value"]:
+        lines.append("  none yet")
+    for a in attempts["value"] or []:
+        exit_text = "exit not recorded" if a["exit_code"] is None else f"exit {a['exit_code']}"
+        lines.append(
+            f"  {a['attempt_id']}  generation {a['generation']}  "
+            f"{a['started_at'] or '—'} → {a['completed_at'] or '—'}  {exit_text}"
+        )
+        if a["error"]:
+            lines.append(f"    error: {a['error']}")
+    lines.append("events (newest first)")
+    events = report["events"]
+    if events["value"] is None:
+        lines.append(problem(events))
+    for e in events["value"] or []:
+        detail = e["detail"] if isinstance(e["detail"], str) else json.dumps(e["detail"], default=str)
+        lines.append(f"  {e['at']}  {e['type']}  {detail}")
+    if events.get("note"):
+        lines.append(f"  note: {events['note']}")
+    tail = report["log_tail"]
+    if tail["value"] is None:
+        lines.append("log tail")
+        lines.append(problem(tail))
+    else:
+        v = tail["value"]
+        lines.append(f"log tail ({v['stream']}, attempt {v['attempt_id']}, last {len(v['lines'])} lines)")
+        if v.get("withheld"):
+            lines.append(f"  {v['withheld']}")
+        lines.extend(f"  {line}" for line in v["lines"])
+    return lines
+
+
+def cmd_debug(client: SwarmClient, args, out) -> int:
+    report = debug_report(client, args.task_id, events=args.events, log_lines=args.log_lines)
+    unread = any(
+        isinstance(report.get(key), dict) and report[key].get("value") is None
+        for key in ("task", "attempts", "events", "log_tail")
+    )
+    if args.json:
+        out.write(json.dumps(report, indent=2, default=str) + "\n")
+    else:
+        out.write("\n".join(_debug_lines(report)) + "\n")
+    return EXIT_FAIL if unread else EXIT_OK
+
+
+# --------------------------------------------------------------------------
 # Which deployment, and who you are on it
 # --------------------------------------------------------------------------
 
@@ -752,14 +1262,10 @@ def cmd_logout(_client, args, out) -> int:
     return EXIT_OK
 
 
-def cmd_whoami(_client, args, out) -> int:
-    """Context, URL, where that came from, the tier, the principal, the tenant.
-
-    Every field is filled from a READ: the principal from the signed-in ID
-    token (or from the API, on a tier without one), the tenant from
-    `/v1/tenants/me`. A field that could not be read is left out and the
-    reason printed, because a blank reads as "none".
-    """
+def read_whoami(args) -> tuple[dict[str, Any], int]:
+    """What `sc whoami` reads, and its exit code -- read once, here, for
+    `sc whoami` and `sc config` alike, so the two cannot disagree about which
+    deployment this is or whose tenant it answered for."""
     from . import auth, credentials, signin
 
     shown: dict[str, Any] = {
@@ -788,7 +1294,18 @@ def cmd_whoami(_client, args, out) -> int:
     except SwarmError as exc:
         shown["error"] = str(exc)
         code = EXIT_FAIL
+    return shown, code
 
+
+def cmd_whoami(_client, args, out) -> int:
+    """Context, URL, where that came from, the tier, the principal, the tenant.
+
+    Every field is filled from a READ: the principal from the signed-in ID
+    token (or from the API, on a tier without one), the tenant from
+    `/v1/tenants/me`. A field that could not be read is left out and the
+    reason printed, because a blank reads as "none".
+    """
+    shown, code = read_whoami(args)
     if getattr(args, "json", False):
         out.write(json.dumps(shown, indent=2) + "\n")
         return code
@@ -805,6 +1322,109 @@ def cmd_whoami(_client, args, out) -> int:
         out.write(f"{label:<11} {value}\n")
     if shown["error"]:
         out.write(f"{'problem':<11} {shown['error']}\n")
+    return code
+
+
+def plugin_manifest() -> tuple[Any, str | None]:
+    """The sc plugin's `plugin.json`: `(path, None)`, or `(None, why not)`.
+
+    READ FROM THE FILE, never restated: the version a person runs is the one
+    in the manifest Claude Code loaded. Claude Code hands a plugin's processes
+    CLAUDE_PLUGIN_ROOT; a terminal in a checkout has `plugin/` beside the
+    bridge (`client._repo_root`). A bridge installed from git has neither,
+    and that is said, not guessed.
+    """
+    from pathlib import Path
+
+    from .client import _repo_root
+
+    looked: list[str] = []
+    root = os.environ.get("CLAUDE_PLUGIN_ROOT", "").strip()
+    candidates = [Path(root) / ".claude-plugin" / "plugin.json"] if root else []
+    candidates.append(Path(_repo_root()) / "plugin" / ".claude-plugin" / "plugin.json")
+    for candidate in candidates:
+        looked.append(str(candidate))
+        if candidate.is_file():
+            return candidate, None
+    return None, "no plugin manifest found (looked at " + ", ".join(looked) + ")"
+
+
+def _plugin_version() -> dict[str, Any]:
+    path, why = plugin_manifest()
+    if path is None:
+        return {"value": None, "not_read_because": why}
+    try:
+        version = json.loads(path.read_text()).get("version")
+    except (OSError, ValueError, AttributeError) as exc:
+        return {"value": None, "not_read_because": f"{path} could not be read: {exc}"}
+    if not isinstance(version, str) or not version.strip():
+        return {"value": None, "not_read_because": f"{path} carries no version"}
+    return {"value": version, "path": str(path)}
+
+
+def _bridge_version() -> dict[str, Any]:
+    from importlib import metadata
+
+    try:
+        return {"value": metadata.version("swarm-mcp")}
+    except metadata.PackageNotFoundError as exc:
+        return {"value": None, "not_read_because": f"swarm-mcp is not installed as a package: {exc}"}
+
+
+def cmd_config(_client, args, out) -> int:
+    """One read-only view: endpoint, tenant, session target, and both versions.
+
+    BUILT OVER `sc whoami` and `sc context` rather than beside them: the
+    endpoint and tenant are `read_whoami`'s, the target is
+    `config.session_target`'s -- the reads the MCP server makes too -- and
+    the versions are read from their files. Every field is filled or says
+    why not, never left blank: a blank tenant reads as "no tenant".
+
+    NO SECRET IS PRINTED. Nothing here reads the client secret or a token
+    into a field; `read_whoami` carries the store's DESCRIPTION, which this
+    view does not show either.
+    """
+    from . import config
+
+    shown, code = read_whoami(args)
+    reason = shown.get("error") or "not reported"
+
+    def field(value: Any, **beside: Any) -> dict[str, Any]:
+        if value is None:
+            return {"value": None, "not_read_because": reason}
+        return {"value": value, **beside}
+
+    try:
+        target = config.session_target(override=getattr(args, "target", None))
+        target_field: dict[str, Any] = {"value": target.value, "source": target.source}
+    except SwarmError as exc:
+        target_field, code = {"value": None, "not_read_because": str(exc)}, EXIT_FAIL
+    view = {
+        "endpoint": field(shown.get("url"), context=shown.get("context"), source=shown.get("source")),
+        "tenant": field(shown.get("tenant")),
+        "target": target_field,
+        "plugin_version": _plugin_version(),
+        "bridge_version": _bridge_version(),
+    }
+    if getattr(args, "json", False):
+        out.write(json.dumps(view, indent=2) + "\n")
+        return code
+
+    def text(entry: dict[str, Any], beside: str = "") -> str:
+        if entry.get("value") is None:
+            return f"not read: {entry.get('not_read_because')}"
+        return f"{entry['value']}{beside}"
+
+    endpoint = view["endpoint"]
+    rows = (
+        ("endpoint", text(endpoint, f"  (context {endpoint.get('context')}, from {endpoint.get('source')})")),
+        ("tenant", text(view["tenant"])),
+        ("target", text(target_field, f"  (from {target_field.get('source')})")),
+        ("plugin", text(view["plugin_version"], f"  ({view['plugin_version'].get('path')})")),
+        ("bridge", text(view["bridge_version"])),
+    )
+    for label, value in rows:
+        out.write(f"{label:<11} {value}\n")
     return code
 
 
@@ -942,6 +1562,12 @@ def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     )
 
 
+def _targets() -> tuple[str, ...]:
+    from . import config
+
+    return config.TARGETS
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sc",
@@ -1008,6 +1634,49 @@ def build_parser() -> argparse.ArgumentParser:
     _common(wh, root=False)
     wh.set_defaults(func=cmd_whoami, no_client=True)
 
+    cf = sub.add_parser(
+        "config", help="the endpoint, tenant, session target and plugin version this machine uses"
+    )
+    _common(cf, root=False)
+    cf.add_argument(
+        "--target", choices=_targets(),
+        help="show this target as the one in force, as a per-call target would be",
+    )
+    cf.set_defaults(func=cmd_config, no_client=True)
+
+    db = sub.add_parser(
+        "debug", help="one task: state, attempts, last error, newest events, the log's tail (masked)"
+    )
+    db.add_argument("task_id")
+    db.add_argument("--events", type=int, default=DEBUG_EVENTS, help="how many newest events")
+    db.add_argument("--log-lines", type=int, default=DEBUG_LOG_LINES, help="how many log lines")
+    _common(db, root=False)
+    db.set_defaults(func=cmd_debug)
+
+    # -- the account verbs: WRITE to the pool (see `ACCOUNT_VERBS`) -------
+    ac = sub.add_parser(
+        "account", help="change one of your accounts: add, pause, resume, drain, remove"
+    )
+    ac_sub = ac.add_subparsers(dest="account_command", required=True)
+    for verb, state in ACCOUNT_VERBS.items():
+        av = ac_sub.add_parser(verb, help=f"ask the broker to set your account {state}")
+        av.add_argument("account", help="its label or id, as the accounts view lists it")
+        av.add_argument("--reason", default="", help="recorded with the change")
+        _common(av, root=False)
+        av.set_defaults(func=cmd_account_state, verb=verb)
+    ar = ac_sub.add_parser("remove", help="remove your account from the pool (type its label to confirm)")
+    ar.add_argument("account", help="its label or id")
+    _common(ar, root=False)
+    ar.set_defaults(func=cmd_account_remove)
+    aa = ac_sub.add_parser("add", help="add an account by signing in to Claude in your browser")
+    aa.add_argument("--label", required=True, help="the account's name in the pool")
+    aa.add_argument(
+        "--lend-to", action="append", default=[], metavar="TENANT",
+        help="a tenant that may run on it too (repeat for several)",
+    )
+    _common(aa, root=False)
+    aa.set_defaults(func=cmd_account_add)
+
     cx = sub.add_parser(
         "context", help="the deployments this machine knows: add, use, list, remove"
     )
@@ -1048,8 +1717,21 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None, out=None) -> int:
+    from . import config
+
     args = build_parser().parse_args(argv)
     stream = out or sys.stdout
+    # THE SESSION TARGET IS CHECKED AT START-UP (S8), as the MCP server checks
+    # it: a config file or plugin setting naming no target stops here, with
+    # the three it may name, rather than being read as some other target.
+    # `sc config` is exempt: it is how an operator SEES the bad target, which
+    # it reports as not read with this same reason (and exits non-zero).
+    if args.func is not cmd_config:
+        try:
+            config.session_target(override=getattr(args, "target", None))
+        except SwarmError as exc:
+            print(f"sc: {exc}", file=sys.stderr)
+            return EXIT_FAIL
     if getattr(args, "no_client", False):
         # Sign-in and contexts exist to fix a connection that cannot be made,
         # so making one first would stop them running exactly when needed.

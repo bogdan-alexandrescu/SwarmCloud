@@ -866,8 +866,45 @@ def final_answer(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
         )
         text = text[:MAX_ANSWER_CHARS]
     out["answer"] = text
-    out["answer_excerpt"] = text if len(text) <= EXCERPT_CHARS else text[: EXCERPT_CHARS - 1] + "…"
+    out["answer_excerpt"] = json_safe_excerpt(text)
     return out
+
+
+#: What `json_safe_excerpt` writes in place of the characters a JSON string
+#: would have to escape. A backslash becomes a forward slash so a Windows path
+#: still reads as a path; a double quote or a backtick becomes a single quote.
+_EXCERPT_REPLACEMENTS = {"\\": "/", '"': "'", "`": "'"}
+
+
+def json_safe_excerpt(text: str) -> str:
+    """The first `EXCERPT_CHARS` of `text`, in characters that need no escaping
+    inside a JSON string: `json.dumps(x, ensure_ascii=False) == '"' + x + '"'`.
+
+    WHY (#285). An `sc:step` row is a Haiku relay that RETYPES the bridge's
+    outcome into its `StructuredOutput` JSON. Served the raw answer's first 500
+    characters, it failed validation five times on one step -- backticks,
+    double quotes, `********` masks, paths and backslashes -- and a step whose
+    task had SUCCEEDED reported `state: null`. A field that needs no escaping
+    can be copied verbatim, so there is nothing for the relay to get wrong.
+
+    Control characters (newlines and tabs included, and the C1 range and the
+    Unicode line/paragraph separators, which some JSON readers reject) become
+    a space and runs of whitespace collapse to one; a backslash, double quote
+    or backtick is replaced as `_EXCERPT_REPLACEMENTS` says. The replacing is
+    done BEFORE the cut, so the limit is measured on the text served: the
+    result, ellipsis included, is at most `EXCERPT_CHARS` characters. `****`
+    masks and path text pass through. This is the excerpt only: `answer`, the
+    whole answer, stays exactly as the task wrote it.
+    """
+    chars = []
+    for ch in text:
+        code = ord(ch)
+        if code < 0x20 or 0x7F <= code <= 0x9F or ch in ("\u2028", "\u2029"):
+            chars.append(" ")
+        else:
+            chars.append(_EXCERPT_REPLACEMENTS.get(ch, ch))
+    flat = " ".join("".join(chars).split())
+    return flat if len(flat) <= EXCERPT_CHARS else flat[: EXCERPT_CHARS - 1] + "…"
 
 
 def last_json_object(text: Any) -> dict[str, Any] | None:

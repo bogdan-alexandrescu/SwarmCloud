@@ -151,6 +151,122 @@ jobs:
         run: ./scripts/destroy.sh --self-test
 
   # -------------------------------------------------------------------------
+  # THE PLUGIN'S BRIDGE TAG (#272; docs/ci.md, "The plugin's bridge tag is
+  # made by the release"). plugin/.claude-plugin/plugin.json installs the
+  # swarm-mcp bridge from `@sc-v<version>`, and its `version` is the same
+  # string (tests/unit/mcp/test_plugin_bridge_install.py). That tag was made
+  # by hand, so it could be missing: sc-v0.5.6 did not exist while main
+  # already pinned it, and every fresh install of that version failed to
+  # fetch its bridge. This job creates it, on the commit being released.
+  #
+  # After `verify`, because a tag is what users' installs resolve: a commit
+  # whose unit tests fail is not one to hand them. On main only -- a
+  # workflow_dispatch can name another branch, and a tag made from it would
+  # pin users to a commit main never had.
+  #
+  # IT NEVER MOVES A TAG THAT EXISTS. Users' installs already resolved it, and
+  # uv caches what it fetched; moving it would give two users of the same
+  # version two different bridges. So nothing here forces: an existing tag is
+  # reported (with the commit it points at, when that is not this one) and
+  # left exactly where it is.
+  #
+  # `contents: write` is granted on THIS job, not the workflow, whose default
+  # stays `contents: read`: the jobs that build, plan and deploy run a great
+  # deal of code and none of it needs to write to the repository. (The other
+  # job holding it is `acceptance`, for its own sweep; see its header.) This
+  # job runs nothing but checkout, jq and git.
+  #
+  # A bump that touches ONLY plugin/ starts no release (plugin/** is not in
+  # `on.push.paths`). It is tagged by the next release whose commit descends
+  # from it -- the tag then lands on that later commit, whose plugin.json
+  # says the same version. Until then application.yml's shell job warns.
+  # -------------------------------------------------------------------------
+  plugin-tag:
+    name: tag the plugin's bridge (sc-v<version>)
+    runs-on: ubuntu-24.04
+    needs: [verify]
+    # MAIN ONLY, said on each STEP rather than on the job. A job-level
+    # `github.ref` is outside what tests/unit/scripts/test_release_prod_gate.py
+    # can evaluate (its release contexts carry no ref), and a job-level `if:`
+    # there would have to be modelled before relying on it. Off main this job
+    # starts, runs nothing, and ends green. No status function on either
+    # step, so neither runs unless everything before it succeeded.
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        if: github.ref == 'refs/heads/main'
+
+      - name: create sc-v<version> on this commit unless it already exists
+        if: github.ref == 'refs/heads/main'
+        env:
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          manifest=plugin/.claude-plugin/plugin.json
+          version="$(jq -r '.version' "$manifest")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=${manifest}::version is '${version}', not X.Y.Z; no tag created"
+            exit 1
+          fi
+          tag="sc-v${version}"
+          listing="$(mktemp)"
+
+          # 0: it exists. 2 (--exit-code): it does not. Anything else is a
+          # remote that could not be read, which is not "absent".
+          remote_tag() {
+            local status=0
+            git ls-remote --exit-code --tags origin "refs/tags/${tag}" > "$listing" || status=$?
+            return "$status"
+          }
+          # The commit an existing tag points at: the peeled line of an
+          # annotated tag, else the tag's own line.
+          tagged_commit() {
+            local peeled
+            peeled="$(awk -v ref="refs/tags/${tag}^{}" '$2 == ref {print $1}' "$listing")"
+            if [ -n "$peeled" ]; then echo "$peeled"; else awk -v ref="refs/tags/${tag}" '$2 == ref {print $1}' "$listing"; fi
+          }
+          report_existing() {
+            local at
+            at="$(tagged_commit)"
+            if [ "$at" = "$RELEASE_SHA" ]; then
+              echo "::notice title=${tag} already exists::${tag} already points at this commit (${RELEASE_SHA}); nothing to do."
+            else
+              echo "::notice title=${tag} already exists::${tag} points at ${at}, not this commit (${RELEASE_SHA}). It is left where it is: installs of ${version} already resolved it."
+            fi
+          }
+
+          status=0
+          remote_tag || status=$?
+          if [ "$status" -eq 0 ]; then
+            report_existing
+            exit 0
+          fi
+          if [ "$status" -ne 2 ]; then
+            echo "::error::git ls-remote could not read origin's tags (exit ${status}); not creating ${tag} blind"
+            exit 1
+          fi
+
+          git -c "user.name=github-actions[bot]" \
+              -c "user.email=41898282+github-actions[bot]@users.noreply.github.com" \
+              tag -a "$tag" "$RELEASE_SHA" -m "swarm-mcp bridge for plugin sc ${version}"
+          if git push origin "refs/tags/${tag}"; then
+            echo "::notice title=${tag} created::${tag} now points at ${RELEASE_SHA}."
+            exit 0
+          fi
+          # Rejected. Another release (a dev push and a prod dispatch can run
+          # at once) may have pushed it first; that is the tag existing, not
+          # a failure. Anything else is.
+          status=0
+          remote_tag || status=$?
+          if [ "$status" -eq 0 ]; then
+            report_existing
+            exit 0
+          fi
+          echo "::error::pushing ${tag} was rejected and origin does not have it"
+          exit 1
+
+  # -------------------------------------------------------------------------
   # The images, and their scan. application.yml's `build images` job builds
   # every image once per commit on main and uploads the digests it built; this
   # job waits for that job, fetches that record and scans every digest in it.

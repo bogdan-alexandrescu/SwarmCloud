@@ -96,7 +96,24 @@ LEGACY_HOST_VARS = ("SWARM_API_HOST", "API_HOST")
 PLUGIN_URL = "deployment_url"
 PLUGIN_CLIENT_ID = "oauth_client_id"
 PLUGIN_CLIENT_SECRET = "oauth_client_secret"
-PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET)
+#: Where a dispatching tool sends work when the call does not say (S8,
+#: BUILD_PROMPT_V2 2.5). The same name is the config file's key, so a terminal
+#: and a plugin session read one setting under one name.
+PLUGIN_TARGET = "default_target"
+PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET)
+
+#: The three places a unit of work can be sent (S8). `cloud` dispatches it,
+#: `local` sends nothing and says the work stays in this session, and `hybrid`
+#: applies the spec's explicit rule: a unit that names a runner profile goes to
+#: the cloud unless the caller declares it `needs_local`.
+TARGETS = ("cloud", "local", "hybrid")
+
+#: The session default when nothing sets one. HYBRID, owner decision
+#: 2026-10-01: with no `needs_local` declared it dispatches exactly as `cloud`
+#: does, so nothing that dispatched before this setting existed stops
+#: dispatching -- and a caller that declares a local need is refused for the
+#: cloud without having to change the session's setting first.
+DEFAULT_TARGET = "hybrid"
 
 
 def plugin_env(key: str) -> str:
@@ -190,6 +207,11 @@ class Config:
     path: Path
     current: str | None = None
     contexts: dict[str, Context] = field(default_factory=dict)
+    #: The file's `default_target` as written, unchecked: `session_target`
+    #: checks it, so a bad value is refused where the target is used and
+    #: named with the file it came from, rather than making the whole file
+    #: unreadable to the commands that do not care.
+    default_target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -338,10 +360,12 @@ def load(environ: Mapping[str, str] | None = None) -> Config:
             oauth_client_id=str(entry.get("oauth_client_id") or ""),
         )
     current = body.get("current_context")
+    target = body.get(PLUGIN_TARGET)
     return Config(
         path=path,
         current=current if isinstance(current, str) and current in contexts else None,
         contexts=contexts,
+        default_target=None if target is None else str(target),
     )
 
 
@@ -370,6 +394,11 @@ def save(config: Config) -> None:
             for name, c in sorted(config.contexts.items())
         },
     }
+    if config.default_target is not None:
+        # KEPT ACROSS A REWRITE. `sc context use` rewrites the whole file, and
+        # a setting the person wrote by hand must not vanish because they
+        # switched deployments. Not a secret: one of three words.
+        body[PLUGIN_TARGET] = config.default_target
     fd, temporary = tempfile.mkstemp(prefix=".config-", dir=directory)
     try:
         with os.fdopen(fd, "w") as handle:
@@ -631,3 +660,69 @@ def seed_from_plugin(environ: Mapping[str, str] | None = None, *, store: Any = N
         if chosen.get(slot) != plugin.client_secret:
             chosen.set(slot, plugin.client_secret)
     return plugin_deployment(plugin, load(environ))
+
+
+# -- where work is sent (S8) --------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Target:
+    """Which of `TARGETS` applies, and which layer said so.
+
+    `source` is printed beside the value -- by every dispatch answer and by
+    `sc config` -- because "local" from a per-call argument and "local" from a
+    setting made weeks ago are different things to undo.
+    """
+
+    value: str
+    source: str
+
+
+def check_target(value: Any, *, where: str) -> str:
+    """`value` as one of `TARGETS`, or a SwarmError naming all three."""
+    text = str(value).strip().lower() if isinstance(value, str) else ""
+    if text not in TARGETS:
+        raise SwarmError(
+            f"{where} is {value!r}; a target is one of {', '.join(TARGETS)} -- "
+            "cloud dispatches to SwarmCloud, local keeps the work in this session, "
+            "hybrid sends a unit that names a runner profile to the cloud unless "
+            "the call declares `needs_local`"
+        )
+    return text
+
+
+def session_target(
+    environ: Mapping[str, str] | None = None,
+    *,
+    override: str | None = None,
+    override_source: str = "--target",
+) -> Target:
+    """The session's default target, most explicit first.
+
+        1. `override`                  a `--target` on this command line
+        2. SWARM_PLUGIN_DEFAULT_TARGET the plugin's `default_target` setting
+        3. `default_target` in the config file, for a terminal
+        4. DEFAULT_TARGET              hybrid
+
+    An invalid value at any layer is REFUSED, never skipped: falling through
+    to the next layer would run work somewhere the person had said it must
+    not go. The MCP server and `sc` both call this at start-up, so a bad
+    setting stops them there rather than at the first dispatch.
+    """
+    environ = os.environ if environ is None else environ
+    if override not in (None, ""):
+        return Target(check_target(override, where=override_source), override_source)
+    name = plugin_env(PLUGIN_TARGET)
+    from_plugin = _env(environ, name)
+    if from_plugin:
+        return Target(
+            check_target(from_plugin, where=f"the sc plugin's {PLUGIN_TARGET} ({name})"),
+            f"the sc plugin's {PLUGIN_TARGET} setting (/plugin configure)",
+        )
+    stored = load(environ)
+    if stored.default_target not in (None, ""):
+        return Target(
+            check_target(stored.default_target, where=f"{PLUGIN_TARGET} in {stored.path}"),
+            f"{PLUGIN_TARGET} in {stored.path}",
+        )
+    return Target(DEFAULT_TARGET, f"the built-in default ({DEFAULT_TARGET})")

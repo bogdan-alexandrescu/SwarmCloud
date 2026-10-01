@@ -111,6 +111,12 @@ jobs:
   shell:
     name: shellcheck
     runs-on: ubuntu-24.04
+    # Job-level permissions REPLACE the workflow's, so contents: read is
+    # restated. actions: read is for the plugin-tag check's `gh run list` of
+    # release.yml; nothing here mints a cloud token, so no id-token.
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v5
 
@@ -219,6 +225,110 @@ jobs:
         # says must not be softened. A hand-off that silently misses IS a
         # softening, so it is checked rather than proof-read.
         run: ./scripts/lib/check-doc-links.sh
+
+      - name: the plugin's pinned bridge tag exists, or its release has not run yet
+        # #272; docs/ci.md, "The plugin's bridge tag is made by the release".
+        # plugin.json pins its bridge to `sc-v<version>`, and release.yml's
+        # plugin-tag job creates that tag after verify. sc-v0.5.6 was missing
+        # while main pinned it, and nothing said so; this says so.
+        #
+        # RED only when a completed release on main whose `verify` job passed
+        # already descends from the commit that bumped the version: plugin-tag
+        # runs exactly when verify passed, so that release should have tagged
+        # it and did not. The RUN's conclusion is deliberately not read: a
+        # plugin-tag that failed (a rejected push, a ruleset on sc-v*), or any
+        # later build or deploy job that failed, makes the whole run `failure`,
+        # and filtering on `success` would hide precisely the release #272 is
+        # about. A WARNING when no such release has run since the bump -- a
+        # bump touching only plugin/ starts no release (release.yml's path
+        # filter), and the next release tags it. A gh call that fails is a
+        # check that could not be made, never "no releases".
+        #
+        # On main only: the tag is made by main's release, so a pull request
+        # bumping the version is expected to have none.
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          manifest=plugin/.claude-plugin/plugin.json
+          version="$(jq -r '.version' "$manifest")"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error file=${manifest}::version is '${version}', not X.Y.Z, so it pins no tag a release can make"
+            exit 1
+          fi
+          tag="sc-v${version}"
+
+          # 0: it exists. 2 (--exit-code): it does not. Anything else is a
+          # remote that could not be read, which is not "absent".
+          status=0
+          git ls-remote --exit-code --tags origin "refs/tags/${tag}" > /dev/null || status=$?
+          if [ "$status" -eq 0 ]; then
+            echo "${tag} exists on origin."
+            exit 0
+          fi
+          if [ "$status" -ne 2 ]; then
+            echo "::error::git ls-remote could not read origin's tags (exit ${status}); ${tag} not checked"
+            exit 1
+          fi
+
+          # The checkout is shallow; the bump commit and the release heads need
+          # history. Fetched only here, on the rare path, not on every run.
+          if [ "$(git rev-parse --is-shallow-repository)" = "true" ]; then
+            git fetch --quiet --unshallow origin
+          fi
+          bump="$(git log -1 --format=%H -G'"version"' -- "$manifest")"
+          if [ -z "$bump" ]; then
+            echo "::error file=${manifest}::${tag} is missing and no commit in history changed the version line"
+            exit 1
+          fi
+
+          runs="$(mktemp)"
+          gh_status=0
+          gh run list --workflow release.yml --branch main --status completed --limit 50 --json databaseId,headSha > "$runs" || gh_status=$?
+          if [ "$gh_status" -ne 0 ]; then
+            echo "::error::gh run list failed (exit ${gh_status}); cannot tell whether a release since ${bump} should have made ${tag}"
+            exit 1
+          fi
+          pairs="$(mktemp)"
+          jq -r '.[] | "\(.databaseId) \(.headSha)"' "$runs" > "$pairs"
+
+          examined=0
+          offender=""
+          offender_sha=""
+          offender_tagjob=""
+          while read -r run_id sha; do
+            [ -n "$sha" ] || continue
+            examined=$((examined + 1))
+            if ! git cat-file -e "${sha}^{commit}" 2> /dev/null; then
+              echo "release head ${sha} (run ${run_id}) is not in this clone; counted as not descended from ${bump}"
+              continue
+            fi
+            git merge-base --is-ancestor "$bump" "$sha" || continue
+            [ -z "$offender" ] || continue
+            jobs="$(mktemp)"
+            view_status=0
+            gh run view "$run_id" --json jobs > "$jobs" || view_status=$?
+            if [ "$view_status" -ne 0 ]; then
+              echo "::error::gh run view ${run_id} failed (exit ${view_status}); cannot tell whether that release should have made ${tag}"
+              exit 1
+            fi
+            verify="$(jq -r '[.jobs[] | select(.name == "verify") | .conclusion][0] // "absent"' "$jobs")"
+            if [ "$verify" = "success" ]; then
+              offender="$run_id"
+              offender_sha="$sha"
+              offender_tagjob="$(jq -r '[.jobs[] | select(.name | startswith("tag the plugin")) | .conclusion][0] // "absent"' "$jobs")"
+            else
+              echo "release run ${run_id} (${sha}) descends from ${bump}, but its verify is ${verify}, so plugin-tag did not run"
+            fi
+          done < "$pairs"
+          echo "examined ${examined} completed release runs on main"
+
+          if [ -n "$offender" ]; then
+            echo "::error title=${tag} is missing::release run ${offender} of ${offender_sha} passed verify and descends from ${bump}, the commit that set version ${version}, but origin has no ${tag}; its plugin-tag job concluded '${offender_tagjob}'. Installs of plugin ${version} cannot fetch their bridge. Read that run's plugin-tag job."
+            exit 1
+          fi
+          echo "::warning title=${tag} not tagged yet::${bump} set version ${version}; no release on main has passed verify since it, and the next one tags ${tag}."
 
   workflows:
     name: release workflow wiring (actionlint)
