@@ -116,6 +116,15 @@ runner child sees 429 (it is the only thing that sees the provider's headers)
                         -> scheduler reads the pool and admits fewer tasks
 ```
 
+**The worker never calls `/exhausted`.** A runner's 429 reaches the broker as
+`/rate-limit` whether the runner labelled it `THROTTLED` or `EXHAUSTED`
+(`control.QUOTA_REPORT_ROUTES`), because every runner labels its 429 `EXHAUSTED`
+and posting each one to `/exhausted` would stop the tenant on the first 429. The
+cost: a genuine quota-spent answer with a reset hours away reaches `EXHAUSTED`
+only through `AIMD_EXHAUSTION_THRESHOLD` consecutive 429s, not at once. The
+worker is also no longer a writer of `quota/{provider}:{tenant}`; a document the
+worker wrote beside the broker bypassed AIMD and was undone by the sweep.
+
 The scheduler never asks a provider how it feels. It reads a pool, and the pool
 already carries the answer. That separation is what keeps the admission path a
 single Firestore transaction with no network calls in it.
