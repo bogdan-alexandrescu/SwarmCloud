@@ -892,10 +892,16 @@ def test_a_live_job_under_a_heartbeating_lease_is_never_killed_because_a_list_fa
     report = rec.run_once()
 
     assert report.leases_examined == 1, "the lease must be in the snapshot"
-    # The path under test RAN: the list failed, and the Job was read by name.
+    # The path under test RAN: the list failed.
     assert ENG_NS in batch.listed()
+    # And no GET was needed: since #372 a lease heartbeating inside the grace
+    # raises no missing_execution at all, failed list or not, so there is no
+    # absence to disprove. The probe's ACTIVE -> disproved path is still
+    # exercised, under a lease that has not heartbeated yet, by the next test
+    # (GKE) and by
+    # tests/unit/worker/test_reconciler_missing_execution_needs_proof.py (Cloud Run).
     job_name = ids["execution"].split("/", 1)[1]
-    assert ("read_namespaced_job", ENG_NS, job_name) in batch.calls, "the probe was not tried"
+    assert ("read_namespaced_job", ENG_NS, job_name) not in batch.calls
 
     assert batch.deleted == [], "a heartbeating agent was killed because a LIST failed"
     task = db.docs[f"tasks/{ids['task']}"]
@@ -907,6 +913,47 @@ def test_a_live_job_under_a_heartbeating_lease_is_never_killed_because_a_list_fa
     # Disproved, not held back. Counting it as suppressed, or logging
     # NOT_REPAIRING for it, would page after thirty minutes of an agent that is
     # doing exactly what it should.
+    assert report.findings_suppressed == 0, [s.as_dict() for s in report.suppressed]
+    assert not [l for l in log_lines(stream) if l["message"] == repair.NOT_REPAIRING]
+
+
+@pytest.mark.parametrize("list_status", [429, 500, 403])
+def test_a_live_job_under_a_lease_not_yet_heartbeating_is_disproved_by_name_when_a_list_failed(
+    list_status: int,
+):
+    """The GKE probe's ACTIVE -> disproved path, still pinned after #372.
+
+    The test above no longer reaches the probe: a lease heartbeating inside the
+    grace raises no missing_execution at all. This one has not heartbeated
+    yet -- its dispatch deadline is still ahead, so it is not stale -- and is
+    past a short missing-execution grace, so the FAILED list does raise a
+    missing_execution. The Job, read by name, is active and is this attempt's:
+    the finding is disproved, not repaired and not held back.
+    """
+    db = FakeFirestore()
+    seed_tenant(db, ENG, record_namespace=True)
+    ids = seed_stranded(db, "task_7c2d1e0f9a8b4c6d8e31", state="DISPATCHED", minutes_ago=2)
+    job = k8s_job(task_id=ids["task"], active=1)
+    if list_status == 403:
+        batch = RbacBatchApi(jobs=[job], listable=set(), gettable={ENG_NS},
+                             deletable={ENG_NS})
+    else:
+        batch = RbacBatchApi(jobs=[job], listable={ENG_NS}, list_fails_with=list_status)
+    before = pool_actives(db)
+    rec, stream = reconciler(db, gke(batch), missing_execution_grace_seconds=60)
+
+    report = rec.run_once()
+
+    assert report.leases_examined == 1, "the lease must be in the snapshot"
+    assert ENG_NS in batch.listed()
+    job_name = ids["execution"].split("/", 1)[1]
+    assert ("read_namespaced_job", ENG_NS, job_name) in batch.calls, "the probe was not tried"
+
+    assert batch.deleted == [], "a live agent was killed because a LIST failed"
+    task = db.docs[f"tasks/{ids['task']}"]
+    assert task["current_generation"] == 1, "a live worker's generation was fenced"
+    assert db.docs[f"leases/{ids['lease']}"]["released_at"] is None
+    assert pool_actives(db) == before
     assert report.findings_suppressed == 0, [s.as_dict() for s in report.suppressed]
     assert not [l for l in log_lines(stream) if l["message"] == repair.NOT_REPAIRING]
 

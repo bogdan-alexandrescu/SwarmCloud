@@ -23,14 +23,19 @@ Note what is NOT a finding: a task in LEASED with a fresh lease and no execution
 yet. Dispatch takes time, image pulls take minutes, and a reconciler that treats
 "not started yet" as "dead" would kill every cold start on the platform.
 
-Two more apply to GKE Jobs only, because browser pods carry
-`safe-to-evict=false` and nothing else in the cluster will ever reclaim one:
+One applies on both backends, each behind its own switch (GKE:
+`enable_gke_eviction`; Cloud Run: `enable_cloud_run_stall_guard`, D5):
 
     stuck, no progress the worker is alive and heartbeating, but the attempt
                        has shown no progress (`progress.py`) for longer than
-                       `stuck_after_seconds` -> fence now; the worker stops
-                       itself, and a later pass terminates if need be,
-                       releases, and requeues or fails by the retry rule
+                       its profile's threshold (`stuck_after_for`) -> fence
+                       now; the worker stops itself, and a later pass
+                       terminates if need be, releases, and requeues or fails
+                       by the retry rule
+
+And one applies to GKE Jobs only, because browser pods carry
+`safe-to-evict=false` and nothing else in the cluster will ever reclaim one:
+
     left running       the task is already terminal and its Job is still
                        active -> terminate; release only that Job's own lease
 
@@ -84,6 +89,8 @@ from .model import (
 #: `backends.GkeBackend.name` is the same string; importing that module here
 #: would be circular (it imports `sanitised` from this one).
 GKE = Backend.GKE_AUTOPILOT.value
+#: The backend the no-progress rule also judges since D5, spelled the same way.
+CLOUD_RUN = Backend.CLOUD_RUN_JOB.value
 
 #: The worker's exit code for "cannot start, and another attempt would fail the
 #: same way": `agent_worker.errors.ExitCode.CONFIG`.
@@ -117,8 +124,9 @@ class FindingKind(str, Enum):
     #: be established either way. The only finding in this module decided by a
     #: clock rather than by state.
     ORPHAN_CHECKPOINT = "orphan_checkpoint"
-    #: A GKE attempt whose lease is heartbeating and which has shown no
-    #: progress for `stuck_after_seconds`. See `progress.py` for what progress is.
+    #: A GKE or Cloud Run attempt whose lease is heartbeating and which has
+    #: shown no progress for its profile's threshold (`stuck_after_for`). See
+    #: `progress.py` for what progress is.
     STUCK_NO_PROGRESS = "stuck_no_progress"
     #: A GKE Job still active after its task reached a terminal state.
     LEFT_RUNNING = "left_running"
@@ -428,7 +436,19 @@ def detect_missing_executions(
     config: ReconcilerConfig,
     now: datetime | None = None,
 ) -> list[Finding]:
-    """Tasks the control plane believes are running, with nothing behind them."""
+    """Tasks the control plane believes are running, with nothing behind them.
+
+    A LEASE THAT HEARTBEATS INSIDE `heartbeat_grace_seconds` IS NEVER MISSING
+    ITS EXECUTION (#372). Its worker wrote that heartbeat, and a worker only
+    runs inside an execution, so a live heartbeat is better evidence than any
+    listing: on 2026-09-30 a listing that succeeded but did not attribute
+    swarm-job-eng-claude-code-s4s9z to its attempt got a heartbeating,
+    checkpointing attempt fenced as missing. A lease whose worker has gone
+    quiet is the stale-lease rule's, so nothing is lost by standing aside here.
+
+    What remains is an absence claim, and on a backend that can be asked by
+    name `repair.Reconciler._admit` confirms it before anything is repaired.
+    """
     now = now or utcnow()
     findings: list[Finding] = []
     for task in snapshot.tasks.values():
@@ -439,6 +459,11 @@ def detect_missing_executions(
             continue
         if lease.attempt_id in executions_by_attempt:
             continue
+        if (
+            lease.heartbeat_at is not None
+            and lease.silent_seconds(now) <= config.heartbeat_grace_seconds
+        ):
+            continue  # a live worker is proof an execution exists
         attempt = snapshot.attempts.get(lease.attempt_id)
         reference = (attempt.created_at if attempt else None) or lease.created_at
         if reference is None:
@@ -637,6 +662,19 @@ def detect_orphan_executions(
                 f"execution is generation {execution.generation} but the task is at "
                 f"{task.generation}"
             )
+        elif (
+            lease is None
+            and not execution.attempt_id
+            and (current := snapshot.lease_for_task(task.task_id)) is not None
+            and not current.is_released
+        ):
+            # NO ATTEMPT ID IS NOT "NO LEASE" (#372). The execution names this
+            # task, at its current generation (an older one was caught above),
+            # and the task holds a live lease: it may well BE that lease's
+            # execution, read back without its ATTEMPT_ID. Killing it would be
+            # #372 again by another rule. The backend logs the execution and
+            # what it lacked; the lease's own rules still judge the lease.
+            continue
         elif lease is None:
             reason = "no lease exists for this execution's attempt"
         elif lease.is_released:
@@ -795,7 +833,7 @@ def detect_orphan_leases(
 
 @dataclass(frozen=True)
 class StuckSubject:
-    """A running GKE attempt the stuck rule could act on, before any evidence."""
+    """A running attempt the stuck rule could act on, before any evidence."""
 
     task: TaskView
     lease: LeaseView
@@ -817,8 +855,14 @@ def _stuck_subject(
     lease to `detect_stale_leases`, an old generation to the obsolete-generation
     rule, a finished task to `detect_left_running` -- and must not be judged
     twice by rules that would disagree about what to do with it.
+
+    Which backends it judges is decided here, each by its own switch: GKE by
+    `enable_gke_eviction`, Cloud Run by `enable_cloud_run_stall_guard` (D5).
+    The two halves share everything else -- the evidence, the per-profile
+    threshold and the fence-only repair -- so the rule cannot drift between
+    them.
     """
-    if execution.backend != GKE or not execution.is_active:
+    if not execution.is_active or not _stall_guarded(execution.backend, config):
         return None
     if execution.claim_refused or not execution.task_id or not execution.attempt_id:
         return None
@@ -848,9 +892,19 @@ def _stuck_subject(
     started = (attempt.started_at if attempt else None) or task.started_at
     if started is None:
         started = lease.created_at
-    if started is not None and (now - started).total_seconds() < config.stuck_after_seconds:
+    threshold = config.stuck_after_for(task.runner_profile)
+    if started is not None and (now - started).total_seconds() < threshold:
         return None  # has not been running long enough to be stuck at all
     return StuckSubject(task=task, lease=lease, execution=execution, started_at=started)
+
+
+def _stall_guarded(backend: str | None, config: ReconcilerConfig) -> bool:
+    """Whether the no-progress rule may judge an attempt on this backend."""
+    if backend == GKE:
+        return bool(config.enable_gke_eviction)
+    if backend == CLOUD_RUN:
+        return bool(config.enable_cloud_run_stall_guard)
+    return False
 
 
 def stuck_candidates(
@@ -864,7 +918,7 @@ def stuck_candidates(
     Used by the reconciler to decide which event streams to read, so that an
     attempt younger than the threshold -- nearly all of them -- costs nothing.
     """
-    if not config.enable_gke_eviction:
+    if not (config.enable_gke_eviction or config.enable_cloud_run_stall_guard):
         return []
     now = now or utcnow()
     prepared = scope_executions_to_their_tenant(
@@ -884,7 +938,9 @@ def detect_stuck_executions(
     config: ReconcilerConfig,
     now: datetime | None = None,
 ) -> list[Finding]:
-    """GKE attempts that are alive, current, and making no progress.
+    """Attempts that are alive, current, and making no progress.
+
+    On GKE and, since D5, on Cloud Run: `_stuck_subject` says which.
 
     Only on EVIDENCE: an attempt with no assessment in `snapshot.progress`, or
     one whose assessment could not be judged, produces nothing. The repair
@@ -893,9 +949,10 @@ def detect_stuck_executions(
     superseded, silent lease that the existing rules release -- terminating
     the Job first if it is still active -- through the frozen
     `release_lease_in_transaction`, then READY, or FAILED once the attempts
-    are spent, or CANCELLED if a cancel was asked for.
+    are spent, or CANCELLED if a cancel was asked for. On Cloud Run the kill
+    is a cancelled execution rather than a deleted Job; the order is the same.
     """
-    if not config.enable_gke_eviction:
+    if not (config.enable_gke_eviction or config.enable_cloud_run_stall_guard):
         return []
     now = now or utcnow()
     findings: list[Finding] = []

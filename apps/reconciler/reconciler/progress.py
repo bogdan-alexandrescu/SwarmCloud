@@ -6,6 +6,16 @@ browser pod that is stuck for some time WITHOUT PROGRESS. A pod that may not be
 evicted by the autoscaler holds its node for as long as it runs, so a wedged
 one has to be found by something else, and this is that something.
 
+WHAT IT COVERS NOW. Every runner profile, on both backends (D5;
+BUILD_PROMPT_V2 2.9 asks for the no-progress signal everywhere, and the owner's
+2026-10-01 decision keeps Cloud Run Jobs primary, so `mock`, `generic`,
+`claude-code` and `codex` all run there). A GKE attempt is judged when
+`enable_gke_eviction` is on, a Cloud Run attempt when
+`enable_cloud_run_stall_guard` is on. The verdict below is the same on both and
+so is the action: fence only (`repair.Reconciler._repair_stuck`). The
+threshold is per runner profile (`ReconcilerConfig.stuck_after_for`, S27),
+1800 s for every profile until the owner sets an override.
+
 HEARTBEATING IS NOT PROGRESS. The worker heartbeats from its own supervision
 loop (`agent_worker.lifecycle._run_child_supervised`), which keeps running
 whatever the runner child is doing -- a Chromium wedged on a page that never
@@ -57,10 +67,23 @@ showed nothing. An attempt whose CPU could not be measured, or whose events
 stopped arriving, is "not judged", never "stuck": the reconciler's standing rule
 is that a component which cannot see must not act, and that is the rule here.
 
-WHAT THIS DOES NOT CATCH, stated so nobody relies on it: a browser spinning at
-full CPU on a page that never finishes reads as progressing. That attempt is
-still bounded by the worker's own `timeout_seconds` (5400s for `browser`), as
-every attempt was before this rule existed.
+WHAT THIS DOES NOT CATCH, stated so nobody relies on it:
+
+* an agent spinning at full CPU without getting anywhere -- a browser on a
+  page that never finishes, a coding agent in a retry loop, a model call
+  streaming tokens it will throw away -- reads as progressing;
+* an agent that waits on something remote (a model call, a provider queue)
+  while its container idles reads as quiet, and the only defence is the
+  threshold being longer than any legitimate wait. Nothing here can tell a
+  long model call from a hung one; that is why the threshold is per profile;
+* an attempt whose worker cannot measure CPU, or whose events stop arriving,
+  is never judged at all (below).
+
+The signals that would close the first two -- per-step activity from the
+runner, and provider-side request progress (items 2 and 4 of BUILD_PROMPT_V2
+2.9) -- are not written by any worker yet. Until they are, every such attempt
+is still bounded by its own `timeout_seconds`, as every attempt was before
+this rule existed.
 
 Pure: no I/O. `repair.Reconciler._read_progress` reads the events and hands
 them here; `detect.detect_stuck_executions` turns the verdict into a finding.
