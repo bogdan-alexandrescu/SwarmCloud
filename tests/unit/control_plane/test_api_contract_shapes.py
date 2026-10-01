@@ -239,10 +239,12 @@ CODECS: tuple[Codec, ...] = (
         # PR #229 review, are what the task collected about itself and the
         # userinfo of its repository URL. `waiting_for` (#362) is a live read
         # of a READY task's pools by `swarm_api.waiting`, never stored.
+        # `account` (#379) is derived from the task's own account events by
+        # `swarm_api.task_accounts`, never stored.
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
-            "repository_url_redaction_count", "waiting_for",
+            "repository_url_redaction_count", "waiting_for", "account",
         ),
     ),
     Codec(

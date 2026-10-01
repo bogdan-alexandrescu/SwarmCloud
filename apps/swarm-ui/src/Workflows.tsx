@@ -105,6 +105,7 @@ import {
   type WorkflowDrift,
   type WorkflowStep,
   workflowHeaderState,
+  workflowStartText,
   TERMINAL_STATES,
 } from './types'
 import {
@@ -1051,6 +1052,9 @@ export function WorkflowCard({
     usage.kind === 'ready' && usage.usage !== null ? usage.usage.byTaskId : null,
   )
   const header = workflowHeaderState(workflow)
+  // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
+  // workflow document records no start -- with `created_at` as its submit.
+  const started = workflowStartText(workflow, taskById)
   const bodyId = `wf-body-${workflow.workflow_id}`
   // WHAT THE ROW IS CALLED AND WHAT IT OPENED (#330), both off the step tasks
   // the board already joined -- see `workflowLabel` and `workflowPullRequest`.
@@ -1173,6 +1177,15 @@ export function WorkflowCard({
           <Shape shape={shape} />
           <Mix steps={workflow.steps} />
           <Spend spend={spend} />
+          {/* STARTED, AND SUBMITTED UNDER IT (#376). Derived from the step
+              tasks the board joined; `start not read` when it read none,
+              `never started` when it read them all and none has. */}
+          <span className="wf-started" title={started.title}>
+            <span className="wf-started-at">{started.text}</span>
+            <span className="wf-started-sub" title={started.submittedTitle}>
+              sub {started.submitted}
+            </span>
+          </span>
           <span className="wf-when" title={`Last state change: ${workflow.updated_at}`}>
             {timeAgo(workflow.updated_at)}
           </span>
@@ -1211,6 +1224,18 @@ export function WorkflowCard({
 
       {expanded && (
         <div className="wf-body" id={bodyId}>
+          {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
+              instant and age in each hover. */}
+          <ul className="ctl-facts wf-times">
+            <li className="ctl-fact" title={started.title}>
+              <b>started</b>
+              {started.text}
+            </li>
+            <li className="ctl-fact" title={started.submittedTitle}>
+              <b>submitted</b>
+              {started.submitted}
+            </li>
+          </ul>
           <CensusFact roll={roll} />
           <StateDrift drift={workflow.drift} />
           <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
@@ -1989,6 +2014,7 @@ function InspectorSlot({
     <StepInspector
       workflowId={workflow.workflow_id}
       workflowLabel={label}
+      workflowStarted={workflowStartText(workflow, taskById, now)}
       row={row}
       taskState={state.kind === 'state' ? state.state : null}
       siblings={refs}

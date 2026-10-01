@@ -37,6 +37,7 @@ from ..deps import (
 )
 from ..errors import ValidationFailed
 from ..schemas import TaskBatchCreate, TaskCreate
+from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
 from ..waiting import waiting_for_page
 
@@ -133,8 +134,18 @@ def list_tasks(
     )
     # One read of the page's READY tasks' pools, de-duplicated (#362).
     waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
+    # #379: each row's account, from ONE bounded collection-group query per 30
+    # rows of the page (Firestore's `in` cap) -- two for the 50-row phone page,
+    # seven for a full 200 -- capped at 64 event documents per task, and none
+    # for a row whose profile calls no model, never asks the pool, or was never
+    # admitted. A finished task's answer is cached per process. See
+    # `swarm_api.task_accounts`.
+    accounts = accounts_for(ctx.db, tenant_id, page.items)
     return {
-        "tasks": [task_to_api(task, waiting.get(task.id)) for task in page.items],
+        "tasks": [
+            task_to_api(task, waiting.get(task.id), account=accounts.get(task.id))
+            for task in page.items
+        ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
@@ -149,7 +160,8 @@ def get_task(
 ) -> dict:
     task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
-    return {"task": task_to_api(task, waiting.get(task.id))}
+    accounts = accounts_for(ctx.db, tenant_id, [task])
+    return {"task": task_to_api(task, waiting.get(task.id), account=accounts.get(task.id))}
 
 
 @router.post("/{task_id}/cancel")
@@ -165,8 +177,9 @@ def cancel_task(
     task = ctx.store.request_cancel(
         tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
     )
+    accounts = accounts_for(ctx.db, tenant_id, [task])
     return {
-        "task": task_to_api(task),
+        "task": task_to_api(task, account=accounts.get(task.id)),
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.
@@ -252,7 +265,8 @@ def list_attempts(
     # Resolve the task first so a wrong id is a 404 about the TASK rather than
     # an empty attempt list, which would read as "this task never ran". Its
     # masker masks each attempt's `error` (the PR #229 review).
-    masking = masking_for(ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by))
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    masking = masking_for(task)
     attempts = ctx.store.list_attempts(
         tenant_id, task_id, limit=paged_limit(ctx, limit)
     )
@@ -262,6 +276,11 @@ def list_attempts(
         # The clock each row's `cpu_reading_age_seconds` is taken against.
         "read_at": read_at,
         "attempts": [attempt_to_api(a, masking=masking, read_at=read_at) for a in attempts],
+        # #379: each attempt's own account and the accounts it swapped away
+        # from, keyed by `attempt_id`, from one bounded read of this task's
+        # account events. BESIDE the rows rather than in them, so a row stays
+        # the one shape `GET /v1/attempts` serves too (`attempt_to_api`).
+        "accounts_by_attempt": accounts_for_attempts(ctx.db, task, attempts),
     }
 
 

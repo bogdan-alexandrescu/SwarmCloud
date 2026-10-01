@@ -180,7 +180,12 @@ def workflow_dispatch(tasks: Any) -> dict[str, Any]:
     }
 
 
-def task_to_api(task: Task, waiting_for: dict[str, Any] | None = None) -> dict[str, Any]:
+def task_to_api(
+    task: Task,
+    waiting_for: dict[str, Any] | None = None,
+    *,
+    account: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
 
     THE INPUT AND THE METADATA ARE SERVED MASKED (owner decision, 2026-09-26,
@@ -295,6 +300,11 @@ def task_to_api(task: Task, waiting_for: dict[str, Any] | None = None) -> dict[s
         # Null for every other state, and on routes that do not compute it.
         # `blocked_by` above is the scheduler's record from its last pass.
         "waiting_for": waiting_for,
+        # #379: the subscription account the LATEST attempt runs on, derived
+        # by `swarm_api.task_accounts` from this task's own account events
+        # (never by this serialiser, which reads nothing). Null on routes that
+        # do not read it; `status` says why there is no account otherwise.
+        "account": account,
     }
 
 

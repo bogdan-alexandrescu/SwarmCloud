@@ -212,6 +212,21 @@ locals {
       ]
     }
 
+    # ---- which account each agent runs on (#379) ----------------------------
+    # swarm_api.task_accounts: tenant_id == T AND task_id IN <<=30 ids> AND
+    # "account_" <= detail.cause < "account`". The cause is a RANGE, so it is
+    # the last field: Firestore serves an inequality only from an index whose
+    # final field it is. One query per 30 rows of a task list page.
+    "events-tenant-task-cause" = {
+      collection  = "events"
+      query_scope = "COLLECTION_GROUP"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "task_id", order = "ASCENDING" },
+        { field_path = "detail.cause", order = "ASCENDING" },
+      ]
+    }
+
     # ---- quota broker: per-provider health, per tenant ----------------------
     "quota-provider-updated" = {
       collection  = "quota"

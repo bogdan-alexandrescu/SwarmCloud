@@ -34,16 +34,19 @@ import {
   GIB,
   REASON_COPY,
   TERMINAL_STATES,
+  accountText,
   ageSpan,
   artifactKind,
   attemptOutcome,
   bytesLabel,
   checkpointsFor,
+  clockTime,
   dispatchOf,
   elapsed,
   newestHeartbeat,
   reasonCopy,
   restoredFrom,
+  startedOf,
   stateTone,
   usageOf,
   waitingLine,
@@ -593,6 +596,9 @@ function Headline({
 }) {
   const { task, events } = run
   const el = elapsed(task, now)
+  const start = startedOf(task, now)
+  const ended = clockTime(task.completed_at, now)
+  const account = accountText(task.account)
 
   return (
     <section className="section panel">
@@ -677,6 +683,31 @@ function Headline({
             {el.text}
           </li>
         )}
+        {/* WHEN IT STARTED, WITH WHEN IT WAS SUBMITTED BESIDE IT (#376), and
+            when it ended. One formatter (`clockTime`): local time, the UTC
+            instant and its age in the hover. `never started` is a value --
+            a cancelled or failed task that never ran says so -- and the
+            submit time is there either way. */}
+        <li className="ctl-fact" title={start.title}>
+          <b>started</b>
+          {start.text}
+        </li>
+        <li className="ctl-fact" title={start.submittedTitle}>
+          <b>submitted</b>
+          {start.submitted}
+        </li>
+        {ended !== null && (
+          <li className="ctl-fact" title={`ended ${ended.title}`}>
+            <b>ended</b>
+            {ended.text}
+          </li>
+        )}
+        {/* THE ACCOUNT THE LATEST ATTEMPT RUNS ON (#379). Each attempt's own,
+            and the accounts it gave back, are on its card below. */}
+        <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+          <b>account</b>
+          <span className="mono">{account.text}</span>
+        </li>
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -1519,6 +1550,22 @@ function AttemptLegend() {
   )
 }
 
+/**
+ * An attempt's account fact (#379). The row's own `account`, joined on from
+ * `accounts_by_attempt` by `loadAgentRun`; absent means not read. Whether an
+ * attempt with none is `not assigned yet` or `not assigned` is the API's
+ * answer (`task_accounts.accounts_for_attempts`); this only prints it.
+ */
+function AttemptAccount({ a }: { a: AttemptRow }) {
+  const account = accountText(a.account)
+  return (
+    <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+      <b>account</b>
+      <span className="mono">{account.text}</span>
+    </li>
+  )
+}
+
 function AttemptCard({
   a,
   ordinal,
@@ -1607,6 +1654,9 @@ function AttemptCard({
             <b>end</b>
             {a.completed_at === null ? <Em /> : timeAgo(a.completed_at)}
           </li>
+          {/* THIS ATTEMPT'S ACCOUNT (#379), swaps included:
+              `acct-eng-01 → 02 (swapped: unreadable)`. */}
+          <AttemptAccount a={a} />
           {/* `ran` ONLY BESIDE ANOTHER ATTEMPT (#102). With one attempt it
               is the Elapsed tile's figure a second time -- measured between
               the attempt's instants rather than the task's, so the two read

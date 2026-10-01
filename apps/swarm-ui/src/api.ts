@@ -13,7 +13,7 @@ import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AttemptRow, TaskAccount, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -1563,12 +1563,20 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
     // #15). The `include=usage` this read used to send asked the server for
     // #188's interim reading off the task's events, which the typed fields
     // replaced; nothing extra is asked for now.
-    read<{ attempts: AttemptRow[] }>(
+    read<{ attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }>(
       route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, id),
       (d) => d.attempts.length === 0,
     ),
     loadResourceClasses(),
   ])
+
+  // #379: each attempt's account is served BESIDE the rows, keyed by attempt
+  // id, so a row stays the shape `GET /v1/attempts` serves; joined on here so
+  // the attempt card reads it off its own row. Absent on an older API.
+  const withAccounts = (d: { attempts: AttemptRow[]; accounts_by_attempt?: Record<string, TaskAccount> }) =>
+    d.accounts_by_attempt === undefined
+      ? d.attempts
+      : d.attempts.map((a) => ({ ...a, account: d.accounts_by_attempt?.[a.attempt_id] ?? null }))
 
   if (task.status === 'loading' || task.status === 'error') return task
   if (task.status === 'empty') {
@@ -1593,8 +1601,8 @@ export async function loadAgentRun(taskId: string): Promise<Result<AgentRun>> {
   // `empty` is a real answer here and collapses to [], which is NOT the same
   // as the null a failure produces. The screen prints two different sentences.
   const attemptList =
-    attempts.status === 'ok' ? attempts.data.attempts
-    : attempts.status === 'stale' ? attempts.data.attempts
+    attempts.status === 'ok' ? withAccounts(attempts.data)
+    : attempts.status === 'stale' ? withAccounts(attempts.data)
     : attempts.status === 'empty' ? []
     : null
 

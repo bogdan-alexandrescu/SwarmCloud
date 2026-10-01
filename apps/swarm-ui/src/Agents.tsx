@@ -19,8 +19,11 @@ import {
   CONCURRENCY_STATES,
   RESOURCE_UNITS,
   TERMINAL_STATES,
+  accountText,
+  compareStarted,
   elapsed,
   rollupState,
+  startedOf,
   stateTone,
   whyAgent,
   whyNeedsAction,
@@ -29,6 +32,19 @@ import {
 } from './types'
 
 type Tab = 'live' | 'waiting' | 'recent'
+
+/**
+ * The STARTED column's sort (#376): null is the list's own order (most
+ * recently changed first), otherwise by start, newest or oldest first. Rows
+ * that never started sort after every row that did, either way.
+ */
+export type StartedSort = 'desc' | 'asc' | null
+
+/** The head's sort control: the current order, and what a press sets next. */
+interface SortControl {
+  started: StartedSort
+  onStarted: () => void
+}
 
 /**
  * A group's rolled-up state, in the chip's own tone vocabulary.
@@ -387,6 +403,13 @@ function AgentsBody({
   // so a query typed there cannot silently empty another tab.
   const needle = shown === 'recent' ? query.trim().toLowerCase() : ''
   const failFirst = shown === 'recent' && failedFirst
+  // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
+  // back to the list's own order. A reader's scratch, so not in the address.
+  const [startedSort, setStartedSort] = useState<StartedSort>(null)
+  const sort: SortControl = {
+    started: startedSort,
+    onStarted: () => setStartedSort((s) => (s === null ? 'desc' : s === 'desc' ? 'asc' : null)),
+  }
   const rows = useMemo(
     () =>
       page.tasks
@@ -399,9 +422,10 @@ function AgentsBody({
             const byFailed = Number(b.state === 'FAILED') - Number(a.state === 'FAILED')
             if (byFailed !== 0) return byFailed
           }
+          if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return a.updated_at < b.updated_at ? 1 : -1
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst],
+    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort],
   )
 
   // The segment's counts, from the loaded Recent rows, like the tab badges.
@@ -581,9 +605,9 @@ function AgentsBody({
           </h3>
         </div>
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
       ) : (
-        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
       )}
     </>
   )
@@ -599,17 +623,19 @@ function FlatRows({
   onOpen,
   openTaskId,
   classes,
+  sort,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
+  sort?: SortControl
 }) {
   const shared = flatShared(rows.map((t) => rowReason(t, classes)))
   return (
     <div className="rows">
-      <RowHead />
+      <RowHead sort={sort} />
       {rows.map((t, i) => (
         <TaskRow
           key={t.id}
@@ -699,12 +725,14 @@ function GroupedRows({
   onOpen,
   openTaskId,
   classes,
+  sort,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
+  sort?: SortControl
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -764,7 +792,7 @@ function GroupedRows({
               </p>
             ))}
             <div className="rows">
-              <RowHead />
+              <RowHead sort={sort} />
               {tasks.map((t, i) => (
                 <TaskRow
                   key={t.id}
@@ -799,14 +827,32 @@ function GroupedRows({
  * The flags column has no head: it is empty on most rows, and the chip in it
  * names itself.
  */
-function RowHead() {
+function RowHead({ sort }: { sort?: SortControl }) {
+  const started = sort?.started ?? null
   return (
     <div className="row is-head">
       <span className="st">State</span>
       <span className="agent">Agent</span>
       <span className="owner">Owner</span>
       <span className="wf">Step</span>
+      {/* SORTABLE (#376). A button inside the head cell, so the head stays a
+          `.row` on the rows' own template; `aria-sort` names the order, and
+          the arrow is the visible half of it. Without a control (a caller
+          that passes none) it is the plain label. */}
+      <span
+        className="started"
+        aria-sort={started === null ? 'none' : started === 'asc' ? 'ascending' : 'descending'}
+      >
+        {sort ? (
+          <button type="button" className="ag-sort" onClick={sort.onStarted}>
+            Started{started === 'desc' ? ' ↓' : started === 'asc' ? ' ↑' : ''}
+          </button>
+        ) : (
+          'Started'
+        )}
+      </span>
       <span className="when">Elapsed</span>
+      <span className="acct">Account</span>
       <span className="try">Try</span>
       <span className="class">Class</span>
       <span className="badges" />
@@ -859,6 +905,8 @@ function TaskRow({
   // Said once by a neighbour or the group header (#100), and never a warn line.
   const whyHidden = whyShared && !why.warn
   const el = elapsed(task, now)
+  const start = startedOf(task, now)
+  const account = accountText(task.account)
   const tries = attemptsUsed(task)
   const units = RESOURCE_UNITS[task.resource_class]
   // Driven by the flag, not by an optimistic state flip. A cancel on a LEASED
@@ -954,7 +1002,25 @@ function TaskRow({
         )}
       </span>
 
+      {/* STARTED, WITH THE SUBMIT TIME UNDER IT (#376). Local wall-clock
+          time from `clockTime`, the full UTC instant and its age in the
+          hover. A task with no start reads `never started` -- whatever its
+          state -- with its submit time still beside it. */}
+      <span className={`started${start.never ? ' is-never' : ''}`} title={start.title}>
+        <span className="started-at">{start.text}</span>
+        <span className="started-sub" title={start.submittedTitle}>
+          sub {start.submitted}
+        </span>
+      </span>
+
       <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+
+      {/* THE ACCOUNT THIS AGENT RUNS ON (#379), from its own events. The
+          words for "none" are the API's answer: no model call, not assigned
+          yet, not read -- never a guess. */}
+      <span className={`acct${account.known ? '' : ' is-none'}`} title={account.title}>
+        {account.text}
+      </span>
 
       {/* OVER THE CAP IS A PROBLEM, AND IT LOOKS LIKE ONE (AG-15). `83/3`
           rendered exactly like `1/3`. `is-over` is the design system's word
