@@ -6676,8 +6676,9 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #   whose tail must carry an explicit placeholder IN A TEST PATH, so an
 #   `sk-test-aaaa` fixture passes there and is refused anywhere else; a JWT
 #   whose header decodes to JSON naming `alg`; a private-key block whose body
-#   holds about 100 high-entropy base64 characters (a bare marker or a stub
-#   body is not a key).
+#   decodes as a DER private key, or holds at least `PEM_BODY_MIN_CHARS` (48)
+#   base64 characters at high entropy, wherever in the file the body sits (a
+#   bare marker or a stub body is not a key).
 # * TIER 2, outside test paths: the generic rules refuse exactly as before.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
@@ -6736,6 +6737,15 @@ _NOT_BASE64 = re.compile(r"[^A-Za-z0-9+/=]")
 #: Where a body with no END marker stops: the first character that no key
 #: written as lines, pieces or JSON would hold.
 _PEM_BODY_CHARS = re.compile(r"[A-Za-z0-9+/=\s\"'`,\\]*")
+#: A body whose lines carry a log prefix (`2026-09-30T12:00:01Z INFO MIIE...`)
+#: is read over this many characters after BEGIN, or to the first blank line.
+_PEM_WINDOW_CHARS = 4 * 1024
+_PEM_BLANK_LINE = re.compile(r"\n[ \t]*\r?\n")
+#: A base64 run: what is left of a line once its prefix and glue are gone.
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]+")
+_BASE64_RUN_AT_LEAST = re.compile(r"[A-Za-z0-9+/]{%d,}={0,2}" % _PEM_DER_MIN_CHARS)
+#: What an OpenSSH private key body decodes to first.
+_OPENSSH_MAGIC = b"openssh-key-v1\x00"
 
 #: Directory names that make a CODE file under them a test file (compared
 #: lower-cased, so `Tests/x.py` is the same as `tests/x.py`). `fixtures/` and
@@ -6855,6 +6865,71 @@ def _is_explicit_placeholder(tail: str) -> bool:
     )
 
 
+def _prefix_is_der_private_key(raw: bytes) -> bool:
+    """True when `raw` opens like a DER private key: a SEQUENCE whose first
+    element is INTEGER 0 or 1 (PKCS#1, SEC1, PKCS#8 v1 and v2)."""
+    if len(raw) < 6 or raw[0] != 0x30:
+        return False
+    if raw[1] < 0x80:
+        at = 2
+    else:
+        count = raw[1] & 0x7F
+        if not 1 <= count <= 4:
+            return False
+        at = 2 + count
+    return raw[at : at + 3] in (b"\x02\x01\x00", b"\x02\x01\x01")
+
+
+def _run_is_a_private_key(run: str) -> bool:
+    """True when the base64 `run` decodes to a DER private-key shape or to an
+    OpenSSH key body. A run is tried at each of the four alignments, because
+    the characters before it in the file may be glued to its start."""
+    for skip in range(4):
+        chunk = run[skip : skip + 64]
+        chunk = chunk[: len(chunk) - len(chunk) % 4]
+        if len(chunk) < 20:
+            continue
+        try:
+            raw = base64.b64decode(chunk)
+        except ValueError:
+            continue
+        if _prefix_is_der_private_key(raw) or raw.startswith(_OPENSSH_MAGIC):
+            return True
+    return False
+
+
+def _key_outside_the_block(text: str) -> bool:
+    """True when ANY base64 run in `text`, once quoted pieces are joined, is a
+    private key's DER or an OpenSSH key body.
+
+    This catches a key whose body is held away from its markers: a PEM
+    assembled by an f-string, by `%`, or from a variable. It judges by shape
+    ONLY, never by the entropy fallback, so that a certificate or an
+    unrelated base64 blob in the same file is not refused: a certificate's
+    SEQUENCE opens with another SEQUENCE, not with INTEGER 0 or 1.
+    """
+    joined = _PEM_PIECE_JOINER.sub("", text)
+    return any(_run_is_a_private_key(m.group(0)) for m in _BASE64_RUN_AT_LEAST.finditer(joined))
+
+
+def _body_is_real(body: str) -> bool:
+    if _is_der_sequence(body):
+        return True
+    return len(body) >= PEM_BODY_MIN_CHARS and _shannon_bits(body) >= PEM_BODY_MIN_ENTROPY_BITS
+
+
+def _windowed_body(text: str, start: int, stop: int) -> str:
+    """The body in `text[start:stop]`, read to the first blank line or
+    `_PEM_WINDOW_CHARS`: from each line only its longest base64 run, so a
+    log prefix (`2026-09-30T12:00:01Z INFO`) and any glue are dropped."""
+    window = text[start : min(stop, start + _PEM_WINDOW_CHARS)]
+    blank = _PEM_BLANK_LINE.search(window)
+    if blank is not None:
+        window = window[: blank.start()]
+    runs = [max(_BASE64_RUN.findall(line), key=len, default="") for line in window.splitlines()]
+    return "".join(runs)
+
+
 def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
     """Where the first private-key block with a REAL body starts, or None.
 
@@ -6878,10 +6953,17 @@ def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
             raw = _PEM_BODY_CHARS.match(text, start, start + _PEM_BODY_SCAN_CHARS).group(0)
         raw = _PEM_ESCAPED_SPACE.sub("", raw)
         body = _NOT_BASE64.sub("", _PEM_PIECE_JOINER.sub("", raw))
-        if _is_der_sequence(body):
+        if _body_is_real(body):
             return marker.start()
-        if len(body) >= PEM_BODY_MIN_CHARS and _shannon_bits(body) >= PEM_BODY_MIN_ENTROPY_BITS:
+        # No END marker, or log-prefixed lines: the window method.
+        stop = end.start() if end is not None else marker.end() + _PEM_WINDOW_CHARS
+        if _body_is_real(_windowed_body(text, marker.end(), stop)):
             return marker.start()
+    # A marker whose own body is no key may still have its key elsewhere in
+    # the file; look at all of the added text, by shape only.
+    first = begin.search(text)
+    if first is not None and _key_outside_the_block(text):
+        return first.start()
     return None
 
 
