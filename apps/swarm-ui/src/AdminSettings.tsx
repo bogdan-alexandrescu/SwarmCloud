@@ -1,6 +1,6 @@
 import { useEffect, useId, useState, useSyncExternalStore } from 'react'
-import { loadCapacity, setPoolLimit } from './api'
-import { errorHeading, isPaused, type ApiError } from './fetch'
+import { loadCapacity, loadMe, setPoolLimit } from './api'
+import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen } from './Shell'
 import {
@@ -11,6 +11,7 @@ import {
   poolLabelAmong,
   setBy,
   type Capacity,
+  type Me,
   type Pool,
   type PoolKind,
 } from './types'
@@ -74,6 +75,26 @@ export function AdminSettingsScreen() {
    */
   const [fresh, setFresh] = useState<{ over: Capacity; data: Capacity } | null>(null)
   const [saved, setSaved] = useState<Readonly<Record<string, SaveMark>>>({})
+  /**
+   * WHO IS ASKING, from the session read the frame already makes (a `frame`
+   * read, so it does not stand in for this screen's own newest read). A
+   * non-admin reads every ceiling with Edit locked (decided 2026-10-01).
+   * `null` is "not known yet, or the read failed": the write route is the
+   * real gate, and it answers 403 with its own message.
+   */
+  const [admin, setAdmin] = useState<boolean | null>(null)
+  useEffect(() => {
+    let live = true
+    Promise.resolve(loadMe({ frame: true })).then(
+      (r: Result<Me> | undefined) => {
+        if (live && r !== undefined && (r.status === 'ok' || r.status === 'stale')) setAdmin(r.data.principal.is_admin)
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [])
 
   const mark = (pool: string, m: SaveMark | null) =>
     setSaved((all) => {
@@ -117,6 +138,7 @@ export function AdminSettingsScreen() {
       {(d) => (
         <Body
           capacity={fresh !== null && fresh.over === d ? fresh.data : d}
+          admin={admin}
           saved={saved}
           onSaved={(pool) => reread(d, pool)}
           onEdit={(pool) => mark(pool, null)}
@@ -185,11 +207,13 @@ function arithmetic(
 
 function Body({
   capacity,
+  admin,
   saved,
   onSaved,
   onEdit,
 }: {
   capacity: Capacity
+  admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
   onSaved: (pool: string) => Promise<boolean>
   onEdit: (pool: string) => void
@@ -230,7 +254,7 @@ function Body({
         </section>
       )}
 
-      <PoolEditor pools={capacity.pools} saved={saved} onSaved={onSaved} onEdit={onEdit} />
+      <PoolEditor capacity={capacity} admin={admin} saved={saved} onSaved={onSaved} onEdit={onEdit} />
     </>
   )
 }
@@ -346,15 +370,21 @@ function ProfileCard({
 function subscribeHash(onChange: () => void): () => void {
   if (typeof window === 'undefined') return () => {}
   window.addEventListener('hashchange', onChange)
-  return () => window.removeEventListener('hashchange', onChange)
+  window.addEventListener('popstate', onChange)
+  return () => {
+    window.removeEventListener('hashchange', onChange)
+    window.removeEventListener('popstate', onChange)
+  }
 }
 
 function linkedPool(): string | null {
   if (typeof window === 'undefined') return null
+  // The hash grammar first, then the real path's query (`/admin/limits?pool=`),
+  // which is where the router leaves it once it has rewritten the hash.
   const hash = window.location.hash
   const at = hash.indexOf('?')
-  if (at === -1) return null
-  return new URLSearchParams(hash.slice(at + 1)).get('pool')
+  if (at !== -1) return new URLSearchParams(hash.slice(at + 1)).get('pool')
+  return new URLSearchParams(window.location.search).get('pool')
 }
 
 /** §7.2's phone width, where the filter is drawn. The Help card's own query. */
@@ -373,29 +403,126 @@ function atPhoneWidth(): boolean {
 }
 
 /**
- * The row being edited, and what has been typed into it. `draft` null means
+ * The pool being edited, and what has been typed for it. `draft` null means
  * the field shows the pool's own value off the latest read.
  *
- * HELD HERE, ABOVE THE ROWS (AH-7). One editor is open at a time (#132), and
- * what is typed into it must survive anything that rebuilds the rows -- a
- * re-read after another row's save, a filter that is changed and changed back.
+ * HELD HERE, ABOVE THE ROWS AND THE SIDE EDITOR (AH-7). One editor is open at
+ * a time (#132), and what is typed into it must survive anything that rebuilds
+ * the rows -- a re-read after another pool's save, a filter that is changed
+ * and changed back.
  */
 interface Editing {
   pool: string
   draft: string | null
 }
 
+/**
+ * A DRASTIC CHANGE: to 0, or a cut of half or more (admin-help.html, L2, the
+ * owner's pick 2026-10-01). Those are the two changes that can silently stop a
+ * whole class of work from starting, so the side editor asks for the pool's
+ * name to be typed before it writes one. A raise, or a smaller cut, writes on
+ * Save alone.
+ */
+export function isDrasticCut(from: number, to: number): boolean {
+  if (to >= from) return false
+  return to === 0 || (from - to) * 2 >= from
+}
+
+/** The ceiling admission would apply with `hard` as the hard limit. */
+function effectiveAt(p: Pool, hard: number): number {
+  const caps = [hard, p.adaptive_target, p.quota_derived_limit].filter(
+    (v): v is number => typeof v === 'number',
+  )
+  return Math.max(0, Math.min(...caps))
+}
+
+/**
+ * WHAT THE CHANGE DOES, IN SENTENCES, FROM DATA THIS SCREEN ALREADY HAS: the
+ * pool's own figures and every runner profile's ceiling before and after
+ * (the same `arithmetic` the Binding pool cards draw). Nothing here is a
+ * forecast of queue length -- the response carries no per-pool waiting count,
+ * so the impact names ceilings and units in use, and nothing else.
+ */
+function impactOf(pool: Pool, next: number, capacity: Capacity): string[] {
+  const after = effectiveAt(pool, next)
+  const said: string[] = []
+
+  if (after === pool.effective_limit) {
+    said.push(`The ceiling admission applies stays ${after}: ${setBy(pool).term} holds it there.`)
+  }
+
+  const byName = new Map(capacity.pools.map((p) => [p.name, p]))
+  const changed = new Map(byName)
+  changed.set(pool.name, { ...pool, effective_limit: after })
+  const moved: string[] = []
+  const held: string[] = []
+  const profiles = Object.entries(capacity.runner_profiles)
+    .filter(([, prof]) => prof.pools.includes(pool.name))
+    .sort(([a], [b]) => a.localeCompare(b))
+  for (const [name, prof] of profiles) {
+    const before = arithmetic(prof.pools, prof.units, byName).ceiling
+    const now = arithmetic(prof.pools, prof.units, changed)
+    if (before !== now.ceiling) {
+      moved.push(`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`)
+    } else {
+      const others = now.binding.filter((b) => b !== pool.name).map((b) => poolLabelAmong(b, prof.pools))
+      held.push(others.length === 0 ? name : `${name} (${others.join(' and ')} bind${others.length === 1 ? 's' : ''})`)
+    }
+  }
+  if (profiles.length === 0) said.push('No runner profile takes this pool.')
+  if (moved.length > 0) said.push(`Max agents: ${moved.join(', ')}.`)
+  if (held.length > 0) said.push(`Unchanged: ${held.join(', ')}.`)
+
+  if (after === 0) {
+    said.push(
+      pool.active > 0
+        ? `Nothing new is admitted to it. The ${pool.active} units in use are not stopped.`
+        : 'Nothing new is admitted to it.',
+    )
+  } else if (after < pool.active) {
+    said.push(
+      `Nothing running is stopped: the ${pool.active} units in use finish, and new work waits until fewer than ${after} are in use.`,
+    )
+  } else if (after < pool.effective_limit) {
+    said.push(`The ${pool.active} units in use fit under it; nothing is stopped.`)
+  } else if (after > pool.effective_limit) {
+    said.push(`${after - pool.active} units free on this pool after the change.`)
+  }
+  return said
+}
+
+/** `20 → 14 · −30%`. No percentage off a zero. */
+function deltaWords(from: number, to: number): string {
+  if (from === 0) return `${from} → ${to}`
+  const pct = Math.round(((to - from) / from) * 100)
+  return `${from} → ${to} · ${pct < 0 ? '−' : '+'}${Math.abs(pct)}%`
+}
+
+/**
+ * WHY "not recorded". Who changed a ceiling and when needs `admin_changed_by`
+ * and `admin_changed_at` on the pool, which the API does not serve. The pool's
+ * `updated_at` is NOT that: admission rewrites the pool document on every
+ * lease, so it moves with traffic, and printing it as "last changed" would
+ * name a time nobody changed anything.
+ */
+const NOT_RECORDED_WHY =
+  'Not recorded: the API does not serve admin_changed_by or admin_changed_at yet, so who changed this ceiling, and when, is not known here.'
+
 function PoolEditor({
-  pools,
+  capacity,
+  admin,
   saved,
   onSaved,
   onEdit,
 }: {
-  pools: Pool[]
+  capacity: Capacity
+  /** From the session read. null: not known (yet), and treated as allowed. */
+  admin: boolean | null
   saved: Readonly<Record<string, SaveMark>>
   onSaved: (pool: string) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
+  const pools = capacity.pools
   const [editing, setEditing] = useState<Editing | null>(null)
   const [writing, setWriting] = useState<readonly string[]>([])
   const onWriting = (pool: string, on: boolean) =>
@@ -413,7 +540,7 @@ function PoolEditor({
     needle === '' ||
     p.name.toLowerCase().includes(needle) ||
     poolLabel(p.name).toLowerCase().includes(needle) ||
-    // The open editor is never filtered away from under what was typed in it.
+    // The open editor's row is never filtered away from under what was typed.
     p.name === editing?.pool
   const families = POOL_FAMILY_ORDER.flatMap((kind) => {
     const rows = pools
@@ -434,35 +561,36 @@ function PoolEditor({
   const close = (pool: string) => setEditing((e) => (e?.pool === pool ? null : e))
 
   // AN UNSAVED VALUE IS NOT THROWN AWAY BY A CLICK ELSEWHERE. Opening another
-  // row replaces the one editor, so while the open row holds a typed value
+  // pool replaces the one editor, so while the open editor holds a typed value
   // that differs from its pool's own, every other row's `edit` is disabled:
   // the reader saves or cancels first, rather than losing the number without
-  // a word.
-  // A value being WRITTEN is not held: from the click on `save` until the
-  // read-back lands it is on its way to the server, and closing its editor
-  // loses nothing.
-  const heldPool = editing?.draft != null ? pools.find((p) => p.name === editing.pool) : undefined
+  // a word. A value being WRITTEN is not held: from the click on Save until
+  // the read-back lands it is on its way to the server, and closing its
+  // editor loses nothing.
+  const open = editing !== null ? pools.find((p) => p.name === editing.pool) : undefined
+  const draft = editing?.draft ?? null
   const held =
-    heldPool !== undefined && !writing.includes(heldPool.name) && editing!.draft!.trim() !== String(heldPool.hard_limit)
-      ? heldPool.name
+    open !== undefined && draft !== null && !writing.includes(open.name) && draft.trim() !== String(open.hard_limit)
+      ? open.name
       : null
 
   return (
     <section className="section">
       <span className="ctl-eyebrow has-q">
         Ceilings
-        {/* The consequence -- "lowering a ceiling evicts nothing" -- sits
-            beside the open editor (#132), where the control it qualifies is;
-            it used to be the table's caption, under every row whether or not
-            anything was being changed. The argument behind it is behind the ?.
-            THIS IS THE ONE GLYPH B7.4 LEFT ON THIS SCREEN, and it is the only
-            one on it that survives the test: what a control DOES NOT do when
-            you use it cannot be written into the control's own label without
-            the label arguing with the button. Everything on this screen is a
-            write, so it is the place a reader is most likely to act on a wrong
-            expectation. */}
+        {/* What a write here DOES NOT do -- evict anything -- is the one
+            thing on this screen a reader is likely to get wrong before
+            acting, so it keeps the screen's one `?`. The same fact is said
+            again inside the open editor, beside the Save it qualifies. */}
         <HelpCard topic="ceiling-change-evicts-nothing" />
       </span>
+      {admin === false && (
+        // NON-ADMINS READ EVERYTHING (decided 2026-10-01): every ceiling is on
+        // screen, Edit is locked, and this one line says why.
+        <p className="ctl-panel-note adm-locked">
+          Admins only. You can read every ceiling; changing one needs the platform admin group.
+        </p>
+      )}
       {phone && (
         <div className="ctl-toolbar adm-filter">
           <input
@@ -476,33 +604,47 @@ function PoolEditor({
         </div>
       )}
       {families.length === 0 && <p className="ctl-panel-note">no pool matches</p>}
-      {/* GROUPED AS CAPACITY › POOLS GROUPS THEM (#132): the same families, in
-          the same order, under the same headings, so a pool is found on the
-          screen that edits it where it was found on the screen that showed it
-          binding. It was one table sorted by name, where `global` sat between
-          `backend:*` and `provider:*`. `.cap-families` is that board's own
-          container, so the headings, the tables' borders and the phone
-          scroll rules are its rules and not a copy of them. */}
-      <div className="cap-families">
-        {families.map(({ kind, rows }) => (
-          <Family
-            key={kind}
-            kind={kind}
-            pools={rows}
-            saved={saved}
-            editing={editing}
-            target={target}
-            held={held}
-            onWriting={onWriting}
-            onOpen={(pool) => setEditing({ pool, draft: null })}
-            onDraft={(pool, draft) => {
-              setEditing({ pool, draft })
-              onEdit(pool)
+      {/* THE TABLE STAYS STILL WHILE EDITING (L2). The editor is a side panel
+          beside the families rather than a field inside a row, so opening it
+          reflows no column, and it has room for the impact and the history. */}
+      <div className={`adm-split${open !== undefined ? ' is-editing' : ''}`}>
+        {/* GROUPED AS CAPACITY › POOLS GROUPS THEM (#132): the same families,
+            in the same order, under the same headings. `.cap-families` is that
+            board's own container, so the headings, borders and phone scroll
+            rules are its rules and not a copy of them. */}
+        <div className="cap-families">
+          {families.map(({ kind, rows }) => (
+            <Family
+              key={kind}
+              kind={kind}
+              pools={rows}
+              saved={saved}
+              editing={editing?.pool ?? null}
+              target={target}
+              held={held}
+              admin={admin}
+              onOpen={(pool) => setEditing({ pool, draft: null })}
+            />
+          ))}
+        </div>
+        {open !== undefined && (
+          <SideEditor
+            // A fresh editor per pool: its busy flag, its error and its typed
+            // confirmation belong to the pool they were for.
+            key={open.name}
+            pool={open}
+            capacity={capacity}
+            draft={draft}
+            admin={admin}
+            onDraft={(draft) => {
+              setEditing({ pool: open.name, draft })
+              onEdit(open.name)
             }}
-            onClose={close}
-            onSaved={onSaved}
+            onClose={() => close(open.name)}
+            onWriting={(on) => onWriting(open.name, on)}
+            onSaved={() => onSaved(open.name)}
           />
-        ))}
+        )}
       </div>
     </section>
   )
@@ -515,30 +657,23 @@ function Family({
   editing,
   target,
   held,
-  onWriting,
+  admin,
   onOpen,
-  onDraft,
-  onClose,
-  onSaved,
 }: {
   kind: PoolKind
   pools: Pool[]
   saved: Readonly<Record<string, SaveMark>>
-  editing: Editing | null
+  /** The pool whose side editor is open, if one is. */
+  editing: string | null
   target: string | null
   /** The pool whose open editor holds an unsaved value, if one does. */
   held: string | null
-  onWriting: (pool: string, on: boolean) => void
+  admin: boolean | null
   onOpen: (pool: string) => void
-  onDraft: (pool: string, draft: string) => void
-  onClose: (pool: string) => void
-  onSaved: (pool: string) => Promise<boolean>
 }) {
   // `Set by` ONLY WHERE IT SAYS SOMETHING (#132). On a pool whose ceiling is
   // its configured value the column read `configured` on every row, which is
-  // the column restating the Ceiling beside it. A family where every pool is
-  // as configured draws no column; one where a quota or AIMD holds a pool
-  // down draws it, with the word on that row alone.
+  // the column restating the Ceiling beside it.
   const showSetBy = pools.some((p) => setBy(p).term !== 'configured')
   return (
     <section className="ctl-card adm-family">
@@ -551,10 +686,8 @@ function Family({
             <thead role="rowgroup">
               <tr role="row">
                 <th role="columnheader" scope="col">Pool</th>
-                {/* The unit rides on the column name (§8.4.3) rather than in a
-                    footnote under the table -- on BOTH figures (CP-24). This
-                    said `In use` bare beside `Ceiling (units)` while Pools said
-                    the opposite, so each screen labelled the other one's half. */}
+                {/* The unit rides on the column name (§8.4.3), on BOTH figures
+                    (CP-24). */}
                 <th role="columnheader" scope="col" className="is-num">In use (units)</th>
                 <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
                 {showSetBy && <th role="columnheader" scope="col">Set by</th>}
@@ -568,14 +701,11 @@ function Family({
                   pool={p}
                   mark={saved[p.name] ?? null}
                   showSetBy={showSetBy}
-                  editing={editing?.pool === p.name ? editing : null}
+                  open={editing === p.name}
                   target={target === p.name}
                   locked={held !== null && held !== p.name}
-                  onWriting={(on) => onWriting(p.name, on)}
+                  admin={admin}
                   onOpen={() => onOpen(p.name)}
-                  onDraft={(draft) => onDraft(p.name, draft)}
-                  onClose={() => onClose(p.name)}
-                  onSaved={() => onSaved(p.name)}
                 />
               ))}
             </tbody>
@@ -590,73 +720,31 @@ function PoolRow({
   pool,
   mark,
   showSetBy,
-  editing,
+  open,
   target,
   locked,
-  onWriting,
+  admin,
   onOpen,
-  onDraft,
-  onClose,
-  onSaved,
 }: {
   pool: Pool
   /** What the last save of this row said. Held by the screen, not the row (AH-7). */
   mark: SaveMark | null
   showSetBy: boolean
-  /** This row's editor, when it is the one open. Held above the rows (AH-7). */
-  editing: Editing | null
+  /** This pool's side editor is the one open. */
+  open: boolean
   /** The row a link named (#134). */
   target: boolean
-  /** Another row's editor holds an unsaved value: this row's `edit` waits. */
+  /** Another pool's editor holds an unsaved value: this row's `edit` waits. */
   locked: boolean
-  /** From the click on `save` until the read-back settles, or the write fails. */
-  onWriting: (on: boolean) => void
+  admin: boolean | null
   onOpen: () => void
-  onDraft: (draft: string) => void
-  onClose: () => void
-  /** Resolves true once the pools have been read back after the write. */
-  onSaved: () => Promise<boolean>
 }) {
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<ApiError | null>(null)
-  const messageId = useId()
-
-  const open = editing !== null
-  // WHAT SOMEBODY TYPED, OR THE POOL'S OWN VALUE. A row nobody has typed in
-  // follows a re-read -- including one that picked up another operator's
-  // change -- instead of showing the old limit as an edit a stray `save`
-  // would write back.
-  const value = editing?.draft ?? String(pool.hard_limit)
-  const dirty = value.trim() !== String(pool.hard_limit)
-  const parsed = Number(value)
-  const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
-  const invalid = open && dirty && !valid
   const by = setBy(pool)
   const editable = isEditable(pool)
-
-  const save = () => {
-    if (!valid || busy) return
-    setBusy(true)
-    setError(null)
-    onWriting(true)
-    setPoolLimit(pool.name, parsed).then(async (r) => {
-      setBusy(false)
-      if (r.status === 'ok' || r.status === 'stale') {
-        // The editor closes only once the read-back carries the value, so the
-        // field never flicks back to the old limit in between. If the
-        // read-back fails the editor stays open on what was written, beside
-        // `not re-read`.
-        const reread = await onSaved()
-        onWriting(false)
-        if (reread) onClose()
-      } else {
-        onWriting(false)
-        if (r.status === 'error') setError(r.error)
-      }
-    })
-  }
-
-  const classes = [isPaused(pool) ? 'is-paused' : '', target ? 'is-target' : ''].filter(Boolean).join(' ')
+  const refused = admin === false
+  const classes = [isPaused(pool) ? 'is-paused' : '', target ? 'is-target' : '', open ? 'is-editing' : '']
+    .filter(Boolean)
+    .join(' ')
 
   return (
     // THE ID A LINK NAMES (#132, #134): `limit-<pool>`, the raw pool name,
@@ -679,57 +767,28 @@ function PoolRow({
       )}
       <td role="cell" data-label="Change">
         <span className="limit-edit">
-          {open ? (
-            <>
-              <input
-                type="number"
-                min={0}
-                max={100000}
-                value={value}
-                disabled={busy || !editable}
-                onChange={(e) => onDraft(e.target.value)}
-                aria-label={`Hard limit for ${pool.name}`}
-                // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8). The range message
-                // used to appear beside the control with nothing tying the two
-                // together, so a keyboard or screen-reader user typing `-1` was
-                // told nothing; the stylesheet draws the warn border off
-                // `aria-invalid`.
-                aria-invalid={invalid ? true : undefined}
-                aria-describedby={invalid ? messageId : undefined}
-              />
-              <button onClick={save} disabled={!dirty || !valid || busy || !editable}>
-                {busy ? 'saving…' : 'save'}
-              </button>
-              <button
-                onClick={() => {
-                  setError(null)
-                  onClose()
-                }}
-                disabled={busy}
-              >
-                cancel
-              </button>
-            </>
-          ) : (
-            // A pool nothing can write gets no editor to open: an enabled
-            // control that silently does nothing is worse than none. The
-            // sentence is on the button, where a keyboard reader reaching it
-            // gets it and a sighted reader gets the two-word marker instead.
-            <button
-              onClick={onOpen}
-              disabled={!editable || locked}
-              aria-label={
-                !editable
-                  ? `Edit ceiling for ${pool.name}. This pool kind has no write route, so it is read-only.`
+          {/* A pool nothing can write gets no editor to open: an enabled
+              control that silently does nothing is worse than none. The
+              sentence is on the button, where a keyboard reader reaching it
+              gets it and a sighted reader gets the two-word marker instead. */}
+          <button
+            type="button"
+            onClick={onOpen}
+            disabled={!editable || locked || refused}
+            aria-expanded={open}
+            aria-label={
+              !editable
+                ? `Edit ceiling for ${pool.name}. This pool kind has no write route, so it is read-only.`
+                : refused
+                  ? `Edit ceiling for ${pool.name}. Admins only: changing a ceiling needs the platform admin group.`
                   : locked
-                    ? `Edit ceiling for ${pool.name}. Another row has an unsaved value: save or cancel it first.`
+                    ? `Edit ceiling for ${pool.name}. Another pool has an unsaved value: save or cancel it first.`
                     : `Edit ceiling for ${pool.name}`
-              }
-              title={locked ? 'another row has an unsaved value' : undefined}
-            >
-              edit
-            </button>
-          )}
+            }
+            title={locked ? 'another pool has an unsaved value' : refused ? 'admins only' : undefined}
+          >
+            edit
+          </button>
           {!editable && <span className="client-side">read-only</span>}
           {mark !== null && <span className="tag ok">saved</span>}
           {mark === 'unread' && (
@@ -737,25 +796,196 @@ function PoolRow({
               not re-read
             </span>
           )}
-          {error && (
-            <span className="warn-text" title={error.message}>
-              {errorHeading(error)}
-            </span>
-          )}
         </span>
-        {/* BELOW THE CONTROL ROW, NOT IN IT (AH-8). Inside the wrapping flex
-            strip it arrived as one more item and reflowed every column of the
-            table the moment a character was typed. */}
-        {invalid && (
-          <div className="warn-text limit-message" id={messageId}>
-            0–100000
-          </div>
-        )}
-        {/* BESIDE THE ONE EDITOR THAT IS OPEN (#132), because it qualifies
-            that control and no other. */}
-        {open && <div className="limit-note">lowering a ceiling evicts nothing</div>}
       </td>
     </tr>
+  )
+}
+
+/**
+ * THE SIDE EDITOR (admin-help.html L2, the owner's pick 2026-10-01): the pool's
+ * figures, the new ceiling, what the change does in a sentence, a typed
+ * confirmation for a drastic change, and the pool's history.
+ */
+function SideEditor({
+  pool,
+  capacity,
+  draft,
+  admin,
+  onDraft,
+  onClose,
+  onWriting,
+  onSaved,
+}: {
+  pool: Pool
+  capacity: Capacity
+  draft: string | null
+  admin: boolean | null
+  onDraft: (draft: string) => void
+  onClose: () => void
+  /** From the click on Save until the read-back settles, or the write fails. */
+  onWriting: (on: boolean) => void
+  /** Resolves true once the pools have been read back after the write. */
+  onSaved: () => Promise<boolean>
+}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<ApiError | null>(null)
+  const [typed, setTyped] = useState('')
+  const messageId = useId()
+  const titleId = useId()
+
+  // WHAT SOMEBODY TYPED, OR THE POOL'S OWN VALUE. An editor nobody has typed
+  // in follows a re-read -- including one that picked up another operator's
+  // change -- instead of showing the old limit as an edit a stray Save would
+  // write back.
+  const value = draft ?? String(pool.hard_limit)
+  const dirty = value.trim() !== String(pool.hard_limit)
+  const parsed = Number(value)
+  // An empty field is not 0: `Number('')` is 0, and a cleared field must not
+  // be one click from closing the pool.
+  const valid = value.trim() !== '' && Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
+  const invalid = dirty && !valid
+  const next = dirty && valid ? parsed : null
+  const drastic = next !== null && isDrasticCut(pool.hard_limit, next)
+  const confirmed = !drastic || typed === pool.name
+  const editable = isEditable(pool) && admin !== false
+
+  const save = () => {
+    if (next === null || busy || !confirmed || !editable) return
+    setBusy(true)
+    setError(null)
+    onWriting(true)
+    setPoolLimit(pool.name, next).then(async (r) => {
+      setBusy(false)
+      if (r.status === 'ok' || r.status === 'stale') {
+        // The editor closes only once the read-back carries the value, so the
+        // field never flicks back to the old limit in between. If the
+        // read-back fails the editor stays open on what was written, and the
+        // row says `not re-read`.
+        const reread = await onSaved()
+        onWriting(false)
+        if (reread) onClose()
+      } else {
+        onWriting(false)
+        if (r.status === 'error') setError(r.error)
+      }
+    })
+  }
+
+  const impact = next === null ? [] : impactOf(pool, next, capacity)
+
+  return (
+    <aside className="adm-side" aria-labelledby={titleId} data-pool={pool.name}>
+      <h3 className="adm-side-title" id={titleId}>
+        {poolLabel(pool.name)}
+        <span className="ctl-sub">{pool.name}</span>
+      </h3>
+      <dl className="adm-side-facts">
+        <dt>In use</dt>
+        <dd>{pool.active} units</dd>
+        <dt>Ceiling</dt>
+        <dd>{pool.effective_limit} units</dd>
+        {pool.effective_limit !== pool.hard_limit && (
+          <>
+            <dt>Hard limit</dt>
+            <dd>{pool.hard_limit}</dd>
+          </>
+        )}
+        <dt>Last changed</dt>
+        <dd className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+          not recorded
+        </dd>
+      </dl>
+
+      <div className="adm-side-field">
+        <label className="adm-side-k" htmlFor={`${titleId}-new`}>
+          New ceiling
+        </label>
+        <input
+          id={`${titleId}-new`}
+          type="number"
+          min={0}
+          max={100000}
+          value={value}
+          disabled={busy || !editable}
+          onChange={(e) => onDraft(e.target.value)}
+          aria-label={`Hard limit for ${pool.name}`}
+          // THE INPUT SAYS IT IS WRONG, AND WHY (AH-8): the stylesheet draws
+          // the warn border off `aria-invalid`, and the range is the message
+          // the field points at.
+          aria-invalid={invalid ? true : undefined}
+          aria-describedby={invalid ? messageId : undefined}
+          autoFocus
+        />
+        {next !== null && <span className="adm-delta">{deltaWords(pool.hard_limit, next)}</span>}
+      </div>
+      {/* BELOW THE FIELD, ON A LINE OF ITS OWN (AH-8). */}
+      {invalid && (
+        <div className="warn-text limit-message" id={messageId}>
+          0–100000
+        </div>
+      )}
+
+      {impact.length > 0 && (
+        <>
+          <span className="adm-side-k">Impact</span>
+          <p className="adm-impact">{impact.join(' ')}</p>
+        </>
+      )}
+      {/* WHAT A WRITE HERE DOES NOT DO, beside the control it qualifies. */}
+      <div className="limit-note">lowering a ceiling evicts nothing</div>
+
+      {drastic && (
+        <div className="adm-drastic">
+          <p className="adm-drastic-why">This is a drastic change: to 0, or a cut of half or more.</p>
+          <label className="adm-side-k" htmlFor={`${titleId}-confirm`}>
+            Type <b className="mono">{pool.name}</b> to confirm
+          </label>
+          <input
+            id={`${titleId}-confirm`}
+            type="text"
+            className="mono"
+            autoComplete="off"
+            spellCheck={false}
+            value={typed}
+            disabled={busy}
+            onChange={(e) => setTyped(e.target.value)}
+            aria-label={`Type ${pool.name} to confirm`}
+          />
+        </div>
+      )}
+
+      <div className="adm-side-actions">
+        <button
+          type="button"
+          className={drastic ? 'is-primary is-danger' : 'is-primary'}
+          onClick={save}
+          disabled={next === null || busy || !editable || !confirmed}
+        >
+          {busy ? 'Saving…' : drastic ? `Set to ${next}` : 'Save'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            onClose()
+          }}
+          disabled={busy}
+        >
+          Cancel
+        </button>
+        {error && (
+          <span className="warn-text" title={error.message}>
+            {errorHeading(error)}
+          </span>
+        )}
+      </div>
+
+      <span className="adm-side-k">History</span>
+      <p className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+        not recorded
+      </p>
+    </aside>
   )
 }
 

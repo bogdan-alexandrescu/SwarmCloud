@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { MarkGlyph } from './marks'
 import { PageHead, timeAgo } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -129,6 +130,18 @@ export function PlatformCountsScreen() {
         </span>
       </PageHead>
 
+      {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
+          figure slot: the page has its shape before the press, and an empty
+          page is not mistaken for a platform with nothing on it. Gone the
+          moment a run is asked for, so a result never shares the screen with
+          the placeholder it replaces. */}
+      {run === null && !busy && (
+        <div className="ctl-cards counts-scopes">
+          <NotRun title="This tenant" queries={STATE_COUNT} />
+          <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} />
+        </div>
+      )}
+
       {run?.status === 'error' && <Failed error={run.error} />}
 
       {run?.status === 'empty' && (
@@ -170,6 +183,38 @@ export function PlatformCountsScreen() {
  * TypeScript, so "twelve" here would have outlived the twelfth state.
  */
 const STATE_COUNT = REAL_STATES.length + NEVER_WRITTEN.size
+
+/**
+ * One scope's card before anything has been counted. `queries` is what this
+ * card's half of a run costs; null where the caller is known not to be an
+ * admin, whose run does not read this scope at all.
+ */
+function NotRun({ title, queries }: { title: string; queries: number | null }) {
+  return (
+    <section className="ctl-card counts-notrun">
+      <div className="ctl-card-head">
+        <h2 className="ctl-card-title">{title}</h2>
+        <span className="ctl-card-note">{queries === null ? 'admin only' : `${queries} count()`}</span>
+      </div>
+      <div className="ctl-card-body">
+        {/* THE QUEUED RING, NEUTRAL: nothing failed and nothing is missing,
+            nothing has been asked yet. Not `.ctl-mark.is-unread`, which is
+            this sheet's mark for a read that failed. */}
+        <span
+          className="sk-st is-neu counts-notrun-mark"
+          data-mark="queued"
+          data-hue="neu"
+          aria-label="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
+        >
+          <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+            <MarkGlyph mark="queued" />
+          </svg>
+          <span className="sk-st-w">not run</span>
+        </span>
+      </div>
+    </section>
+  )
+}
 
 /**
  * The platform block a non-admin cannot have.

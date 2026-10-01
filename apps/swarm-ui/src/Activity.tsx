@@ -57,6 +57,7 @@ import {
   type Outcomes,
   type Span,
 } from './outcomes'
+import { StateMark, WarnMark } from './marks'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { useInView } from './useInView'
@@ -1291,10 +1292,18 @@ export function TenantsScreen() {
                   <tr role="row" key={t.tenant_id} className={t.enabled === false ? 'paused' : undefined}>
                     <th role="rowheader" scope="row">{t.tenant_id}</th>
                     <td role="cell" data-label="Status">
+                      {/* THE BRAND MARKS (admin-help.html, Tenants): a disabled
+                          tenant is the parked mark -- held on purpose, not
+                          failed -- and an enabled one is the plain word, since
+                          enabled is the normal case and needs no glyph. */}
                       {t.enabled === false ? (
-                        <span className="tag paused">disabled</span>
+                        <span className="ten-status">
+                          <StateMark state="PARKED" label="disabled" />
+                        </span>
                       ) : (
-                        <span className="tag ok">enabled</span>
+                        <span className="ten-status sk-st is-neu">
+                          <span className="sk-st-w">enabled</span>
+                        </span>
                       )}
                     </td>
                     <td role="cell" data-label="Kind">{t.kind}</td>
@@ -1329,7 +1338,10 @@ export function TenantsScreen() {
                           ))}
                         </span>
                       ) : (
-                        <span className="tag capped">none registered</span>
+                        // AMBER, NOT RED: a tenant with no key of its own can
+                        // still run on an account lent to it (Capacity ›
+                        // Accounts), so this is a warning and not a failure.
+                        <WarnMark label="none registered" />
                       )}
                     </td>
                     <td role="cell" data-label="Identity" className="mono">

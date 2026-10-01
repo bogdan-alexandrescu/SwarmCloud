@@ -26,6 +26,9 @@ const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
   setPoolLimit: vi.fn(),
   loadAdminQuota: vi.fn(),
+  // Pool limits reads the session to lock Edit for a non-admin. Unanswered
+  // here (undefined), which the screen treats as not known: Edit stays open.
+  loadMe: vi.fn(),
 }))
 vi.mock('../api', () => api)
 
@@ -83,6 +86,17 @@ function editorRow(name: string): HTMLElement {
   const row = document.getElementById(`limit-${name}`)
   expect(row, `no row with id limit-${name}`).not.toBeNull()
   return row as HTMLElement
+}
+
+/**
+ * The side editor (L2, 2026-10-01): one panel beside the families, for the
+ * pool whose `edit` was pressed. The Save, Cancel and field live here now,
+ * not inside the row.
+ */
+function side(): HTMLElement {
+  const panel = document.querySelector<HTMLElement>('aside.adm-side')
+  expect(panel, 'no side editor is open').not.toBeNull()
+  return panel!
 }
 
 /**
@@ -215,7 +229,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     await limitCard('claude-code')
 
     fireEvent.change(input('global'), { target: { value: '25' } })
-    fireEvent.click(within(editorRow('global')).getByRole('button', { name: 'save' }))
+    fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(api.loadCapacity).toHaveBeenCalledTimes(2)
@@ -247,7 +261,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     await limitCard('claude-code')
 
     fireEvent.change(input('global'), { target: { value: '25' } })
-    fireEvent.click(within(editorRow('global')).getByRole('button', { name: 'save' }))
+    fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
     await waitFor(() => expect(api.loadCapacity).toHaveBeenCalledTimes(2), WAIT)
     // While the read-back is in flight, somebody opens another row.
     fireEvent.change(input('tenant:eng'), { target: { value: '12' } })
@@ -269,7 +283,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     await limitCard('claude-code')
 
     fireEvent.change(input('global'), { target: { value: '25' } })
-    fireEvent.click(within(editorRow('global')).getByRole('button', { name: 'save' }))
+    fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
 
     await waitFor(() => {
       expect(api.loadCapacity).toHaveBeenCalledTimes(2)
@@ -385,27 +399,35 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     await limitCard('claude-code')
     // At rest: every row is its value and an edit control.
     expect(document.querySelectorAll('tbody input').length, 'a row draws a field nobody opened').toBe(0)
-    expect(screen.queryAllByRole('button', { name: 'save' })).toHaveLength(0)
-    expect(screen.queryAllByRole('button', { name: 'cancel' })).toHaveLength(0)
+    expect(screen.queryAllByRole('button', { name: 'Save' })).toHaveLength(0)
+    expect(screen.queryAllByRole('button', { name: 'Cancel' })).toHaveLength(0)
     for (const tr of document.querySelectorAll('tbody tr')) {
       expect(within(tr as HTMLElement).getByRole('button', { name: /^Edit ceiling for / }).textContent).toBe('edit')
       expect(tr.querySelector('td[data-label^="Ceiling"] .adm-ceiling')!.textContent).toMatch(/^\d+$/)
     }
 
+    // THE TABLE STAYS STILL (L2): the field opens in the side editor, never
+    // inside a row, and the row being edited is marked.
+    expect(document.querySelector('aside.adm-side'), 'an editor nobody opened').toBeNull()
     input('global')
-    expect(document.querySelectorAll('tbody input').length).toBe(1)
-    expect(within(editorRow('global')).getByRole('button', { name: 'save' })).toBeTruthy()
-    expect(within(editorRow('global')).getByRole('button', { name: 'cancel' })).toBeTruthy()
+    expect(document.querySelectorAll('tbody input').length, 'the editor reflowed a row').toBe(0)
+    expect(document.querySelectorAll('aside.adm-side').length).toBe(1)
+    expect(side().getAttribute('data-pool')).toBe('global')
+    expect(within(side()).getByRole('button', { name: 'Save' })).toBeTruthy()
+    expect(within(side()).getByRole('button', { name: 'Cancel' })).toBeTruthy()
+    expect(editorRow('global').classList.contains('is-editing')).toBe(true)
 
-    // Opening another row closes the first.
+    // Opening another row replaces the one editor.
     input('tenant:eng')
-    expect(document.querySelectorAll('tbody input').length).toBe(1)
-    expect(within(editorRow('global')).queryByRole('button', { name: 'save' })).toBeNull()
+    expect(document.querySelectorAll('aside.adm-side').length).toBe(1)
+    expect(side().getAttribute('data-pool')).toBe('tenant:eng')
+    expect(screen.queryByLabelText('Hard limit for global', { exact: false })).toBeNull()
+    expect(editorRow('global').classList.contains('is-editing')).toBe(false)
 
     // Cancel closes it and writes nothing.
     fireEvent.change(input('tenant:eng'), { target: { value: '3' } })
-    fireEvent.click(within(editorRow('tenant:eng')).getByRole('button', { name: 'cancel' }))
-    expect(document.querySelectorAll('tbody input').length).toBe(0)
+    fireEvent.click(within(side()).getByRole('button', { name: 'Cancel' }))
+    expect(document.querySelector('aside.adm-side')).toBeNull()
     expect(api.setPoolLimit).not.toHaveBeenCalled()
     // And a re-open starts from the pool's own value, not the abandoned one.
     expect(input('tenant:eng').value).toBe('10')
@@ -440,8 +462,9 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     }
     expect(seen()).not.toMatch(/evicts nothing/)
     input('tenant:eng')
-    const said = within(editorRow('tenant:eng')).getByText('lowering a ceiling evicts nothing')
-    expect(said.closest('td')?.getAttribute('data-label')).toBe('Change')
+    const said = within(side()).getByText('lowering a ceiling evicts nothing')
+    // Beside the control it qualifies: in the open editor, with its Save.
+    expect(said.closest('aside')).toBe(side())
     expect(seen().match(/evicts nothing/g)).toHaveLength(1)
   })
 
