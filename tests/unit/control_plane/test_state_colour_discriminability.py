@@ -277,6 +277,12 @@ def _theme_palette(rules: list[Rule], light: bool) -> dict[str, str]:
     for at_rules, selector, decls in rules:
         if not selector.startswith(":root"):
             continue
+        if "[data-theme" in selector and "not(" not in selector:
+            # The theme toggle's forced-light copy (`:root[data-theme='light']`,
+            # outside any media query). It repeats the media block's values, which
+            # test_ui_contrast.py holds identical, so reading it here as a base
+            # `:root` would paint the DARK palette light.
+            continue
         in_light_media = "prefers-color-scheme: light" in at_rules
         if in_light_media and not light:
             continue
@@ -1689,6 +1695,8 @@ def _theme_tokens(sheets, light: bool) -> dict[str, str]:
             for at_rules, selector, decls in rules_:
                 if not selector.startswith(":root"):
                     continue
+                if "[data-theme" in selector and "not(" not in selector:
+                    continue  # the forced-light copy; see `_theme_palette`
                 in_light = "prefers-color-scheme: light" in at_rules
                 if in_light != light_pass or (at_rules and not in_light):
                     continue

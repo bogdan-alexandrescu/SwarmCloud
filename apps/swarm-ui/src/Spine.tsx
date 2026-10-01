@@ -29,6 +29,7 @@ import type { Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS } from './help'
 import { MarkGlyph, STATE_MARK } from './marks'
 import type { Capacity, Me, TaskState } from './types'
+import { ThemeToggle } from './ThemeToggle'
 
 export type SpineSection = 'overview' | 'work' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -477,6 +478,7 @@ export function SkyShell({
           {admin && <span className="sk-adm">admin</span>}
         </span>
         {who !== null && <small>{who.principal.email}</small>}
+        <ThemeToggle />
       </div>
     </nav>
   )

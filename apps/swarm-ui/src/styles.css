@@ -222,6 +222,36 @@
   }
 }
 
+/* THE THEME TOGGLE'S LIGHT (owner decision 2026-10-01). The values above, again,
+   under the attribute, so a person who chose Light on a dark OS gets the light
+   palette; the comments that argue for each value are in the media block, and
+   `test_ui_contrast.py::test_the_forced_light_theme_carries_the_system_light_values`
+   holds the two copies identical (CSS cannot share one declaration list between
+   a media query and an attribute selector). DARK needs no block of its own:
+   `:root` is dark, and the media block excludes `[data-theme='dark']`, so
+   choosing Dark on a light OS falls through to `:root`. */
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f3f6f9;
+  --surface: #ffffff;
+  --surface-2: #eef4fa;
+  --line: #698198;
+  --line-soft: #a9b7c4;
+  --text: #0d1724;
+  --text-dim: #4f5d6e;
+  --text-faint: #606a77;
+  --ok: #1a7f37;
+  --warn: #6e4a00;
+  --bad: #681117;
+  --info: #0369a1;
+  --paused: #7139db;
+  --ok-ink: #15662c;
+  --warn-ink: #805500;
+  --bad-ink: #a71b25;
+  --info-ink: #075985;
+  --paused-ink: #6629d8;
+}
+
 /* ==========================================================================
    §B4.1 — THE TYPE SCALE. SIX INTEGER STEPS, AND NOTHING BETWEEN THEM.
    ==========================================================================
@@ -4724,6 +4754,12 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   }
 }
 
+/* The forced-light copy of the block above (see the first one). */
+:root[data-theme='light'] {
+  --ctl-shadow: 0 1px 2px rgb(31 35 40 / .08);
+  --ctl-absent: #736654;
+}
+
 /* ==========================================================================
    §B4.4 — THE FOUNDATION. The vocabulary the screen pass is built from.
    ==========================================================================
@@ -4896,6 +4932,11 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
        The spread stays; only the opacity comes down. */
     --ctl-shadow-pop: 0 8px 24px rgb(31 35 40 / .12);
   }
+}
+
+/* The forced-light copy of the block above (see the first one). */
+:root[data-theme='light'] {
+  --ctl-shadow-pop: 0 8px 24px rgb(31 35 40 / .12);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -12185,6 +12226,25 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
 }
 
+/* The forced-light copy of the block above (see the first one). */
+:root[data-theme='light'] {
+  --sk-ac: #0369a1;
+  --sk-acs: #e5f3fc;
+  --sk-acl: #b6daf2;
+  --sk-hv: #eef4fa;
+  --s-live: #0a7a55;
+  --s-liveb: #e3f5ee;
+  --s-park: #6b46c1;
+  --s-parkb: #efeafc;
+  --s-bad: #b42318;
+  --s-badb: #fdecea;
+  --s-warn: #8a5a00;
+  --s-warnb: #fdf3dc;
+  --s-neu: #5b6878;
+  --s-neub: #eef1f5;
+  --sk-sh: 0 10px 30px rgba(11, 58, 122, .12);
+}
+
 /* --- the frame ---------------------------------------------------------- */
 .sk-app { display: flex; min-height: 100%; position: relative; background: var(--bg); color: var(--text); font-family: var(--font); }
 .sk-prodbar { position: fixed; left: 0; right: 0; top: 0; height: 3px; background: var(--sk-prod); z-index: 30; }
@@ -12261,6 +12321,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; }
 .sk-pfoot b { font-size: var(--t-micro); }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
+.sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--line-soft); border-radius: 8px; }
+.sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
+.sk-theme button:hover { background: var(--sk-hv); }
+.sk-theme button.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
+.sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
 .sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 4px; padding: 1px 4px; }
 
 /* --- collapsed: the spine alone, a flyout per section -------------------- */

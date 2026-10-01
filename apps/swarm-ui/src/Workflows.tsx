@@ -1282,6 +1282,7 @@ export function WorkflowCard({
       className={`section wf-card${expanded ? ' is-open' : ''}${pr !== null ? ' has-pr' : ''}${page ? ' is-page' : ''}`}
     >
       {!page && (
+      <>
       {/* STILL AN <h2>, and the button is inside it rather than around it. The
           bar is this panel's heading -- it is how the workflow is named on the
           board -- and demoting it to a bare <button> would take the row out of
@@ -1394,6 +1395,7 @@ export function WorkflowCard({
             reserved `[flags]` track instead (styles.css `.wf-pr`). */}
         {pr !== null && <PullRequestLink pr={pr} className="wf-pr" />}
       </h2>
+      </>
       )}
 
       {(expanded || page) && (
