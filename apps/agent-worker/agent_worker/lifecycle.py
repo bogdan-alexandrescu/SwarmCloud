@@ -6673,14 +6673,15 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #
 # * TIER 1, every file, always refused: a registered secret (checked by the
 #   caller, `Worker._leaks_in_added_text`, never relaxed); a vendor-shaped key,
-#   whose tail must also look like a credential IN A TEST PATH, so an
+#   whose tail must carry an explicit placeholder IN A TEST PATH, so an
 #   `sk-test-aaaa` fixture passes there and is refused anywhere else; a JWT
 #   whose header decodes to JSON naming `alg`; a private-key block whose body
 #   holds about 100 high-entropy base64 characters (a bare marker or a stub
 #   body is not a key).
 # * TIER 2, outside test paths: the generic rules refuse exactly as before.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
-#   like a credential (`_looks_like_a_credential`).
+#   like a credential (`_looks_like_a_credential`). The loose tier is test
+#   CODE only (`is_test_path`).
 #
 # `swarm_redaction.RULES` is unchanged: read-time masking shares it, and a
 # false positive there costs one masked word, not a refused publish.
@@ -6736,37 +6737,50 @@ _NOT_BASE64 = re.compile(r"[^A-Za-z0-9+/=]")
 #: written as lines, pieces or JSON would hold.
 _PEM_BODY_CHARS = re.compile(r"[A-Za-z0-9+/=\s\"'`,\\]*")
 
-#: Directory names that make every file under them a test path.
-_TEST_DIRS = frozenset({"tests", "test", "__tests__", "testdata", "fixtures"})
-#: File names that are test files wherever they sit.
-_TEST_FILE = re.compile(r"(?:test_.*\.py|.*_test\.go|.*\.(?:test|spec)\.[jt]sx?)")
+#: Directory names that make a CODE file under them a test file (compared
+#: lower-cased, so `Tests/x.py` is the same as `tests/x.py`). `fixtures/` and
+#: `testdata/` are NOT here: they hold data, and data is judged strictly.
+_TEST_DIRS = frozenset({"tests", "test", "__tests__"})
+#: Only these extensions can be test CODE (owner decision, 2026-10-01). The
+#: loose tier exists so a test may assert on `password="hunter2"`; a config or
+#: data file (.env, .yaml, .json, .toml, .pem, no extension...) is where real
+#: credentials live, so it is judged strictly even under `tests/`.
+_TEST_CODE_EXTENSIONS = frozenset(
+    {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java",
+     ".kt", ".rb", ".sh", ".bats"}
+)
+#: File names that are test files wherever they sit (matched lower-cased).
+_TEST_FILE = re.compile(r"(?:test_.+\..+|.+_test\..+|.+\.(?:test|spec)\..+)")
 #: NEVER a test path, even under `tests/`: the files real credentials live in.
 #: Matched against the file name; `*credential*` also against every directory.
 _NEVER_TEST_FILES = (".env*", "*.pem", "*.key", "*credential*", "*secret*.json")
 
 
 def is_test_path(path: str) -> bool:
-    """True when `path` (repository-relative, `/`-separated) is a test path
-    for the publish guard's tier 3 (owner decision, 2026-09-30, #373).
+    """True when `path` (repository-relative, `/`-separated) is test CODE for
+    the publish guard's loose tier (owner decisions, 2026-09-30 and
+    2026-10-01, #373).
 
-    A directory segment `tests/`, `test/`, `__tests__/`, `testdata/` or
-    `fixtures/`, or a file named `test_*.py`, `*_test.go` or
-    `*.test|spec.[jt]sx?`. A file named `.env*`, `*.pem`, `*.key`,
-    `*credential*` or `*secret*.json` -- or under a `*credential*` directory
-    -- never is, wherever it sits. An empty or unknown path is not one: the
-    guard falls to its stricter tier when it cannot tell.
+    Both must hold: the file has a code extension (`_TEST_CODE_EXTENSIONS`),
+    and it sits under a `tests/`, `test/` or `__tests__/` directory at any
+    depth (case-insensitive) or is named `test_*`, `*_test.*`, `*.test.*` or
+    `*.spec.*`. A file named `*credential*` -- or under a `*credential*`
+    directory -- never is. An empty or unknown path is not one: the guard
+    falls to its stricter tier when it cannot tell.
     """
     if not path:
         return False
     parts = path.split("/")
     name = parts[-1].lower()
+    if os.path.splitext(name)[1] not in _TEST_CODE_EXTENSIONS:
+        return False
     if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NEVER_TEST_FILES):
         return False
     if any("credential" in part.lower() for part in parts[:-1]):
         return False
-    if any(part in _TEST_DIRS for part in parts[:-1]):
+    if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
         return True
-    return _TEST_FILE.fullmatch(parts[-1]) is not None
+    return _TEST_FILE.fullmatch(name) is not None
 
 
 def _shannon_bits(value: str) -> float:
@@ -6828,6 +6842,19 @@ def _is_der_sequence(body: str) -> bool:
     return header + size == len(raw)
 
 
+#: Words that mark a vendor-shaped fixture as one.
+_VENDOR_PLACEHOLDER = re.compile(r"example|test|fake|x{4,}", re.IGNORECASE)
+
+
+def _is_explicit_placeholder(tail: str) -> bool:
+    """True when a vendor token's variable part says it is a fixture: it holds
+    EXAMPLE, test, fake or a run of four x, or is one repeated character."""
+    return (
+        _VENDOR_PLACEHOLDER.search(tail) is not None
+        or (len(tail) >= 4 and len(set(tail)) == 1)
+    )
+
+
 def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
     """Where the first private-key block with a REAL body starts, or None.
 
@@ -6869,13 +6896,15 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
             return True  # tier 2: exactly as before
         value = match.group(0)[len(match.group(1)):]
         return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
-    # A vendor key: refused outside tests as before; in a test path its tail
-    # must look like a credential too.
+    # A vendor key: refused outside tests as before; in a test path it passes
+    # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
+    # and digits cannot tell a fixture from a real key: 22% of real-shaped
+    # AKIA tokens passed that judgement.
     if not in_tests:
         return True
     prefix = _VENDOR_PREFIX.match(match.group(0))
     tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
-    return _looks_like_a_credential(tail)
+    return not _is_explicit_placeholder(tail)
 
 
 def _credential_in(path: str, added: str) -> CredentialHit | None:
