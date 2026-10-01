@@ -365,7 +365,7 @@ export function SkyShell({
   const [fly, setFly] = useState<Exclude<SpineSection, null> | null>(null)
   const flyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const sideRef = useRef<HTMLDivElement | null>(null)
-  const flyRef = useRef<HTMLDivElement | null>(null)
+  const flyRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef<HTMLButtonElement | null>(null)
 
   // THE PHONE DRAWER IS A DIALOG IN BEHAVIOUR: focus moves into it on open, Tab
@@ -868,7 +868,7 @@ function Flyout({
   nav: (to: string) => void
   onEnter: () => void
   onLeave: () => void
-  flyRef: RefObject<HTMLDivElement | null>
+  flyRef: RefObject<HTMLDivElement>
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
