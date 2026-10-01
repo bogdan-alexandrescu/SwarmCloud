@@ -6675,10 +6675,15 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #   caller, `Worker._leaks_in_added_text`, never relaxed); a vendor-shaped key,
 #   whose tail must carry an explicit placeholder IN A TEST PATH, so an
 #   `sk-test-aaaa` fixture passes there and is refused anywhere else; a JWT
-#   whose header decodes to JSON naming `alg`; a private-key block whose body
-#   decodes as a DER private key, or holds at least `PEM_BODY_MIN_CHARS` (48)
-#   base64 characters at high entropy, wherever in the file the body sits (a
-#   bare marker or a stub body is not a key).
+#   whose header decodes to JSON naming `alg`; any private key.
+#   PRIVATE KEYS FOLLOW MAIN'S RULE IN EVERY PATH AND TIER: refused exactly
+#   when `swarm_redaction.rules.mask_private_keys` masks something, so any
+#   BEGIN ... PRIVATE KEY marker and any orphan-END tail is refused, a stub
+#   marker under `tests/` included. Owner decision, 2026-10-01: four review
+#   rounds of relaxing it (body length, entropy, DER shape, windows) each
+#   found inputs main refuses and the branch published. #373's real blocker
+#   was the generic key=value rule in redaction tests, not PEM markers; a
+#   test builds its marker at runtime.
 # * TIER 2, outside test paths: the generic rules refuse exactly as before.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
@@ -6713,44 +6718,8 @@ CREDENTIAL_MIN_ENTROPY_BITS = 3.5
 #: a run of x, a `<name>` or `${VAR}` slot, or a word that says so.
 _PLACEHOLDER = re.compile(r"\*|x{4,}|<[^>]*>|\$\{[^}]*\}|fake|test|dummy|example", re.IGNORECASE)
 
-#: A private key's body must hold at least this many base64 characters...
-#: Why 48: the SHORTEST real private key is a PKCS#8 Ed25519 or X25519 key,
-#: whose body is 64 characters (`openssl genpkey -algorithm ed25519`); 48 sits
-#: below it with margin, and above the 16-character stub (`MIIEowIBAAKCAQEA`)
-#: that tests write. It was 100, which published exactly those short keys.
-PEM_BODY_MIN_CHARS = 48
-#: ...at this entropy per character. Random base64 of 48 characters is about
-#: 5.2 bits; prose and identifiers are near 4.
-PEM_BODY_MIN_ENTROPY_BITS = 4.5
-#: A body that decodes to a DER SEQUENCE whose length matches is a real key
-#: at any size, provided it has at least this many base64 characters.
-_PEM_DER_MIN_CHARS = 24
-#: How far after a BEGIN marker its body is read when no END marker follows.
-_PEM_BODY_SCAN_CHARS = 16 * 1024
-#: How far after a BEGIN marker an END marker is looked for.
-_PEM_BLOCK_MAX_CHARS = 64 * 1024
-_PEM_END_MARKER = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-#: String-literal glue between key pieces: `" +\n "`, `",\n "`, `'` and `` ` ``.
-_PEM_PIECE_JOINER = re.compile(r"[\"'`]\s*[+,]?\s*[\"'`]")
-_PEM_ESCAPED_SPACE = re.compile(r"\\[nrt]")
-_NOT_BASE64 = re.compile(r"[^A-Za-z0-9+/=]")
-#: Where a body with no END marker stops: the first character that no key
-#: written as lines, pieces or JSON would hold.
-_PEM_BODY_CHARS = re.compile(r"[A-Za-z0-9+/=\s\"'`,\\]*")
-#: A body whose lines carry a log prefix (`2026-09-30T12:00:01Z INFO MIIE...`)
-#: is read over this many characters after BEGIN, or to the first blank line.
-_PEM_WINDOW_CHARS = 4 * 1024
-_PEM_BLANK_LINE = re.compile(r"\n[ \t]*\r?\n")
-#: A traditional encrypted PEM's headers. A BEGIN marker followed by either
-#: within the window is a real key with no further judgement: stubs never
-#: carry them. The one blank line after them is not the end of the body.
-_PEM_ENCRYPTED_HEADER = re.compile(r"(?:Proc-Type:[ \t]*4,[ \t]*ENCRYPTED|DEK-Info:)")
-_PEM_HEADER_THEN_BLANK = re.compile(r"(?:Proc-Type|DEK-Info):[^\n]*\n[ \t]*\r?\n")
-#: A base64 run: what is left of a line once its prefix and glue are gone.
-_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]+")
-_BASE64_RUN_AT_LEAST = re.compile(r"[A-Za-z0-9+/]{%d,}={0,2}" % _PEM_DER_MIN_CHARS)
-#: What an OpenSSH private key body decodes to first.
-_OPENSSH_MAGIC = b"openssh-key-v1\x00"
+#: Where a refusal names a private key: its first BEGIN or END marker.
+_PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
 
 #: Directory names that make a CODE file under them a test file (compared
 #: lower-cased, so `Tests/x.py` is the same as `tests/x.py`). `fixtures/` and
@@ -6835,28 +6804,6 @@ def _decodes_as_a_jwt(token: str) -> bool:
     return isinstance(decoded, dict) and "alg" in decoded
 
 
-def _is_der_sequence(body: str) -> bool:
-    """True when `body` base64-decodes to a DER SEQUENCE (0x30) whose encoded
-    length is exactly the rest of the decoded bytes: every real private key
-    (PKCS#8, SEC1, PKCS#1, encrypted PKCS#8) is one; a stub is not."""
-    if len(body) < _PEM_DER_MIN_CHARS:
-        return False
-    try:
-        raw = base64.b64decode(body.rstrip("=") + "=" * (-len(body.rstrip("=")) % 4))
-    except ValueError:  # binascii.Error is one
-        return False
-    if len(raw) < 2 or raw[0] != 0x30:
-        return False
-    if raw[1] < 0x80:
-        header, size = 2, raw[1]
-    else:
-        count = raw[1] & 0x7F
-        if not 1 <= count <= 4 or len(raw) < 2 + count:
-            return False
-        header, size = 2 + count, int.from_bytes(raw[2 : 2 + count], "big")
-    return header + size == len(raw)
-
-
 #: Words that mark a vendor-shaped fixture as one.
 _VENDOR_PLACEHOLDER = re.compile(r"example|test|fake|x{4,}", re.IGNORECASE)
 
@@ -6868,177 +6815,6 @@ def _is_explicit_placeholder(tail: str) -> bool:
         _VENDOR_PLACEHOLDER.search(tail) is not None
         or (len(tail) >= 4 and len(set(tail)) == 1)
     )
-
-
-def _prefix_is_der_private_key(raw: bytes) -> bool:
-    """True when `raw` opens like a DER private key: a SEQUENCE whose first
-    element is INTEGER 0 or 1 (PKCS#1, SEC1, PKCS#8 v1 and v2)."""
-    if len(raw) < 6 or raw[0] != 0x30:
-        return False
-    if raw[1] < 0x80:
-        at = 2
-    else:
-        count = raw[1] & 0x7F
-        if not 1 <= count <= 4:
-            return False
-        at = 2 + count
-    if raw[at : at + 3] in (b"\x02\x01\x00", b"\x02\x01\x01"):
-        return True
-    return _opens_with_an_encryption_algorithm(raw, at)
-
-
-#: OID prefixes (DER content, without tag and length) of PKCS#5 PBES1/PBES2
-#: (1.2.840.113549.1.5.*) and PKCS#12 PBE (1.2.840.113549.1.12.1.*).
-_ENCRYPTION_OIDS = (bytes.fromhex("2a864886f70d0105"), bytes.fromhex("2a864886f70d010c01"))
-
-
-def _opens_with_an_encryption_algorithm(raw: bytes, at: int) -> bool:
-    """True when `raw[at:]` is a SEQUENCE opening with an OID under PKCS#5 or
-    PKCS#12: the AlgorithmIdentifier of an encrypted PKCS#8
-    (`SEQUENCE { SEQUENCE { OID PBES2 ... } OCTET STRING }`). A certificate's
-    inner SEQUENCE opens with `a0 03` (the version) or an INTEGER instead."""
-    if raw[at : at + 1] != b"\x30" or len(raw) < at + 3:
-        return False
-    if raw[at + 1] < 0x80:
-        inner = at + 2
-    else:
-        count = raw[at + 1] & 0x7F
-        if not 1 <= count <= 4:
-            return False
-        inner = at + 2 + count
-    if raw[inner : inner + 1] != b"\x06" or len(raw) < inner + 2:
-        return False
-    length = raw[inner + 1]
-    oid = raw[inner + 2 : inner + 2 + length]
-    return length < 0x80 and oid.startswith(_ENCRYPTION_OIDS)
-
-
-def _run_is_a_private_key(run: str) -> bool:
-    """True when the base64 `run` decodes to a DER private-key shape or to an
-    OpenSSH key body. A run is tried at each of the four alignments, because
-    the characters before it in the file may be glued to its start."""
-    for skip in range(4):
-        chunk = run[skip : skip + 64]
-        chunk = chunk[: len(chunk) - len(chunk) % 4]
-        if len(chunk) < 20:
-            continue
-        try:
-            raw = base64.b64decode(chunk)
-        except ValueError:
-            continue
-        if _prefix_is_der_private_key(raw) or raw.startswith(_OPENSSH_MAGIC):
-            return True
-    return False
-
-
-def _key_outside_the_block(text: str) -> bool:
-    """True when ANY base64 run in `text`, once quoted pieces are joined, is a
-    private key's DER or an OpenSSH key body.
-
-    This catches a key whose body is held away from its markers: a PEM
-    assembled by an f-string, by `%`, or from a variable. It judges by shape
-    ONLY, never by the entropy fallback, so that a certificate or an
-    unrelated base64 blob in the same file is not refused: a certificate's
-    SEQUENCE opens with another SEQUENCE, not with INTEGER 0 or 1.
-    """
-    joined = _PEM_PIECE_JOINER.sub("", text)
-    return any(_run_is_a_private_key(m.group(0)) for m in _BASE64_RUN_AT_LEAST.finditer(joined))
-
-
-def _body_is_real(body: str) -> bool:
-    if _is_der_sequence(body):
-        return True
-    return len(body) >= PEM_BODY_MIN_CHARS and _shannon_bits(body) >= PEM_BODY_MIN_ENTROPY_BITS
-
-
-def _windowed_body(text: str, start: int, stop: int) -> str:
-    """The body in `text[start:stop]`, read to the first blank line or
-    `_PEM_WINDOW_CHARS`: from each line only its longest base64 run, so a
-    log prefix (`2026-09-30T12:00:01Z INFO`) and any glue are dropped."""
-    window = text[start : min(stop, start + _PEM_WINDOW_CHARS)]
-    # Step over exactly one blank line that directly follows the headers.
-    headed = None
-    for headed in _PEM_HEADER_THEN_BLANK.finditer(window):
-        pass
-    if headed is not None:
-        window = window[headed.end() :]
-    blank = _PEM_BLANK_LINE.search(window)
-    if blank is not None:
-        window = window[: blank.start()]
-    runs = [max(_BASE64_RUN.findall(line), key=len, default="") for line in window.splitlines()]
-    return "".join(runs)
-
-
-_BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*\r?")
-
-
-def _lines_above(text: str, marker_start: int) -> str:
-    """The run of whole base64 lines directly above an END marker that starts
-    its line, to the first line that is not base64 and no further than
-    `_PEM_BLOCK_MAX_CHARS` (as `_tail_start` in swarm_redaction does)."""
-    line_start = text.rfind("\n", 0, marker_start) + 1
-    if text[line_start:marker_start].strip():
-        return ""  # other text precedes the marker on its line
-    lines: list[str] = []
-    stop = line_start - 1  # the newline ending the line above
-    while stop >= 0:
-        above = text.rfind("\n", 0, stop) + 1
-        if not _BASE64_LINE.fullmatch(text, above, stop) or marker_start - above > _PEM_BLOCK_MAX_CHARS:
-            break
-        lines.append(text[above:stop].strip())
-        stop = above - 1
-    return "".join(reversed(lines))
-
-
-def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
-    """Where the first private-key block with a REAL body starts, or None.
-
-    The body is what lies between the BEGIN marker and its END (or the
-    key-looking text after it when no END follows), with string-literal
-    glue (quotes, `+`, `,`), literal `\\n` and whitespace removed, so a key
-    written as lines, as one JSON-escaped line or as quoted pieces of any
-    length is read the same. It counts when it decodes as a DER SEQUENCE of
-    its own length, or has at least `PEM_BODY_MIN_CHARS` characters at
-    `PEM_BODY_MIN_ENTROPY_BITS`; a bare marker or a stub body (`MIIEow...`)
-    is a fixture.
-    """
-    if "PRIVATE KEY-----" not in text:
-        return None
-    for marker in begin.finditer(text):
-        if _PEM_ENCRYPTED_HEADER.search(text, marker.end(), marker.end() + _PEM_WINDOW_CHARS):
-            return marker.start()
-        end = _PEM_END_MARKER.search(text, marker.end(), marker.end() + _PEM_BLOCK_MAX_CHARS)
-        if end is not None:
-            raw = text[marker.end() : end.start()]
-        else:
-            start = marker.end()
-            raw = _PEM_BODY_CHARS.match(text, start, start + _PEM_BODY_SCAN_CHARS).group(0)
-        raw = _PEM_ESCAPED_SPACE.sub("", raw)
-        body = _NOT_BASE64.sub("", _PEM_PIECE_JOINER.sub("", raw))
-        if _body_is_real(body):
-            return marker.start()
-        # No END marker, or log-prefixed lines: the window method.
-        stop = end.start() if end is not None else marker.end() + _PEM_WINDOW_CHARS
-        if _body_is_real(_windowed_body(text, marker.end(), stop)):
-            return marker.start()
-    # Any private-key marker plus a traditional-encrypted header ANYWHERE in
-    # the added text is a key: the headers may sit in a variable defined
-    # before the BEGIN or past the window. Stubs never carry them.
-    if (begin.search(text) or _PEM_END_MARKER.search(text)) and _PEM_ENCRYPTED_HEADER.search(text):
-        first = begin.search(text) or _PEM_END_MARKER.search(text)
-        return first.start()
-    # An END marker with whole base64 lines directly above it: its body, as
-    # `_tail_start` in swarm_redaction masks it, however far BEGIN is.
-    for end in _PEM_END_MARKER.finditer(text):
-        if _body_is_real(_lines_above(text, end.start())):
-            return end.start()
-    # A marker whose own body is no key may still have its key elsewhere in
-    # the file; look at all of the added text, by shape only.
-    # An END marker alone counts too: its BEGIN may be split or unchanged.
-    first = begin.search(text) or _PEM_END_MARKER.search(text)
-    if first is not None and _key_outside_the_block(text):
-        return first.start()
-    return None
 
 
 def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
@@ -7077,9 +6853,11 @@ def _credential_in(path: str, added: str) -> CredentialHit | None:
     in_tests = is_test_path(path)
     for rule in CREDENTIAL_RULES:
         if rule.apply is not None:  # the private-key block
-            at = _first_real_private_key(added, rule.pattern)
-            if at is not None:
-                return CredentialHit(rule.name, at)
+            # Main's rule, in every path and tier: refused exactly when
+            # `mask_private_keys` would mask something (owner, 2026-10-01).
+            if rule.apply(added, False, False)[1]:
+                marker = _PEM_MARKER.search(added)
+                return CredentialHit(rule.name, marker.start() if marker else 0)
             continue
         for match in rule.pattern.finditer(added):
             start = match.start()
