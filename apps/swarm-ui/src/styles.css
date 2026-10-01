@@ -12195,10 +12195,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* --- the spine: 84px, the same deep blue in both themes ------------------ */
 .sk-spine { width: 84px; flex: none; background: linear-gradient(180deg, var(--sk-spine-top), var(--sk-spine-foot)); color: var(--sk-spine-ink); display: flex; flex-direction: column; align-items: center; padding: 16px 0 12px; gap: 2px; overflow-y: auto; }
 .sk-hive { display: flex; padding: 2px 0 14px; color: #fff; }
-.sk-ri { width: 70px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0; border: 0; border-radius: 10px; background: none; color: var(--sk-spine-ink); position: relative; cursor: pointer; font: 500 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; }
+.sk-ri { width: 70px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0; border: 0; border-radius: 10px; background: none; color: inherit; position: relative; cursor: pointer; font: 500 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; }
 .sk-ri small { font-size: inherit; }
-.sk-ri:hover { background: rgba(124, 200, 248, .12); color: #fff; }
-.sk-ri.is-on { background: rgba(124, 200, 248, .2); color: #fff; }
+/* Solid, not rgba(124, 200, 248, .12/.2): the contrast gate cannot see that an
+   item sits on the spine, so a translucent fill was measured over the page.
+   These are the same two fills composited over --sk-spine-top, where the
+   section items sit; white on either is over 8:1. `.sk-ri` itself inherits the
+   spine's ink, which is measured against the spine's own gradient. */
+.sk-ri:hover { background: #194b89; color: #fff; }
+.sk-ri.is-on { background: #225693; color: #fff; }
 .sk-ri.is-on::before { content: ""; position: absolute; left: -6px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--sk-sky-line); }
 .sk-ri.sk-cta { background: var(--sk-sky); color: var(--sk-spine-foot); width: 52px; border-radius: 12px; font-weight: 600; }
 .sk-ri.sk-cta:hover { background: #7dd3fc; color: var(--sk-spine-foot); }
@@ -12210,7 +12215,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-rsep { width: 32px; height: 1px; background: rgba(255, 255, 255, .16); margin: 6px 0; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
-.sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: linear-gradient(135deg, var(--sk-sky), var(--sk-spine-top)); color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
+.sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
 
 /* --- the panel: 236px ---------------------------------------------------- */
 .sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--line-soft); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
@@ -12277,7 +12282,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
-  .sk-pbar .sk-pill:not(.is-prod) { background: rgba(124, 200, 248, .18); color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
+  .sk-pbar .sk-pill:not(.is-prod) { background: #1f5491; color: #cfe9fb; border-color: rgba(124, 200, 248, .45); }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }
