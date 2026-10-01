@@ -215,29 +215,40 @@ FIRESTORE_STARTUP_CALL_SECONDS = 10.0
 #: `vpc_access.egress`). docs/incidents/2026-09-25-worker-startup-network.md
 #: has the measurements and the commands that repeat them.
 #:
-#: WHY 0, 30 AND 60 s. The last attempt starts a minute after the first, so a
-#: delay of "a minute or more" is outlasted by the last attempt's own 30 s of
-#: retries: the read is still being tried about 90 s after the worker first
-#: asked. An attempt whose tries each fail at once (the incident: nothing
-#: routes) uses its whole 30 s budget, so the attempts run back to back and the
-#: verdict comes at about 90 s. Each failed attempt is ONE warning line, which
-#: the incident's 28 s did not have.
+#: WHY 0, 30, 65, 105 AND 150 s (#401, owner decision 2026-09-30). The first
+#: schedule, 0, 30 and 60 s, kept the read going about 90 s after the worker
+#: first asked, and that was not enough. Flow logs from 2026-09-25 to 09-30
+#: show some fresh instances getting no reply at all from Google API addresses
+#: for 30 to 90 s after they start, while the same address answers other
+#: instances. "could not read the control plane at startup" was logged on five
+#: executions, and two of them lost their attempt: 2026-09-25 (9ngvq) and
+#: 2026-09-26 (r7ff9). The last attempt now starts at 150 s, so with its own
+#: 30 s of retries the read is still being tried 180 s after the first try,
+#: twice the old span. The gaps grow (30, 35, 40, 45 s): an early blip is
+#: retried quickly, and the later attempts do not hammer an API that is only
+#: slow to answer. An attempt whose tries each fail at once (nothing routes)
+#: uses its whole 30 s budget, so the verdict comes at about 180 s. Each failed
+#: attempt is ONE warning line, which the first incident's 28 s did not have.
 #:
 #: THE WORST CASE, `CONTROL_PLANE_READ_WINDOW_SECONDS`, is every try hanging
-#: for its whole 10 s: each attempt then costs 40 s, starts as soon as the one
-#: before it ends, and the verdict comes at 120 s. On 2026-09-25 the two
-#: executions of the incident's task started their workers 195 s and 103 s
-#: after dispatch, so either bound ends inside the lease's 300 s dispatch
-#: deadline for them. A slower cold start can reach the deadline first. The
-#: reconciler then fences the attempt and stops the execution, and a SIGTERM
-#: between attempts exits 143 at once having written nothing, as it does
-#: during a read. Nothing is written until the check passes, whichever comes
-#: first.
+#: for its whole 10 s. Each attempt then costs 40 s and starts as soon as the
+#: one before it ends, or at its scheduled time if that is later, and the
+#: verdict comes at 200 s (it was 120 s). THIS NOW REACHES THE DISPATCH
+#: DEADLINE for slow cold starts. The lease's 300 s
+#: (`dispatch_timeout_seconds`, frozen in swarm_common) counts from dispatch,
+#: and on 2026-09-25 the incident's two executions started their workers 103 s
+#: and 195 s after dispatch. A worker that cold-started in 195 s and is still
+#: asking at 180 s is past the deadline. The reconciler then fences the
+#: attempt and stops the execution. That happens at 90 s too when the cold
+#: start is slower, and either way the attempt is lost where it used to be
+#: lost. A SIGTERM between attempts exits 143 at once having written nothing,
+#: as it does during a read. Nothing is written until the check passes,
+#: whichever comes first.
 #:
 #: NOT RETRIED: a refusal (78, `lifecycle._refusal_cause`), a fence (70) and a
 #: tenant mismatch (79). Each is an answer, and the next attempt would get the
 #: same one.
-CONTROL_PLANE_READ_SCHEDULE_SECONDS: tuple[float, ...] = (0.0, 30.0, 60.0)
+CONTROL_PLANE_READ_SCHEDULE_SECONDS: tuple[float, ...] = (0.0, 30.0, 65.0, 105.0, 150.0)
 CONTROL_PLANE_READ_ATTEMPTS = len(CONTROL_PLANE_READ_SCHEDULE_SECONDS)
 
 

@@ -1485,14 +1485,33 @@ fs_field_filter() {
 
 #: curl_retry_no_answer OUT CURL_ARGS...
 #:
-#: Run `curl CURL_ARGS...` with its stdout and stderr written to OUT, and when
-#: it got NO ANSWER AT ALL -- curl exit 28 (timed out) or 7 (could not
-#: connect) -- wait SWARM_NO_ANSWER_RETRY_DELAY seconds (5) and run it once
-#: more, OUT rewritten. Returns the exit code of the last attempt.
+#: Run `curl CURL_ARGS...` with its stdout and stderr written to OUT, and while
+#: it gets NO ANSWER AT ALL -- curl exit 28 (timed out) or 7 (could not
+#: connect) -- wait SWARM_NO_ANSWER_RETRY_DELAY seconds (10) and run it again,
+#: OUT rewritten, until SWARM_NO_ANSWER_BUDGET_SECONDS (120) are spent. Returns
+#: the exit code of the last attempt.
+#:
+#: WHY A BUDGET AND NOT ONE RETRY (#401, owner decision 2026-09-30). #398
+#: retried once after 5 s, and the next release still died: swarm-verify-fg44d
+#: timed out at 22:24:06 and its retry timed out too, ending 22:25:11. The
+#: subnet's flow logs show some fresh Cloud Run instances getting no reply at
+#: all from Google API addresses for 30 to 90 s after they start, while the
+#: same address answers other instances. A retry inside that window meets the
+#: same silence, so the retries have to outlast the window.
+#:
+#: THE BUDGET IS THE WHOLE TIME, curl's own --max-time included. A retry is
+#: started only if it could END inside the budget: elapsed + delay + the
+#: --max-time in CURL_ARGS <= budget. So with the defaults and a 30 s
+#: --max-time, timeouts are asked at 0, 40 and 80 s and the verdict comes by
+#: 110 s; refused connects (instant) are asked every 10 s up to 90 s. Nothing
+#: here runs past 120 s. Without a --max-time in CURL_ARGS it counts as 0, and
+#: a single hung attempt is then bounded only by curl itself -- every caller
+#: passes one. A delay of 0 with instant failures asks as fast as curl fails,
+#: still for no longer than the budget.
 #:
 #: ONLY THOSE TWO EXITS. Owner decision, 2026-09-30: a network call is retried
-#: once when nothing answered, never on an HTTP status. A 403, a 404 or a 503
-#: is the server answering; asking again gets the same answer and costs only
+#: when nothing answered, never on an HTTP status. A 403, a 404 or a 503 is
+#: the server answering; asking again gets the same answer and costs only
 #: time, and a retried 403 is a refusal reported late. Other curl failures
 #: (6, could not resolve; 35, TLS) are as often configuration as a blip, and
 #: were not what failed. Without `-f` an HTTP error status exits 0 anyway, so
@@ -1501,19 +1520,40 @@ fs_field_filter() {
 #: OUT is rewritten per attempt rather than appended to, so a caller reading a
 #: response body after a retried success reads that body alone and not the
 #: first attempt's `curl: (28)` line in front of it.
+#:
+#: The clock is `date +%s`, not bash's SECONDS, so a test can drive it.
 curl_retry_no_answer() {
-  local out="$1" rc=0
+  local out="$1" rc=0 started now elapsed max_time=0 prev=""
+  local delay="${SWARM_NO_ANSWER_RETRY_DELAY:-10}"
+  local budget="${SWARM_NO_ANSWER_BUDGET_SECONDS:-120}"
   shift
-  curl "$@" >"${out}" 2>&1 || rc=$?
-  case "${rc}" in
-    7|28) ;;
-    *) return "${rc}" ;;
-  esac
-  warn "no answer (curl exit ${rc}); asking once more in ${SWARM_NO_ANSWER_RETRY_DELAY:-5}s"
-  sleep "${SWARM_NO_ANSWER_RETRY_DELAY:-5}"
-  rc=0
-  curl "$@" >"${out}" 2>&1 || rc=$?
-  return "${rc}"
+  local arg
+  for arg in "$@"; do
+    case "${prev}" in
+      --max-time|-m) max_time="${arg%%.*}" ;;
+    esac
+    case "${arg}" in
+      --max-time=*) max_time="${arg#--max-time=}"; max_time="${max_time%%.*}" ;;
+    esac
+    prev="${arg}"
+  done
+  [[ "${max_time}" =~ ^[0-9]+$ ]] || max_time=0
+  started="$(date +%s)"
+  while :; do
+    rc=0
+    curl "$@" >"${out}" 2>&1 || rc=$?
+    case "${rc}" in
+      7|28) ;;
+      *) return "${rc}" ;;
+    esac
+    now="$(date +%s)"
+    elapsed=$(( now - started ))
+    if (( elapsed + ${delay%%.*} + max_time > budget )); then
+      return "${rc}"
+    fi
+    warn "no answer (curl exit ${rc}) ${elapsed}s after the first request; asking again in ${delay}s (budget ${budget}s)"
+    sleep "${delay}"
+  done
 }
 
 #: Whether the Firestore database exists.
