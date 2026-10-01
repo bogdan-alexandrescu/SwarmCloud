@@ -457,7 +457,18 @@ This is a design constraint with teeth, not a hope:
 Already in the image: `git`, `jq`, `ripgrep`, `fd`, `curl`, `wget`, `node`/`npm`,
 `python`/`uv`, `pytest`, `claude`, `codex`, `build-essential`.
 
-Added:
+Added (S34, 2026-10-01): `gh`, `gcloud` (with `gke-gcloud-auth-plugin`),
+`kubectl`, `terraform`, `checkov`, `shellcheck`, `make` and the `docker` CLI are
+in the default build. `tofu`, `tflint` and `trivy` are installed only with
+`--build-arg INSTALL_TOFU_TFLINT_TRIVY=1`: no published release of them passed
+the promote gate's fixable-HIGH/CRITICAL scan that day. The pinned versions,
+and why two of them differ from the operator pins quoted below, are in
+[`versions.md`](versions.md#agent-image-toolbox). The image still runs every
+tool as uid 10001; it does not provide root.
+
+Specified (the original 2026 specification, kept as written; where it disagrees
+with the paragraph above -- the terraform and tofu versions, and root -- the
+paragraph above and `versions.md` are what the image does):
 
 * **`gh`** — required for "the agent opens a PR" to work at all.
 * **`gcloud`, `kubectl`** — an agent can inspect the infrastructure it works on.
@@ -475,6 +486,8 @@ Added:
 * **`docker` CLI** — present, but see §2.2: image *builds* go to Cloud Build.
 
 Agents install whatever else they need. Root is available; the boundary is gVisor.
+(Superseded: the image runs as uid 10001 and provides no root, so an agent
+installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 
 ---
 

@@ -20,7 +20,9 @@
 #                     image that ignored this would simply fail to schedule
 #   no docker socket  nothing here talks to a container runtime. An agent that
 #                     could reach the socket could escape every boundary the
-#                     rest of this platform builds
+#                     rest of this platform builds. The `docker` CLI is in the
+#                     toolbox (BUILD_PROMPT_V2 §2.12) with no daemon and no
+#                     socket behind it; image builds go to Cloud Build
 #   tini as PID 1     an agent's helpers get orphaned when the worker kills a
 #                     process group; tini reaps them instead of leaving zombies
 #
@@ -152,6 +154,7 @@ RUN apt-get update \
       git \
       jq \
       less \
+      make \
       openssh-client \
       procps \
       ripgrep \
@@ -383,6 +386,254 @@ RUN /usr/local/bin/python3 -m pip install --no-cache-dir --upgrade \
       "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
 COPY --from=builder /opt/venv /opt/venv
 
+# ---------------------------------------------------------------------------
+# The infrastructure toolbox (docs/BUILD_PROMPT_V2.md §2.12)
+# ---------------------------------------------------------------------------
+# What an agent needs to work on this repository the way CLAUDE.md says work
+# is checked: `gh` to open the pull request at all, `gcloud`/`kubectl` to read
+# the infrastructure it is changing, the Terraform/lint/scan set `make lint`
+# and `make security` call, `shellcheck` and `make` (apt, above), and the
+# `docker` CLI. All of it is installed as root and owned by root; the agent
+# runs it as uid 10001 and can write none of it.
+#
+# Every tool is the vendor's PREBUILT linux/amd64 release, never compiled here
+# (an earlier attempt at this change built OpenTofu, TFLint and Trivy from
+# source and starved its own heartbeat). Each is pinned to an exact version and
+# checked against the sha256 written beside it BEFORE it is unpacked -- the
+# same download-then-verify shape as the npm patches above. Where a vendor
+# ships a .deb rather than a static binary, the .deb is fetched by its exact
+# pool filename and verified the same way: its sha256 is copied from the
+# vendor's GPG-signed apt index (the Packages file under dists/), so the trust
+# root is the vendor's signing key without adding an apt source that would
+# float with whatever the repository serves next week. One RUN per tool
+# family, and each removes its own downloads, so no layer carries an archive.
+#
+# VERSIONS ARE CHOSEN AGAINST THE PROMOTE GATE, not by recency alone.
+# scripts/push-images.sh refuses an image with any fixable HIGH or CRITICAL
+# trivy finding. On 2026-10-01 every artifact below was downloaded, its sha256
+# compared with the vendor's published value, and the extracted files scanned
+# with trivy 0.74.0 (`trivy rootfs --scanners vuln --severity HIGH,CRITICAL
+# --ignore-unfixed`, vulnerability DB updated 2026-10-01T07:23Z) -- the same
+# filter the gate applies. Each pin below records what that scan found.
+#
+# bash with pipefail from here on: every `echo <sha> <file> | sha256sum -c -`
+# below is a pipe, and so is the smoke step's output, and a pipe whose first
+# command failed must not pass on the last one's exit status.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Google Cloud: gcloud, the GKE auth plugin, kubectl.
+#
+# gcloud 587.0.0 is the newest google-cloud-cli in the vendor's index on
+# 2026-10-01. Its .deb carries a bundled CPython 3.14
+# (platform/bundledpythonunix) whose site-packages had seven fixable HIGHs:
+# cryptography 46.0.7 (CVE-2026-69247, CVE-2026-69249, GHSA-537c-gmf6-5ccf),
+# urllib3 2.7.0 (CVE-2026-97687, CVE-2026-97689), msgpack 1.1.2
+# (GHSA-6v7p-g79w-8964), setuptools 70.3.0 (CVE-2025-47273). The rest of the
+# package scanned clean. So the bundled interpreter is removed between
+# `dpkg --unpack` and `dpkg --configure`, and gcloud falls back to this
+# image's own Python 3.11 -- its launcher accepts 3.9 through 3.14 and runs it
+# with `-S`, so the worker venv's packages never load into it. Checked on
+# 2026-10-01: `gcloud --version`, `gsutil version` and `bq version` from the
+# unpacked 587.0.0 all run on Python 3.11 with the bundled copy deleted, and
+# `gcloud components post-process` (the postinst) exits 0 on it. The
+# postinst's .pyc recompile is skipped (CLOUDSDK_SKIP_PY_COMPILATION=1): it
+# would compile for the interpreter that is about to be deleted.
+# At runtime the launcher takes the first `python3` on PATH, which is
+# /opt/venv/bin/python3. That is the same interpreter: the venv is made in the
+# builder stage FROM the same PYTHON_IMAGE digest, and its python3 links to
+# /usr/local/bin/python3.11. With `-S` the venv's site-packages never load.
+# CLOUDSDK_PYTHON is NOT set as an ENV: the lifecycle builds the runner's
+# environment rather than inheriting it, so an image ENV would not reach an
+# agent's gcloud without a change to apps/agent-worker, and it would change
+# nothing that runs.
+#
+# Source of GCLOUD_* and GKE_AUTH_PLUGIN_*: the Filename and SHA256 fields of
+# https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages
+# (packages google-cloud-cli and google-cloud-cli-gke-gcloud-auth-plugin,
+# Version 587.0.0-0), recomputed over the downloaded files. Neither .deb
+# declares a Depends. The auth plugin is not on the §2.12 list, but kubectl
+# cannot authenticate to a GKE cluster without it, so without it the kubectl
+# below would only reach clusters nobody here runs.
+ARG GCLOUD_VERSION=587.0.0
+ARG GCLOUD_POOL_ID=997633f1dce2c650ae5bc92a1ec32bca
+ARG GCLOUD_SHA256=117c7a96c43ecf649f91d7f775f54ff83134caeb42df4cfed8a7b92c2b701c14
+ARG GKE_AUTH_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
+ARG GKE_AUTH_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
+# kubectl 1.36.5: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
+# on 2026-10-01), one minor ahead of the 1.35 control plane as kubectl's skew
+# policy allows and the line docs/versions.md pins for operators. The static
+# binary from dl.k8s.io rather than Google's `kubectl` .deb, which is 141 MB
+# of several bundled versions. Checksum:
+# https://dl.k8s.io/release/v1.36.5/bin/linux/amd64/kubectl.sha256. Scan: clean.
+ARG KUBECTL_VERSION=1.36.5
+ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
+# dpkg runs with /usr/sbin on PATH because it refuses to start without
+# ldconfig and start-stop-daemon, which live there and which the runtime PATH
+# deliberately omits; /usr/local/bin is there for the postinst's python3.
+RUN mkdir -p /tmp/toolbox \
+ && curl -fsSL -o /tmp/toolbox/google-cloud-cli.deb \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
+ && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_AUTH_PLUGIN_POOL_ID}.deb" \
+ && curl -fsSL -o /tmp/toolbox/kubectl \
+      "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+ && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
+ && echo "${GKE_AUTH_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
+ && echo "${KUBECTL_SHA256}  /tmp/toolbox/kubectl" | sha256sum -c - \
+ && PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+      dpkg --unpack /tmp/toolbox/google-cloud-cli.deb /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && rm -rf /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
+ && PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin CLOUDSDK_SKIP_PY_COMPILATION=1 \
+      dpkg --configure -a \
+ && test ! -e /usr/lib/google-cloud-sdk/platform/bundledpythonunix \
+ && install -o root -g root -m 0755 /tmp/toolbox/kubectl /usr/local/bin/kubectl \
+ && rm -rf /tmp/toolbox
+
+# GitHub and Docker CLIs.
+#
+# gh 2.102.0: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
+# published 2026-09-30). Checksum from the vendor's own
+# https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_checksums.txt
+# (gh_2.102.0_linux_amd64.tar.gz). Scan: clean.
+ARG GH_VERSION=2.102.0
+ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
+# docker CLI 29.8.2: Docker publishes no checksum beside its static tarballs,
+# so this is the `docker-ce-cli` .deb, newest for bookworm in
+# https://download.docker.com/linux/debian/dists/bookworm/stable/binary-amd64/Packages
+# (Version 5:29.8.2-1~debian.12~bookworm), with that index's SHA256. It is the
+# CLI alone -- Depends: libc6 only -- installed without its Recommends
+# (buildx, compose), and with no daemon. Scan: clean.
+ARG DOCKER_CLI_VERSION=29.8.2
+ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
+RUN mkdir -p /tmp/toolbox \
+ && curl -fsSL -o /tmp/toolbox/gh.tar.gz \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+ && curl -fsSL -o /tmp/toolbox/docker-ce-cli.deb \
+      "https://download.docker.com/linux/debian/dists/bookworm/pool/stable/amd64/docker-ce-cli_${DOCKER_CLI_VERSION}-1~debian.12~bookworm_amd64.deb" \
+ && echo "${GH_SHA256}  /tmp/toolbox/gh.tar.gz" | sha256sum -c - \
+ && echo "${DOCKER_CLI_SHA256}  /tmp/toolbox/docker-ce-cli.deb" | sha256sum -c - \
+ && tar -xzf /tmp/toolbox/gh.tar.gz -C /tmp/toolbox --strip-components=2 \
+      "gh_${GH_VERSION}_linux_amd64/bin/gh" \
+ && install -o root -g root -m 0755 /tmp/toolbox/gh /usr/local/bin/gh \
+ && PATH=/usr/sbin:/usr/bin:/sbin:/bin dpkg -i /tmp/toolbox/docker-ce-cli.deb \
+ && rm -rf /tmp/toolbox
+
+# Terraform, and the two tools held back from the default build.
+#
+# terraform 1.16.4, NOT the 1.16.2 that scripts/prerequisites.sh and CI's
+# terraform.yml/release.yml pin for operators: 1.16.2 is built with Go 1.26.4,
+# and the scan found nine fixable HIGHs in its stdlib (CVE-2026-33818,
+# CVE-2026-39821, CVE-2026-39822, CVE-2026-46600, CVE-2026-56853,
+# CVE-2026-56858, CVE-2026-56859, CVE-2026-56860, CVE-2026-56862; fixed in Go
+# 1.26.6). 1.16.4 (2026-09-23, newest) scanned clean. A patch release of the
+# same minor reads and writes the same state and lock files. Checksum:
+# https://releases.hashicorp.com/terraform/1.16.4/terraform_1.16.4_SHA256SUMS.
+ARG TERRAFORM_VERSION=1.16.4
+ARG TERRAFORM_SHA256=dc94af0eef1147718ad7c8daea792ed199e3e0492eec180d0adafa2a65a879df
+# INSTALL_TOFU_TFLINT_TRIVY is OFF by default because no published release of
+# these three passed the promote gate on 2026-10-01, and the gate refuses the
+# whole image, not just the tool. Each was scanned at its newest release:
+#
+#   tofu 1.13.0 (2026-09-30)   golang.org/x/mod 0.39.0 (CVE-2026-56864,
+#                              CVE-2026-56865; fixed 0.40.0), google.golang.org/
+#                              grpc 1.83.1 (CVE-2026-84445; fixed 1.83.2). The
+#                              1.12.6 docs/versions.md names had fourteen.
+#   tflint 0.64.0 (2026-07-17) Go stdlib 1.26.3 (eleven CVEs, fixed 1.26.6),
+#                              x/crypto 0.53.0 (CVE-2026-56854), x/mod 0.37.0,
+#                              grpc 1.82.0 (CVE-2026-84304, CVE-2026-84445,
+#                              GHSA-hrxh-6v49-42gf). No newer release exists.
+#   trivy 0.74.0 (2026-08-14)  grpc 1.82.1 (CVE-2026-84304, fixed 1.83.1;
+#                              CVE-2026-84445, fixed 1.83.2). No newer release.
+#
+# Building them from source with patched dependencies is ruled out (see the
+# header of this section), and an ignore entry for another project's
+# dependencies is the owner's decision, not this file's. So the install below
+# is complete -- pinned, verified, and covered by the smoke step when the
+# argument is 1 -- and turning it on is one build argument once the vendors
+# ship a release that scans clean (or the owner accepts these findings in
+# .trivyignore.yaml with an expiry). Re-scan before flipping it.
+#
+# Checksums: https://github.com/opentofu/opentofu/releases/download/v1.13.0/tofu_1.13.0_SHA256SUMS
+# (tofu_1.13.0_linux_amd64.tar.gz) and
+# https://github.com/terraform-linters/tflint/releases/download/v0.64.0/checksums.txt
+# (tflint_linux_amd64.zip).
+ARG INSTALL_TOFU_TFLINT_TRIVY=0
+ARG TOFU_VERSION=1.13.0
+ARG TOFU_SHA256=1f0cb37fc85dea4e7633a72aca2332b801f72650a32be911b8b9b32907f214fb
+ARG TFLINT_VERSION=0.64.0
+ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
+RUN mkdir -p /tmp/toolbox \
+ && curl -fsSL -o /tmp/toolbox/terraform.zip \
+      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+ && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
+ && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
+ && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
+ && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
+      curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
+        "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
+      && curl -fsSL -o /tmp/toolbox/tflint.zip \
+        "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
+      && echo "${TOFU_SHA256}  /tmp/toolbox/tofu.tar.gz" | sha256sum -c - \
+      && echo "${TFLINT_SHA256}  /tmp/toolbox/tflint.zip" | sha256sum -c - \
+      && tar -xzf /tmp/toolbox/tofu.tar.gz -C /tmp/toolbox tofu \
+      && unzip -q /tmp/toolbox/tflint.zip tflint -d /tmp/toolbox \
+      && install -o root -g root -m 0755 /tmp/toolbox/tofu /usr/local/bin/tofu \
+      && install -o root -g root -m 0755 /tmp/toolbox/tflint /usr/local/bin/tflint ; \
+    fi \
+ && rm -rf /tmp/toolbox
+
+# Linters and scanners: shellcheck always, trivy behind the same argument.
+#
+# shellcheck 0.11.0, the newest release and the version docs/versions.md pins
+# (Debian bookworm's apt package is 0.9.0).
+# A static Haskell binary, which trivy has no analyzer for, so the gate
+# cannot flag it either way. koalaman publishes no checksum
+# file, so the sha256 is the asset digest GitHub records for
+# shellcheck-v0.11.0.linux.x86_64.tar.gz in
+# https://api.github.com/repos/koalaman/shellcheck/releases/latest, recomputed
+# over the downloaded file. trivy 0.74.0: see INSTALL_TOFU_TFLINT_TRIVY above;
+# checksum from
+# https://github.com/aquasecurity/trivy/releases/download/v0.74.0/trivy_0.74.0_checksums.txt
+# (trivy_0.74.0_Linux-64bit.tar.gz).
+ARG SHELLCHECK_VERSION=0.11.0
+ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
+ARG TRIVY_VERSION=0.74.0
+ARG TRIVY_SHA256=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
+RUN mkdir -p /tmp/toolbox \
+ && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
+      "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
+ && echo "${SHELLCHECK_SHA256}  /tmp/toolbox/shellcheck.tar.gz" | sha256sum -c - \
+ && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
+      "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
+ && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
+ && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then \
+      curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
+        "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+      && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
+      && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
+      && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy ; \
+    fi \
+ && rm -rf /tmp/toolbox
+
+# checkov is Python, so it gets its OWN environment (/opt/uv-tools/checkov,
+# entry point in /usr/local/bin) and can never change the worker's /opt/venv
+# or the agent's `pip install` target. 3.3.17 is the version CI's
+# security.yml/terraform.yml and scripts/prerequisites.sh pin. A pinned
+# checkov alone still resolves ~95 transitive dependencies to whatever PyPI
+# serves on build day, so --exclude-newer pins the RESOLUTION to the date it
+# was scanned: on 2026-10-01 `uv tool install --exclude-newer
+# 2026-10-01T00:00:00Z checkov==3.3.17` on Python 3.11 with uv 0.12.15 (this
+# image's) resolved 96 packages, identical to an unconstrained resolve that
+# day, and the scan found no fixable HIGH or CRITICAL in them. Bump both
+# together, and re-scan. Version source: https://pypi.org/project/checkov/3.3.17/
+ARG CHECKOV_VERSION=3.3.17
+ARG CHECKOV_EXCLUDE_NEWER=2026-10-01T00:00:00Z
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS=never \
+    UV_CACHE_DIR=/tmp/uv-cache \
+      uv tool install --python /usr/local/bin/python3.11 \
+        --exclude-newer "${CHECKOV_EXCLUDE_NEWER}" "checkov==${CHECKOV_VERSION}" \
+ && rm -rf /tmp/uv-cache
+
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
@@ -428,6 +679,26 @@ RUN python -c "\
 from agent_worker.runners.generic import GENERIC_COMMANDS, _resolve_program; \
 print({c.name: _resolve_program(c.argv[0]) for c in GENERIC_COMMANDS.values()})" \
  && python -m pytest --version
+
+# The toolbox smoke: every tool above, run AS THE AGENT USER, the way an agent
+# will run it. A missing or unrunnable tool fails the build and is named; the
+# count is printed so a list that collapsed to one word cannot read as a pass.
+# HOME is a throwaway so `gcloud --version` leaves no config in the image.
+RUN tools="gh gcloud gke-gcloud-auth-plugin kubectl terraform checkov shellcheck make docker" \
+ && if [ "${INSTALL_TOFU_TFLINT_TRIVY}" = "1" ]; then tools="$tools tofu tflint trivy"; fi \
+ && HOME="$(mktemp -d)" && export HOME \
+ && n=0 && missing="" \
+ && for t in $tools; do \
+      case "$t" in kubectl) set -- version --client ;; *) set -- --version ;; esac; \
+      if command -v "$t" >/dev/null 2>&1 && out="$("$t" "$@" 2>&1)"; then \
+        n=$((n + 1)); echo "$t: $(printf '%s\n' "$out" | head -n 1)"; \
+      else \
+        missing="$missing $t"; \
+      fi; \
+    done \
+ && rm -rf "$HOME" \
+ && if [ -n "$missing" ]; then echo "toolbox smoke: missing or broken:$missing" >&2; exit 1; fi \
+ && echo "toolbox smoke: $n tools ok"
 
 # tini reaps orphaned grandchildren; the worker still terminates its own process
 # group itself, so signals reach exactly one direct child.
