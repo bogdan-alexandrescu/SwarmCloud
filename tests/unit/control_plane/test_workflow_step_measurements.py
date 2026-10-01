@@ -405,7 +405,7 @@ def test_the_usage_loader_has_a_reader():
     assert "loadWorkflowUsage" in src("Workflows.tsx"), (
         "loadWorkflowUsage is exported and no screen calls it"
     )
-    assert re.search(r"<Board\s+board=\{d\}", src("Workflows.tsx")), (
+    assert re.search(r"<Board\s+board=\{(?:d|board)\}", src("Workflows.tsx")), (
         "the board is not rendered"
     )
 

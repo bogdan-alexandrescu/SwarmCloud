@@ -329,15 +329,21 @@ export function headroomFor(profile: RunnerProfile): Headroom {
  * ceiling: a `resource:` pool an operator set to 0 refuses with the same
  * reason as one at 4 of 4, and so arrives filed under `no_room` -- "waiting
  * is a valid answer" -- above a pool no wait will ever reopen (live,
- * 2026-09-24). A pool only a person writes, capped at zero, is drawn under
- * `needs_action`. A provider pool at zero is NOT moved: its quota state can
+ * 2026-09-24). A pool only a person writes, capped at zero, with no limit
+ * set, or capped below one task's units, is drawn under `needs_action`. A provider pool at zero is NOT moved: its quota state can
  * zero it and a cooldown ends by itself. See `blockerCeiling`.
  */
 export function blockerGroup(
   blocker: ProfileBlocker,
   groups: Record<string, string[]> | undefined,
+  units: number | null = null,
 ): 'needs_action' | 'no_room' | null {
-  if (blockerCeiling(blocker) === 'set-to-zero') return 'needs_action'
+  // OWNER DECISION 2026-10-01: a pool with no limit set (`limit-unset`) and a
+  // pool whose limit is above 0 but below the task's units (`below-units`,
+  // needs `units`) are filed under needs_action exactly as a pool set to zero
+  // is: nobody has set a usable ceiling, and no wait will reopen it.
+  const ceiling = blockerCeiling(blocker, units)
+  if (ceiling === 'set-to-zero' || ceiling === 'limit-unset' || ceiling === 'below-units') return 'needs_action'
   if (blocker.group === 'needs_action' || blocker.group === 'no_room') return blocker.group
   if (groups) {
     if (groups.needs_action?.includes(blocker.reason)) return 'needs_action'

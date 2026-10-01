@@ -1236,7 +1236,6 @@ const SHEETS: Readonly<Record<Theme, string>> = {
   dark: resolveSheet(STYLES, 'dark'),
   light: resolveSheet(STYLES, 'light'),
 }
-const FILL = ['background', 'background-color'] as const
 const OUTLINE = ['border', 'border-color', 'border-top', 'border-top-color'] as const
 
 function tokenColour(name: string, theme: Theme): RGBA {

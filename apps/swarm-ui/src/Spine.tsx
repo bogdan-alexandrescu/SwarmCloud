@@ -225,13 +225,14 @@ function dataOf<T>(r: Result<T>): T | null {
 /** The global pool for the meter, and the first pool that is full or paused. */
 export function meterOf(c: Capacity | null): {
   active: number
-  limit: number
+  /** null: the global pool has no limit set (#374), which is not 0. */
+  limit: number | null
   warn: string | null
 } | null {
   if (c === null) return null
   const g = c.pools.find((p) => p.name === 'global')
   if (g === undefined) return null
-  const hot = c.pools.find((p) => p.enabled === false || (p.effective_limit > 0 && p.available <= 0))
+  const hot = c.pools.find((p) => p.enabled === false || (p.effective_limit !== null && p.effective_limit > 0 && p.available !== null && p.available <= 0))
   const warn = hot === undefined ? null : `${hot.name} ${hot.enabled === false ? 'paused' : 'full'}`
   return { active: g.active, limit: g.effective_limit, warn }
 }
@@ -583,16 +584,17 @@ function Meter({ meter, unread }: { meter: ReturnType<typeof meterOf>; unread: b
       </div>
     )
   }
-  const pct = meter.limit > 0 ? Math.min(100, (meter.active / meter.limit) * 100) : 0
+  const limit = meter.limit
+  const pct = limit !== null && limit > 0 ? Math.min(100, (meter.active / limit) * 100) : 0
   return (
     <div className="sk-meter" title="Slots leased against the global pool's effective ceiling">
       <div className="sk-mh">
         <span>Global pool</span>
         <b>
-          {meter.active} / {meter.limit}
+          {meter.active} / {limit === null ? 'no limit set' : limit}
         </b>
       </div>
-      <div className="sk-bar" role="meter" aria-valuenow={meter.active} aria-valuemin={0} aria-valuemax={meter.limit} aria-label="Global pool leased">
+      <div className="sk-bar" role="meter" aria-valuenow={meter.active} aria-valuemin={0} aria-valuemax={limit ?? 0} aria-label="Global pool leased">
         <i style={{ width: `${pct}%` }} />
       </div>
       {meter.warn !== null && <div className="sk-mw">{meter.warn}</div>}

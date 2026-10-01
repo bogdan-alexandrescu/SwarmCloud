@@ -57,7 +57,7 @@ import {
   type DagLayout,
   type ZoomTier,
 } from '../dag'
-import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
 import { cascade, splitTop, type CascadeEnv } from './cssgate'
 import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 
