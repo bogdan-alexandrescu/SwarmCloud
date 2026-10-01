@@ -252,14 +252,16 @@ describe('history', () => {
       history: {
         account_id: 'eng:laptop', viewer: 'borrower',
         from: null, to: null,
-        spans: [], others: 40, scan_limited: true,
+        // Five pages searched, none of this tenant's: no count is served for a
+        // partial scan, since it would not be over the hour-aligned window.
+        spans: [], scan_limited: true,
       },
     })
     await openRow(account(), 'research')
     fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
 
     expect(await screen.findByText(/Older history was not searched further/, undefined, WAIT)).toBeTruthy()
-    expect(screen.getByText('40 other agents in this window')).toBeTruthy()
+    expect(screen.queryByText(/other agents? in this window/)).toBeNull()
     expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
   })
 })

@@ -45,6 +45,12 @@ from quota_broker.settings import BrokerSettings
 from .conftest import core_settings
 from .fakes import FakeFirestore, FakeTransaction
 
+#: Every instant below is built from the clock at import, never from a calendar
+#: date: the history routes refuse an instant outside now -/+ the retention, so a
+#: fixed date rots into a 422 once it falls out of range.
+_NOW = datetime.now(timezone.utc)
+_AT_DT = (_NOW - timedelta(hours=6)).replace(microsecond=0)
+
 ENG = "eng"
 RESEARCH = "research"
 ACCOUNT = f"{ENG}:personal"
@@ -342,7 +348,7 @@ def test_history_serves_ended_and_open_spans_newest_first(client, db):
 def test_history_pages_without_losing_spans_that_share_an_instant(client, db):
     """A cursor that is "strictly before the last instant served" drops every
     other span taken in that same instant. Three share one here."""
-    same = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    same = _AT_DT
     for i in range(3):
         db.docs[f"{HOLD_LOG_COLLECTION}/a{i}"] = {
             "account_id": ACCOUNT, "tenant_id": ENG, "task_id": f"t{i}",
@@ -355,8 +361,7 @@ def test_history_pages_without_losing_spans_that_share_an_instant(client, db):
     seen: list[str] = []
     cursor = None
     for _ in range(5):
-        params = {"limit": 2, "from": "2026-09-29T00:00:00+00:00",
-                  "to": "2026-10-01T00:00:00+00:00"}
+        params = {"limit": 2, **_WINDOW}
         if cursor:
             params["cursor"] = cursor
         body = client.get(f"/v1/accounts/{ACCOUNT}/holds/history", params=params).json()
@@ -372,8 +377,8 @@ def _history(client, **params):
     return client.get(f"/v1/accounts/{ACCOUNT}/holds/history", params=params)
 
 
-_WINDOW = {"from": "2026-09-29T00:00:00+00:00", "to": "2026-10-01T00:00:00+00:00"}
-_AT = "2026-09-30T12:00:00+00:00"
+_WINDOW = {"from": (_NOW - timedelta(days=2)).isoformat(), "to": (_NOW + timedelta(hours=12)).isoformat()}
+_AT = _AT_DT.isoformat()
 
 
 @pytest.mark.parametrize(
@@ -406,8 +411,8 @@ def test_a_window_longer_than_the_retention_is_a_422(client, db):
     only be a scan of everything."""
     client.identity.as_platform()
 
-    over = _history(client, **{"from": "2026-01-01T00:00:00+00:00", "to": "2026-09-30T00:00:00+00:00"})
-    exact = _history(client, **{"from": "2026-07-02T00:00:00+00:00", "to": "2026-09-30T00:00:00+00:00"})
+    over = _history(client, **{"from": (_NOW - timedelta(days=200)).isoformat(), "to": _NOW.isoformat()})
+    exact = _history(client, **{"from": (_NOW - timedelta(days=89)).isoformat(), "to": _NOW.isoformat()})
 
     assert over.status_code == 422, over.text[:200]
     assert exact.status_code == 200, exact.text[:200]
@@ -424,7 +429,7 @@ def test_a_from_older_than_the_retention_with_no_to_is_a_422(client, db):
 def test_history_returns_every_row_exactly_once_across_pages_with_shared_instants(client, db):
     """Seven spans, four sharing one instant, two sharing another, paged three
     at a time: every row once, none twice, in newest-first order."""
-    base = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    base = _AT_DT
     instants = [base] * 4 + [base - timedelta(minutes=5)] * 2 + [base - timedelta(minutes=9)]
     for i, at in enumerate(instants):
         db.docs[f"{HOLD_LOG_COLLECTION}/h{i}"] = {
@@ -456,7 +461,7 @@ def test_history_returns_every_row_exactly_once_across_pages_with_shared_instant
 
 
 def test_history_is_scoped_to_the_account_and_the_window(client, db):
-    inside = datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc)
+    inside = _AT_DT
     for doc_id, account_id, at in [
         ("in", ACCOUNT, inside),
         ("other-account", f"{ENG}:spare", inside),
@@ -471,7 +476,7 @@ def test_history_is_scoped_to_the_account_and_the_window(client, db):
 
     body = client.get(
         f"/v1/accounts/{ACCOUNT}/holds/history",
-        params={"from": "2026-09-30T00:00:00+00:00", "to": "2026-10-01T00:00:00+00:00"},
+        params={"from": (_NOW - timedelta(days=1)).isoformat(), "to": (_NOW + timedelta(hours=12)).isoformat()},
     ).json()
 
     assert [s["task_id"] for s in body["spans"]] == ["in"]

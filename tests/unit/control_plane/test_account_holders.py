@@ -36,6 +36,16 @@ from .test_log_redaction import _shape
 
 NOW = datetime.now(timezone.utc)
 SHARED = "eng:shared"
+
+
+def _z(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+#: Built from the clock: the history route refuses an instant outside
+#: now -/+ the retention, so a calendar date here would rot.
+_TO = NOW.replace(microsecond=0)
+_FROM = _TO - timedelta(days=1)
 SOLO = "eng:solo"
 
 #: Built at runtime so no credential-shaped literal exists in this source: the
@@ -117,6 +127,9 @@ class FakeBroker:
         #: When set, `hold_history` answers from it by the cursor asked for
         #: (None for the first page) instead of from SPANS.
         self.history_script: dict[str | None, dict] | None = None
+        #: When set, `hold_history` serves the rows inside [start, end), newest
+        #: first, as the real broker does.
+        self.history_rows: list[dict] | None = None
 
     def list_accounts(self, tenant_id: str) -> dict:
         return {"accounts": [
@@ -131,6 +144,13 @@ class FakeBroker:
 
     def hold_history(self, account_id: str, *, start, end, cursor) -> dict:
         self.calls.append(("hold_history", account_id, start, end, cursor))
+        if self.history_rows is not None:
+            lo, hi = datetime.fromisoformat(start), datetime.fromisoformat(end)
+            inside = [r for r in self.history_rows
+                      if lo <= datetime.fromisoformat(r["assigned_at"]) < hi]
+            inside.sort(key=lambda r: r["assigned_at"], reverse=True)
+            return {"account_id": account_id, "from": start, "to": end,
+                    "spans": [dict(r) for r in inside], "next_cursor": None}
         if self.history_script is not None:
             page = self.history_script[cursor]
             return {"account_id": account_id, "from": start or "", "to": end or "",
@@ -288,7 +308,9 @@ def test_a_borrower_is_served_none_of_another_tenants_times_or_ends(client, brok
     assert [s["mine"] for s in body["spans"]] == [True]
     assert all(set(s) <= {"since", "until", "end", "mine", "recorded", "verified",
                           "task_id", "attempt"} for s in body["spans"])
-    assert body["others"] == 0
+    # The page was cut at the borrower's own row, so a count would be bounded
+    # by that row's instant, not by the hour grid: it is not served.
+    assert "others" not in body
 
 
 def test_a_borrowers_cursor_points_only_at_its_own_row(client, broker):
@@ -334,7 +356,7 @@ def _eng_pages(n_pages: int, per_page: int) -> tuple[dict, int]:
 
 
 def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_cursor(client, broker):
-    script, count = _eng_pages(20, 2)
+    script, count = _eng_pages(20, 2)  # a broker that would serve 20 pages
     broker.history_script = script
 
     body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
@@ -342,7 +364,11 @@ def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_curso
     assert body["spans"] == []
     assert body["scan_limited"] is True
     assert body.get("next_cursor") is None
-    assert body["others"] == count == 40
+    assert count == 10
+    # Five broker pages, the first and four followed, and no more.
+    assert len([c for c in broker.calls if c[0] == "hold_history"]) == 5
+    # A count over a partial scan is not over the window: not served.
+    assert "others" not in body
     assert "task_id" not in json.dumps(body)
 
 
@@ -394,11 +420,9 @@ def test_an_open_span_past_its_deadline_is_served_as_expired(client):
 
 def test_history_passes_the_window_through_to_the_broker(client, broker):
     client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
-               params={"from": "2026-09-29T00:00:00Z", "to": "2026-09-30T00:00:00Z",
-                       "cursor": "2026-09-30T00:00:00Z|1"})
+               params={"from": _z(_FROM), "to": _z(_TO), "cursor": f"{_z(_TO)}|1"})
 
-    assert ("hold_history", SHARED, "2026-09-29T00:00:00Z",
-            "2026-09-30T00:00:00Z", "2026-09-30T00:00:00Z|1") in broker.calls
+    assert ("hold_history", SHARED, _z(_FROM), _z(_TO), f"{_z(_TO)}|1") in broker.calls
 
 
 def test_an_empty_history_is_an_empty_list_not_an_error(client):
@@ -438,7 +462,7 @@ def test_an_unknown_scope_is_refused(client):
 
 
 _OUT_OF_RANGE = [
-    pytest.param({"from": "0001-01-01T00:00:00+01:00", "to": "2026-09-30T00:00:00Z"}, id="from-underflows-in-utc"),
+    pytest.param({"from": "0001-01-01T00:00:00+01:00", "to": _z(_TO)}, id="from-underflows-in-utc"),
     pytest.param({"to": "9999-12-31T23:59:59-01:00"}, id="to-overflows-in-utc"),
     pytest.param({"to": "0001-01-05T00:00:00Z"}, id="default-span-underflows"),
     pytest.param({"cursor": "0001-01-01T00:00:00+01:00|0"}, id="cursor-underflows-in-utc"),
@@ -500,3 +524,90 @@ def test_an_owner_and_a_platform_cursor_are_not_checked_against_spans(client, br
                        params={"cursor": f"{arbitrary}|0", "scope": "platform"})
 
     assert owner.status_code == 200 and admin.status_code == 200
+
+
+_HOUR = NOW.replace(minute=0, second=0, microsecond=0) - timedelta(hours=3)
+
+
+def _grid_rows() -> list[dict]:
+    return [
+        _span("eng", "eng-task-1", hours_ago=0, end="released") | {
+            "assigned_at": _iso(_HOUR + timedelta(minutes=30, seconds=7, microseconds=123456))},
+        _span("research", "research-task-1", hours_ago=0, end="released") | {
+            "assigned_at": _iso(_HOUR + timedelta(minutes=47, seconds=12, microseconds=500000))},
+        _span("eng", "eng-task-2", hours_ago=0, end="released") | {
+            "assigned_at": _iso(_HOUR + timedelta(minutes=52, seconds=1))},
+    ]
+
+
+def _borrower_window(client, lo: timedelta, hi: timedelta, user: str = "bob") -> dict:
+    response = client.get(
+        f"/v1/accounts/{SHARED}/history", headers=auth_header(user),
+        params={"from": _z(_HOUR + lo), "to": _z(_HOUR + hi)})
+    assert response.status_code == 200, response.text[:200]
+    return response.json()
+
+
+def test_a_borrowers_one_second_window_is_served_as_the_whole_utc_hour(client, broker):
+    broker.history_rows = _grid_rows()
+
+    body = _borrower_window(client, timedelta(minutes=47, seconds=12), timedelta(minutes=47, seconds=13))
+
+    asked = [c for c in broker.calls if c[0] == "hold_history"][-1]
+    assert datetime.fromisoformat(asked[2]) == _HOUR
+    assert datetime.fromisoformat(asked[3]) == _HOUR + timedelta(hours=1)
+    assert datetime.fromisoformat(body["from"]) == _HOUR
+    assert datetime.fromisoformat(body["to"]) == _HOUR + timedelta(hours=1)
+    assert [s["mine"] for s in body["spans"]] == [True]
+    assert body["others"] == 2  # both eng rows in the hour, not the none in the second
+
+
+def test_halving_a_borrowers_window_below_an_hour_changes_nothing(client, broker):
+    broker.history_rows = _grid_rows()
+    windows = [(0, 60), (0, 30), (30, 60), (30, 45), (45, 60), (52, 53), (30, 31)]
+
+    bodies = [_borrower_window(client, timedelta(minutes=a), timedelta(minutes=b)) for a, b in windows]
+
+    assert {(b["from"], b["to"], b["others"], len(b["spans"])) for b in bodies} == {
+        (bodies[0]["from"], bodies[0]["to"], 2, 1)}
+
+
+def test_a_window_that_crosses_an_hour_boundary_is_floored_and_ceilinged(client, broker):
+    broker.history_rows = _grid_rows()
+
+    body = _borrower_window(client, timedelta(minutes=59, seconds=59), timedelta(hours=1, seconds=1))
+
+    assert datetime.fromisoformat(body["from"]) == _HOUR
+    assert datetime.fromisoformat(body["to"]) == _HOUR + timedelta(hours=2)
+
+
+def test_an_owners_window_is_not_snapped(client, broker):
+    broker.history_rows = _grid_rows()
+    lo, hi = _HOUR + timedelta(minutes=47, seconds=12), _HOUR + timedelta(minutes=47, seconds=13)
+
+    client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
+               params={"from": _z(lo), "to": _z(hi)})
+
+    assert ("hold_history", SHARED, _z(lo), _z(hi), None) in broker.calls
+
+
+def test_a_borrower_with_no_window_is_served_whole_hours_ending_at_the_next_hour(client, broker):
+    broker.history_rows = []
+
+    client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"))
+
+    asked = [c for c in broker.calls if c[0] == "hold_history"][-1]
+    lo, hi = datetime.fromisoformat(asked[2]), datetime.fromisoformat(asked[3])
+    assert (lo.minute, lo.second, lo.microsecond) == (0, 0, 0)
+    assert (hi.minute, hi.second, hi.microsecond) == (0, 0, 0)
+    assert timedelta(0) <= hi - NOW.replace(microsecond=0) <= timedelta(hours=1)
+    assert hi - lo == timedelta(days=7)
+
+
+def test_a_borrower_continuation_page_serves_no_count(client, broker):
+    own = SPANS[SHARED][0]["assigned_at"]
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                      params={"cursor": f"{own}|1"}).json()
+
+    assert "others" not in body
