@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove the GKE path works: submit ONE browser task and follow it to the end.
+# Prove the GKE path works: submit one browser task, then a fixture page load.
 #
 # WHY. docs/incidents/2026-09-24-gke-dispatch.md: every `browser` task this
 # platform ever accepted failed, from the day GKE dispatch shipped. Seven causes
@@ -23,7 +23,12 @@
 #      from its EVENTS, because the worker clears `current_lease_id` as the
 #      task ends (see task_lease_ids in lib/testlib.sh). The check waits up to
 #      --lease-wait seconds, because the worker writes the terminal state
-#      before it releases the lease.
+#      before it releases the lease;
+#   5. a page LOADS and RENDERS (#357) -- a second browser task opens a page
+#      the check wrote, and the check reads its screenshot's pixels and its
+#      extracted text back (t_check_browser_fixture in lib/testlib.sh). Steps
+#      2 and 3 hold for a screenshot of about:blank, and every browser task
+#      that succeeded before this check existed was exactly that.
 #
 # A PARKED TASK PROVES NOTHING, and says so. The 30-node redispatch in the
 # incident parked six browser steps before any reached a backend. Parked on
@@ -37,12 +42,15 @@
 # WHAT IT SUBMITS. The browser runner refuses an input with neither `url` nor
 # `actions`, so a generic `{message: ...}` input fails at the runner with
 # dispatch working perfectly -- which is what the smoke suite's backend matrix
-# used to submit. This takes one screenshot of about:blank: Chromium starts,
-# /dev/shm is big enough, the workspace is writable and an artifact uploads,
-# all without depending on any site outside the platform. `--url` adds a page
-# load, which also proves the worker's egress.
+# used to submit. The first task takes one screenshot of about:blank, and is
+# labelled for the one thing that proves: Chromium starts (/dev/shm is big
+# enough, the workspace is writable and an artifact uploads), without
+# depending on any site outside the platform. `--url` adds a page load to it.
+# The second, the fixture task of step 5, loads a page through
+# SWARM_BROWSER_FIXTURE_BASE (httpbin.org by default), so it also proves the
+# worker's egress; it runs only once the first has succeeded.
 #
-# It creates one task, as the calling identity's tenant, and nothing else. It
+# It creates those two tasks, as the calling identity's tenant, and nothing else. It
 # never touches the cluster directly; everything goes through the API, and
 # what is observed is read from Firestore and GCS, as every suite here does.
 #
@@ -74,7 +82,7 @@ while [[ $# -gt 0 ]]; do
     --lease-wait) LEASE_WAIT="$2"; shift 2 ;;
     --url)        URL="$2"; shift 2 ;;
     --keep)       KEEP=1; shift ;;
-    -h|--help)    sed -n '2,45p' "$0"; exit 0 ;;
+    -h|--help)    sed -n '2,57p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -194,7 +202,7 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-t_case "It succeeded"
+t_case "It succeeded (about:blank: Chromium starts)"
 if [[ "${FINAL}" == "SUCCEEDED" ]]; then
   t_pass "SUCCEEDED"
 else
@@ -240,6 +248,26 @@ if [[ -z "${FINAL}" ]]; then
   t_fail "the task is not finished, so its lease cannot have been returned yet"
 elif ! t_check_leases_released "${TASK_ID}" "${LEASE_WAIT}" fail; then
   t_info "see the Firestore error above: the check is red because the read failed, not because a lease is held"
+fi
+
+# ---------------------------------------------------------------------------
+# Step 5: a page loads and renders. After the lease check, so that check reads
+# the first task alone. Not attempted when Chromium was never seen to start:
+# the fixture task would fail for the reason already recorded above.
+if [[ "${FINAL}" == "SUCCEEDED" ]]; then
+  t_check_browser_fixture "${BACKEND}" "${TIMEOUT}" \
+    "$(profile_extra "${PROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"prove-gke-dispatch-fixture"}}')" || true
+  # The fixture task holds capacity as the first did, so it must return it
+  # as the first did. Only once it finished: one cut off by the timeout was
+  # cancelled by the check and has nothing settled to read.
+  if [[ -n "${FIXTURE_TASK_ID}" && -n "${FIXTURE_TASK_FINAL}" ]]; then
+    t_case "${BACKEND}: the fixture task's capacity was returned"
+    t_check_leases_released "${FIXTURE_TASK_ID}" "${LEASE_WAIT}" fail || \
+      t_info "see the Firestore error above: the check is red because the read failed, not because a lease is held"
+  fi
+else
+  t_case "${BACKEND}: a browser task loads a page the check wrote; its pixels and text come back"
+  t_skip "not submitted -- the about:blank task ended ${FINAL:-${STATE}}, so Chromium was never seen to start"
 fi
 
 # A proof task that is still in flight -- parked, or cut off by the timeout --
