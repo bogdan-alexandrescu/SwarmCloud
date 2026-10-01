@@ -349,7 +349,8 @@ describe('the capacity group stays inside its prose budget', () => {
   it('Pools', async () => {
     api.loadCapacity.mockResolvedValue(ok(CAPACITY))
     render(<CapacityScreen />)
-    await screen.findAllByText(/claude-code/, undefined, WAIT)
+    // The ceiling tables, not the per-profile panel (removed 2026-10-01).
+    await waitFor(() => expect(document.querySelectorAll('.cap-families tbody tr').length).toBe(6), WAIT)
     report('Pools')
   })
 

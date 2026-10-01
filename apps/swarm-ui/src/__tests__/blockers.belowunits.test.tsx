@@ -22,7 +22,7 @@
 // module is real, as tables.scroll.test.tsx does it.
 
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { ResourceClasses } from '../api'
@@ -38,8 +38,6 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { CapacityScreen } = await import('../Capacity')
-const { ProfilesScreen } = await import('../Profiles')
 const { ProfileFacts } = await import('../Submit')
 
 // ---------------------------------------------------------------------------
@@ -102,115 +100,8 @@ function serve(b: ProfileBlocker, classes: Result<{ resource_classes: ResourceCl
   api.loadResourceClasses.mockResolvedValue(classes)
 }
 
-/** Every mark on the blocker list under the card, as `word|tone`. */
-function listMarks(el: HTMLElement): string[] {
-  return [...el.querySelectorAll('.blocker-group .ctl-chip')].map((c) => {
-    const tone = [...c.classList].find((k) => k.startsWith('is-')) ?? '(none)'
-    return `${(c.textContent ?? '').trim()}|${tone}`
-  })
-}
-
 const NEVER = /can never (be )?admit/i
 const RAISE = /(somebody|someone|a person) (has|needs) to raise/i
-
-// ---------------------------------------------------------------------------
-// Profile headroom: the card's blocker list and its Status cell
-// ---------------------------------------------------------------------------
-
-describe('Profile headroom, a pool whose limit is below one task', () => {
-  /**
-   * THE MEASURED CASE FROM #66. MUTATION: drop the units check and this row is
-   * `full`, "0 of 1 units in use", under "eligible, no room" again.
-   */
-  it('says a browser task can never be admitted at limit 1, and that a person has to raise it', async () => {
-    serve(blocker({}))
-    const { container } = render(<ProfilesScreen />)
-
-    await waitFor(
-      () => expect(container.querySelector('.blocker-group.needs-action'), 'filed where waiting is the answer').not.toBeNull(),
-      { timeout: 3000 },
-    )
-    const acting = container.querySelector('.blocker-group.needs-action') as HTMLElement
-    expect(acting.textContent).toMatch(NEVER)
-    expect(acting.textContent).toMatch(RAISE)
-    expect(acting.textContent, 'the limit the task cannot fit under is named').toMatch(/limit (of )?1\b/)
-    expect(acting.textContent, 'and so is what one task weighs').toMatch(/2 units/)
-    expect(container.querySelector('.blocker-group.no-room')).toBeNull()
-
-    for (const m of listMarks(container)) expect(m, 'nothing is busy: nothing is running').not.toMatch(/^full\|/)
-    expect(container.textContent).not.toMatch(/busy platform-wide/)
-    expect(container.textContent).not.toMatch(/0 of 1 units in use/)
-  })
-
-  it('does not tag the pool `full` in its Status cell either', async () => {
-    serve(blocker({}))
-    render(<ProfilesScreen />)
-    const row = (await screen.findByRole('rowheader', { name: /resource:browser/ }, { timeout: 3000 })).closest('tr')!
-    await waitFor(() => expect(row.className).not.toMatch(/\bfull\b/), { timeout: 3000 })
-    const status = row.querySelector('[data-label="Status"] .ctl-chip') as HTMLElement
-    expect(status.textContent?.trim()).not.toBe('full')
-    expect(status.className, 'a person has to act: the paused tone, as a limit of 0 set by an operator is drawn').toContain('is-paused')
-    expect(status.getAttribute('title') ?? status.getAttribute('aria-label') ?? '').toMatch(NEVER)
-  })
-
-  /** The other half: a limit the task fits under is still a full pool. */
-  it('keeps `full` for a pool at a ceiling one task fits under', async () => {
-    serve(blocker({ limit: 4, active: 3 }))
-    const { container } = render(<ProfilesScreen />)
-    await waitFor(() => expect(container.querySelector('.blocker-group.no-room')).not.toBeNull(), { timeout: 3000 })
-    expect(listMarks(container)).toEqual(['full|is-warn'])
-    expect(container.textContent).toMatch(/3 of 4 units in use/)
-    expect(container.textContent).not.toMatch(NEVER)
-  })
-
-  /** A limit of 0 keeps the message it already had. */
-  it('keeps the limit-0 message for a pool set to zero', async () => {
-    serve(blocker({ limit: 0, active: 0 }))
-    const { container } = render(<ProfilesScreen />)
-    await waitFor(() => expect(container.querySelector('.blocker-group.needs-action')).not.toBeNull(), { timeout: 3000 })
-    expect(listMarks(container)).toEqual(['limit 0|is-paused'])
-    expect(container.textContent).toMatch(/paused by operator \(limit 0\)/)
-    expect(container.textContent).not.toMatch(NEVER)
-  })
-
-  /**
-   * NO CATALOGUE, NO CLAIM. The weight is read from `/v1/resource-classes`
-   * and from nowhere else; a screen that fell back to a bundled table here
-   * would be carrying the copy #66 says it must not. MUTATION: read
-   * `RESOURCE_UNITS` from types.ts when the route fails.
-   */
-  it('claims nothing about the weight when the resource-class catalogue could not be read', async () => {
-    serve(blocker({}), {
-      status: 'error',
-      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The API could not be reached.' },
-    })
-    const { container } = render(<ProfilesScreen />)
-    await waitFor(() => expect(container.querySelector('.blocker-group')).not.toBeNull(), { timeout: 3000 })
-    expect(container.textContent).not.toMatch(NEVER)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// Pools: the Held back by chip
-// ---------------------------------------------------------------------------
-
-describe('Pools, the Held back by chip for the same pool', () => {
-  it('is not drawn as `browser 0/1` in the full tone', async () => {
-    serve(blocker({}))
-    render(<CapacityScreen />)
-    const row = (await screen.findByRole('rowheader', { name: 'browser' }, { timeout: 3000 })).closest('tr')!
-    await waitFor(
-      () => {
-        const chip = row.querySelector('[data-label="Held back by"] .ctl-chip') as HTMLElement
-        expect(chip.className).toContain('is-paused')
-      },
-      { timeout: 3000 },
-    )
-    const chip = row.querySelector('[data-label="Held back by"] .ctl-chip') as HTMLElement
-    expect(chip.textContent).not.toMatch(/0\/1/)
-    expect(chip.getAttribute('title')).toMatch(NEVER)
-  })
-})
 
 // ---------------------------------------------------------------------------
 // Submit: the "right now" box
@@ -227,5 +118,45 @@ describe('Submit, the right-now box for a browser task', () => {
     expect(container.textContent).toMatch(RAISE)
     expect(container.textContent).not.toMatch(/0 of 1 (weighted )?units in use/)
     expect(container.querySelector('.tag.full'), 'the compact row is not tagged full').toBeNull()
+  })
+
+  // MOVED FROM THE PROFILE HEADROOM CARD (removed 2026-10-01). The card was
+  // one of three surfaces drawing this verdict; Submit's box is the one left
+  // that draws a blocker row, through the same `blockerVerdict`.
+
+  /** The other half: a limit the task fits under is still a full pool. */
+  it('keeps `full` for a pool at a ceiling one task fits under', async () => {
+    serve(blocker({ limit: 4, active: 3 }))
+    const b = blocker({ limit: 4, active: 3 })
+    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    await waitFor(() => expect(container.querySelector('.blocker-list .tag.full')).not.toBeNull(), { timeout: 3000 })
+    expect(container.textContent).toMatch(/3 of 4 units in use/)
+    expect(container.textContent).not.toMatch(NEVER)
+  })
+
+  /** A limit of 0 keeps the mark it already had. */
+  it('keeps `limit 0` for a pool set to zero', async () => {
+    serve(blocker({ limit: 0, active: 0 }))
+    const b = blocker({ limit: 0, active: 0 })
+    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    await waitFor(() => expect(container.querySelector('.blocker-list .tag')).not.toBeNull(), { timeout: 3000 })
+    expect(container.querySelector('.blocker-list .tag')!.textContent?.trim()).toBe('limit 0')
+    expect(container.textContent).not.toMatch(NEVER)
+  })
+
+  /**
+   * NO CATALOGUE, NO CLAIM. The weight is read from `/v1/resource-classes`
+   * and from nowhere else. MUTATION: read `RESOURCE_UNITS` from types.ts when
+   * the route fails.
+   */
+  it('claims nothing about the weight when the resource-class catalogue could not be read', async () => {
+    serve(blocker({}), {
+      status: 'error',
+      error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The API could not be reached.' },
+    })
+    const b = blocker({})
+    const { container } = render(<ProfileFacts name="browser" profile={browser(b)} pools={capacity(b).pools} />)
+    await waitFor(() => expect(container.querySelector('.blocker-list')).not.toBeNull(), { timeout: 3000 })
+    expect(container.textContent).not.toMatch(NEVER)
   })
 })

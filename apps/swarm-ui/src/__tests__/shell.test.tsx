@@ -2238,7 +2238,9 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '<nav class="sk-spine"><button class="sk-ri is-on" aria-current="page">Work</button>' +
         '<div class="ctl-nav-util sk-foot"><button class="sk-ri is-on" aria-current="page">API reads</button></div></nav>',
     )
-    const [section, util] = [...f.querySelectorAll('button')] as [Element, Element]
+    const buttons = [...f.querySelectorAll('button')]
+    expect(buttons).toHaveLength(2)
+    const [section, util] = buttons as unknown as [Element, Element]
     for (const env of [WIDE, PHONE]) {
       for (const prop of ['color', 'background', 'background-color', 'padding', 'border', 'border-left', 'text-decoration', 'text-decoration-line']) {
         expect(won(util, prop, env), `${prop} at ${env.width}`).toBe(won(section, prop, env))

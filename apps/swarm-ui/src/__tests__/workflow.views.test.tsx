@@ -6,7 +6,9 @@
 // from one that only orders two steps, and a file the worker really staged is
 // drawn back into the graph it came from.
 //
-// Every claim below is made against the DOM the real screen produced. The api
+// Every claim below is made against the DOM the real screen produced -- since
+// the board form was removed (owner's decision, 2026-10-01), that screen is ONE
+// WORKFLOW'S PAGE, `WorkflowsScreen` at `wf=<id>`, with its tab in the address. The api
 // module is replaced with fixtures built HERE, because the cases this file is
 // about -- one step id repeated across three workflows, a parked step that ran
 // once before, an input staged from the submission -- are exactly the ones the
@@ -14,7 +16,7 @@
 //
 // FOUR GROUPS, one per item:
 //
-//  U2  the board offers Timeline and Table beside Rows and Graph, and each is
+//  U2  one workflow's page offers Timeline and Table beside the Graph, and each is
 //      honest about the three kinds of nothing (not started, not read, not
 //      recorded) and about time WAITED versus time RUN.
 //  U3  an edge that carries a file is drawn differently from one that does not,
@@ -24,7 +26,7 @@
 
 import STYLES from '../styles.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -44,7 +46,8 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowCard, WorkflowBoardScreen } = await import('../Workflows')
+const { WorkflowCard, WorkflowsScreen } = await import('../Workflows')
+const { parseWorkflowQuery } = await import('../workflowlist')
 const { inputsByStep, layoutOf, stepDuration } = await import('../dag')
 
 // ---------------------------------------------------------------------------
@@ -273,32 +276,59 @@ beforeEach(() => {
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function landed(): Promise<void> {
-  render(<WorkflowBoardScreen />)
-  await screen.findByText('wf_new')
-  // The attempt read the board starts once it has landed; its figures are what
-  // the table's cost column sorts on.
-  await waitFor(() => expect(api.loadWorkflowUsage).toHaveBeenCalled())
-}
+/**
+ * THE ADDRESS, AS THE ROUTER HOLDS IT. One workflow's page writes its tab and
+ * a same-step scrub's target workflow here (`onView`), so every case below
+ * reads where the reader IS from it -- and `visited` is every page the reader
+ * was taken to, which is how "the scrubber never visits wf_new" is asserted.
+ */
+let address = ''
+let visited: string[] = []
 
-function boardModes(): HTMLButtonElement[] {
-  const seg = document.querySelector('.wf-chrome .ctl-seg')
-  expect(seg, 'the board has no mode control').toBeTruthy()
-  return [...seg!.querySelectorAll<HTMLButtonElement>('button')]
-}
-
-function chooseBoard(label: string): void {
-  const b = boardModes().find((x) => x.textContent === label)
-  expect(b, `the board mode control has no "${label}"`).toBeTruthy()
-  fireEvent.click(b!)
-}
-
-function cardOf(id: string): HTMLElement {
-  const c = [...document.querySelectorAll<HTMLElement>('.wf-card')].find(
-    (el) => el.querySelector('.wf-bar .id')?.textContent === id,
+function Routed({ initial }: { initial: string }) {
+  const [view, setView] = useState(initial)
+  address = view
+  return (
+    <WorkflowsScreen
+      view={view}
+      onView={(v) => {
+        const wf = parseWorkflowQuery(v).wf
+        if (wf !== null) visited.push(wf)
+        setView(v)
+      }}
+    />
   )
-  expect(c, `no card for ${id}`).toBeTruthy()
-  return c!
+}
+
+/**
+ * Open one workflow's page in a tab, and wait for its card and for the attempt
+ * read the page starts once the board has landed (the table's cost column
+ * sorts on it). Any page already open is unmounted first.
+ */
+async function openPage(id: string, tab: 'graph' | 'timeline' | 'table' = 'graph'): Promise<HTMLElement> {
+  cleanup()
+  visited = [id]
+  api.loadWorkflowUsage.mockClear()
+  render(<Routed initial={tab === 'graph' ? `wf=${id}` : `wf=${id}&tab=${tab}`} />)
+  const c = await waitFor(() => cardOf(id))
+  await waitFor(() => expect(api.loadWorkflowUsage).toHaveBeenCalled())
+  return c
+}
+
+/** The page's card, asserting the page is `id`'s: its address and its heading. */
+function cardOf(id: string): HTMLElement {
+  expect(parseWorkflowQuery(address).wf, `the page open is not ${id}'s`).toBe(id)
+  expect(document.querySelector('.head h1')?.textContent, `the page is not headed ${id}`).toBe(id)
+  const cards = document.querySelectorAll<HTMLElement>('.wf-card')
+  expect(cards, `no card for ${id}`).toHaveLength(1)
+  return cards[0]!
+}
+
+/** The card's own view control: Graph, Timeline, Table. */
+function chooseTab(card: HTMLElement, label: string): void {
+  const bar = card.querySelector<HTMLElement>('.wf-viewbar')
+  expect(bar, 'the page has no view control').toBeTruthy()
+  fireEvent.click(within(bar!).getByText(label))
 }
 
 function track(card: HTMLElement, stepId: string): HTMLElement {
@@ -331,60 +361,55 @@ function sortBy(card: HTMLElement, col: string): HTMLElement {
 }
 
 // ---------------------------------------------------------------------------
-// U2 -- Timeline and Table, beside Rows and Graph
+// U2 -- Timeline and Table, beside the Graph, on one workflow's page
 // ---------------------------------------------------------------------------
 
 describe('U2: the view modes', () => {
-  it('offers Timeline and Table beside Rows and Graph, as one segmented control', async () => {
-    await landed()
-    const buttons = boardModes()
-    expect(buttons.map((b) => b.textContent)).toEqual(['Rows', 'Graph', 'Timeline', 'Table'])
-    // Rows is what the board lands on, as before.
-    expect(buttons.find((b) => b.textContent === 'Rows')!.getAttribute('aria-pressed')).toBe('true')
-    expect(document.querySelector('.wf-canvas, .wf-timeline, .wf-table')).toBeNull()
+  // THE BOARD'S Rows / Graph / Timeline / Table CONTROL IS GONE with the board
+  // form (owner's decision, 2026-10-01): a view is a property of one
+  // workflow's page, held in its address. What these cases guard -- the three
+  // views exist, each draws only itself, and the table is in dependency order
+  // -- is asserted on the page.
+  it('offers Timeline and Table beside the Graph, as one segmented control, and no board-wide one', async () => {
+    const c = await openPage('wf_new')
+    const seg = c.querySelector('.wf-viewbar .ctl-seg')
+    expect(seg, 'the page has no view control').toBeTruthy()
+    const buttons = [...seg!.querySelectorAll<HTMLButtonElement>('button')]
+    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Timeline', 'Table'])
+    // The Graph is what the page lands on.
+    expect(c.querySelector('.wf-canvas')).toBeTruthy()
+    expect(document.querySelector('.wf-chrome .ctl-seg'), 'a board-wide mode control is still drawn').toBeNull()
   })
 
-  it('opens every workflow as a timeline, and draws no canvas', async () => {
-    await landed()
-    chooseBoard('Timeline')
+  it('opens a workflow as a timeline, and draws no canvas', async () => {
     for (const id of ['wf_new', 'wf_mid', 'wf_old']) {
-      const c = cardOf(id)
+      const c = await openPage(id, 'timeline')
       expect(c.querySelector('.wf-timeline'), `${id} is not drawn as a timeline`).toBeTruthy()
       expect(c.querySelector('.wf-canvas')).toBeNull()
       expect(c.querySelector('.wf-table')).toBeNull()
     }
   })
 
-  it('opens every workflow as a table, one row per step, in dependency order', async () => {
-    await landed()
-    chooseBoard('Table')
-    expect(rowOrder(cardOf('wf_new'))).toEqual(['plan', 'build', 'scan', 'ship'])
-    expect(rowOrder(cardOf('wf_mid'))).toEqual(['plan', 'lost'])
+  it('opens a workflow as a table, one row per step, in dependency order', async () => {
+    expect(rowOrder(await openPage('wf_new', 'table'))).toEqual(['plan', 'build', 'scan', 'ship'])
+    expect(rowOrder(await openPage('wf_mid', 'table'))).toEqual(['plan', 'lost'])
     expect(document.querySelector('.wf-canvas')).toBeNull()
   })
 
-  it('switches ONE open workflow without touching the others, and a board choice overrules it', async () => {
-    await landed()
-    // Rows: open one card, which lands on its graph.
-    fireEvent.click(cardOf('wf_new').querySelector('.wf-bar')!)
-    const newCard = cardOf('wf_new')
-    expect(newCard.querySelector('.wf-canvas')).toBeTruthy()
-    const perCard = newCard.querySelector('.wf-viewbar .ctl-seg')
-    expect(perCard, 'an open workflow has no view control of its own').toBeTruthy()
-    fireEvent.click(within(perCard as HTMLElement).getByText('Table'))
+  it('switches the page between views through its address', async () => {
+    const c = await openPage('wf_new')
+    chooseTab(c, 'Table')
+    expect(parseWorkflowQuery(address).tab).toBe('table')
     expect(cardOf('wf_new').querySelector('.wf-table')).toBeTruthy()
-    // Nothing else opened.
-    expect(cardOf('wf_mid').querySelector('.wf-body')).toBeNull()
-    // A board-wide instruction clears the per-card one.
-    chooseBoard('Graph')
+    expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeNull()
+    chooseTab(cardOf('wf_new'), 'Graph')
+    expect(parseWorkflowQuery(address).tab).toBe('graph')
     expect(cardOf('wf_new').querySelector('.wf-canvas')).toBeTruthy()
-    expect(cardOf('wf_new').querySelector('.wf-table')).toBeNull()
   })
 
   describe('the timeline', () => {
     it('draws time WAITED apart from time RUN, and the run starts where the wait ends', async () => {
-      await landed()
-      chooseBoard('Timeline')
+      await openPage('wf_new', 'timeline')
       const t = track(cardOf('wf_new'), 'plan')
       const waited = t.querySelector<HTMLElement>('.wf-tl-span.is-waited')
       const ran = t.querySelector<HTMLElement>('.wf-tl-span.is-ran')
@@ -402,8 +427,7 @@ describe('U2: the view modes', () => {
     })
 
     it('draws a running step as open-ended, reaching now, and never with an end', async () => {
-      await landed()
-      chooseBoard('Timeline')
+      await openPage('wf_new', 'timeline')
       const t = track(cardOf('wf_new'), 'build')
       const running = t.querySelector<HTMLElement>('.wf-tl-span.is-running')
       expect(running, 'build has no running span').toBeTruthy()
@@ -413,8 +437,7 @@ describe('U2: the view modes', () => {
     })
 
     it('never draws a parked step as running, although it has a start time', async () => {
-      await landed()
-      chooseBoard('Timeline')
+      await openPage('wf_new', 'timeline')
       const t = track(cardOf('wf_new'), 'scan')
       // Its parent `plan` finished 100s after `scan` was submitted, so the
       // wait is split there (#107): on the parent, then waiting, still open.
@@ -428,12 +451,12 @@ describe('U2: the view modes', () => {
     })
 
     it('draws the three kinds of nothing as three different words, and no bar for any of them', async () => {
-      await landed()
-      chooseBoard('Timeline')
+      await openPage('wf_new', 'timeline')
       const unstarted = track(cardOf('wf_new'), 'ship')
       expect(unstarted.querySelector('.wf-tl-span')).toBeNull()
       expect(unstarted.textContent).toContain('not started')
 
+      await openPage('wf_mid', 'timeline')
       const unread = track(cardOf('wf_mid'), 'lost')
       expect(unread.querySelector('.wf-tl-span')).toBeNull()
       expect(unread.textContent).toContain('task unread')
@@ -447,8 +470,7 @@ describe('U2: the view modes', () => {
     })
 
     it('puts a time axis over the bars, starting at zero', async () => {
-      await landed()
-      chooseBoard('Timeline')
+      await openPage('wf_new', 'timeline')
       const ticks = cardOf('wf_new').querySelectorAll('.wf-tl-tick')
       expect(ticks.length).toBeGreaterThan(1)
       expect(ticks[0]!.textContent).toBe('0')
@@ -457,8 +479,7 @@ describe('U2: the view modes', () => {
 
   describe('the table', () => {
     it('sorts by cost, and an unmeasured cost is LAST whichever way it is sorted', async () => {
-      await landed()
-      chooseBoard('Table')
+      await openPage('wf_new', 'table')
       const c = cardOf('wf_new')
       await waitFor(() => expect(cell(c, 'plan', 'cost').textContent).toContain('$0.50'))
       expect(cell(c, 'scan', 'cost').textContent).toBe('not reported')
@@ -475,8 +496,7 @@ describe('U2: the view modes', () => {
     })
 
     it('sorts by time run, and a parked step is between attempts, not "so far"', async () => {
-      await landed()
-      chooseBoard('Table')
+      await openPage('wf_new', 'table')
       const c = cardOf('wf_new')
       expect(cell(c, 'scan', 'ran').textContent).toBe('between attempts')
       expect(cell(c, 'scan', 'ran').textContent).not.toMatch(/so far/)
@@ -487,8 +507,7 @@ describe('U2: the view modes', () => {
     })
 
     it('sorts by attempts and by state', async () => {
-      await landed()
-      chooseBoard('Table')
+      await openPage('wf_new', 'table')
       const c = cardOf('wf_new')
       expect(cell(c, 'plan', 'attempts').textContent).toBe('3 of 3')
       expect(cell(c, 'ship', 'attempts').textContent).toBe('not started')
@@ -534,9 +553,7 @@ function oneStepCard(
     <WorkflowCard
       workflow={w}
       taskById={tasks}
-      expanded
       usage={{ kind: 'ready', usage: null }}
-      onToggle={() => {}}
       openStages={{}}
       onToggleStage={() => {}}
       view={view}
@@ -720,9 +737,7 @@ function Card({ w, tasks }: { w: Workflow; tasks: Map<string, Task> }) {
     <WorkflowCard
       workflow={w}
       taskById={tasks}
-      expanded
       usage={{ kind: 'ready', usage: null }}
-      onToggle={() => {}}
       openStages={stages}
       onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
       reload={() => {}}
@@ -786,15 +801,14 @@ describe('U3: an edge that carries a file', () => {
   })
 
   it('lists staged files in the table, with their size, and one from the submission as such', async () => {
-    await landed()
-    chooseBoard('Table')
-    const old = cardOf('wf_old')
+    const old = await openPage('wf_old', 'table')
     const inputs = cell(old, 'build', 'inputs')
     expect(inputs.textContent).toContain('plan.md')
     expect(inputs.textContent).toContain('2 KiB')
     expect(inputs.textContent).toContain('brief.txt')
     expect(inputs.textContent).toContain('submission')
     // A declared input on a step still running is not "not staged".
+    await openPage('wf_new', 'table')
     const fresh = cell(cardOf('wf_new'), 'build', 'inputs')
     expect(fresh.textContent).toContain('plan.md')
     expect(fresh.textContent).toContain('reported at finish')
@@ -890,14 +904,12 @@ describe('U3: an edge that carries a file', () => {
   })
 
   it('marks, on the open card, a staged input no edge can carry', async () => {
-    await landed()
-    chooseBoard('Graph')
-    const mark = cardOf('wf_old').querySelector<HTMLElement>('.wf-strays')
+    const mark = (await openPage('wf_old', 'graph')).querySelector<HTMLElement>('.wf-strays')
     expect(mark, 'an input from outside the graph is not marked').toBeTruthy()
     expect(mark!.textContent).toBe('1 input off-graph')
     expect(mark!.getAttribute('aria-label')).toMatch(/brief\.txt/)
     expect(mark!.getAttribute('aria-label')).toMatch(/submission/)
-    expect(cardOf('wf_new').querySelector('.wf-strays')).toBeNull()
+    expect((await openPage('wf_new', 'graph')).querySelector('.wf-strays')).toBeNull()
   })
 })
 
@@ -925,8 +937,7 @@ function fact(root: HTMLElement, key: string): string {
 
 describe('U5: scrubbing', () => {
   it('steps to the next and previous attempt of a step, by pointer and by keyboard', async () => {
-    await landed()
-    chooseBoard('Table')
+    await openPage('wf_new', 'table')
     const c = cardOf('wf_new')
     pick(c, 'plan')
     const i = inspector(c)
@@ -962,16 +973,24 @@ describe('U5: scrubbing', () => {
     // #112: `plan` is in all three workflows, but only `wf_mid` and `wf_old`
     // share a shape (1 -> 1, two steps). `wf_new` is 1 -> 2 -> 1, so it is
     // not a comparable object and the scrubber never visits it.
-    await landed()
-    chooseBoard('Table')
-    pick(cardOf('wf_new'), 'plan')
+    //
+    // MOVED TO THE PAGE with the board form's removal (2026-10-01): the
+    // selection no longer moves between two cards on one board -- a scrub
+    // OPENS THE OTHER WORKFLOW'S PAGE, in the same tab, with the step picked.
+    // What is asserted is unchanged: the order, the shape filter, where the
+    // selection is afterwards, and where focus lands.
+    const c = await openPage('wf_new', 'table')
+    pick(c, 'plan')
     const alone = inspector(cardOf('wf_new'))
     expect(within(alone).getByText('workflow 1 of 1')).toBeTruthy()
     expect(alone.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 2 → 1 · 4 steps')
     fireEvent.click(within(alone).getByRole('button', { name: 'Stop inspecting this step' }))
 
-    pick(cardOf('wf_mid'), 'plan')
-    const first = inspector(cardOf('wf_mid'))
+    // wf_mid's page lands with its failed `plan` already picked (the step
+    // that needs a look), so it is not clicked again -- a click would put it down.
+    await openPage('wf_mid', 'table')
+    const first = await waitFor(() => inspector(cardOf('wf_mid')))
+    expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(within(first).getByText('workflow 1 of 2')).toBeTruthy()
     expect(first.querySelector('.wf-scrub-shape')!.textContent).toBe('1 → 1 · 2 steps')
     expect(
@@ -979,31 +998,32 @@ describe('U5: scrubbing', () => {
     ).toBe('true')
 
     fireEvent.click(within(first).getByRole('button', { name: 'Same step, older workflow' }))
-    // The selection MOVED: it is now wf_old's `plan`, inspected in wf_old's card.
-    expect(cardOf('wf_mid').querySelector('.wf-inspect')).toBeNull()
-    const second = inspector(cardOf('wf_old'))
+    // The selection MOVED: it is now wf_old's `plan`, inspected on wf_old's page.
+    const second = await waitFor(() => inspector(cardOf('wf_old')))
     expect(within(second).getByText('workflow 2 of 2')).toBeTruthy()
     expect(second.querySelector('a[href="#work/task/t_plan_old"]')).toBeTruthy()
+    expect(parseWorkflowQuery(address).tab, 'the scrub left the view the reader was in').toBe('table')
     const older = within(second).getByRole('button', { name: 'Same step, older workflow' })
     expect(older.getAttribute('aria-disabled')).toBe('true')
     // FOCUS LANDS ON THE CONTROL THE READER WAS PRESSING, even at its end. It
     // used to fall back to the other button, so a reader holding ArrowRight
     // found themselves on "newer" with nothing said.
-    expect(document.activeElement).toBe(older)
+    await waitFor(() => expect(document.activeElement).toBe(older))
     // And from there the other direction still works, from the keyboard.
     const group = second.querySelector<HTMLElement>('[data-scrub="workflow"]')
     expect(group).toBeTruthy()
     fireEvent.keyDown(group!, { key: 'ArrowLeft' })
-    const back = inspector(cardOf('wf_mid'))
+    const back = await waitFor(() => inspector(cardOf('wf_mid')))
     expect(within(back).getByText('workflow 1 of 2')).toBeTruthy()
-    expect(document.activeElement).toBe(within(back).getByRole('button', { name: 'Same step, newer workflow' }))
+    await waitFor(() =>
+      expect(document.activeElement).toBe(within(back).getByRole('button', { name: 'Same step, newer workflow' })),
+    )
     // And never on to wf_new, whose `plan` is the same id in a different shape.
-    expect(cardOf('wf_new').querySelector('.wf-inspect')).toBeNull()
+    expect(visited, 'the scrubber opened a workflow of another shape').toEqual(['wf_mid', 'wf_old', 'wf_mid'])
   })
 
   it('keeps focus on a scrub control that reaches its end, so the arrow keys keep working', async () => {
-    await landed()
-    chooseBoard('Table')
+    await openPage('wf_new', 'table')
     const c = cardOf('wf_new')
     pick(c, 'plan')
     const i = inspector(c)
@@ -1032,8 +1052,7 @@ describe('U5: scrubbing', () => {
   })
 
   it('says a step with no task has no attempt to scrub, rather than showing none', async () => {
-    await landed()
-    chooseBoard('Timeline')
+    await openPage('wf_new', 'timeline')
     const c = cardOf('wf_new')
     pick(c, 'ship')
     const i = inspector(c)
@@ -1159,36 +1178,35 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       data: { ...usage, notSampled: new Set(['t_beyond']), tasksRequested: 8 },
       fetchedAt: T0,
     } satisfies Result<WorkflowUsage>)
-    await landed()
+    // ON ONE WORKFLOW'S PAGE since the board form was removed (2026-10-01);
+    // the views are the page's tabs. The board's Rows form, which drew no step
+    // figure, went with it.
+    const c = await openPage('wf_new', 'table')
     const mark = () => document.querySelector('.wf-caveats .ctl-mark.is-partial')
     // The Table draws cost and tokens per step: the coverage of that read is
     // worth stating there. Waiting for it here is also what proves the read
     // has LANDED, so the absences below are not just an early render.
-    chooseBoard('Table')
     await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
-    // Rows draws no step figure at all, and its spend column is summed from a
-    // different source the sample says nothing about.
-    chooseBoard('Rows')
-    expect(mark(), 'a caveat about figures nobody can see').toBeNull()
     // The Timeline draws times from the task read, not the sample.
-    chooseBoard('Timeline')
-    expect(mark()).toBeNull()
+    chooseTab(c, 'Timeline')
+    expect(mark(), 'a caveat about figures nobody can see').toBeNull()
     // AH-24: AFTER THE LABEL OR HEADING, NEVER AFTER A VALUE. The board's one
     // `?` trailed the caveats -- `6/8 sampled ?` -- where it read as a
     // footnote on the figure. #161's first version moved it to LEAD the
     // strip, which has no label, so it followed nothing. The glyph explains a
     // property of the whole screen (a word where a digit would be, on every
-    // absent figure), so it follows the screen's heading, `Workflows`, in the
-    // page head, and is there whether any caveat is drawn or none.
+    // absent figure), so it follows the screen's heading -- the workflow's id,
+    // on its page -- in the page head, and is there whether any caveat is
+    // drawn or none.
     // MUTATION: move it back into `.wf-caveats`, at either end.
-    chooseBoard('Table')
+    chooseTab(cardOf('wf_new'), 'Table')
     await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
     const caveats = document.querySelector('.wf-caveats')!
     expect(caveats.querySelector('button[aria-label^="Help: "]'), 'the board `?` is still among the caveats').toBeNull()
     const head = document.querySelector('.head')
-    expect(head?.querySelector('h1')?.textContent).toBe('Workflows')
+    expect(head?.querySelector('h1')?.textContent).toBe('wf_new')
     const glyph = head?.querySelector('button[aria-label^="Help: "]') ?? null
-    expect(glyph, 'the `?` does not follow the Workflows heading').not.toBeNull()
+    expect(glyph, 'the `?` does not follow the page heading').not.toBeNull()
     expect(glyph!.closest('h1'), 'the `?` is inside the heading, and in its name').toBeNull()
     expect(
       head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -1196,7 +1214,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     ).toBeTruthy()
     // The Graph, at the Figures tier these small workflows land on, draws
     // them on every node.
-    chooseBoard('Graph')
+    chooseTab(cardOf('wf_new'), 'Graph')
     expect(mark()?.textContent).toBe('6/8 sampled')
   })
 })
@@ -1263,9 +1281,7 @@ function viewCard(
     <WorkflowCard
       workflow={workflow('wf_decided', 1200, steps)}
       taskById={new Map(tasks.map((t) => [t.id, t]))}
-      expanded
       usage={{ kind: 'ready', usage }}
-      onToggle={() => {}}
       openStages={{}}
       onToggleStage={() => {}}
       view={view}
@@ -1488,171 +1504,35 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
 
 describe('the owner’s decisions: scrubbing across workflows (WF-10)', () => {
   it('keeps the view the reader chose, and the picked step, when the scrubber moves to another workflow', async () => {
-    await landed()
-    // Rows: open one card and look at it as a Timeline.
-    // `wf_mid` and `wf_old` are the two workflows of one shape (#112).
-    fireEvent.click(cardOf('wf_mid').querySelector('.wf-bar')!)
-    fireEvent.click(within(cardOf('wf_mid').querySelector<HTMLElement>('.wf-viewbar')!).getByText('Timeline'))
-    pick(cardOf('wf_mid'), 'plan')
+    // MOVED TO THE PAGE (2026-10-01): the scrub opens the other workflow's
+    // page, and the view it opens in is the tab the reader was on.
+    // `wf_mid` and `wf_old` are the two workflows of one shape (#112); wf_mid
+    // lands with its failed `plan` picked.
+    const mid = await openPage('wf_mid')
+    chooseTab(mid, 'Timeline')
+    await waitFor(() => inspector(cardOf('wf_mid')))
+    expect(cardOf('wf_mid').querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(within(inspector(cardOf('wf_mid'))).getByRole('button', { name: 'Same step, older workflow' }))
-    const old = cardOf('wf_old')
+    const old = await waitFor(() => cardOf('wf_old'))
+    expect(parseWorkflowQuery(address).tab).toBe('timeline')
     expect(old.querySelector('.wf-timeline'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
     expect(old.querySelector('.wf-canvas')).toBeNull()
     expect(old.querySelector('.wf-pick[data-step="plan"]')!.getAttribute('aria-pressed')).toBe('true')
     expect(inspector(old)).toBeTruthy()
     // And from a Table, to a Table.
-    fireEvent.click(within(old.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
+    chooseTab(old, 'Table')
     fireEvent.click(within(inspector(cardOf('wf_old'))).getByRole('button', { name: 'Same step, newer workflow' }))
-    expect(cardOf('wf_mid').querySelector('.wf-table'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
-    expect(inspector(cardOf('wf_mid'))).toBeTruthy()
+    const back = await waitFor(() => cardOf('wf_mid'))
+    expect(back.querySelector('.wf-table'), 'the next workflow opened in a view the reader did not choose').toBeTruthy()
+    expect(inspector(back)).toBeTruthy()
   })
 })
 
-describe('the owner’s decisions: the Timeline’s hues (WF-11)', () => {
-  it('outlines a wait in --text-faint, fills a finished run --text-dim, and keeps hue for a failure or live work', () => {
-    const tasks = [
-      task('t_ok', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-590), completed_at: iso(-500) }),
-      task('t_bad', 'FAILED', { created_at: iso(-600), started_at: iso(-580), completed_at: iso(-450) }),
-      task('t_live', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) }),
-      task('t_wait', 'QUEUED', { created_at: iso(-200) }),
-      task('t_stop', 'CANCELLED', { created_at: iso(-600), started_at: iso(-570), completed_at: iso(-400) }),
-    ]
-    const root = viewCard(
-      ['ok', 'bad', 'live', 'wait', 'stop'].map((id) => step(id, [], { task_id: `t_${id}` })),
-      tasks,
-      'timeline',
-    )
-    const span = (id: string, kind: string) => {
-      const el = track(root, id).querySelector<HTMLElement>(`.wf-tl-span.is-${kind}`)
-      expect(el, `${id} has no ${kind} span`).toBeTruthy()
-      return el!
-    }
-    const waited = span('ok', 'waited')
-    const okRan = span('ok', 'ran')
-    const badRan = span('bad', 'ran')
-    const running = span('live', 'running')
-    const waiting = span('wait', 'waiting')
-    const stopRan = span('stop', 'ran')
-    // The class is the verdict: only a failed run carries one.
-    expect(okRan.classList.contains('is-ok'), 'a succeeded run still carries is-ok').toBe(false)
-    expect(badRan.classList.contains('is-bad')).toBe(true)
-    expect(stopRan.classList.contains('is-bad')).toBe(false)
-    expect(running.classList.contains('is-running')).toBe(true)
-
-    const HUES = ['--ok', '--bad', '--info', '--warn', '--warn-ink']
-    const spans = [...root.querySelectorAll<HTMLElement>('.wf-tl-span')]
-    expect(spans.length).toBeGreaterThanOrEqual(8)
-    for (const theme of THEMES) {
-      const faint = tokenColour('--text-faint', theme)
-      const dim = tokenColour('--text-dim', theme)
-      expect(sameColour(paintOf(waited, OUTLINE, theme), faint), `${theme}: a wait is not a --text-faint outline`).toBe(true)
-      expect(sameColour(paintOf(waiting, OUTLINE, theme), faint), `${theme}: a wait is not a --text-faint outline`).toBe(true)
-      expect(sameColour(paintOf(okRan, FILL, theme), dim), `${theme}: a succeeded run is not --text-dim`).toBe(true)
-      expect(sameColour(paintOf(stopRan, FILL, theme), dim), `${theme}: a cancelled run is not --text-dim`).toBe(true)
-      // ONLY A FAILURE OR LIVE WORK IS COLOURED, across every span drawn.
-      const hues = HUES.map((h) => tokenColour(h, theme))
-      for (const el of spans) {
-        const painted = [paintOf(el, FILL, theme), paintOf(el, OUTLINE, theme)]
-        const hued = painted.some((c) => hues.some((h) => sameColour(c, h)))
-        const verdict = el.classList.contains('is-bad') || el.classList.contains('is-running')
-        expect(hued, `${theme}: \`${el.className}\` ${verdict ? 'lost' : 'took'} a state hue`).toBe(verdict)
-      }
-      // THE FAILED RUN'S POST, read from the sheet: jsdom computes no
-      // pseudo-element. A --bad rule standing 8px above and below the bar,
-      // because a --bad rule on a --bad fill is invisible.
-      expect(
-        sameColour(paintOf(badRan, FILL, theme, 'before'), tokenColour('--bad', theme)),
-        `${theme}: a failed run carries no --bad post`,
-      ).toBe(true)
-      const top = cascade(SHEETS[theme], badRan, 'top', { width: 1440, theme }, 'before').winner
-      expect(top, `${theme}: the post declares no top`).not.toBeNull()
-      expect(Number.parseFloat(top!.value), `${theme}: the post does not stand past the bar`).toBeLessThan(0)
-      const content = cascade(SHEETS[theme], badRan, 'content', { width: 1440, theme }, 'before').winner
-      expect(content?.value, `${theme}: the post is never generated`).toBe("''")
-    }
-  })
-})
-
-describe('the owner’s decisions: the Timeline’s axis (WF-12)', () => {
-  it('prints every other label on a phone, counting back from the last, and keeps every rule', () => {
-    // 03g's shape: a twenty-one-minute span, ticks at 0, +5m, +10m, +15m and
-    // +20m -- where 390 printed "+10m+15m" and "+1520m".
-    const t = task('t_work', 'SUCCEEDED', { created_at: iso(-1260), started_at: iso(-1200), completed_at: iso(0) })
-    const { container } = oneStepCard(t, [], 'timeline')
-    const root = container as HTMLElement
-    const ticks = [...root.querySelectorAll<HTMLElement>('.wf-tl-scale .wf-tl-tick')]
-    expect(ticks.map((el) => el.textContent)).toEqual(['0', '+5m', '+10m', '+15m', '+20m'])
-    const labels = ticks.map((el) => el.querySelector<HTMLElement>('.wf-tl-tick-label'))
-    expect(labels.every((l) => l !== null), 'a tick’s label is not an element of its own, so no rule can thin it').toBe(true)
-    const shown = (width: number) =>
-      labels
-        .filter((l) => cascade(STYLES, l!, 'visibility', { width }).winner?.value !== 'hidden')
-        .map((l) => l!.textContent)
-    expect(shown(390), 'the phone axis prints labels over each other').toEqual(['0', '+10m', '+20m'])
-    expect(shown(1440)).toEqual(['0', '+5m', '+10m', '+15m', '+20m'])
-    // Every tick keeps its line: only the LABEL is hidden.
-    for (const tick of ticks) expect(cascade(STYLES, tick, ['visibility', 'display'], { width: 390 }).winner).toBeNull()
-    // The last tick, at 95% of the track, hangs left of its line; no other does.
-    expect(ticks.map((el) => el.classList.contains('is-end'))).toEqual([false, false, false, false, true])
-  })
-
-  it('hangs only a tick marked is-end, and thins the labels only at the phone breakpoint', () => {
-    // The sheet on its own, over six ticks -- an even count, where '0' and
-    // the first tick after it both print.
-    const scale = document.createElement('div')
-    scale.className = 'wf-tl-scale'
-    for (const label of ['0', '+5m', '+10m', '+15m', '+20m', '+25m']) {
-      const tick = document.createElement('span')
-      tick.className = 'wf-tl-tick'
-      const text = document.createElement('span')
-      text.className = 'wf-tl-tick-label'
-      text.textContent = label
-      tick.appendChild(text)
-      scale.appendChild(tick)
-    }
-    document.body.appendChild(scale)
-    try {
-      const ticks = [...scale.children]
-      const last = ticks[ticks.length - 1]!
-      // A last tick that is NOT marked faces right, like every other: the
-      // hang went on `:last-child` whatever the tick's position.
-      expect(cascade(STYLES, last, 'transform', { width: 1440 }).winner, 'a last tick hangs left wherever it sits').toBeNull()
-      last.classList.add('is-end')
-      expect(cascade(STYLES, last, 'transform', { width: 1440 }).winner?.value).toBe('translateX(-100%)')
-      const hidden = (width: number) =>
-        ticks.map((t) => cascade(STYLES, t.firstElementChild!, 'visibility', { width }).winner?.value === 'hidden')
-      expect(hidden(560)).toEqual([false, false, true, false, true, false])
-      expect(hidden(561)).toEqual([false, false, false, false, false, false])
-    } finally {
-      scale.remove()
-    }
-  })
-})
-
-describe('the owner’s decisions: two durations, two facts (WF-21)', () => {
-  it('says which timestamps the table’s "ran" is read from, and points at the inspector’s "took"', () => {
-    const t = task('t_work', 'SUCCEEDED', { created_at: iso(-600), started_at: iso(-500), completed_at: iso(-400) })
-    const { container } = oneStepCard(t, [], 'table')
-    const ran = cell(container as HTMLElement, 'work', 'ran').querySelector<HTMLElement>('.wf-cell')!
-    expect(ran.textContent).toBe('1m 40s')
-    const note = ran.getAttribute('title') ?? ''
-    expect(note, 'the note does not say it is the task’s timestamps').toMatch(/task’s latest started_at/)
-    expect(note, 'the note does not point at the inspector’s figure').toMatch(/inspector’s “took”/)
-    // A park ENDS the attempt and the next start rewrites started_at, which is
-    // why the Timeline counts earlier attempts as waiting. "and any park" was
-    // false.
-    expect(note, 'the note still claims the run includes a park').not.toMatch(/park/)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// #106: why a step is not running
 // ---------------------------------------------------------------------------
 
 describe('#106: every workflow view says why a step is not running', () => {
   it('adds a why column to the table, from the task, the parents and the cascade', async () => {
-    await landed()
-    chooseBoard('Table')
+    await openPage('wf_new', 'table')
     const c = cardOf('wf_new')
     const th = c.querySelector<HTMLElement>('.wf-table th[data-col="why"]')
     expect(th, 'the table has no why column').toBeTruthy()
@@ -1727,8 +1607,7 @@ describe('#106: every workflow view says why a step is not running', () => {
 
 describe('#107: the Timeline splits a wait at the parents’ finish', () => {
   it('draws waiting-on-parents lighter, then queued, then the run, and says so', async () => {
-    await landed()
-    chooseBoard('Timeline')
+    await openPage('wf_new', 'timeline')
     // `build` was submitted 600s ago; `plan`, its parent, finished 500s ago;
     // `build` started 400s ago. 100s on its parent, then 100s queued.
     const t = track(cardOf('wf_new'), 'build')
@@ -1842,119 +1721,5 @@ describe('#107: the Timeline splits a wait at the parents’ finish', () => {
     expect(scale.querySelector('.wf-tl-scale-break')).toBeTruthy()
     const labels = [...scale.querySelectorAll('.wf-tl-tick')].map((t) => t.textContent)
     expect(labels.at(-1)).toMatch(/^\+3h/)
-  })
-})
-
-// ---------------------------------------------------------------------------
-// #330: chains only
-// ---------------------------------------------------------------------------
-
-describe('#330: the chains-only toggle', () => {
-  const KEY = 'swarm.workflows.chainsOnly'
-
-  /** The fixture board plus two one-step wrappers, the shape direct dispatch makes. */
-  function withWrappers(): void {
-    const { board: b } = board()
-    const single = (id: string) => workflow(id, 300, [step('only', [])])
-    api.loadWorkflowBoard.mockResolvedValue({
-      status: 'ok',
-      data: { ...b, workflows: [...b.workflows, single('wf_one_a'), single('wf_one_b')] },
-      fetchedAt: T0,
-    } satisfies Result<WorkflowBoard>)
-  }
-
-  const ids = () => [...document.querySelectorAll('.wf-bar .id')].map((el) => el.textContent)
-  const toggle = () => {
-    const box = screen.getByRole('checkbox', { name: /chains only/i }) as HTMLInputElement
-    return box
-  }
-
-  beforeEach(() => window.localStorage.removeItem(KEY))
-
-  it('is off by default, and hides the one-step workflows when turned on', async () => {
-    withWrappers()
-    await landed()
-    expect(toggle().checked).toBe(false)
-    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid', 'wf_one_a', 'wf_one_b'])
-
-    fireEvent.click(toggle())
-    expect(toggle().checked).toBe(true)
-    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid'])
-    // It says how many it is hiding, so a filtered board is not read as a quiet one.
-    expect(document.querySelector('.wf-chains-hidden')!.textContent).toBe('2 one-step hidden')
-    expect(window.localStorage.getItem(KEY)).toBe('1')
-
-    fireEvent.click(toggle())
-    expect(ids()).toHaveLength(5)
-    expect(document.querySelector('.wf-chains-hidden')).toBeNull()
-    expect(window.localStorage.getItem(KEY)).toBeNull()
-  })
-
-  it('is remembered per viewer across a remount', async () => {
-    withWrappers()
-    window.localStorage.setItem(KEY, '1')
-    await landed()
-    expect(toggle().checked).toBe(true)
-    expect(ids()).toEqual(['wf_old', 'wf_new', 'wf_mid'])
-  })
-
-  it('opens on the default when storage throws', async () => {
-    withWrappers()
-    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('SecurityError')
-    })
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('SecurityError')
-    })
-    await landed()
-    expect(toggle().checked).toBe(false)
-    expect(ids()).toHaveLength(5)
-    // Turning it on still works for this visit.
-    fireEvent.click(toggle())
-    expect(ids()).toHaveLength(3)
-  })
-
-  it('puts the pick down when the toggle hides the row it is in', async () => {
-    withWrappers()
-    await landed()
-    chooseBoard('Table')
-    pick(cardOf('wf_one_a'), 'only')
-    inspector(cardOf('wf_one_a'))
-    fireEvent.click(toggle())
-    expect(ids()).not.toContain('wf_one_a')
-    // Turned off again, the row is back and nothing in it is still selected.
-    fireEvent.click(toggle())
-    expect(cardOf('wf_one_a').querySelector('.wf-inspect')).toBeNull()
-    expect(document.querySelectorAll('.wf-inspect')).toHaveLength(0)
-  })
-
-  it('says "no chains" only when it is hiding something', async () => {
-    const { board: b } = board()
-    const single = (id: string) => workflow(id, 300, [step('only', [])])
-    window.localStorage.setItem(KEY, '1')
-    api.loadWorkflowBoard.mockResolvedValue({
-      status: 'ok',
-      data: { ...b, workflows: [] },
-      fetchedAt: T0,
-    } satisfies Result<WorkflowBoard>)
-    const empty = render(<WorkflowBoardScreen />)
-    await waitFor(() => expect(toggle().checked).toBe(true))
-    // An empty board with the toggle on hides nothing, so there is no
-    // "turn it off to see the 0".
-    expect(document.querySelector('.wf-chains-none')).toBeNull()
-    empty.unmount()
-
-    api.loadWorkflowBoard.mockResolvedValue({
-      status: 'ok',
-      data: { ...b, workflows: [single('wf_one_a')] },
-      fetchedAt: T0,
-    } satisfies Result<WorkflowBoard>)
-    render(<WorkflowBoardScreen />)
-    const mark = await waitFor(() => {
-      const m = document.querySelector('.wf-chains-none')
-      expect(m).toBeTruthy()
-      return m!
-    })
-    expect(mark.getAttribute('aria-label')).toContain('Turn it off to see the 1.')
   })
 })

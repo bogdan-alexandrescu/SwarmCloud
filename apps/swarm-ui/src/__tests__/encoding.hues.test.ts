@@ -90,9 +90,9 @@ describe('an absence is not drawn in the colour of an outcome', () => {
       // paints is the absence colour.
       // RE-POINTED AGAIN (#185, decision 7): `.stackcol` and `.chart-legend`
       // were the row-window Timeline's and are deleted with it. A cancelled
-      // segment is the ledger card's and the Workflows row's now, and its key
-      // the ledger's.
-      for (const selector of ['.ol-meter > i.ol-seg.cancelled', '.wf-meter > i.wf-seg.cancelled', '.ol-legend > i.ol-k.is-ended']) {
+      // segment is the ledger card's now (the Workflows row that also drew
+      // one was removed with the board, 2026-10-01), and its key the ledger's.
+      for (const selector of ['.ol-meter > i.ol-seg.cancelled', '.ol-legend > i.ol-k.is-ended']) {
         const value = painted(build(selector, hosts), ['background', 'background-image', 'background-color'], {
           width: 1440,
           theme,

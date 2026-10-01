@@ -664,7 +664,10 @@ def _overview_grids() -> list[tuple[str, int, int]]:
 
     grid_tracks = re.search(r"\.ov-grid \{ grid-template-columns: repeat\((\d+), ", css)
     pair_tracks = re.search(
-        r"\.ov-pair \{ grid-template-columns: ((?:minmax\(0, 1fr\) ?)+)\}", css
+        # The widest declaration, as the sheet writes it: `...1fr); }`. The
+        # semicolon is optional so the declaration's own punctuation is not
+        # what decides whether the track count was read.
+        r"\.ov-pair \{ grid-template-columns: ((?:minmax\(0, 1fr\) ?)+);? ?\}", css
     )
     assert grid_tracks is not None, "`.ov-grid` declares no explicit track count"
     assert pair_tracks is not None, "`.ov-pair` declares no explicit track count"

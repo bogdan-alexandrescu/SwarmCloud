@@ -356,7 +356,7 @@ export const SECTIONS: SectionDef[] = [
       // "how many more could I submit". One is a catalogue, the other is a
       // measurement of one tenant against it, and "headroom" is the word this
       // product already uses for that measurement everywhere else
-      // (`headroomFor`, `headroomFigure`, the Pools table's own column).
+      // (`headroomFor`, and the Profiles matrix it feeds).
       //
       // The id stays `profiles` -- `runner_profile` is the field name in the
       // contract and invariant 10 is the reason this screen exists, so the

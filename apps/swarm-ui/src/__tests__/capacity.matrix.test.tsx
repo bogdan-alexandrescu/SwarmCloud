@@ -10,7 +10,7 @@
 // runner:codex. Or outline only the first binding pool -- `browser`, where two
 // pools tie, loses one.
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -91,7 +91,7 @@ describe('the profile matrix outlines exactly the binding cell', () => {
   it('outlines the pool the server says limits each profile, and no other cell in its row', async () => {
     loadCapacity.mockResolvedValue({ status: 'ok', data: CAPACITY, fetchedAt: Date.now(), serverAt: CAPACITY.generated_at })
     render(<ProfilesScreen />)
-    await screen.findByText('Per profile')
+    await waitFor(() => expect(document.querySelector('.cap-mx tr[data-profile]')).not.toBeNull())
 
     expect(outlined('claude-code')).toEqual(['provider:anthropic'])
     expect(outlined('codex')).toEqual(['runner:codex'])
@@ -108,7 +108,7 @@ describe('the profile matrix outlines exactly the binding cell', () => {
   it('draws the units free in each cell, with leased/ceiling under it', async () => {
     loadCapacity.mockResolvedValue({ status: 'ok', data: CAPACITY, fetchedAt: Date.now(), serverAt: CAPACITY.generated_at })
     render(<ProfilesScreen />)
-    await screen.findByText('Per profile')
+    await waitFor(() => expect(document.querySelector('.cap-mx tr[data-profile]')).not.toBeNull())
     const cell = document.querySelector('.cap-mx tr[data-profile="codex"] td[data-pool="runner:codex"]')!
     expect(cell.querySelector('b')?.textContent).toBe('1')
     expect(cell.querySelector('small')?.textContent).toBe('9/10')
@@ -117,7 +117,7 @@ describe('the profile matrix outlines exactly the binding cell', () => {
   it('opens a row into one sentence naming what runs out first', async () => {
     loadCapacity.mockResolvedValue({ status: 'ok', data: CAPACITY, fetchedAt: Date.now(), serverAt: CAPACITY.generated_at })
     render(<ProfilesScreen />)
-    await screen.findByText('Per profile')
+    await waitFor(() => expect(document.querySelector('.cap-mx tr[data-profile]')).not.toBeNull())
     const toggle = document.querySelector<HTMLButtonElement>('.cap-mx tr[data-profile="claude-code"] button')!
     expect(toggle.getAttribute('aria-expanded')).toBe('false')
     fireEvent.click(toggle)

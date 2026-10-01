@@ -3,13 +3,14 @@
  * at /workflows, one workflow's page, Cancel workflow's inline confirm, the
  * Recent (5) switcher's store, polling, and the brand marks on step nodes.
  */
+import STYLES from '../styles.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
 import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
-import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -403,5 +404,285 @@ describe('the Recent (5) store', () => {
       { id: 'wf_old', state: null },
       { id: 'wf_new', state: 'PARKED' },
     ])
+  })
+})
+
+// ---------------------------------------------------------------------------
+// MOVED FROM workflow.board.test.tsx WITH THE REBRAND (2026-10-01). The
+// board's own row was removed; what it said about a workflow -- its name, its
+// shape, its runners, its spend, a pending cancel, its pull request -- is now
+// said by the list row (`WorkflowListRow`) and the page head (`WorkflowHead`),
+// and these hold it there.
+// ---------------------------------------------------------------------------
+
+/** Serve these workflows and tasks as the board read. */
+function serve(workflows: Workflow[], taskById: Map<string, Task> | null = new Map()): void {
+  api.loadWorkflowBoard.mockResolvedValue({
+    status: 'ok',
+    data: { workflows, taskById, statesDetail: null },
+    fetchedAt: T0,
+  } satisfies Result<WorkflowBoard>)
+}
+
+/** The list row for `id`, once the list has drawn it. */
+async function listRow(id: string): Promise<HTMLElement> {
+  render(<WorkflowsScreen />)
+  return waitFor(() => {
+    const row = document.querySelector<HTMLElement>(`.wfl-table tr[data-workflow="${id}"]`)
+    expect(row, `no list row for ${id}`).toBeTruthy()
+    return row!
+  })
+}
+
+/** One workflow's page head, once the page has drawn it. */
+async function pageHead(id: string): Promise<HTMLElement> {
+  render(<WorkflowsScreen view={`wf=${id}`} />)
+  return waitFor(() => {
+    const head = document.querySelector<HTMLElement>('.wfp-head')
+    expect(head, `no page head for ${id}`).toBeTruthy()
+    return head!
+  })
+}
+
+/** A two-step chain whose step tasks carry the spec's label as `metadata.unit`. */
+function labelled(label: string | null): { w: Workflow; tasks: Map<string, Task> } {
+  const w = workflow('wf_5e5ad3b6f7da4299a839', 'RUNNING', 'priya', [
+    step('implement', [], { task_id: 't_impl' }),
+    step('review', ['implement'], { task_id: 't_rev' }),
+  ])
+  const metadata = label === null ? { origin: 'swarm-mcp' } : { origin: 'swarm-mcp', unit: label }
+  const tasks = new Map<string, Task>([
+    ['t_impl', task('t_impl', 'SUCCEEDED', { started_at: iso(-300), completed_at: iso(-200), metadata })],
+    ['t_rev', task('t_rev', 'RUNNING', { started_at: iso(-100), metadata })],
+  ])
+  return { w, tasks }
+}
+
+/** A result summary whose git outcome names a pull request. */
+function withPr(url: string, number = 412): Record<string, unknown> {
+  return { git: { pull_request: { number, url, state: 'open', created: true } } }
+}
+
+const dispatchAs = (strategy: TaskDispatch['strategy'], role: TaskDispatch['role']): TaskDispatch => ({
+  strategy,
+  carrier: 'checkpoints',
+  role,
+  integrates: [],
+})
+
+describe('#330: the list row leads with the label', () => {
+  // Was 'leads with the spec label and puts the wf_ id on a second line' on the board row.
+  it('leads with the spec label and puts the wf_ id on a second line', async () => {
+    const { w, tasks } = labelled('workflows-board')
+    serve([w], tasks)
+    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfl-name')!
+    expect(name.querySelector('a')!.textContent).toBe('workflows-board')
+    // The id is still the `.id`, whole in its title.
+    const id = name.querySelector<HTMLElement>('.id')
+    expect(id, 'the label hid the id').toBeTruthy()
+    expect(id!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(id!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
+  })
+
+  // Was 'falls back to the id alone when there is no label, or no task was read'.
+  for (const [what, tasks] of [
+    ['no unit in the metadata', labelled(null).tasks],
+    ['a blank unit', labelled('   ').tasks],
+    ['no task read', null],
+  ] as const) {
+    it(`falls back to the id alone: ${what}`, async () => {
+      serve([labelled(null).w], tasks)
+      const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
+      expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+      expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
+    })
+  }
+})
+
+describe('#330: the page head links the pull request the run opened', () => {
+  async function head(over: Partial<Task>, other: Partial<Task> = {}): Promise<HTMLElement> {
+    const w = workflow('wf_pr', 'SUCCEEDED', 'priya', [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
+    serve(
+      [w],
+      new Map<string, Task>([
+        ['t_a', task('t_a', 'SUCCEEDED', other)],
+        ['t_b', task('t_b', 'SUCCEEDED', over)],
+      ]),
+    )
+    return pageHead('wf_pr')
+  }
+  const prChip = (h: HTMLElement) => [...h.querySelectorAll<HTMLElement>('.wfp-chip')].find((c) => /^PR #/.test(c.textContent ?? ''))
+
+  it('shows PR #N, linked, for the integrator’s pull request', async () => {
+    const h = await head({ dispatch: dispatchAs('integrate', 'integrator'), result_summary: withPr('https://github.com/o/r/pull/412') })
+    const pr = prChip(h)
+    expect(pr, 'the head does not link the pull request').toBeTruthy()
+    expect(pr!.tagName).toBe('A')
+    expect(pr!.textContent).toBe('PR #412')
+    expect(pr!.getAttribute('href')).toBe('https://github.com/o/r/pull/412')
+    expect(pr!.getAttribute('rel')).toContain('noreferrer')
+    // The number alone: the recorded state is a creation-time word.
+    expect(pr!.textContent).not.toMatch(/open|merged/)
+  })
+
+  it('does the same for a direct-pr step', async () => {
+    const h = await head({ dispatch: dispatchAs('direct-pr', null), result_summary: withPr('http://forge.example/pr/7', 7) })
+    expect(prChip(h)!.textContent).toBe('PR #7')
+  })
+
+  it('prints the number without a link when the URL is not http(s)', async () => {
+    const h = await head({ dispatch: dispatchAs('direct-pr', null), result_summary: withPr('javascript:alert(1)', 9) })
+    const pr = prChip(h)
+    expect(pr, 'a PR with a non-http URL lost its number too').toBeTruthy()
+    expect(pr!.tagName).not.toBe('A')
+    expect(pr!.textContent).toBe('PR #9')
+    expect(h.querySelector('.wfp-chips a')).toBeNull()
+  })
+
+  for (const [what, over] of [
+    ['a contributor', { dispatch: dispatchAs('integrate', 'contributor'), result_summary: withPr('https://x/pull/1') }],
+    ['a collect step', { dispatch: dispatchAs('collect', null), result_summary: withPr('https://x/pull/1') }],
+    ['no pull request', { dispatch: dispatchAs('direct-pr', null), result_summary: { git: {} } }],
+  ] as const) {
+    it(`names no PR from ${what}`, async () => {
+      const h = await head(over as Partial<Task>)
+      expect(prChip(h), what).toBeUndefined()
+    })
+  }
+})
+
+describe('WF-15: a cancel is said to be requested only while the workflow has not ended', () => {
+  const live = () => ({ ...workflow('wf_live', 'RUNNING', 'priya', [step('a', [])]), cancel_requested: true })
+  // Finished cancelled a day ago; the flag is never cleared.
+  const over = () => ({ ...workflow('wf_over', 'CANCELLED', 'priya', [step('a', [])]), cancel_requested: true })
+  // A rollup that could not read every step has not shown it is over.
+  const unread = (): Workflow => {
+    const w = workflow('wf_unread', 'CANCELLED', 'priya', [step('a', [])])
+    return { ...w, cancel_requested: true, rollup: { ...w.rollup!, complete: false } }
+  }
+  const tag = (root: Element) => root.querySelector('.tag.wait')?.textContent ?? ''
+
+  it('on the list row', async () => {
+    serve([live(), over(), unread()])
+    expect(tag(await listRow('wf_live'))).toBe('cancel requested')
+    expect(tag(document.querySelector('tr[data-workflow="wf_over"]')!), 'a finished workflow still reads "cancel requested"').toBe('')
+    expect(tag(document.querySelector('tr[data-workflow="wf_unread"]')!)).toBe('cancel requested')
+  })
+
+  it('on the page head', async () => {
+    serve([live(), over()])
+    expect(tag(await pageHead('wf_over')), 'a finished workflow still reads "cancel requested"').toBe('')
+  })
+
+  it('on the page head of a live workflow', async () => {
+    serve([live()])
+    expect(tag(await pageHead('wf_live'))).toBe('cancel requested')
+  })
+})
+
+describe('the list row: shape, runners and spend', () => {
+  // Was 'distinguishes a fan-out from a chain' / 'names the shape in words a reader can hover'.
+  it('tells a fan-out from a chain, in its widths and in words a reader can hover', async () => {
+    const chain = workflow('wf_chain', 'RUNNING', 'priya', [step('a', []), step('b', ['a']), step('c', ['b'])])
+    const fan = workflow('wf_fan', 'RUNNING', 'priya', [
+      step('root', []),
+      ...['p1', 'p2', 'p3', 'p4', 'p5'].map((id) => step(id, ['root'])),
+      step('join', ['p1', 'p2', 'p3', 'p4', 'p5']),
+    ])
+    serve([chain, fan])
+    const chainShape = (await listRow('wf_chain')).querySelector<HTMLElement>('.wf-shape')!
+    const fanShape = document.querySelector<HTMLElement>('tr[data-workflow="wf_fan"] .wf-shape')!
+    expect(chainShape.textContent).toContain('1 → 1 → 1')
+    expect(fanShape.textContent).toContain('1 → 5 → 1')
+    expect(chainShape.getAttribute('title')).toMatch(/chain/i)
+    const fanTitle = fanShape.getAttribute('title') ?? ''
+    expect(fanTitle).toContain('parallel')
+    expect(fanTitle).toContain('converge')
+  })
+
+  // Was WF-16 'folds whole runner chips into the count rather than letting the column cut one'.
+  it('WF-16: folds whole runner chips into the count rather than letting the column cut one', async () => {
+    const steps = [
+      ...Array.from({ length: 20 }, (_, i) => step(`cc-${i}`, [], { runner_profile: 'claude-code' })),
+      ...Array.from({ length: 6 }, (_, i) => step(`br-${i}`, [], { runner_profile: 'browser' })),
+      ...Array.from({ length: 4 }, (_, i) => step(`mk-${i}`, [], { runner_profile: 'mock' })),
+    ]
+    serve([workflow('wf_mix', 'RUNNING', 'priya', steps)])
+    const chips = async (room: number) => {
+      // THE COLUMN'S WIDTH, stubbed, because jsdom has no layout.
+      const spy = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
+        return this.classList.contains('wf-mix') ? room : 0
+      })
+      const { unmount } = render(<WorkflowsScreen />)
+      const mix = await waitFor(() => {
+        const m = document.querySelector('tr[data-workflow="wf_mix"] .wf-mix')
+        expect(m).toBeTruthy()
+        return m!
+      })
+      const named = [...mix.querySelectorAll('.wf-chip:not(.more)')].map((c) => c.firstChild?.textContent)
+      const more = mix.querySelector('.wf-chip.more')?.textContent ?? null
+      const title = mix.getAttribute('title')
+      unmount()
+      spy.mockRestore()
+      return { named, more, title }
+    }
+    // 160px: `claude-code ×20` and `+2` fit; a second whole chip does not.
+    const narrow = await chips(160)
+    expect(narrow.named, 'a chip the column cannot hold was drawn anyway').toEqual(['claude-code'])
+    expect(narrow.more).toBe('+2')
+    // Room for two: two named and the third counted.
+    expect(await chips(400)).toMatchObject({ named: ['claude-code', 'browser'], more: '+1' })
+    // Every profile stays reachable whatever was folded.
+    expect(narrow.title).toBe('Runner profiles: claude-code ×20, browser ×6, mock ×4')
+  })
+
+  /** One finished workflow whose steps reported these costs (null: none reported). */
+  async function spendCell(costs: (number | null)[]): Promise<HTMLElement> {
+    const steps = costs.map((_, i) => step(`s${i}`, i === 0 ? [] : ['s0'], { task_id: `t${i}` }))
+    const tasks = new Map<string, Task>(
+      costs.map((c, i) => [
+        `t${i}`,
+        task(`t${i}`, 'SUCCEEDED', { result_summary: c === null ? {} : { runner: { usage: { total_cost_usd: c } } } }),
+      ]),
+    )
+    serve([workflow('wf_spend', 'SUCCEEDED', 'priya', steps)], tasks)
+    return (await listRow('wf_spend')).querySelector<HTMLElement>('.wf-spend')!
+  }
+
+  // Was 'what a workflow has cost' on the board row.
+  it('says "not reported" when nothing reported one, and prints no zero', async () => {
+    const cell = await spendCell([null, null])
+    expect(cell.textContent).toBe('not reported')
+    expect(cell.textContent, 'an unreported cost rendered a figure').not.toMatch(/\d/)
+    expect(cell.className).toContain('absent')
+    expect(cell.getAttribute('title')).toContain('not $0.00')
+  })
+
+  it('prints a REPORTED zero as a number, because that one was measured', async () => {
+    const cell = await spendCell([0, 0])
+    expect(cell.textContent).toContain('$0.0000')
+    expect(cell.className).not.toContain('absent')
+  })
+
+  // Was the board's 'draws an absent figure differently from a measured one'.
+  it('draws an absent spend differently from a measured one, in the shipped stylesheet', async () => {
+    const style = document.createElement('style')
+    style.textContent = STYLES
+    document.head.appendChild(style)
+    const absentCell = await spendCell([null, null])
+    const absent = { italic: getComputedStyle(absentCell).fontStyle, color: getComputedStyle(absentCell).color }
+    cleanup()
+    const measuredCell = await spendCell([0, 0])
+    expect(absent.italic).toBe('italic')
+    expect(getComputedStyle(measuredCell).fontStyle).toBe('normal')
+    expect(absent.color).not.toBe(getComputedStyle(measuredCell).color)
+    style.remove()
+  })
+
+  it('never shows a partial total without its coverage', async () => {
+    const cell = await spendCell([0.0642, null, null])
+    expect(cell.textContent).toContain('$0.0642')
+    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1/3')
+    expect(cell.getAttribute('title')).toContain('floor rather than the total')
   })
 })

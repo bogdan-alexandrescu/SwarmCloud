@@ -39,7 +39,6 @@ vi.mock('../api', async (importOriginal) => {
 })
 
 const { CapacityScreen } = await import('../Capacity')
-const { ProfilesScreen } = await import('../Profiles')
 const { AccountsScreen } = await import('../Accounts')
 
 const PHONE: CascadeEnv = { width: 390 }
@@ -148,16 +147,6 @@ describe('CH-13: the data tables the owner named scroll at 390', () => {
     expect(tables.length, 'Pools drew no family table').toBeGreaterThan(0)
     for (const t of tables) expectScrolls(t, 'a Pools family table')
     // CP-18 still lines the six tables up where they fit.
-    expect(painted(tables[0]!, 'table-layout', WIDE)).toBe('fixed')
-  })
-
-  it('scrolls every Profile headroom table with its pool column held, and keeps CP-18 on a wide screen', async () => {
-    api.loadCapacity.mockResolvedValue(ok(CAPACITY))
-    render(<ProfilesScreen />)
-    await screen.findAllByText('claude-code', undefined, WAIT)
-    const tables = [...document.querySelectorAll('.section.panel > dl.kv + .table-wrap > table.pools')]
-    expect(tables.length, 'Profile headroom drew no headroom table').toBeGreaterThan(0)
-    for (const t of tables) expectScrolls(t, 'a Profile headroom table')
     expect(painted(tables[0]!, 'table-layout', WIDE)).toBe('fixed')
   })
 })

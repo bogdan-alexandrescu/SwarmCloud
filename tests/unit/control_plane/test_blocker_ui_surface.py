@@ -224,6 +224,14 @@ def test_blocker_group_prefers_the_served_grouping():
 #   test_a_zero_delta_names_what_still_binds
 #     -> honesty.capacity.test.tsx, "a zero delta names what still binds".
 #
+# REMOVED 2026-10-01 (owner's decision): the surfaces those six DOM tests
+# rendered -- Pools' `Could start / Held back by` panel, the Profile headroom
+# cards, their blocker list, incomplete-read banner and counterfactual column
+# -- were deleted with the rebrand, and the tests went with them. A refusing
+# pool's tag and figure are still asserted on the row Submit draws
+# (waitreason.test.tsx, blockers.belowunits.test.tsx); a disabled profile on
+# the Profiles matrix (honesty.capacity.test.tsx, CP-3).
+#
 # WHAT STAYED IN PYTHON, and why it is not a grep in disguise. Section 1 above
 # asserts the ABSENCE of arithmetic in `headroomFor` -- `Infinity`,
 # `Math.floor`, `.available`. No behavioural test can assert that a function

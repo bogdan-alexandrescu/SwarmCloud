@@ -37,7 +37,7 @@ import {
 } from '../Brand'
 import { App } from '../App'
 import { Screen } from '../Shell'
-import { WorkflowBoardScreen } from '../Workflows'
+import { WorkflowsScreen } from '../Workflows'
 import type { Me } from '../types'
 import { flatRules, type CascadeEnv } from './cssgate'
 import { painted } from './marks'
@@ -801,30 +801,24 @@ describe('CH-20: the identity at phone width', () => {
 // ---------------------------------------------------------------------------
 
 describe('B17: an identifier is never restyled', () => {
-  it('leaves the workflow id alone inside the section heading', async () => {
+  it('leaves the workflow id alone inside the page heading', async () => {
     const style = withStyles()
-    render(<WorkflowBoardScreen />)
+    // One workflow's page (Workflows V2): its heading IS the id. The board's
+    // row heading this used to read was removed with the board (2026-10-01).
+    render(<WorkflowsScreen view="wf=wf_audit_01" />)
 
     // The real screen, the real fixture id, the real stylesheet.
-    const id = await screen.findByText('wf_audit_01', {}, { timeout: 4000 })
-    const heading = id.closest('h2')
-    expect(heading, 'the workflow id is no longer inside the section heading').toBeTruthy()
+    const heading = await screen.findByRole('heading', { level: 1, name: 'wf_audit_01' }, { timeout: 4000 })
 
-    expect(getComputedStyle(id).textTransform).toBe('none')
+    // No case shift at all: none declared, or `none` declared.
+    expect(['', 'none']).toContain(getComputedStyle(heading).textTransform)
     // The text is the id as the API serves it, in lower case, paste-ready.
-    expect(id.textContent).toBe('wf_audit_01')
+    expect(heading.textContent).toBe('wf_audit_01')
 
-    // §B4.1 MOVED THE OTHER HALF OF THIS TEST. `.section > h2` used to be
-    // `text-transform: uppercase`, and this test read that back to prove it
-    // was not passing because the defect had evaporated for some unrelated
-    // reason. The type scale fixed the inversion -- a panel title was drawn
-    // smaller and fainter than its own rows -- so the heading is now
-    // --t-lead in --text (TS-18) and no longer uppercases anything. The precondition
-    // therefore moved to a rule that still DOES case-shift, in the next test
-    // (`.ctl-chip`, which the restraint pass moved from uppercase to
-    // lowercase); it did not get deleted, because a B17 assertion with nothing
-    // transforming above it passes on an empty stylesheet.
-    expect(getComputedStyle(heading!).textTransform).not.toBe('uppercase')
+    // The precondition lives in the next test (`.ctl-chip`, a rule that still
+    // case-shifts); a B17 assertion with nothing transforming above it passes
+    // on an empty stylesheet.
+    expect(getComputedStyle(heading).textTransform).not.toBe('uppercase')
     style.remove()
   })
 
