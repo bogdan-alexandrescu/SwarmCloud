@@ -12953,3 +12953,32 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-wf-opts { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 var(--ctl-gutter); font-size: var(--t-meta); }
 .sbf-wf-opts legend { padding: 0; margin-bottom: 4px; color: var(--text-dim); }
 .sbf-wf-opts input[type='number'] { width: 7em; font: var(--t-body)/var(--lh-body) var(--mono); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+
+/* ======================================================================== */
+/* --- Workflows V2 (workflows.html): list, one workflow, switcher -------- */
+/* ======================================================================== */
+/* (Workflows V2 rules go above this line.) */
+
+
+/* ======================================================================== */
+/* --- Capacity (capacity.html): ceilings, matrix, accounts --------------- */
+/* ======================================================================== */
+/* (Capacity rules go above this line.) */
+
+
+/* ======================================================================== */
+/* --- Admin (admin-help.html): Pool limits L2, Tenants, Platform counts -- */
+/* ======================================================================== */
+/* (Admin rules go above this line.) */
+
+
+/* ======================================================================== */
+/* --- Submit task (submit.html): one page, sticky summary, stages -------- */
+/* ======================================================================== */
+/* (Submit rules go above this line.) */
+
+
+/* ======================================================================== */
+/* --- Agents V1 remainder (agents.html): compact rows, hover cards, phone - */
+/* ======================================================================== */
+/* (Agents rules go above this line.) */
