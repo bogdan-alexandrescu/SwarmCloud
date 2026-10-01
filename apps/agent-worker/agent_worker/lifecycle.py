@@ -6969,6 +6969,27 @@ def _windowed_body(text: str, start: int, stop: int) -> str:
     return "".join(runs)
 
 
+_BASE64_LINE = re.compile(r"[ \t]*[A-Za-z0-9+/]+={0,2}[ \t]*\r?")
+
+
+def _lines_above(text: str, marker_start: int) -> str:
+    """The run of whole base64 lines directly above an END marker that starts
+    its line, to the first line that is not base64 and no further than
+    `_PEM_BLOCK_MAX_CHARS` (as `_tail_start` in swarm_redaction does)."""
+    line_start = text.rfind("\n", 0, marker_start) + 1
+    if text[line_start:marker_start].strip():
+        return ""  # other text precedes the marker on its line
+    lines: list[str] = []
+    stop = line_start - 1  # the newline ending the line above
+    while stop >= 0:
+        above = text.rfind("\n", 0, stop) + 1
+        if not _BASE64_LINE.fullmatch(text, above, stop) or marker_start - above > _PEM_BLOCK_MAX_CHARS:
+            break
+        lines.append(text[above:stop].strip())
+        stop = above - 1
+    return "".join(reversed(lines))
+
+
 def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
     """Where the first private-key block with a REAL body starts, or None.
 
@@ -7000,6 +7021,17 @@ def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
         stop = end.start() if end is not None else marker.end() + _PEM_WINDOW_CHARS
         if _body_is_real(_windowed_body(text, marker.end(), stop)):
             return marker.start()
+    # Any private-key marker plus a traditional-encrypted header ANYWHERE in
+    # the added text is a key: the headers may sit in a variable defined
+    # before the BEGIN or past the window. Stubs never carry them.
+    if (begin.search(text) or _PEM_END_MARKER.search(text)) and _PEM_ENCRYPTED_HEADER.search(text):
+        first = begin.search(text) or _PEM_END_MARKER.search(text)
+        return first.start()
+    # An END marker with whole base64 lines directly above it: its body, as
+    # `_tail_start` in swarm_redaction masks it, however far BEGIN is.
+    for end in _PEM_END_MARKER.finditer(text):
+        if _body_is_real(_lines_above(text, end.start())):
+            return end.start()
     # A marker whose own body is no key may still have its key elsewhere in
     # the file; look at all of the added text, by shape only.
     # An END marker alone counts too: its BEGIN may be split or unchanged.
