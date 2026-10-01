@@ -12981,4 +12981,93 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Agents V1 remainder (agents.html): compact rows, hover cards, phone - */
 /* ======================================================================== */
+/* THE COMPACT ROW: two lines beside an open agent (Agents.tsx `CompactRow`).
+   Line one is the mark, the name and the elapsed time; line two the profile,
+   owner and try; the reason a row waits or stopped follows, never dropped.
+   The state's word stays in the row's accessible name; the mark is what the
+   drawing shows, as the strip does. */
+.app.has-inspector .row.is-compact {
+  grid-template-columns: [state] auto [name] minmax(0, 1fr) [age] auto;
+  column-gap: var(--ctl-s2);
+  row-gap: 2px;
+  align-items: baseline;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.app.has-inspector .row.is-compact > .ctl-chip { font-size: 0; }
+.app.has-inspector .row.is-compact > .cr-name { grid-column: name; }
+.app.has-inspector .row.is-compact > .cr-name b {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.app.has-inspector .row.is-compact > .when { grid-column: age; white-space: nowrap; }
+.app.has-inspector .row.is-compact > .cr-sub,
+.app.has-inspector .row.is-compact > .why { grid-column: name / -1; }
+.cr-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+.cr-sub .id { font-family: var(--mono); }
+.cr-try.is-over { color: var(--bad); font-weight: 600; }
+
+/* THE STRIP'S HOVER CARD: the agent a bare mark stands for, beside it. Fixed,
+   in a portal on <body>, because the list column clips; never a pointer
+   target, so it cannot steal the hover from the row that drew it. */
+.ag-hovcard {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  box-shadow: var(--ctl-shadow-pop);
+  pointer-events: none;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.ag-hovcard > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.ag-hovcard > small { color: var(--text-dim); }
+.ag-hovcard-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); }
+.ag-hovcard-when { font-family: var(--mono); color: var(--text-dim); }
+.ag-hovcard-hint { color: var(--text-faint); }
+
+/* THE AGENT PAGE'S BACK LINK (App.tsx `AgentDrawer`). Wherever the agent
+   covers the list -- below 1100px -- it is the way back; beside the list
+   there is nothing to go back to. */
+.ctl-agent-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--info);
+  cursor: pointer;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+}
+.ctl-agent-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+@media (min-width: 1100px) {
+  .ctl-agent-back { display: none; }
+}
+/* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
+   agent open the list is not drawn behind it, and the back link replaces the
+   close cross. */
+@media (max-width: 560px) {
+  .app.has-inspector > .work { display: none; }
+  .app.has-inspector > .ctl-drawer > .drawer-close { display: none; }
+}
+
 /* (Agents rules go above this line.) */

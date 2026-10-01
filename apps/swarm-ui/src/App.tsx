@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, parseAgentList, type AgentList } from './agentlist'
+import { agentListPath, backLabel, parseAgentList, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -1735,6 +1735,13 @@ function AgentDrawer({
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       />
+      {/* THE WAY BACK TO THE LIST (agents.html V1, decided 2026-10-01): on a
+          phone the list and the agent are two pages, and this is the agent
+          page's back link. Shown wherever the agent covers the list (below
+          1100px); beside the list there is nothing to go back to. */}
+      <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
+        ‹ {backLabel(closeTo)}
+      </button>
       <button className="drawer-close" onClick={close} aria-label="Close">
         ✕
       </button>
