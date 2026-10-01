@@ -19,7 +19,7 @@ guideline.
 | Line | Driver | Control |
 |---|---|---|
 | Agent compute | concurrent agents x wall clock x class | slot pools, timeouts, right-sizing |
-| Provider tokens | what the agent does | usually the biggest line; per-tenant budgets |
+| Provider tokens | what the agent does | usually the biggest line; provider pools, recorded per attempt (no budgets, §2) |
 | Control plane | Cloud Run min-instances and request volume | scale to zero where latency allows |
 | GCS | checkpoints + artifacts | lifecycle rules, retention days |
 | Firestore | documents + reads | aggregation queries instead of scans |
@@ -55,15 +55,43 @@ With `global = 100`, `standard` at roughly $0.20/hour and 40% utilisation, the
 cloud side lands near $5.8k/month. The provider side is separate and typically
 larger.
 
-Per-tenant budgets park work rather than failing it:
+**There are no per-tenant dollar budgets. They are not built and not planned**
+(owner decision, 2026-10-01). A tenant's spend is bounded by the pools above —
+`max_active` and `capacity_units` — which the scheduler enforces on every
+admission:
 
 ```bash
 ./scripts/api.sh PUT /admin/tenants/eng/limits \
-    '{"max_active": 25, "capacity_units": 50, "monthly_budget_usd": 2000}'
+    '{"max_active": 25, "capacity_units": 50}'
 ```
 
-A tenant over budget gets `PARKED(BUDGET_EXHAUSTED)` — free, resumable,
-unsurprising — instead of failed tasks someone retries by hand.
+What exists, and what does not:
+
+* **Per-attempt cost IS recorded.** The worker's `record_spend`
+  (`apps/agent-worker/agent_worker/control.py:1119`), called from every exit by
+  `_record_spend` (`apps/agent-worker/agent_worker/lifecycle.py:5965`), writes
+  the runner's token counts and `cost_usd` onto the attempt
+  (`apps/common/swarm_common/models.py:372`). It is the provider cost the runner
+  reports — `total_cost_usd` from the CLI's result — not the cloud bill, and a
+  cost the runner did not report is omitted, not written as zero. The attempts
+  list reports how many rows carry one
+  (`apps/swarm-api/swarm_api/routes/attempts.py:48`), because a sum over
+  partially reported rows is a lower bound that looks like a total.
+* **`monthly_budget_usd` is refused with a 422**
+  (`apps/swarm-api/swarm_api/routes/admin.py:266`). Storing it would echo a
+  number back with a 200 and enforce nothing, and an admin would believe they
+  had a spend control.
+* **`PARKED(BUDGET_EXHAUSTED)` is never written.** The value stays in the frozen
+  `ParkReason` enum (`apps/common/swarm_common/states.py:134`) because the enum
+  is frozen, not because anything uses it; no sweep reads it either
+  (`apps/scheduler/scheduler/loop.py:836`). Removing it is a request, not an
+  edit: [contract-change-requests.md](contract-change-requests.md) entry 39.
+
+The constraint anyone revisiting this would face: `record_spend` writes when an
+attempt ends, so a budget fed by it could only refuse the *next* admission after
+the money was spent, and a tenant at `max_active: 25` could overshoot by up to
+25 attempts' worth. Concurrency and capacity units bound spend *before* it
+happens, at admission, which is why they are the controls this platform keeps.
 
 ---
 

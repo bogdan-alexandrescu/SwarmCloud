@@ -325,8 +325,13 @@ described above. See [security.md](security.md#authentication) and
 # then, once nothing is using it:
 ./scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 
-# Limits. monthly_budget_usd is refused (422): nothing attributes cost, so it
-# could be stored but never enforced -- see routes/admin.py.
+# Limits. monthly_budget_usd is refused (422,
+# apps/swarm-api/swarm_api/routes/admin.py:266): there are no per-tenant
+# budgets, built or planned (owner decision, 2026-10-01). Per-attempt cost IS
+# recorded -- record_spend, apps/agent-worker/agent_worker/control.py:1119 --
+# but only after the attempt has spent it, so it cannot bound admission;
+# max_active and capacity_units do. PARKED(BUDGET_EXHAUSTED) stays in the
+# frozen enum and nothing writes it (docs/cost-control.md section 2).
 ./scripts/api.sh PUT /admin/tenants/eng/limits \
     '{"max_active": 25, "capacity_units": 50}'
 

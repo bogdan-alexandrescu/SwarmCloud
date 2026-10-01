@@ -1,9 +1,14 @@
 # SwarmCloud v2 — build prompt
 
-**Status:** specification, not yet built.
-**Supersedes:** `gcp_zero_idle_agent_swarm_build_prompt.md` (v1), which is built,
-deployed and running. v2 keeps v1's control plane and replaces its execution
-substrate.
+**Status:** built in part, and amended to what is built (owner decisions,
+2026-10-01). The control plane, the account pool (`apps/quota-broker`), the
+`/swarm` bridge (`apps/swarm-mcp`) and the dashboard (`apps/swarm-ui`) exist in
+this repository. The substrate did NOT move: Cloud Run Jobs stay the primary
+execution backend and GKE Autopilot runs only the browser runner — §2.1 says
+why. What is deployed is a different, dated question: read
+[`DEPLOY_STATE.md`](DEPLOY_STATE.md), not this line.
+**Supersedes:** `gcp_zero_idle_agent_swarm_build_prompt.md` (v1). v2 keeps v1's
+control plane and its execution substrate, and adds to them.
 
 Read `CONTRACT.md` for the invariants v1 froze. §9 of this document lists the
 ones v2 changes and why; everything not listed there still holds.
@@ -32,35 +37,99 @@ Every one of these was made deliberately. Where a decision costs something, the
 cost is written down next to it, because the reason a decision looks wrong in
 six months is usually that its cost was never recorded.
 
-### 2.1 Substrate: GKE Autopilot, and only GKE Autopilot
+### 2.1 Substrate: Cloud Run Jobs primary, GKE Autopilot for the browser runner
 
-Everything is a pod. One scheduler, one reaper, one log path, one resource
-model, no "which backend" branching anywhere in the code or the dashboard.
+**Amended 2026-10-01 by owner decision; the spec moved to match the code, not
+the other way round.** This section originally made GKE Autopilot the sole
+execution substrate, with every task a pod, and retired Cloud Run Jobs. That was
+never built. What runs is:
 
-**What this buys:** `PersistentVolumeClaim` if ever needed, `kubectl exec` into a
-running agent, `kubectl logs -f`, up to ~28 vCPU / 80 GiB per pod, extended run
-time so a node upgrade does not evict a working agent.
+| profile | backend | where the catalogue says so |
+|---|---|---|
+| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1078` |
+| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:992` |
+| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1094` |
+| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1111` |
+| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1140` |
 
-**What it costs, plainly:**
+`BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`) sends
+`CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
+(`apps/scheduler/scheduler/dispatch.py:689`) and `GKE_AUTOPILOT` to
+`GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py:1334`); the module
+header (`apps/scheduler/scheduler/dispatch.py:8`) states the same split. No
+profile is `AUTO`, so `resolve_backend`
+(`apps/common/swarm_common/profiles.py:1150`) only passes the declared backend
+through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue
+and fails when this table stops matching it.
 
-* **The Cloud Run Jobs backend is retired.** That is working, proven, tested code
-  — the dispatcher, the per-tenant Job resources, the custom `swarmJobDispatcher`
-  and `swarmJobReaper` roles, and the terraform module that builds them. It is
-  deleted, not left dormant: a second backend nobody exercises is a second
-  backend that silently rots.
-* Autopilot bills a **minimum 0.25 vCPU / 0.5 GiB and one minute per pod**. A
-  ten-second mock task now costs what a sixty-second one does.
-* **Cold start on every task.** There is no warm path any more.
-* A cluster management fee (~$0.10/hr list) replaces v1's literal zero. The GKE
-  free tier credit covers roughly one cluster; verify against the actual bill
-  rather than trusting this sentence.
+**Why Cloud Run Jobs stay primary.** The v1 rationale in
+`docs/architecture.md` §5 ("Cloud Run Jobs is the primary backend, not GKE
+Autopilot") still holds: Autopilot has nodes, and nodes have autoscalers,
+upgrades, repairs and pressure eviction — each a way to end a running agent for
+a reason unrelated to the agent. Cloud Run Jobs has no nodes to upgrade, no
+autoscaler to compact work onto fewer machines and no node pool to repair. The
+GKE-only plan would have traded that for `kubectl exec`, `kubectl logs -f` and
+bigger pods, and taken on a cluster fee, a 0.25 vCPU / 0.5 GiB / one-minute
+minimum per pod, and a second rewrite of a dispatcher that is proven. The owner
+chose to keep the proven path.
 
-**Zero-idle is now a property of the WORKLOAD, not of the bill.** Say it that way
-in the README. v1's headline claim does not survive this decision intact, and
-pretending otherwise would be the kind of thing that gets discovered by an
-invoice.
+**Why the browser runner is on GKE.** Chromium needs a large `/dev/shm`, and GKE
+gives direct control over it (`apps/scheduler/scheduler/dispatch.py:8`). That is
+the only profile on GKE today. GPU work and anything over 32 GiB would also need
+GKE, but no such profile exists: `ResourceClass` refuses more than 8 vCPU or
+32 GiB at import (`apps/common/swarm_common/profiles.py:65`).
+
+**What this costs, plainly.** Two backends means two dispatchers, two reap
+paths and two log paths, and a dashboard that has to say which one a task ran
+on. That is the "which backend" branching this section originally set out to
+delete, kept on purpose. `kubectl exec` and `kubectl logs -f` exist for browser
+tasks only; a Cloud Run task is read through Cloud Logging and the structured
+events. The gVisor shape in §2.2 is a render option for GKE pods
+(`kubernetes/render.py:390`, `--runtime gvisor`), not the default, and does not
+apply to Cloud Run Jobs at all.
+
+**Workspace storage: memory, GA, live migration.** Cloud Run's disk-backed
+ephemeral volume is **Preview** and **disables live migration**, which would
+partially undermine the reason Cloud Run was chosen. This platform does not use
+it: the Terraform google provider cannot express it (`empty_dir.medium` accepts
+only `"MEMORY"`, `terraform/modules/cloud_run_jobs/main.tf:107`), so the
+workspace is a memory-backed **tmpfs** carved out of the container's memory
+limit (`apps/common/swarm_common/profiles.py:68`,
+`apps/scheduler/scheduler/dispatch.py:153`), and every Job is created on launch
+stage **GA** (`terraform/modules/cloud_run_jobs/main.tf:53`,
+`apps/scheduler/scheduler/dispatch.py:827`). The GA path **does** support live
+migration. That is the CLAUDE.md "Correction (workspace storage)", and the
+consequence is that `disk_gib` is a slice of `memory_gib`, not extra capacity.
+
+**Checkpointing is still mandatory**, but not because of live migration. A
+worker can still lose its attempt to a quota park-and-exit, a cancellation, a
+reconciler reclaim of a stale generation, or an ordinary crash; checkpointing is
+what makes any of those cost minutes instead of the whole attempt. Live
+migration covers infrastructure moves, not those application-level
+interruptions, so it is no ground for relaxing checkpointing.
+
+**Spot stays off on both backends.** Spot Pods cannot use Autopilot extended run
+time, so on the GKE side "Spot preferred" is impossible here rather than merely
+undesirable (CONTRACT.md invariant 6).
+
+**Zero-idle stays a property of the workload, and mostly of the bill too.**
+Cloud Run Jobs costs nothing between executions. The GKE side carries the
+cluster management fee (~$0.10/hr list) whether or not a browser task runs;
+verify that against the actual bill rather than trusting this sentence.
 
 ### 2.2 Isolation: root inside the pod, gVisor underneath
+
+> **Amended 2026-10-01: this section is unbuilt v2 design, not what runs.**
+> No profile runs as root and no profile runs under gVisor by default. The agent
+> image drops to `USER swarm:swarm`, uid 10001
+> (`images/agent-runtime-base/Dockerfile:658`), on both backends, and an agent
+> installs into its own user paths (§2.12). gVisor is the `--runtime gvisor`
+> render option for GKE pods (`kubernetes/render.py:390`), not the default, and
+> Cloud Run Jobs has no runtime class at all. So the boundary this section
+> describes, root made safe by a sandbox underneath it, does not exist: today's
+> boundary is an unprivileged user inside the backend's own isolation. Do not
+> grant root on the strength of the reasoning below; it holds only once a
+> profile actually renders the gVisor template.
 
 Agents run as **root with a writable root filesystem** and can `apt-get install`
 anything. This is required: an agent that cannot install the tool it needs is an
@@ -247,6 +316,17 @@ refresh disabled, and let the broker own it.
 §7.3 applies with full force: one-writer must be **enforced**, not asserted.
 
 #### 2.6.3 Dispatch — the pod starts already logged in
+
+> **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
+> v2 design. What runs: the worker process itself asks the broker for an
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3285`), gets a
+> Secret Manager secret NAME back, reads the value under its own service
+> account and shapes it into the agent child's environment
+> (`apps/agent-worker/agent_worker/lifecycle.py:3392`,
+> `apps/agent-worker/agent_worker/accountlease.py:445`). That is the same on a
+> Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
+> rather than in a pod spec only one backend has. The broker stays the single
+> writer (§7.3); the worker never refreshes.
 
 ```
 admission  → broker picks the account with the most headroom
@@ -493,6 +573,15 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 
 ## 3. Architecture
 
+> **Amended 2026-10-01.** The diagram is the v2 design and draws one execution
+> box. What is built has two (§2.1): Cloud Run Jobs for `mock`, `generic`,
+> `claude-code` and `codex`, and GKE Autopilot for `browser`, routed by
+> `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`).
+> Neither box is "root, sandboxed": the worker runs as uid 10001
+> (`images/agent-runtime-base/Dockerfile:658`) and gVisor is opt-in
+> (`kubernetes/render.py:390`), see §2.2. There is no credential sidecar; the
+> worker leases its account itself (§2.6.3).
+
 ```
   laptop                          GCP
   ──────                          ───
@@ -552,9 +641,12 @@ v1 built these and they are correct. They are not rewritten:
 
 ## 5. What gets built
 
-1. **GKE Autopilot substrate** — cluster, gVisor runtime class, per-tenant
-   namespaces, NetworkPolicies, the pod spec, RBAC.
-2. **Pod dispatcher** replacing the Cloud Run Jobs dispatcher.
+1. **GKE Autopilot substrate, for the browser runner** — cluster, per-tenant
+   namespaces, NetworkPolicies, the pod spec, RBAC. gVisor is a render option,
+   not the default (§2.1).
+2. **Pod dispatcher** beside the Cloud Run Jobs dispatcher, not replacing it
+   (amended 2026-10-01, §2.1): `GkeJobDispatcher` takes `GKE_AUTOPILOT`
+   profiles and `CloudRunJobDispatcher` keeps the rest.
 3. **Sharded pool counters** preserving all-or-nothing admission.
 4. **Account pool** — broker-side policy (assignment, headroom, drain, refresh
    for N, still one writer) over claudeswitch as the pod-side mechanism.
@@ -574,15 +666,18 @@ v1 built these and they are correct. They are not rewritten:
 
 ## 6. What gets deleted
 
-Deleted, not deprecated. A backend nobody exercises is a backend that rots.
+Nothing, as amended 2026-10-01. This section listed the Cloud Run Jobs backend
+for deletion: its Terraform module, its scheduler dispatch path, the
+`swarmJobDispatcher` and `swarmJobReaper` custom roles, and the `Backend`
+enum's Cloud Run member with every branch on it. The owner kept Cloud Run Jobs
+as the primary backend instead (§2.1), so all of those stay, and are NOT
+deleted. They carry four of the five profiles.
 
-* `terraform/modules/cloud_run_jobs/` and its tests.
-* The Cloud Run Jobs dispatch path in the scheduler.
-* `swarmJobDispatcher` and `swarmJobReaper` custom roles.
-* The `Backend` enum's `CLOUD_RUN_JOB` member and every branch on it.
+The original argument — a backend nobody exercises is a backend that rots —
+still holds, and is why the GKE path is not dormant either: the `browser`
+profile exercises it on every browser task.
 
-The control-plane services stay on Cloud Run. Only the *execution* substrate
-moves.
+The control-plane services stay on Cloud Run, and so does most execution.
 
 ---
 
@@ -651,11 +746,15 @@ compared to discovering the answer halfway through.
 v2 contradicts the frozen contract in specific places. These are **requests**, per
 `CLAUDE.md`, not changes made unilaterally:
 
-* **Cloud Run Jobs as the primary backend** → GKE Autopilot as the only backend.
-* **"No nodes, no autoscaler, no node upgrades to evict"** → false under v2. The
-  replacement guarantee is extended run time plus gVisor, and it is a weaker,
-  more operationally demanding promise. Say so.
-* **Zero idle cost** → zero idle *workload*. A cluster fee exists.
+* ~~**Cloud Run Jobs as the primary backend** → GKE Autopilot as the only
+  backend.~~ **Declined 2026-10-01 (owner):** Cloud Run Jobs stay primary and
+  the contract's "Primary backend" line stands, now naming each profile (§2.1).
+* ~~**"No nodes, no autoscaler, no node upgrades to evict"** → false under v2.~~
+  Still true for the four Cloud Run profiles; it was only ever false for the
+  browser runner on GKE, where the guarantee is extended run time, a weaker and
+  more operationally demanding promise.
+* **Zero idle cost** → zero idle *workload*. A cluster fee exists for the GKE
+  side (§2.1).
 * **Non-root, read-only rootfs, dropped capabilities** → root, writable rootfs,
   gVisor. The defence moved down a layer; it did not disappear, and it is not the
   same defence.
@@ -673,8 +772,9 @@ Ordered by what unblocks what, not by what is most interesting.
 1. **Spikes 1, 2, 3** from §8. Two of them can invalidate whole components.
 2. **Autopilot substrate** — cluster, gVisor, namespaces, RBAC, NetworkPolicies.
 3. **Pod dispatcher**, with the existing profile catalogue unchanged.
-4. **One real `claude-code` agent in a pod**, end to end. Same milestone v1
-   reached with Cloud Run Jobs, re-proven on the new substrate.
+4. ~~**One real `claude-code` agent in a pod**, end to end.~~ Withdrawn
+   2026-10-01: `claude-code` stays on Cloud Run Jobs, where v1 already reached
+   this milestone (§2.1).
 5. **Structured events** — the dashboard and two stall signals both need them.
 6. **Internal LB + IAP** — prerequisite for the dashboard and for any second user.
 7. **Dashboard.**
