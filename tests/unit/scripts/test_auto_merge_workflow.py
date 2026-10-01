@@ -261,14 +261,50 @@ PROTECTED = {"name": "main", "protected": True, "protection": {"enabled": True, 
 UNPROTECTED = {"name": "main", "protected": False, "protection": {"enabled": False, "required_status_checks": {
     "enforcement_level": "off", "contexts": [], "checks": [],
 }}}
+# What `GET repos/{repo}/branches/main` returned for this repository on
+# 2026-10-01: `protected` is true because a RULESET protects main, while the
+# classic `.protection` block is off and lists no check. Read alone, it is
+# "main has no required status checks" -- the refusal every `ready` label got
+# (run 36822836560, #412; #403).
+RULESET_ONLY_BRANCH = {"name": "main", "protected": True, "protection": {"enabled": False, "required_status_checks": {
+    "enforcement_level": "off", "contexts": [], "checks": [],
+}}}
+# `GET repos/{repo}/rules/branches/main` on 2026-10-01: the effective rules of
+# ruleset 24160219 (`main-protection`), five required checks.
+RULESET_CHECKS = [
+    "secret scan",
+    "trivy (repo)",
+    "checkov (terraform + kubernetes)",
+    "platform policy assertions",
+    "ci-gate",
+]
+_RULE_SOURCE = {"ruleset_source_type": "Repository", "ruleset_source": "bogdan-alexandrescu/SwarmCloud",
+                "ruleset_id": 24160219}
+RULESET_RULES = [
+    {"type": "deletion", **_RULE_SOURCE},
+    {"type": "non_fast_forward", **_RULE_SOURCE},
+    {"type": "pull_request", **_RULE_SOURCE, "parameters": {"required_approving_review_count": 0}},
+    {"type": "required_status_checks", **_RULE_SOURCE, "parameters": {
+        "strict_required_status_checks_policy": False,
+        "do_not_enforce_on_create": False,
+        "required_status_checks": [{"context": c} for c in RULESET_CHECKS],
+    }},
+]
 
 FAKE_GH = r"""#!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
 if [[ "${1:-}" == "api" ]]; then
-  case "${2:-}" in
+  # The endpoint is the argument starting `repos/`, wherever flags put it.
+  path=""
+  for arg in "$@"; do
+    case "${arg}" in repos/*) path="${arg}" ;; esac
+  done
+  case "${path%%\?*}" in
     */check-runs) cat "${FAKE_GH_CHECK_RUNS}" ;;
-    *) cat "${FAKE_GH_BRANCH}" ;;
+    */rules/branches/*) cat "${FAKE_GH_RULES}" ;;
+    */branches/*) cat "${FAKE_GH_BRANCH}" ;;
+    *) echo "fake gh: unexpected endpoint: $*" >&2; exit 3 ;;
   esac
   exit 0
 fi
@@ -308,9 +344,13 @@ def run_gate(job: dict, tmp_path: Path):
         base_ref: str = "main",
         head_sha: str = "0000000000000000000000000000000000abcd",
         check_runs: list[dict] | None = None,
+        rules: list[dict] | None = None,
     ):
         branch_file = tmp_path / "branch.json"
         branch_file.write_text(json.dumps(branch))
+        rules_file = tmp_path / "rules.json"
+        # Default: no ruleset applies, so only classic protection can count.
+        rules_file.write_text(json.dumps(rules if rules is not None else []))
         check_runs_file = tmp_path / "check-runs.json"
         # Default: nothing else has reported on this head, so item 5 passes.
         check_runs_file.write_text(json.dumps({"check_runs": check_runs if check_runs is not None else []}))
@@ -333,6 +373,7 @@ def run_gate(job: dict, tmp_path: Path):
             "FAKE_GH_LOG": str(log),
             "FAKE_GH_BRANCH": str(branch_file),
             "FAKE_GH_CHECK_RUNS": str(check_runs_file),
+            "FAKE_GH_RULES": str(rules_file),
             "FAKE_GH_COMMENTS": str(comments),
         }
         proc = subprocess.run(
@@ -433,6 +474,66 @@ def test_protection_without_checks_is_refused(run_gate):
     proc, _calls, comments = run_gate("A fact-style headline", branch)
     assert proc.returncode != 0
     assert "required" in comments.lower(), comments
+
+
+# Owner decision, 2026-10-01: main is protected by a repository RULESET
+# (24160219), not classic branch protection, so the gate counts the effective
+# rules for the branch and unions classic protection's checks into them.
+
+
+def test_a_ruleset_s_required_checks_count_when_classic_protection_has_none(run_gate):
+    """The defect of 2026-10-01: every `ready` label was refused with "main has
+    no required status checks" while ruleset 24160219 required five.
+    MUTATION: read only `branches/main` `.protection`, as before."""
+    proc, calls, comments = run_gate("A fact-style headline", RULESET_ONLY_BRANCH, rules=RULESET_RULES)
+    assert proc.returncode == 0, proc.stderr + proc.stdout + comments
+    assert comments == "", comments
+    assert "rules/branches/main" in calls, calls
+    assert "gate passed: 5 required check(s) on main" in proc.stdout, proc.stdout
+
+
+def test_classic_and_ruleset_checks_are_counted_once_each(run_gate):
+    """A repository that keeps classic protection, or moves back to it, still
+    counts; a check required by both is one check, not two.
+    MUTATION: drop the classic read, drop the ruleset read, or drop `unique`."""
+    branch = {"name": "main", "protected": True, "protection": {"enabled": True, "required_status_checks": {
+        "enforcement_level": "non_admins",
+        "contexts": ["trivy (repo)", "shellcheck"],
+        "checks": [{"context": "trivy (repo)", "app_id": 15368}, {"context": "shellcheck", "app_id": 15368}],
+    }}}
+    proc, _calls, comments = run_gate("A fact-style headline", branch, rules=RULESET_RULES)
+    assert proc.returncode == 0, proc.stderr + proc.stdout + comments
+    # Five from the ruleset, plus shellcheck; trivy (repo) is in both.
+    assert "gate passed: 6 required check(s) on main" in proc.stdout, proc.stdout
+
+
+@pytest.mark.parametrize(
+    "rules",
+    [
+        [],
+        [rule for rule in RULESET_RULES if rule["type"] != "required_status_checks"],
+        [rule if rule["type"] != "required_status_checks" else {**rule, "parameters": {
+            **rule["parameters"], "required_status_checks": []}} for rule in RULESET_RULES],
+    ],
+    ids=["no-rules", "ruleset-without-status-checks", "status-check-rule-with-no-checks"],
+)
+def test_no_required_check_in_either_ruleset_or_classic_protection_is_refused(run_gate, rules: list[dict]):
+    """A ruleset that protects main without requiring a check gives auto-merge
+    nothing to wait for. MUTATION: count the rules instead of their checks."""
+    proc, calls, comments = run_gate("A fact-style headline", RULESET_ONLY_BRANCH, rules=rules)
+    assert proc.returncode != 0, "a base branch requiring no check passed the gate"
+    assert "rules/branches/main" in calls, calls
+    assert "pr comment 4242" in calls, calls
+    assert "required" in comments.lower() and "docs/ci.md" in comments, comments
+    assert "ruleset" in comments.lower(), comments
+
+
+def test_the_refusal_names_the_ruleset_not_classic_branch_protection(run_gate):
+    """The comment sends the owner to the mechanism this repository uses.
+    MUTATION: keep the old "applies branch protection" wording."""
+    proc, _calls, comments = run_gate("A fact-style headline", UNPROTECTED)
+    assert proc.returncode != 0
+    assert "ruleset" in comments.lower(), comments
 
 
 @pytest.mark.parametrize("app_id,has_key", [("", "true"), ("123456", "false"), ("", "false")])
