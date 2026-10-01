@@ -78,6 +78,30 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
 _MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
 
 
+def _named_task(data: Any) -> str:
+    """The task id a raw document names, or "" when it names none readably."""
+    task_id = data.get("task_id") if isinstance(data, dict) else None
+    return task_id if isinstance(task_id, str) else ""
+
+
+def _withhold(snapshot: ControlSnapshot, task_ids: set[str]) -> None:
+    """Take each task out of `snapshot.tasks` and record it as unreadable.
+
+    A task whose lease or attempt could not be decoded is judged on nothing
+    this pass. Left in `tasks`, it would be a task in a concurrency state with
+    no lease beside it -- which `detect_leaseless_tasks` requeues -- on the
+    strength of a lease that exists and was merely unreadable. Recorded in
+    `unreadable_tasks`, the set the orphan-execution and orphan-lease rules
+    already treat as "conclude nothing" (the same set a malformed TASK
+    document lands in).
+    """
+    for task_id in task_ids:
+        if not task_id:
+            continue
+        snapshot.tasks.pop(task_id, None)
+        snapshot.unreadable_tasks.add(task_id)
+
+
 class ControlStore:
     def __init__(
         self,
@@ -122,8 +146,27 @@ class ControlStore:
             filter=self._filter("released_at", "==", None)
         )
         cutoff = utcnow() - timedelta(hours=lease_lookback_hours)
+        # Task ids whose lease or attempt could not be decoded this pass. Each
+        # is withheld from `snapshot.tasks` below, so that no rule judges it on
+        # half the evidence -- see `_withhold`.
+        withheld: set[str] = set()
         for doc in leases_query.stream():
-            lease = LeaseView.from_doc(doc.to_dict() or {}, doc.id)
+            data = doc.to_dict() or {}
+            try:
+                lease = LeaseView.from_doc(data, doc.id)
+            except _MALFORMED_TASK_DOC as exc:
+                # The same rule as the task loop above, for the same reason: one
+                # document with `generation` or `units` of NaN or Infinity
+                # (`int()` raises on both) must not stop the pass for every
+                # tenant (#294).
+                self._log.warning(
+                    "a lease document is malformed and cannot be read; skipping it",
+                    lease_id=doc.id,
+                    task_id=_named_task(data),
+                    error=type(exc).__name__,
+                )
+                withheld.add(_named_task(data))
+                continue
             if lease.created_at is not None and lease.created_at < cutoff:
                 # Ancient unreleased leases are a data-integrity problem, not a
                 # reconciliation one; they are reported, never auto-repaired.
@@ -139,9 +182,22 @@ class ControlStore:
                 continue
             doc = self._db.collection("attempts").document(lease.attempt_id).get()
             if doc.exists:
-                snapshot.attempts[lease.attempt_id] = AttemptView.from_doc(
-                    doc.to_dict() or {}, lease.attempt_id
-                )
+                try:
+                    snapshot.attempts[lease.attempt_id] = AttemptView.from_doc(
+                        doc.to_dict() or {}, lease.attempt_id
+                    )
+                except _MALFORMED_TASK_DOC as exc:
+                    # An attempt document is the worker's, and a tenant's
+                    # agents can reach their tenant's documents
+                    # (docs/multi-tenancy.md); the same rule as a lease (#294).
+                    self._log.warning(
+                        "an attempt document is malformed and cannot be read; skipping it",
+                        attempt_id=lease.attempt_id,
+                        task_id=lease.task_id,
+                        error=type(exc).__name__,
+                    )
+                    withheld.add(lease.task_id)
+        _withhold(snapshot, withheld)
         return snapshot
 
     def task_and_attempts(self, task_id: str) -> tuple[TaskView | None, list[AttemptView]]:

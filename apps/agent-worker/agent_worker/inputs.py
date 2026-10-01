@@ -16,6 +16,20 @@ where the agent will find it.
                                                in work/repo and the prompt names
                                                this path in full -- #226)
 
+A step may opt in to staging every input under its PARENT'S STEP ID instead
+(#75, owner decision 2026-10-01, option (b)), so two parents that both write
+`notes.md` can feed one step:
+
+    metadata.input_from:              {"task_abc": "notes.md", "task_def": "notes.md"}
+    metadata.dispatch.input_parents:  {"task_abc": "scan-A",   "task_def": "scan-B"}
+      -> <workspace>/work/scan-A/notes.md
+      -> <workspace>/work/scan-B/notes.md
+
+`input_from` keeps its `{task id: filename}` shape; the step ids ride in the
+`dispatch` block, which swarm-api writes and the spec signature covers
+(`swarm_common.specsign.SIGNED_METADATA_KEYS`). A task with no
+`input_parents` stages exactly as it always did.
+
 Three properties are worth stating out loud, because each of them is a decision
 that could reasonably have gone the other way.
 
@@ -63,13 +77,36 @@ from .objectstore import ObjectStore, validate_key
 #: defensively here.
 METADATA_KEY = "input_from"
 
+#: Where swarm-api records each parent's STEP id for a step that opted in to
+#: `input_layout: "by_parent"` (#75): `metadata[DISPATCH_KEY][PARENTS_KEY]`,
+#: `{upstream task id: upstream step id}`. Its presence IS the opt-in. In the
+#: dispatch block rather than in `input_from` because `input_from` is read as
+#: `{task id: filename}` by the UI and the masking, and because the dispatch
+#: block is signed. swarm-api spells it `DispatchOptions.to_metadata`;
+#: tests/unit/control_plane/test_input_from_by_parent_layout.py runs this
+#: module on what the API stores, so the two cannot drift apart.
+DISPATCH_KEY = "dispatch"
+PARENTS_KEY = "input_parents"
+
 
 @dataclass(frozen=True)
 class DeclaredInput:
     """One `{upstream_task_id: filename}` entry, syntactically checked."""
 
     upstream_task_id: str
+    #: The artifact's name in the upstream's manifest. Also where it lands,
+    #: unless the step opted in to staging by parent.
     filename: str
+    #: The upstream's STEP id when the step opted in to `by_parent` (#75), else
+    #: None -- and None is today's layout, byte for byte.
+    parent_step_id: str | None = None
+
+    @property
+    def destination(self) -> str:
+        """Where this input lands, relative to the work directory."""
+        if self.parent_step_id is None:
+            return self.filename
+        return f"{self.parent_step_id}/{self.filename}"
 
 
 @dataclass(frozen=True)
@@ -160,12 +197,83 @@ def declared_inputs(metadata: Any) -> list[DeclaredInput]:
             )
         declared.append(DeclaredInput(upstream.strip(), filename.strip()))
 
+    parents = _declared_parents(metadata, declared)
+    if parents is not None:
+        declared = [
+            DeclaredInput(item.upstream_task_id, item.filename, parents[item.upstream_task_id])
+            for item in declared
+        ]
+
     _assert_distinct_destinations(declared)
     return declared
 
 
+def _declared_parents(
+    metadata: dict[str, Any], declared: list[DeclaredInput]
+) -> dict[str, str] | None:
+    """`metadata.dispatch.input_parents`, checked against `declared`; None when absent.
+
+    Absent is the common case and means today's layout. PRESENT BUT MALFORMED
+    RAISES, for the reason a malformed `input_from` does: the step opted in,
+    its prompt expects `<step>/<file>`, and staging at the bare filename
+    instead -- or not at all -- would hand the agent a workspace it was not
+    told about. swarm-api writes one entry per `input_from` entry, so a
+    missing or extra entry is a document nobody of ours wrote.
+
+    Each step id must be ONE safe path segment. The API's step-id pattern
+    already guarantees it; this is the worker not trusting a free-form dict.
+    """
+    block = metadata.get(DISPATCH_KEY)
+    if not isinstance(block, dict) or block.get(PARENTS_KEY) is None:
+        return None
+    # Every refusal below OPENS "metadata.input_from": the outcome classifier
+    # reads the opening of `last_error` (`swarm_api.outcomes`), and that is the
+    # opening it files under "inputs unavailable".
+    where = f"metadata.{DISPATCH_KEY}.{PARENTS_KEY}"
+    raw = block.get(PARENTS_KEY)
+    if not isinstance(raw, dict):
+        raise InputUnavailable(
+            f"metadata.{METADATA_KEY} is staged by parent step, and {where} must be "
+            f"a mapping of upstream task id to upstream step id, got {type(raw).__name__}"
+        )
+    wanted = {item.upstream_task_id for item in declared}
+    keys = {str(key).strip() for key in raw}
+    if keys != wanted:
+        raise InputUnavailable(
+            f"metadata.{METADATA_KEY} declares upstream tasks {sorted(wanted)}, and "
+            f"{where} names {sorted(keys)}; every declared input needs exactly "
+            "one parent step id to be staged under"
+        )
+    parents: dict[str, str] = {}
+    for key, step_id in raw.items():
+        text = step_id.strip() if isinstance(step_id, str) else None
+        if (
+            not text
+            or text in (".", "..")
+            or any(bad in text for bad in ("/", "\\", "\x00"))
+        ):
+            raise InputUnavailable(
+                f"metadata.{METADATA_KEY} is staged by parent step, and "
+                f"{where}[{key!r}] must be one upstream step id, a single path "
+                f"segment, got {step_id!r}"
+            )
+        parents[str(key).strip()] = text
+    if len(set(parents.values())) != len(parents):
+        raise InputUnavailable(
+            f"metadata.{METADATA_KEY} is staged by parent step, and {where} names "
+            f"one step id for two upstream tasks ({sorted(parents.items())}); a step "
+            "id is unique within a workflow"
+        )
+    return parents
+
+
 def _assert_distinct_destinations(declared: list[DeclaredInput]) -> None:
-    """Refuse two upstream tasks that stage the same filename.
+    """Refuse two upstream tasks that stage to the same destination.
+
+    Compared on `DeclaredInput.destination`: for a step that did not opt in
+    that is the filename, exactly as before; for a `by_parent` step it is
+    `<step>/<filename>`, which `_declared_parents` has already made distinct
+    -- this stays as defence in depth, not as the rule.
 
     `input_from` names the artifact in the UPSTREAM's prefix and that same name
     is where it lands here, so there is no way to say "take both patches". Two
@@ -176,7 +284,7 @@ def _assert_distinct_destinations(declared: list[DeclaredInput]) -> None:
     """
     by_name: dict[str, list[str]] = {}
     for item in declared:
-        by_name.setdefault(item.filename, []).append(item.upstream_task_id)
+        by_name.setdefault(item.destination, []).append(item.upstream_task_id)
     for filename, sources in sorted(by_name.items()):
         if len(sources) > 1:
             raise InputUnavailable(
@@ -428,7 +536,7 @@ def stage_inputs(
     # Pass 1: destinations. Every unsafe name is refused before a single
     # control-plane read, so a hostile filename costs nothing.
     destinations = {
-        item: destination_for(work, item.filename, reserved=reserved)
+        item: destination_for(work, item.destination, reserved=reserved)
         for item in declared
     }
 
