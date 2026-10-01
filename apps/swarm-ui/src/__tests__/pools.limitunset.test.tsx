@@ -70,7 +70,9 @@ function capacity(): Capacity {
 
 async function capacityRow(name: string): Promise<HTMLElement> {
   const raw = await screen.findAllByText(name, { selector: '.ctl-sub' }, WAIT)
-  return raw[0].closest('tr') as HTMLElement
+  const row = raw[0]?.closest('tr')
+  if (!row) throw new Error(`no capacity row for ${name}`)
+  return row
 }
 
 describe('Capacity draws a pool with no limit set as that, not as ok or limit 0', () => {
