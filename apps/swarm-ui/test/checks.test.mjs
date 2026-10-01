@@ -62,7 +62,7 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   assert.equal(check.status, 'found')
   assert.equal(check.problems.length, 1)
   const p = check.problems[0]
-  assert.match(p.headline, /1 workflow has not advanced in 10 minutes/)
+  assert.match(p.headline, /1 workflow has not advanced in 12 minutes/)
   assert.equal(p.n, 1)
   // `#work/workflows`, NOT `#agents/workflows`.
   //
@@ -132,17 +132,19 @@ test('THE STALL IS NEVER PHRASED AS A CAPACITY PROBLEM', () => {
   assert.match(p.detail, /nothing is holding capacity|none is holding capacity/)
 })
 
-test('MUTATION GUARD: the threshold is crossed at exactly 600 seconds', () => {
-  // Catches `>` in place of `>=`. Ten minutes on the nose is stalled; one
-  // second under is not.
+test('MUTATION GUARD: the threshold is crossed at exactly 720 seconds', () => {
+  // Catches `>` in place of `>=`. Twelve minutes on the nose is stalled; one
+  // second under is not. (#404 raised the dispatch deadline to 480s, which
+  // raised this threshold from 600 to 720 so it still clears deadline + p90
+  // cold start; contract request 37.)
   const at = deriveChecks(
-    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 600 })])) }),
+    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 720 })])) }),
     NOW,
   )
   assert.equal(checkNamed(at, 'Workflows').status, 'found')
 
   const under = deriveChecks(
-    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 599 })])) }),
+    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 719 })])) }),
     NOW,
   )
   assert.equal(checkNamed(under, 'Workflows').status, 'clear')
@@ -155,6 +157,19 @@ test('MUTATION GUARD: the threshold is above the measured cold start', () => {
   // quiet for 480s must stay clear.
   const checks = deriveChecks(
     inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 480 })])) }),
+    NOW,
+  )
+  assert.equal(checkNamed(checks, 'Workflows').status, 'clear')
+})
+
+test('MUTATION GUARD: the threshold clears the dispatch deadline plus the p90 cold start', () => {
+  // #404 moved `dispatch_timeout_seconds` from 300 to 480. 480 + the measured
+  // p90 cold start of 159.0s is about 639s -- a threshold at or below that sum
+  // can fire on a task that is merely still inside its deadline and its
+  // ordinary cold start, before anything could have fenced and redispatched
+  // it. 720 must stay clear at that sum.
+  const checks = deriveChecks(
+    inputs({ workflows: ok(workflowPage([workflow({ counts: { READY: 1 }, quietSeconds: 480 + 159 })])) }),
     NOW,
   )
   assert.equal(checkNamed(checks, 'Workflows').status, 'clear')
