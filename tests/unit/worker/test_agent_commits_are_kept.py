@@ -1284,3 +1284,101 @@ def test_a_placeholder_token_in_a_config_file_under_tests_is_refused(worker_fact
     text = _shape("key: ", "AK", "IA", "IOSFODNN7", "EXAMPLE", "\n")
     assert _rule_for(worker, "tests/secrets.yaml", text) is not None
     assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+# -- a key whose body sits outside the block, or whose lines carry a prefix (#411)
+#
+# The guard once judged only the text between BEGIN and END. Main refused any
+# marker; the tiered guard let a key through when its body was held elsewhere
+# (an f-string, `%`, a variable) or when its lines carried a log prefix.
+
+OUTSIDE_PATHS = ["src/app.py", "tests/test_x.py"]
+LOG_PATHS = ["src/app.py", "tests/test_x.py", "tests/fixtures/run.log"]
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode()
+
+
+def _rsa_der() -> bytes:
+    # SEQUENCE, long-form length, INTEGER 0, then random bytes: PKCS#1-shaped.
+    inner = bytes.fromhex("020100") + _RNG.randbytes(600)
+    return bytes.fromhex("3082") + len(inner).to_bytes(2, "big") + inner
+
+
+def _ed25519_der() -> bytes:
+    return bytes.fromhex("302e020100300506032b657004220420") + _RNG.randbytes(32)
+
+
+def _openssh_body() -> bytes:
+    return b"openssh-key-v1\x00" + _RNG.randbytes(250)
+
+
+KEY_BODIES = {"rsa": _rsa_der, "ed25519": _ed25519_der, "openssh": _openssh_body}
+
+
+def _begin(kind: str = "") -> str:
+    return _shape("-----", "BEGIN", kind, " PRIVATE", " KEY", "-----")
+
+
+def _end(kind: str = "") -> str:
+    return _shape("-----", "END", kind, " PRIVATE", " KEY", "-----")
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_key_assembled_by_an_f_string_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'BODY = "{body}"\n'
+            f'K = f"{_begin()}\\n{{BODY}}\\n{_end()}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_key_assembled_by_percent_with_the_pieces_after_end_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'key_b64 = "{body}"\n'
+            f'K = "{_begin(" RSA")}\\n%s\\n{_end(" RSA")}" % key_b64\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_body_in_a_separate_private_key_b64_variable_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'private_key_b64 = "{body}"\n'
+            f'HEAD = "{_begin()}"\nTAIL = "{_end()}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", LOG_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_log_prefixed_key_with_no_end_marker_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    lines = [body[i : i + 64] for i in range(0, len(body), 64)]
+    out = [f"2026-09-30T12:00:00Z INFO {_begin(' RSA')}"]
+    out += [f"2026-09-30T12:00:{i + 1:02d}Z INFO {line}" for i, line in enumerate(lines)]
+    assert _rule_for(worker, path, "\n".join(out) + "\n") == "private_key_block"
+
+
+def test_a_stub_marker_and_an_unrelated_non_der_blob_in_a_test_file_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    blob = "".join(_RNG.choice(_ALNUM + "+/") for _ in range(200))
+    # Start the blob so it cannot decode to a SEQUENCE.
+    blob = "A" + blob[1:]
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nBLOB = "{blob}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+def test_a_stub_marker_and_a_certificate_shaped_der_in_a_test_file_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    # SEQUENCE { SEQUENCE {...} ...}: first element is a SEQUENCE, not INTEGER 0/1.
+    inner = bytes.fromhex("30820100") + _RNG.randbytes(256) + _RNG.randbytes(300)
+    cert = bytes.fromhex("3082") + len(inner).to_bytes(2, "big") + inner
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) is None
