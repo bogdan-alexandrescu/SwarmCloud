@@ -42,6 +42,9 @@
 //   Runtimes      338     233       255
 //   Holders        94      83        95
 //   Accounts      474     227       250
+//   Accounts      (#379)  251       256   +4: the open row's "Holding now (N)"
+//                                         and "History" tabs, the only words
+//                                         the holder panel shows until clicked
 //
 // A ceiling that has to be RAISED is not a failure either -- a screen that
 // gains a genuinely new column gains words. It is a decision, and the point of
@@ -322,7 +325,7 @@ const BUDGET = {
   Pools: 215,
   Runtimes: 255,
   Holders: 95,
-  Accounts: 250,
+  Accounts: 256,
 } as const
 
 function report(screenName: keyof typeof BUDGET): void {

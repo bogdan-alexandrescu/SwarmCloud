@@ -73,11 +73,13 @@ an expiry.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
-from ..auth import AuthContext
+from ..accountholds import TaskCheck, Viewer, history_view, holders_view, own_page, viewer_of
+from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
 from ..deps import AppContext, current_auth, get_context
 from ..errors import Forbidden, NotFound, ValidationFailed
@@ -91,6 +93,12 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
+
+#: The (method, template) `require_admin` is handed for `scope=platform` on the
+#: two holder reads. Not in POOL_ADMIN_ROUTES, so a pool admin asking for the
+#: platform view is refused like any non-admin -- the `outcomes.py` pattern.
+HOLDERS_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/holders")
+HISTORY_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/history")
 
 
 def account_pool(
@@ -382,3 +390,215 @@ def remove_account(
     """
     _owned(pool, _tenant_id(ctx, auth), account_id)
     return pool.remove(account_id)
+
+
+# --------------------------------------------------------------------------
+# Who holds an account, and who held it (#379 parts 2 and 3)
+# --------------------------------------------------------------------------
+#
+# The broker serves these to a PLATFORM caller with every tenant's tasks in
+# them. Every bit of per-viewer filtering is `accountholds.py`'s, given the
+# caller's RESOLVED tenant and whether it owns the account; see that module for
+# what each viewer is shown and why. Nothing here logs a task id: a log line is
+# readable by people the response is not.
+
+
+def _viewer(
+    scope: str | None,
+    account_id: str,
+    auth: AuthContext,
+    ctx: AppContext,
+    pool: AccountPool,
+    platform_route: tuple[str, str],
+) -> tuple[Viewer, str | None]:
+    """(viewer, tenant) for a holder read, or a refusal.
+
+    `scope=platform` is the admin view and goes through `require_admin` FIRST,
+    before any tenant is resolved or any broker call is made. Every other
+    caller sees the account only when the broker lists it for their tenant --
+    owned or lent -- and gets the same 404 an unknown id gets otherwise.
+    """
+    if scope not in (None, "", "tenant", "platform"):
+        raise ValidationFailed("scope must be 'tenant' or 'platform'")
+    if scope == "platform":
+        require_admin(auth, platform_route)
+        return "platform", None
+    tenant_id = _tenant_id(ctx, auth)
+    for account in pool.list_accounts(tenant_id).get("accounts") or []:
+        if isinstance(account, dict) and account.get("account_id") == account_id:
+            return viewer_of(account, tenant_id), tenant_id
+    raise NotFound(f"no account {account_id!r} in this tenant's pool")
+
+
+def _check(ctx: AppContext) -> TaskCheck:
+    store = ctx.store
+    return TaskCheck(
+        tasks_by_id=store.tasks_by_id,
+        list_attempts=lambda tenant, task: store.list_attempts(tenant, task),
+    )
+
+
+@router.get("/{account_id}/holders")
+def account_holders(
+    account_id: str,
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Who is on this account now, as this caller may see it.
+
+    Own holds with a task link, the attempt and since when; the owner of a
+    lent account sees how many of each borrowing tenant's agents are on it;
+    a borrower sees a count of everyone else's. No assignment id, no secret.
+    """
+    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HOLDERS_PLATFORM_ROUTE)
+    return holders_view(
+        pool.holds(account_id),
+        viewer=viewer,
+        tenant_id=tenant_id,
+        check=_check(ctx),
+        now=datetime.now(timezone.utc),
+    )
+
+
+#: What the broker's history cursor looks like -- `<instant>|<skip>`, the skip
+#: at most three digits (the broker's page is at most 500). The broker enforces
+#: the value; this refuses a forged one before a broker call is made.
+_CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
+
+
+#: The broker's HOLD_LOG_RETENTION (90 days), restated because this service does
+#: not import the broker. Every instant a history read names must lie within
+#: [now - retention - 1 day, now + 1 day]: the broker refuses the rest with a
+#: 422, and refuses it here first so a value it cannot parse never reaches it
+#: and comes back as AccountPoolUnavailable.
+_HOLD_LOG_RETENTION = timedelta(days=90)
+
+
+def _utc(raw: Any) -> datetime | None:
+    """A parsed instant as UTC, or None for anything that is not one."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(
+            timezone.utc
+        )
+    except (ValueError, OverflowError):
+        return None
+
+
+def _check_range(raw: str | None, name: str, now: datetime) -> datetime | None:
+    """422 when `raw` parses to an instant outside the retained range.
+
+    An unparsable value is left to the broker, which names it. An instant whose
+    UTC conversion overflows (`0001-01-01T00:00:00+01:00`) is out of range.
+    """
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        value = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(
+            timezone.utc
+        )
+    except OverflowError:
+        raise ValidationFailed(f"`{name}` is outside the range the hold log retains") from None
+    except ValueError:
+        return None
+    if not now - _HOLD_LOG_RETENTION - timedelta(days=1) <= value <= now + timedelta(days=1):
+        raise ValidationFailed(f"`{name}` is outside the range the hold log retains")
+    return value
+
+
+#: The broker's default window when `from` is absent (HISTORY_DEFAULT_SPAN).
+_HISTORY_DEFAULT_SPAN = timedelta(days=7)
+
+
+def _floor_hour(value: datetime) -> datetime:
+    return value.replace(minute=0, second=0, microsecond=0)
+
+
+def _ceil_hour(value: datetime) -> datetime:
+    floor = _floor_hour(value)
+    return floor if floor == value else floor + timedelta(hours=1)
+
+
+def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime) -> None:
+    """A borrower's cursor must be the `assigned_at` of one of ITS OWN spans.
+
+    Otherwise `T|0` for any T is a probe: the page it opens counts the other
+    tenants' rows at or below T, so a borrower could bisect T to read when
+    another tenant held the account. This service mints a borrower cursor only
+    from the borrower's own row (`own_page`), so that is the only kind it
+    accepts back. One lookup, of exactly the instant, no page walk.
+    """
+    page = pool.hold_history(
+        account_id,
+        start=at.isoformat(),
+        end=(at + timedelta(microseconds=1)).isoformat(),
+        cursor=None,
+    )
+    for r in page.get("spans") or []:
+        if isinstance(r, dict) and r.get("tenant_id") == tenant_id and _utc(r.get("assigned_at")) == at:
+            return
+    raise ValidationFailed("the cursor is not one this route issued to you")
+
+
+@router.get("/{account_id}/history")
+def account_history(
+    account_id: str,
+    start: str | None = Query(default=None, alias="from", max_length=64),
+    end: str | None = Query(default=None, alias="to", max_length=64),
+    cursor: str | None = Query(default=None, max_length=80, pattern=_CURSOR_SHAPE),
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Recorded spans on this account in [from, to), newest first, paged.
+
+    The caller's own spans name their task. The owner of a lent account sees
+    every borrower's spans with times, outcome and tenant; a borrower sees only
+    its own, and a count of everyone else's. The broker validates
+    the window and the cursor and answers a bad one with a 422 that names it.
+    """
+    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE)
+    now = datetime.now(timezone.utc)
+    _check_range(start, "from", now)
+    _check_range(end, "to", now)
+    at_cursor = _check_range(cursor.rpartition("|")[0], "cursor", now) if cursor else None
+    if viewer == "borrower" and cursor:
+        if at_cursor is None:
+            raise ValidationFailed("the cursor is not one this route issued to you")
+        _require_own_cursor(pool, account_id, tenant_id, at_cursor)
+
+    if viewer == "borrower":
+        # THE UTC HOUR GRID. A borrower is told how many other agents held the
+        # account in its window, and an exact count per window let it halve the
+        # window until one other tenant's start time was pinned to the
+        # microsecond. So `from` snaps DOWN and `to` UP to whole UTC hours, here,
+        # before the broker is asked, and the response echoes the snapped window.
+        # Absent bounds are made explicit so the broker's own defaults (an
+        # un-snapped `now`) never apply.
+        hi_raw, lo_raw = _check_range(end, "to", now), _check_range(start, "from", now)
+        if (end and hi_raw is None) or (start and lo_raw is None):
+            raise ValidationFailed("`from` and `to` must be ISO 8601 instants with an offset")
+        hi = _ceil_hour(hi_raw or now)
+        lo = _floor_hour(lo_raw or hi - _HISTORY_DEFAULT_SPAN)
+        start, end = lo.isoformat(), hi.isoformat()
+
+    def fetch(at: str | None) -> dict:
+        return pool.hold_history(account_id, start=start, end=end, cursor=at)
+
+    payload = fetch(cursor)
+    if viewer == "borrower":
+        payload = own_page(payload, tenant_id=tenant_id, cursor=cursor, fetch=fetch)
+    return history_view(
+        payload,
+        viewer=viewer,
+        tenant_id=tenant_id,
+        check=_check(ctx),
+        now=datetime.now(timezone.utc),
+        continued=bool(cursor),
+    )

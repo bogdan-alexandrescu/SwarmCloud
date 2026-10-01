@@ -164,6 +164,54 @@ run "the_outcome_ledger_has_its_index_and_its_exemptions" {
   }
 }
 
+run "account_hold_records_have_their_index_and_their_ttl" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # The quota broker's history route runs exactly one query:
+  #   account_holds where account_id == A and assigned_at in [F, T)
+  #   order by assigned_at DESC
+  # Without this index it fails rather than running slowly.
+  assert {
+    condition = (
+      google_firestore_index.this["account-holds-account-assigned"].collection == "account_holds" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[0].field_path == "account_id" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[1].field_path == "assigned_at" &&
+      google_firestore_index.this["account-holds-account-assigned"].fields[1].order == "DESCENDING"
+    )
+    error_message = "account_holds needs (account_id, assigned_at DESC): account_id is the equality filter, assigned_at the window and the order"
+  }
+
+  # Records name tasks; they are kept 90 days, not for ever.
+  assert {
+    condition = (
+      google_firestore_field.account_holds_ttl.collection == "account_holds" &&
+      google_firestore_field.account_holds_ttl.field == "expires_at"
+    )
+    error_message = "account_holds must expire on expires_at, the field quota_broker.accounts.hold_log_entry writes"
+  }
+}
+
+run "account_hold_ttl_survives_turning_the_audit_ttls_off" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    event_ttl_field = ""
+  }
+
+  assert {
+    condition     = google_firestore_field.account_holds_ttl.field == "expires_at"
+    error_message = "disabling the audit-trail TTLs must not make hold records, which name tasks, permanent"
+  }
+}
+
 run "pools_and_tenants_are_materialised_at_provisioning_time" {
   command = plan
 

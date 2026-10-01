@@ -301,6 +301,44 @@ def _inputs_and_metadata(node: Any, out: list[Any]) -> list[Any]:
     return out
 
 
+SWEEP_ACCOUNT = "eng:pool"
+
+
+class _SweepBroker:
+    """The account pool the account routes read, with the planted secrets in it.
+
+    The broker's payloads carry what the sweep must prove is never served: a
+    secret in a task id, and the allow-listed-away fields (the assignment id,
+    the secret name) that a route built "the document minus some keys" would
+    serve. The account is owned by `eng` and lent to `research`, so alice (eng)
+    reads it as its owner and the admin reads it too.
+    """
+
+    def _account(self) -> dict[str, Any]:
+        return {"account_id": SWEEP_ACCOUNT, "owner_tenant": "eng", "lend_to": ["research"]}
+
+    def list_accounts(self, tenant_id: str) -> dict[str, Any]:
+        return {"accounts": [self._account()]}
+
+    def holds(self, account_id: str) -> dict[str, Any]:
+        at = datetime.now(timezone.utc)
+        return {"account_id": account_id, "holds": [{
+            "assignment_id": OPENAI, "secret_ref": BARE, "tenant_id": "eng",
+            "task_id": f"task_mine {OPENAI}", "attempt_id": BARE,
+            "assigned_at": at.isoformat(), "expires_at": (at.replace(year=at.year + 1)).isoformat(),
+        }]}
+
+    def hold_history(self, account_id: str, *, start, end, cursor) -> dict[str, Any]:
+        at = datetime.now(timezone.utc)
+        return {"account_id": account_id, "from": at.isoformat(), "to": at.isoformat(),
+                "spans": [{
+                    "assignment_id": OPENAI, "secret_ref": BARE, "tenant_id": "eng",
+                    "task_id": f"task_mine {OPENAI}", "attempt_id": BARE,
+                    "assigned_at": at.isoformat(), "released_at": at.isoformat(),
+                    "end": "released", "hold_expires_at": at.isoformat(),
+                }], "next_cursor": None}
+
+
 def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client, db, objects):
     """Swept, not listed: a route added tomorrow is covered the day it exists,
     as long as its path parameters are among the ones filled in below -- a
@@ -372,6 +410,8 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
     }
     db.docs["tasks/task_mine"]["workflow_id"] = "wf_mine"
 
+    client.app.state.account_pool = _SweepBroker()
+
     swept = 0
     carried = 0
     skipped: list[str] = []
@@ -385,6 +425,7 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
                 route.path.replace("{task_id}", "task_mine")
                 .replace("{workflow_id}", "wf_mine")
                 .replace("{tenant_id}", "eng")
+                .replace("{account_id}", SWEEP_ACCOUNT)
                 .replace("{checkpoint_id}", "ckpt-00001")
                 .replace("{path:path}", "input.json")
             )
@@ -421,5 +462,6 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
         "/v1/tasks/{task_id}", "/v1/tasks/{task_id}/attempts", "/v1/tasks/{task_id}/events",
         "/v1/tasks/{task_id}/logs", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/files/{path:path}",
         "/v1/attempts", "/v1/workflows/{workflow_id}",
+        "/v1/accounts/{account_id}/holders", "/v1/accounts/{account_id}/history",
     ):
         assert template in served_ok, f"{template} never answered 200, so the sweep proved nothing there"

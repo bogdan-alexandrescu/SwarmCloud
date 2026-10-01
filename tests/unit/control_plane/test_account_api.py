@@ -1058,12 +1058,16 @@ def test_every_path_the_ui_calls_exists_on_this_api():
 
     from swarm_api.routes.accounts import router
 
-    api_ts = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src/api.ts"
+    ui = Path(__file__).resolve().parents[3] / "apps/swarm-ui/src"
+    api_ts = ui / "api.ts"
     if not api_ts.exists():  # pragma: no cover - the UI is not always checked out
         pytest.skip("apps/swarm-ui/src/api.ts is not present")
+    # Accounts.tsx too: the holder reads (#379) are called from there, and a
+    # seam this test cannot see is the seam it exists for.
+    sources = api_ts.read_text() + (ui / "Accounts.tsx").read_text()
 
     called = set()
-    for raw in re.findall(r"['\"`](/v1/accounts[^'\"`]*)['\"`]", api_ts.read_text()):
+    for raw in re.findall(r"['\"`](/v1/accounts[^'\"`]*)['\"`]", sources):
         # Template holes become the path parameter this router declares, so the
         # comparison is about the SHAPE of the route rather than one instance.
         called.add(re.sub(r"\$\{[^}]*\}", "{account_id}", raw))

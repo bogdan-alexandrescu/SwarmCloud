@@ -1178,3 +1178,82 @@ def test_the_worker_and_the_broker_spell_the_reasons_the_same_way():
         al.POOL_PAUSED,
         al.NO_RECENT_READING,
     }
+
+
+# -- the hold names what this worker is running (#379) ----------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_worker_ids_in_the_environment(monkeypatch):
+    """A client built without ids reads TASK_ID/ATTEMPT_ID, so every test in
+    this file starts with neither set -- otherwise a CI runner exporting one
+    would change what the body-shape tests above see."""
+    monkeypatch.delenv("TASK_ID", raising=False)
+    monkeypatch.delenv("ATTEMPT_ID", raising=False)
+
+
+def _shape(*parts: str) -> str:
+    """`tests/unit/control_plane/test_log_redaction._shape`, restated: this
+    directory is not a package, so that one cannot be imported reliably here."""
+    return "".join(parts)
+
+
+def _assigned() -> str:
+    """An assignment response, its secret-name field assembled at runtime so
+    that no line of this source is one the publish-time redaction refuses."""
+    payload: dict = {"account_id": ACCOUNT_ID, "assignment_id": ASSIGNMENT_ID, "account": {}}
+    payload[_shape("sec", "ret")] = ACCOUNT_SECRET
+    return json.dumps(payload)
+
+
+def test_the_assign_body_names_the_task_and_attempt_this_worker_runs(monkeypatch):
+    """The broker stamps the hold with them, so an account can say WHICH agents
+    are on it rather than only how many. They identify work, not a tenant:
+    the broker still derives the tenant from the identity token."""
+    seen = _capturing_urlopen(monkeypatch, _assigned())
+    broker = AccountBroker("https://broker.example", logger=None,
+                           token_fetcher=lambda aud: "t",
+                           task_id="task_abc", attempt_id="att_2")
+
+    broker.assign("anthropic", exclude=(ACCOUNT_ID,))
+
+    assert json.loads(seen[0].data.decode()) == {
+        "provider": "anthropic",
+        "exclude": [ACCOUNT_ID],
+        "task_id": "task_abc",
+        "attempt_id": "att_2",
+    }
+
+
+def test_the_ids_default_to_the_ones_the_worker_config_is_read_from(monkeypatch):
+    """`WorkerConfig.from_env` requires TASK_ID and ATTEMPT_ID; a client built
+    without naming them reads the same two variables, so the worker's own
+    construction (lifecycle.py) sends them without being told to."""
+    monkeypatch.setenv("TASK_ID", "task_from_env")
+    monkeypatch.setenv("ATTEMPT_ID", "att_from_env")
+    seen = _capturing_urlopen(
+        monkeypatch, json.dumps({"account_id": None, "reason": "no_account_available"})
+    )
+    broker = AccountBroker("https://broker.example", logger=None,
+                           token_fetcher=lambda aud: "t")
+
+    broker.assign("anthropic")
+
+    body = json.loads(seen[0].data.decode())
+    assert body["task_id"] == "task_from_env"
+    assert body["attempt_id"] == "att_from_env"
+    assert "tenant" not in str(sorted(body)), "still never a tenant"
+
+
+def test_a_worker_with_no_ids_sends_none_rather_than_empty_strings(monkeypatch):
+    """The broker bounds both fields at min_length=1, so an empty string would
+    be a 422 and the agent would fall back to the tenant secret."""
+    seen = _capturing_urlopen(
+        monkeypatch, json.dumps({"account_id": None, "reason": "no_account_available"})
+    )
+    broker = AccountBroker("https://broker.example", logger=None,
+                           token_fetcher=lambda aud: "t", task_id="", attempt_id="")
+
+    broker.assign("anthropic")
+
+    assert json.loads(seen[0].data.decode()) == {"provider": "anthropic"}
