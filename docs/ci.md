@@ -1151,18 +1151,25 @@ It refuses, with a comment on the pull request saying which and why:
   put `swarm: work from task_...` on main as a headline. Retitle it as a
   fact-style headline, then remove and re-add `ready`;
 * **a base branch with no required status checks** — auto-merge would have
-  nothing to wait for and would merge at once, red or not;
+  nothing to wait for and would merge at once, red or not. The gate counts the
+  branch's **effective rules** (`GET repos/{repo}/rules/branches/{branch}`,
+  which includes every ruleset that applies, here
+  [`main-protection`](#the-ruleset-on-main-and-ci-gate)) together with any
+  classic branch protection's checks, each name once. Until 2026-10-01 it read
+  only classic protection (`branches/main` → `.protection`), which this
+  repository does not use, so it counted zero and refused every `ready` label
+  (#412, #403). Classic protection still counts, so moving back to it works;
 * **no merge App configured** — see the next paragraph;
 * **a check that already ran on the head commit and is failing or still
-  running** — even one that is not required. Branch protection below requires
-  only the checks that run on every pull request; a path-filtered workflow
+  running** — even one that is not required. The ruleset requires only the
+  checks that run on every pull request, plus `ci-gate`; a path-filtered workflow
   (`application.yml`, `terraform.yml`) is not required, but when a pull
   request's changes do trigger it, this still holds the merge on its result.
 
 If the pull request is already green when the label lands, GitHub will not
 *enable* auto-merge on it (its merge state is already `CLEAN`), so the
-workflow merges it directly with the same token, method and subject. Branch
-protection still decides; the App has no bypass.
+workflow merges it directly with the same token, method and subject. The
+ruleset still decides; the App has no bypass.
 
 ### Why the merge uses a GitHub App token, not the GITHUB_TOKEN
 
@@ -1242,8 +1249,12 @@ gh api --method PATCH repos/bogdan-alexandrescu/SwarmCloud -F allow_auto_merge=t
 ```
 
 (Superseded on 2026-09-29 by the repository ruleset `main-protection`, which
-requires the same four checks; see [the ruleset on main](#the-ruleset-on-main-and-ci-gate).
-The command below is kept as the record of why each value is what it is.)
+requires the same four checks plus `ci-gate`; see
+[the ruleset on main](#the-ruleset-on-main-and-ci-gate). **The ruleset is what
+supplies `main`'s required checks; classic branch protection is not applied**
+(`GET .../branches/main/protection` is 404, read 2026-10-01). The command
+below is kept as the record of why each value is what it is, and
+`auto-merge.yml` would still count its checks if it were applied.)
 
 **3. Branch protection on `main`**, requiring only the checks that run on
 **every** pull request — `security.yml`'s four jobs. `application.yml` and
@@ -1313,8 +1324,12 @@ required list past what always runs fails CI.
 **`main-protection` (id `24160219`)**, not by the classic branch protection
 in step 3 above. It forbids deleting `main` and force-pushing to it, requires
 a pull request (no approving review: `ready` is the review decision), and
-requires four status checks: `security.yml`'s `secret scan`, `trivy (repo)`,
-`checkov (terraform + kubernetes)` and `platform policy assertions`.
+requires five status checks: `security.yml`'s `secret scan`, `trivy (repo)`,
+`checkov (terraform + kubernetes)` and `platform policy assertions`, and
+`ci-gate` (added by the owner step below; read live on 2026-10-01 with
+`gh api repos/bogdan-alexandrescu/SwarmCloud/rules/branches/main`). These are
+the checks `auto-merge.yml` waits on: its gate reads the same effective-rules
+endpoint.
 
 ### Why only security is required directly
 
