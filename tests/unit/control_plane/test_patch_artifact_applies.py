@@ -217,6 +217,27 @@ LITERALS = [
     # A CLI flag, and a quoted literal.
     ("--token=abcdefghqrst", "abcdefghqrst"),
     ('REFRESH_TOKEN = "plain-quoted-literal-77"', "plain-quoted"),
+    # The #403 security review's three regressions. A symbol password that
+    # happens to read as `name(`: the first version exempted any identifier
+    # followed by `(` or `[`, under every key.
+    ("password: " + _shape("aB3x(", "9kQ!", "z7Lm"), "9kQ!"),
+    ("db_password = " + _shape("Pa5sw0rd(", "x9Qz", ")"), "Pa5sw0rd"),
+    ("api_key: " + _shape("vdl89(", "ooR%bd", ")}%Y"), "ooR%bd"),
+    # A PascalCase value was taken for a type annotation whatever followed it.
+    ("password: MyDogRex", "MyDogRex"),
+    ("password: MyDogRex1", "MyDogRex1"),
+    ("db_password: ZebraQuokkaTundra9", "ZebraQuokka"),
+    ("secret: ZebraQuokkaTundra9", "ZebraQuokka"),
+    ("password: Summer)", "Summer"),
+    # `prefix.Base62` was taken for a dotted type (`re.Pattern`): a legacy
+    # Vault token, and a batch token.
+    ("vault_token: " + _shape("s.", "A8kZ2qLm9XcV", "b3NpQ7rT1wYe"), "A8kZ2qLm9XcV"),
+    ("vault_token = " + _shape("s.", "A8kZ2qLm9XcV", "b3NpQ7rT1wYe"), "A8kZ2qLm9XcV"),
+    ("vault_token: " + _shape("hvb.", "AAAAAQJx9", "Lm2Zq8Rt4Wc7Yb1Np5Ks3Vd6Hg0Fj"), "Lm2Zq8Rt4Wc7"),
+    # A shell default VALUE is a literal; only an empty `${NAME:-}` is not.
+    ("token: ${TOKEN:-plain-default-91}", "plain-default"),
+    # A value that starts with `=` is not a comparison.
+    ("password = " + _shape("=e/~r.", "fhAeG&xu@S"), "fhAeG"),
 ]
 
 
@@ -248,6 +269,43 @@ def test_both_filters_mask_each_literal(line, secret):
     assert secret not in shell, shell
     assert python.text == shell, (python.text, shell)
     assert python.count >= 1
+
+
+#: (line shape, alphabet, lengths). The #403 security review measured how
+#: often a RANDOM value is served whole under each shape: main serves none,
+#: and the first version of this fix served 5.6-6.4% of symbol passwords,
+#: 42% of `s.` Vault tokens and most `hvb.` ones. Measured after the fix at
+#: 0.00-0.03% (symbol passwords) and 0 (Vault), on 40,000 samples a shape.
+_B62 = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+_SYMBOLS = _B62 + "!@#$%^&*()-_=+[]{};:.<>?/~"
+RANDOM_SHAPES = [
+    ("password: {}", _SYMBOLS, "", (12, 16, 20)),
+    ("password = {}", _SYMBOLS, "", (12, 16, 20)),
+    ("db_password = {}", _SYMBOLS, "", (12, 16, 20)),
+    ("api_key: {}", _SYMBOLS, "", (12, 16, 20)),
+    ("DB_PASSWORD={}", _SYMBOLS, "", (12, 16, 20)),
+    ("vault_token: {}", _B62, "s.", (24,)),
+    ("vault_token = {}", _B62, "s.", (24,)),
+    ("vault_token: {}", _B62, "hvb.", (40,)),
+]
+
+
+@pytest.mark.parametrize(
+    "shape,alphabet,prefix,lengths", RANDOM_SHAPES, ids=[f"{p}{s}" for s, _, p, _ in RANDOM_SHAPES]
+)
+def test_a_random_secret_is_almost_never_taken_for_code(shape, alphabet, prefix, lengths):
+    """A seeded sample, so the count is the same on every run: at most 0.1%
+    of 3,000 values served whole, where the first version served about 6%."""
+    import random
+
+    rng = random.Random(403)
+    served = []
+    for length in lengths:
+        for _ in range(3000 // len(lengths)):
+            value = prefix + "".join(rng.choice(alphabet) for _ in range(length))
+            if value in redact(shape.format(value)).text:
+                served.append(value)
+    assert len(served) <= 3, served
 
 
 # --------------------------------------------------------------------------

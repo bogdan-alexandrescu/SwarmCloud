@@ -641,6 +641,78 @@
         "plain-quoted"
       ],
       "count": 1
+    },
+    {
+      "name": "kv-literal-pascal-password-yaml-403",
+      "text": "password: MyDogRex",
+      "expected": "password: ********",
+      "never": [
+        "MyDogRex"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-pascal-db-password-yaml-403",
+      "text": "db_password: ZebraQuokkaTundra9",
+      "expected": "db_password: ********",
+      "never": [
+        "ZebraQuokka"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-pascal-secret-yaml-403",
+      "text": "secret: ZebraQuokkaTundra9",
+      "expected": "secret: ********",
+      "never": [
+        "ZebraQuokka"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-password-with-parens-403",
+      "text": "db_password = Pa5sw0rd(x9Qz)",
+      "expected": "db_password = ********",
+      "never": [
+        "Pa5sw0rd"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-password-before-paren-403",
+      "text": "password: Summer)",
+      "expected": "password: ********",
+      "never": [
+        "Summer"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-api-key-pascal-paren-403",
+      "text": "api_key: Tfg)Y8r]Hi([zhCm",
+      "expected": "api_key: ********",
+      "never": [
+        "Y8r]Hi"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-starts-with-equals-403",
+      "text": "password = =e/~r.fhAeG&xu@S",
+      "expected": "password = ********",
+      "never": [
+        "fhAeG"
+      ],
+      "count": 1
+    },
+    {
+      "name": "kv-literal-shell-default-value-403",
+      "text": "token: ${TOKEN:-plain-default-91}",
+      "expected": "token: ********",
+      "never": [
+        "plain-default"
+      ],
+      "count": 1
     }
   ]
 }
