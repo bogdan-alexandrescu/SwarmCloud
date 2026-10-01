@@ -112,7 +112,7 @@ async function liveApp(hash: string): Promise<{ release: (res: Response) => Prom
   render(<LiveApp />)
   // The FRAME's read has landed: the tab now holds a successful read that is
   // not the screen's.
-  await screen.findByText('u-bogdan')
+  await screen.findByText('Bogdan')
   return {
     release: async (res: Response) => {
       await act(async () => {

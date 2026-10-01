@@ -1212,9 +1212,17 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
       'the `?` sits before the heading',
     ).toBeTruthy()
-    // The Graph, at the Figures tier these small workflows land on, draws
-    // them on every node.
+    // The Graph draws step figures only at the Figures tier. On the board the
+    // smallest workflow (`wf_old`, two steps) landed there on Auto and carried
+    // the mark for all; one workflow's page has only its own steps, and
+    // `wf_new`'s three levels are taller than the canvas at Figures, so Auto
+    // draws fewer fields and the mark must be gone. The reader's own choice of
+    // Figures brings the figures back, and the mark with them.
     chooseTab(cardOf('wf_new'), 'Graph')
+    const zoom = () => document.querySelector<HTMLElement>('.wf-zoom-seg')!
+    fireEvent.click(within(zoom()).getByText('Names'))
+    expect(mark(), 'a caveat about figures a Names graph does not draw').toBeNull()
+    fireEvent.click(within(zoom()).getByText('Figures'))
     expect(mark()?.textContent).toBe('6/8 sampled')
   })
 })

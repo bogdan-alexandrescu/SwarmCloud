@@ -209,15 +209,18 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
   })
 
   /**
-   * THREE PANELS, NOT FIVE.
+   * FOUR PANELS, NOT FIVE.
    *
    * Five equal cards never fill a three-track row, which is why the old grid
    * carried ten nth-child parity rules to widen whichever card landed last.
    * "Capacity" and "Subscription pool" were two of the five answering ONE
    * question -- can I start more work, and what stops me -- so they are one
-   * panel, and the orphan they created is gone with them.
+   * panel, and the orphan they created is gone with them. The fourth is
+   * "Waiting, and why" (the overview pass, owner's pick 2026-10-01), set beside
+   * Headroom as the two halves of that one question: what is held back, and
+   * what stops it. It replaced no panel; it is the one panel added since.
    */
-  it('holds three panels and no more', async () => {
+  it('holds four panels and no more', async () => {
     const el = await mountOverview()
 
     const panels = [...el.querySelectorAll('.ctl-card')].filter(
@@ -232,9 +235,10 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
       for (const n of [...clone.querySelectorAll('[data-help-description], button')]) n.remove()
       return (clone.textContent ?? '').trim()
     })
-    expect(titles.length, `the overview drew ${titles.length} panels: ${titles.join(', ')}`).toBe(3)
+    expect(titles.length, `the overview drew ${titles.length} panels: ${titles.join(', ')}`).toBe(4)
     expect(titles).toContain('Running')
     expect(titles).toContain('Spend')
+    expect(titles).toContain('Waiting, and why')
     // One panel, two groups: the two ceilings bind in sequence and are read
     // together or not at all.
     expect(titles).toContain('Headroom')

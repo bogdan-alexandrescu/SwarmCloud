@@ -408,13 +408,16 @@ describe('keyboard traversal', () => {
       ROUTES.length,
     )
     for (const p of per) {
-      // The rail alone is 20 stops on every route -- 4 sections + 14 tabs + 2
-      // utility, where it was 21 (6 + 13 + 2) before the collapse; the comment
-      // on STOP_FLOOR said 22 and was counting a tab strip under Runtimes that
-      // a single-pane section never drew. So this proves the SHELL rendered
-      // rather than the screen. What notices a screen going empty is the
-      // total below and the per-route numbers in the log.
-      expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(20)
+      // The Sky spine alone is more than ten stops on every route -- its seven
+      // buttons (Submit, the four sections, Help, API reads), the collapse and
+      // the theme switch, before the open section's pages in the panel. The old
+      // rail was 20 (4 sections + 14 tabs + 2 utility); the spine folded the
+      // tabs into a panel that lists one section's pages, so Admin as a
+      // non-admin -- three disabled rows and a locked screen -- measured 17.
+      // This proves the SHELL rendered rather than the screen. What notices a
+      // screen going empty is the total below and the per-route numbers in the
+      // log.
+      expect(p.stops, `${p.route} rendered almost no controls`).toBeGreaterThan(10)
     }
     expect(stops, 'the sweep reached almost nothing').toBeGreaterThan(STOP_FLOOR)
 
@@ -465,6 +468,8 @@ describe('keyboard traversal', () => {
     const row = container.querySelector<HTMLElement>('.row.clickable')
     expect(row, 'the agent list rendered no rows, so this test measured nothing').not.toBeNull()
 
+    const rowTaskId = row!.getAttribute('data-task-id')
+    expect(rowTaskId, 'the row names no agent').not.toBeNull()
     await act(async () => {
       row!.focus()
     })
@@ -573,7 +578,12 @@ describe('keyboard traversal', () => {
     await settle()
 
     expect(document.querySelector('.ctl-drawer'), 'Escape did not close the drawer').toBeNull()
-    expect(document.activeElement, 'closing the drawer did not put focus back on the row').toBe(row)
+    // The list beside an open agent draws the compact row and the full row
+    // returns when it closes, so the node clicked is gone: the property is that
+    // focus is on the row of the SAME agent, not on <body>.
+    const back = document.activeElement as HTMLElement | null
+    expect(back?.matches('.row.clickable'), 'closing the drawer did not put focus back on a row').toBe(true)
+    expect(back?.getAttribute('data-task-id'), 'focus came back to a different agent\'s row').toBe(rowTaskId)
     unmount()
   }, 60000)
 

@@ -250,6 +250,19 @@ function stubMe(me: unknown): void {
   }) as unknown as typeof fetch
 }
 
+/**
+ * THE APP ON THE LIVE PATH. Under vitest `api.ts` answers from its fixtures
+ * unless VITE_LIVE is set, and the fixture's own tenant ('Bogdan', dev) would
+ * make a stubbed `/v1/tenants/me` unreachable: the environment and the tenant
+ * these two tests measure would never come from the stub.
+ */
+async function liveApp(): Promise<{ LiveApp: typeof App }> {
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  const mod = await import('../App')
+  return { LiveApp: mod.App }
+}
+
 describe('the Sky spine shell', () => {
   beforeEach(() => {
     window.history.replaceState(null, '', '/')
@@ -259,7 +272,10 @@ describe('the Sky spine shell', () => {
       /* storage may be absent */
     }
   })
-  afterEach(() => window.history.replaceState(null, '', '/'))
+  afterEach(() => {
+    vi.unstubAllEnvs()
+    window.history.replaceState(null, '', '/')
+  })
 
   it('draws the spine in one fixed order: Submit, the four sections, Help, API reads', () => {
     render(<App />)
@@ -319,14 +335,16 @@ describe('the Sky spine shell', () => {
 
   it('draws the red bar and pill only where the environment measured production', async () => {
     stubMe({ ...ME, environment: 'prod' })
-    render(<App />)
+    const { LiveApp } = await liveApp()
+    render(<LiveApp />)
     await waitFor(() => expect(document.querySelector('.sk-prodbar')).not.toBeNull())
     expect(document.querySelector('.sk-panel .sk-pill.is-prod')?.textContent).toBe('PROD')
   })
 
   it('leaves the bar off for a declared non-production environment', async () => {
     stubMe(ME)
-    render(<App />)
+    const { LiveApp } = await liveApp()
+    render(<LiveApp />)
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
     expect(document.querySelector('.sk-prodbar')).toBeNull()
     expect(document.querySelector('.sk-panel .sk-pill')?.textContent).toBe('Dev')

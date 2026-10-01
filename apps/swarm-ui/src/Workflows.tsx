@@ -1715,7 +1715,22 @@ function WorkflowSteps({
   const now = useNow()
   const rows = stepRows(workflow, taskById, usage, now, classes)
   if (rows.length === 0) return <span className="ctl-mark">no steps</span>
-  if (view === 'table') return <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
+  if (view === 'table') {
+    // THE TOTAL, SUMMED FROM THE FIGURES THE ROWS ABOVE IT SHOW (WF-5). The
+    // list row and the page head sum the results alone, because neither has
+    // the attempt read; this one has it, so it moves with the cells: a sampled
+    // step's figure is its attempts' sum, an unsampled finished step's is its
+    // result's, and the total says how many of the latter.
+    const spend = workflowSpend(workflow.steps, taskById, usage.kind === 'ready' ? (usage.usage?.byTaskId ?? null) : null)
+    return (
+      <>
+        <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
+        <p className="wf-table-total">
+          <span>Total</span> <Spend spend={spend} />
+        </p>
+      </>
+    )
+  }
   const created = new Date(workflow.created_at).getTime()
   return (
     <WorkflowTimeline

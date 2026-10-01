@@ -2061,7 +2061,11 @@ describe('the settlements: what a healthy step does not draw', () => {
    * the chip and the dot: the word takes the row's `--text-dim`, and the rule
    * the node's own `--text-faint`. The dot beside each still says succeeded.
    * The row's word went with the board's row (rebrand, 2026-10-01); the node
-   * rule is what is left to hold.
+   * rule is what is left to hold. THE NEUTRAL IS NOW THE BRAND'S: the rebrand
+   * tints a step in the vocabulary of its state (`.node.t-live` teal,
+   * `.t-park` violet, `.t-bad` red, `.t-neu` grey), so a succeeded step's edge
+   * is the grey `--s-neu` and not `--text-faint`. The ruling is unchanged: a
+   * healthy step draws no hue of any state.
    *
    * MUTATION: put the green back on the node rule.
    */
@@ -2085,12 +2089,15 @@ describe('the settlements: what a healthy step does not draw', () => {
     const { container } = card(w, tasks)
     const node = container.querySelector('.node.ok')
     expect(node, 'a succeeded step no longer carries .node.ok; this check is vacuous').not.toBeNull()
-    const HUES = ['--ok', '--ok-ink', '--info', '--info-ink', '--warn', '--warn-ink', '--bad', '--bad-ink', '--paused']
+    const HUES = [
+      '--ok', '--ok-ink', '--info', '--info-ink', '--warn', '--warn-ink', '--bad', '--bad-ink', '--paused',
+      '--s-live', '--s-park', '--s-bad', '--s-warn',
+    ]
     for (const theme of THEMES) {
       const rule = paintOf(node!, ['border-left-color', 'border-left', 'border-color', 'border'], theme)
       expect(
-        sameColour(rule, tokenColour('--text-faint', theme)),
-        `${theme}: the node's healthy rule is not --text-faint`,
+        sameColour(rule, tokenColour('--s-neu', theme)),
+        `${theme}: the node's healthy rule is not the brand neutral --s-neu`,
       ).toBe(true)
       for (const h of HUES) {
         expect(sameColour(rule, tokenColour(h, theme)), `${theme}: the healthy node rule is painted ${h}`).toBe(false)

@@ -1582,6 +1582,15 @@ function AgentDrawer({
   const panel = useRef<HTMLDivElement>(null)
   /** The element that was focused when this opened. Where Escape puts you back. */
   const opener = useRef<Element | null>(null)
+  /** What held focus when this first rendered, and which agent's row it was in. */
+  const born = useRef<{ el: Element | null; rowId: string | null } | null>(null)
+  if (born.current === null) {
+    const a = typeof document === 'undefined' ? null : document.activeElement
+    born.current = {
+      el: a,
+      rowId: a instanceof HTMLElement ? (a.closest('[data-task-id]')?.getAttribute('data-task-id') ?? null) : null,
+    }
+  }
 
   useEffect(() => {
     const root = document.documentElement
@@ -1624,8 +1633,9 @@ function AgentDrawer({
    * THE ROW IS STILL THERE TO GO BACK TO, which is what makes the restore
    * honest rather than a guess. The drawer is a SIBLING of `<main>` (see the
    * shell above) and the route that opens it keeps `tab: 'running'`, so the
-   * list is never unmounted and the row node that was clicked is the same node
-   * after the drawer closes. Nothing has to be found again by id.
+   * list is never unmounted. The row NODE is not always the same one, though:
+   * the list draws the compact row while an agent is open, so the clicked
+   * node is replaced on close and the row is found again by its task id.
    *
    * WHY THE OPENER IS CAPTURED HERE AND NOT PASSED IN. The drawer is a ROUTE --
    * a deep link, the breadcrumb, a workflow node and a row click all open it --
@@ -1640,7 +1650,12 @@ function AgentDrawer({
    */
   useEffect(() => {
     const el = panel.current
-    const came = document.activeElement
+    // THE OPENER IS READ AT FIRST RENDER (above), not here: the same commit
+    // that mounts the drawer swaps the clicked row for the compact one, and by
+    // the time an effect runs the focused node is detached and the active
+    // element is <body>. The row is remembered by its agent's id and found
+    // again on close, where the full row has replaced the compact one.
+    const { el: came, rowId } = born.current ?? { el: null, rowId: null }
     opener.current = came
     // FOCUS MOVES IN ONLY WHEN THE PANEL COVERS THE LIST. Above 1100px this is
     // a grid column beside the rows, and pulling focus off the row into a panel
@@ -1651,6 +1666,13 @@ function AgentDrawer({
       opener.current = null
       if (back instanceof HTMLElement && back.isConnected && back !== document.body) {
         back.focus()
+        return
+      }
+      if (rowId !== null) {
+        const again = [...document.querySelectorAll<HTMLElement>('.row.clickable[data-task-id]')].find(
+          (r) => r.getAttribute('data-task-id') === rowId,
+        )
+        again?.focus()
       }
     }
     // Once per open. `taskId` changing swaps the CONTENTS of an open drawer and

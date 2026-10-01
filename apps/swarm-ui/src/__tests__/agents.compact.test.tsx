@@ -110,7 +110,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(row.querySelector('.cr-name b')?.textContent).toBe('fix-heartbeat')
     expect(row.querySelector('.when')?.textContent).toMatch(/\d/)
     // A lone task is named by the id prefix, with the whole id in its title.
-    const lone = rowOf(c, 'task_bbbbbbbb')
+    const lone = rowOf(c, 'bbbbbbbb')
     expect(lone.querySelector('.cr-name .id')?.getAttribute('title')).toBe(LONE.id)
   })
 
@@ -130,7 +130,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     const parked = task('task_cccccccc00000000000c', 'PARKED')
     const queued = task('task_dddddddd00000000000d', 'QUEUED')
     const c = await land([parked, queued], parked.id)
-    const row = rowOf(c, 'task_cccccccc')
+    const row = rowOf(c, 'cccccccc')
     expect(row.querySelector('.cr-sub')?.textContent).not.toMatch(/try/)
     expect(row.querySelector('.cr-sub')?.textContent).toContain('claude-code · alex')
     const why = row.querySelector('.why')
@@ -181,7 +181,7 @@ describe('a strip row shows its agent on hover and on focus', () => {
     const c = await land([STEP, LONE], LONE.id)
     document.documentElement.dataset.agentList = 'strip'
     const first = rowOf(c, 'fix-heartbeat')
-    const second = rowOf(c, 'task_bbbbbbbb')
+    const second = rowOf(c, 'bbbbbbbb')
 
     act(() => first.focus())
     expect(screen.getByRole('tooltip').textContent).toContain('fix-heartbeat')
@@ -190,7 +190,7 @@ describe('a strip row shows its agent on hover and on focus', () => {
     expect(document.activeElement).toBe(second)
     const cards = screen.getAllByRole('tooltip')
     expect(cards).toHaveLength(1)
-    expect(cards[0]!.textContent).toContain('task_bbbbbbbb')
+    expect(cards[0]!.textContent).toContain('bbbbbbbb')
     expect(cards[0]!.textContent).toContain('priya')
 
     act(() => second.blur())

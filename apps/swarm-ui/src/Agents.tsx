@@ -937,6 +937,7 @@ function TaskRow({
       className="row clickable"
       role="button"
       tabIndex={0}
+      data-task-id={task.id}
       // WHICH ROW IS OPEN (AG-17). With the inspector open no row said which
       // agent it was showing; the one it is gets `aria-current`, which a
       // screen reader announces and the sheet draws (a surface step and an
@@ -1165,6 +1166,7 @@ function CompactRow({
       className="row clickable is-compact"
       role="button"
       tabIndex={0}
+      data-task-id={task.id}
       aria-current={open ? 'true' : undefined}
       aria-describedby={card !== null ? cardId : undefined}
       onClick={() => onOpen(task.id)}
