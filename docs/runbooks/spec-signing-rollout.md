@@ -134,6 +134,22 @@ From that release on, a task created after the cutover with its signature
 stripped is refused instead of admitted. `create_time` is Firestore's and no
 client can write it.
 
+`status.traffic` names only the revision serving now, not the first one that
+signed: by 2026-10-01 seven later revisions had replaced it. Find the first
+revision whose environment carries `SPEC_SIGNING_KEY_VERSION` instead:
+
+```bash
+gcloud run revisions list --service swarm-api --region us-central1 \
+  --format=json | jq -r '.[] | [.metadata.name, .metadata.creationTimestamp,
+    ([.spec.containers[0].env[]? | select(.name | startswith("SPEC_")) | .name] | join(","))]
+    | join(" ")'
+```
+
+In dev that was `swarm-api-00119-lcs`, created 2026-09-30T21:24:36.572669Z by
+#353's release; the service routes 100% to the latest ready revision
+(`terraform/modules/cloud_run`), so it took all traffic within that release's
+`terraform apply`.
+
 ### 4. Enforce (a pull request, before 2026-10-20)
 
 Count the non-terminal tasks without a signature (read-only), and let them
@@ -204,11 +220,24 @@ built.
 
 ## Not verified here
 
-* The `AsymmetricSign` quota for this project and region, and its headroom
-  against the other team's use of KMS. Every task and workflow step is one
-  sign call; a `RESOURCE_EXHAUSTED` is a 503 on every submission. Check it with
-  `gcloud services quota list --service=cloudkms.googleapis.com` before
-  `enforce`.
+* Which KMS quota bucket an `AsymmetricSign` on a SOFTWARE EC P-256 key
+  draws from, and its headroom against the other team's use of KMS. Every
+  task and workflow step is one sign call; a `RESOURCE_EXHAUSTED` is a 503 on
+  every submission. `gcloud services quota list` does not exist in GA gcloud
+  (586.0.0 answers `Invalid choice: 'quota'`); read the limits with
+
+  ```bash
+  gcloud quotas info list --service=cloudkms.googleapis.com \
+    --project=saga-agents-staging --format=json
+  ```
+
+  Read 2026-10-01: `crypto_requests` 60,000/min per project,
+  `software_high_latency_requests` 600/min per region, `software_usage`
+  6,000,000/min per region. The project's 7-day peak of
+  `serviceruntime.googleapis.com/quota/rate/net_usage` for `software_usage`
+  in us-central1 was 1,500 per minute (2026-10-01T01:03Z); no
+  `software_high_latency_requests` usage was reported in that window. If
+  the 600/min bucket is the one that applies, it is the binding limit.
 * That the `state=ENABLED` filter of `google_kms_crypto_key_versions` is
   accepted by the live API as written. The module filters on `state` again, so
   a filter that matched too much would still trust only enabled versions; one
