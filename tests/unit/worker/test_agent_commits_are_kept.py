@@ -1110,14 +1110,6 @@ def test_a_vendor_fixture_with_a_placeholder_tail_passes_in_tests_only(worker_fa
     assert _rule_for(worker, "src/rules.py", text) is not None
 
 
-@pytest.mark.parametrize("path", EVERYWHERE)
-def test_a_private_key_marker_over_a_stub_body_passes(worker_factory, path):
-    worker, _, _ = worker_factory()
-    text = "\n".join([_pem_marker("BEGIN"), "MIIEowIBAAKCAQEA...", _pem_marker("END")]) + "\n"
-    assert _rule_for(worker, path, text) is None
-    assert _rule_for(worker, path, _pem_marker("BEGIN") + "\n") is None
-
-
 def _der_key_body(prefix_hex: str, random_len: int) -> str:
     """A PKCS#8-shaped body: a fixed DER prefix plus random bytes, base64.
     Built at run time, so no key-shaped literal sits in the repository."""
@@ -1170,11 +1162,6 @@ def test_a_der_shaped_key_of_any_size_is_refused(worker_factory, kind):
     # SEQUENCE, long-form length 0x0140 = 320, then 320 random bytes.
     body = _der_key_body("30820140", 320)
     assert _rule_for(worker, "src/k.py", _pkcs8(body, kind)) == "private_key_block"
-
-
-def test_a_sixteen_character_stub_between_markers_under_tests_passes(worker_factory):
-    worker, _, _ = worker_factory()
-    assert _rule_for(worker, "tests/unit/test_x.py", _pkcs8("MIIEowIBAAKCAQEA")) is None
 
 
 @pytest.mark.parametrize("path", EVERYWHERE)
@@ -1366,24 +1353,6 @@ def test_a_log_prefixed_key_with_no_end_marker_is_refused(worker_factory, path, 
     assert _rule_for(worker, path, "\n".join(out) + "\n") == "private_key_block"
 
 
-def test_a_stub_marker_and_an_unrelated_non_der_blob_in_a_test_file_passes(worker_factory):
-    worker, _, _ = worker_factory()
-    blob = "".join(_RNG.choice(_ALNUM + "+/") for _ in range(200))
-    # Start the blob so it cannot decode to a SEQUENCE.
-    blob = "A" + blob[1:]
-    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nBLOB = "{blob}"\n'
-    assert _rule_for(worker, "tests/test_x.py", text) is None
-
-
-def test_a_stub_marker_and_a_certificate_shaped_der_in_a_test_file_passes(worker_factory):
-    worker, _, _ = worker_factory()
-    # SEQUENCE { SEQUENCE {...} ...}: first element is a SEQUENCE, not INTEGER 0/1.
-    inner = bytes.fromhex("30820100") + _RNG.randbytes(256) + _RNG.randbytes(300)
-    cert = bytes.fromhex("3082") + len(inner).to_bytes(2, "big") + inner
-    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
-    assert _rule_for(worker, "tests/test_x.py", text) is None
-
-
 # --- #411 third review: encrypted keys and an orphan END ---------------------
 #
 # An encrypted PKCS#8 opens SEQUENCE { SEQUENCE { OID PBES2 ... } OCTET STRING },
@@ -1474,15 +1443,6 @@ def test_an_orphan_end_with_a_split_begin_is_refused(worker_factory, path, which
     assert _rule_for(worker, path, text) == "private_key_block"
 
 
-def test_a_stub_marker_and_a_certificate_with_a_context_sequence_in_tests_passes(worker_factory):
-    worker, _, _ = worker_factory()
-    # Certificate: SEQUENCE { SEQUENCE { [0] { INTEGER 2 } ... } ... }, `a0 03`.
-    tbs = _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300))
-    cert = _der(0x30, tbs + _RNG.randbytes(100))
-    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
-    assert _rule_for(worker, "tests/test_x.py", text) is None
-
-
 # --- #411 fourth review: headers and ciphertext away from the markers --------
 #
 # A traditional encrypted PEM's headers may sit in a variable defined before
@@ -1536,20 +1496,55 @@ def test_an_orphan_end_with_ciphertext_lines_above_it_is_refused(worker_factory,
     assert _rule_for(worker, path, text) == "private_key_block"
 
 
-def test_a_stub_marker_and_a_certificate_blob_in_tests_passes(worker_factory):
+# --- #411, owner decision 2026-10-01: private keys follow main's rule -------
+#
+# Four review rounds of relaxing the private-key check each found inputs main
+# refuses and the branch published. Any marker, a stub or a bare one included,
+# is refused in every path, exactly where `mask_private_keys` masks.
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+def test_a_bare_stub_marker_is_refused_as_on_main(worker_factory, path):
     worker, _, _ = worker_factory()
-    cert = _der(0x30, _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300)) + _RNG.randbytes(100))
-    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
-    assert _rule_for(worker, "tests/test_x.py", text) is None
+    assert _rule_for(worker, path, _pem_marker("BEGIN") + "\n") == "private_key_block"
 
 
-def test_a_stub_marker_and_a_random_blob_in_a_quoted_variable_in_tests_passes(worker_factory):
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+def test_a_sixteen_character_stub_between_markers_is_refused_as_on_main(worker_factory, path):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _pkcs8("MIIEowIBAAKCAQEA")) == "private_key_block"
+
+
+def test_a_stub_marker_and_a_random_blob_under_tests_is_refused_as_on_main(worker_factory):
     worker, _, _ = worker_factory()
     text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nBLOB = "{_b64(_RNG.randbytes(500))}"\n'
-    assert _rule_for(worker, "tests/test_x.py", text) is None
+    assert _rule_for(worker, "tests/test_x.py", text) == "private_key_block"
 
 
-def test_an_orphan_end_preceded_by_a_non_base64_line_in_tests_passes(worker_factory):
-    worker, _, _ = worker_factory()
-    text = "\n".join([*_cipher_lines(), "# not part of any key", _end(" RSA")]) + "\n"
-    assert _rule_for(worker, "tests/test_x.py", text) is None
+def _parity_inputs() -> dict[str, str]:
+    cert = _der(0x30, _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300)) + _RNG.randbytes(100))
+    return {
+        "bare-marker": _pem_marker("BEGIN") + "\n",
+        "stub": _pkcs8("MIIEowIBAAKCAQEA"),
+        "stub-and-blob": f'{_pkcs8("MIIEowIBAAKCAQEA")}\nB = "{_b64(_RNG.randbytes(500))}"\n',
+        "stub-and-certificate": f'{_pkcs8("MIIEowIBAAKCAQEA")}\nC = "{_b64(cert)}"\n',
+        "real-ed25519": _pkcs8(_ed25519_body()),
+        "real-rsa": "\n".join(_pem_lines(1600)) + "\n",
+        "orphan-end-with-ciphertext": "\n".join([*_cipher_lines(), _end(" RSA")]) + "\n",
+        "orphan-end-after-prose": "\n".join([*_cipher_lines(), "# not a key", _end(" RSA")]) + "\n",
+        "orphan-end-alone": _end(" RSA") + "\n",
+        "no-marker": 'BLOB = "' + _b64(_RNG.randbytes(300)) + '"\n',
+        "prose": "nothing to see here\n",
+    }
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+@pytest.mark.parametrize("name", sorted(_parity_inputs()))
+def test_the_guard_refuses_a_private_key_exactly_when_main_masks_one(path, name):
+    """PARITY: the branch's private-key answer is `mask_private_keys`'s."""
+    from swarm_redaction.rules import mask_private_keys
+
+    text = _parity_inputs()[name]
+    hit = lifecycle._credential_in(path, text)
+    refused = hit is not None and hit.rule == "private_key_block"
+    assert refused == (mask_private_keys(text, False, False)[1] > 0)
