@@ -858,19 +858,30 @@ def _span_to_api(record: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _instant(raw: str, name: str) -> datetime:
+def _instant(raw: str, name: str, now: datetime) -> datetime:
+    """An instant within [now - retention - 1 day, now + 1 day], as UTC.
+
+    The bound is what keeps `0001-01-01T00:00:00+01:00` and
+    `9999-12-31T23:59:59-01:00` from reaching arithmetic: `astimezone` raises
+    OverflowError (not ValueError) on them, which was an unhandled 500. No
+    record outlives HOLD_LOG_RETENTION and none is dated in the future, so an
+    instant outside the range can only be a probe or a mistake.
+    """
     try:
         value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        if value.tzinfo is None:
+            raise BrokerValidationError(f"`{name}` must carry a UTC offset")
+        value = value.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         raise BrokerValidationError(
             f"`{name}` must be an ISO 8601 instant with an offset"
         ) from None
-    if value.tzinfo is None:
-        raise BrokerValidationError(f"`{name}` must carry a UTC offset")
-    return value.astimezone(timezone.utc)
+    if not now - HOLD_LOG_RETENTION - timedelta(days=1) <= value <= now + timedelta(days=1):
+        raise BrokerValidationError(f"`{name}` is outside the range the hold log retains")
+    return value
 
 
-def _history_cursor(raw: str) -> tuple[datetime, int]:
+def _history_cursor(raw: str, now: datetime) -> tuple[datetime, int]:
     """`<instant>|<n served at that instant>`, as the previous page minted it.
 
     `n` is BOUNDED by `HISTORY_PAGE_MAX`. It sizes the Firestore read
@@ -889,7 +900,7 @@ def _history_cursor(raw: str) -> tuple[datetime, int]:
     skip = int(count)
     if skip > HISTORY_PAGE_MAX:
         raise BrokerValidationError("the cursor is not one this route issued")
-    return _instant(instant, "cursor"), skip
+    return _instant(instant, "cursor", now), skip
 
 
 def quota_to_api(state: QuotaState) -> dict[str, Any]:
@@ -2408,8 +2419,14 @@ def create_app(
         _platform_only(request, bearer)
         _account_or_refuse(request, account_id)
         now = datetime.now(timezone.utc)
-        until = _instant(end, "to") if end else now
-        since = _instant(start, "from") if start else until - HISTORY_DEFAULT_SPAN
+        until = _instant(end, "to", now) if end else now
+        if start:
+            since = _instant(start, "from", now)
+        else:
+            try:
+                since = until - HISTORY_DEFAULT_SPAN
+            except OverflowError:
+                raise BrokerValidationError("`to` leaves no default window before it") from None
         if since >= until:
             raise BrokerValidationError("`from` must be earlier than `to`")
         if until - since > HOLD_LOG_RETENTION:
@@ -2418,7 +2435,7 @@ def create_app(
             raise BrokerValidationError(
                 f"the window `from`..`to` may span at most {HOLD_LOG_RETENTION.days} days"
             )
-        position = _history_cursor(cursor) if cursor else None
+        position = _history_cursor(cursor, now) if cursor else None
         if position is not None and position[0] >= until:
             raise BrokerValidationError("the cursor is outside the window")
 

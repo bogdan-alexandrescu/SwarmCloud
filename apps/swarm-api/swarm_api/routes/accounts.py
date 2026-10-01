@@ -73,7 +73,7 @@ an expiry.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
@@ -468,6 +468,70 @@ def account_holders(
 _CURSOR_SHAPE = r"^[0-9TZ:+.\-]{1,40}\|[0-9]{1,3}$"
 
 
+#: The broker's HOLD_LOG_RETENTION (90 days), restated because this service does
+#: not import the broker. Every instant a history read names must lie within
+#: [now - retention - 1 day, now + 1 day]: the broker refuses the rest with a
+#: 422, and refuses it here first so a value it cannot parse never reaches it
+#: and comes back as AccountPoolUnavailable.
+_HOLD_LOG_RETENTION = timedelta(days=90)
+
+
+def _utc(raw: Any) -> datetime | None:
+    """A parsed instant as UTC, or None for anything that is not one."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        return (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(
+            timezone.utc
+        )
+    except (ValueError, OverflowError):
+        return None
+
+
+def _check_range(raw: str | None, name: str, now: datetime) -> datetime | None:
+    """422 when `raw` parses to an instant outside the retained range.
+
+    An unparsable value is left to the broker, which names it. An instant whose
+    UTC conversion overflows (`0001-01-01T00:00:00+01:00`) is out of range.
+    """
+    if not raw:
+        return None
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        value = (value if value.tzinfo else value.replace(tzinfo=timezone.utc)).astimezone(
+            timezone.utc
+        )
+    except OverflowError:
+        raise ValidationFailed(f"`{name}` is outside the range the hold log retains") from None
+    except ValueError:
+        return None
+    if not now - _HOLD_LOG_RETENTION - timedelta(days=1) <= value <= now + timedelta(days=1):
+        raise ValidationFailed(f"`{name}` is outside the range the hold log retains")
+    return value
+
+
+def _require_own_cursor(pool: AccountPool, account_id: str, tenant_id: str | None, at: datetime) -> None:
+    """A borrower's cursor must be the `assigned_at` of one of ITS OWN spans.
+
+    Otherwise `T|0` for any T is a probe: the page it opens counts the other
+    tenants' rows at or below T, so a borrower could bisect T to read when
+    another tenant held the account. This service mints a borrower cursor only
+    from the borrower's own row (`own_page`), so that is the only kind it
+    accepts back. One lookup, of exactly the instant, no page walk.
+    """
+    page = pool.hold_history(
+        account_id,
+        start=at.isoformat(),
+        end=(at + timedelta(microseconds=1)).isoformat(),
+        cursor=None,
+    )
+    for r in page.get("spans") or []:
+        if isinstance(r, dict) and r.get("tenant_id") == tenant_id and _utc(r.get("assigned_at")) == at:
+            return
+    raise ValidationFailed("the cursor is not one this route issued to you")
+
+
 @router.get("/{account_id}/history")
 def account_history(
     account_id: str,
@@ -487,6 +551,15 @@ def account_history(
     the window and the cursor and answers a bad one with a 422 that names it.
     """
     viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE)
+    now = datetime.now(timezone.utc)
+    _check_range(start, "from", now)
+    _check_range(end, "to", now)
+    at_cursor = _check_range(cursor.rpartition("|")[0], "cursor", now) if cursor else None
+    if viewer == "borrower" and cursor:
+        if at_cursor is None:
+            raise ValidationFailed("the cursor is not one this route issued to you")
+        _require_own_cursor(pool, account_id, tenant_id, at_cursor)
+
     def fetch(at: str | None) -> dict:
         return pool.hold_history(account_id, start=start, end=end, cursor=at)
 
