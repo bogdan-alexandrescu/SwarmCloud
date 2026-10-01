@@ -244,6 +244,18 @@ class AccountRelease(StrictModel):
     unusable: str = Field(default="", max_length=200)
 
 
+class AttemptHoldsRelease(StrictModel):
+    """Give back every hold stamped with one fenced attempt (#380).
+
+    BOTH ids are required and neither may be empty. A hold taken before holds
+    were stamped carries neither, and an empty `attempt_id` matching "no
+    attempt" would release every one of those at once.
+    """
+
+    task_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+
+
 class RateLimitReport(StrictModel):
     retry_after_seconds: int | None = Field(default=None, ge=0, le=86_400)
     reset_at: datetime | None = None
@@ -812,6 +824,94 @@ def prune_holds(
         return dropped
 
     return _apply(transaction)
+
+
+def release_attempt_holds(
+    db: Any,
+    account_id: str,
+    *,
+    task_id: str,
+    attempt_id: str,
+    now: datetime,
+) -> int:
+    """Drop every live hold on one account stamped with (task_id, attempt_id).
+
+    Returns how many were released. For the reconciler, once it has FENCED the
+    attempt (#380): a fenced worker never runs its own exit path's release, so
+    until now its hold stayed counted for the whole `DEFAULT_HOLD_TTL` and
+    `choose()` handed out less of the account than it had.
+
+    MATCHED ON BOTH STAMPS. The attempt id alone would do in practice; the
+    task id as well means a hold can only be released by a caller that names
+    the work it belongs to. A hold with no stamps (taken before #412/#413) is
+    never matched and still ages out through `prune_holds`.
+
+    IDEMPOTENT: a second call finds nothing stamped with the attempt and
+    writes nothing at all, so no record is closed twice with a later end.
+
+    Each released hold's record is closed as `released` in this transaction,
+    and the expired holds the rewrite drops are closed as `expired`, the same
+    as every other change to `holds`. `released`, not a new end: the swarm-api
+    history reader and the Accounts screen accept exactly the three ends in
+    `accounts.py`, and a hold given back on the worker's behalf ended the same
+    way as one the worker gave back.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            return 0
+        holds, expired = _split_holds(snap.to_dict() or {}, now)
+        held = [
+            h for h in holds if h.attempt_id == attempt_id and h.task_id == task_id
+        ]
+        if not held:
+            return 0
+        remaining = [h for h in holds if h not in held]
+        txn.update(ref, _hold_payload(remaining))
+        for hold in held:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(hold, account_id, end=HOLD_END_RELEASED, released_at=now),
+            )
+        _close_expired(txn, db, account_id, expired)
+        return len(held)
+
+    return _apply(transaction)
+
+
+def _release_attempt_holds_everywhere(
+    db: Any, *, task_id: str, attempt_id: str, now: datetime
+) -> dict[str, Any]:
+    """`release_attempt_holds` over every account document. One transaction each.
+
+    Every document id straight from the collection, as `_prune_all_holds`
+    walks them and for its reason (#243): a malformed account is the one a
+    decoded listing would skip, and its holds count all the same.
+    """
+    released = 0
+    accounts: list[str] = []
+    for doc in db.collection(ACCOUNTS_COLLECTION).stream():
+        account_id = str(doc.id)
+        try:
+            count = release_attempt_holds(
+                db, account_id, task_id=task_id, attempt_id=attempt_id, now=now
+            )
+        except _MALFORMED as exc:
+            log.warning(
+                "could not release a fenced attempt's holds on an account document",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
+            continue
+        if count:
+            released += count
+            accounts.append(account_id)
+    return {"released": released, "accounts": accounts}
 
 
 #: The history route's page: the default, and the most one request may ask.
@@ -2348,7 +2448,14 @@ def create_app(
     # reader holding it could give back somebody else's hold. Nor the secret
     # name, nor anything else of the account's beyond who owns and borrows it.
 
-    def _platform_only(request: Request, header: str | None) -> None:
+    def _platform_only(
+        request: Request,
+        header: str | None,
+        refusal: str = (
+            "only the platform may read an account's holders; they name "
+            "other tenants' work"
+        ),
+    ) -> None:
         try:
             _, is_platform = request.app.state.identity.resolve(header)
         except BrokerAuthError:
@@ -2356,10 +2463,7 @@ def create_app(
             raise
         if not is_platform:
             request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
-            raise BrokerAuthError(
-                "only the platform may read an account's holders; they name "
-                "other tenants' work"
-            )
+            raise BrokerAuthError(refusal)
 
     def _account_or_refuse(request: Request, account_id: str) -> dict[str, Any]:
         _accounts(request)  # refuse early if the pool is not configured
@@ -2472,6 +2576,47 @@ def create_app(
             "spans": [_span_to_api(r) for r in page],
             "next_cursor": next_cursor,
         }
+
+    @app.post("/v1/holds/release-attempt")
+    def release_fenced_attempt_holds(
+        request: Request,
+        body: AttemptHoldsRelease,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Give back every account hold of one FENCED attempt, now (#380).
+
+        PLATFORM-ONLY, by the same rule as the sweep and the holders reads: the
+        caller is the reconciler, and it names another tenant's work. A
+        worker's token is refused -- a tenant able to call this could release
+        holds by guessing ids, and the worker's own path is the named,
+        tenant-checked `/v1/accounts/{id}/release`.
+
+        The reconciler calls it only AFTER its fence has committed, so a
+        fence that loses its race (#372) releases nothing a live worker is
+        still using. Idempotent: a repeat finds nothing and says so.
+        """
+        _platform_only(
+            request,
+            authorization,
+            "only the platform may release another attempt's account holds",
+        )
+        result = _release_attempt_holds_everywhere(
+            request.app.state.broker.db,
+            task_id=body.task_id,
+            attempt_id=body.attempt_id,
+            now=datetime.now(timezone.utc),
+        )
+        if result["released"]:
+            log.warning(
+                "released the account holds of a fenced attempt",
+                extra={
+                    "task_id": body.task_id,
+                    "attempt_id": body.attempt_id,
+                    "released": result["released"],
+                    "accounts": result["accounts"],
+                },
+            )
+        return {"task_id": body.task_id, "attempt_id": body.attempt_id, **result}
 
     @app.post("/v1/quota/sweep")
     def sweep(

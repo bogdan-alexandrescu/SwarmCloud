@@ -106,6 +106,26 @@ def initial_state(provider: str, tenant_id: str, *, configured_hard_max: int,
     )
 
 
+def _run_count(state: QuotaState) -> int:
+    """The stored count of the CURRENT rate-limit run, read honestly.
+
+    `rate_limit_count` is the number of 429s in the run that is still going
+    (CP-10, #85; owner decision 2026-09-25). A run starts at a 429 and ends
+    when a success is reported (`record_success` writes 0) or when `refresh`
+    retires the cooldown and the reset window (it writes 0 too). The
+    exhaustion threshold therefore counts CONSECUTIVE 429s, which is what
+    `AIMD_EXHAUSTION_THRESHOLD` is documented to count.
+
+    A stored count with no `last_429_at` behind it is read as 0. Documents the
+    worker used to create directly were seeded with a 1 nobody had observed;
+    reading them this way corrects them on their next report, with no one-off
+    Firestore write.
+    """
+    if state.last_429_at is None:
+        return 0
+    return max(0, int(state.rate_limit_count))
+
+
 def record_success(
     state: QuotaState,
     *,
@@ -123,7 +143,12 @@ def record_success(
     """
     moment = now or utcnow()
     if state.state is ProviderState.DISABLED:
-        return replace(state, success_count=state.success_count + 1, updated_at=moment)
+        return replace(
+            state,
+            success_count=state.success_count + 1,
+            rate_limit_count=0,
+            updated_at=moment,
+        )
 
     successes = state.success_count + 1
     target = current_target(state, config)
@@ -141,6 +166,12 @@ def record_success(
         cooldown_until=None,
         quota_derived_limit=None,
         retry_after_seconds=None,
+        # A clean call ends the rate-limit run. `refresh` never resets a state
+        # that is already AVAILABLE, so without this the count would carry
+        # 429s from runs that are over, and five 429s spread across a day of
+        # successes would read as five consecutive ones and exhaust the tenant.
+        # `last_429_at` is kept: it is when the last 429 was, not a run marker.
+        rate_limit_count=0,
         requests_remaining=(
             requests_remaining if requests_remaining is not None else state.requests_remaining
         ),
@@ -169,7 +200,7 @@ def record_rate_limit(
     it in an invisible wait.
     """
     moment = now or utcnow()
-    rate_limits = state.rate_limit_count + 1
+    rate_limits = _run_count(state) + 1
     target = _clamp(
         current_target(state, config) * config.multiplicative_decrease, state, config
     )
@@ -233,7 +264,7 @@ def record_exhausted(
         retry_after_seconds=cooldown,
         reset_at=reset_at if reset_at is not None else state.reset_at,
         last_429_at=moment,
-        rate_limit_count=state.rate_limit_count + 1,
+        rate_limit_count=_run_count(state) + 1,
         success_count=0,
         updated_at=moment,
     )

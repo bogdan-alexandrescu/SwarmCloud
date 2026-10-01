@@ -349,14 +349,18 @@ module "cloud_run" {
       # `_authorize`/`may_serve`, so a worker on this list can still only be
       # assigned an account its own tenant owns or was lent.
       #
+      # The reconciler calls one platform-only route here,
+      # /v1/holds/release-attempt, when it fences an attempt (#380).
+      #
       # Keyed by tenant id rather than by the member string, for the reason the
       # cloud_run module's own comment gives: a service account email is not
       # known until apply and cannot appear in a for_each key.
       invokers = merge(
         {
-          tick      = module.iam.tick_member
-          scheduler = module.iam.service_account_members["swarm-scheduler"]
-          api       = module.iam.service_account_members["swarm-api"]
+          tick       = module.iam.tick_member
+          scheduler  = module.iam.service_account_members["swarm-scheduler"]
+          api        = module.iam.service_account_members["swarm-api"]
+          reconciler = module.iam.service_account_members["swarm-reconciler"]
         },
         {
           for tenant_id, member in module.tenancy.worker_members :

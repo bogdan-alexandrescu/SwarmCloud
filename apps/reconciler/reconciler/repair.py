@@ -23,9 +23,14 @@ depend on the backend being reachable.
 
 from __future__ import annotations
 
+import json
+import os
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import datetime
-from typing import Any
+from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from swarm_common.models import EndCause, utcnow
 from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
@@ -128,6 +133,99 @@ class _Disproved:
 
 
 _DISPROVED = _Disproved()
+
+
+# ---------------------------------------------------------------------------
+# Account holds of a fenced attempt (#380)
+# ---------------------------------------------------------------------------
+
+
+class HoldReleaser(Protocol):
+    """Gives back every account hold stamped with one attempt. Returns how many."""
+
+    def release_attempt(self, *, task_id: str, attempt_id: str) -> int: ...
+
+
+#: The broker route, platform-only (`quota_broker.main`).
+RELEASE_ATTEMPT_HOLDS_PATH = "/v1/holds/release-attempt"
+
+_BROKER_TIMEOUT_SECONDS = 10
+
+
+def _identity_token(audience: str) -> str:
+    """This service's own Google ID token for `audience`.
+
+    The reconciler's service account is what makes the call a PLATFORM call:
+    the broker accepts it only when the account is on its
+    `PLATFORM_SERVICE_ACCOUNTS`, exactly as it accepts the sweep tick.
+    """
+    from google.auth.transport import requests as google_requests
+    from google.oauth2 import id_token
+
+    return str(id_token.fetch_id_token(google_requests.Request(), audience))
+
+
+class BrokerHoldReleaser:
+    """The reconciler's client for the broker's `release-attempt` route.
+
+    One POST, no retry: the hold's own TTL, pruned by the broker's sweep, is
+    still the backstop, so a failed call costs what it cost before #380 and
+    nothing more. Standard library only for the request, as the worker's
+    account client is.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        audience: str | None = None,
+        token_fetcher: Any = None,
+        timeout: int = _BROKER_TIMEOUT_SECONDS,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        self._audience = (audience or self._base).rstrip("/")
+        self._fetch_token = token_fetcher or _identity_token
+        self._timeout = timeout
+
+    @classmethod
+    def from_env(cls) -> "BrokerHoldReleaser | None":
+        """`QUOTA_BROKER_URL` and `QUOTA_BROKER_AUDIENCE`, the names every other
+        broker client in this repository reads. None when the URL is unset: a
+        deployment with no broker has no account pool and so no holds."""
+        url = os.environ.get("QUOTA_BROKER_URL", "").strip()
+        if not url:
+            return None
+        audience = os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
+        return cls(url, audience=audience)
+
+    def release_attempt(self, *, task_id: str, attempt_id: str) -> int:
+        url = f"{self._base}{RELEASE_ATTEMPT_HOLDS_PATH}"
+        body = json.dumps({"task_id": task_id, "attempt_id": attempt_id}).encode("utf-8")
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", f"Bearer {self._fetch_token(self._audience)}")
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                raw = response.read().decode("utf-8", errors="replace")
+        except urllib.error.HTTPError as exc:
+            raise RuntimeError(
+                f"the quota broker answered {exc.code} on {RELEASE_ATTEMPT_HOLDS_PATH}"
+            ) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            host = urlparse(url).hostname or self._base
+            raise RuntimeError(f"could not reach the quota broker at {host}: {exc}") from exc
+        try:
+            parsed = json.loads(raw) if raw.strip() else {}
+        except json.JSONDecodeError as exc:
+            raise RuntimeError("the quota broker answered with non-JSON") from exc
+        released = parsed.get("released") if isinstance(parsed, dict) else None
+        return int(released) if isinstance(released, int) else 0
+
+
+#: Reconciler's default for `hold_releaser`: read the environment. A sentinel
+#: rather than None, so None can still mean "no broker" when passed.
+_FROM_ENV: Any = object()
 
 
 @dataclass
@@ -287,11 +385,26 @@ class Reconciler:
         config: ReconcilerConfig,
         logger: Any,
         checkpoint_store: CheckpointStore | None = None,
+        hold_releaser: HoldReleaser | None = _FROM_ENV,
     ) -> None:
         self._store = store
         self._backends = backends
         self._config = config
         self._log = logger
+        # Who gives back a fenced attempt's account holds (#380). Built from
+        # the environment unless a caller supplies one; None means this
+        # deployment has no broker, and the holds age out on their TTL.
+        self._holds: HoldReleaser | None = (
+            BrokerHoldReleaser.from_env() if hold_releaser is _FROM_ENV else hold_releaser
+        )
+        if self._holds is None:
+            # Said once, here, because the per-fence path returns silently: a
+            # deployment missing QUOTA_BROKER_URL would otherwise look exactly
+            # like one with nothing to release.
+            self._log.warning(
+                "no quota broker configured (QUOTA_BROKER_URL unset); a fenced "
+                "attempt's account holds will count until their TTL"
+            )
         # None disables the sweep outright. An environment with no artifact
         # bucket configured gets no collector rather than one that deletes
         # nothing quietly while claiming to have run.
@@ -1173,6 +1286,7 @@ class Reconciler:
                     lease_id=finding.lease_id,
                     generation=finding.generation,
                 )
+                self._release_fenced_holds(finding, outcome)
 
         # ---- STEP 2: terminate the execution ----------------------------
         if not self._terminate(finding, outcome, handles):
@@ -1419,9 +1533,49 @@ class Reconciler:
             lease_id=finding.lease_id,
             generation=finding.generation,
         )
+        self._release_fenced_holds(finding, outcome)
         outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
         self._log_eviction(finding, outcome)
         return outcome
+
+    def _release_fenced_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
+        """Give back the account holds of the attempt this pass just fenced (#380).
+
+        CALLED ONLY ONCE THE FENCE HAS COMMITTED -- `invalidate_generation`
+        returned the new generation. A fence that was refused or lost its race
+        (#372) returns None, and then nothing is released: the attempt may be
+        a live worker still using its account, and taking its hold away would
+        let `choose()` stack another agent onto it. After a committed fence the
+        worker can no longer write anything for its generation and stops at its
+        next poll, so its hold describes nothing the platform should count.
+
+        A fenced worker never reaches its own release (`lifecycle._give_back`),
+        so without this the hold counted for its whole TTL. Never raises: the
+        TTL, pruned by the broker's sweep, is still the backstop, and a broker
+        outage must not stop the rest of the repair.
+        """
+        if self._holds is None or not finding.task_id or not finding.attempt_id:
+            return
+        try:
+            released = self._holds.release_attempt(
+                task_id=finding.task_id, attempt_id=finding.attempt_id
+            )
+        except Exception as exc:
+            self._log.warning(
+                "could not release a fenced attempt's account holds; they will "
+                "age out on their TTL",
+                task_id=finding.task_id,
+                attempt_id=finding.attempt_id,
+                error=str(exc)[:300],
+            )
+            outcome.actions.append(
+                f"did NOT release the account holds of {finding.attempt_id}: broker call failed"
+            )
+            return
+        if released:
+            outcome.actions.append(
+                f"released {released} account hold(s) of {finding.attempt_id}"
+            )
 
     def _repair_left_running(
         self, finding: Finding, outcome: RepairOutcome, handles: dict[str, Any]

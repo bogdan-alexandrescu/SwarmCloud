@@ -649,9 +649,18 @@ locals {
       # supplied. swarm-api is the tenant boundary for these routes; the broker
       # is the single writer. If that ever stops being true, this line is the
       # one that turns it into a cross-tenant hole.
+      #
+      # swarm-reconciler is here for #380: when it fences an attempt it calls
+      # /v1/holds/release-attempt, a platform-only route, to give back that
+      # attempt's account holds at once rather than at their 3h TTL. It is
+      # platform, not a tenant: like swarm-api it is not a worker SA, so the
+      # broker could not resolve it to a tenant anyway. Being listed lets it
+      # use every platform route (the sweep, a hard max); it calls only the
+      # release, and it is a control-plane identity as trusted as the tick.
       PLATFORM_SERVICE_ACCOUNTS = join(",", [
         module.iam.tick_service_account,
         module.iam.service_account_emails["swarm-api"],
+        module.iam.service_account_emails["swarm-reconciler"],
       ])
 
       # Provisioning an account's two secrets, which moved here when account
@@ -687,6 +696,14 @@ locals {
       # they are set there and not here.
       GKE_ENDPOINT    = var.enable_gke_autopilot ? try(module.gke_autopilot[0].endpoint, "") : ""
       GKE_CA_CERT_B64 = var.enable_gke_autopilot ? try(module.gke_autopilot[0].ca_certificate, "") : ""
+
+      # Where the reconciler gives back a fenced attempt's account holds
+      # (#380, `repair.BrokerHoldReleaser`). Unset, the reconciler logs a
+      # warning at start and the holds count against the pool until their TTL.
+      # Declared rather than derived for the same cycle reason as the
+      # scheduler's copy above; the quota_broker_url_is_wired check covers both.
+      QUOTA_BROKER_URL      = var.quota_broker_url
+      QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
     })
   }
 }
