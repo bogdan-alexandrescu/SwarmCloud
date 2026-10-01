@@ -57,6 +57,7 @@ vi.mock('../api', async (importOriginal) => {
 
 import { AgentDetailScreen, DRAWER_POLL_MS, drawerPoll } from '../AgentDetail'
 import { AgentsScreen } from '../Agents'
+import { RunFiles } from '../RunFiles'
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -331,28 +332,21 @@ describe('the open drawer re-reads its run (AG-2)', () => {
 describe('a checkpoint written while the drawer is open is not drawn as lost', () => {
   /**
    * THE REVIEW'S CASE. The listing at open holds ckpt-00001. The worker then
-   * uploads ckpt-00002 and records it on the attempt, and the next drawer
-   * read brings that record. The listing read at open does not hold it -- it
-   * did not exist yet -- and comparing the two drew "Written, then reclaimed"
-   * over a checkpoint that is sitting in the bucket.
+   * uploads ckpt-00002 and records it on the attempt, and the next read brings
+   * that record. The listing read at open does not hold it -- it did not exist
+   * yet -- and comparing the two drew "Written, then reclaimed" over a
+   * checkpoint that is sitting in the bucket.
    *
    * The second listing is SLOW on purpose: while it is in flight, the panel
    * must not compare the old listing with the new records either.
+   *
+   * THE PANEL IS THE CHECKPOINTS TAB'S since the Agents V1 rebrand (agents.html,
+   * decided 2026-10-01): `RunFiles`, re-rendered here the way a re-read hands
+   * it newer records and a newer `readAt`.
    */
-  it('re-reads the listing with the drawer, and never compares an older listing with newer records', async () => {
+  it('re-reads the listing with the run, and never compares an older listing with newer records', async () => {
     fakeClock()
     api.loadTaskLogs.mockImplementation(async () => NO_BODY)
-    let reads = 0
-    api.loadAgentRun.mockImplementation(async () => {
-      reads += 1
-      return ok(
-        agentRun({
-          attempts: [
-            attempt({ checkpoints: reads === 1 ? ['ckpt-00001'] : ['ckpt-00001', 'ckpt-00002'] }),
-          ],
-        }),
-      )
-    })
     let listings = 0
     api.loadCheckpoints.mockImplementation(async () => {
       listings += 1
@@ -360,22 +354,57 @@ describe('a checkpoint written while the drawer is open is not drawn as lost', (
       await new Promise((resolve) => setTimeout(resolve, 2_000))
       return ok(listing(['ckpt-00001', 'ckpt-00002']))
     })
-
-    const root = await openDrawer()
+    const t = task('RUNNING')
+    const { container, rerender } = render(
+      <RunFiles task={t} attempts={[attempt({ checkpoints: ['ckpt-00001'] })]} readAt={1} now={null} />,
+    )
+    await advance(0)
+    const root = container as HTMLElement
     const panel = () => section(root, 'Checkpoints')?.textContent ?? ''
     expect(panel()).toContain('ckpt-00001')
     expect(panel()).not.toMatch(/reclaimed/i)
 
-    // The drawer's second read lands: the attempt now records ckpt-00002.
-    await advance(DRAWER_POLL_MS)
-    expect(reads).toBe(2)
+    // The second read lands: the attempt now records ckpt-00002.
+    rerender(
+      <RunFiles
+        task={t}
+        attempts={[attempt({ checkpoints: ['ckpt-00001', 'ckpt-00002'] })]}
+        readAt={2}
+        now={null}
+      />,
+    )
+    await advance(0)
     expect(panel(), 'an older listing was compared with newer attempt records').not.toMatch(/reclaimed/i)
 
     // The re-read listing lands, holding it.
     await advance(2_000)
-    expect(listings, 'the checkpoint listing was not re-read with the drawer').toBe(2)
+    expect(listings, 'the checkpoint listing was not re-read with the run').toBe(2)
     expect(panel()).toContain('ckpt-00002')
     expect(panel(), 'a checkpoint in the bucket was drawn as reclaimed').not.toMatch(/reclaimed/i)
+  })
+
+  /**
+   * DETAILS STILL RE-READS THE LISTING -- the Checkpoints tile's "N written ·
+   * M in bucket" (#103) reads it -- but draws no checkpoint panel: that is
+   * the Checkpoints tab's. MUTATION: put `<RunFiles>` back in `Run`.
+   */
+  it('re-reads the listing with the drawer for the tile, and draws no Checkpoints panel on Details', async () => {
+    fakeClock()
+    api.loadTaskLogs.mockImplementation(async () => NO_BODY)
+    api.loadAgentRun.mockImplementation(async () =>
+      ok(agentRun({ attempts: [attempt({ checkpoints: ['ckpt-00001'] })] })),
+    )
+    let listings = 0
+    api.loadCheckpoints.mockImplementation(async () => {
+      listings += 1
+      return ok(listing(['ckpt-00001']))
+    })
+    const root = await openDrawer()
+    expect(listings).toBe(1)
+    await advance(DRAWER_POLL_MS)
+    expect(listings, 'the checkpoint listing was not re-read with the drawer').toBe(2)
+    expect(root.textContent).toContain('1 written · 1 in bucket')
+    expect(section(root, 'Checkpoints'), 'Details drew the Checkpoints tab\'s panel').toBeUndefined()
   })
 })
 

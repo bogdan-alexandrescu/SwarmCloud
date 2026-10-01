@@ -41,7 +41,11 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { Run } = await import('../AgentDetail')
+// THE CHECKPOINTS TAB'S PANEL, given the run's attempt records. Details drew
+// this panel until the Agents V1 rebrand (agents.html, decided 2026-10-01)
+// made it the agent's fourth tab; the finding under test is `RunFiles`'s, so
+// it is rendered on its own, with the records it compares the listing to.
+const { RunFiles } = await import('../RunFiles')
 
 const PREFIX = 'tenants/eng/tasks/tsk_charts/attempts/'
 const POINTER = `gs://swarm-artifacts/${PREFIX}att_1/checkpoints/ckpt-00001/`
@@ -83,18 +87,18 @@ function agentRun(over: Partial<AgentRun> = {}): AgentRun {
   }
 }
 
-/** The Checkpoints section of the inspector, once its listing has landed. */
+/** The Checkpoints panel (the Checkpoints tab's), once its listing has landed. */
 async function checkpointsSection(run: AgentRun, page: CheckpointsPage): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue(ok(page))
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
-  const { container } = render(<Run run={run} />)
+  const { container } = render(<RunFiles task={run.task} attempts={run.attempts} />)
   let section: HTMLElement | undefined
   await waitFor(
     () => {
       section = [...container.querySelectorAll<HTMLElement>('section')].find(
         (s) => s.querySelector('h2')?.textContent === 'Checkpoints',
       )
-      expect(section, 'the inspector drew no Checkpoints section').toBeTruthy()
+      expect(section, 'RunFiles drew no Checkpoints section').toBeTruthy()
       expect(section!.textContent).toMatch(/found/)
     },
     { timeout: 5000 },

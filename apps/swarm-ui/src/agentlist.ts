@@ -93,3 +93,17 @@ export function agentListPath(list: AgentList): string {
  * cannot drift apart again.
  */
 export const PHONE_PAGE_LIMIT = 50
+
+/**
+ * THE WORD ON THE AGENT PAGE'S BACK LINK: the list tab it returns to.
+ *
+ * agents.html V1 (decided 2026-10-01): on a phone the list and the agent are
+ * two pages, and the agent page leads with `‹ Waiting` -- the tab the reader
+ * came from, read off the list address the drawer closes to. An address that
+ * names no tab (the list before it has landed anywhere) goes back to Agents.
+ */
+export function backLabel(listAddress: string): string {
+  const m = /running\/(live|waiting|recent)(?:\/|$)/.exec(listAddress)
+  const tab = m?.[1]
+  return tab === undefined ? 'Agents' : tab.charAt(0).toUpperCase() + tab.slice(1)
+}

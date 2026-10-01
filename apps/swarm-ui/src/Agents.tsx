@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
 // One definition for the four screens of this group; a second copy of a mark
@@ -633,9 +634,12 @@ function FlatRows({
   sort?: SortControl
 }) {
   const shared = flatShared(rows.map((t) => rowReason(t, classes)))
+  // BESIDE AN OPEN AGENT THE LIST IS THE COMPACT COLUMN (agents.html V1):
+  // two-line rows and no column heads, which name columns it no longer has.
+  const compact = openTaskId !== null
   return (
     <div className="rows">
-      <RowHead sort={sort} />
+      {!compact && <RowHead sort={sort} />}
       {rows.map((t, i) => (
         <TaskRow
           key={t.id}
@@ -645,6 +649,7 @@ function FlatRows({
           open={t.id === openTaskId}
           classes={classes}
           whyShared={shared[i]}
+          compact={compact}
         />
       ))}
     </div>
@@ -792,7 +797,7 @@ function GroupedRows({
               </p>
             ))}
             <div className="rows">
-              <RowHead sort={sort} />
+              {openTaskId === null && <RowHead sort={sort} />}
               {tasks.map((t, i) => (
                 <TaskRow
                   key={t.id}
@@ -802,6 +807,7 @@ function GroupedRows({
                   open={t.id === openTaskId}
                   classes={classes}
                   whyShared={said.shared[i]}
+                  compact={openTaskId !== null}
                 />
               ))}
             </div>
@@ -890,6 +896,7 @@ function TaskRow({
   open = false,
   classes,
   whyShared = false,
+  compact = false,
 }: {
   task: Task
   now: number
@@ -900,10 +907,15 @@ function TaskRow({
   classes: ResourceClasses | null
   /** The reason is said once for this row and its neighbours (#100); keep it for a screen reader only. */
   whyShared?: boolean
+  /** The list sits beside an open agent: draw the two-line compact row (agents.html V1). */
+  compact?: boolean
 }) {
   const why = rowReason(task, classes)
   // Said once by a neighbour or the group header (#100), and never a warn line.
   const whyHidden = whyShared && !why.warn
+  if (compact) {
+    return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
+  }
   const el = elapsed(task, now)
   const start = startedOf(task, now)
   const account = accountText(task.account)
@@ -1070,6 +1082,158 @@ function TaskRow({
           answers "why" when read on its own. Never a warn line, and never
           hover-only: `flatShared`/`groupReasons` decide it. */}
       {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
+    </div>
+  )
+}
+
+/**
+ * WHETHER THE LIST IS FOLDED TO THE 64px STRIP. `AgentDrawer` (App.tsx) owns
+ * the snap and writes it on the root as `data-agent-list`, which is also what
+ * the sheet folds the list by; reading the same attribute here keeps the row
+ * and the sheet on one answer rather than two copies of the snap.
+ */
+function stripFolded(): boolean {
+  return typeof document !== 'undefined' && document.documentElement.dataset.agentList === 'strip'
+}
+
+/** Where the hover card is drawn: beside the strip row, in viewport pixels. */
+type CardAt = { top: number; left: number }
+
+/**
+ * THE COMPACT ROW (agents.html V1, decided 2026-10-01): two lines, as drawn.
+ *
+ *   line 1  the state mark, the agent's name, its elapsed time
+ *   line 2  profile (and model) · owner · `try n/m` on a live row
+ *   then    the reason it waits or stopped, where there is one -- never
+ *           dropped, for the reason `TaskRow` gives (the phone question)
+ *
+ * THE NAME IS THE STEP, OR THE TASK ID. A task carries no title; the step id
+ * is the name a workflow gave it (#94), and a lone task is named by the id
+ * prefix the rest of the product prints (`shortTaskId`). The full id is in the
+ * title either way, and on line 2 when the step is the name.
+ *
+ * FOLDED TO THE STRIP, the sheet leaves only the mark (`:root[data-agent-list
+ * ='strip']`), and a mark alone says nothing about which agent it is. So
+ * hovering or focusing the row draws a card beside it -- name, state, elapsed,
+ * profile and owner -- and ↑/↓ move between rows, which is how a keyboard
+ * reader walks a column of marks. The card is in a portal on `document.body`
+ * because the list column clips and the strip hides every child of the row
+ * but the mark; it is `role="tooltip"` and the row's `aria-describedby` while
+ * it is up.
+ */
+function CompactRow({
+  task,
+  now,
+  onOpen,
+  open,
+  why,
+  whyHidden,
+}: {
+  task: Task
+  now: number
+  onOpen: (taskId: string) => void
+  open: boolean
+  why: RowReason
+  whyHidden: boolean
+}) {
+  const [card, setCard] = useState<CardAt | null>(null)
+  const el = elapsed(task, now)
+  const tries = attemptsUsed(task)
+  const name = task.step_id ?? shortTaskId(task.id)
+  const owner = task.submitted_by?.split('@')[0] ?? null
+  const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
+  const live = tabOf(task) === 'live'
+  const cardId = `ag-card-${task.id}`
+
+  const show = (row: HTMLElement) => {
+    if (!stripFolded()) return
+    const r = row.getBoundingClientRect()
+    setCard({ top: r.top, left: r.right + 8 })
+  }
+  const hide = () => setCard(null)
+  const move = (row: HTMLElement, step: 1 | -1): boolean => {
+    const scope: ParentNode = row.closest('.work') ?? row.ownerDocument
+    const all = [...scope.querySelectorAll<HTMLElement>('.row.is-compact')]
+    const next = all[all.indexOf(row) + step]
+    if (next === undefined) return false
+    next.focus()
+    return true
+  }
+
+  return (
+    <div
+      className="row clickable is-compact"
+      role="button"
+      tabIndex={0}
+      aria-current={open ? 'true' : undefined}
+      aria-describedby={card !== null ? cardId : undefined}
+      onClick={() => onOpen(task.id)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen(task.id)
+          return
+        }
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          if (move(e.currentTarget, e.key === 'ArrowDown' ? 1 : -1)) e.preventDefault()
+        }
+      }}
+      onMouseEnter={(e) => show(e.currentTarget)}
+      onMouseLeave={hide}
+      onFocus={(e) => show(e.currentTarget)}
+      onBlur={hide}
+    >
+      <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+      <span className="agent cr-name">
+        {task.step_id ? (
+          <b title={task.id}>{name}</b>
+        ) : (
+          <b className="id" title={task.id}>
+            {name}
+          </b>
+        )}
+        {whyHidden && <span className="why is-shared">{why.text}</span>}
+      </span>
+      <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+      <span className="cr-sub">
+        <span className="cr-profile">{profile}</span>
+        {' · '}
+        <span className="cr-owner" title={task.submitted_by ?? undefined}>
+          {owner ?? <Em />}
+        </span>
+        {live && (
+          <>
+            {' · '}
+            <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
+              try {task.attempt_count}/{task.max_attempts}
+            </span>
+          </>
+        )}
+        {task.step_id && (
+          <>
+            {' · '}
+            <span className="id" title={task.id}>
+              {shortTaskId(task.id)}
+            </span>
+          </>
+        )}
+      </span>
+      {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
+      {card !== null &&
+        createPortal(
+          <div id={cardId} role="tooltip" className="ag-hovcard" style={{ top: card.top, left: card.left }}>
+            <span className="ag-hovcard-head">
+              <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+              <span className="ag-hovcard-when">{el.text}</span>
+            </span>
+            <b>{name}</b>
+            <small>
+              {profile} · {owner ?? 'no owner recorded'}
+            </small>
+            <small className="ag-hovcard-hint">click to open · ↑↓ to move</small>
+          </div>,
+          document.body,
+        )}
     </div>
   )
 }

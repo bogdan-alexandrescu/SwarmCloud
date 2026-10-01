@@ -6,8 +6,9 @@
 // whole somewhere a reader can reach: in its `title`, and in the copy action
 // beside it -- the AH-11 precedent. A cut uri is a different uri.
 //
-// Rendered through the inspector's own `Run`, with the two loaders its file
-// panel calls stubbed, as `checkpoint.reclaimed.test.tsx` does.
+// Rendered through `RunFiles`, the Checkpoints tab's panel (it left Details
+// in the Agents V1 rebrand), with the two loaders it calls stubbed, as
+// `checkpoint.reclaimed.test.tsx` does.
 
 import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
@@ -26,7 +27,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { Run } = await import('../AgentDetail')
+const { RunFiles } = await import('../RunFiles')
 
 const URI = 'gs://swarm-artifacts/tenants/eng/tasks/tsk_charts/attempts/att_1/checkpoints/ckpt-00001/'
 
@@ -85,11 +86,12 @@ function listing(): CheckpointsPage {
 describe('CH-13: a stacked record ellipsizes a long value and keeps it whole', () => {
   it("keeps a checkpoint's whole uri in its title, beside the action that copies it", async () => {
     // MUTATION: drop the `title` from the Location cell's uri.
-    // #102: the checkpoints' one table is the Checkpoints section's, read from
+    // #102: the checkpoints' one table is the Checkpoints tab's, read from
     // the bucket, so the listing is what carries the uri now.
     api.loadCheckpoints.mockResolvedValue({ status: 'ok', fetchedAt: Date.now(), data: listing() })
     api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
-    const { container } = render(<Run run={agentRun()} />)
+    const run = agentRun()
+    const { container } = render(<RunFiles task={run.task} attempts={run.attempts} />)
     const uri = await waitFor(
       () => {
         const el = [...container.querySelectorAll('.ctl-table.is-stacked .uri')].find((e) => e.textContent === URI)
