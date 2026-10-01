@@ -26,6 +26,7 @@ import {
   rollupState,
   startedOf,
   stateTone,
+  taskGroup,
   whyAgent,
   whyNeedsAction,
   type Task,
@@ -605,6 +606,8 @@ function AgentsBody({
             {shown === 'live' && <HelpCard topic="capacity" />}
           </h3>
         </div>
+      ) : shown === 'waiting' ? (
+        <WaitingGroups rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} grouped={grouped} />
       ) : grouped && shown !== 'live' ? (
         <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
       ) : (
@@ -653,6 +656,60 @@ function FlatRows({
         />
       ))}
     </div>
+  )
+}
+
+/**
+ * THE WAITING TAB, SPLIT BY REMEDY (owner decision 2026-10-01): "Needs
+ * action" first -- a pool paused, set to zero, with no limit set or below
+ * this task's weight, or a park no timer ends -- then "No room", where
+ * waiting is the answer. The split is `taskGroup` (types.ts), which files a
+ * blocker by `blockerGroup`: the same rule Capacity's "Needs action" group
+ * reads off the pools, so the two screens cannot disagree about a pool.
+ *
+ * Each group keeps the list's own order and, when "Group by workflow" is on,
+ * groups its own rows by workflow. An empty group is not drawn.
+ */
+function WaitingGroups({
+  rows,
+  now,
+  onOpen,
+  openTaskId,
+  classes,
+  sort,
+  grouped,
+}: {
+  rows: Task[]
+  now: number
+  onOpen: (taskId: string) => void
+  openTaskId: string | null
+  classes: ResourceClasses | null
+  sort?: SortControl
+  grouped: boolean
+}) {
+  const split = { needs_action: [] as Task[], no_room: [] as Task[] }
+  for (const t of rows) split[taskGroup(t, classUnits(classes, t.resource_class))].push(t)
+  const groups = [
+    { key: 'needs_action', title: 'Needs action', rows: split.needs_action },
+    { key: 'no_room', title: 'No room', rows: split.no_room },
+  ] as const
+  return (
+    <>
+      {groups.map((g) =>
+        g.rows.length === 0 ? null : (
+          <section className={`section ag-wait-group${g.key === 'needs_action' ? ' needs-action' : ''}`} key={g.key} data-group={g.key}>
+            <h2>
+              {g.title} <span className="ag-scope">{g.rows.length}</span>
+            </h2>
+            {grouped ? (
+              <GroupedRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+            ) : (
+              <FlatRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+            )}
+          </section>
+        ),
+      )}
+    </>
   )
 }
 

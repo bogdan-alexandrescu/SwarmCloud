@@ -143,10 +143,8 @@ describe('metadata and hypotheticals carry no state hue (CP-13)', () => {
     }
   })
 
-  it('draws a counterfactual effect in ink, not in the healthy hue', () => {
-    // MUTATION: `.cf-effect { color: var(--ok) }` back.
-    expect(declared(CSS, '.cf-effect', 'color')).toBe('var(--text)')
-  })
+  // The counterfactual effect's rule (`.cf-effect`) was deleted with the
+  // `+N if lifted` column that drew it: no source renders it (2026-10-01).
 })
 
 describe('the token-mix bar left no rules behind (#227)', () => {

@@ -114,16 +114,19 @@ describe('the capacity board as a whole', () => {
 
   // The Cards view was the alternative set aside on 2026-10-01 (capacity.html);
   // its scope test went with it. The Scope column above is the one place the
-  // scope is drawn, on every row, including the "Needs a look" group's.
-  it('declares scope on a row the "Needs a look" group took out of its family', async () => {
+  // scope is drawn, on every row, including the "Needs action" group's. The
+  // group holds the pools a person has to act on (owner decision 2026-10-01,
+  // `poolGroup`), so the pool here is paused; a merely full pool stays in its
+  // family.
+  it('declares scope on a row the "Needs action" group took out of its family', async () => {
     renderCapacity(
       capacity({
         tenant_id: 'eng',
-        pools: [pool({ name: 'global' }), pool({ name: 'tenant:research', active: 8, available: 0 })],
+        pools: [pool({ name: 'global' }), pool({ name: 'tenant:research', enabled: false })],
       }),
     )
     await screen.findByText('Global')
-    expect(familyRow('tenant:research').closest('.cap-needs'), 'a full pool is not in Needs a look').not.toBeNull()
+    expect(familyRow('tenant:research').closest('.cap-needs'), 'a paused pool is not in Needs action').not.toBeNull()
     expect(scopeCell('tenant:research')).toBe('tenant research')
   })
 

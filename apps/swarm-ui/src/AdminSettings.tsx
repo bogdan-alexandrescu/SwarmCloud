@@ -39,14 +39,10 @@ import {
  * `provider:anthropic:tenant:u-bogdan` stayed at 5, holding the real ceiling
  * at five.
  *
- * That used to be a sentence: "a task must clear EVERY pool its profile lists,
- * so its ceiling is the MINIMUM across them". A sentence asserting an
- * arithmetic rule is the weakest way to show one, because the reader has to
- * carry it to the figures and apply it themselves. SO THE OPERANDS ARE DRAWN
- * INSTEAD: every profile card lists each of its pools with that pool's own
- * agent ceiling, and the smallest is marked as the one that binds. `min()` is
- * not explained; it is shown with its inputs beside its output, which is the
- * form in which nobody has to be told what `min` means.
+ * The per-profile cards that drew those operands here are gone (owner
+ * decision, 2026-10-01): Pools > By runner profile draws every profile against
+ * every pool, and the side editor states what a new limit does to each
+ * profile's ceiling before it is saved.
  *
  * The sentence itself lives at `#help/pools-all-at-once`.
  */
@@ -236,148 +232,15 @@ function Body({
   onSaved: (pool: string) => Promise<boolean>
   onEdit: (pool: string) => void
 }) {
-  const byName = new Map(capacity.pools.map((p) => [p.name, p]))
-  const profiles = Object.entries(capacity.runner_profiles).sort(([a], [b]) =>
-    a.localeCompare(b),
-  )
-
-  return (
-    <>
-      {profiles.length > 0 && (
-        <section className="section">
-          {/* One word where "What actually binds, per profile" used to be, and
-              now two: `Binding pool` says WHICH of the several ceilings each
-              card names, which is what the `?` was opened for. The rule behind
-              it -- that a task clears every pool in its list at one moment, so
-              the binding one is the minimum and never a sum -- is stated where
-              the figure it governs is, on the Capacity board's `Could start
-              (min across pools)` column, and is in the rail's Help section.
-              This screen keeps one glyph, on Ceilings below. */}
-          {/* NO `has-q` EITHER. That class is `display: flex` with a baseline
-              gap, and it exists to sit a `?` beside an eyebrow's text; on an
-              eyebrow with no glyph it turns one text node into a flex item for
-              nothing. The `Ceilings` eyebrow below keeps both, because it keeps
-              the glyph. */}
-          <span className="ctl-eyebrow">Binding pool</span>
-          <div className="ctl-cards">
-            {profiles.map(([name, prof]) => (
-              <ProfileCard
-                key={name}
-                name={name}
-                units={prof.units}
-                {...arithmetic(prof.pools, prof.units, byName)}
-              />
-            ))}
-          </div>
-        </section>
-      )}
-
-      <PoolEditor capacity={capacity} admin={admin} saved={saved} onSaved={onSaved} onEdit={onEdit} />
-    </>
-  )
-}
-
-function ProfileCard({
-  name,
-  units,
-  operands,
-  ceiling,
-  binding,
-  unset,
-}: {
-  name: string
-  units: number
-  operands: Operand[]
-  ceiling: number | null
-  binding: string[]
-  unset: boolean
-}) {
-  // The unit that used to be a footnote -- "'Ceiling' is how many AGENTS of
-  // that profile could run at once, not units" -- is now fused to the figure
-  // (`4 agents`) and to the weight in the card note (`1 unit each`), which is
-  // the other half of the same fact. §8.4.1: a well-chosen unit is the
-  // explanation.
-  const measured = ceiling !== null
-  // One name per operand, qualified where two would read alike (CP-15): the
-  // `browser` profile takes `resource:browser` AND `runner:browser`, and both
-  // printed `browser` -- two operands with one name and different ceilings.
-  const among = operands.map((o) => o.pool)
-  const label = (pool: string) => poolLabelAmong(pool, among)
-  const named = binding.map(label).join(' and ')
-
-  return (
-    <section className="ctl-card">
-      <div className="ctl-card-head">
-        <h2 className="ctl-card-title">{name}</h2>
-        <span className="ctl-card-note">
-          {units} unit{units === 1 ? '' : 's'} each
-        </span>
-      </div>
-      <div className="ctl-card-body">
-        <b
-          className={`ctl-figure${measured ? '' : ' is-absent'}`}
-          aria-label={
-            unset
-              ? `${name} can run no agents: ${named} ${binding.length === 1 ? 'has' : 'have'} no limit set, so admission refuses. Nobody set ${binding.length === 1 ? 'it' : 'them'} to 0: somebody has to set a limit.`
-              : measured
-              ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding.length === 1 ? `${named} is the pool that binds it` : `${named} bind it together: raising any one of them alone leaves it where it is`}.`
-              : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
-          }
-        >
-          {/* A CEILING, AND SAID TO BE ONE (#132): `max 5 agents`. The bare
-              `5 agents` read as a count of agents running, which is the other
-              figure on this platform with that unit. */}
-          {measured && <span className="ctl-figure-unit adm-figure-max">max</span>}
-          {measured ? ceiling : unset ? <i className="ctl-em">no limit set</i> : <i className="ctl-em">—</i>}
-          {measured && <span className="ctl-figure-unit">agents</span>}
-        </b>
-
-        {/* THE OPERANDS. Each pool's own ceiling in agents, the smallest one
-            marked. This is the whole reason the paragraph could go: the
-            reader sees three numbers and the marked one is the smallest, so
-            "the minimum across them" is a thing they read off the card
-            rather than a rule they were asked to remember. */}
-        {/* §B6.4: a key COLUMN. Eight pool names and eight ceilings in a
-            wrapping strip read as one run-on line of alternating word and
-            digit; the smallest of them is the whole point of the card and it
-            was the hardest thing on it to find. */}
-        {/* EVERY OPERAND AT THE MINIMUM IS MARKED (AH-1), not the first one:
-            two pools tied at the ceiling both bind it, and raising either
-            alone moves nothing.
-
-            THE FIGURE IS ITS OWN ELEMENT (AH-19). It was a bare text node after
-            the key, so it started wherever the key's column ended and a `5`
-            sat under the `2` of a `25`. `.adm-value` is the hook the
-            stylesheet right-aligns in a fixed tabular-nums track, so the
-            operands compare down the card the way a column of figures does. */}
-        <ul className="ctl-facts is-rows adm-operands">
-          {operands.map((o) => (
-            <li
-              key={o.pool}
-              className={`ctl-fact${o.agents === null ? ' is-absent' : ''}${
-                binding.includes(o.pool) ? ' is-binding' : ''
-              }`}
-              title={o.pool}
-            >
-              <b>{label(o.pool)}</b>
-              <span className="adm-value">
-                {o.unset ? <i className="ctl-em">no limit set</i> : o.agents === null ? <i className="ctl-em">—</i> : o.agents}
-              </span>
-            </li>
-          ))}
-        </ul>
-      </div>
-      <p className="ctl-card-foot">
-        {unset ? (
-          <>no limit set on {named}</>
-        ) : binding.length === 0 ? (
-          <>no pool in this response</>
-        ) : (
-          <>binds on {named}</>
-        )}
-      </p>
-    </section>
-  )
+  // THE PER-PROFILE "BINDING POOL" CARDS ARE GONE (owner decision,
+  // 2026-10-01). Each drew one runner profile's ceiling in agents -- the
+  // smallest of its pools' limits over its weight -- with every operand
+  // listed. Pools > By runner profile (`ProfileMatrix`) draws every profile
+  // against every pool with leased/ceiling per cell and outlines the pool that
+  // runs out first, and the side editor here says what a new limit does to
+  // each profile's ceiling (`impactOf`, which still reads `arithmetic`). The
+  // cards held no control, so nothing a person could do went with them.
+  return <PoolEditor capacity={capacity} admin={admin} saved={saved} onSaved={onSaved} onEdit={onEdit} />
 }
 
 /**
@@ -464,7 +327,7 @@ function effectiveAt(p: Pool, hard: number): number {
 /**
  * WHAT THE CHANGE DOES, IN SENTENCES, FROM DATA THIS SCREEN ALREADY HAS: the
  * pool's own figures and every runner profile's ceiling before and after
- * (the same `arithmetic` the Binding pool cards draw). Nothing here is a
+ * (`arithmetic`, the minimum across a profile's pools). Nothing here is a
  * forecast of queue length -- the response carries no per-pool waiting count,
  * so the impact names ceilings and units in use, and nothing else.
  */

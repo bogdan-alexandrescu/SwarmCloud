@@ -384,6 +384,75 @@ interface PickedStep {
 }
 
 /**
+ * THE ATTEMPT READ, ONCE PER SURFACE, SHARED BY EVERY TOTAL ON IT (WF-5).
+ *
+ * It lived inside `Board`, so the step table's total read attempt telemetry
+ * while the page head beside it and the list row summed the step results
+ * alone, and one page showed two totals. The page now reads it once and hands
+ * it to the head and the board; the list reads it for the rows it draws.
+ * `firstId` is the workflow whose steps go first, so the sample cap never
+ * leaves out the steps of the page's own workflow.
+ */
+function useWorkflowUsage(workflows: readonly Workflow[], firstId: string | null): UsageRead {
+  // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
+  // and caps; the order decides which steps fall inside the cap, so it is the
+  // board's own order rather than a set's iteration order -- except that the
+  // page puts its own workflow first, so its steps are never the ones the cap
+  // leaves out.
+  //
+  // AS ONE KEY, because the page now polls (every 10s while a workflow runs):
+  // each poll is a new array, and re-reading every step's attempts on every
+  // poll -- and blanking every figure to `reading` meanwhile -- would make the
+  // figures flicker for no new information. A changed set of tasks re-reads.
+  const taskKey = useMemo(() => {
+    const ordered = [
+      ...workflows.filter((w) => w.workflow_id === firstId),
+      ...workflows.filter((w) => w.workflow_id !== firstId),
+    ]
+    return ordered
+      .flatMap((w) => w.steps.map((s) => s.task_id ?? null).filter((id): id is string => id !== null))
+      .join('\n')
+  }, [workflows, firstId])
+
+  const [usage, setUsage] = useState<UsageRead>({ kind: 'reading' })
+
+  useEffect(() => {
+    let live = true
+    setUsage({ kind: 'reading' })
+    loadWorkflowUsage(taskKey === '' ? [] : taskKey.split('\n')).then((r) => {
+      if (!live) return
+      if (r.status === 'ok') {
+        setUsage({ kind: 'ready', usage: r.data })
+        return
+      }
+      // `empty` is a real answer: no step has a task yet, so there is nothing
+      // to read and nothing failed. The per-step cells then say "not started",
+      // which is what the state join already says.
+      if (r.status === 'empty') {
+        setUsage({ kind: 'ready', usage: null })
+        return
+      }
+      if (r.status === 'stale') {
+        setUsage({ kind: 'ready', usage: r.data })
+        return
+      }
+      if (r.status === 'error') {
+        setUsage({ kind: 'failed', detail: r.error.message })
+        return
+      }
+      // `loading` is not a value this promise resolves to, but leaving the
+      // nodes in `reading` for ever if it ever did is a silent stall, and a
+      // placeholder that never stops moving is the worst of the three states.
+      setUsage({ kind: 'failed', detail: 'The attempt read did not complete.' })
+    })
+    return () => {
+      live = false
+    }
+  }, [taskKey])
+  return usage
+}
+
+/**
  * The board, plus the SECOND read the step figures need.
  *
  * Separate from `WorkflowsScreen` because `Screen`'s children is a render prop:
@@ -395,11 +464,14 @@ function Board({
   board,
   stores,
   focus,
+  usage,
 }: {
   board: WorkflowBoard
   stores: BoardStores
   /** One workflow's page (Workflows V2): draw only it, open, in its address's view. */
   focus: BoardFocus
+  /** The page's attempt read (`useWorkflowUsage`), the one its head totals from too. */
+  usage: UsageRead
 }) {
   const { openStages, toggleStage, zooms, chooseZoom, pick, choosePick, reload } = stores
   // THE CARD ON SCREEN: the page's one workflow. Everything below that draws
@@ -470,61 +542,8 @@ function Board({
     if (pick !== null && pick.focus !== null) choosePick({ ...pick, focus: null })
   }, [pick, choosePick])
 
-  // Every task a step points at, in board order. `loadWorkflowUsage` dedupes
-  // and caps; the order decides which steps fall inside the cap, so it is the
-  // board's own order rather than a set's iteration order -- except that the
-  // page puts its own workflow first, so its steps are never the ones the cap
-  // leaves out.
-  //
-  // AS ONE KEY, because the page now polls (every 10s while a workflow runs):
-  // each poll is a new array, and re-reading every step's attempts on every
-  // poll -- and blanking every figure to `reading` meanwhile -- would make the
-  // figures flicker for no new information. A changed set of tasks re-reads.
-  const taskKey = useMemo(() => {
-    const ordered = [
-      ...board.workflows.filter((w) => w.workflow_id === focusId),
-      ...board.workflows.filter((w) => w.workflow_id !== focusId),
-    ]
-    return ordered
-      .flatMap((w) => w.steps.map((s) => s.task_id ?? null).filter((id): id is string => id !== null))
-      .join('\n')
-  }, [board.workflows, focusId])
-
-  const [usage, setUsage] = useState<UsageRead>({ kind: 'reading' })
-
-  useEffect(() => {
-    let live = true
-    setUsage({ kind: 'reading' })
-    loadWorkflowUsage(taskKey === '' ? [] : taskKey.split('\n')).then((r) => {
-      if (!live) return
-      if (r.status === 'ok') {
-        setUsage({ kind: 'ready', usage: r.data })
-        return
-      }
-      // `empty` is a real answer: no step has a task yet, so there is nothing
-      // to read and nothing failed. The per-step cells then say "not started",
-      // which is what the state join already says.
-      if (r.status === 'empty') {
-        setUsage({ kind: 'ready', usage: null })
-        return
-      }
-      if (r.status === 'stale') {
-        setUsage({ kind: 'ready', usage: r.data })
-        return
-      }
-      if (r.status === 'error') {
-        setUsage({ kind: 'failed', detail: r.error.message })
-        return
-      }
-      // `loading` is not a value this promise resolves to, but leaving the
-      // nodes in `reading` for ever if it ever did is a silent stall, and a
-      // placeholder that never stops moving is the worst of the three states.
-      setUsage({ kind: 'failed', detail: 'The attempt read did not complete.' })
-    })
-    return () => {
-      live = false
-    }
-  }, [taskKey])
+  // THE ATTEMPT READ is the page's (`useWorkflowUsage`), handed in, so the
+  // head, the table and the nodes read one set of figures (WF-5).
 
   // WHAT THE CARD IS DRAWING, stated once. The card below is handed exactly
   // these, and the sample mark asks the same questions of it -- a second
@@ -1717,11 +1736,12 @@ function WorkflowSteps({
   if (rows.length === 0) return <span className="ctl-mark">no steps</span>
   if (view === 'table') {
     // THE TOTAL, SUMMED FROM THE FIGURES THE ROWS ABOVE IT SHOW (WF-5). The
-    // list row and the page head sum the results alone, because neither has
-    // the attempt read; this one has it, so it moves with the cells: a sampled
+    // page head sums the same read (`useWorkflowUsage`, handed to both), and
+    // the list row sums its own read by the same rule, so it moves with the
+    // cells: a sampled
     // step's figure is its attempts' sum, an unsampled finished step's is its
     // result's, and the total says how many of the latter.
-    const spend = workflowSpend(workflow.steps, taskById, usage.kind === 'ready' ? (usage.usage?.byTaskId ?? null) : null)
+    const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
     return (
       <>
         <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
@@ -3214,6 +3234,15 @@ type UsageRead =
   | { kind: 'ready'; usage: WorkflowUsage | null }
   | { kind: 'failed'; detail: string }
 
+/**
+ * The attempt figures a total sums, once the read has landed; null before it
+ * has or when it failed, which `workflowSpend` reads as "results only". Every
+ * total on a surface goes through this with the surface's one read (WF-5).
+ */
+function telemetryOf(usage: UsageRead): ReadonlyMap<string, StepUsage> | null {
+  return usage.kind === 'ready' ? (usage.usage?.byTaskId ?? null) : null
+}
+
 
 /** Every figure one node shows, and what to say where there is none. */
 interface StepFigures {
@@ -3663,6 +3692,11 @@ function WorkflowList({
   const owners = withChosen(ownersOf(board.workflows), query.owner)
   const profiles = withChosen(profilesOf(board.workflows), query.profile)
   const filteredAtAll = query.q !== '' || query.owner !== '' || query.profile !== ''
+  // THE ROWS' COST, BY THE TABLE'S RULE (WF-5): attempt telemetry where the
+  // read carried a cost, the step's result where it did not. Read for the rows
+  // drawn, in their order, so the cap covers the top of the list; a step
+  // outside the cap totals from its result and its row says how many did.
+  const telemetry = telemetryOf(useWorkflowUsage(rows, null))
 
   return (
     <div className="wfl">
@@ -3743,6 +3777,7 @@ function WorkflowList({
                   workflow={w}
                   label={labels.get(w.workflow_id) ?? null}
                   taskById={board.taskById}
+                  telemetry={telemetry}
                   query={query}
                 />
               ))}
@@ -3765,16 +3800,19 @@ function WorkflowListRow({
   workflow,
   label,
   taskById,
+  telemetry,
   query,
 }: {
   workflow: Workflow
   label: string | null
   taskById: ReadonlyMap<string, Task> | null
+  /** The list's attempt read (`useWorkflowUsage`): the row totals by the table's rule (WF-5). */
+  telemetry: ReadonlyMap<string, StepUsage> | null
   query: WorkflowQuery
 }) {
   const why = rowWhy(workflow, taskById)
   const roll = rollupLine(workflow, taskById)
-  const spend = workflowSpend(workflow.steps, taskById, null)
+  const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
   return (
     <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
@@ -3881,6 +3919,10 @@ function WorkflowPage({
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
   const derived = workflow === null ? null : derivedStateOf(workflow)
+  // ONE ATTEMPT READ FOR THE PAGE: the head's total and the board's (the
+  // nodes, the step table and its total) come from it, so the page never
+  // shows two totals (WF-5). This workflow's steps go first under the cap.
+  const usage = useWorkflowUsage(board.workflows, id)
 
   // OPENING A WORKFLOW RECORDS IT in the panel's Recent (5), with the state it
   // was read in, so the switcher can draw its mark without a read of its own.
@@ -3921,8 +3963,8 @@ function WorkflowPage({
   }
   return (
     <div className="wfp">
-      <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} />
-      <Board board={board} stores={stores} focus={focus} />
+      <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
+      <Board board={board} stores={stores} focus={focus} usage={usage} />
     </div>
   )
 }
@@ -3943,14 +3985,17 @@ function WorkflowHead({
   workflow,
   taskById,
   reload,
+  usage,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   reload: () => void
+  /** The page's attempt read: the head totals from the figures the table does (WF-5). */
+  usage: UsageRead
 }) {
   const roll = rollupLine(workflow, taskById)
   const shape = shapeOf(workflow.steps)
-  const spend = workflowSpend(workflow.steps, taskById, null)
+  const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   const facts = [

@@ -1,4 +1,5 @@
-import { loadCapacity } from './api'
+import { loadCapacity, type ResourceClasses } from './api'
+import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
@@ -13,6 +14,7 @@ import {
   ceilingCopy,
   needsAPerson,
   overCeiling,
+  poolGroup,
   poolKind,
   poolLabel,
   poolScope,
@@ -90,11 +92,10 @@ export function CapacityScreen() {
       {(d) => (
         <>
           {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
-              one table per family, with a "Needs a look" group ahead of them
-              holding every pool that is full, over its ceiling, at limit 0,
-              paused or lowered below its configured limit. A pool appears
-              once: the top group takes it out of its family. The Cards view
-              was the alternative set aside and is gone. */}
+              one table per family, with a "Needs action" group ahead of them
+              holding every pool a person has to act on (`needsAction`). A
+              pool appears once: the top group takes it out of its family.
+              The Cards view was the alternative set aside and is gone. */}
           <CeilingTables pools={d.pools} viewer={viewerOf(d)} />
 
           <HelpLinks topics={CAPACITY_TOPICS} />
@@ -141,26 +142,35 @@ function scopeWord(name: string, viewer: string | undefined): string {
 }
 
 /**
- * True when a pool belongs in "Needs a look": anything the classification
- * marks (paused, over ceiling, limit 0, full), or a ceiling lowered below its
- * configured limit by AIMD or by provider quota (#125).
+ * True when a pool belongs in "Needs action" (owner decision 2026-10-01):
+ * `poolGroup` (types.ts) files it there by `blockerGroup`, the rule the
+ * Agents list's Waiting split uses -- paused, set to zero by a person, no
+ * limit set, or below one task of its class. A `resource:` pool is weighed
+ * against its class's `units` from the catalogue; no other pool has one class.
+ *
+ * It was "Needs a look", decided by this screen's own classification, which
+ * also took in a pool that was merely full or lowered by AIMD: two screens,
+ * two rules, and a busy pool filed beside one no wait will reopen. Those keep
+ * their marks in their family's table.
  */
-export function needsALook(pool: Pool): boolean {
-  return classifyPool(pool).row !== undefined || (pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit)
+export function needsAction(pool: Pool, classes: ResourceClasses | null): boolean {
+  const units = poolKind(pool.name) === 'resource' ? classUnits(classes, pool.name.slice('resource:'.length)) : null
+  return poolGroup(pool, units) === 'needs_action'
 }
 
 /**
- * The Ceilings tab: "Needs a look" first, then one table per family, each
+ * The Ceilings tab: "Needs action" first, then one table per family, each
  * holding only the pools the top group did not take.
  */
 function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
+  const classes = useResourceClasses()
   const byName = (a: Pool, b: Pool) => a.name.localeCompare(b.name)
-  const look = pools.filter(needsALook).sort(byName)
-  const rest = pools.filter((p) => !needsALook(p))
+  const act = pools.filter((p) => needsAction(p, classes)).sort(byName)
+  const rest = pools.filter((p) => !needsAction(p, classes))
   return (
     <div className="cap-families">
-      {look.length > 0 && (
-        <Family title={`Needs a look · ${look.length}`} className="cap-needs" pools={look} viewer={viewer} />
+      {act.length > 0 && (
+        <Family title={`Needs action · ${act.length}`} className="cap-needs" pools={act} viewer={viewer} />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
         const family = rest.filter((p) => poolKind(p.name) === kind).sort(byName)

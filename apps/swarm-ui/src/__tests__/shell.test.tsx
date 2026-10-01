@@ -1931,22 +1931,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(basis?.value, 'the message has to wrap under the field, not widen the cell').toMatch(/(^|\s)100%$/)
   })
 
-  it('AH-19: Pool limits\' operand figures align right in a fixed tabular track', () => {
-    // MUTATION: drop the operand grid, or lower it to (0,3,0) so the
-    // primitive's flex row wins by order.
-    const f = fragment(
-      '<ul class="ctl-facts is-rows adm-operands"><li class="ctl-fact"><b>anthropic · u-bogdan</b>25</li></ul>',
-    )
-    const li = pick(f, 'li')
-    expect(won(li, 'display', WIDE)).toBe('grid')
-    const template = won(li, 'grid-template-columns', WIDE) ?? ''
-    const last = splitTop(template, ' ').at(-1)
-    expect(ch(last), `the figure track is ${last}; it must be a fixed width in characters`).toBeGreaterThanOrEqual(6)
-    expect(won(li, 'justify-items', WIDE)).toBe('end')
-    expect(won(li, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
-    expect(won(pick(f, 'b'), 'justify-self', WIDE), 'the key stays left').toBe('start')
-  })
-
   it('AH-18: a Help topic is a row of its region, and the deep-linked one takes the selection treatment', () => {
     // §13.3: a region is `.section`, and what repeats inside it draws nothing.
     // Every topic was a bordered, filled, rounded panel written inline.
@@ -2487,17 +2471,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // deleted with it -- the ledger draws only work that ended. TS-22's rule
     // is held here for the pairs that remain: the Workflows row's segments and
     // the ledger's keys share one declaration each.
-    // MUTATION: give a key its own fill again.
-    const f = fragment(
-      '<span class="wf-meter"><i class="wf-seg failed"></i><i class="wf-seg cancelled"></i></span>' +
-        '<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>',
-    )
-    const cancelled = won(pick(f, '.wf-seg.cancelled'), ['background', 'background-image'], WIDE)
-    expect(cancelled).toMatch(/gradient/)
-    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toBe(cancelled)
-    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toBe(
-      won(pick(f, '.wf-seg.failed'), ['background', 'background-color'], WIDE),
-    )
+    // The Workflows row's segments (`.wf-meter > .wf-seg`) were deleted with the
+    // row that drew them (2026-10-01: no source rendered `.wf-meter` any more),
+    // so the ledger's keys are held to the fills they drew from them.
+    // MUTATION: drop a key's fill.
+    const f = fragment('<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>')
+    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toMatch(/gradient/)
+    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toContain('var(--')
   })
 
   it('TS-24: the dependency disclosure has a marker, a hover and a focus ring', () => {
@@ -2587,13 +2567,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, 'div'), 'width', WIDE)).toBe('max-content')
   })
 
-  it('WF-16: the flags column is reserved on every row, and a mix chip is whole or absent', () => {
-    // MUTATION: `[flags] minmax(0, auto)` back.
-    const f = fragment('<button class="wf-bar"></button><span class="wf-mix"><span class="wf-chip">mock</span></span>')
-    const flags = trackAfter(won(pick(f, '.wf-bar'), 'grid-template-columns', WIDE), 'flags')
-    expect(flags, 'a content-sized flags track takes width from the name on the rows that have a flag').not.toMatch(
-      /auto|content/,
-    )
+  it('WF-16: a mix chip is whole or absent', () => {
+    // The flags-column half of WF-16 went with `.wf-bar`, the board row whose
+    // grid it held: no source renders that row any more (2026-10-01).
+    const f = fragment('<span class="wf-mix"><span class="wf-chip">mock</span></span>')
     // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
     // mid-word; or drop the one-chip height that hides the second line.
     const mix = pick(f, '.wf-mix')
