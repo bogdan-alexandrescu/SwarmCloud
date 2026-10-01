@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given and returns its workflow id and the task id of every step, or reads a submitted workflow's derived state. Used by the /sc:run workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
+description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given and returns its workflow id and the task id of every step, or reads a submitted workflow's derived state. Used by the /sc:swarmcloud workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
 model: haiku
 effort: low
 maxTurns: 10

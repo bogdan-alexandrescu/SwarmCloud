@@ -668,7 +668,7 @@ answer: the dispatch was refused (an unpushed branch, say), the task ended
 with the requested object, the task could not be read (a 404 or 403, or three
 calls in a row that read nothing), or the sc plugin's server is not connected.
 
-**A whole SwarmCloud workflow: `/sc:run`.** Its argument is a SwarmCloud
+**A whole SwarmCloud workflow: `/sc:swarmcloud`.** Its argument is a SwarmCloud
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
 text, or as the path of the spec file, relative to the session's checkout. A
 workflow script has no filesystem, so given a path one `sc:workflow` agent
@@ -679,12 +679,14 @@ what the bridge read. Text that begins like JSON and does not parse is reported
 as broken JSON, not looked for as a file. One `sc:workflow` agent then
 submits the spec (phase `Submit`), and SwarmCloud owns the DAG from then on:
 dependencies, `input_from` staging, `on_step_failure`, retries. The script
-starts one `sc:step` row per step, labelled with its `step_id`, under phase
+starts one `sc:step` row per step, labelled
+`[SwarmCloud] <spec label or workflow id> · stage <n> · <step_id>` (cut at 80
+characters from the name, so the stage and step survive), under phase
 `Level N` — its depth in the DAG — or under the step's `stage` when the spec
-gives one (`stage` is display-only and never sent). A row follows its own task
-only, so it may start before its parents finish; it then says it is waiting,
-and why, in its first lines, and a waiting task holds no capacity. Each
-finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced findings.md`,
+gives one (`stage` is display-only and never sent). The submit and result rows
+carry the same prefix. A row follows its own task only, so it may start before
+its parents finish; it then says it is waiting, and why, in its first line,
+and a waiting task holds no capacity. Each finished step is one narrator line, `scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231 · produced findings.md`,
 which names the artifacts the step produced, or says `produced no artifacts`
 for a success that made none.
 The run returns every step's result and the workflow's state as
@@ -703,7 +705,7 @@ it, and a distinct task per step — or no row starts and the run returns
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
 
-**How `/sc:run` can end before any row starts**, and what each means:
+**How `/sc:swarmcloud` can end before any row starts**, and what each means:
 
 | `state` | What happened | What to do |
 |---|---|---|
@@ -719,18 +721,59 @@ frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
 spec file, submit and read — and only through the sc plugin's own server (above).
 
+### What a row shows, and what it costs
+
+A row writes one short line when its task's state or progress changes, and
+nothing otherwise:
+
+    [review 4674b39f] READY · waiting 3m · waits: dependency
+    [review 4674b39f] READY → RUNNING
+    [review 4674b39f] RUNNING · 4m10s · attempt 1/3 · checkpoint 1m ago · 210k tok · $0.31
+
+That is the state, the elapsed time, attempt n/m, the age of the last
+checkpoint, and the tokens and cost recorded so far. For a waiting task it
+says what the task waits for: a dependency, capacity, quota, and so on. A
+figure that is not known is one word: `unrecorded`, `unreadable` or `none`.
+It is never estimated, and an unrecorded cost is never `$0`. When the task
+finishes, the row answers with the same seven fields as before: `state`,
+`answer_excerpt`, `cost_usd`, `duration_s`, `pr_url`, `artifacts` and
+`last_error`.
+
+**Why it is this thin (measured 2026-10-01).** Until then each row followed
+`swarm_follow` with `format: "lines"` and `wait_seconds: 90`. Six wave-1
+workflows of three steps each made eighteen rows. Every reply carried 5–16 KB
+of the remote agent's narrated log, and a row re-reads its whole transcript
+on every turn. One row used 4.0M tokens over 41 calls, and the six workflows
+used about 22M tokens. Rows whose parents had not started polled the whole
+time. Yet what the workflow acts on is one terminal line per step.
+
+A row now follows `format: "progress"` instead:
+
+* **No log.** A reply for one unfinished task is a few hundred bytes, bounded
+  at 768 by a test, and it repeats nothing an earlier reply said.
+* **One long call per turn.** A running task is followed with
+  `wait_seconds: 120`. A task still waiting on its parents is followed with
+  `wait_seconds: 600`. The bridge holds the call until the state, attempt or
+  wait reason changes, or until the wait ends. While a task waits, the bridge
+  reads only the task document, at most every 30 s, with no log, event or
+  attempt reads.
+
+The full log is still there. `swarm_follow` with `format: "lines"` narrates
+it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
+<task_id>` and the console.
+
 ### What differs from a local step — read before swapping one in
 
-| | A local `agent()` step | The same step through `sc:remote` or `/sc:run` |
+| | A local `agent()` step | The same step through `sc:remote` or `/sc:swarmcloud` |
 |---|---|---|
-| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:run`, the `input_from` files SwarmCloud stages |
-| Its prompt | handed to the agent as written | **retyped by a relay** — `sc:remote`, a haiku row, copies the prompt into `swarm_dispatch`, and a long prompt can arrive changed, with nothing after it able to tell. The prompt the remote agent got is the task's input: read it in the console, or in the row's transcript. Under `/sc:run` the spec is checked by digest (above) |
+| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:swarmcloud`, the `input_from` files SwarmCloud stages |
+| Its prompt | handed to the agent as written | **retyped by a relay** — `sc:remote`, a haiku row, copies the prompt into `swarm_dispatch`, and a long prompt can arrive changed, with nothing after it able to tell. The prompt the remote agent got is the task's input: read it in the console, or in the row's transcript. Under `/sc:swarmcloud` the spec is checked by digest (above) |
 | Which code it sees | the working tree, uncommitted edits included | a **depth-1 clone of the pushed branch**, cloned by the branch's OWN name on its remote — never its upstream: no history, no uncommitted work. The bridge refuses a branch that is not on its remote under its own name or has commits that are not there, naming `git push -u <remote> <branch>`, and names uncommitted changes as invisible |
 | Tools | the session's tools, MCP servers and permission rules | the `claude-code` runner's own tools inside its container; none of the session's MCP servers or permission rules |
 | Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
 | Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
 | Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
-| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:run` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
 | Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
 
 **Which checkout is inferred.** The bridge reads the git checkout of the
@@ -742,7 +785,7 @@ a null.
 
 **Inference is opt-in: `infer: true`, not the default.** A plain
 `swarm_dispatch` or `swarm_workflow` call names a repository only when given,
-exactly as before this feature existed. `sc:remote` and `/sc:run` pass
+exactly as before this feature existed. `sc:remote` and `/sc:swarmcloud` pass
 `infer: true` on every call; anything else naming neither `repo` nor `infer`
 clones nothing.
 
@@ -795,9 +838,13 @@ are the same value.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
-  returns it with its digest, submitting nothing — the half of `/sc:run` that
+  returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being
   repeated.
+* `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
+  per task only when it changed, the state `transitions` since `since`, and a
+  finished task's `outcome` reduced to the step result's fields. A call holds
+  for up to 600 s (see "What a row shows, and what it costs" above).
 * Every tool refuses an argument it does not declare, instead of ignoring it.
 * The stdio loop answers tool calls concurrently. It answered one at a time,
   so a single `swarm_wait` held every other call, and a dozen rows each
@@ -807,7 +854,13 @@ None of it adds a model, an image, a command or a resource parameter.
 
 ## What keeps these honest
 
-Seven files, all in `make test`, all offline — bar one test, which CI runs:
+Eight files, all in `make test`, all offline — bar one test, which CI runs:
+
+`tests/unit/mcp/test_follow_progress_format.py` holds the row's cost down:
+`format: "progress"` returns no log line and stays under 768 bytes for a task
+with large logs, repeats nothing on an unchanged call, and for a step waiting
+on its parents reads only the task and holds one call for the whole wait. It
+also checks that a finished task still carries every field of the step result.
 
 `tests/unit/mcp/test_plugin_bridge_install.py` covers whether the server can
 **start** on a machine that has only the plugin: the declaration names nothing
@@ -847,7 +900,7 @@ sentence here, there or in the delegate skill states a bound the table does not
 own, and requires every example input to be one the catalogue accepts.
 
 `tests/unit/mcp/test_plugin_agents_and_workflows.py` covers the agents and
-`/sc:run`, whose loader fails quietly: a plugin agent whose frontmatter does not
+`/sc:swarmcloud`, whose loader fails quietly: a plugin agent whose frontmatter does not
 parse loads with every field ignored, and `mcpServers`, `permissionMode`,
 `hooks` and `initialPrompt` do nothing in a plugin agent. Each
 `plugin/agents/*.md` must parse strictly — and to the same values under a real
@@ -863,8 +916,10 @@ changing a dependency, reusing a task or carrying the wrong digest starts no
 row; that a stopped or failing Submit is reported as UNKNOWN, not as not
 submitted; that given a spec file's path it has the bridge read the file and
 submits nothing unless the relayed spec digests to what the bridge read; that
-each step's line names what it produced; and that a failing Result row keeps
-every step's result. CI fails
+each step's line names what it produced; that a failing Result row keeps
+every step's result; that every row is labelled `[SwarmCloud] … · stage <n> ·
+<step>` within 80 characters; and that `sc:step` follows `format: "progress"`,
+never `"lines"`, with its seven-field result unchanged. CI fails
 rather than skips when node is missing. Claude Code's own frontmatter parser
 and workflow runtime are not run by any of this.
 
