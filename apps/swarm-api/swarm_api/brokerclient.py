@@ -219,6 +219,19 @@ class AccountPool(Protocol):
 
     def remove(self, account_id: str) -> dict[str, Any]: ...
 
+    # Who holds the account and who held it (#379). PLATFORM reads: they name
+    # every tenant's tasks, and `accountholds.py` is what filters them.
+    def holds(self, account_id: str) -> dict[str, Any]: ...
+
+    def hold_history(
+        self,
+        account_id: str,
+        *,
+        start: str | None,
+        end: str | None,
+        cursor: str | None,
+    ) -> dict[str, Any]: ...
+
 
 def urllib_transport(
     method: str,
@@ -505,6 +518,25 @@ class BrokerClient:
 
     def remove(self, account_id: str) -> dict[str, Any]:
         return self._call("DELETE", f"/v1/accounts/{quote(account_id, safe='')}")
+
+    def holds(self, account_id: str) -> dict[str, Any]:
+        return self._call("GET", f"/v1/accounts/{quote(account_id, safe='')}/holds")
+
+    def hold_history(
+        self,
+        account_id: str,
+        *,
+        start: str | None,
+        end: str | None,
+        cursor: str | None,
+    ) -> dict[str, Any]:
+        # `from`/`to` are the broker's query names. `_call` drops the empty
+        # ones, so an unset bound is the broker's default rather than "".
+        return self._call(
+            "GET",
+            f"/v1/accounts/{quote(account_id, safe='')}/holds/history",
+            params={"from": start or "", "to": end or "", "cursor": cursor or ""},
+        )
 
     # ----------------------------------------------------------------- plumbing
 

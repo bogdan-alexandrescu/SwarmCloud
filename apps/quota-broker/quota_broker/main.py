@@ -49,6 +49,10 @@ from .usagepoll import UsagePoller
 from .accounts import (
     DEFAULT_HOLD_TTL,
     DEFAULT_STALE_AFTER,
+    HOLD_END_EXPIRED,
+    HOLD_END_RELEASED,
+    HOLD_END_UNUSABLE,
+    HOLD_LOG_COLLECTION,
     AccountState,
     Hold,
     Unavailable,
@@ -58,6 +62,7 @@ from .accounts import (
     eligibility,
     holds_from_firestore,
     holds_to_firestore,
+    hold_log_entry,
     secret_name,
     validate_label,
 )
@@ -207,6 +212,16 @@ class AccountAssign(StrictModel):
     #: deterministic and would return the same unreadable account on every ask
     #: until the task ran out of attempts.
     exclude: list[str] = Field(default_factory=list, max_length=20)
+
+    #: Which task and attempt this worker is running, from its OWN config, so
+    #: the account can say who is on it (#379). OPTIONAL: an older worker image
+    #: sends neither and must still be assigned. Safe to take from the body for
+    #: the same reason `exclude` is -- it can change nothing about which
+    #: account is chosen or who may use it. It is a CLAIM, recorded on the
+    #: hold as sent; swarm-api checks that the hold's tenant owns the task
+    #: before showing it to anyone, and shows "unverified" when it does not.
+    task_id: str | None = Field(default=None, min_length=1, max_length=128)
+    attempt_id: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AccountRelease(StrictModel):
@@ -513,6 +528,33 @@ def _live_holds(data: dict[str, Any], now: datetime) -> list[Hold]:
     return [h for h in holds_from_firestore(data.get("holds")) if not h.is_expired(now)]
 
 
+def _split_holds(data: dict[str, Any], now: datetime) -> tuple[list[Hold], list[Hold]]:
+    """(live, expired). Every path that drops the expired ones must log them."""
+    holds = holds_from_firestore(data.get("holds"))
+    return (
+        [h for h in holds if not h.is_expired(now)],
+        [h for h in holds if h.is_expired(now)],
+    )
+
+
+def _log_ref(db: Any, assignment_id: str) -> Any:
+    return db.collection(HOLD_LOG_COLLECTION).document(assignment_id)
+
+
+def _close_expired(txn: Any, db: Any, account_id: str, expired: list[Hold]) -> None:
+    """Close the records of holds that lapsed, IN the caller's transaction.
+
+    `released_at` is the hold's own deadline -- when it stopped counting --
+    rather than the moment this transaction happened to notice, so a span in
+    the history ends where the counter stopped including it.
+    """
+    for hold in expired:
+        txn.set(
+            _log_ref(db, hold.assignment_id),
+            hold_log_entry(hold, account_id, end=HOLD_END_EXPIRED, released_at=hold.expires_at),
+        )
+
+
 def _hold_payload(holds: list[Hold]) -> dict[str, Any]:
     """`assigned` is written from `holds` and never independently of it.
 
@@ -578,6 +620,8 @@ def acquire_hold(
     tenant_id: str,
     now: datetime,
     ttl: timedelta = DEFAULT_HOLD_TTL,
+    task_id: str | None = None,
+    attempt_id: str | None = None,
 ) -> tuple[str, int] | None:
     """Record one agent's claim on an account. Returns (assignment_id, assigned).
 
@@ -594,6 +638,12 @@ def acquire_hold(
 
     None when the account no longer exists -- an operator may remove one
     between the listing and this call, and nothing was counted.
+
+    THE RECORD IS OPENED IN THIS TRANSACTION (#379): `account_holds/{id}` is
+    set alongside the account, and every expired hold dropped on the way
+    through is closed as `expired` alongside it too. A record written after
+    this commits is one a crash between the two leaves disagreeing with the
+    counter.
     """
     from google.cloud import firestore
 
@@ -606,11 +656,19 @@ def acquire_hold(
         snap = _txn_snapshot(txn.get(ref))
         if not getattr(snap, "exists", False):
             return None
-        holds = _live_holds(snap.to_dict() or {}, now)
-        holds.append(
-            Hold(assignment_id=assignment_id, tenant_id=tenant_id, expires_at=now + ttl)
+        holds, expired = _split_holds(snap.to_dict() or {}, now)
+        hold = Hold(
+            assignment_id=assignment_id,
+            tenant_id=tenant_id,
+            expires_at=now + ttl,
+            task_id=task_id or None,
+            attempt_id=attempt_id or None,
+            assigned_at=now,
         )
+        holds.append(hold)
         txn.update(ref, {**_hold_payload(holds), "last_assigned_at": now})
+        txn.set(_log_ref(db, assignment_id), hold_log_entry(hold, account_id))
+        _close_expired(txn, db, account_id, expired)
         return len(holds)
 
     assigned = _apply(transaction)
@@ -645,6 +703,11 @@ def release_hold(
     honest scope: a borrower that was never granted `secretAccessor` on a lent
     secret has learned nothing about the owner, and a global mark would let one
     tenant pause another's account.
+
+    The released hold's record is closed IN THIS TRANSACTION -- `released`, or
+    `unusable` when the secret could not be read -- and so is the record of
+    every expired hold the rewrite drops. A release that matched nothing writes
+    no record at all, so a duplicate cannot re-close a span with a later end.
     """
     from google.cloud import firestore
 
@@ -657,7 +720,7 @@ def release_hold(
         if not getattr(snap, "exists", False):
             return None, False
         data = snap.to_dict() or {}
-        holds = _live_holds(data, now)
+        holds, expired = _split_holds(data, now)
         held = [
             h
             for h in holds
@@ -674,6 +737,13 @@ def release_hold(
             reports[held[0].tenant_id or (tenant_id or "")] = now
             payload["unreadable_by"] = reports
         txn.update(ref, payload)
+        end = HOLD_END_UNUSABLE if unusable else HOLD_END_RELEASED
+        for hold in held:
+            txn.set(
+                _log_ref(db, hold.assignment_id),
+                hold_log_entry(hold, account_id, end=end, released_at=now),
+            )
+        _close_expired(txn, db, account_id, expired)
         return len(remaining), bool(held)
 
     return _apply(transaction)
@@ -695,6 +765,9 @@ def prune_holds(
     one. The quota sweep calls this for every account on every tick, so a
     worker killed without warning costs one over-counted hold until the hold's
     own deadline passes and this call notices.
+
+    Each pruned hold's record is closed as `expired` IN THIS TRANSACTION, so
+    the history and the counter change together or not at all.
     """
     from google.cloud import firestore
 
@@ -734,9 +807,74 @@ def prune_holds(
         payload = _hold_payload(live)
         payload["unreadable_by"] = reports
         txn.update(ref, payload)
+        _close_expired(txn, db, account_id, [h for h in holds if h.is_expired(now)])
         return dropped
 
     return _apply(transaction)
+
+
+#: The history route's page: the default, and the most one request may ask.
+HISTORY_PAGE = 100
+HISTORY_PAGE_MAX = 500
+
+#: The window the history route reads when the caller names none.
+HISTORY_DEFAULT_SPAN = timedelta(days=7)
+
+
+def _iso(value: Any) -> str | None:
+    return _aware_utc(value).isoformat() if isinstance(value, datetime) else None
+
+
+def _hold_to_api(hold: Hold) -> dict[str, Any]:
+    """One live hold for the platform read. NO assignment id: it authorises release."""
+    return {
+        "tenant_id": hold.tenant_id,
+        "task_id": hold.task_id,
+        "attempt_id": hold.attempt_id,
+        "assigned_at": _iso(hold.assigned_at),
+        "expires_at": _iso(hold.expires_at),
+    }
+
+
+def _span_to_api(record: dict[str, Any]) -> dict[str, Any]:
+    """One `account_holds` record, by an allow-list of fields.
+
+    An allow-list rather than the document minus some keys: the document id is
+    the assignment id, and a record that one day grows a field must not start
+    serving it by default.
+    """
+    end = record.get("end")
+    return {
+        "tenant_id": str(record.get("tenant_id") or ""),
+        "task_id": record.get("task_id") if isinstance(record.get("task_id"), str) else None,
+        "attempt_id": (
+            record.get("attempt_id") if isinstance(record.get("attempt_id"), str) else None
+        ),
+        "assigned_at": _iso(record.get("assigned_at")),
+        "released_at": _iso(record.get("released_at")),
+        "end": end if end in (HOLD_END_RELEASED, HOLD_END_UNUSABLE, HOLD_END_EXPIRED) else None,
+        "hold_expires_at": _iso(record.get("hold_expires_at")),
+    }
+
+
+def _instant(raw: str, name: str) -> datetime:
+    try:
+        value = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        raise BrokerValidationError(
+            f"`{name}` must be an ISO 8601 instant with an offset"
+        ) from None
+    if value.tzinfo is None:
+        raise BrokerValidationError(f"`{name}` must carry a UTC offset")
+    return value.astimezone(timezone.utc)
+
+
+def _history_cursor(raw: str) -> tuple[datetime, int]:
+    """`<instant>|<n served at that instant>`, as the previous page minted it."""
+    instant, sep, count = raw.rpartition("|")
+    if not sep or not count.isdigit():
+        raise BrokerValidationError("the cursor is not one this route issued")
+    return _instant(instant, "cursor"), int(count)
 
 
 def quota_to_api(state: QuotaState) -> dict[str, Any]:
@@ -2020,6 +2158,8 @@ def create_app(
             chosen.account_id,
             tenant_id=tenant_id,
             now=now,
+            task_id=asked.task_id,
+            attempt_id=asked.attempt_id,
         )
         if held is None:
             # Removed between the read and the hold. Nothing was counted, so
@@ -2168,6 +2308,131 @@ def create_app(
             # not, which is what a duplicate release and a forged id both look
             # like. Not an error either way -- but not silence either.
             "reason": "" if was_held else "not_held",
+        }
+
+    # -- who holds an account, and who held it (#379) ----------------------
+    #
+    # PLATFORM-ONLY, both of them. They name every tenant's tasks on the
+    # account, which no single tenant may see; the one caller is swarm-api,
+    # which resolves the human's tenant and filters per viewer
+    # (swarm_api/accountholds.py). A worker's token is a tenant's token and is
+    # refused here exactly as `set_hard_max` and the sweep refuse it.
+    #
+    # NEITHER SERVES THE ASSIGNMENT ID. It is what authorises a release, so a
+    # reader holding it could give back somebody else's hold. Nor the secret
+    # name, nor anything else of the account's beyond who owns and borrows it.
+
+    def _platform_only(request: Request, header: str | None) -> None:
+        try:
+            _, is_platform = request.app.state.identity.resolve(header)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError(
+                "only the platform may read an account's holders; they name "
+                "other tenants' work"
+            )
+
+    def _account_or_refuse(request: Request, account_id: str) -> dict[str, Any]:
+        _accounts(request)  # refuse early if the pool is not configured
+        # RAW, like the release path (#243): who holds a malformed document is
+        # exactly what an operator repairing it needs to see.
+        data = _raw_account(request.app.state.broker.db, account_id)
+        if data is None:
+            raise BrokerValidationError(f"no account {account_id!r}")
+        return data
+
+    @app.get("/v1/accounts/{account_id}/holds")
+    def account_holds(
+        request: Request,
+        account_id: str,
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """The LIVE holds on one account, with the task each worker named.
+
+        Expired holds are filtered here with the same `is_expired` the counter
+        uses, so a hold whose worker was killed is not served as a current
+        holder in the minutes before the sweep prunes it.
+        """
+        _platform_only(request, bearer)
+        data = _account_or_refuse(request, account_id)
+        now = datetime.now(timezone.utc)
+        owner = data.get("owner_tenant")
+        lend_to = data.get("lend_to")
+        return {
+            "account_id": account_id,
+            "owner_tenant": owner if isinstance(owner, str) else "",
+            "lend_to": [t for t in lend_to if isinstance(t, str)]
+            if isinstance(lend_to, (list, tuple))
+            else [],
+            "holds": [_hold_to_api(h) for h in _live_holds(data, now)],
+            "observed_at": now.isoformat(),
+        }
+
+    @app.get("/v1/accounts/{account_id}/holds/history")
+    def account_hold_history(
+        request: Request,
+        account_id: str,
+        start: str | None = Query(default=None, alias="from"),
+        end: str | None = Query(default=None, alias="to"),
+        cursor: str | None = Query(default=None, max_length=80),
+        limit: int = Query(default=HISTORY_PAGE, ge=1, le=HISTORY_PAGE_MAX),
+        bearer: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Recorded spans on one account taken in [from, to), newest first.
+
+        Served from `account_holds`, which the hold transactions write; one
+        query on (account_id ==, assigned_at range, order by assigned_at
+        desc), which is the composite index terraform declares as
+        `account-holds-account-assigned`. A hold from before #379 has no
+        `assigned_at` and so falls outside every window -- it is not dated, and
+        is not given a date it never had.
+        """
+        _platform_only(request, bearer)
+        _account_or_refuse(request, account_id)
+        now = datetime.now(timezone.utc)
+        until = _instant(end, "to") if end else now
+        since = _instant(start, "from") if start else until - HISTORY_DEFAULT_SPAN
+        if since >= until:
+            raise BrokerValidationError("`from` must be earlier than `to`")
+        position = _history_cursor(cursor) if cursor else None
+        if position is not None and position[0] >= until:
+            raise BrokerValidationError("the cursor is outside the window")
+
+        from google.cloud.firestore_v1.base_query import FieldFilter
+
+        top = position[0] if position is not None else until
+        skip = position[1] if position is not None else 0
+        query = (
+            request.app.state.broker.db.collection(HOLD_LOG_COLLECTION)
+            .where(filter=FieldFilter("account_id", "==", account_id))
+            .where(filter=FieldFilter("assigned_at", ">=", since))
+            .where(filter=FieldFilter("assigned_at", "<=" if position else "<", top))
+            .order_by("assigned_at", direction="DESCENDING")
+            .limit(limit + skip + 1)
+        )
+        rows = [snap.to_dict() or {} for snap in query.stream()]
+        # The first `skip` rows at the cursor's instant were served on the
+        # previous page. Ties share an instant; skipping by COUNT at that
+        # instant rather than "strictly before it" is what keeps them.
+        rows = rows[skip:]
+        more = len(rows) > limit
+        page = rows[:limit]
+        next_cursor = None
+        if more and page:
+            last = page[-1]["assigned_at"]
+            at_last = sum(1 for r in page if r.get("assigned_at") == last)
+            if position is not None and last == position[0]:
+                at_last += skip
+            next_cursor = f"{_aware_utc(last).isoformat()}|{at_last}"
+        return {
+            "account_id": account_id,
+            "from": since.isoformat(),
+            "to": until.isoformat(),
+            "spans": [_span_to_api(r) for r in page],
+            "next_cursor": next_cursor,
         }
 
     @app.post("/v1/quota/sweep")

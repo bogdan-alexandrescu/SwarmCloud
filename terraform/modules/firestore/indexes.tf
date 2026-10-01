@@ -231,6 +231,22 @@ locals {
       ]
     }
 
+    # ---- account_holds (#379) ------------------------------------------------
+    # GET /v1/accounts/{id}/holds/history on the quota broker:
+    #   account_holds where account_id == A and F <= assigned_at < T
+    #   order by assigned_at DESC
+    # An equality on one field and a range plus order on another: Firestore
+    # serves that only from a composite index, and without it the history tab
+    # does not load slowly -- it fails.
+    "account-holds-account-assigned" = {
+      collection  = "account_holds"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "account_id", order = "ASCENDING" },
+        { field_path = "assigned_at", order = "DESCENDING" },
+      ]
+    }
+
     # ---- workflows ----------------------------------------------------------
     "workflows-tenant-state-created" = {
       collection  = "workflows"
@@ -315,5 +331,26 @@ resource "google_firestore_field" "events_ttl" {
 
   # The default single-field index on a TTL field is not useful and costs a
   # write amplification on every event.
+  index_config {}
+}
+
+# Account hold records (#379) name which task held which subscription, and are
+# kept to answer "who was on this account" over a billing month -- not for
+# ever. The quota broker sets `expires_at` to released_at + 90 days when a hold
+# ends, and to the hold's own deadline + 90 days while it is open, so a record
+# whose hold is never closed still ages out. The field name is the broker's
+# (quota_broker.accounts.hold_log_entry), not var.event_ttl_field: that
+# variable switches off the AUDIT-trail TTLs, and turning it off must not make
+# this collection keep task ids indefinitely.
+resource "google_firestore_field" "account_holds_ttl" {
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = "account_holds"
+  field      = "expires_at"
+
+  ttl_config {}
+
+  # Never queried on; the history query orders on assigned_at. The default
+  # single-field index would be write amplification on every hold.
   index_config {}
 }

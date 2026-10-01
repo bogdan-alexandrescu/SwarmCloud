@@ -107,6 +107,29 @@ DEFAULT_ASSIGN_FLOOR = 0.15
 #: slot forever.
 DEFAULT_HOLD_TTL = timedelta(hours=3)
 
+#: Where each hold's lifetime is recorded: `account_holds/{assignment_id}`.
+#:
+#: The account document's `holds` say who is on it NOW and are rewritten on
+#: every change, so they cannot answer "who was on it at 14:00". This
+#: collection can, and it is written INSIDE the same transaction as every
+#: change to `holds` (acquire, release, prune) -- a record written after the
+#: counter commits is one that can disagree with it.
+HOLD_LOG_COLLECTION = "account_holds"
+
+#: How long a closed record is kept: `expires_at = released_at + 90 days`, and
+#: a Firestore TTL policy on `expires_at` deletes it (terraform/modules/firestore).
+#: Ninety days covers a billing month with margin, which is the question the
+#: history tab is for; past that a record is a liability that names tasks
+#: nobody is asking about.
+HOLD_LOG_RETENTION = timedelta(days=90)
+
+#: How a hold ended. `released` is the worker's own exit path; `unusable` is a
+#: release that reported the secret unreadable; `expired` is a hold whose
+#: deadline passed without a release -- a worker killed outright.
+HOLD_END_RELEASED = "released"
+HOLD_END_UNUSABLE = "unusable"
+HOLD_END_EXPIRED = "expired"
+
 
 class Unavailable(str, Enum):
     """Why no account could be assigned. Each one is a different wait.
@@ -232,6 +255,17 @@ class Hold:
     assignment_id: str
     tenant_id: str
     expires_at: datetime
+
+    #: What the worker said it was running, from its own config (#379). OPTIONAL
+    #: in every sense: a worker image older than this field sends neither, and
+    #: a hold written before it existed has neither. They are a CLAIM by the
+    #: worker, not a fact the broker checked -- swarm-api verifies that the
+    #: hold's tenant owns the task before it shows a link to anyone.
+    task_id: str | None = None
+    attempt_id: str | None = None
+
+    #: When the hold was taken. None on a hold from before this field.
+    assigned_at: datetime | None = None
 
     def is_expired(self, now: datetime) -> bool:
         return now >= self.expires_at
@@ -545,14 +579,67 @@ class Account:
 
 
 def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
-    return [
-        {
+    out: list[dict[str, Any]] = []
+    for h in holds:
+        item: dict[str, Any] = {
             "assignment_id": h.assignment_id,
             "tenant_id": h.tenant_id,
             "expires_at": h.expires_at,
         }
-        for h in holds
-    ]
+        # Only when present, so a hold with no stamp is written back in exactly
+        # the shape it was read in rather than growing three nulls.
+        if h.task_id:
+            item["task_id"] = h.task_id
+        if h.attempt_id:
+            item["attempt_id"] = h.attempt_id
+        if h.assigned_at is not None:
+            item["assigned_at"] = h.assigned_at
+        out.append(item)
+    return out
+
+
+def _optional_text(raw: Any) -> str | None:
+    """A non-empty string, or None. Never an exception: the stamp is descriptive."""
+    return raw if isinstance(raw, str) and raw else None
+
+
+def hold_log_entry(
+    hold: Hold,
+    account_id: str,
+    *,
+    end: str | None = None,
+    released_at: datetime | None = None,
+) -> dict[str, Any]:
+    """The `account_holds/{assignment_id}` document for one hold.
+
+    Built from the HOLD every time, open or closed, so a close is a complete
+    write rather than a merge onto a record that may not exist: a hold taken
+    before this collection existed has no open record, and closing it must
+    still leave a whole one. Writing in full also keeps the transaction free of
+    a read of the record, so the only document a hold transaction reads is
+    still the account.
+
+    `expires_at` is the TTL field. A closed record keeps `HOLD_LOG_RETENTION`
+    from when it closed; an OPEN one keeps it from when its hold would lapse,
+    so a record whose hold is never closed -- the account removed under a live
+    agent -- still ages out rather than living forever.
+
+    NO SECRET NAME, and nothing else from the account: the record says who
+    held what, when, and how it ended.
+    """
+    closed_at = released_at if end is not None else None
+    anchor = closed_at if closed_at is not None else hold.expires_at
+    return {
+        "account_id": account_id,
+        "tenant_id": hold.tenant_id,
+        "task_id": hold.task_id,
+        "attempt_id": hold.attempt_id,
+        "assigned_at": hold.assigned_at,
+        "released_at": closed_at,
+        "end": end,
+        "hold_expires_at": hold.expires_at,
+        "expires_at": anchor + HOLD_LOG_RETENTION,
+    }
 
 
 def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
@@ -577,11 +664,18 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
         assignment_id = item.get("assignment_id")
         if not isinstance(expires, datetime) or not assignment_id:
             continue
+        assigned = item.get("assigned_at")
         holds.append(
             Hold(
                 assignment_id=str(assignment_id),
                 tenant_id=str(item.get("tenant_id") or ""),
                 expires_at=_aware(expires),
+                # Absent on a hold from before #379, and malformed reads as
+                # absent rather than dropping the hold: a bad stamp must not
+                # cost the COUNT an agent.
+                task_id=_optional_text(item.get("task_id")),
+                attempt_id=_optional_text(item.get("attempt_id")),
+                assigned_at=_aware(assigned) if isinstance(assigned, datetime) else None,
             )
         )
     return tuple(holds)
@@ -802,6 +896,11 @@ __all__ = [
     "DEFAULT_ASSIGN_FLOOR",
     "DEFAULT_HOLD_TTL",
     "DEFAULT_STALE_AFTER",
+    "HOLD_END_EXPIRED",
+    "HOLD_END_RELEASED",
+    "HOLD_END_UNUSABLE",
+    "HOLD_LOG_COLLECTION",
+    "HOLD_LOG_RETENTION",
     "account_id_for",
     "accounts_serving",
     "choose",
@@ -809,6 +908,7 @@ __all__ = [
     "eligibility",
     "holds_from_firestore",
     "holds_to_firestore",
+    "hold_log_entry",
     "secret_name",
     "validate_label",
 ]

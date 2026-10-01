@@ -9,7 +9,7 @@ import {
   setAccountState,
   type AccountsBoard,
 } from './api'
-import { errorHeading, type ApiError, type Result } from './fetch'
+import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { UtilTrack } from './primitives'
@@ -1194,6 +1194,7 @@ function Detail({
       </ul>
 
       <AllWindows account={account} now={now} />
+      <Holding account={account} now={now} />
       {owned ? (
         <>
           <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
@@ -1204,6 +1205,327 @@ function Detail({
         </>
       ) : (
         <Borrowed account={account} />
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Who holds it, and who held it (#379 parts 2 and 3)
+// ---------------------------------------------------------------------------
+
+/**
+ * One live hold, as `GET /v1/accounts/{id}/holders` serves it to THIS viewer.
+ *
+ * swarm-api does every bit of the tenant filtering (`swarm_api/accountholds.py`)
+ * and this screen renders what arrives: it never decides on its own who may
+ * see what. So a `task_id` is present only on the caller's own VERIFIED holds
+ * (the admin view aside), `tenant` only where the caller may know it, and no
+ * assignment id or secret name is ever in the payload to leak.
+ */
+export interface AccountHolder {
+  since: string | null
+  task_id?: string
+  attempt?: number | null
+  tenant?: string
+  /** The worker named a task at all. False: an older worker, or an older hold. */
+  recorded: boolean
+  /** The hold's tenant owns the task it named. */
+  verified: boolean
+}
+
+export interface AccountHolders {
+  account_id: string
+  viewer: 'owner' | 'borrower' | 'platform'
+  total: number
+  holders: AccountHolder[]
+  /** Live holds that are not the caller's. A count, and for a borrower nothing more. */
+  others: number
+  /** The owner's view of who borrowed: tenant and count, never task ids. */
+  by_tenant?: { tenant: string; n: number }[]
+}
+
+export interface HoldSpan {
+  since: string | null
+  until: string | null
+  end: 'released' | 'unusable' | 'expired' | null
+  mine: boolean
+  tenant?: string
+  task_id?: string
+  attempt?: number | null
+  recorded?: boolean
+  verified?: boolean
+}
+
+export interface HoldHistory {
+  account_id: string
+  viewer: 'owner' | 'borrower' | 'platform'
+  from: string | null
+  to: string | null
+  spans: HoldSpan[]
+  next_cursor: string | null
+}
+
+/**
+ * The two reads, here rather than in api.ts because nothing else calls them.
+ * `() => false`: an account nobody holds is a real answer, rendered inside the
+ * panel, not a missing response. `test_every_path_the_ui_calls_exists_on_this_api`
+ * reads this file as well as api.ts, so a path written here is held to the
+ * router the same way.
+ */
+export function loadAccountHolders(accountId: string): Promise<Result<AccountHolders>> {
+  return read<AccountHolders>(
+    route('/v1/accounts/{account_id}/holders', { account_id: accountId }),
+    () => false,
+  )
+}
+
+export function loadAccountHistory(
+  accountId: string,
+  cursor: string | null,
+): Promise<Result<HoldHistory>> {
+  const query = cursor ? new URLSearchParams({ cursor }) : undefined
+  return read<HoldHistory>(
+    route('/v1/accounts/{account_id}/history', { account_id: accountId }, query),
+    () => false,
+  )
+}
+
+/** "38m", "2h 5m", "3d 4h". Whole minutes: a hold is not timed to the second. */
+function heldFor(ms: number): string {
+  const m = Math.max(0, Math.floor(ms / 60_000))
+  if (m < 1) return '<1m'
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h ${m % 60}m`
+  return `${Math.floor(h / 24)}d ${h % 24}h`
+}
+
+function clockOf(iso: string): string {
+  const d = new Date(iso)
+  return Number.isFinite(d.getTime())
+    ? d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '?'
+}
+
+/**
+ * What a hold was running, in the three cases that must not read alike:
+ * a task the hold's tenant owns (a link), a task it named and does NOT own
+ * (`unverified`, no id), and no task named at all (`task not recorded`).
+ */
+function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recorded?: boolean; verified?: boolean } }) {
+  if (h.task_id) {
+    return (
+      <>
+        <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(h.task_id)}`}>
+          {h.task_id}
+        </a>
+        {typeof h.attempt === 'number' && <span className="muted"> attempt {h.attempt}</span>}
+        {h.verified === false && <span className="ctl-mark is-partial">unverified</span>}
+      </>
+    )
+  }
+  if (h.recorded) {
+    return (
+      <span
+        className="ctl-mark is-partial"
+        aria-label="The worker named a task this tenant does not own, so it is not shown."
+      >
+        unverified
+      </span>
+    )
+  }
+  return (
+    <span
+      className="ctl-mark is-absent"
+      aria-label="The worker that took this hold did not say which task it was running."
+    >
+      task not recorded
+    </span>
+  )
+}
+
+/**
+ * The account's holders, fetched only when asked for.
+ *
+ * Collapsed by default and loaded on the click, deliberately: a row opening
+ * should not cost two broker round trips nobody wanted, and the count on the
+ * tab is the one the listing already carried (`assigned`), so nothing has to
+ * load to say how many.
+ */
+function Holding({ account, now }: { account: Account; now: number }) {
+  const [tab, setTab] = useState<'none' | 'now' | 'history'>('none')
+  const pick = (t: 'now' | 'history') => setTab(tab === t ? 'none' : t)
+  return (
+    <div className="acct-action acct-holding">
+      <div className="ctl-seg" role="tablist" aria-label={`Who holds ${account.label}`}>
+        <button type="button" role="tab" aria-selected={tab === 'now'} onClick={() => pick('now')}>
+          Holding now ({account.assigned})
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'history'}
+          onClick={() => pick('history')}
+        >
+          History
+        </button>
+      </div>
+      {tab === 'now' && <HoldingNow accountId={account.account_id} now={now} />}
+      {tab === 'history' && <HoldingHistory account={account} now={now} />}
+    </div>
+  )
+}
+
+function useLoad<T>(load: () => Promise<Result<T>>, key: string): [Result<T>, () => void] {
+  const [res, setRes] = useState<Result<T>>({ status: 'loading', since: Date.now() })
+  const [n, setN] = useState(0)
+  useEffect(() => {
+    let live = true
+    setRes({ status: 'loading', since: Date.now() })
+    void load().then((r) => {
+      if (live) setRes(r)
+    })
+    return () => {
+      live = false
+    }
+    // `load` is rebuilt each render; `key` and `n` are what change the read.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key, n])
+  return [res, () => setN((x) => x + 1)]
+}
+
+function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
+  const [res, retry] = useLoad(() => loadAccountHolders(accountId), accountId)
+  if (res.status === 'loading') return <p className="muted small">Loading holders…</p>
+  if (res.status === 'error') return <FailedPanel error={res.error} onRetry={retry} />
+  if (res.status === 'empty') return <p className="muted small">Nobody holds it.</p>
+  const b = res.data
+  return (
+    <div className="acct-holders">
+      <h4>Holding now ({b.total})</h4>
+      {b.total === 0 ? (
+        <p className="muted small">Nobody holds it.</p>
+      ) : (
+        <ul className="acct-holder-list">
+          {b.holders.map((h, i) => (
+            <li key={i}>
+              {h.tenant !== undefined && <span className="mono">{h.tenant} </span>}
+              <HoldWork h={h} />
+              {h.since ? (
+                <span className="muted">
+                  {' '}since {clockOf(h.since)} ({heldFor(now - Date.parse(h.since))})
+                </span>
+              ) : (
+                <span className="muted"> since an unrecorded time</span>
+              )}
+            </li>
+          ))}
+          {(b.by_tenant ?? []).map((t) => (
+            <li key={`t:${t.tenant}`}>
+              {pluralise(t.n, 'agent')} · <span className="mono">{t.tenant}</span>
+            </li>
+          ))}
+          {b.others > 0 && b.by_tenant === undefined && (
+            <li className="muted">+{b.others} held by other tenants</li>
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
+function HoldingHistory({ account, now }: { account: Account; now: number }) {
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [res, retry] = useLoad(
+    () => loadAccountHistory(account.account_id, cursor),
+    `${account.account_id}|${cursor ?? ''}`,
+  )
+  if (res.status === 'loading') return <p className="muted small">Loading history…</p>
+  if (res.status === 'error') return <FailedPanel error={res.error} onRetry={retry} />
+  const h = res.status === 'empty' ? null : res.data
+  const spans = h?.spans ?? []
+  const from = Date.parse(h?.from ?? '') || now - 7 * 86_400_000
+  const to = Date.parse(h?.to ?? '') || now
+  const width = Math.max(1, to - from)
+  const five = readingOf(account, FIVE_HOUR)
+  return (
+    <div className="acct-holders">
+      <h4>History</h4>
+      {/* THE UTILISATION IS TODAY'S READING, NOT A SERIES. The broker keeps
+          one reading per window, so there is no past utilisation to draw the
+          spans over; the current one is printed beside them and labelled as
+          current rather than stretched across the window as if it were. */}
+      {(five.kind === 'live' || five.kind === 'stale') && (
+        <p className="muted small">
+          Five-hour window now: {Math.round(five.pct)}%
+          {five.kind === 'stale' && <span className="ctl-mark is-partial">partial</span>}
+        </p>
+      )}
+      {spans.length === 0 ? (
+        <p className="muted small">No holds recorded in this window.</p>
+      ) : (
+        <ul className="acct-holder-list acct-spans">
+          {spans.map((s, i) => {
+            const a = Date.parse(s.since ?? '')
+            const b = s.until ? Date.parse(s.until) : now
+            const left = Number.isFinite(a) ? ((a - from) / width) * 100 : 0
+            const span = Number.isFinite(a) && Number.isFinite(b) ? ((b - a) / width) * 100 : 0
+            return (
+              <li key={i}>
+                <span
+                  className="acct-span-bar"
+                  aria-hidden="true"
+                  style={{
+                    display: 'inline-block',
+                    position: 'relative',
+                    width: '8rem',
+                    height: '0.5rem',
+                    background: 'var(--line, currentColor)',
+                    opacity: 0.6,
+                    verticalAlign: 'middle',
+                    marginRight: '0.5rem',
+                  }}
+                >
+                  <span
+                    style={{
+                      position: 'absolute',
+                      top: 0,
+                      bottom: 0,
+                      left: `${Math.max(0, Math.min(100, left))}%`,
+                      width: `${Math.max(1, Math.min(100, span))}%`,
+                      background: 'var(--text, currentColor)',
+                    }}
+                  />
+                </span>
+                {s.mine ? (
+                  <HoldWork h={s} />
+                ) : s.tenant !== undefined ? (
+                  <span className="mono">{s.tenant}</span>
+                ) : (
+                  <span className="muted">another tenant</span>
+                )}
+                {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
+                {!s.mine && h?.viewer === 'platform' && s.task_id && (
+                  <>
+                    {' '}
+                    <HoldWork h={s} />
+                  </>
+                )}
+                <span className="muted">
+                  {' '}
+                  {s.since ? `${clockOf(s.since)} for ${heldFor(b - a)}` : 'start not recorded'}
+                  {s.end ? ` · ${s.end}` : ' · holding'}
+                </span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+      {h?.next_cursor && (
+        <button type="button" onClick={() => setCursor(h.next_cursor)}>
+          Older
+        </button>
       )}
     </div>
   )

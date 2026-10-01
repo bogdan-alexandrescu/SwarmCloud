@@ -11,7 +11,7 @@ THE SHAPE OF THE CALL, AND WHY IT IS THIS SHAPE
 -----------------------------------------------
 Two POSTs, no state, no retry loop:
 
-    POST /v1/accounts/assign     {provider, exclude}
+    POST /v1/accounts/assign     {provider, exclude, task_id, attempt_id}
                                  -> {account_id, assignment_id, secret, ...}
     POST /v1/accounts/{id}/release  {assignment_id, unusable}
                                  -> {assigned}
@@ -81,6 +81,7 @@ would be paid for on every image pull, forever.
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -302,8 +303,22 @@ class AccountBroker:
         audience: str | None = None,
         token_fetcher: Any = None,
         timeout: int = _TIMEOUT,
+        task_id: str | None = None,
+        attempt_id: str | None = None,
     ) -> None:
         self._base = base_url.rstrip("/")
+        # WHICH WORK this worker is, sent on assign so the broker can stamp
+        # the hold and an account can say who is on it (#379). None reads the
+        # two variables `WorkerConfig.from_env` requires -- the worker's own
+        # config, from the same source -- so the construction in lifecycle.py
+        # sends them without having to be told. Identifiers of work, never of
+        # a tenant: the broker still takes the tenant from the identity token.
+        self._task_id = (
+            task_id if task_id is not None else os.environ.get("TASK_ID", "")
+        ).strip()
+        self._attempt_id = (
+            attempt_id if attempt_id is not None else os.environ.get("ATTEMPT_ID", "")
+        ).strip()
         self._log = logger
         # Cloud Run checks the token's `aud` against the service URL unless a
         # custom audience is configured, so the URL is the right default and an
@@ -335,6 +350,12 @@ class AccountBroker:
         excluded = sorted({str(a) for a in exclude if a})
         if excluded:
             body["exclude"] = excluded
+        # Omitted rather than sent empty: the broker bounds both at one
+        # character, and a 422 here would put the agent on the tenant secret.
+        if self._task_id:
+            body["task_id"] = self._task_id
+        if self._attempt_id:
+            body["attempt_id"] = self._attempt_id
         payload = self._post("/v1/accounts/assign", body)
         account_id = payload.get("account_id")
         if not account_id:

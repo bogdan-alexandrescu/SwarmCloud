@@ -73,11 +73,13 @@ an expiry.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 
-from ..auth import AuthContext
+from ..accountholds import TaskCheck, Viewer, history_view, holders_view, viewer_of
+from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
 from ..deps import AppContext, current_auth, get_context
 from ..errors import Forbidden, NotFound, ValidationFailed
@@ -91,6 +93,12 @@ from ..schemas import (
 )
 
 router = APIRouter(prefix="/v1/accounts", tags=["accounts"])
+
+#: The (method, template) `require_admin` is handed for `scope=platform` on the
+#: two holder reads. Not in POOL_ADMIN_ROUTES, so a pool admin asking for the
+#: platform view is refused like any non-admin -- the `outcomes.py` pattern.
+HOLDERS_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/holders")
+HISTORY_PLATFORM_ROUTE = ("GET", "/v1/accounts/{account_id}/history")
 
 
 def account_pool(
@@ -382,3 +390,100 @@ def remove_account(
     """
     _owned(pool, _tenant_id(ctx, auth), account_id)
     return pool.remove(account_id)
+
+
+# --------------------------------------------------------------------------
+# Who holds an account, and who held it (#379 parts 2 and 3)
+# --------------------------------------------------------------------------
+#
+# The broker serves these to a PLATFORM caller with every tenant's tasks in
+# them. Every bit of per-viewer filtering is `accountholds.py`'s, given the
+# caller's RESOLVED tenant and whether it owns the account; see that module for
+# what each viewer is shown and why. Nothing here logs a task id: a log line is
+# readable by people the response is not.
+
+
+def _viewer(
+    scope: str | None,
+    account_id: str,
+    auth: AuthContext,
+    ctx: AppContext,
+    pool: AccountPool,
+    platform_route: tuple[str, str],
+) -> tuple[Viewer, str | None]:
+    """(viewer, tenant) for a holder read, or a refusal.
+
+    `scope=platform` is the admin view and goes through `require_admin` FIRST,
+    before any tenant is resolved or any broker call is made. Every other
+    caller sees the account only when the broker lists it for their tenant --
+    owned or lent -- and gets the same 404 an unknown id gets otherwise.
+    """
+    if scope not in (None, "", "tenant", "platform"):
+        raise ValidationFailed("scope must be 'tenant' or 'platform'")
+    if scope == "platform":
+        require_admin(auth, platform_route)
+        return "platform", None
+    tenant_id = _tenant_id(ctx, auth)
+    for account in pool.list_accounts(tenant_id).get("accounts") or []:
+        if isinstance(account, dict) and account.get("account_id") == account_id:
+            return viewer_of(account, tenant_id), tenant_id
+    raise NotFound(f"no account {account_id!r} in this tenant's pool")
+
+
+def _check(ctx: AppContext) -> TaskCheck:
+    store = ctx.store
+    return TaskCheck(
+        tasks_by_id=store.tasks_by_id,
+        list_attempts=lambda tenant, task: store.list_attempts(tenant, task),
+    )
+
+
+@router.get("/{account_id}/holders")
+def account_holders(
+    account_id: str,
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Who is on this account now, as this caller may see it.
+
+    Own holds with a task link, the attempt and since when; the owner of a
+    lent account sees how many of each borrowing tenant's agents are on it;
+    a borrower sees a count of everyone else's. No assignment id, no secret.
+    """
+    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HOLDERS_PLATFORM_ROUTE)
+    return holders_view(
+        pool.holds(account_id),
+        viewer=viewer,
+        tenant_id=tenant_id,
+        check=_check(ctx),
+        now=datetime.now(timezone.utc),
+    )
+
+
+@router.get("/{account_id}/history")
+def account_history(
+    account_id: str,
+    start: str | None = Query(default=None, alias="from", max_length=64),
+    end: str | None = Query(default=None, alias="to", max_length=64),
+    cursor: str | None = Query(default=None, max_length=80),
+    scope: str | None = Query(default=None, description="tenant | platform"),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    pool: AccountPool = Depends(account_pool),
+) -> dict:
+    """Recorded spans on this account in [from, to), newest first, paged.
+
+    The caller's own spans name their task; other tenants' are anonymised --
+    by tenant for the owner, not at all for a borrower. The broker validates
+    the window and the cursor and answers a bad one with a 422 that names it.
+    """
+    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE)
+    return history_view(
+        pool.hold_history(account_id, start=start, end=end, cursor=cursor),
+        viewer=viewer,
+        tenant_id=tenant_id,
+        check=_check(ctx),
+        now=datetime.now(timezone.utc),
+    )
