@@ -46,6 +46,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | PROPOSED 2026-09-29 |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
+| 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
 
 ---
 
@@ -8011,3 +8012,85 @@ scheduler's drain (none today) would still say `TENANT_LIMIT` at 0.
 2. All-or-nothing reservation: unchanged; an unset pool still refuses.
 3. Concurrency counts from `LEASED`: unchanged.
 7. `requests == limits`: unaffected; this is the pool ceiling, not a pod spec.
+
+---
+
+## 39. `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets
+
+**Status: open (functionality wave 1, lane B0, 2026-10-01).** Recorded as a
+request, per CLAUDE.md rule 1; nothing under `apps/common/swarm_common/` was
+edited. Numbered 39 on the assumption that 38 (lane B1) lands first; renumber if
+another branch has taken it.
+
+### What is true today
+
+The owner decided on 2026-10-01 that there are NO per-tenant budgets: no
+`monthly_budget_usd` enforcement, built or planned, and nothing writes
+`PARKED(BUDGET_EXHAUSTED)`. The frozen contract still carries the vocabulary of
+the feature that was dropped:
+
+* `ParkReason.BUDGET_EXHAUSTED` (`apps/common/swarm_common/states.py:134`).
+  Nothing writes it, and no scheduler sweep reads it
+  (`apps/scheduler/scheduler/loop.py:836`;
+  `tests/unit/control_plane/test_every_park_has_an_unparker.py`
+  `test_no_sweep_reads_budget_exhausted` holds the second).
+* `BlockedReason.BUDGET_LIMIT` (`apps/common/swarm_common/states.py:153`).
+  `evaluate_capacity` never produces it; `apps/swarm-api/swarm_api/headroom.py:73`
+  lists it in the needs-action group with the advice "raise the budget", which
+  there is no way to do.
+* `Tenant.monthly_budget_usd` (`apps/common/swarm_common/models.py:452`). The
+  admin route refuses it with a 422
+  (`apps/swarm-api/swarm_api/routes/admin.py:266`), so no write path sets it;
+  the codecs still read it from a document if a hand-edit put it there.
+
+Per-attempt cost IS recorded, which is what made the old refusal message
+("no cost attribution source") stale: `record_spend`
+(`apps/agent-worker/agent_worker/control.py:1119`) writes `cost_usd` onto the
+attempt (`apps/common/swarm_common/models.py:372`). The decision is not "budgets
+once attribution exists"; it is "no budgets".
+
+Readers outside the contract that name the unused value and would go with it:
+`apps/swarm-mcp/swarm_mcp/compact.py:88`, `apps/swarm-mcp/swarm_mcp/progress.py:160`,
+and the UI's park-reason lists in `apps/swarm-ui/src/types.ts` (`:1822`,
+`:2088`, `:2109`, `:2134`, `:2196`).
+
+### The requested change
+
+Either of these, at the owner's choice:
+
+* **Remove** `ParkReason.BUDGET_EXHAUSTED`, `BlockedReason.BUDGET_LIMIT` and
+  `Tenant.monthly_budget_usd`, with the readers above in the same change; or
+* **Keep and document** them: a comment on each in the frozen modules saying the
+  value is reserved and never written (owner, 2026-10-01), so a reader of the
+  enum does not go looking for the code that sets it.
+
+### What it would break if accepted
+
+* Removal: a Firestore task document that somehow carries
+  `park_reason: "BUDGET_EXHAUSTED"` would no longer decode into `ParkReason`.
+  None should exist, since nothing has ever written it; a read-only count over
+  `tasks` where `park_reason == "BUDGET_EXHAUSTED"` should confirm 0 before
+  merging. A tenant document with a hand-written `monthly_budget_usd` would
+  decode only if the codecs drop the key.
+* Removal: the API's `TenantLimitsRequest.monthly_budget_usd`
+  (`apps/swarm-api/swarm_api/schemas.py:200`) exists only so the refusal can
+  explain itself. It would stay, as a refusal of a field the contract no longer
+  has, or go, and the refusal would become a plain `extra_forbidden`.
+* Removal: the UI and MCP lists lose a member; their tests that enumerate
+  `ParkReason` follow.
+* Keep-and-document: nothing breaks; it is comments only.
+
+### If it is declined
+
+The value stays, unused, and the docs say so where a reader meets it:
+`docs/quota-management.md` §4 marks it never written, `docs/cost-control.md` §2
+says budgets are not built and not planned, and `docs/multi-tenancy.md` says why
+`monthly_budget_usd` is refused. The UI keeps a label for a state no task can
+reach, which costs nothing but a misleading line in a list.
+
+### Invariants
+
+1. Only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create demand: unchanged;
+   this park was never reached, so no task leaves or enters one.
+2. All-or-nothing reservation: unaffected. `BUDGET_LIMIT` is not a pool.
+10. Callers pick a profile by name: unaffected.

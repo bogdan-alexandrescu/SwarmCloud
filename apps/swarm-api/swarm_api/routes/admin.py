@@ -264,18 +264,21 @@ def set_tenant_limits(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     if body.monthly_budget_usd is not None:
-        # Refused rather than stored. There is no cost attribution anywhere in
-        # this control plane -- no billing export, no per-attempt spend, no price
-        # per resource class -- so accepting it would write a number into
-        # Firestore, echo it back with a 200, enforce nothing, and never reach
-        # ParkReason.BUDGET_EXHAUSTED. An admin would believe they had a spend
-        # control. store.py states the standard this would violate: "the document
-        # and the pool must move together or the limit is a lie".
+        # Refused rather than stored. There are no per-tenant budgets, built or
+        # planned (owner decision, 2026-10-01; docs/cost-control.md section 2).
+        # Per-attempt spend IS recorded (agent_worker/control.py `record_spend`),
+        # but nothing enforces a budget from it, so accepting this would write a
+        # number into Firestore, echo it back with a 200, enforce nothing, and
+        # never reach ParkReason.BUDGET_EXHAUSTED. An admin would believe they
+        # had a spend control. store.py states the standard this would violate:
+        # "the document and the pool must move together or the limit is a lie".
         raise ValidationFailed(
-            "monthly_budget_usd is not enforceable by this control plane: it has no "
-            "cost attribution source, so the value could be stored but never acted "
-            "on. Bound spend with max_active / capacity_units, which the scheduler "
-            "really does enforce on every admission.",
+            "monthly_budget_usd is not enforced by this control plane: per-tenant "
+            "budgets are not built and not planned (owner decision, 2026-10-01), so "
+            "the value could be stored but never acted on. Per-attempt cost is "
+            "recorded on each attempt for reporting. Bound spend with max_active / "
+            "capacity_units, which the scheduler really does enforce on every "
+            "admission.",
             detail={
                 "enforceable_limits": ["max_active", "capacity_units", "enabled"],
                 "requires": "per-attempt cost attribution (billing export)",

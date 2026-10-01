@@ -461,7 +461,7 @@ def test_a_capacity_units_ceiling_actually_refuses_admission(db, make_scheduler,
 def test_a_budget_that_cannot_be_enforced_is_refused_rather_than_stored(client, db):
     """An admin who sets a budget used to get a 200 and no spend control.
 
-    There is no cost attribution anywhere in this control plane, and
+    There are no per-tenant budgets (owner, 2026-10-01), and
     ParkReason.BUDGET_EXHAUSTED appears in no code path, so the number could only
     ever be stored and echoed back.
     """
@@ -480,6 +480,29 @@ def test_a_budget_that_cannot_be_enforced_is_refused_rather_than_stored(client, 
         "enabled",
     ]
     assert db.docs["tenants/eng"].get("monthly_budget_usd") is None
+
+
+def test_the_budget_refusal_gives_the_owner_decision_not_a_missing_cost_source(client, db):
+    """The refusal's reason is the owner's decision, not "no cost attribution".
+
+    Per-attempt spend IS recorded: the worker's `record_spend`
+    (apps/agent-worker/agent_worker/control.py) writes `cost_usd` onto the
+    attempt. The 422 used to say the control plane "has no cost attribution
+    source", which stopped being true, and read as "budgets arrive once it
+    does". The owner decided on 2026-10-01 that there are no per-tenant budgets
+    and none are planned. Same status, same detail keys: text only.
+    """
+    seed_tenant(db, "eng", max_active=20)
+    response = client.put(
+        "/v1/admin/tenants/eng/limits",
+        headers=auth_header("root"),
+        json={"monthly_budget_usd": 500},
+    )
+    assert response.status_code == 422, response.text
+    message = response.json()["message"]
+    assert "no cost attribution" not in message
+    assert "not planned" in message
+    assert "2026-10-01" in message
 
 
 # -- a failed dispatch tells the tenant a code, not the backend's message ---
