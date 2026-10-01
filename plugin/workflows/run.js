@@ -1,5 +1,5 @@
 export const meta = {
-  name: 'SwarmCloud',
+  name: 'swarmcloud',
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a [SwarmCloud] row per step, by stage, with a short progress line when its state changes',
   whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely. Pass the spec object, its JSON text, or the path of the spec file as args.',
   phases: [
@@ -8,7 +8,7 @@ export const meta = {
   ],
 }
 
-// /sc:SwarmCloud -- a SwarmCloud workflow, shown as a Claude Code workflow.
+// /sc:swarmcloud -- a SwarmCloud workflow, shown as a Claude Code workflow.
 // (Named `run` until 2026-10-01; the owner asked that it read as SwarmCloud
 // in /workflows, and that every row carry a `[SwarmCloud]` prefix.)
 //
@@ -140,7 +140,7 @@ const WORKFLOW_STATE = {
   required: ['state', 'state_note', 'steps'],
 }
 
-// What /sc:SwarmCloud was given: { spec } for a spec object or its JSON text, or
+// What /sc:swarmcloud was given: { spec } for a spec object or its JSON text, or
 // { path } for anything else -- the path of a spec file, which the bridge
 // reads (the READ SPEC row below). Text that begins like JSON is JSON with a mistake
 // in it, and is reported as that rather than looked for as a file.
@@ -153,7 +153,7 @@ function readSpec(given) {
     try {
       spec = JSON.parse(text)
     } catch (error) {
-      throw new Error('/sc:SwarmCloud takes a SwarmCloud workflow spec object, its JSON text, or the path of a spec file; its argument begins like JSON and is not JSON: ' + error.message)
+      throw new Error('/sc:swarmcloud takes a SwarmCloud workflow spec object, its JSON text, or the path of a spec file; its argument begins like JSON and is not JSON: ' + error.message)
     }
     if (typeof spec === 'string' && spec.trim()) return { path: spec.trim() }
   }
@@ -166,7 +166,7 @@ function checkSpec(given) {
     spec = spec.spec
   }
   if (!spec || typeof spec !== 'object' || Array.isArray(spec) || !Array.isArray(spec.steps) || spec.steps.length === 0) {
-    throw new Error('/sc:SwarmCloud takes a SwarmCloud workflow spec: an object with a non-empty `steps` list, the shape `swarm workflow` reads')
+    throw new Error('/sc:swarmcloud takes a SwarmCloud workflow spec: an object with a non-empty `steps` list, the shape `swarm workflow` reads')
   }
   return spec
 }
@@ -390,7 +390,7 @@ if (given.path) {
   const relayed = specDigest(spec)
   if (relayed !== read.spec_digest) {
     return notSubmitted(
-      'the bridge read ' + (read.path || given.path) + ' with digest ' + (read.spec_digest || 'none') + ', and the spec relayed from it has digest ' + relayed + ': it was changed on the way, so nothing was submitted. Run /sc:SwarmCloud again, or pass the spec object itself.',
+      'the bridge read ' + (read.path || given.path) + ' with digest ' + (read.spec_digest || 'none') + ', and the spec relayed from it has digest ' + relayed + ': it was changed on the way, so nothing was submitted. Run /sc:swarmcloud again, or pass the spec object itself.',
     )
   }
   log('read the spec from ' + (read.path || given.path) + ' · ' + relayed)
@@ -422,7 +422,7 @@ if (!submitted || (!submitted.workflow_id && !submitted.error)) {
     : submitted
       ? 'the submitting row answered with neither a workflow id nor an error'
       : 'the submitting row stopped before it answered'
-  const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:SwarmCloud again, which would submit a second copy.'
+  const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:swarmcloud again, which would submit a second copy.'
   log('submission outcome unknown · ' + clip(why, 200))
   return { workflow_id: null, state: 'SUBMISSION_UNKNOWN', error: error, steps: [] }
 }

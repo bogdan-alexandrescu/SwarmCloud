@@ -542,7 +542,7 @@ TOOLS: list[dict[str, Any]] = [
                         "A whole workflow spec -- the file the terminal's workflow "
                         "command reads -- instead of `steps` and the "
                         "parameters beside it. A step may carry `stage`, the group "
-                        "/sc:SwarmCloud shows it under; it is never sent."
+                        "/sc:swarmcloud shows it under; it is never sent."
                     ),
                 },
                 "spec_digest": {
@@ -655,7 +655,7 @@ TOOLS: list[dict[str, Any]] = [
                             "stage": {
                                 "type": "string",
                                 "description": (
-                                    "Display only: the group /sc:SwarmCloud shows this "
+                                    "Display only: the group /sc:swarmcloud shows this "
                                     "step under. Never sent to the platform."
                                 ),
                             },
@@ -723,7 +723,7 @@ TOOLS: list[dict[str, Any]] = [
             "check it as swarm_workflow would, and return it with its "
             "`spec_digest`. Submits NOTHING and makes no request.\n"
             "\n"
-            "For /sc:SwarmCloud given a path: a workflow script has no filesystem, so "
+            "For /sc:swarmcloud given a path: a workflow script has no filesystem, so "
             "the bridge reads the file, and the script checks the spec relayed "
             "back against this digest before it submits. `path` is relative to "
             "the checkout, or absolute; the reply's `path` is the file actually "
@@ -1096,7 +1096,7 @@ MAX_SPEC_FILE_BYTES = 1024 * 1024
 def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
     """A spec file, checked by `workflows.read_spec`, with its digest (epic #227).
 
-    `/sc:SwarmCloud` took only a spec object or JSON text, unlike `swarm workflow`,
+    `/sc:swarmcloud` took only a spec object or JSON text, unlike `swarm workflow`,
     which takes a file; a path passed as its argument failed in `readSpec`. A
     workflow script has no filesystem, so the bridge reads the file here, and
     the script holds the spec relayed back to this digest before it submits.
@@ -1467,7 +1467,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     "those itself. Pass the whole spec, or `steps` with the parameters "
                     "beside it -- not both"
                 )
-            # THE DIGEST OF WHAT ARRIVED, before anything else reads it. /sc:SwarmCloud
+            # THE DIGEST OF WHAT ARRIVED, before anything else reads it. /sc:swarmcloud
             # hands the spec to a relay that retypes it into this call; the
             # digest the script computed is the only thing that can show the
             # relay dropped a step or "tidied" a prompt, and it is checked

@@ -458,7 +458,7 @@ def watch(
     this row expects -- and a task given up on carries `abandoned_because`.
 
     `step_id`, with exactly one task: the workflow step that task must be. A
-    row of `/sc:SwarmCloud` is handed its task id through a relay that retypes it; a
+    row of `/sc:swarmcloud` is handed its task id through a relay that retypes it; a
     task that turns out to be ANOTHER step is not followed, because its
     answer, cost and pull request would be reported under this step's name.
 

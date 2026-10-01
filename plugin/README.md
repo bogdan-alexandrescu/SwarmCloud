@@ -668,7 +668,7 @@ answer: the dispatch was refused (an unpushed branch, say), the task ended
 with the requested object, the task could not be read (a 404 or 403, or three
 calls in a row that read nothing), or the sc plugin's server is not connected.
 
-**A whole SwarmCloud workflow: `/sc:SwarmCloud`.** Its argument is a SwarmCloud
+**A whole SwarmCloud workflow: `/sc:swarmcloud`.** Its argument is a SwarmCloud
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
 text, or as the path of the spec file, relative to the session's checkout. A
 workflow script has no filesystem, so given a path one `sc:workflow` agent
@@ -705,7 +705,7 @@ it, and a distinct task per step — or no row starts and the run returns
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
 
-**How `/sc:SwarmCloud` can end before any row starts**, and what each means:
+**How `/sc:swarmcloud` can end before any row starts**, and what each means:
 
 | `state` | What happened | What to do |
 |---|---|---|
@@ -764,16 +764,16 @@ it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 
 ### What differs from a local step — read before swapping one in
 
-| | A local `agent()` step | The same step through `sc:remote` or `/sc:SwarmCloud` |
+| | A local `agent()` step | The same step through `sc:remote` or `/sc:swarmcloud` |
 |---|---|---|
-| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:SwarmCloud`, the `input_from` files SwarmCloud stages |
-| Its prompt | handed to the agent as written | **retyped by a relay** — `sc:remote`, a haiku row, copies the prompt into `swarm_dispatch`, and a long prompt can arrive changed, with nothing after it able to tell. The prompt the remote agent got is the task's input: read it in the console, or in the row's transcript. Under `/sc:SwarmCloud` the spec is checked by digest (above) |
+| What it knows | the prompt, the session's files, its own tools | **only its prompt**. No conversation, no other step's output — except, under `/sc:swarmcloud`, the `input_from` files SwarmCloud stages |
+| Its prompt | handed to the agent as written | **retyped by a relay** — `sc:remote`, a haiku row, copies the prompt into `swarm_dispatch`, and a long prompt can arrive changed, with nothing after it able to tell. The prompt the remote agent got is the task's input: read it in the console, or in the row's transcript. Under `/sc:swarmcloud` the spec is checked by digest (above) |
 | Which code it sees | the working tree, uncommitted edits included | a **depth-1 clone of the pushed branch**, cloned by the branch's OWN name on its remote — never its upstream: no history, no uncommitted work. The bridge refuses a branch that is not on its remote under its own name or has commits that are not there, naming `git push -u <remote> <branch>`, and names uncommitted changes as invisible |
 | Tools | the session's tools, MCP servers and permission rules | the `claude-code` runner's own tools inside its container; none of the session's MCP servers or permission rules |
 | Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
 | Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
 | Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
-| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:SwarmCloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
 | Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
 
 **Which checkout is inferred.** The bridge reads the git checkout of the
@@ -785,7 +785,7 @@ a null.
 
 **Inference is opt-in: `infer: true`, not the default.** A plain
 `swarm_dispatch` or `swarm_workflow` call names a repository only when given,
-exactly as before this feature existed. `sc:remote` and `/sc:SwarmCloud` pass
+exactly as before this feature existed. `sc:remote` and `/sc:swarmcloud` pass
 `infer: true` on every call; anything else naming neither `repo` nor `infer`
 clones nothing.
 
@@ -838,7 +838,7 @@ are the same value.
   With `spec_digest` it refuses, before sending, a spec that arrived
   different; its reply carries the digest of what it received.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
-  returns it with its digest, submitting nothing — the half of `/sc:SwarmCloud` that
+  returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being
   repeated.
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
@@ -900,7 +900,7 @@ sentence here, there or in the delegate skill states a bound the table does not
 own, and requires every example input to be one the catalogue accepts.
 
 `tests/unit/mcp/test_plugin_agents_and_workflows.py` covers the agents and
-`/sc:SwarmCloud`, whose loader fails quietly: a plugin agent whose frontmatter does not
+`/sc:swarmcloud`, whose loader fails quietly: a plugin agent whose frontmatter does not
 parse loads with every field ignored, and `mcpServers`, `permissionMode`,
 `hooks` and `initialPrompt` do nothing in a plugin agent. Each
 `plugin/agents/*.md` must parse strictly — and to the same values under a real

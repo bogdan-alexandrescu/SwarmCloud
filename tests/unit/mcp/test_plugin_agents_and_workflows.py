@@ -512,13 +512,13 @@ def _meta() -> dict:
 def test_run_js_meta_is_a_pure_literal_naming_the_command():
     """Anything but literals in `meta` -- a variable, a call, a spread, a
     template -- and Claude Code drops the command from `/` autocomplete. The
-    plugin's workflows run as /<plugin>:<meta.name>, so this is /sc:SwarmCloud.
+    plugin's workflows run as /<plugin>:<meta.name>, so this is /sc:swarmcloud.
 
     Owner decision, 2026-10-01: the workflow is not called `run` -- it reads as
     SwarmCloud in /workflows, and its rows carry a `[SwarmCloud]` prefix."""
     meta = _meta()
-    assert meta["name"] == "SwarmCloud"
-    assert _plugin_name() == "sc", "the command is documented as /sc:SwarmCloud"
+    assert meta["name"] == "swarmcloud", "the command is lowercase: /sc:swarmcloud (owner, 2026-10-01)"
+    assert _plugin_name() == "sc", "the command is documented as /sc:swarmcloud"
     assert "SwarmCloud" in meta["description"]
     assert isinstance(meta["description"], str) and meta["description"].strip()
     titles = [phase["title"] for phase in meta.get("phases", [])]

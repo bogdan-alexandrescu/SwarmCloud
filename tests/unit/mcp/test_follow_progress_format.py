@@ -1,7 +1,7 @@
 """`swarm_follow` `format: "progress"`: a workflow row that costs bytes, not megabytes.
 
 MEASURED, 2026-10-01. Six wave-1 workflows of three steps each ran under
-`/sc:SwarmCloud` (then `/sc:run`): eighteen haiku `sc:step` rows, each looping
+`/sc:swarmcloud` (then `/sc:run`): eighteen haiku `sc:step` rows, each looping
 `swarm_follow` with `format: "lines"` and `wait_seconds: 90`. Every reply carried
 5-16 KB of the remote agent's narrated log, and each row re-read its growing
 history on every turn: one row used 4.0M tokens over 41 calls, and the six

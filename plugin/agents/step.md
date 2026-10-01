@@ -1,6 +1,6 @@
 ---
 name: step
-description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state or progress changes (never the remote log) until its task finishes, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:SwarmCloud workflow, one per step. It never dispatches, cancels or retries anything.
+description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state or progress changes (never the remote log) until its task finishes, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
