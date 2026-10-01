@@ -12969,6 +12969,65 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Admin (admin-help.html): Pool limits L2, Tenants, Platform counts -- */
 /* ======================================================================== */
+/* POOL LIMITS L2, THE SIDE EDITOR (owner's pick 2026-10-01). The families keep
+   the full width until a pool is picked; then the editor takes a column beside
+   them, so the table stays still while editing. Below 1100px it stacks under
+   the families, where `autoFocus` on its field brings it into view. */
+.adm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
+.adm-side {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac);
+  border-radius: var(--radius); background: var(--surface);
+}
+@media (min-width: 1100px) {
+  .adm-split.is-editing { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+  .adm-split.is-editing > .adm-side { position: sticky; top: 12px; }
+}
+.adm-side-title { margin: 0; display: flex; flex-direction: column; gap: 2px; font: 600 var(--t-lead)/var(--lh-lead) var(--font); }
+.adm-side-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); }
+.adm-side-facts dt { color: var(--text-dim); }
+.adm-side-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.adm-side-k { font-size: var(--t-micro); color: var(--text-dim); }
+.adm-side-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-side-field > label { flex-basis: 100%; }
+.adm-side input {
+  min-height: 36px; padding: 3px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.adm-side-field > input { width: 96px; font-variant-numeric: tabular-nums; }
+.adm-side input:disabled { opacity: .5; cursor: not-allowed; }
+.adm-side input[aria-invalid='true'] { border-color: var(--warn); }
+.adm-delta { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--sk-ac); }
+.adm-impact { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.adm-drastic { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--bad); border-radius: 8px; }
+.adm-drastic-why { margin: 0; font-size: var(--t-meta); color: var(--bad-ink); }
+.adm-side-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-side-actions > button {
+  min-height: 36px; padding: 4px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text);
+  font-size: var(--t-body); cursor: pointer;
+}
+.adm-side-actions > button.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); font-weight: 600; }
+.adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
+.adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
+.adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
+.adm-family tr.is-editing > th,
+.adm-family tr.is-editing > td { background: var(--sk-acs); }
+@media (max-width: 560px) {
+  .adm-side input,
+  .adm-side-actions > button { min-height: 44px; }
+}
+
+/* TENANTS: the status is a mark and a word (brand.html vocabulary), and a
+   tenant with no key of its own carries the amber warning, not a red tag. */
+.ten-status { white-space: nowrap; }
+
+/* PLATFORM COUNTS before the first run (#135): both cards drawn, each saying
+   `not run` in its figure slot, so the page has its shape before the press. */
+.counts-notrun .ctl-card-body { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }
 /* (Admin rules go above this line.) */
 
 
