@@ -11,6 +11,7 @@ import {
 } from './api'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
+import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
@@ -217,6 +218,10 @@ export function AccountsScreen() {
       key={nonce}
       title="Accounts"
       load={load}
+      // Decided 2026-10-01 (#117): every 60s, paused while the tab is hidden
+      // (`Screen`). A poll re-reads in place; it does not bump `nonce`, so it
+      // never remounts the screen under a sign-in in progress.
+      pollMs={ACCOUNTS_POLL_MS}
       summary={(b) => <SummaryLine board={b} />}
       /*
        * NO `empty` PROP, DELIBERATELY. Screen renders `empty` INSTEAD of its
@@ -434,8 +439,18 @@ function Pool({
   // under an operator (an account breaking while they look at it) without
   // overriding a choice they made.
   const isOpen = (a: Account) => ui.open[a.account_id] ?? needsAHuman(a)
+  // THE SPLIT VIEW SHOWS ONE ACCOUNT (capacity.html §D, decided 2026-10-01):
+  // choosing a row closes every other, so the pane on the right is the
+  // account the reader chose. The default is unchanged -- an account that
+  // needs a sign-in starts chosen -- and choosing the chosen row closes it.
   const toggle = (a: Account) =>
-    patch((p) => ({ ...p, open: { ...p.open, [a.account_id]: !isOpen(a) } }))
+    patch((p) => {
+      const next: Record<string, boolean> = {}
+      for (const other of accounts) if (other.account_id !== a.account_id) next[other.account_id] = false
+      next[a.account_id] = !isOpen(a)
+      return { ...p, open: { ...p.open, ...next } }
+    })
+  const chosen = accounts.filter(isOpen)
 
   // One clock for the whole render. Reading Date.now() per cell would let two
   // cells in the same row disagree by a second, which is exactly the kind of
@@ -445,7 +460,7 @@ function Pool({
   if (accounts.length === 0) {
     return (
       <section className="section panel">
-        <h2>The pool</h2>
+        <h2>Subscription accounts</h2>
         <div className="state" role="status">
           {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
               that work waits rather than fails, quietly -- is the topic. */}
@@ -478,9 +493,10 @@ function Pool({
   }
 
   return (
-    <section className="section panel">
+    <div className="acct-split">
+    <section className="section panel acct-list">
       <h2>
-        The pool
+        Subscription accounts
         {/* THE QUALIFIER SLOT, NOT A CHIP (CP-22). Body-size mono beside the
             title, where Pools, Holders and Provider quota put a fact about
             the section in `.ctl-card-note`. */}
@@ -523,9 +539,6 @@ function Pool({
                 readAt={board.readAt}
                 open={isOpen(a)}
                 onToggle={() => toggle(a)}
-                ui={ui}
-                patch={patch}
-                reload={reload}
               />
             ))}
           </tbody>
@@ -572,6 +585,22 @@ function Pool({
         <HelpCard topic="projected-not-measured" />
       </p>
     </section>
+    {/* THE CHOSEN ACCOUNT, beside the list rather than inside it (capacity.html
+        §D, Variant 1). The detail is the same component the expanded row drew
+        -- facts, controls, and PR #413's Holding now | History switch -- so
+        nothing it said or guarded changed by moving. */}
+    <div className="acct-pane">
+      {chosen.length === 0 ? (
+        <p className="acct-pane-empty muted">Choose an account.</p>
+      ) : (
+        chosen.map((a) => (
+          <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${a.label}`}>
+            <Detail account={a} board={board} now={now} ui={ui} patch={patch} reload={reload} />
+          </section>
+        ))
+      )}
+    </div>
+    </div>
   )
 }
 
@@ -582,20 +611,15 @@ function PoolRows({
   readAt,
   open,
   onToggle,
-  ui,
-  patch,
-  reload,
 }: {
   account: Account
   board: AccountsBoard
   now: number
   /** When the board these rows came from was read. See `AccountsBoard.readAt`. */
   readAt: number
+  /** Whether this row is the account the pane beside the list shows. */
   open: boolean
   onToggle: () => void
-  ui: Persisted
-  patch: Patch
-  reload: () => void
 }) {
   const tone = accountTone(account.state)
   const five = readingOf(account, FIVE_HOUR)
@@ -612,7 +636,9 @@ function PoolRows({
       <tr
         role="row"
         className={
-          tone === 'bad' || unusable ? 'over' : tone === 'paused' ? 'paused' : undefined
+          [tone === 'bad' || unusable ? 'over' : tone === 'paused' ? 'paused' : '', open ? 'is-chosen' : '']
+            .filter(Boolean)
+            .join(' ') || undefined
         }
       >
         <th role="rowheader" scope="row" className="pool-name">
@@ -674,20 +700,6 @@ function PoolRows({
           <StateNote account={account} />
         </td>
       </tr>
-      {open && (
-        <tr role="row" className="acct-detail-row">
-          <td role="cell" colSpan={5}>
-            <Detail
-              account={account}
-              board={board}
-              now={now}
-              ui={ui}
-              patch={patch}
-              reload={reload}
-            />
-          </td>
-        </tr>
-      )}
     </>
   )
 }

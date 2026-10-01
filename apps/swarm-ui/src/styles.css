@@ -12963,6 +12963,46 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Capacity (capacity.html): ceilings, matrix, accounts --------------- */
 /* ======================================================================== */
+/* Ceilings: "Needs a look" leads, in the warning hue's soft surface. */
+.cap-needs { border-color: color-mix(in srgb, var(--s-warn) 50%, transparent); }
+.cap-needs .ctl-card-title { color: var(--text); }
+.cap-use { display: grid; grid-template-columns: minmax(64px, 1fr) 44px; gap: 8px; align-items: center; min-width: 130px; }
+.cap-use-pct { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
+.cap-links { white-space: nowrap; font-size: var(--t-meta); color: var(--text-faint); }
+
+/* By runner profile: the matrix. The binding cell is outlined in the warning
+   hue -- amber is for warnings only, and the pool that runs out first is one. */
+.cap-mx { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--ctl-gutter); }
+.cap-mx td.is-num b { display: block; font: 650 var(--t-body)/var(--lh-body) var(--font); font-variant-numeric: tabular-nums; }
+.cap-mx td.is-num small { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx td.is-binding { outline: 2px solid var(--s-warn); outline-offset: -4px; border-radius: 6px; background: var(--s-warnb); }
+.cap-mx td.cap-mx-na { color: var(--text-faint); }
+.cap-mx b.cap-mx-zero { color: var(--s-warn); }
+.cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
+.cap-mx tr.is-open > * { background: var(--surface-2); }
+.cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
+.cap-mx-lift { font-size: var(--t-meta); color: var(--text-dim); white-space: normal; }
+.cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+.cap-mx-detail-head { margin: var(--ctl-gutter) 0 8px; }
+
+/* Runtimes: the pools each runtime must clear, each one a link. */
+.rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.rt-pool-chip { font-size: var(--t-micro); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; color: var(--info); text-decoration: none; }
+.rt-pool-chip:hover { border-color: var(--info); }
+
+/* Holders: the tenant filter beside "Every holder". */
+.hold-tenants { margin-left: 8px; }
+
+/* Accounts: the list and the chosen account side by side; stacked on a phone. */
+.acct-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
+@media (min-width: 1100px) { .acct-split { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
+.acct-pane { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
+.acct-pane-empty { margin: 0; padding: 16px; border: 1px dashed var(--line-soft); border-radius: 10px; font-size: var(--t-meta); }
+.acct-pane-detail .acct-detail { border-radius: 10px; }
+table.accounts tr.is-chosen > * { background: var(--surface-2); }
+table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 /* (Capacity rules go above this line.) */
 
 

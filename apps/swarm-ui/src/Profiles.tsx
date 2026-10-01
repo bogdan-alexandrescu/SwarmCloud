@@ -2,6 +2,8 @@ import { loadCapacity } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
+import { POOLS_POLL_MS } from './capacityPoll'
+import { ProfileMatrix } from './ProfileMatrix'
 import { Screen, timeAgo } from './Shell'
 import {
   BlockerList,
@@ -97,6 +99,9 @@ export function ProfilesScreen() {
          every card, in the pool column's name (`MUST_CLEAR`). */
       help="pools-all-at-once"
       load={loadCapacity}
+      // Part of Pools, so Pools' cadence (#117): every 30s, paused while the
+      // tab is hidden (`Screen`).
+      pollMs={POOLS_POLL_MS}
       summary={(d) => {
         const profiles = Object.values(d.runner_profiles)
         const backends = new Set(profiles.map((p) => p.backend)).size
@@ -176,6 +181,13 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
             Pools uses for the same Trap D -- and `#help/tenant-scope` in the
             footer. A qualifier on the card cannot be scrolled away from the
             figures it scopes; a paragraph above the first card could. */}
+      {/* THE MATRIX FIRST (capacity.html §B, decided 2026-10-01, #124): every
+          profile against every pool family, the binding cell outlined. The
+          cards below are each row's detail -- every pool, its status, the
+          remedy and the counterfactual per pool -- and keep every claim the
+          old Profile headroom screen made. */}
+      <ProfileMatrix capacity={capacity} />
+      <h2 className="ctl-eyebrow cap-mx-detail-head">Per profile</h2>
       {entries.map(([name, profile]) => (
         <ProfileCard
           key={name}
