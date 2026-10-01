@@ -626,6 +626,87 @@ It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
 
+## The plugin's bridge tag is made by the release
+
+[`plugin/.claude-plugin/plugin.json`](../plugin/.claude-plugin/plugin.json)
+names its version twice. One is `version`, which decides which skills a user
+has. The other is the `@sc-v<version>` ref its MCP server installs the swarm-mcp
+bridge from.
+[`tests/unit/mcp/test_plugin_bridge_install.py`](../tests/unit/mcp/test_plugin_bridge_install.py)
+holds the two equal. But the tag itself used to be made by hand, so it could
+be missing. sc-v0.5.6 was: main pinned it before anyone had tagged it, every
+fresh install of 0.5.6 failed to fetch its bridge, and no check said so (#272).
+
+**Who tags, and when.** `release.yml`'s `plugin-tag` job creates the annotated
+tag `sc-v<version>` on the commit being released (`github.sha`). It reads the
+version from `plugin.json` with `jq` at run time, so the workflow never names
+a version. It refuses anything that is not `X.Y.Z`.
+
+* **After `verify`.** A tag is what users' installs resolve, so a commit whose
+  unit tests failed is not one to hand them.
+* **On main only.** A `workflow_dispatch` can name another branch, and a tag
+  made from it would pin users to a commit main never had. The condition sits
+  on each step, not on the job. The release-gate model in
+  `test_release_prod_gate.py` cannot evaluate a job-level `github.ref`, and a
+  condition it cannot evaluate is one it cannot hold. Off main, the job starts,
+  runs nothing and ends green.
+* **Only when origin does not have the tag** (`git ls-remote --exit-code`).
+  If the remote cannot be read, the job fails. That is never treated as
+  "absent".
+
+**It never moves an existing tag.** Users' installs already resolved it, and uv
+caches what it fetched. A moved tag would give two users of the same version
+two different bridges, and neither of them could tell. So nothing in the job
+forces. When the tag exists, the job prints a `::notice`, also naming the
+commit the tag points at if that is not this one, and leaves it where it is.
+If two releases tag at once (a dev push and a prod dispatch), the second push
+is rejected. The job then reads the remote again, and counts the tag being
+there as success.
+
+**`contents: write` is granted on that job, not on the workflow.** The workflow
+default stays `contents: read`. The jobs that build, plan and deploy run a lot
+of code, and none of it needs to write to the repository. `plugin-tag` runs
+only checkout, `jq` and `git`. (`acceptance` holds the same grant for its own
+sweep. See its header.)
+
+**A bump that touches only `plugin/` starts no release,** because `plugin/**`
+is not in `release.yml`'s `on.push.paths`. That filter was left alone. The
+version is tagged by the next release whose commit descends from the bump. The
+tag then lands on that later commit, whose `plugin.json` says the same version.
+
+**The check.** On a push to main, `application.yml`'s `shell` job asks whether
+origin has `sc-v<version>`.
+
+* **Passes** when the tag exists.
+* **Fails** when the tag is missing and a completed `release.yml` run on main
+  whose `verify` job passed already descends from the commit that last changed
+  the version line. `plugin-tag` runs exactly when `verify` passed, so that
+  release should have tagged it and did not. The error names the tag, the bump
+  commit, that run and its `plugin-tag` job's conclusion.
+  **The run's own conclusion is not read.** A `plugin-tag` that failed (a
+  rejected push, a ruleset on `sc-v*`), or any later build or deploy job that
+  failed, makes the whole run `failure`. Counting only successful runs would
+  warn forever in exactly the case this check exists for.
+* **Only warns** when no release on main has passed `verify` since the bump
+  (the plugin-only case above, a release still in flight, or one whose
+  `verify` failed and so never tried to tag). The next release tags it.
+* **Fails** if `gh run list`, `gh run view` or `git ls-remote` fails. A check that could not
+  be made is not "no releases".
+
+It prints how many release runs it examined. A release head missing from the
+clone counts as not descended, and the check says so. It is gated to main
+because a pull request that bumps the version is expected to have no tag yet.
+It deepens the shallow checkout only on the path where the tag is missing. For
+`gh`, the `shell` job holds `actions: read` along with the `contents: read`
+that job-level permissions would otherwise drop.
+
+[`tests/unit/scripts/test_plugin_tag.py`](../tests/unit/scripts/test_plugin_tag.py)
+runs both steps' `run:` text, read out of the workflow files, against stub
+`git` and `gh`. It covers the tag being created and pushed, the tag never being
+moved, nothing ever being forced, a bad version being refused, and each of the
+check's outcomes. It cannot show that GITHUB_TOKEN may push an `sc-v*` tag in
+this repository. The first release after this lands is that proof.
+
 ## The UI job's Node is read from the image, not pinned
 
 The `ui` job does not name a Node version. Its first step reads the major from

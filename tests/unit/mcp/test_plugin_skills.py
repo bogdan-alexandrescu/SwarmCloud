@@ -107,7 +107,11 @@ _NOT_YET_HEADING = "## Tools that do not exist yet"
 _NOT_YET_ENTRY = re.compile(r"^\s*\*\s+\*\*`(swarm_[a-z_]+)`\*\*")
 
 #: Anything that dispatches, cancels, or writes to the operator's tree.
-_WRITE_TOOLS = {"swarm_dispatch", "swarm_apply", "swarm_integrate", "swarm_cancel"}
+_WRITE_TOOLS = {
+    "swarm_dispatch", "swarm_apply", "swarm_integrate", "swarm_cancel",
+    # S10: they change an account in the shared pool.
+    "swarm_account_pause", "swarm_account_resume", "swarm_account_drain", "swarm_account_remove",
+}
 
 
 def _split(text: str) -> tuple[list[str], str]:

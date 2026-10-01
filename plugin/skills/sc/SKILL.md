@@ -10,6 +10,8 @@ allowed-tools:
   - Bash(uv run sc task:*)
   - Bash(uv run sc trouble:*)
   - Bash(uv run sc whoami:*)
+  - Bash(uv run sc config:*)
+  - Bash(uv run sc debug:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -18,15 +20,19 @@ allowed-tools:
   - Bash(sc task:*)
   - Bash(sc trouble:*)
   - Bash(sc whoami:*)
+  - Bash(sc config:*)
+  - Bash(sc debug:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
 ---
 
 # sc — SwarmCloud cluster state
 
-`sc` is read-only towards the cluster. It never writes to it, never refreshes
-an account's credential and never cancels anything, so every view below is
-always safe to run.
+Every `sc` VIEW is read-only towards the cluster. A view never writes to it,
+never refreshes an account's credential and never cancels anything, so every
+view below is always safe to run. The one part of `sc` that writes is
+`sc account ...`, which changes an account in the pool; this skill is not
+granted it (see the last section).
 
 It reads **the developer's own deployment**, not one this plugin knows about:
 whatever they configured at install (`/plugin configure sc@swarmcloud`), or a
@@ -52,7 +58,31 @@ dispatch to another cluster without asking.
 | what did this agent produce? | `uv run sc task <id>` |
 | is anything broken? | `uv run sc trouble` |
 | which deployment, and who am I on it? | `uv run sc whoami` |
+| which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
+| why did this one task fail? | `uv run sc debug <id>` |
 | what may I actually run? | `uv run swarm profiles` |
+
+`sc config` shows where the dispatching tools send work — the session
+`target` (cloud, local or hybrid) and which setting chose it — beside the
+endpoint, the tenant, the plugin's version and the bridge's. A field it could
+not read says `not read:` and why; report that, never a blank.
+
+`sc debug <id>` is one task's diagnosis: its state and profile, every attempt
+(generation, start and end, exit code, error), its last error, its newest
+events and the tail of its newest attempt's log — all from the API, which
+masks them, with the counts it masked. A line reading `withheld` is a string
+the API did not say it masked, so it is not shown; say so, do not go looking
+for it. A section that says `not read:` failed on its own; the rest of the
+report is still good.
+
+## Changing an account is the developer's to do
+
+`uv run sc account pause <label>`, `resume`, `drain`, `remove` and `add` WRITE
+to the shared account pool, and this skill is not granted them. Tell the
+developer the command and let them run it: `drain` stops new assignments and
+moves running agents to another account at their next turn boundary; `remove`
+asks them to type the account's label back; `add` opens a browser for them to
+sign in to Claude and asks them to paste a code, which only they can do.
 
 The task view says what the agent produced before its code: each artifact by
 name and size, the runner's own summary, the exit code, the duration, and the

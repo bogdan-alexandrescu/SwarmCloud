@@ -496,6 +496,32 @@ try {
 } catch (error) {
   finalFailure = failureText(error)
 }
+// A row whose relay failed is not a step whose task failed (#285). The sc:step
+// relay retypes its answer into StructuredOutput JSON, and one retyping a raw
+// answer excerpt (backticks, quotes, ******** masks, paths, backslashes) ran out
+// of its five attempts on a step whose task had SUCCEEDED -- so the row said
+// state null for a finished task. The workflow status read just above names
+// every step's state as SwarmCloud derived it, so such a row takes its state
+// from there, keeps its own row_error beside it, and says where the state came
+// from (state_from, on these rows only: a row that answered keeps the
+// STEP_RESULT shape). It stays null only when that read failed too, or did not
+// name the step, or named it with no state -- nothing here guesses one.
+const statusOf = {}
+if (final && Array.isArray(final.steps)) {
+  for (const entry of final.steps) {
+    if (entry && typeof entry.step_id === 'string' && typeof entry.state === 'string' && entry.state) {
+      statusOf[entry.step_id] = entry.state
+    }
+  }
+}
+for (const row of rows) {
+  if (!row || !row.row_error || row.state !== null) continue
+  if (!Object.prototype.hasOwnProperty.call(statusOf, row.step_id)) continue
+  row.state = statusOf[row.step_id]
+  row.state_from = 'workflow status'
+  log(row.step_id + ' ' + row.state + ' (from the workflow status; its row failed: ' + clip(row.row_error, 100) + ')')
+}
+
 const state = final ? final.state : null
 const note = final
   ? final.state_note

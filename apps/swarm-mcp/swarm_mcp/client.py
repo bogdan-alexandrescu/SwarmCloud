@@ -566,6 +566,46 @@ def unwrap_task(payload: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def task_payload(
+    *,
+    prompt: str,
+    runner_profile: str = "claude-code",
+    repository_url: str | None = None,
+    repository_ref: str | None = None,
+    metadata: dict[str, Any] | None = None,
+    timeout_seconds: int | None = None,
+    model: str | None = None,
+    inputs: dict[str, Any] | None = None,
+    strategy: str | None = None,
+) -> dict[str, Any]:
+    """One task's `TaskCreate` body, for `POST /v1/tasks` and each entry of
+    `POST /v1/tasks/batch` alike.
+
+    ONE BUILDER FOR BOTH SHAPES (S7). A batch whose entries were built by a
+    second copy of this would drift from the single dispatch the first time a
+    field was added to one of them -- the `origin` tag, a strategy -- and the
+    batch is the shape least often read by a person. `SwarmClient.dispatch`
+    documents what each field means and why none of them is an execution
+    parameter (invariant 10).
+    """
+    payload: dict[str, Any] = {
+        "runner_profile": runner_profile,
+        "input": {**(inputs or {}), "prompt": prompt},
+        "metadata": {"origin": "swarm-mcp", **(metadata or {})},
+    }
+    if repository_url:
+        payload["repository_url"] = repository_url
+    if repository_ref:
+        payload["repository_ref"] = repository_ref
+    if timeout_seconds:
+        payload["timeout_seconds"] = timeout_seconds
+    if model:
+        payload["model"] = model
+    if strategy:
+        payload["strategy"] = strategy
+    return payload
+
+
 def task_id_of(task: dict[str, Any]) -> str:
     """A task's id. The API calls it `id`; this package called it `task_id`.
 
@@ -1135,21 +1175,17 @@ class SwarmClient:
         model. Sent only when given, so a caller that names none gets exactly
         the payload it got before the field existed.
         """
-        payload: dict[str, Any] = {
-            "runner_profile": runner_profile,
-            "input": {**(inputs or {}), "prompt": prompt},
-            "metadata": {"origin": "swarm-mcp", **(metadata or {})},
-        }
-        if repository_url:
-            payload["repository_url"] = repository_url
-        if repository_ref:
-            payload["repository_ref"] = repository_ref
-        if timeout_seconds:
-            payload["timeout_seconds"] = timeout_seconds
-        if model:
-            payload["model"] = model
-        if strategy:
-            payload["strategy"] = strategy
+        payload = task_payload(
+            prompt=prompt,
+            runner_profile=runner_profile,
+            repository_url=repository_url,
+            repository_ref=repository_ref,
+            metadata=metadata,
+            timeout_seconds=timeout_seconds,
+            model=model,
+            inputs=inputs,
+            strategy=strategy,
+        )
         # UNWRAPPED HERE, not by each caller. `cmd_dispatch` printed
         # `task.get("task_id", "")` off the envelope and printed an empty line,
         # which a shell then piped into `swarm tail`.

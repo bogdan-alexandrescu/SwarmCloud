@@ -41,10 +41,10 @@ from typing import Any
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from . import checkout, compact, progress
+from . import checkout, compact, config, progress
 from . import profiles as catalogue
 from . import workflows
-from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of
+from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of, task_payload
 from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
 from .invocation import terminal_command
 from .patches import (
@@ -95,6 +95,98 @@ _INPUTS_SCHEMA: dict[str, Any] = {
     ),
 }
 
+#: What a unit may declare it needs from THIS machine (S8, BUILD_PROMPT_V2
+#: 2.5). The bridge cannot see a prompt's intent -- whether "fix the test" means
+#: the committed test or the one the developer is editing -- so the caller
+#: declares it, and under `hybrid` any one of these keeps the unit local. The
+#: rule is the spec's and is never inferred: no prompt is read for a hint.
+NEEDS_LOCAL = ("filesystem", "keychain", "interactive")
+
+#: Why each `needs_local` entry cannot run remotely, said in the refusal.
+_NEEDS_LOCAL_WHY = {
+    "filesystem": (
+        "it needs the local filesystem -- uncommitted work, or a path outside the "
+        "pushed repository -- and a remote agent gets a fresh clone of what was pushed"
+    ),
+    "keychain": (
+        "it needs this machine's keychain or the developer's own credentials, and a "
+        "remote agent runs as its tenant's identity with none of them"
+    ),
+    "interactive": (
+        "it needs the developer to answer while it runs, and a remote agent has "
+        "nobody to ask"
+    ),
+}
+
+_TARGET_SCHEMA: dict[str, Any] = {
+    "type": "string",
+    "enum": list(config.TARGETS),
+    "description": (
+        "Where THIS call's work goes, overriding the session default (the sc "
+        "plugin's `default_target`, hybrid unless set) for this call only. "
+        "`cloud`: dispatch it. `local`: send NOTHING -- the reply refuses and says "
+        "the work is to run locally in this session. `hybrid`: a unit that names a "
+        "runner profile goes to the cloud, unless the call declares `needs_local`, "
+        "in which case nothing is sent and the reason is named. Every reply states "
+        "the target that applied and where it came from."
+    ),
+}
+
+_NEEDS_LOCAL_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string", "enum": list(NEEDS_LOCAL)},
+    "description": (
+        "What this work needs from THIS machine, declared by the caller because "
+        "the bridge cannot see it: `filesystem` (uncommitted work, or a path "
+        "outside the pushed repository), `keychain` (the keychain or the "
+        "developer's own credentials), `interactive` (the developer answering as "
+        "it runs). Under target `hybrid` any entry keeps the work local and "
+        "nothing is sent. Under `cloud` it is not consulted, and the reply says so."
+    ),
+}
+
+#: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
+#: the profile under the API's own name. Read by `_dispatch_batch`, so the
+#: schema and the check cannot disagree.
+_BATCH_TASK_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "prompt": {"type": "string", "description": "This task's instructions."},
+        "runner_profile": {
+            "type": "string",
+            "default": "claude-code",
+            "description": "A runner profile BY NAME, as `profile` is for one task.",
+        },
+        "repo": {"type": "string", "description": "As `repo` for one task."},
+        "ref": {"type": "string", "description": "As `ref` for one task."},
+        "infer": {"type": "boolean", "default": False, "description": "As `infer` for one task."},
+        "strategy": {"type": "string", "enum": list(_DISPATCH_STRATEGIES), "default": "collect"},
+        "label": {"type": "string", "description": "A short name, for the UI."},
+        "inputs": _INPUTS_SCHEMA,
+    },
+    "required": ["prompt"],
+}
+
+#: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs")
+
+#: `swarm_account_pause`/`resume`/`drain` share one shape.
+_ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "account": {
+            "type": "string",
+            "description": (
+                "The account's label or id, as swarm_accounts lists it. A label "
+                "resolves to YOUR OWN account only; a label two of your accounts "
+                "share is refused with both ids."
+            ),
+        },
+        "reason": {"type": "string", "description": "Recorded with the state change."},
+    },
+    "required": ["account"],
+}
+
 TOOLS: list[dict[str, Any]] = [
     {
         "name": "swarm_dispatch",
@@ -103,7 +195,19 @@ TOOLS: list[dict[str, Any]] = [
             "immediately; the agent runs remotely on its own tenant identity. "
             "Use this the way you would spawn a local subagent, then call "
             "swarm_follow with the returned id to watch it work, and "
-            "swarm_wait or swarm_result for the outcome."
+            "swarm_wait or swarm_result for the outcome.\n"
+            "\n"
+            "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
+            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs} "
+            "-- instead of `prompt` and the fields beside it. They are sent as ONE "
+            "request, every task id comes back in the order given, and a list "
+            "longer than the API's max_batch_size is refused before anything is "
+            "sent. Collect them with swarm_collect. Units that depend on each "
+            "other are a workflow: use swarm_workflow.\n"
+            "\n"
+            "WHERE IT GOES is `target`: this call's, else the session default. "
+            "`local` sends nothing; `hybrid` sends nothing when `needs_local` "
+            "names anything. The reply's `target` says which applied and why."
         ),
         "inputSchema": {
             "type": "object",
@@ -159,8 +263,25 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "label": {"type": "string", "description": "A short name, for the UI."},
                 "inputs": _INPUTS_SCHEMA,
+                "tasks": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": _BATCH_TASK_SCHEMA,
+                    "description": (
+                        "Several independent tasks in ONE request, instead of "
+                        "`prompt` and the one-task fields beside it. At most the "
+                        "API's max_batch_size (its /v1/stats `limits`). Each is "
+                        "checked as a single dispatch is, and a task identical to "
+                        "another in the list, or to one already dispatched in this "
+                        "session, refuses the whole list before anything is sent."
+                    ),
+                },
+                "target": _TARGET_SCHEMA,
+                "needs_local": _NEEDS_LOCAL_SCHEMA,
             },
-            "required": ["prompt"],
+            # `prompt` OR `tasks`, checked in `_call`, for the reason
+            # swarm_workflow gives about `steps` OR `spec`.
+            "required": [],
         },
     },
     {
@@ -197,6 +318,34 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "task_ids": {"type": "array", "items": {"type": "string"}},
                 "timeout_seconds": {"type": "integer", "default": 3600},
+            },
+            "required": ["task_ids"],
+        },
+    },
+    {
+        "name": "swarm_collect",
+        "description": (
+            "Wait for these tasks as swarm_wait does, then return, in ONE reply "
+            "and in the order given, each task's state and -- for a task that "
+            "FINISHED -- what swarm_result says it produced. A task that has not "
+            "finished when the wait ends is reported `finished: false` with its "
+            "state and NO result: it is never presented as one. A task that could "
+            "not be read is `finished: null` with `read_error`. `still_running` "
+            "lists the unfinished ones. This does not stream; for progress while "
+            "they run, poll swarm_follow."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_ids": {"type": "array", "items": {"type": "string"}},
+                "wait_seconds": {
+                    "type": "integer",
+                    "default": 3600,
+                    "description": (
+                        "How long to wait for every task to finish before "
+                        "answering. 0 reads once and answers at once."
+                    ),
+                },
             },
             "required": ["task_ids"],
         },
@@ -403,6 +552,29 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"task_id": {"type": "string"}},
+            "required": ["task_id"],
+        },
+    },
+    {
+        "name": "swarm_debug",
+        "description": (
+            "ONE task's diagnosis in one call, from the API's own reads: its "
+            "state and profile, every attempt (id, generation, start and end, "
+            "exit code, error), its last error, its newest events, and the tail "
+            "of its newest attempt's agent log. Every one of those is served "
+            "masked by the API, and `masked` says how many credential-shaped "
+            "strings it masked in each; a string the API did not say it masked is "
+            "withheld rather than shown. A read that fails is reported as not "
+            "read, with the reason, and the other sections still come back. "
+            "swarm_trouble is the whole cluster; this is one task."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "task_id": {"type": "string"},
+                "events": {"type": "integer", "default": 10, "description": "How many newest events."},
+                "log_lines": {"type": "integer", "default": 40, "description": "How many log lines of the tail."},
+            },
             "required": ["task_id"],
         },
     },
@@ -709,6 +881,8 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "priority": {"type": "integer"},
                 "label": {"type": "string", "description": "A short name, for the UI."},
+                "target": _TARGET_SCHEMA,
+                "needs_local": _NEEDS_LOCAL_SCHEMA,
             },
             # `steps` OR `spec`, checked in `_call` -- JSON Schema's oneOf is
             # not something every MCP host renders, and a host that cannot show
@@ -859,6 +1033,55 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_account_pause",
+        "description": (
+            "PAUSE one of YOUR subscription accounts: no new agent is assigned to "
+            "it; agents already on it keep running. Resolved by label or id "
+            "against your own accounts in swarm_accounts. The reply carries the "
+            "broker's answer verbatim."
+        ),
+        "inputSchema": _ACCOUNT_STATE_SCHEMA,
+    },
+    {
+        "name": "swarm_account_resume",
+        "description": (
+            "Make one of YOUR paused or draining accounts AVAILABLE again for new "
+            "assignments. Resolved as swarm_account_pause resolves. The reply "
+            "carries the broker's answer verbatim."
+        ),
+        "inputSchema": _ACCOUNT_STATE_SCHEMA,
+    },
+    {
+        "name": "swarm_account_drain",
+        "description": (
+            "DRAIN one of YOUR accounts -- what that does is in the reply's "
+            "`what_draining_does`, beside the broker's answer verbatim. Use it "
+            "before removing an account."
+        ),
+        "inputSchema": _ACCOUNT_STATE_SCHEMA,
+    },
+    {
+        "name": "swarm_account_remove",
+        "description": (
+            "REMOVE one of YOUR accounts from the pool. Destructive, so it needs "
+            "`confirm_label` equal to the account's label, typed back; anything "
+            "else sends nothing. The broker removes the pool entry and KEEPS the "
+            "account's secret (its answer, returned verbatim, says so). Drain it "
+            "first if agents are running on it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "account": {"type": "string", "description": "The account's label or id."},
+                "confirm_label": {
+                    "type": "string",
+                    "description": "The account's label, exactly. Nothing is sent unless it matches.",
+                },
+            },
+            "required": ["account", "confirm_label"],
+        },
+    },
+    {
         "name": "swarm_capacity",
         "description": (
             "Pool ceilings, and for each runner profile WHICH pool actually "
@@ -999,6 +1222,304 @@ def _remember_dispatch(client: Any, signature: tuple) -> None:
     _DISPATCHED.setdefault(client, set()).add(signature)
 
 
+#: How a per-call `target` is named in a reply, beside a session default's source.
+_CALL_TARGET = "this call's `target`"
+
+
+def _needs_local(args: dict[str, Any]) -> list[str]:
+    """The call's `needs_local`, checked: each entry one of NEEDS_LOCAL.
+
+    An entry it does not know is refused, not dropped -- a dropped
+    `"filesytem"` is a unit that needed this machine dispatched to one that
+    does not have it.
+    """
+    value = args.get("needs_local")
+    if value is None or value == "":
+        return []
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        raise SwarmError(f"`needs_local` is a list drawn from {list(NEEDS_LOCAL)}. Nothing was sent")
+    needs: list[str] = []
+    for item in value:
+        text = item.strip().lower() if isinstance(item, str) else ""
+        if text not in NEEDS_LOCAL:
+            raise SwarmError(
+                f"`needs_local` takes {', '.join(NEEDS_LOCAL)}; {item!r} is none of them. "
+                "Nothing was sent"
+            )
+        if text not in needs:
+            needs.append(text)
+    return needs
+
+
+def _placement(name: str, args: dict[str, Any], *, profiles: list[str]) -> dict[str, Any]:
+    """Where this call's work goes (S8), decided BEFORE anything is read or sent.
+
+    The per-call `target` first, then the session default
+    (`config.session_target`). `local` refuses outright; `hybrid` applies the
+    spec's explicit rule -- a unit naming a runner profile goes to the cloud,
+    a unit declaring `needs_local` stays here -- and never a heuristic over the
+    prompt. A refusal is a SwarmError, so the host shows it as the tool's
+    answer and nothing has travelled: no stats read, no checkout probe, no
+    dispatch.
+
+    `profiles` is what the call's units name, with the tool's documented
+    default (`claude-code`) where a unit omits one: the schema declares that
+    default, so a unit that omits it names it.
+    """
+    if args.get("target") is not None:
+        target = config.Target(config.check_target(args["target"], where=f"{name}'s `target`"), _CALL_TARGET)
+    else:
+        target = config.session_target()
+    needs = _needs_local(args)
+    applied = f"target `{target.value}` (from {target.source})"
+    if target.value == "local":
+        raise SwarmError(
+            f"{applied} applies to this call, so NOTHING was sent to SwarmCloud: this "
+            "work is to run locally in this session -- do it here, directly or as a "
+            "local subagent. Only if the developer wants it dispatched, call again with "
+            "`target: \"cloud\"`"
+        )
+    if target.value == "hybrid" and needs:
+        reasons = "; ".join(f"`{need}`: {_NEEDS_LOCAL_WHY[need]}" for need in needs)
+        raise SwarmError(
+            f"{applied} keeps work local when the call declares `needs_local`, and this "
+            f"call declares {needs}, so NOTHING was sent to SwarmCloud: {reasons}. Run it "
+            "locally in this session"
+        )
+    placed: dict[str, Any] = {"applied": target.value, "from": target.source, "sent_to": "cloud"}
+    if target.value == "hybrid":
+        named = ", ".join(sorted(set(profiles)))
+        placed["because"] = (
+            f"every unit names a runner profile ({named}) and the call declares no `needs_local`"
+            if named
+            # A workflow whose steps could not be listed here: swarm-api
+            # validates the spec, and the rule's other half still held.
+            else "the call declares no `needs_local`"
+        )
+    elif needs:
+        placed["needs_local_not_consulted"] = (
+            f"target `cloud` dispatches whatever the call declares, so {needs} was not "
+            "consulted; pass `target: \"hybrid\"` for it to keep this work local"
+        )
+    return placed
+
+
+def _batch_limit(client: Any) -> tuple[int | None, str | None]:
+    """The API's `max_batch_size`, read from `/v1/stats` and never restated.
+
+    `(limit, None)`, or `(None, why)` when it could not be read -- and then the
+    batch is still sent: swarm-api enforces the same limit on the request
+    (`validate_batch_size`) and is the authority. This check only refuses
+    sooner, with the number, when it can.
+    """
+    from .sc import fetch_stats
+
+    try:
+        stats = fetch_stats(client)
+    except SwarmError as exc:
+        return None, f"the API's max_batch_size could not be read ({exc}); the API checks it itself"
+    limits = stats.get("limits") if isinstance(stats, dict) else None
+    limit = limits.get("max_batch_size") if isinstance(limits, dict) else None
+    if isinstance(limit, int) and not isinstance(limit, bool) and limit >= 1:
+        return limit, None
+    return None, "the API's /v1/stats carried no limits.max_batch_size; the API checks it itself"
+
+
+def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -> str:
+    """`swarm_dispatch` with `tasks`: every task checked, then ONE request (S7).
+
+    EVERY CHECK BEFORE THE ONE SEND, for every task: the profile and its
+    inputs, the strategy, the repository, and the repeat guard -- against this
+    session's earlier dispatches AND against the other tasks of this list. A
+    refusal names the task by its index and sends nothing, so a list is never
+    half-dispatched by this bridge. The API takes the batch all or nothing
+    too (`submit_tasks`).
+    """
+    tasks = args.get("tasks")
+    if not isinstance(tasks, list) or not tasks:
+        raise SwarmError("`tasks` is a non-empty list of tasks, each {prompt, runner_profile, ...}")
+    limit, limit_note = _batch_limit(client)
+    if limit is not None and len(tasks) > limit:
+        raise SwarmError(
+            f"`tasks` holds {len(tasks)} tasks and this API's max_batch_size is {limit} "
+            "(its /v1/stats `limits`); nothing was sent. Split the list"
+        )
+    accepted = set(_BATCH_TASK_SCHEMA["properties"])
+    prepared: list[tuple[dict[str, Any], tuple, Any, str | None]] = []
+    seen: dict[tuple, int] = {}
+    for index, item in enumerate(tasks):
+        where = f"swarm_dispatch tasks[{index}]"
+        if not isinstance(item, dict):
+            raise SwarmError(f"{where} is not an object. Nothing was sent")
+        unknown = sorted(str(key) for key in item if key not in accepted)
+        if unknown:
+            raise SwarmError(
+                f"{where} does not take {unknown}; a task takes {sorted(accepted)}. "
+                "Nothing was sent"
+            )
+        prompt = item.get("prompt")
+        if not isinstance(prompt, str) or not prompt.strip():
+            raise SwarmError(f"{where} has no prompt. Nothing was sent")
+        profile = catalogue.check(item.get("runner_profile") or "claude-code", where=where)
+        inputs = catalogue.check_inputs(profile, item.get("inputs"), where=where)
+        strategy = _dispatch_strategy(item.get("strategy"))
+        repository = checkout.resolve(repo=item.get("repo"), ref=item.get("ref"), infer=_flag(item, "infer"))
+        if strategy == "direct-pr" and not repository.url:
+            raise SwarmError(
+                f"{where}: strategy 'direct-pr' needs a repository, and this task has "
+                "none: " + "; ".join(repository.notes) + ". Nothing was sent"
+            )
+        signature = _dispatch_signature(profile, prompt, strategy, repository, inputs)
+        try:
+            _refuse_a_repeat_dispatch(client, signature)
+        except SwarmError as exc:
+            raise SwarmError(f"{where}: {exc}. Nothing in this list was sent") from None
+        if signature in seen:
+            raise SwarmError(
+                f"{where} is the same task as tasks[{seen[signature]}] (profile, prompt, "
+                "repository and strategy unchanged): the list would dispatch it twice. "
+                "Nothing was sent"
+            )
+        seen[signature] = index
+        payload = task_payload(
+            prompt=prompt,
+            runner_profile=profile,
+            repository_url=repository.url,
+            repository_ref=repository.ref,
+            metadata={"unit": item["label"]} if item.get("label") else None,
+            inputs=inputs or None,
+            strategy=strategy,
+        )
+        prepared.append((payload, signature, repository, strategy))
+
+    created = client.dispatch_batch([payload for payload, *_ in prepared])
+    # The request reached the API, so every signature is remembered BEFORE the
+    # answer is judged: a reply this bridge cannot read is not proof nothing
+    # was created, and a retry must not create the list twice.
+    for _, signature, _, _ in prepared:
+        _remember_dispatch(client, signature)
+    ids = [task_id_of(task) for task in created]
+    if len(created) != len(prepared) or not all(ids):
+        raise SwarmError(
+            f"the API accepted a batch of {len(prepared)} and answered {len(created)} task(s) "
+            f"with ids {ids}; do not resend it -- read the named tasks with swarm_status"
+        )
+    rows = [
+        {
+            "task_id": task_id,
+            "state": task.get("state"),
+            "strategy": _accepted_strategy(task, strategy),
+            "repository": repository.as_dict(),
+        }
+        for task_id, task, (_, _, repository, strategy) in zip(ids, created, prepared)
+    ]
+    answer: dict[str, Any] = {
+        "task_ids": ids,
+        "count": len(ids),
+        "tasks": rows,
+        "max_batch_size": limit,
+        "target": placed,
+        "collect_with": "swarm_collect",
+        "follow_with": "swarm_follow",
+        "follow_live_with": follow_command(ids),
+    }
+    if limit_note:
+        answer["max_batch_size_unread_because"] = limit_note
+    return json.dumps(answer, indent=2)
+
+
+def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any]:
+    """What `swarm_result` says of one read task: `describe_task`, `failure`
+    on a failure, and `outputs`. One function for `swarm_result` and
+    `swarm_collect`, so a collected result is a result."""
+    described = describe_task(task)
+    # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
+    # round trip to the attempts route, which is where the exit code, the
+    # backend that actually ran and the earlier attempts' errors live --
+    # none of them are on the task document. A successful read pays nothing
+    # because the function returns None without asking.
+    failure = explain_failure(client, task)
+    if failure is not None:
+        described["failure"] = failure
+    # WHAT IT PRODUCED (#143), from the artifacts route. A failed listing
+    # is said inside `outputs`, not raised: the task itself was read.
+    try:
+        listing, listing_error = client.artifacts(task_id), None
+    except SwarmError as exc:
+        listing, listing_error = None, str(exc)
+    # `outputs`, not `produced`: a workflow read already names the whole
+    # of `describe_task` `produced`, and one word for two shapes misleads.
+    described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    return described
+
+
+def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, Any]:
+    """`swarm_collect`: `swarm_wait`'s loop, then each task's state and result.
+
+    ALWAYS ONE PASS, then wait, for the reason `swarm_wait` gives. A task that
+    answers 404 or 403 is not waited for -- it will not appear by waiting --
+    and any other read failure is retried until the deadline, then reported
+    as not read. An unfinished task is reported with its state and NO
+    `result`, so nothing downstream can mistake a running task's partial
+    record for what it produced.
+    """
+    deadline = time.monotonic() + max(0, wait_seconds)
+    latest: dict[str, dict[str, Any]] = {}
+    errors: dict[str, str] = {}
+    pending = list(dict.fromkeys(task_ids))
+    while True:
+        for task_id in list(pending):
+            try:
+                task = client.task(task_id)
+            except SwarmError as exc:
+                errors[task_id] = str(exc)
+                latest.pop(task_id, None)
+                if exc.status in (403, 404):
+                    pending.remove(task_id)
+                continue
+            errors.pop(task_id, None)
+            latest[task_id] = task
+            if task.get("state") in TERMINAL:
+                pending.remove(task_id)
+        remaining = deadline - time.monotonic()
+        if not pending or remaining <= 0:
+            break
+        time.sleep(min(5.0, remaining))
+
+    rows: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        task = latest.get(task_id)
+        if task is None:
+            rows.append({
+                "task_id": task_id, "state": None, "finished": None,
+                "read_error": errors.get(task_id, "not read"),
+            })
+        elif task.get("state") in TERMINAL:
+            rows.append({
+                "task_id": task_id, "state": task.get("state"), "finished": True,
+                "result": _result_of(client, task_id, task),
+            })
+        else:
+            rows.append({
+                "task_id": task_id, "state": task.get("state"), "finished": False,
+                "note": "not finished: this is its state, not a result",
+            })
+    out: dict[str, Any] = {"tasks": rows}
+    running = [row["task_id"] for row in rows if row["finished"] is False]
+    unread = [row["task_id"] for row in rows if row["finished"] is None]
+    if running:
+        out["still_running"] = running
+        out["note"] = (
+            "the wait ended before these tasks finished; nothing here is their result. "
+            "Collect them again, or follow them with swarm_follow"
+        )
+    if unread:
+        out["not_read"] = unread
+    return out
+
+
 def _accepted_strategy(task: dict[str, Any], sent: str | None) -> str:
     """The strategy the API RECORDED for this task, else what was sent, else its default."""
     block = (task.get("metadata") or {}).get("dispatch")
@@ -1076,6 +1597,14 @@ _SC_VIEWS = {
     "swarm_capacity": (_capacity_view, "capacity"),
     "swarm_agents": (_agents_view, "agents"),
     "swarm_trouble": (_trouble_view, "trouble"),
+}
+
+
+#: The account state tools, by the `sc account` verb each one is.
+_ACCOUNT_STATE_TOOLS = {
+    "swarm_account_pause": "pause",
+    "swarm_account_resume": "resume",
+    "swarm_account_drain": "drain",
 }
 
 
@@ -1166,7 +1695,30 @@ def _refuse_unknown_arguments(name: str, args: dict[str, Any]) -> None:
 
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     _refuse_unknown_arguments(name, args)
+    if name == "swarm_dispatch" and args.get("tasks") is not None:
+        beside = sorted(k for k in _SINGLE_TASK_ARGS if args.get(k) is not None)
+        if beside:
+            raise SwarmError(
+                f"swarm_dispatch was given `tasks` AND {beside}; each task in `tasks` "
+                "carries those itself. Pass one task's fields, or `tasks` -- not both. "
+                "Nothing was sent"
+            )
+        units = args["tasks"] if isinstance(args["tasks"], list) else []
+        placed = _placement(
+            name, args,
+            profiles=[
+                str((u.get("runner_profile") if isinstance(u, dict) else None) or "claude-code")
+                for u in units
+            ],
+        )
+        return _dispatch_batch(client, args, placed)
+
     if name == "swarm_dispatch":
+        if not isinstance(args.get("prompt"), str):
+            raise SwarmError("swarm_dispatch needs `prompt`, or `tasks` for several. Nothing was sent")
+        # WHERE IT GOES, before anything else is read: `local`, or `hybrid`
+        # with a declared local need, sends nothing at all (S8).
+        placed = _placement(name, args, profiles=[str(args.get("profile") or "claude-code")])
         # CHECKED BEFORE THE ROUND TRIP. The API refuses an unknown or disabled
         # profile too and stays the authority; this only refuses sooner, with
         # the catalogue's own reason, so a session that typed `claude` for
@@ -1235,6 +1787,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 # binary that is not on PATH.
                 "follow_with": "swarm_follow",
                 "follow_live_with": follow_command([task_id]),
+                # Which target applied, and which layer chose it (S8).
+                "target": placed,
             },
             indent=2,
         )
@@ -1394,25 +1948,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
 
     if name == "swarm_result":
         task = client.task(args["task_id"])
-        described = describe_task(task)
-        # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
-        # round trip to the attempts route, which is where the exit code, the
-        # backend that actually ran and the earlier attempts' errors live --
-        # none of them are on the task document. A successful read pays nothing
-        # because the function returns None without asking.
-        failure = explain_failure(client, task)
-        if failure is not None:
-            described["failure"] = failure
-        # WHAT IT PRODUCED (#143), from the artifacts route. A failed listing
-        # is said inside `outputs`, not raised: the task itself was read.
-        try:
-            listing, listing_error = client.artifacts(args["task_id"]), None
-        except SwarmError as exc:
-            listing, listing_error = None, str(exc)
-        # `outputs`, not `produced`: a workflow read already names the whole
-        # of `describe_task` `produced`, and one word for two shapes misleads.
-        described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
-        return json.dumps(described, indent=2)
+        return json.dumps(_result_of(client, args["task_id"], task), indent=2)
+
+    if name == "swarm_collect":
+        return json.dumps(
+            _collect(client, list(args["task_ids"]), _int_arg(args, "wait_seconds", 3600)),
+            indent=2,
+        )
 
     if name == "swarm_artifact":
         window = client.artifact_content(
@@ -1457,6 +1999,16 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return result.render()
 
     if name == "swarm_workflow":
+        # WHERE IT GOES first (S8): a workflow under `local`, or under `hybrid`
+        # with a declared local need, submits nothing.
+        given_steps = (args.get("spec") or {}).get("steps") if isinstance(args.get("spec"), dict) else args.get("steps")
+        placed = _placement(
+            name, args,
+            profiles=[
+                str((step.get("runner_profile") if isinstance(step, dict) else None) or "claude-code")
+                for step in (given_steps if isinstance(given_steps, list) else [])
+            ],
+        )
         digest: str | None = None
         expected_digest = args.get("spec_digest")
         if args.get("spec") is not None:
@@ -1547,6 +2099,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 "swarm_workflow_status -- a create response does not derive a "
                 "workflow state and this tool will not quote the stored one"
             ),
+            "target": placed,
         }
         if digest is not None:
             # What was RECEIVED, so a caller that did not pass `spec_digest` can
@@ -1602,6 +2155,58 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         view, needs = _SC_VIEWS[name]
         snap = collect(client, NEEDS[needs])
         return render.join(view(snap, style))
+
+    if name in _ACCOUNT_STATE_TOOLS:
+        # The same resolve-and-PUT `sc account <verb>` runs (S10): a label is
+        # the caller's OWN account or it is refused, an ambiguous one names
+        # every id, and the broker's answer comes back verbatim.
+        from .sc import change_account_state
+
+        return json.dumps(
+            change_account_state(
+                client, str(args["account"]), _ACCOUNT_STATE_TOOLS[name], str(args.get("reason") or "")
+            ),
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_account_remove":
+        # DESTRUCTIVE, so the label is typed back: `confirm_label` must be the
+        # resolved account's label exactly, or nothing is sent. A tool cannot
+        # prompt the way `sc account remove` does; this argument is that
+        # prompt's answer, given by whoever made the call.
+        from .sc import remove_account, resolve_account
+
+        account = resolve_account(client, str(args["account"]))
+        label = str(account.get("label") or "")
+        if not label or str(args.get("confirm_label") or "").strip() != label:
+            raise SwarmError(
+                f"`confirm_label` must be this account's label, {label!r}, exactly; nothing "
+                "was removed"
+            )
+        return json.dumps(
+            {
+                "account_id": account.get("account_id"),
+                "label": label,
+                "broker_answer": remove_account(client, account),
+            },
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_debug":
+        from .sc import DEBUG_EVENTS, DEBUG_LOG_LINES, debug_report
+
+        return json.dumps(
+            debug_report(
+                client,
+                str(args["task_id"]),
+                events=_int_arg(args, "events", DEBUG_EVENTS),
+                log_lines=_int_arg(args, "log_lines", DEBUG_LOG_LINES),
+            ),
+            indent=2,
+            default=str,
+        )
 
     if name == "swarm_cancel":
         for task_id in args["task_ids"]:
@@ -1765,7 +2370,28 @@ def seed_plugin_config() -> None:
         print(f"swarm-mcp: could not save the plugin's deployment for the terminal: {exc}", file=sys.stderr)
 
 
+def check_session_target() -> str | None:
+    """The session's default target, checked at start-up: None, or why not.
+
+    REFUSED HERE rather than at the first dispatch (S8): a setting that names
+    no target would otherwise surface as an error on whichever call happened
+    to dispatch first, long after the person who set it has moved on, and the
+    read tools would work in the meantime as if nothing were wrong.
+    """
+    try:
+        config.session_target()
+    except SwarmError as exc:
+        return str(exc)
+    return None
+
+
 def main() -> int:
+    problem = check_session_target()
+    if problem is not None:
+        # STDERR: stdout is the JSON-RPC channel. Claude Code shows a server
+        # that exits at start-up as failed, with this line in its log.
+        print(f"swarm-mcp: refusing to start: {problem}", file=sys.stderr)
+        return 2
     seed_plugin_config()
     return serve()
 
