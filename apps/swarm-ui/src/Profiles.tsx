@@ -88,7 +88,7 @@ export function ProfilesScreen() {
          The route is still `#capacity/profiles`: `runner_profile` is the
          contract's field name and invariant 10 is why this screen exists, so
          the address keeps the contract's noun. */
-      title="Profile headroom"
+      title="By runner profile"
       /* THE SCREEN'S ONE `?` (CP-5's second half, #85): Pools' glyph, on the
          same topic. The banner it replaces said the conjunction once for
          every card, and the glyph does too -- after the title, AH-24's slot

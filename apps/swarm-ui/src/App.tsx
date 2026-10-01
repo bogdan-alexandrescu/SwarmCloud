@@ -364,7 +364,10 @@ export const SECTIONS: SectionDef[] = [
       // ADDRESS keeps the contract's noun while the LABEL says which of the
       // two questions it answers. The screen's `<h1>` moved with the tab;
       // test_nav_headings_agree.py fails the build if it had not.
-      { id: 'profiles', label: 'Profile headroom' },
+      // "By runner profile" since the rebrand (navigation.html, 2026-10-01):
+      // Profile headroom folds into Pools as its profile-by-pool view, and the
+      // panel lists it under Pools by this name.
+      { id: 'profiles', label: 'By runner profile' },
       // "Holders", and the earlier argument for "Capacity holders" is what
       // makes it right rather than what it overrules. That argument was:
       // "Holders" alone does not say holders of WHAT, and one tab away from
