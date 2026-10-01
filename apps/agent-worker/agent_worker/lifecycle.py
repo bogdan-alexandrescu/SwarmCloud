@@ -6712,16 +6712,29 @@ CREDENTIAL_MIN_ENTROPY_BITS = 3.5
 _PLACEHOLDER = re.compile(r"\*|x{4,}|<[^>]*>|\$\{[^}]*\}|fake|test|dummy|example", re.IGNORECASE)
 
 #: A private key's body must hold at least this many base64 characters...
-PEM_BODY_MIN_CHARS = 100
-#: ...at this entropy per character. Random base64 of 100 characters is about
-#: 5.4 bits; prose and identifiers are near 4.
+#: Why 48: the SHORTEST real private key is a PKCS#8 Ed25519 or X25519 key,
+#: whose body is 64 characters (`openssl genpkey -algorithm ed25519`); 48 sits
+#: below it with margin, and above the 16-character stub (`MIIEowIBAAKCAQEA`)
+#: that tests write. It was 100, which published exactly those short keys.
+PEM_BODY_MIN_CHARS = 48
+#: ...at this entropy per character. Random base64 of 48 characters is about
+#: 5.2 bits; prose and identifiers are near 4.
 PEM_BODY_MIN_ENTROPY_BITS = 4.5
+#: A body that decodes to a DER SEQUENCE whose length matches is a real key
+#: at any size, provided it has at least this many base64 characters.
+_PEM_DER_MIN_CHARS = 24
 #: How far after a BEGIN marker its body is read when no END marker follows.
 _PEM_BODY_SCAN_CHARS = 16 * 1024
 #: How far after a BEGIN marker an END marker is looked for.
 _PEM_BLOCK_MAX_CHARS = 64 * 1024
 _PEM_END_MARKER = re.compile(r"-----END [A-Z ]*PRIVATE KEY-----")
-_BASE64_RUN = re.compile(r"[A-Za-z0-9+/=]{16,}")
+#: String-literal glue between key pieces: `" +\n "`, `",\n "`, `'` and `` ` ``.
+_PEM_PIECE_JOINER = re.compile(r"[\"'`]\s*[+,]?\s*[\"'`]")
+_PEM_ESCAPED_SPACE = re.compile(r"\\[nrt]")
+_NOT_BASE64 = re.compile(r"[^A-Za-z0-9+/=]")
+#: Where a body with no END marker stops: the first character that no key
+#: written as lines, pieces or JSON would hold.
+_PEM_BODY_CHARS = re.compile(r"[A-Za-z0-9+/=\s\"'`,\\]*")
 
 #: Directory names that make every file under them a test path.
 _TEST_DIRS = frozenset({"tests", "test", "__tests__", "testdata", "fixtures"})
@@ -6793,22 +6806,53 @@ def _decodes_as_a_jwt(token: str) -> bool:
     return isinstance(decoded, dict) and "alg" in decoded
 
 
+def _is_der_sequence(body: str) -> bool:
+    """True when `body` base64-decodes to a DER SEQUENCE (0x30) whose encoded
+    length is exactly the rest of the decoded bytes: every real private key
+    (PKCS#8, SEC1, PKCS#1, encrypted PKCS#8) is one; a stub is not."""
+    if len(body) < _PEM_DER_MIN_CHARS:
+        return False
+    try:
+        raw = base64.b64decode(body.rstrip("=") + "=" * (-len(body.rstrip("=")) % 4))
+    except ValueError:  # binascii.Error is one
+        return False
+    if len(raw) < 2 or raw[0] != 0x30:
+        return False
+    if raw[1] < 0x80:
+        header, size = 2, raw[1]
+    else:
+        count = raw[1] & 0x7F
+        if not 1 <= count <= 4 or len(raw) < 2 + count:
+            return False
+        header, size = 2 + count, int.from_bytes(raw[2 : 2 + count], "big")
+    return header + size == len(raw)
+
+
 def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
     """Where the first private-key block with a REAL body starts, or None.
 
-    The body is every base64 run of 16 or more characters between the BEGIN
-    marker and its END (or the next `_PEM_BODY_SCAN_CHARS` when no END
-    follows), so a key written as lines, as one JSON-escaped line or as
-    quoted string pieces is read the same. It counts with at least
-    `PEM_BODY_MIN_CHARS` characters at `PEM_BODY_MIN_ENTROPY_BITS`; a bare
-    marker or a stub body (`MIIEow...`) is a fixture.
+    The body is what lies between the BEGIN marker and its END (or the
+    key-looking text after it when no END follows), with string-literal
+    glue (quotes, `+`, `,`), literal `\\n` and whitespace removed, so a key
+    written as lines, as one JSON-escaped line or as quoted pieces of any
+    length is read the same. It counts when it decodes as a DER SEQUENCE of
+    its own length, or has at least `PEM_BODY_MIN_CHARS` characters at
+    `PEM_BODY_MIN_ENTROPY_BITS`; a bare marker or a stub body (`MIIEow...`)
+    is a fixture.
     """
     if "PRIVATE KEY-----" not in text:
         return None
     for marker in begin.finditer(text):
         end = _PEM_END_MARKER.search(text, marker.end(), marker.end() + _PEM_BLOCK_MAX_CHARS)
-        stop = end.start() if end is not None else marker.end() + _PEM_BODY_SCAN_CHARS
-        body = "".join(_BASE64_RUN.findall(text, marker.end(), stop))
+        if end is not None:
+            raw = text[marker.end() : end.start()]
+        else:
+            start = marker.end()
+            raw = _PEM_BODY_CHARS.match(text, start, start + _PEM_BODY_SCAN_CHARS).group(0)
+        raw = _PEM_ESCAPED_SPACE.sub("", raw)
+        body = _NOT_BASE64.sub("", _PEM_PIECE_JOINER.sub("", raw))
+        if _is_der_sequence(body):
+            return marker.start()
         if len(body) >= PEM_BODY_MIN_CHARS and _shannon_bits(body) >= PEM_BODY_MIN_ENTROPY_BITS:
             return marker.start()
     return None
