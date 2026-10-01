@@ -236,15 +236,17 @@ export function verdictNeedsAPerson(v: Verdict): boolean {
 }
 
 /**
- * `blockerGroup`, with a pool too small for one task filed where a pool set
- * to zero is: under `needs_action`, whatever group its reason arrived in.
+ * `blockerGroup`, with a pool too small for one task -- or with no limit set
+ * at all (#374) -- filed where a pool set to zero is: under `needs_action`,
+ * whatever group its reason arrived in.
  */
 export function verdictGroup(
   b: ProfileBlocker,
   groups: Record<string, string[]> | undefined,
   units: number | null,
 ): 'needs_action' | 'no_room' | null {
-  if (blockerVerdict(b, units) === 'below-units') return 'needs_action'
+  const verdict = blockerVerdict(b, units)
+  if (verdict === 'below-units' || verdict === 'limit-unset') return 'needs_action'
   return blockerGroup(b, groups)
 }
 
@@ -289,6 +291,12 @@ const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: 
     cls: 'paused',
     word: 'too small',
     title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. Waiting changes nothing — somebody has to raise it.",
+  },
+  'limit-unset': {
+    // The paused tone: a person acts, as for a pool set to zero (#374).
+    cls: 'paused',
+    word: 'no limit set',
+    title: "This pool has no limit set, so its ceiling was never read and it admits nothing. Nobody set it to zero: somebody has to set a limit.",
   },
   'below-units-quota': {
     cls: 'capped',
@@ -341,6 +349,7 @@ const CEILING_MARK: Readonly<Record<Verdict, { cls: 'is-paused' | 'is-bad' | 'is
   // they take the same tones: paused when a person set it, bad when quota may.
   'below-units': { cls: 'is-paused', word: 'too small' },
   'below-units-quota': { cls: 'is-bad', word: 'too small' },
+  'limit-unset': { cls: 'is-paused', word: 'no limit set' },
 }
 
 export function ceilingMark(c: Verdict): { cls: 'is-paused' | 'is-bad' | 'is-warn'; word: string } {
@@ -367,6 +376,7 @@ export function ceilingFigure(blocker: ProfileBlocker, units: number | null = nu
   if (ceiling === 'below-units' || ceiling === 'below-units-quota') {
     return `limit ${blocker.limit} · one task is ${units} units · ${held}`
   }
+  if (ceiling === 'limit-unset') return `no limit set · ${held}`
   return ceiling === 'paused' ? held : `limit 0 · ${held}`
 }
 

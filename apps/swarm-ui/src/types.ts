@@ -2235,14 +2235,31 @@ export function reasonCopy(reason: string): string {
  * With `units` null or absent (the catalogue unread, or the caller has none
  * to give) this is exactly what it was before #66: a positive limit is
  * always `full`.
+ *
+ * ONE MORE, FOR #374: `limit-unset`, a pool whose document carries no
+ * `hard_limit` at all. The scheduler names that refusal `POOL_LIMIT_UNSET`
+ * with `limit: null` (scheduler/codec.py): admission reads the missing key as
+ * 0 and refuses, but nobody set the pool to zero, so neither `set-to-zero`
+ * nor `full` is true of it. A person has to set a limit.
  */
-export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full' | 'below-units' | 'below-units-quota'
+export type Ceiling =
+  | 'paused'
+  | 'set-to-zero'
+  | 'zero'
+  | 'full'
+  | 'below-units'
+  | 'below-units-quota'
+  | 'limit-unset'
+
+/** The scheduler's blocker reason for a pool with no `hard_limit` (#374). */
+export const POOL_LIMIT_UNSET = 'POOL_LIMIT_UNSET'
 
 export function blockerCeiling(
   b: { reason: string; pool?: string; limit?: unknown },
   units: number | null = null,
 ): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
+  if (b.reason === POOL_LIMIT_UNSET) return 'limit-unset'
   if (b.limit !== 0) {
     if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
       return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
@@ -2252,9 +2269,9 @@ export function blockerCeiling(
   return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
 }
 
-/** The three ceilings no amount of waiting clears: a person has to act. */
+/** The ceilings no amount of waiting clears: a person has to act. */
 export function needsAPerson(c: Ceiling): boolean {
-  return c === 'paused' || c === 'set-to-zero' || c === 'below-units'
+  return c === 'paused' || c === 'set-to-zero' || c === 'below-units' || c === 'limit-unset'
 }
 
 /**
@@ -2284,6 +2301,8 @@ export function ceilingCopy(
       return `${subject} is paused by operator. It admits nothing until somebody resumes it.${held}`
     case 'set-to-zero':
       return `${subject} is paused by operator (limit 0). It admits nothing until somebody raises its limit.${held}`
+    case 'limit-unset':
+      return `${subject} has no limit set, so its ceiling was never read and it admits nothing. Waiting cannot clear it: somebody has to set its limit.${held}`
     case 'zero': {
       const who =
         b.pool !== undefined && poolKind(b.pool) === 'provider'

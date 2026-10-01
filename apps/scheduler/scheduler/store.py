@@ -604,6 +604,43 @@ class SchedulerStore:
             self.append_event(task, EventType.READY, detail or {})
         return outcome
 
+    def dead_letter_parked(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """End a PARKED task that may not be retried: PARKED -> DEAD_LETTERED.
+
+        For a park whose task has used its last attempt. Returning it to READY
+        would lease attempt N+1 of N, because admission does not check the
+        retry cap (`swarm_common.models.retries_exhausted` says why the rule
+        lives where it does). PARKED -> FAILED is not a legal transition;
+        DEAD_LETTERED is.
+
+        Guarded exactly as `promote_to_ready` is, on the state AND the park
+        reason the caller read. The task holds no capacity in PARKED, so there
+        is no lease to release and none is touched. `end_cause` is written as
+        null: no `EndCause` value names this ending, and the contract says a
+        writer ending a task for a reason with no value writes None.
+        """
+        assert_transition(task.state, TaskState.DEAD_LETTERED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "dead_letter",
+            task,
+            {
+                "state": TaskState.DEAD_LETTERED.value,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.DEAD_LETTERED, {"reason": reason, **(detail or {})})
+        return outcome
+
     def mark_dispatched(
         self, task: Task, lease: Lease, execution_name: str, backend: str
     ) -> GuardedWrite:
