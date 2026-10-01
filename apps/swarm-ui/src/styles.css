@@ -302,8 +302,8 @@
      the heading of a state or an empty panel, and Overview's attention lead
      (`.ov-lead-title`, OV-15, which won over TS-18's first draft on #84) -- is
      --t-lead, set apart from body by weight (TS-18, design-system.md §2).
-     (The product wordmark, `.brand-word`, also takes this size; it is a
-     logotype, not a heading, and says why beside its rule.)
+     (The Sky panel's wordmark is a logotype, not a heading, and is not on
+     this ladder.)
      §B4.1 had put `.section > h2` here too, which made a section heading the
      same 18/600 as the page title above it: a page with no second rank.
 
@@ -576,9 +576,9 @@ body {
    concludes the hazard still does.
 
    `--dock-h` IS STILL PUBLISHED AND STILL READ. `Dock.tsx` measures the real
-   box; `.ctl-rail` and the inspector use it to size a sticky column against
-   the SCROLLPORT, which is the viewport minus the dock row. Those two readers
-   are why the custom property survives the overlay that introduced it.
+   box; the inspector uses it to size a sticky column against
+   the SCROLLPORT, which is the viewport minus the dock row. That reader is
+   why the custom property survives the overlay that introduced it.
 
    HEIGHT IS `100%`, NOT `100dvh`, because `body` carries the safe-area insets
    as padding: `100%` inherits the chain `html, body, #root { height: 100% }`
@@ -718,90 +718,17 @@ body {
 }
 
 /* ---------------------------------------------------------------------------
-   THE PRODUCT HEADER (Brand.tsx)
+   THE ENVIRONMENT BADGE (Brand.tsx `EnvironmentBadge`)
    ---------------------------------------------------------------------------
-   Mark, wordmark, environment, tenant, signed-in principal. One bar, above
-   everything, on every screen.
+   The product header this badge sat in went with the Sky spine (rebrand
+   2026-10-01); the frame's environment is the spine's pill now (`.sk-pill`).
+   The badge's rules stay while `tests/unit/control_plane/test_ui_contrast.py`
+   measures `.brand-env.is-unknown > span` by name. */
 
-   IT SITS OUTSIDE `.app`. `.brand-bar` has to reach both viewport edges --
-   that full width is what makes the environment readable in peripheral vision
-   and in a screenshot scaled to a thumbnail -- and an element inside `.app`
-   stops at the content gutter. `.brand-row` re-applies `--app-max` and
-   `--app-pad` so the wordmark still lines up with the nav below it.
-
-   DENSITY. 52px tall, 18px wordmark, 10.5px keys: the Lens / Nomad register
-   the redesign is aimed at, not a marketing header. It is chrome, and chrome
-   that spends 80px of a 900px screen is chrome that has stopped being useful. */
-.brand {
-  border-bottom: 1px solid var(--line);
-  background: var(--surface);
-}
-
-/* THE ENVIRONMENT BAR. Drawn only for the two kinds that mean "a mistake here
-   is expensive": production, and not-knowing. 3px is enough to register
-   without reading and small enough to cost nothing.
-
-   SOLID FOR PRODUCTION, HATCHED FOR UNKNOWN. Two different marks, not two
-   colours -- the same rule the state palette is held to: render the page in
-   greyscale and two things that mean different things must still look
-   different. The hatch is this sheet's established "we could not read this"
-   surface, so unknown reuses a meaning that already exists here rather than
-   inventing one. */
-.brand-bar { height: 3px; }
-.brand-bar.is-prod { background: var(--bad); }
-.brand-bar.is-unknown { background: var(--ctl-hatch); }
-
-.brand-row {
-  max-width: var(--app-max);
-  margin: 0 auto;
-  padding: 0 var(--app-pad);
-  /* 52, up from 44, and the density argument above still holds -- it is the
-     reason this is 52 and not 64. The mark is 36px; 44 left it 4px of air top
-     and bottom, which reads as a logo jammed into a strip rather than one
-     sitting in a header. 8px each side is the least that does not, and 52px of
-     a 900px screen is still under 6% spent on chrome. */
-  min-height: 52px;
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  flex-wrap: wrap;
-}
-
-.brand-home {
-  display: inline-flex;
-  align-items: center;
-  /* Scaled with the lockup: 9 x 1.3 = 11.7 -> 12. Holding the old 9px while
-     the mark and the word both grew would have closed the gap optically. */
-  gap: 12px;
-  color: var(--text);
-  text-decoration: none;
-  /* The mark inherits this, so it is the same ink as the wordmark in both
-     themes and on any ground this bar is ever given. */
-  flex: 0 0 auto;
-}
-.brand-home:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: 6px; }
+/* The SwarmMark's own box: Brand.tsx draws it with this class wherever it
+   is used (the spine's hive, the phone header). */
 .brand-mark { display: block; }
-.brand-word {
-  /* --lh-flush: the box is `.brand-row`'s 52px min-height. The wordmark is
-     centred in it and must not add leading that grows the product header. */
-  /* --t-title, and it is the scale's own step rather than a seventh one added
-     for the logo. The owner asked for the logo 30% larger; 14 x 1.3 = 18.2,
-     and --t-title is 18px -- the arithmetic landed on a step that already
-     exists. A `--t-brand: 18px` was written first and typescale.test.ts
-     refused it, correctly: "a seventh step is how seventeen sizes came back
-     last time, one defensible addition at a time", and a second declaration of
-     a size the scale already has is the least defensible kind.
-     The role fits too. This is the product's name, which is what the title
-     step is for; it is not a lead, and it is certainly not body. */
-  font: 400 var(--t-title)/var(--lh-flush) var(--font);
-  white-space: nowrap;
-}
-/* Two weights, one word: the swarm is the noun and the cloud is where it runs.
-   No second font and no webfont -- a product header that waits on a font
-   download is a product header that flashes on every cold load. */
-.brand-word b { font-weight: 700; }
 
-/* A KEY, not a label: the small word that says what the value beside it is. */
 .brand-k {
   font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
   color: var(--text-faint);
@@ -820,15 +747,9 @@ body {
 /* FOUR TREATMENTS, AND THE CHANNEL IS NEVER COLOUR ALONE.
    A pill is quiet; a square-cornered block with a rule down its left edge is
    loud. That distinction survives greyscale, a colour-blind reader and a
-   screenshot, which is where these screens are actually read.
-   THE ADMIN TAG TAKES THE QUIET TREATMENT TOO (CH-20). It was an `--info`
-   tinted pill -- the accent spent on a fact about you, beside the one badge on
-   this bar that is allowed to be loud. It is a grey hairline tag now, the
-   same box as a non-production environment, and it is in this list rather
-   than restating it. */
+   screenshot, which is where these screens are actually read. */
 .brand-env.is-nonprod,
-.brand-env.is-local,
-.brand-admin {
+.brand-env.is-local {
   border: 1px solid var(--line);
   border-radius: 999px;
   background: var(--surface-2);
@@ -871,117 +792,10 @@ body {
    rule above would otherwise lift it to the value's. */
 .brand-env.is-unknown > .brand-k { color: var(--text-faint); }
 
-/* WHO YOU ARE. Pushed right, and allowed to wrap rather than to truncate: a
-   service-account email cut off at the column edge is the one thing on this
-   bar somebody copies. */
-.brand-who {
-  margin: 0 0 0 auto;
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  flex-wrap: wrap;
-  min-width: 0;
-  font-size: var(--t-meta);
-  line-height: var(--lh-meta);
-  color: var(--text-dim);
-}
-/* No size of its own: §B4.1 channel 1 is "weight, case and tracking on the
-   label, FULL SIZE on the value", and this id is the value. It used to restate
-   `.brand-who`'s size, which is the kind of declaration that drifts. */
-.brand-who .id { color: var(--text); }
-.brand-who-name { color: var(--text-faint); font-size: var(--t-micro); }
-/* The read has not landed yet, and the bar says so rather than showing an
-   empty slot that reads as "no tenant". */
-.brand-who.is-pending { color: var(--text-faint); font-style: italic; }
-/* The read FAILED. Still not an empty slot, and deliberately not painted as an
-   incident: not being able to name your tenant is information about this tab,
-   not evidence about the platform. */
-.brand-who.is-unread { color: var(--text-dim); max-width: var(--measure); }
-
-/* The box is the quiet treatment's, in the list above. */
-.brand-admin {
-  padding: 0 7px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-}
-/* THE PRINCIPAL AND THE ADMIN TAG ARE ONE UNIT THAT NEVER WRAPS (CH-20), so
-   above 560px "admin" cannot fall onto a line of its own -- at 390 it used to,
-   alone, on a third line. Between 561 and 899px the identity still wraps onto
-   its own line when it does not fit; it does so as a unit. */
-.brand-who-me {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 8px;
-  white-space: nowrap;
-}
-/* THE TENANT ID IS ITS OWN COPY CONTROL (CH-20, Brand.tsx `TenantId`). A
-   button that draws nothing of its own: no box, no fill, the id's own ink and
-   type, so the header shows the id exactly as before and the pointer says what
-   a press does. It is the flex item that gives way at 560px and below; the id
-   inside it is what ellipsizes. */
-.brand-id {
-  display: inline-flex;
-  align-items: baseline;
-  min-width: 0;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: copy;
-}
-.brand-id:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
-/* What the copy did, for a screen reader. Never drawn: the id beside it is
-   what a sighted reader was pointing at. */
-.brand-id-said {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
-
-/* AT 560px AND BELOW THE HEADER IS ONE ROW (CH-20, design-system.md §7.2).
-   It doubled to about 100px at 390 -- the identity on a line of its own, and
-   the admin badge on a third -- against §7.2's "the header keeps its height".
-   The row holds, in order: the mark (the home link, named "SwarmCloud" by the
-   mark's own title), the environment badge, the tenant key, the tenant id and
-   the admin tag, and it keeps its 52px min-height.
-
-   ONLY THE TENANT ID GIVES WAY: it ellipsizes, with the whole value in its
-   title, and the text is intact under the ellipsis, so copying it copies all
-   of it. NOT DRAWN, AND STILL ANNOUNCED: the tenant's display name, the
-   "signed in" key with the principal, the unknown badge's host and the word
-   ENVIRONMENT before UNKNOWN -- visually hidden, never `display: none`, so a
-   screen reader still reads each one (and "ENVIRONMENT UNKNOWN" is still the
-   badge's words). The wordmark IS `display: none`: it repeats the mark's name.
-
-   The row is the containing block for the hidden spans, so an absolutely
-   positioned 1px box cannot escape into `.ctl-scroll`'s overflow the way the
-   stacked tables' heads once did (§B6.3). The 720px rule that used to put the
-   identity on its own line is gone: 720 is a retired breakpoint (§7.1). */
+/* At 560px and below the unknown badge draws UNKNOWN after its key: the
+   word ENVIRONMENT and the unclassified host stay in the tree, visually
+   hidden rather than `display: none`, so a screen reader still reads them. */
 @media (max-width: 560px) {
-  .brand-row { position: relative; flex-wrap: nowrap; gap: var(--ctl-s2); }
-  .brand-word { display: none; }
-  .brand-who { flex: 0 1 auto; flex-wrap: nowrap; min-width: 0; gap: var(--ctl-s2); }
-  /* The copy control gives way in the row and reaches §7.2's 44px target
-     inside the 52px bar; the id in it ellipsizes, whole in the control's
-     title and in what it copies. */
-  .brand-who > .brand-id {
-    align-items: center;
-    min-width: 0;
-    min-height: 44px;
-  }
-  .brand-id > .id {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-  .brand-who-name,
-  .brand-who-principal,
   .brand-env.is-unknown > .id,
   .brand-env-lead {
     position: absolute;
@@ -7504,285 +7318,28 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 
 /* -------------------------------------------------------------------------- */
-/* 7. The shell: rail, head, work area, inspector, dock (§B3)                   */
+/* 7. The shell: head, work area, inspector, dock (§B3)                        */
 /* -------------------------------------------------------------------------- */
-/* THE REGIONS, AND WHAT EACH ONE IS FOR.
-   This replaced two horizontal strips -- a section bar and a tab strip,
-   stacked above every screen -- which between them spent about 64px of
-   vertical on all fifteen routes to display navigation that does not change.
-   Vertical is the axis a 900px-tall laptop has least of; horizontal is what
-   the tables and the workflow graph want. So the navigation went sideways.
+/* THE REGIONS, AND WHAT EACH ONE IS FOR. The navigation is the Sky spine's
+   (Spine.tsx, rebrand 2026-10-01: an 84px spine and a 236px panel, a phone
+   header and drawer), styled in the spine section at the end of this sheet.
+   The 200px rail and the product header it lined up with are gone; this
+   section holds what sits inside the spine's main column:
 
-     RAIL       200px fixed, never reorders, all six sections with their tabs
      WORK       fluid, min-width 0, no max-width -- the point of §B19
      INSPECTOR  a grid COLUMN, not a fixed overlay, wherever two panes fit
      HEAD       44px inside the work column: breadcrumb, read age, section `?`
-     DOCK       fixed to the viewport, 28px collapsed (§B18)
-
-   `.app` KEEPS `max-width: var(--app-max)` and its `--app-pad` gutter. Those
-   two are what line the content column up with the product header, which sits
-   outside `.app` so its environment bar can reach both viewport edges. Losing
-   either would drift the wordmark away from the rail at the first breakpoint,
-   and `src/__tests__/brand.test.tsx` fails if they go.
+     DOCK       the frame's second row, 28px collapsed (§B18)
 
    THE GRID ITSELF IS DECLARED ONCE, in the `.app` rule beside `.ctl-frame` at
-   the top of this sheet, together with that max-width and gutter. It used to
+   the top of this sheet, together with its max-width and gutter. It used to
    be a second `.app` rule here; `stylesheet.gate.test.ts` holds it to one. */
-
-:root { --rail-w: 200px; }
-/* THE WIDTH OF THE FADE at the end of the phone-width strip, declared once and
-   read twice in the `@media (max-width: 899px)` block below: by the strip's
-   mask, and by the utility corner's trailing padding, which reserves exactly
-   the faded band as empty space at the end of the scroll. Two literal 24px
-   values are how the next edit to one of them would put "API reads" back
-   under the fade (`rail.phone.test.ts`). A token on `:root` rather than a
-   property on `.ctl-rail` because every `var()` in this sheet resolves from
-   `:root` -- `spaceprobe.ts` holds that, and throws on one that does not. */
-:root { --rail-fade: 24px; }
-/* Below 1280px the rail narrows rather than becoming a 56px icon column: this
-   product has no icon set, and a letter is not an icon -- it is a label with
-   everything but the first character deleted. That argument used to rest on
-   Agents and Admin sharing an initial; the three-section collapse made the
-   four rail entries Overview, Work, Capacity and Admin, so the collision is
-   gone and the argument is not (the TABS, which are most of this column's
-   height, have no initials at all).
-
-   MEASURED IN A REAL BROWSER, 2026-09-24 (Chromium/macOS, `500 14px
-   ui-sans-serif` as this sheet resolves it), because nothing offline can do it
-   -- jsdom implements no layout. A 152px rail leaves each tab
-   152 - 12 (`.ctl-rail-tabs` margin-left) - 2 (border-left) - 20 (padding)
-   = 118px of content.
-
-   The label the note on `Rail` in App.tsx asked someone to look at is FINE:
-   "Profile headroom" renders at 113.02px and clears 118px by 4.98px. The worry
-   was that it is one character longer than the "Runner profiles" (100.6px) the
-   152px was taken against; one character was not enough to matter.
-
-   THREE OTHERS DO NOT FIT, and the reason the note missed them is that it
-   reasoned about the longest LABEL STRING while the box is sized by RENDERED
-   WIDTH -- which for two of these includes the inline `admin` badge:
-
-     Platform counts + badge   149.19px   over by 31.19px
-     Provider quota  + badge   141.08px   over by 23.08px
-     Submit a workflow          121.73px   over by  3.73px
-
-   The badge alone costs 44.14px (39.14px of mono `admin` plus its 5px margin),
-   so it is the badge and not the words that breaks the first two: "Platform
-   counts" is 105.05px and "Provider quota" 96.94px, and both clear 118px on
-   their own. "Submit a workflow" is simply longer than "Profile headroom" and
-   was never in the comparison.
-
-   WHY WRAPPING RATHER THAN A WIDER RAIL. `white-space: nowrap` with
-   `text-overflow: ellipsis` does not wrap these, it CLIPS them, and what gets
-   clipped off the two admin tabs is the badge -- the one mark telling a
-   non-admin that the tab opens a gate. That is this file's own argument against
-   a 56px icon rail arriving through overflow instead of through a decision: a
-   label with its tail deleted is a thing you decode rather than recognise.
-   Widening the rail to the 184px that fits every badge would buy back only 16px
-   of the 48px the narrowing exists to reclaim for the tables at these widths
-   (see §B6.3 below), so the rail keeps its width and the labels keep their text.
-   Vertical is the axis this column has most of: it already scrolls, and the
-   three affected tabs cost 21px each in the one band where they render. */
-@media (max-width: 1279px) { :root { --rail-w: 152px; } }
-/* The rule that acts on all of the above is NOT here -- it is immediately after
-   `.ctl-rail-tabs button`, several hundred lines down, because a media query
-   adds no specificity and a block written here would have lost the cascade to
-   the `white-space: nowrap` in that rule. Written here first, and it silently
-   did nothing. */
 
 .work { min-width: 0; }
 
-/* ---- the rail ---- */
-.ctl-rail {
-  position: sticky;
-  /* Under the 44px product header, which is not sticky, so this pins once the
-     header has scrolled away and not before. */
-  top: 0;
-  align-self: start;
-  display: flex;
-  flex-direction: column;
-  gap: var(--ctl-s3);
-  padding: var(--ctl-s3) 0;
-  max-height: calc(100vh - var(--dock-h, 28px));
-  overflow-y: auto;
-  /* NO BORDER, NO NEGATIVE MARGIN, NO RECLAIMED GAP — see §B5.1 above. These
-     three lines together were the measured zero gutter: the rail took the
-     whole of `.app`'s column gap back with `margin-right: -28px`, spent it as
-     its own padding, and left the hairline sitting exactly on the work
-     column's first pixel. What separates the rail from the content now is
-     `--ctl-gutter`, undivided, which is the separation every reference in this
-     product's target set uses for this particular boundary. */
-}
-.ctl-rail-sections { display: flex; flex-direction: column; gap: 2px; }
-.ctl-rail-group { display: flex; flex-direction: column; }
-
-/* A SECTION. The one control target in the rail that is a destination. */
-.ctl-nav-link {
-  display: block;
-  width: 100%;
-  text-align: left;
-  background: none;
-  border: none;
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
-  /* Chrome, so it gets the chrome target: 30px of height and 10px of air,
-     against the 30px data row the tables now use. */
-  min-height: 30px;
-  padding: 6px 10px;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.ctl-nav-link:hover { color: var(--text); background: var(--surface); }
-/* SELECTION IS A RULE PLUS A SURFACE STEP, NOT A HUE (§B4.2 tier 2). `--info`
-   already carries seven jobs in this file, and a selected tab drawn in the
-   same blue as a live agent is how a reader learns to stop trusting colour as
-   a state channel. The rule is `--text`, which is hueless. */
-.ctl-nav-link.is-on {
-  color: var(--text);
-  background: var(--surface-2);
-  border-left-color: var(--text);
-}
-.ctl-nav-link:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-
-/* THE SECOND LEVEL, indented 12px. Drawn for every section at all times, not
-   only the open one: the rail's value is that a position means one thing, and
-   a list that grows under the cursor has a geometry you re-read every visit. */
-.ctl-rail-tabs {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  margin: 2px 0 2px var(--ctl-s3);
-}
-.ctl-rail-tabs button {
-  display: block;
-  width: 100%;
-  text-align: left;
-  min-height: 26px;
-  padding: 4px 10px;
-  border: none;
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
-  background: none;
-  color: var(--text-faint);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  cursor: pointer;
-}
-.ctl-rail-tabs button:hover { color: var(--text); background: var(--surface); }
-.ctl-rail-tabs button[aria-selected='true'] {
-  color: var(--text);
-  background: var(--surface-2);
-  border-left-color: var(--text-dim);
-}
-.ctl-rail-tabs button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-
-/* THE PHONE STRIP'S TWO ROWS, AND WHAT THEY ARE ON THE DESKTOP COLUMN (CH-21).
-   Below 900px the strip is two rows (the narrow block below): row 1,
-   `.ctl-rail-main`, holds the sections and the utility corner; row 2,
-   `.ctl-rail-sub`, the open section's tabs. Here -- 900px and up, and as base
-   rules so the narrow block overrides them by order -- row 1 is TRANSPARENT to
-   the layout, so the sections and the corner are the column's own flex items
-   exactly as before, and row 2 is not displayed: the tabs are drawn inline,
-   under every section, where the column has always drawn them. */
-.ctl-rail-main { display: contents; }
-/* After `.ctl-rail-tabs`, which row 2 also carries, so this wins by order. */
-.ctl-rail-sub { display: none; }
-
-/* THE 152px RAIL IS NOT WIDE ENOUGH FOR THREE OF THESE LABELS. MEASURED.
-   The figures and the argument are on `--rail-w` above; the short version is
-   that at 152px a tab has 118px of content, and "Platform counts" with its
-   `admin` badge needs 149.19px, "Provider quota" with its badge 141.08px and
-   "Submit a workflow" 121.73px. `white-space: nowrap` with `text-overflow:
-   ellipsis` does not shrink those, it cuts them -- and what it cuts off the
-   first two is the badge, which is the only warning a non-admin gets that the
-   tab opens a gate.
-
-   IT SITS HERE, AFTER THE BASE RULE, AND THAT IS LOAD-BEARING. A media query
-   contributes nothing to specificity, so this block and
-   `.ctl-rail-tabs button` above are equally specific and the LATER one wins.
-   Placed up beside the `--rail-w` declaration it belongs to -- which is where
-   it was written first -- it lost to the `white-space: nowrap` in that rule and
-   changed nothing at all.
-
-   ONLY 900-1279px. Below 900px the rail becomes a horizontal scroller whose
-   buttons are `width: auto` (see the narrow block below), so they size to their
-   own content and cannot clip; wrapping there would turn a correct row of tabs
-   into a row of tall two-line ones. */
-@media (min-width: 900px) and (max-width: 1279px) {
-  .ctl-rail-tabs button {
-    /* The widest single WORD in the set is "Workflows" at 69.13px against
-       118px, so no word can overflow on its own and wrapping is a complete fix
-       rather than one that merely moves the clip. `text-overflow` is cleared
-       with the `nowrap` that gave it something to do. */
-    white-space: normal;
-    text-overflow: clip;
-  }
-}
-
-/* The admin marker on a tab that will render an admin gate for most people.
-   Saying so before the click is cheaper than a blue panel after it.
-
-   THIS WAS 9.5px, the smallest type in the product, on the one mark that
-   saves somebody a wasted click. It is --t-meta now: a marker on a tab is
-   chip text, and §B4.1's floor is 11px. It went UP by 2.5px, which is the
-   largest single increase in the pass. */
-.ctl-subnav-admin {
-  margin-left: 5px;
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
-  color: var(--text-faint);
-}
-
-/* The utility corner. `API reads` and Help are things you look up once, not
-   things you work in, so they sit under the sections rather than among them.
-   `margin-top: auto` pins them to the foot of the rail at any height. */
-.ctl-nav-util {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: var(--ctl-s1);
-  margin-top: auto;
-  padding-top: var(--ctl-s3);
-  border-top: 1px solid var(--ctl-hairline);
-}
-/* THE CURRENT PAGE IS MARKED THE WAY A SECTION IS (CH-6). API reads and Help
-   said "you are here" with the accent alone -- on Help the only marker was a
-   small underlined `?` turning blue -- while every other place in the rail
-   says it with a surface step and a 2px `--text` rule (`.ctl-nav-link.is-on`,
-   §1.3). The rule is reserved transparent on every state, as the section
-   link's is, so choosing one moves no text; below 900px it moves to the
-   bottom edge with the rest of the strip's. */
-.ctl-nav-util button {
-  background: none;
-  border: 0;
-  border-left: 2px solid transparent;
-  border-radius: 0 var(--ctl-radius-sm) var(--ctl-radius-sm) 0;
-  min-height: 24px;
-  padding: 2px 10px;
-  color: var(--text-faint);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 3px;
-  text-decoration-color: var(--line);
-}
-.ctl-nav-util button:hover { color: var(--text-dim); }
-.ctl-nav-util button.is-on {
-  color: var(--text);
-  background: var(--surface-2);
-  border-left-color: var(--text);
-  text-decoration-color: currentColor;
-}
-.ctl-nav-util button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-
 /* ---- the head ---- */
-/* 44px, inside the work column. It names the PAGE; the rail names the product,
-   and the bar above them both names the environment. */
+/* 44px, inside the work column. It names the PAGE; the spine's panel names
+   the product and the environment. */
 /* NO RULE UNDER IT (§B5.3). The breadcrumb strip sat between the product
    header's own bottom border and the page `<h1>` beneath it, which put three
    horizontal lines within 70px of the top of every screen. A rule with nothing
@@ -8107,159 +7664,14 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   max-width: var(--measure);
 }
 
-/* ---- narrow: the rail is a top bar again, in two rows ---- */
-/* 200px of a 390pt phone is half the screen, so below 900px the column is a
-   strip at the top -- and it is TWO ROWS (CH-21). It used to be one scrolling
-   row with the open section's tabs inserted inline after their section, which
-   moved every later section whenever a section opened; §6.14's "a position
-   means one thing" held on the desktop and nowhere else. Now:
-
-     row 1  `.ctl-rail-main`  the sections and the utility corner -- the same
-                              items in the same places on every route
-     row 2  `.ctl-rail-sub`   the open section's tabs, drawn only when it has
-                              more than one (Overview draws no second row)
-
-   Each row scrolls on its own, with the same fade. `.ctl-rail` is the column
-   holding them and is no longer the scroller. The inline copy of the tabs is
-   hidden here, and row 2 is `.ctl-rail-tabs` as well, so every tab rule --
-   the 44px target at 560px included -- reaches it without a second copy.
-   A SECTION'S SELECTION IS A RULE AND A TAB'S IS A FILL: the section keeps its
-   2px `--text` bottom rule and loses its surface step; the tab takes the
-   `--surface-2` step in `--text` ink and no rule. Those differ in greyscale,
-   which the two used not to (a rule under each, near alike) -- the phone case
-   of §1.3's "surface step plus a 2px rule", split between the two levels. */
+/* ---- narrow ---- */
+/* Below 900px the work area is one column and the `?` card opens from the
+   left. The rail's two-row phone strip that used to live here went with the
+   Sky spine (rebrand 2026-10-01): the phone navigation is the spine's own
+   header and drawer (`.sk-pbar`, `.sk-side`, in the spine section at the
+   end of this sheet). */
 @media (max-width: 899px) {
   .app { grid-template-columns: minmax(0, 1fr); gap: 0; }
-  .ctl-rail {
-    position: static;
-    flex-direction: column;
-    align-items: stretch;
-    gap: 0;
-    max-height: none;
-    /* Not a scroller any more: each row is. The desktop column's own
-       `overflow-y: auto` would make it one. */
-    overflow: visible;
-    margin-right: 0;
-    padding: 0 0 var(--ctl-s2);
-    border-right: none;
-    border-bottom: 1px solid var(--ctl-hairline);
-  }
-  .ctl-rail-main {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: var(--ctl-s2);
-  }
-  /* THE TWO ROWS' SCROLLER, ONE RULE FOR BOTH (CH-21). Two copies of these
-     declarations are how the next edit to one row leaves the other behind. */
-  .ctl-rail-main,
-  .ctl-rail-sub {
-    overflow-x: auto;
-    overflow-y: hidden;
-    scrollbar-width: none;
-    /* AN EDGE THAT SAYS THERE IS MORE.
-       The rail becomes a horizontal strip here and scrolls, and its scrollbar
-       is hidden on purpose -- a native bar under a row of tabs is heavier than
-       the tabs. Hidden, though, the strip renders a tab sliced clean in half at
-       the viewport edge with nothing to say it continues: at 390px "Pools" is
-       cut mid-word and the four items after it are simply not there, which
-       reads as a clipping bug rather than as a scroller.
-       A mask fading the last 24px restores the signal the scrollbar carried. It
-       applies only while there is something to scroll to, because a permanent
-       fade on a strip that fits would dim a tab for no reason -- `animation` on
-       a scroll-driven timeline is not available here, so the fade is
-       unconditional in the fallback and the strip is short enough that the
-       cost is one faded tab-edge at most.
-       (This was a second `.ctl-rail` rule two rules further down this block;
-       one element, one rule. It is on each ROW now, from this one rule.)
-       THE FADE'S WIDTH IS ONE TOKEN, `--rail-fade` beside `--rail-w`, read by
-       the mask here and by the trailing padding at the end of each row --
-       the utility corner's on row 1, row 2's own below. A mask does not
-       scroll with the content, so the last fade-width of a row sits under it
-       at every scroll position, the end included; each row reserves exactly
-       that much empty space so the end of the scroll uncovers the last label. */
-    -webkit-mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
-    mask-image: linear-gradient(to right, #000 calc(100% - var(--rail-fade)), transparent 100%);
-  }
-  .ctl-rail-main::-webkit-scrollbar,
-  .ctl-rail-sub::-webkit-scrollbar { display: none; }
-  /* HELD AT THEIR OWN WIDTH, so the row OVERFLOWS the strip and the strip
-     scrolls. As ordinary flex items (`flex-shrink: 1`) they were squeezed to
-     fit a row wider than the phone instead -- measured at 390x844 on
-     2026-09-24 as "AP / reac": the corner shrunk to its longest word and
-     "API reads" broke in two inside a one-line strip whose vertical overflow
-     is hidden (`08-overview-390.png`). */
-  .ctl-rail-sections { flex: 0 0 auto; flex-direction: row; align-items: center; gap: var(--ctl-s2); }
-  .ctl-rail-group { flex-direction: row; align-items: center; }
-  /* `scroll-margin-inline-end: var(--rail-fade)` ON ALL THREE KINDS OF ITEM
-     (CH-14). The strip scrolls and its last 24px are under the fade mask, so
-     an item scrolled into view flush with the end would be scrolled INTO the
-     fade -- present and unreadable. The margin makes "into view" mean clear of
-     it. Scrolling the current item into view on a route change is App.tsx's
-     half; without this, the item it scrolls to lands under the mask. */
-  .ctl-nav-link {
-    width: auto;
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
-    scroll-margin-inline-end: var(--rail-fade);
-  }
-  /* A SECTION'S SELECTION IS THE RULE ALONE here: its surface step is the
-     tab's (CH-21). */
-  .ctl-nav-link.is-on { border-left-color: transparent; border-bottom-color: var(--text); background: none; }
-  /* No section's tabs are inline in row 1 -- the open section's are row 2.
-     They used to be: nineteen items in one scrolling row, and every section
-     after the open one moved when it opened. */
-  .ctl-rail-group .ctl-rail-tabs { display: none; }
-  .ctl-rail-tabs { flex-direction: row; margin: 0 0 0 var(--ctl-s2); }
-  .ctl-rail-tabs button {
-    width: auto;
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    scroll-margin-inline-end: var(--rail-fade);
-  }
-  /* A TAB'S SELECTION IS THE FILL ALONE: the `--surface-2` step in `--text`
-     ink from the base rule, and no rule under it (CH-21). */
-  .ctl-rail-tabs button[aria-selected='true'] {
-    border-left-color: transparent;
-    border-bottom-color: transparent;
-  }
-  /* ROW 2. After the `.ctl-rail-tabs` rule above, which it overrides by order
-     at equal specificity: flush with the strip's edge rather than indented,
-     and ending on the faded band's width of empty space, as row 1 ends on
-     the utility corner's. */
-  .ctl-rail-sub {
-    display: flex;
-    flex-direction: row;
-    align-items: center;
-    gap: 1px;
-    margin: 0;
-    padding-right: var(--rail-fade);
-  }
-  .ctl-nav-util {
-    flex: 0 0 auto;
-    flex-direction: row;
-    margin-top: 0;
-    margin-left: auto;
-    padding-top: 0;
-    padding-left: var(--ctl-s3);
-    /* The faded band at the end of the scroll is empty space, not a label.
-       See `--rail-fade`, beside `--rail-w`. */
-    padding-right: var(--rail-fade);
-    border-top: none;
-    border-left: 1px solid var(--ctl-hairline);
-  }
-  /* One line, like every other label in the strip (`.ctl-nav-link` is nowrap
-     at every width). The current-page rule moves to the bottom edge with the
-     section links' (CH-6), and the scroll margin is CH-14's. */
-  .ctl-nav-util button {
-    white-space: nowrap;
-    border-left: none;
-    border-bottom: 2px solid transparent;
-    border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
-    scroll-margin-inline-end: var(--rail-fade);
-  }
-  .ctl-nav-util button.is-on { border-left-color: transparent; border-bottom-color: var(--text); }
   .ctl-q-card { right: auto; left: 0; max-width: min(44ch, 86vw); }
 }
 
@@ -8485,10 +7897,6 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
      column and costs legibility. A cell is `--t-body` at every width. */
   .ctl-table th, .ctl-table td { padding: 6px 8px; }
 
-  /* Padding only; the `font-size: 13px` restated --t-body.
-     44px OF TARGET (CH-8, §7.2): the padding came to 41px. The box grows and
-     the label stays centred in it; the type does not change. */
-  .ctl-nav-link { padding: 9px 10px; min-height: 44px; display: flex; align-items: center; }
   .ctl-empty { padding: var(--ctl-s3); }
 }
 
@@ -12067,20 +11475,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      a word or a disc that cannot  a hit area: an empty `::after`, centred on
                                    the control and at least 44x44, which takes
                                    the pointer and draws nothing
-   A linked fact (`a.ctl-metric`) already clears 44px and is not listed. The rail's items take
-   height rather than a hit area because the strip clips vertically (it is a
-   horizontal scroller), and a hit area outside a clip cannot be hit. The
-   section links are in the phone block beside their own padding, where the
-   gate wants a selector's phone rule to be. */
+   A linked fact (`a.ctl-metric`) already clears 44px and is not listed. */
 @media (max-width: 560px) {
   .ctl-seg > button { min-height: 44px; }
-
-  .ctl-rail-tabs button,
-  .ctl-nav-util button {
-    min-height: 44px;
-    display: inline-flex;
-    align-items: center;
-  }
 
   .limit-edit input,
   .limit-edit button,

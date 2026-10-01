@@ -1,11 +1,13 @@
 /**
  * THE APP ACTUALLY MOUNTS WHAT IT WAS BUILT TO MOUNT.
  *
- * A verifier found on 2026-09-22 that deleting `<ProductHeader />` from
- * App.tsx left the entire suite green -- 222 of 222. The header is the whole
+ * A verifier found on 2026-09-22 that deleting the product header from
+ * App.tsx left the entire suite green -- 222 of 222. The header was the whole
  * deliverable of B30, it was tested exhaustively in isolation, and the one
  * fact nobody asserted was that the product renders it. A component can be
- * perfect and unreachable.
+ * perfect and unreachable. (The header itself went with the rebrand,
+ * 2026-10-01: the Sky spine's panel head is what this guards now, and
+ * brand.test.tsx's "the frame" block holds what it says.)
  *
  * The same hole existed for the help affordance and the environment badge, so
  * this file guards the mounting of each rather than the component behind it --
