@@ -320,6 +320,51 @@ def test_a_borrower_counts_the_others_in_the_window_and_pages_past_them(client, 
         assert stamp not in text
 
 
+def _eng_pages(n_pages: int, per_page: int) -> tuple[dict, int]:
+    """A broker history of `n_pages` pages of eng rows only, each with a next cursor."""
+    script: dict = {}
+    count = 0
+    for i in range(n_pages):
+        rows = [_row("eng", f"eng-task-{i}-{j}", hours_ago=i * per_page + j + 1)
+                for j in range(per_page)]
+        count += len(rows)
+        key = None if i == 0 else f"page-{i}"
+        script[key] = {"spans": rows, "next_cursor": f"page-{i + 1}"}
+    return script, count
+
+
+def test_a_borrower_scan_with_no_own_row_in_20_pages_stops_limited_with_no_cursor(client, broker):
+    script, count = _eng_pages(20, 2)
+    broker.history_script = script
+
+    body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
+
+    assert body["spans"] == []
+    assert body["scan_limited"] is True
+    assert body.get("next_cursor") is None
+    assert body["others"] == count == 40
+    assert "task_id" not in json.dumps(body)
+
+
+def test_own_page_stops_at_20_pages_and_marks_the_scan_limited():
+    from swarm_api.accountholds import own_page
+
+    script, count = _eng_pages(25, 3)
+    fetched: list[str | None] = []
+
+    def fetch(cursor: str | None) -> dict:
+        fetched.append(cursor)
+        return script[cursor]
+
+    served = own_page(script[None], tenant_id="research", cursor=None, fetch=fetch)
+
+    assert len(fetched) == 19  # the first page was already in hand: 20 pages in all
+    assert served["scan_limited"] is True
+    assert served["next_cursor"] is None
+    assert len(served["spans"]) == 20 * 3
+    assert 20 * 3 < count
+
+
 def test_the_owner_is_still_served_borrower_spans_with_the_tenant_name(client, broker):
     rows = [_row("research", "research-task-1", hours_ago=1, end="unusable"),
             _row("eng", "eng-task-1", hours_ago=3)]

@@ -192,7 +192,7 @@ describe('history', () => {
     expect(await screen.findByText('No holds recorded in this window.', undefined, WAIT)).toBeTruthy()
   })
 
-  it('links own spans and anonymises everyone else', async () => {
+  it('links own spans and counts everyone else, with no other tenant span', async () => {
     const at = new Date(Date.now() - 120 * MINUTES).toISOString()
     const until = new Date(Date.now() - 90 * MINUTES).toISOString()
     serve({
@@ -202,9 +202,9 @@ describe('history', () => {
         to: new Date().toISOString(),
         spans: [
           { since: at, until, end: 'released', mine: true, task_id: 'task_mine', attempt: 1, recorded: true, verified: true },
-          { since: at, until, end: 'expired', mine: false },
           { since: at, until: null, end: null, mine: true, recorded: false, verified: false },
         ],
+        others: 3,
         next_cursor: '2026-09-30T12:00:00+00:00|1',
       },
     })
@@ -212,13 +212,54 @@ describe('history', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
 
     expect(await screen.findByRole('link', { name: 'task_mine' }, WAIT)).toBeTruthy()
-    expect(screen.getByText('another tenant')).toBeTruthy()
+    expect(screen.getByText('3 other agents in this window')).toBeTruthy()
+    expect(screen.queryByText('another tenant')).toBeNull()
     expect(screen.getByText('task not recorded')).toBeTruthy()
     expect(screen.getByText(/for 30m · released/)).toBeTruthy()
+    // Exactly the two own spans are listed; the others are a count, not rows.
+    expect(document.querySelectorAll('.acct-spans li').length).toBe(2)
 
     fireEvent.click(screen.getByRole('button', { name: 'Older' }))
-    await screen.findByText('another tenant', undefined, WAIT)
+    await screen.findByText('3 other agents in this window', undefined, WAIT)
     const urls = reads.read.mock.calls.map((c) => (c[0] as { url: string }).url)
     expect(urls.some((u) => u.includes('cursor=2026-09-30T12'))).toBe(true)
+  })
+
+  it('never shows another tenant\'s times to a borrower, only the count', async () => {
+    const at = new Date(Date.now() - 120 * MINUTES).toISOString()
+    const until = new Date(Date.now() - 90 * MINUTES).toISOString()
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'borrower',
+        from: new Date(Date.now() - 7 * 1440 * MINUTES).toISOString(),
+        to: new Date().toISOString(),
+        spans: [
+          { since: at, until, end: 'released', mine: true, task_id: 'task_mine', attempt: 1, recorded: true, verified: true },
+        ],
+        others: 1,
+      },
+    })
+    await openRow(account(), 'research')
+    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+
+    expect(await screen.findByText('1 other agent in this window', undefined, WAIT)).toBeTruthy()
+    expect(document.querySelectorAll('.acct-spans li').length).toBe(1)
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
+  })
+
+  it('says a borrower scan was limited, with no Older button', async () => {
+    serve({
+      history: {
+        account_id: 'eng:laptop', viewer: 'borrower',
+        from: null, to: null,
+        spans: [], others: 40, scan_limited: true,
+      },
+    })
+    await openRow(account(), 'research')
+    fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
+
+    expect(await screen.findByText(/Older history was not searched further/, undefined, WAIT)).toBeTruthy()
+    expect(screen.getByText('40 other agents in this window')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
   })
 })

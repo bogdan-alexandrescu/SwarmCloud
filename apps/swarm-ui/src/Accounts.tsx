@@ -1263,7 +1263,11 @@ export interface HoldHistory {
   from: string | null
   to: string | null
   spans: HoldSpan[]
-  next_cursor: string | null
+  next_cursor?: string | null
+  /** A borrower only: other tenants' spans in the window, counted and nothing more. */
+  others?: number
+  /** A borrower only: 20 broker pages held none of its own rows, so the scan stopped. */
+  scan_limited?: boolean
 }
 
 /**
@@ -1500,10 +1504,8 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
                 </span>
                 {s.mine ? (
                   <HoldWork h={s} />
-                ) : s.tenant !== undefined ? (
-                  <span className="mono">{s.tenant}</span>
                 ) : (
-                  <span className="muted">another tenant</span>
+                  <span className="mono">{s.tenant}</span>
                 )}
                 {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
                 {!s.mine && h?.viewer === 'platform' && s.task_id && (
@@ -1522,8 +1524,19 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
           })}
         </ul>
       )}
+      {h?.viewer === 'borrower' && (h.others ?? 0) > 0 && (
+        <p className="muted small">
+          {h.others} other agent{h.others === 1 ? '' : 's'} in this window
+        </p>
+      )}
+      {h?.scan_limited && (
+        <p className="muted small">
+          Older history was not searched further: none of this tenant’s own holds were found in
+          the most recent pages.
+        </p>
+      )}
       {h?.next_cursor && (
-        <button type="button" onClick={() => setCursor(h.next_cursor)}>
+        <button type="button" onClick={() => setCursor(h.next_cursor ?? null)}>
           Older
         </button>
       )}
