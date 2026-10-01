@@ -356,15 +356,17 @@ def test_the_recovery_bound_is_computed_from_the_deployment_and_not_from_memory(
     missing_execution = config.missing_execution_grace_seconds + tick_seconds
 
     # 150 and 360 since the tick went from */5 to */1 (#198's follow-up):
-    # they were 390 and 600.
+    # they were 390 and 600. The second is 540 since contract request 37
+    # raised the dispatch deadline (and with it the missing-execution grace)
+    # from 300 to 480 s (#401, #404).
     assert stale_lease == 150, (
         f"the time to notice a dead worker is now {stale_lease}s "
         f"({config.heartbeat_grace_seconds}s grace + a {tick_seconds}s tick), "
         "not 150s. That is the number the runbook gives an operator."
     )
-    assert missing_execution == 360, (
+    assert missing_execution == 540, (
         f"the time to notice a dispatch that never started is now "
-        f"{missing_execution}s, not 360s."
+        f"{missing_execution}s, not 540s. That is the number the runbook gives an operator."
     )
     # Re-admission and a cold start come after all of that, which is why the
     # observed end-to-end recovery on 2026-09-22 was around twenty minutes and
