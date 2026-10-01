@@ -76,6 +76,27 @@ spec:
       serviceAccountName: __KSA_NAME__
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 120
+      # NO CLUSTER SEARCH PATH (#341; owner decision 2026-09-29). Under the
+      # default ClusterFirst, `kubernetes.default` -- or any short name a
+      # browser task opens -- is tried under `<ns>.svc.cluster.local`,
+      # `svc.cluster.local` and `cluster.local`, and reaches a cluster Service.
+      # `None`, not ClusterFirst: under ClusterFirst a pod's `searches` are
+      # APPENDED to the cluster's, so `[]` would remove nothing. `None` makes
+      # this block the whole resolver and so has to name the nameserver:
+      # NodeLocal DNSCache's 169.254.20.10, which is what a ClusterFirst pod on
+      # swarm-autopilot is already given (network-policies/allow-egress.yaml)
+      # and what that policy's rule 1b opens. Fully qualified names resolve
+      # exactly as before. Same values as GKE_POD_DNS_CONFIG in
+      # apps/scheduler/scheduler/dispatch.py, held equal by
+      # tests/unit/scheduler/test_gke_browser_pod_dns.py.
+      dnsPolicy: "None"
+      dnsConfig:
+        nameservers:
+          - 169.254.20.10
+        searches: []
+        options:
+          - name: ndots
+            value: "1"
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

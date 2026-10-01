@@ -286,7 +286,11 @@ require_platform() {
 #
 # One screenshot of about:blank: Chromium starts, /dev/shm is large enough, the
 # workspace is writable and an artifact uploads, with no dependency on any site
-# outside the platform.
+# outside the platform. THAT IS ALL IT PROVES, and the suites label it "Chromium
+# starts" for that reason (#357): every browser task that ever succeeded here
+# screenshotted about:blank, so a page that never loaded, a renderer that drew
+# nothing and a broken text extraction all came back SUCCEEDED. That a page
+# loads and renders is t_check_browser_fixture's to prove, below.
 #
 # THE RUN ID RIDES IN THE PROMPT. It was a key of its own, `run_id`, beside a
 # `message` no runner read. Since contract request 25 the API refuses any key
@@ -319,6 +323,231 @@ profile_input() {
       jq -nc --arg r "${run_id}" '{prompt: ("smoke " + $r)}'
       ;;
   esac
+}
+
+# ---------------------------------------------------------------------------
+# The browser fixture: a page the check writes, loaded and read back (#357)
+# ---------------------------------------------------------------------------
+#
+# The about:blank task above proves Chromium starts. This proves a page LOADS
+# and RENDERS: the check writes a page -- one colour filling the viewport and a
+# string carrying the run id -- has a browser task open it, and asserts the
+# screenshot's PIXELS are that colour and the extracted text holds that string.
+# A blank screenshot, another page (an error page, a consent wall) or a stale
+# one from an earlier run fails it.
+#
+# HOW THE CHECK SERVES A PAGE IT WROTE. Not a data: URL: the runner opens http
+# and https only (`ALLOWED_SCHEMES`, and `url_refusal` in the frozen catalogue).
+# Not this repository: no host it has serves an .html file as text/html
+# (scripts/acceptance/groups/browser.sh measured raw.githubusercontent.com and
+# jsDelivr on 2026-09-29: text/plain, nosniff). httpbin's /base64/<value>
+# answers the base64url-decoded value as text/html, so the URL CARRIES the
+# page and nothing outside the URL decides what it shows. httpbin.org is the
+# third party the acceptance suite already uses (owner decision on #358);
+# SWARM_BROWSER_FIXTURE_BASE points this at a self-hosted httpbin (go-httpbin
+# serves the same route) for a deployment whose egress cannot reach it.
+#
+# tests/unit/scripts/test_browser_fixture_check.py runs every helper here
+# offline, against PNGs it writes.
+
+#: The fixture's colour block, RRGGBB. Saturated and far from white, black and
+#: example.com's #eee, so neither a blank page nor a different page matches it
+#: within pngcheck's tolerance.
+BROWSER_FIXTURE_RGB="c2185b"
+BROWSER_FIXTURE_TITLE="Swarm acceptance fixture"
+#: The block fills the viewport and the text is a few short lines, so the
+#: colour covers far more than this; half is what a page that rendered
+#: something else as well, or only partly, cannot reach.
+BROWSER_FIXTURE_MIN_FRACTION="0.5"
+
+# browser_fixture_text RUN_ID -> the string the page shows and page.txt must
+# hold. Per run, so a screenshot or a cached page from another run cannot pass.
+browser_fixture_text() { printf 'swarm-fixture-%s' "$1"; }
+
+# browser_fixture_html RUN_ID -> the page.
+browser_fixture_html() {
+  printf '<!doctype html><html><head><meta charset="utf-8"><title>%s</title>' "${BROWSER_FIXTURE_TITLE}"
+  printf '<style>html,body{margin:0;height:100%%;background:#%s}' "${BROWSER_FIXTURE_RGB}"
+  printf 'p{margin:0;padding:24px 40px;color:#fff;font:20px sans-serif}</style></head>'
+  printf '<body><p>%s</p><p>%s</p></body></html>' "${BROWSER_FIXTURE_TITLE}" "$(browser_fixture_text "$1")"
+}
+
+# browser_fixture_url RUN_ID -> the URL that serves the page.
+#
+# base64url WITH its padding: httpbin decodes with urlsafe_b64decode, which
+# refuses unpadded input. `tr -d '\n'` because GNU base64 wraps at 76 columns
+# and macOS's does not; `-w` exists on only one of them.
+browser_fixture_url() {
+  local base="${SWARM_BROWSER_FIXTURE_BASE:-https://httpbin.org/base64/}"
+  printf '%s%s' "${base}" "$(browser_fixture_html "$1" | base64 | tr -d '\n' | tr '+/' '-_')"
+}
+
+# png_shows_colour FILE RRGGBB MIN_FRACTION -> 0 when FILE is a PNG that is not
+# blank and RRGGBB covers at least MIN_FRACTION of it; otherwise 1, with the
+# reason on stderr. scripts/acceptance/pngcheck.py does the decoding -- one
+# decoder in this repository, standard-library Python, tested against every
+# PNG row filter in tests/unit/scripts/test_acceptance_helpers.py.
+png_shows_colour() {
+  local file="$1" rgb="$2" fraction="$3" out rc=0 reason
+  if ! command -v python3 >/dev/null 2>&1; then
+    err "png: no python3 to decode ${file} with (scripts/acceptance/pngcheck.py is standard-library Python)"
+    return 1
+  fi
+  out="$(python3 "${REPO_ROOT}/scripts/acceptance/pngcheck.py" "${file}" \
+      --colour "${rgb}" --min-colour-fraction "${fraction}")" || rc=$?
+  reason="$(jq -r '.reason // empty' <<<"${out}" 2>/dev/null || printf '%s' "${out}")"
+  case "${rc}" in
+    0) printf '%s\n' "${reason}" >&2; return 0 ;;
+    1)
+      case "${reason}" in
+        blank*) err "png: the screenshot is blank -- ${reason}" ;;
+        *) err "png: the fixture colour #${rgb} is missing or too little of the image -- ${reason}" ;;
+      esac
+      ;;
+    *) err "png: ${file} is not a PNG this decoder reads -- ${reason}" ;;
+  esac
+  return 1
+}
+
+# browser_fixture_preflight URL -> 0 when URL answers 200 text/html carrying
+# BROWSER_FIXTURE_TITLE, fetched from HERE before any task is submitted.
+# Otherwise 1, with FIXTURE_PREFLIGHT_REASON naming the host and what it said.
+#
+# WHY. The fixture host is a third party (httpbin.org unless
+# SWARM_BROWSER_FIXTURE_BASE says otherwise), and both callers gate a release.
+# The runner reports an error page as SUCCEEDED, so without this an httpbin
+# outage reads as "the page did not render" and turns the release red for a
+# reason that is not the platform's. A host that does not serve the fixture is
+# therefore a SKIP that names it -- not measured, never a pass -- exactly as
+# scripts/acceptance/groups/browser.sh treats httpbin being unreachable. The
+# fetch is from the caller's network, not the worker's, so a host that answers
+# here and not from the worker still fails below, with the page the runner
+# ended on in the message.
+FIXTURE_PREFLIGHT_REASON=""
+browser_fixture_preflight() {
+  local url="$1" host body meta code type rc=0
+  host="${url#*://}"
+  host="${host%%/*}"
+  body="$(mktemp "${TMPDIR:-/tmp}/swarm-fixture-pre.XXXXXX")"
+  meta="$(curl -sS -m 20 -o "${body}" -w '%{http_code} %{content_type}' "${url}" 2>/dev/null)" || rc=$?
+  code="${meta%% *}"
+  type=""
+  [[ "${meta}" != *" "* ]] || type="${meta#* }"
+  FIXTURE_PREFLIGHT_REASON=""
+  if [[ "${rc}" -ne 0 ]]; then
+    FIXTURE_PREFLIGHT_REASON="${host} unavailable (curl exit ${rc}), page load not measured"
+  elif [[ "${code}" != "200" ]]; then
+    FIXTURE_PREFLIGHT_REASON="${host} unavailable (HTTP ${code:-none}), page load not measured"
+  elif [[ "${type}" != text/html* ]]; then
+    FIXTURE_PREFLIGHT_REASON="${host} answered ${type:-no content type}, not text/html, page load not measured"
+  elif ! grep -qF -- "<title>${BROWSER_FIXTURE_TITLE}</title>" "${body}"; then
+    FIXTURE_PREFLIGHT_REASON="${host} answered 200 without the fixture's title, page load not measured"
+  fi
+  rm -f "${body}"
+  [[ -z "${FIXTURE_PREFLIGHT_REASON}" ]]
+}
+
+# text_file_contains FILE STRING -> 0 when FILE holds STRING, literally.
+text_file_contains() {
+  [[ -s "$1" ]] && grep -qF -- "$2" "$1"
+}
+
+# task_artifact_raw TASK NAME OUTFILE -> the artifact's stored bytes in OUTFILE.
+#
+# Through the API's raw route, as scripts/acceptance/lib.sh's acc_raw_artifact
+# reads them: curl writes the file itself, because a shell variable drops NUL
+# bytes and a PNG is full of them. The credential goes on stdin (auth_config),
+# never argv. Sets ARTIFACT_HTTP to the status.
+ARTIFACT_HTTP=""
+task_artifact_raw() {
+  local task="$1" name="$2" out="$3" q
+  q="$(jq -rn --arg n "${name}" '$n | @uri')"
+  ARTIFACT_HTTP=""
+  if ! ARTIFACT_HTTP="$(auth_config "$(api_credential)" | curl -sS -m 120 -K - -o "${out}" \
+      -w '%{http_code}' "$(api_url)${API_PREFIX}/tasks/${task}/artifacts/raw?name=${q}&disposition=attachment")"; then
+    return 1
+  fi
+  [[ "${ARTIFACT_HTTP}" == "200" ]]
+}
+
+# t_check_browser_fixture WHO TIMEOUT [EXTRA_JSON] -> one case: submit the
+# fixture task, run it to the end, and assert its title, pixels and text.
+# Returns 1 when any assertion failed (each is already recorded), so a caller
+# under `set -e` calls it with `|| true`. Sets FIXTURE_TASK_ID and
+# FIXTURE_TASK_FINAL (empty when not submitted, or not finished), so a caller
+# can check that task's leases came back too.
+FIXTURE_TASK_ID=""
+FIXTURE_TASK_FINAL=""
+t_check_browser_fixture() {
+  local who="$1" timeout="$2" extra="${3:-{\}}"
+  local run_id text url task final title landed work failed=0
+  FIXTURE_TASK_ID=""
+  FIXTURE_TASK_FINAL=""
+  t_case "${who}: a browser task loads a page the check wrote; its pixels and text come back"
+  run_id="$(test_run_id)"
+  text="$(browser_fixture_text "${run_id}")"
+  url="$(browser_fixture_url "${run_id}")"
+  if ! browser_fixture_preflight "${url}"; then
+    t_skip "${who}: ${FIXTURE_PREFLIGHT_REASON}"
+    return 0
+  fi
+  # The input is written HERE, as a jq literal on the submit_task line, rather
+  # than by a helper: scripts/lib/check-contract-parity.sh reads every
+  # submit_task call's input keys against the catalogue's declared inputs, and
+  # an input built elsewhere is one it cannot read. The viewport screenshot is
+  # fixture.png; extract_text writes page.txt, the text read back below; no
+  # final full-page screenshot, because one picture is the evidence.
+  if ! task="$(submit_task browser \
+      "$(jq -nc --arg r "${run_id}" --arg u "${url}" '{prompt: ("smoke fixture " + $r), url: $u, actions: [{type: "screenshot", name: "fixture.png", full_page: false}], extract_text: true, screenshot: false}')" \
+      "${extra}")"; then
+    t_fail "${who}: the fixture task could not be submitted; see the API response above"
+    return 1
+  fi
+  # shellcheck disable=SC2034  # read by the scripts that source this library
+  FIXTURE_TASK_ID="${task}"
+  t_info "${who}: fixture task ${task}, page served by ${SWARM_BROWSER_FIXTURE_BASE:-https://httpbin.org/base64/}"
+  if ! final="$(wait_for_state "${task}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${timeout}")"; then
+    t_fail "${who}: the fixture task reached no terminal state within ${timeout}s (stuck at ${final})"
+    cancel_task "${task}" || t_info "${who}: could not cancel ${task}; cancel it by hand"
+    return 1
+  fi
+  # shellcheck disable=SC2034  # read by the scripts that source this library
+  FIXTURE_TASK_FINAL="${final}"
+  if [[ "${final}" != "SUCCEEDED" ]]; then
+    t_fail "${who}: the fixture task ended ${final}: $(task_field "${task}" '.last_error // "no error recorded"' | redact | head -c 300)"
+    return 1
+  fi
+
+  title="$(task_field "${task}" '.result_summary.runner.output.title // ""')"
+  if [[ "${title}" == "${BROWSER_FIXTURE_TITLE}" ]]; then
+    t_pass "${who}: the runner read the fixture's title"
+  else
+    landed="$(task_field "${task}" '.result_summary.runner.output.final_url // ""' | redact | head -c 160)"
+    t_fail "${who}: the page the runner ended on is titled '${title}', not '${BROWSER_FIXTURE_TITLE}' -- it did not load the fixture (final_url: ${landed:-none})"
+    failed=1
+  fi
+
+  work="$(mktemp -d "${TMPDIR:-/tmp}/swarm-fixture.XXXXXX")"
+  if ! task_artifact_raw "${task}" "fixture.png" "${work}/fixture.png"; then
+    t_fail "${who}: fixture.png could not be downloaded (HTTP ${ARTIFACT_HTTP:-none})"
+    failed=1
+  elif png_shows_colour "${work}/fixture.png" "${BROWSER_FIXTURE_RGB}" "${BROWSER_FIXTURE_MIN_FRACTION}" 2>"${work}/png.err"; then
+    t_pass "${who}: fixture.png is not blank and shows #${BROWSER_FIXTURE_RGB} ($(tr '\n' ' ' <"${work}/png.err"))"
+  else
+    t_fail "${who}: $(tr '\n' ' ' <"${work}/png.err")"
+    failed=1
+  fi
+  if ! task_artifact_raw "${task}" "page.txt" "${work}/page.txt"; then
+    t_fail "${who}: page.txt (extract_text) could not be downloaded (HTTP ${ARTIFACT_HTTP:-none})"
+    failed=1
+  elif text_file_contains "${work}/page.txt" "${text}"; then
+    t_pass "${who}: page.txt (extract_text) carries '${text}'"
+  else
+    t_fail "${who}: page.txt (extract_text) does not carry '${text}': $(head -c 160 "${work}/page.txt" | tr '\n' ' ' | redact)"
+    failed=1
+  fi
+  rm -rf "${work}"
+  return "${failed}"
 }
 
 # profile_extra PROFILE -> what a submission of PROFILE carries BESIDE its

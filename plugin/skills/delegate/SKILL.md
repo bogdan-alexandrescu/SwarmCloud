@@ -467,7 +467,7 @@ ships both.
   error field and every other required field is nullable. When writing such a
   script, give the schema those fields and catch the call (the plugin README
   shows the shape); an uncaught schema-mode failure aborts the whole script.
-* **A whole SwarmCloud workflow: `/sc:run <spec>`**, where the spec is the
+* **A whole SwarmCloud workflow: `/sc:swarmcloud <spec>`**, where the spec is the
   object `swarm workflow` reads. One `sc:workflow` row submits it through
   `swarm_workflow`, checked by digest so a relay that changed the spec
   submits nothing; SwarmCloud owns the DAG from then on. Each step gets an
@@ -485,7 +485,7 @@ Say these differences BEFORE swapping a local step for a remote one, because
 each is a way the same prompt does different work:
 
 * **each step knows only its prompt** — no conversation, no other step's
-  output (under `/sc:run`, only the `input_from` files SwarmCloud stages);
+  output (under `/sc:swarmcloud`, only the `input_from` files SwarmCloud stages);
 * **its prompt is retyped by a relay** — the `sc:remote` row copies it into
   `swarm_dispatch`, and a long prompt can arrive changed; the task's input in
   the console is what the remote agent actually got;

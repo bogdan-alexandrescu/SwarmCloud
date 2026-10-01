@@ -68,7 +68,13 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
     const pick =
       names.find((n) => binding.has(n)) ??
       names.find((n) => unread.has(n)) ??
-      [...names].sort((a, b) => (byName.get(a)?.available ?? Infinity) - (byName.get(b)?.available ?? Infinity))[0]!
+      // A pool with no limit set (#374) has no `available`, and it is the
+      // one that matters most (admission refuses on it): it sorts first.
+      [...names].sort((a, b) => {
+        const rank = (n: string) => (byName.has(n) ? (byName.get(n)!.available ?? -Infinity) : Infinity)
+        const [ra, rb] = [rank(a), rank(b)]
+        return ra === rb ? 0 : ra < rb ? -1 : 1
+      })[0]!
     const row = byName.get(pick) ?? null
     return {
       family,
@@ -216,6 +222,22 @@ function MatrixCellView({ cell }: { cell: MatrixCell }) {
     )
   }
   const r = cell.row
+  if (r.available === null || r.effective_limit === null) {
+    // No limit set (#374): unknown, never a 0 -- admission refuses on it and
+    // somebody has to set one.
+    return (
+      <td
+        role="cell"
+        data-label={label}
+        data-pool={cell.pool ?? undefined}
+        className={cell.binding ? 'is-num is-binding' : 'is-num'}
+        title={cell.pool ?? undefined}
+      >
+        <b className="cap-mx-zero">no limit set</b>
+        <small>{`${r.active}/—`}</small>
+      </td>
+    )
+  }
   return (
     <td
       role="cell"

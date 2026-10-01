@@ -8,6 +8,7 @@ import { Screen } from './Shell'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
+  POOL_LIMIT_UNSET,
   blockerCeiling,
   ceilingCopy,
   needsAPerson,
@@ -145,7 +146,7 @@ function scopeWord(name: string, viewer: string | undefined): string {
  * configured limit by AIMD or by provider quota (#125).
  */
 export function needsALook(pool: Pool): boolean {
-  return classifyPool(pool).row !== undefined || pool.effective_limit < pool.hard_limit
+  return classifyPool(pool).row !== undefined || (pool.effective_limit !== null && pool.hard_limit !== null && pool.effective_limit < pool.hard_limit)
 }
 
 /**
@@ -247,8 +248,10 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
   // would hand the track a measured zero for a pool that holds something. A
   // ceiling of 0 leaves no room at all, so the track is full in the
   // classification's tone (#159 review of CP-14), never the not-measured hatch.
-  const pct = limit > 0 ? Math.min(100, (pool.active / limit) * 100) : 100
-  const shown = limit > 0 ? `${Math.round((pool.active / limit) * 100)}%` : 'no room'
+  // No limit set (#374): the ceiling was never read, so the track is the
+  // not-measured hatch (null) and the cell says so, never `no room` or 0%.
+  const pct = limit === null ? null : limit > 0 ? Math.min(100, (pool.active / limit) * 100) : 100
+  const shown = limit === null ? 'no limit set' : limit > 0 ? `${Math.round((pool.active / limit) * 100)}%` : 'no room'
 
   return (
     <tr role="row" className={marks.row}>
@@ -259,8 +262,13 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
       <td role="cell" data-label="Scope">{scope}</td>
       <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
       <td role="cell" data-label={CEILING} className="is-num">
-        {limit}
-        {limit < pool.hard_limit && (
+        {limit === null || pool.hard_limit === null ? (
+          // No limit set (#374): unknown, so no number -- not even a 0.
+          <i className="ctl-em" title={by.detail}>no limit set</i>
+        ) : (
+          limit
+        )}
+        {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
           <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
             /{pool.hard_limit}
           </span>
@@ -271,11 +279,15 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
           <UtilTrack
             pct={pct}
             tone={marks.track}
-            meter={{
-              label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units leased`,
-              now: pool.active,
-              max: limit,
-            }}
+            meter={
+              limit === null
+                ? { label: `${poolLabel(pool.name)}: ${pool.active} units leased, no limit set`, now: pool.active, max: 0 }
+                : {
+                    label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units leased`,
+                    now: pool.active,
+                    max: limit,
+                  }
+            }
           />
           <span className="cap-use-pct">{shown}</span>
         </span>
@@ -334,9 +346,17 @@ function classifyPool(pool: Pool): PoolClass {
   const paused = isPaused(pool)
   const over = overCeiling(pool)
   const limit = pool.effective_limit
+  // NO LIMIT SET (#374) is neither `limit 0` nor `ok`: the ceiling was never
+  // read, admission refuses on it, and a person has to set one. The verdict is
+  // the blockers' own `limit-unset`, so the screens cannot disagree.
+  const unset = !paused && limit === null
   const zero = !paused && !over && limit === 0
-  const full = !over && limit > 0 && pool.active >= limit
-  const ceiling = zero ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 }) : null
+  const full = !over && limit !== null && limit > 0 && pool.active >= limit
+  const ceiling = zero
+    ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 })
+    : unset
+      ? blockerCeiling({ reason: POOL_LIMIT_UNSET, pool: pool.name, limit: null })
+      : null
   const zeroTone = ceiling !== null && needsAPerson(ceiling) ? 'is-paused' : 'is-bad'
 
   const chips: PoolClass['chips'] = []
@@ -348,6 +368,15 @@ function classifyPool(pool: Pool): PoolClass {
       cls: 'is-bad',
       word: 'over ceiling',
       title: `${pool.active} units are held against a ceiling of ${limit}. Admission cannot produce this, so it is drift: a limit lowered under running work, or a slot never released. 'make pool-check' finds these.`,
+    })
+  }
+  if (unset) {
+    chips.push({
+      cls: zeroTone,
+      word: 'no limit set',
+      title:
+        ceilingCopy({ reason: POOL_LIMIT_UNSET, pool: pool.name, limit: null, active: pool.active }, 'This pool') ??
+        'This pool has no limit set.',
     })
   }
   if (zero) {
@@ -366,7 +395,7 @@ function classifyPool(pool: Pool): PoolClass {
   // grey screen is what a healthy platform looks like.
   if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
 
-  const track = over ? 'is-bad' : paused ? 'is-paused' : zero ? zeroTone : full ? 'is-warn' : undefined
+  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : full ? 'is-warn' : undefined
   const row =
     track === undefined
       ? undefined
@@ -376,7 +405,9 @@ function classifyPool(pool: Pool): PoolClass {
           ? 'is-paused paused'
           : zero
             ? `${zeroTone} limit-0`
-            : 'is-warn full'
+            : unset
+              ? `${zeroTone} limit-unset`
+              : 'is-warn full'
   return { chips, row, track }
 }
 

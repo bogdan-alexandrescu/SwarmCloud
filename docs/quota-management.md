@@ -116,6 +116,15 @@ runner child sees 429 (it is the only thing that sees the provider's headers)
                         -> scheduler reads the pool and admits fewer tasks
 ```
 
+**The worker never calls `/exhausted`.** A runner's 429 reaches the broker as
+`/rate-limit` whether the runner labelled it `THROTTLED` or `EXHAUSTED`
+(`control.QUOTA_REPORT_ROUTES`), because every runner labels its 429 `EXHAUSTED`
+and posting each one to `/exhausted` would stop the tenant on the first 429. The
+cost: a genuine quota-spent answer with a reset hours away reaches `EXHAUSTED`
+only through `AIMD_EXHAUSTION_THRESHOLD` consecutive 429s, not at once. The
+worker is also no longer a writer of `quota/{provider}:{tenant}`; a document the
+worker wrote beside the broker bypassed AIMD and was undone by the sweep.
+
 The scheduler never asks a provider how it feels. It reads a pool, and the pool
 already carries the answer. That separation is what keeps the admission path a
 single Firestore transaction with no network calls in it.
@@ -156,17 +165,24 @@ already exhausted the quota — and parks instead of finding out the hard way.
 
 ## 4. Park reasons
 
-From `swarm_common.states.ParkReason`. None of these cost compute:
+From `swarm_common.states.ParkReason`. None of these cost compute, and every
+reason something writes has an un-parker below. The two scheduler sweeps added
+for `SCHEDULED_RETRY` and `MANUAL_PAUSE` page through their parks with a cursor
+kept across drains (`Scheduler._parked_window`), so parks that must stay parked
+never hide one that is due: each is examined within ceil(parks /
+`DEPENDENCY_SWEEP_SIZE`) drains. A promotion writes PARKED -> READY alone, in
+the guarded transaction every promotion uses; only admission, later, takes
+capacity (invariant 1).
 
 | Reason | Meaning | Unparked by |
 |---|---|---|
 | `PROVIDER_QUOTA_EXHAUSTED` | quota spent | `next_eligible_at` / reset |
 | `PROVIDER_COOLDOWN` | backing off after 429s | cooldown expiry |
 | `PROVIDER_OUTAGE` | provider unreachable | broker marking it available |
-| `SCHEDULED_RETRY` | ordinary retry backoff | `next_eligible_at` |
+| `SCHEDULED_RETRY` | the worker was interrupted (SIGTERM) and wrote `next_eligible_at=now` | the scheduler's `_promote_scheduled_retries`, once `next_eligible_at` has passed (a null instant is due). A task that has used its last attempt is ended `DEAD_LETTERED` instead (`end_cause` null), because admission does not check `max_attempts` |
 | `DEPENDENCY_INCOMPLETE` | upstream workflow step unfinished | dependency sweep |
-| `MANUAL_PAUSE` | an operator paused it | `resume-swarm.sh` |
-| `BUDGET_EXHAUSTED` | tenant budget spent | budget reset / admin raise |
+| `MANUAL_PAUSE` | its tenant is missing or disabled, or its runner profile left the catalogue | the scheduler's `_promote_manual_pauses`, once the tenant is enabled, the profile is back, and no pool it needs is `enabled == false` (`resume-swarm.sh` writes it back) |
+| `BUDGET_EXHAUSTED` | nothing writes it: there are no budgets (owner, 2026-10-01) | no sweep reads it; the frozen enum keeps the value |
 | `CREDENTIAL_MISSING` | tenant has no key for this provider, and no pool account can run the profile for it | admin adds the key, or lends the tenant an account. A worker's park on a task the pool serves also waits for its `next_eligible_at` (below) |
 
 `CREDENTIAL_MISSING` is worth calling out: a tenant that has not registered a key

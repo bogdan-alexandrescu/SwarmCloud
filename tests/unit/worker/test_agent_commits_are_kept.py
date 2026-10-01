@@ -20,7 +20,11 @@ Real git against local `file://` remotes; only the HTTP forge is faked, as in
 
 from __future__ import annotations
 
+import base64
+import json
+import random
 import shutil
+import string
 import subprocess
 from pathlib import Path
 
@@ -45,6 +49,55 @@ from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
 pytestmark = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 KEY = "sk-ant-supersecret-value-0123456789"
+
+
+# -- credential-shaped values, built at run time (#373) ----------------------
+#
+# Every value below that a secret scanner would take for a real credential is
+# ASSEMBLED when the tests run, from parts or from a seeded generator: this
+# repository is public and its own CI runs trivy's secret scan over the
+# source, so no contiguous credential-shaped literal may sit in this file.
+
+_RNG = random.Random(373)
+_ALNUM = string.ascii_letters + string.digits
+
+
+def _shape(*parts: str) -> str:
+    """Join parts into one value, so the source never holds it whole."""
+    return "".join(parts)
+
+
+def _random_token(length: int, alphabet: str = _ALNUM, digits: int = 4) -> str:
+    """`length` DISTINCT characters, at least `digits` of them digits and the
+    rest letters: high entropy and a letter/digit mix by construction, so a
+    test that needs a credential-shaped value always gets one."""
+    letters = [c for c in alphabet if not c.isdigit()]
+    numbers = [c for c in alphabet if c.isdigit()]
+    chars = _RNG.sample(numbers, digits) + _RNG.sample(letters, length - digits)
+    _RNG.shuffle(chars)
+    return "".join(chars)
+
+
+def _pem_marker(edge: str) -> str:
+    return _shape("-----", edge, " RSA ", "PRIVATE", " KEY", "-----")
+
+
+def _pem_lines(body_chars: int) -> list[str]:
+    """A private-key block whose body is `body_chars` random base64
+    characters, in 64-character lines between its markers."""
+    body = "".join(_RNG.choice(_ALNUM + "+/") for _ in range(body_chars))
+    lines = [body[i : i + 64] for i in range(0, len(body), 64)]
+    return [_pem_marker("BEGIN"), *lines, _pem_marker("END")]
+
+
+def _jwt() -> str:
+    """A token whose header decodes to JSON naming an `alg`."""
+    def part(data: bytes) -> str:
+        return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+    header = part(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    claims = part(json.dumps({"sub": _random_token(12)}).encode())
+    return f"{header}.{claims}.{_random_token(40)}"
 
 
 def _attempt(worker_factory, monkeypatch, remote: Path, *, task_id: str, edit, register=()):
@@ -318,7 +371,7 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
     registered secrets. A key the agent pasted into an `.env` is registered
     by no one; kept one by one, the first commit's tree would publish it.
 
-    MUTATION: drop `_holds_a_credential` from `Worker._leaks_in_added_text` and
+    MUTATION: drop `_credential_in` from `Worker._leaks_in_added_text` and
     this history is kept as two commits, the first carrying the key."""
     def edit(repo: Path) -> None:
         (repo / ".env").write_text(f"AWS_SECRET_ACCESS_KEY={UNREGISTERED_AWS_KEY}\n")
@@ -352,8 +405,12 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         # rule alone would read `eyword_only_args` as a token.
         ("+++ b/api.py\n@@ -0,0 +1 @@\n+def f(*, keyword_only_args=None): pass\n", False),
         # Assembled, so no secret scanner reads this file as holding a key.
+        # A marker over a STUB body IS refused: private keys follow main's
+        # rule exactly, in every path (owner decision, 2026-10-01, #411),
+        # after four review rounds found regressions in every relaxation.
         ("+++ b/key.pem\n@@ -0,0 +2 @@\n+" + "-----" + "BEGIN RSA " + "PRIVATE KEY" + "-----"
          + "\n+MIIEowIBAAKCAQEA\n", True),
+        ("+++ b/key.pem\n@@ -0,0 +4 @@\n+" + "\n+".join(_pem_lines(200)) + "\n", True),
         # The key/value rule counts only for a LITERAL (owner decision,
         # 2026-09-28): a quoted string, or a bare credential-shaped token.
         ("+++ b/auth.py\n@@ -0,0 +1 @@\n+token = get_token()\n", False),
@@ -364,7 +421,8 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         ("+++ b/.env\n@@ -0,0 +1 @@\n+DB_SECRET=a1b2c3d4e5f6g7h8\n", True),
     ],
     ids=[
-        "added", "only-removed", "no-credential", "prefix-inside-an-identifier", "private-key",
+        "added", "only-removed", "no-credential", "prefix-inside-an-identifier",
+        "private-key-stub-body", "private-key-real-body",
         "kv-call", "kv-annotation", "kv-attribute", "kv-double-quoted", "kv-single-quoted",
         "kv-bare-token",
     ],
@@ -497,7 +555,7 @@ def test_a_list_that_skips_a_commit_counts_as_a_hit(tmp_path, origin):
 
     def first(listed: list[str]) -> int | None:
         return lifecycle._first_leaking_commit(
-            shas=listed, keep=None, leaks=lambda text: False, git=["git"], repo=repo,
+            shas=listed, keep=None, leaks=lambda _path, _text: None, git=["git"], repo=repo,
             private_dir=tmp_path, logs_dir=tmp_path / "logs", timeout_seconds=60,
             logger=_QuietLog(), floor=base,
         )
@@ -623,17 +681,26 @@ def test_a_key_past_the_32_mib_mark_of_a_40_mb_diff_is_caught(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
-    assert out.get("final_tree_leak") == "the final tree adds a credential in big.py; remove it", out
+    assert out.get("final_tree_leak") == (
+        "the final tree adds a credential in big.py (rule aws_access_key_id, line 11500001); remove it"
+    ), out
     assert not _branch_exists(origin, branch), "a branch was pushed"
 
 
-def _scan(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None) -> str | None:
+def _scan_hit(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None):
+    """The scanner's whole finding: (path, rule, line), or None."""
     scanner = lifecycle._DiffLeakScanner(
-        leaks or lifecycle._holds_a_credential, window=window, overlap=overlap
+        leaks or lifecycle._credential_in, window=window, overlap=overlap
     )
     for start in range(0, len(diff), piece):
         scanner.feed(diff[start : start + piece])
     return scanner.close()
+
+
+def _scan(diff: bytes, *, window: int, overlap: int, piece: int, leaks=None) -> str | None:
+    """The path the scanner names, or None."""
+    hit = _scan_hit(diff, window=window, overlap=overlap, piece=piece, leaks=leaks)
+    return None if hit is None else hit.path
 
 
 def _one_file_diff(path: str, lines: list[str]) -> bytes:
@@ -653,16 +720,20 @@ def test_a_key_straddling_a_window_edge_is_found(piece):
     filler = ["y" * 30] * 6  # 186 characters with newlines
     diff = _one_file_diff("a.txt", [*filler, f"{'z' * 9} {UNREGISTERED_AWS_KEY}", *filler])
     assert _scan(diff, window=200, overlap=64, piece=piece) == "a.txt"
+    # The line is counted across the window edge too: six filler lines, then the key.
+    assert _scan_hit(diff, window=200, overlap=64, piece=piece) == ("a.txt", "aws_access_key_id", 7)
 
 
 def test_a_registered_value_straddling_a_window_edge_is_found():
     secret = "registered-" + "s" * 90  # longer than the base overlap
     filler = ["y" * 30] * 6
     diff = _one_file_diff("b.txt", [*filler, secret, *filler])
-    found = _scan(
-        diff, window=200, overlap=32 + len(secret), piece=5, leaks=lambda text: secret in text
-    )
-    assert found == "b.txt"
+    def leaks(_path: str, text: str):
+        at = text.find(secret)
+        return None if at < 0 else lifecycle.CredentialHit("registered_secret", at)
+
+    found = _scan_hit(diff, window=200, overlap=32 + len(secret), piece=5, leaks=leaks)
+    assert found == ("b.txt", "registered_secret", 7)
 
 
 def test_the_stream_scan_names_the_file_and_reads_only_added_lines():
@@ -755,7 +826,9 @@ def test_an_env_committed_with_a_registered_key_and_never_deleted_publishes_noth
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
-    assert out.get("final_tree_leak") == "the final tree adds a credential in .env; remove it", out
+    assert out.get("final_tree_leak") == (
+        "the final tree adds a credential in .env (rule registered_secret, line 1); remove it"
+    ), out
     assert ".env" in out["publish_reason"], out["publish_reason"]
     assert KEY not in str(out), "the value reached the publish result"
     assert not _branch_exists(origin, branch), "a branch was pushed"
@@ -780,7 +853,9 @@ def test_an_uncommitted_credential_in_the_final_tree_publishes_nothing(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
-    assert out.get("final_tree_leak") == "the final tree adds a credential in .env; remove it", out
+    assert out.get("final_tree_leak") == (
+        "the final tree adds a credential in .env (rule aws_access_key_id, line 1); remove it"
+    ), out
     assert UNREGISTERED_AWS_KEY not in str(out), "the value reached the publish result"
     assert not _branch_exists(origin, branch), "a branch was pushed"
     assert UNREGISTERED_AWS_KEY.encode() not in _all_object_bytes(origin), (
@@ -815,7 +890,7 @@ def test_a_final_tree_leak_fails_the_attempt_retryably_naming_the_file(
     db.doc("tasks/task_1")["metadata"] = {"dispatch": {"strategy": "direct-pr"}}
     monkeypatch.setattr(lifecycle.Worker, "_title_owed", lambda self, task: False)
     worker, _config, _exporter = worker_factory()
-    reason = "the final tree adds a credential in .env; remove it"
+    reason = "the final tree adds a credential in .env (rule aws_access_key_id, line 1); remove it"
 
     def harvest(*, publish: bool, **_kwargs):
         return {
@@ -848,3 +923,624 @@ def test_an_added_line_that_reads_like_a_file_header_is_still_scanned():
         f"+++ {UNREGISTERED_AWS_KEY}\n"
     )
     assert lifecycle._adds_a_credential(diff) is True
+
+
+# -- the tiered, path-aware publish guard (#373) ------------------------------
+#
+# OWNER DECISION, 2026-09-30 (#373). The publish scans refused every test of
+# the redaction rules, because such a test has to hold text the rules match
+# (`"password": "********"`, `secret="<name>"`), and no SwarmCloud agent could
+# publish one. The guard is now tiered by the file's path:
+#
+# * TIER 1, every file: a registered secret (never relaxed); a vendor-shaped
+#   key, which in a TEST path must also carry a credential-shaped tail; a JWT
+#   whose header decodes to JSON naming `alg`; a private-key block with a real
+#   body of about 100 high-entropy base64 characters.
+# * TIER 2, outside test paths: the generic rules (key/value, Bearer/Basic,
+#   the Authorization scheme) refuse exactly as before.
+# * TIER 3, in test paths: a generic match refuses only when its value looks
+#   like a credential -- 16 or more characters, high entropy, letters and
+#   digits mixed, not a placeholder.
+#
+# Both scans -- per commit and final tree -- ask the same predicate, so they
+# agree. A refusal names the rule and the line, never the value.
+
+
+@pytest.mark.parametrize(
+    ("path", "is_test"),
+    [
+        ("tests/unit/worker/helpers.py", True),
+        ("test/fixture.go", True),
+        ("web/src/__tests__/App.jsx", True),
+        ("apps/swarm-api/tests/conftest.py", True),
+        ("src/test_module.py", True),
+        ("src/app/test_settings.py", True),
+        ("tests/unit/control_plane/test_json_artifact_masking.py", True),
+        ("test_top_level.py", True),
+        ("pkg/parse/parse_test.go", True),
+        ("src/module_test.py", True),
+        ("web/src/App.test.tsx", True),
+        ("web/src/App.spec.ts", True),
+        ("web/src/util.test.js", True),
+        ("web/src/util.spec.jsx", True),
+        ("web/src/App.test.py", True),
+        ("Tests/x.py", True),
+        ("src/TESTS/x.sh", True),
+        # Config and data files are strict everywhere, under tests/ too.
+        ("pkg/parse/testdata/input.txt", False),
+        ("fixtures/sample.json", False),
+        ("tests/fixtures/secrets.yaml", False),
+        ("tests/secrets.yaml", False),
+        ("tests/prod.env", False),
+        ("tests/service-account.json", False),
+        ("deploy/fixtures/prod.yaml", False),
+        ("testdata/aws_config", False),
+        ("tests/settings.toml", False),
+        ("tests/app.ini", False),
+        ("tests/Makefile", False),
+        ("src/app.py", False),
+        ("testing/helpers.py", False),
+        ("contest/entry.py", False),
+        ("src/latest/app.py", False),
+        ("src/test.py", False),
+        ("src/mytest_module.py", False),
+        ("web/src/App.tests.ts", False),
+        ("", False),
+        # NEVER a test path, even under tests/: the files real credentials live in.
+        ("tests/fixtures/.env", False),
+        ("tests/.env.local", False),
+        ("tests/certs/server.pem", False),
+        ("tests/keys/id_rsa.key", False),
+        ("tests/fixtures/credentials.json", False),
+        ("tests/unit/test_credential_store.py", False),
+        ("tests/fixtures/client_secret.json", False),
+        ("fixtures/secret.json", False),
+    ],
+)
+def test_the_test_path_classifier(path, is_test):
+    assert lifecycle.is_test_path(path) is is_test
+
+
+def _rule_for(worker, path: str, text: str) -> str | None:
+    hit = worker._leaks_in_added_text(path, text)
+    return None if hit is None else hit.rule
+
+
+EVERYWHERE = ["src/app.py", "tests/unit/test_masking.py", "tests/fixtures/data.txt"]
+
+
+@pytest.mark.parametrize("path", EVERYWHERE)
+def test_a_registered_secret_is_refused_in_every_path(worker_factory, path):
+    worker, _, _ = worker_factory()
+    secret = _shape("retained-", "name")  # low entropy: only the registration catches it
+    worker.log.register_secret(secret)
+    assert _rule_for(worker, path, f'extra = {{"value": "{secret}"}}\n') == "registered_secret"
+
+
+@pytest.mark.parametrize("path", EVERYWHERE)
+@pytest.mark.parametrize(
+    ("make", "rule"),
+    [
+        (lambda: _shape("gh", "p_", _random_token(36)), "github_token"),
+        (lambda: _shape("AK", "IA", _random_token(16, string.ascii_uppercase + string.digits)),
+         "aws_access_key_id"),
+        (_jwt, "jwt"),
+        (lambda: "\n".join(_pem_lines(400)), "private_key_block"),
+    ],
+    ids=["github-token", "aws-key", "decodable-jwt", "private-key-real-body"],
+)
+def test_a_tier_one_credential_is_refused_in_every_path(worker_factory, path, make, rule):
+    worker, _, _ = worker_factory()
+    value = make()
+    assert _rule_for(worker, path, f"value = {value!r}\n") == rule
+
+
+def test_a_high_entropy_token_under_tests_is_refused(worker_factory):
+    worker, _, _ = worker_factory()
+    text = f'payload = {{"token": "{_random_token(32)}"}}\n'
+    assert _rule_for(worker, "tests/unit/test_api.py", text) == "key_value_assignment"
+
+
+def test_anything_in_an_env_file_under_tests_is_judged_as_outside_tests(worker_factory):
+    """`.env*` is never a test path, so its generic matches refuse as in src."""
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/fixtures/.env", 'API_TOKEN="hunter2"\n') == "key_value_assignment"
+    low_entropy = "DB_PASSWORD=p4ssw0rd-p4ssw0rd\n"
+    assert _rule_for(worker, "tests/fixtures/.env", low_entropy) == "key_value_assignment"
+    assert _rule_for(worker, "tests/fixtures/settings.py", low_entropy) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    ['config = {"secret": "retained"}\n', 'login(password="hunter2")\n', "password = 'hunter2'\n"],
+    ids=["json-secret", "kwarg-password", "assigned-password"],
+)
+def test_a_generic_literal_outside_tests_is_refused_as_before(worker_factory, text):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "src/app.py", text) == "key_value_assignment"
+
+
+#: Allowed in a test path, each refused outside one (the paired assertion).
+TEST_ONLY_ALLOWED = [
+    'assert masked == {"secret": "retained"}\n',
+    'assert redact(\'{"token": "x"}\') == \'{"token": "********"}\'\n',
+    "env = 'DB_PASSWORD=supersecretpassword'\n",
+    'env = "DB_PASSWORD=p4ssw0rd-p4ssw0rd"\n',
+    'login(password="hunter2")\n',
+    # The four shapes that blocked real runs: #376's `extra=` registration,
+    # #379's keyword argument, and #327's masked-JSON assertions.
+    'log.info("resolved", extra={"secret": "tenant-git-token", "token": "anthropic-api-key"})\n',
+    'resolve(secret="swarm-tenant-acme-git")\n',
+    "assert masked == '{\"password\": \"********\"}'\n",
+    'assert body["password"] == "********"\n',
+]
+
+
+@pytest.mark.parametrize("text", TEST_ONLY_ALLOWED)
+def test_a_generic_match_in_a_test_path_passes_unless_credential_shaped(worker_factory, text):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/unit/control_plane/test_json_artifact_masking.py", text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        'assert masked == {"secret": "retained"}\n',
+        'login(password="hunter2")\n',
+        'resolve(secret="swarm-tenant-acme-git")\n',
+    ],
+)
+def test_the_same_generic_match_outside_tests_is_refused(worker_factory, text):
+    """The control for the test above: the path alone made the difference."""
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "apps/swarm-api/swarm_api/routes.py", text) == "key_value_assignment"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _shape("key = '", "sk-", "test-aaaa", "'\n"),
+        _shape("key = '", "AK", "IA", "IOSFODNN7", "EXAMPLE", "'\n"),
+        _shape("key = '", "gh", "p_", "x" * 36, "'\n"),
+    ],
+    ids=["sk-test", "aws-documentation-example", "github-placeholder"],
+)
+def test_a_vendor_fixture_with_a_placeholder_tail_passes_in_tests_only(worker_factory, text):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/unit/test_rules.py", text) is None
+    assert _rule_for(worker, "src/rules.py", text) is not None
+
+
+def _der_key_body(prefix_hex: str, random_len: int) -> str:
+    """A PKCS#8-shaped body: a fixed DER prefix plus random bytes, base64.
+    Built at run time, so no key-shaped literal sits in the repository."""
+    return base64.b64encode(bytes.fromhex(prefix_hex) + _RNG.randbytes(random_len)).decode()
+
+
+def _pkcs8(body: str, kind: str = "") -> str:
+    return "\n".join(
+        [_shape("-----", "BEGIN", kind, " PRIVATE", " KEY", "-----"), body,
+         _shape("-----", "END", kind, " PRIVATE", " KEY", "-----")]
+    ) + "\n"
+
+
+def _ed25519_body() -> str:
+    # 302e020100300506032b657004220420 + 32 random bytes: a 64-character body.
+    body = _der_key_body("302e020100300506032b657004220420", 32)
+    assert len(body) == 64
+    return body
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/unit/test_x.py"])
+def test_a_short_pkcs8_ed25519_key_is_refused_in_every_path(worker_factory, path):
+    """BLOCKER: a 64-character body sat under the 100-character floor."""
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _pkcs8(_ed25519_body())) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/unit/test_x.py"])
+def test_a_json_escaped_short_key_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    escaped = json.dumps(_pkcs8(_ed25519_body()))
+    assert _rule_for(worker, path, f"data = {escaped}\n") == "private_key_block"
+
+
+def test_an_rsa_2048_key_split_into_short_quoted_pieces_is_refused_from_src(worker_factory):
+    """MAJOR: no piece reached 16 characters, so no run counted."""
+    worker, _, _ = worker_factory()
+    body = "".join(_RNG.choice(_ALNUM + "+/") for _ in range(1600))
+    pieces = [body[i : i + 15] for i in range(0, len(body), 15)]
+    lines = [_shape('    "', piece, '" +') for piece in pieces]
+    text = "\n".join(
+        ["KEY = (", f'    "{_pem_marker("BEGIN")}\\n" +', *lines, f'    "{_pem_marker("END")}"', ")"]
+    ) + "\n"
+    assert _rule_for(worker, "src/keys.py", text) == "private_key_block"
+
+
+@pytest.mark.parametrize("kind", ["", " EC", " RSA"])
+def test_a_der_shaped_key_of_any_size_is_refused(worker_factory, kind):
+    worker, _, _ = worker_factory()
+    # SEQUENCE, long-form length 0x0140 = 320, then 320 random bytes.
+    body = _der_key_body("30820140", 320)
+    assert _rule_for(worker, "src/k.py", _pkcs8(body, kind)) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", EVERYWHERE)
+def test_an_ey_run_that_is_not_a_jwt_passes(worker_factory, path):
+    """`ey` and eight characters is the read-time rule's JWT; a header that
+    does not decode to JSON naming `alg` is not one at publish."""
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _shape("cursor = 'ey", "abcdefghijKLMNOP", "'\n")) is None
+
+
+@pytest.mark.parametrize(
+    ("value", "shaped"),
+    [
+        (_random_token(16), True),
+        (_random_token(32), True),
+        (_random_token(15), False),  # too short
+        ("abcdefghijklmnopqrstuvwxyz", False),  # no digit
+        ("12345678901234567890", False),  # no letter
+        ("aaaaaaaa11111111", False),  # low entropy
+        ("p4ssw0rd-p4ssw0rd", False),  # low entropy
+        ("********", False),
+        (_shape("xxxx", _random_token(16)), False),
+        (_shape("<", _random_token(16), ">"), False),
+        (_shape("${", _random_token(16), "}"), False),
+        (_shape("fake", _random_token(16)), False),
+        (_shape(_random_token(16), "Test"), False),
+        (_shape("dummy", _random_token(16)), False),
+        (_shape(_random_token(16), "EXAMPLE"), False),
+    ],
+)
+def test_what_counts_as_credential_shaped(value, shaped):
+    assert lifecycle._looks_like_a_credential(value) is shaped
+
+
+def test_every_generic_rule_the_guard_names_is_a_redaction_rule():
+    """A rename in `swarm_redaction.RULES` would silently move a generic rule
+    into the vendor tier; this names the drift instead."""
+    names = {rule.name for rule in lifecycle.CREDENTIAL_RULES}
+    assert lifecycle.GENERIC_CREDENTIAL_RULES <= names
+    assert {"jwt", "private_key_block"} <= names
+
+
+def test_a_refusal_names_the_rule_and_the_line_and_never_the_value():
+    """The line is the file's own: the hunk starts at line 41, and the token
+    is the hunk's third added line."""
+    token = _random_token(32)
+    diff = (
+        "diff --git a/tests/unit/test_api.py b/tests/unit/test_api.py\n"
+        "--- a/tests/unit/test_api.py\n+++ b/tests/unit/test_api.py\n"
+        "@@ -1,0 +2 @@\n+import json\n"
+        "@@ -40,0 +41,3 @@\n"
+        '+def test_x():\n+    masked = {"password": "********"}\n'
+        f'+    sent = {{"token": "{token}"}}\n'
+    ).encode()
+    hit = _scan_hit(diff, window=1 << 20, overlap=64, piece=7)
+    assert hit == ("tests/unit/test_api.py", "key_value_assignment", 43)
+    assert token not in repr(hit)
+
+
+def test_the_per_commit_scan_reads_a_test_files_path():
+    """`_adds_a_credential` judges each file by its own path: the same line
+    passes in a test file and is caught in source."""
+    line = 'assert masked == {"secret": "retained"}'
+    in_tests = f"+++ b/tests/unit/test_mask.py\n@@ -0,0 +1 @@\n+{line}\n"
+    in_src = f"+++ b/src/mask.py\n@@ -0,0 +1 @@\n+{line}\n"
+    assert lifecycle._adds_a_credential(in_tests) is False
+    assert lifecycle._adds_a_credential(in_src) is True
+
+
+def _akia() -> str:
+    """A real-shaped AWS access key id: AKIA and 16 random upper/digits, never
+    carrying a placeholder word by accident."""
+    while True:
+        tail = "".join(_RNG.choice(string.ascii_uppercase + string.digits) for _ in range(16))
+        if not lifecycle._PLACEHOLDER.search(tail):
+            return _shape("AK", "IA", tail)
+
+
+def test_no_real_shaped_aws_key_passes_under_tests():
+    """The reviewer measured 22.15% passing the entropy/digit judgement."""
+    from agent_worker.lifecycle import _credential_in
+
+    refused = sum(
+        _credential_in("tests/test_x.py", f"AWS_KEY = {_akia()!r}\n") is not None
+        for _ in range(200)
+    )
+    assert refused == 200
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _shape("key = '", "AK", "IA", "IOSFODNN7", "EXAMPLE", "'\n"),
+        _shape("key = '", "gh", "p_", "x" * 36, "'\n"),
+        _shape("key = '", "AK", "IA", "A" * 16, "'\n"),
+    ],
+    ids=["aws-example", "github-xxxx", "repeated-character"],
+)
+def test_an_explicit_placeholder_vendor_token_passes_under_tests(worker_factory, text):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+    assert _rule_for(worker, "src/app.py", text) is not None
+
+
+def test_a_placeholder_token_in_a_config_file_under_tests_is_refused(worker_factory):
+    worker, _, _ = worker_factory()
+    text = _shape("key: ", "AK", "IA", "IOSFODNN7", "EXAMPLE", "\n")
+    assert _rule_for(worker, "tests/secrets.yaml", text) is not None
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+# -- a key whose body sits outside the block, or whose lines carry a prefix (#411)
+#
+# The guard once judged only the text between BEGIN and END. Main refused any
+# marker; the tiered guard let a key through when its body was held elsewhere
+# (an f-string, `%`, a variable) or when its lines carried a log prefix.
+
+OUTSIDE_PATHS = ["src/app.py", "tests/test_x.py"]
+LOG_PATHS = ["src/app.py", "tests/test_x.py", "tests/fixtures/run.log"]
+
+
+def _b64(raw: bytes) -> str:
+    return base64.b64encode(raw).decode()
+
+
+def _rsa_der() -> bytes:
+    # SEQUENCE, long-form length, INTEGER 0, then random bytes: PKCS#1-shaped.
+    inner = bytes.fromhex("020100") + _RNG.randbytes(600)
+    return bytes.fromhex("3082") + len(inner).to_bytes(2, "big") + inner
+
+
+def _ed25519_der() -> bytes:
+    return bytes.fromhex("302e020100300506032b657004220420") + _RNG.randbytes(32)
+
+
+def _openssh_body() -> bytes:
+    return b"openssh-key-v1\x00" + _RNG.randbytes(250)
+
+
+KEY_BODIES = {"rsa": _rsa_der, "ed25519": _ed25519_der, "openssh": _openssh_body}
+
+
+def _begin(kind: str = "") -> str:
+    return _shape("-----", "BEGIN", kind, " PRIVATE", " KEY", "-----")
+
+
+def _end(kind: str = "") -> str:
+    return _shape("-----", "END", kind, " PRIVATE", " KEY", "-----")
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_key_assembled_by_an_f_string_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'BODY = "{body}"\n'
+            f'K = f"{_begin()}\\n{{BODY}}\\n{_end()}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_key_assembled_by_percent_with_the_pieces_after_end_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'key_b64 = "{body}"\n'
+            f'K = "{_begin(" RSA")}\\n%s\\n{_end(" RSA")}" % key_b64\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_body_in_a_separate_private_key_b64_variable_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'private_key_b64 = "{body}"\n'
+            f'HEAD = "{_begin()}"\nTAIL = "{_end()}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", LOG_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_a_log_prefixed_key_with_no_end_marker_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    lines = [body[i : i + 64] for i in range(0, len(body), 64)]
+    out = [f"2026-09-30T12:00:00Z INFO {_begin(' RSA')}"]
+    out += [f"2026-09-30T12:00:{i + 1:02d}Z INFO {line}" for i, line in enumerate(lines)]
+    assert _rule_for(worker, path, "\n".join(out) + "\n") == "private_key_block"
+
+
+# --- #411 third review: encrypted keys and an orphan END ---------------------
+#
+# An encrypted PKCS#8 opens SEQUENCE { SEQUENCE { OID PBES2 ... } OCTET STRING },
+# so its first element is a SEQUENCE and the INTEGER 0/1 shape check missed it.
+# A traditional encrypted PEM carries `Proc-Type` / `DEK-Info` headers and then
+# raw ciphertext after a blank line. Both are built at run time.
+
+
+def _der(tag: int, payload: bytes) -> bytes:
+    return bytes([tag, 0x82]) + len(payload).to_bytes(2, "big") + payload
+
+
+def _encrypted_pkcs8(oid_hex: str = "06092a864886f70d01050d") -> bytes:
+    # PBES2 by default; 06092a864886f70d010503 is PBES1, ...010c0103 is PKCS#12.
+    alg = _der(0x30, bytes.fromhex(oid_hex) + _RNG.randbytes(40))
+    return _der(0x30, alg + _der(0x04, _RNG.randbytes(300)))
+
+
+ENCRYPTED_BODIES = {
+    "pbes2": lambda: _encrypted_pkcs8(),
+    "pbes1": lambda: _encrypted_pkcs8("06092a864886f70d010503"),
+    "pkcs12": lambda: _encrypted_pkcs8("060a2a864886f70d010c0103"),
+}
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_in_an_f_string_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'BODY = "{body}"\n'
+            f'K = f"{_begin(" ENCRYPTED")}\\n{{BODY}}\\n{_end(" ENCRYPTED")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_by_percent_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'key_b64 = "{body}"\n'
+            f'K = "{_begin(" ENCRYPTED")}\\n%s\\n{_end(" ENCRYPTED")}" % key_b64\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_in_a_private_key_b64_variable_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'private_key_b64 = "{body}"\n'
+            f'HEAD = "{_begin(" ENCRYPTED")}"\nTAIL = "{_end(" ENCRYPTED")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def _traditional_encrypted_pem(with_end: bool) -> str:
+    cipher = _b64(_RNG.randbytes(96))
+    lines = [cipher[i : i + 64] for i in range(0, len(cipher), 64)]
+    out = [_begin(" RSA"), "Proc-Type: 4,ENCRYPTED",
+           "DEK-Info: AES-128-CBC," + _RNG.randbytes(16).hex().upper(), "", *lines]
+    if with_end:
+        out.append(_end(" RSA"))
+    return "\n".join(out) + "\n"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("with_end", [True, False])
+def test_a_traditional_encrypted_pem_is_refused(worker_factory, path, with_end):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _traditional_encrypted_pem(with_end)) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_marker_followed_by_dek_info_alone_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    text = f"{_begin(' RSA')}\nDEK-Info: AES-256-CBC,{_RNG.randbytes(16).hex()}\n"
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+# An orphan END whose BEGIN is split across string pieces is not refused: it
+# is refused only where main's private-key rule refuses it, and main does not
+# (owner decision, 2026-10-01: private keys follow main's rule exactly; the
+# parity test above pins that). The gap predates #411 and is on epic #361.
+
+
+# --- #411 fourth review: headers and ciphertext away from the markers --------
+#
+# A traditional encrypted PEM's headers may sit in a variable defined before
+# the BEGIN, or further than the window after it; an orphan END may have only
+# its ciphertext lines above it. Main refuses all of these.
+
+
+def _trad_parts() -> tuple[str, str]:
+    hdr = "Proc-Type: 4,ENCRYPTED\\nDEK-Info: AES-128-CBC," + _RNG.randbytes(16).hex().upper() + "\\n\\n"
+    return hdr, _b64(_RNG.randbytes(300))
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_with_headers_defined_before_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    text = (f'HDR = "{hdr}"\nBODY = "{body}"\n'
+            f'K = f"{_begin(" RSA")}\\n{{HDR}}{{BODY}}\\n{_end(" RSA")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_by_percent_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    text = (f'HDR = "{hdr}"\nBODY = "{body}"\n'
+            f'K = "{_begin(" RSA")}\\n%s%s\\n{_end(" RSA")}" % (HDR, BODY)\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_traditional_encrypted_pem_with_headers_far_after_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    hdr, body = _trad_parts()
+    filler = "".join(f"# filler line number {i} of padding text\n" for i in range(200))
+    text = (f'K = f"{_begin(" RSA")}\\n{{HDR}}{{BODY}}\\n{_end(" RSA")}"\n'
+            f'{filler}HDR = "{hdr}"\nBODY = "{body}"\n')
+    assert len(filler) > 4096
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def _cipher_lines(raw_len: int = 300) -> list[str]:
+    cipher = _b64(_RNG.randbytes(raw_len))
+    return [cipher[i : i + 64] for i in range(0, len(cipher), 64)]
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_an_orphan_end_with_ciphertext_lines_above_it_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    text = "\n".join([*_cipher_lines(), _end(" RSA")]) + "\n"
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+# --- #411, owner decision 2026-10-01: private keys follow main's rule -------
+#
+# Four review rounds of relaxing the private-key check each found inputs main
+# refuses and the branch published. Any marker, a stub or a bare one included,
+# is refused in every path, exactly where `mask_private_keys` masks.
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+def test_a_bare_stub_marker_is_refused_as_on_main(worker_factory, path):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _pem_marker("BEGIN") + "\n") == "private_key_block"
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+def test_a_sixteen_character_stub_between_markers_is_refused_as_on_main(worker_factory, path):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _pkcs8("MIIEowIBAAKCAQEA")) == "private_key_block"
+
+
+def test_a_stub_marker_and_a_random_blob_under_tests_is_refused_as_on_main(worker_factory):
+    worker, _, _ = worker_factory()
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nBLOB = "{_b64(_RNG.randbytes(500))}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) == "private_key_block"
+
+
+def _parity_inputs() -> dict[str, str]:
+    cert = _der(0x30, _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300)) + _RNG.randbytes(100))
+    return {
+        "bare-marker": _pem_marker("BEGIN") + "\n",
+        "stub": _pkcs8("MIIEowIBAAKCAQEA"),
+        "stub-and-blob": f'{_pkcs8("MIIEowIBAAKCAQEA")}\nB = "{_b64(_RNG.randbytes(500))}"\n',
+        "stub-and-certificate": f'{_pkcs8("MIIEowIBAAKCAQEA")}\nC = "{_b64(cert)}"\n',
+        "real-ed25519": _pkcs8(_ed25519_body()),
+        "real-rsa": "\n".join(_pem_lines(1600)) + "\n",
+        "orphan-end-with-ciphertext": "\n".join([*_cipher_lines(), _end(" RSA")]) + "\n",
+        "orphan-end-after-prose": "\n".join([*_cipher_lines(), "# not a key", _end(" RSA")]) + "\n",
+        "orphan-end-alone": _end(" RSA") + "\n",
+        "no-marker": 'BLOB = "' + _b64(_RNG.randbytes(300)) + '"\n',
+        "prose": "nothing to see here\n",
+    }
+
+
+@pytest.mark.parametrize("path", ["src/app.py", "tests/test_x.py"])
+@pytest.mark.parametrize("name", sorted(_parity_inputs()))
+def test_the_guard_refuses_a_private_key_exactly_when_main_masks_one(path, name):
+    """PARITY: the branch's private-key answer is `mask_private_keys`'s."""
+    from swarm_redaction.rules import mask_private_keys
+
+    text = _parity_inputs()[name]
+    hit = lifecycle._credential_in(path, text)
+    refused = hit is not None and hit.rule == "private_key_block"
+    assert refused == (mask_private_keys(text, False, False)[1] > 0)

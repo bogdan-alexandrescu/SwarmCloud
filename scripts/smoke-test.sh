@@ -442,7 +442,12 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
     t_info "${BACKEND} is therefore untested by this suite, and a green run says nothing about it"
     continue
   fi
-  t_case "Backend ${BACKEND}: submit a ${BPROFILE} task and run it to completion"
+  # The browser row's task screenshots about:blank, so it proves Chromium
+  # starts and nothing more; it is labelled for that, and the fixture check
+  # after it proves a page loads (#357, testlib.sh).
+  B_WHAT=""
+  [[ "${BPROFILE}" != "browser" ]] || B_WHAT=" (about:blank: Chromium starts)"
+  t_case "Backend ${BACKEND}: submit a ${BPROFILE} task${B_WHAT} and run it to completion"
   if row_is_paused "${BACKEND} (${BPROFILE})" "${BCLASS}"; then
     PAUSED=$(( PAUSED + 1 ))
     continue
@@ -460,6 +465,7 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
   fi
   EXERCISED=$(( EXERCISED + 1 ))
   t_info "${BACKEND}: task ${B_TASK_ID}"
+  b_final=""
   if b_final="$(wait_for_state "${B_TASK_ID}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${TIMEOUT}")"; then
     assert_eq "SUCCEEDED" "${b_final}" "${BACKEND}: terminal state"
     if [[ "${b_final}" != "SUCCEEDED" ]]; then
@@ -473,6 +479,19 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
   else
     t_fail "${BACKEND}: no terminal state within ${TIMEOUT}s (stuck at ${b_final})"
     t_info "${BACKEND}: last_error: $(task_field "${B_TASK_ID}" '.last_error // "none"')"
+  fi
+  if [[ "${BPROFILE}" == "browser" ]]; then
+    # A page LOADS and RENDERS, which about:blank never showed (#357). Only
+    # after Chromium has been seen to start: if it did not, the fixture task
+    # would fail for the reason already recorded above, and its row is a skip
+    # that names that, never a pass.
+    if [[ "${b_final}" == "SUCCEEDED" ]]; then
+      t_check_browser_fixture "${BACKEND} (${BPROFILE})" "${TIMEOUT}" \
+        "$(profile_extra "${BPROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"smoke-test-fixture"}}')" || true
+    else
+      t_case "${BACKEND} (${BPROFILE}): a browser task loads a page the check wrote; its pixels and text come back"
+      t_skip "${BACKEND} (${BPROFILE}): not submitted -- the about:blank task above did not succeed (${b_final:-no state}), so Chromium was never seen to start"
+    fi
   fi
 done 3<"${COVER_FILE}"
 rm -f "${COVER_FILE}"
@@ -495,7 +514,9 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-t_case "Submit a ${PROFILE} task and run it to completion"
+MAIN_WHAT=""
+[[ "${PROFILE}" != "browser" ]] || MAIN_WHAT=" (about:blank: Chromium starts; the matrix's fixture check is the page load)"
+t_case "Submit a ${PROFILE} task${MAIN_WHAT} and run it to completion"
 # The same pause check as the matrix rows above, for the same reason: a
 # submission into a pool an operator closed sits QUEUED for the whole
 # --timeout. Every case after this one is about THIS task -- its events, its

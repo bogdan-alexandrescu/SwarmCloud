@@ -57,16 +57,30 @@ and a transaction's own begin, commit and rollback through
 `FirestoreTransactionRunner`. Outside it, every call keeps the library's
 defaults. The lifecycle holds the window open from the generation check
 until the runner child is built, and nowhere else.
+
+**The worker reports provider outcomes; it never writes quota state.** The
+quota broker is the single writer of `quota/{provider}:{tenant}` and of the
+caps on the provider pools, because it is the one place AIMD runs: a 429
+halves the target, a run of successes raises it by one, and enough 429s in a
+row mark the provider EXHAUSTED. A worker writing the document beside it
+bypassed all three, and the broker's sweep then retired the worker's THROTTLED
+(it carried no cooldown) on its next tick. `update_quota_state` POSTs each
+outcome to the broker with this worker's identity token instead; see
+`BrokerQuotaReporter`.
 """
 
 from __future__ import annotations
 
 import functools
+import json
 import sys
+import urllib.error
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
+from urllib.parse import quote, urlparse
 
 from swarm_common.admission import _snapshot, release_lease_in_transaction
 from swarm_common.models import (
@@ -87,7 +101,9 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from .accountlease import fetch_identity_token
 from .errors import ControlPlaneError, FencedError, FencedWriteRefused, TenantMismatchError
+from .quota import UNKNOWN_WAIT_SECONDS
 from .startup import StartupInterrupted
 
 #: The attempt document's map of checkpoint id to the SHA-256 of its archive,
@@ -384,6 +400,97 @@ def _with_budget(base: type) -> type:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Quota reports to the broker
+# ---------------------------------------------------------------------------
+
+#: Broker route per provider state the worker can observe. THROTTLED and
+#: EXHAUSTED are both "the provider answered 429": every runner labels its
+#: `quota.json` EXHAUSTED (`runners.base.write_quota_signal`), so sending that
+#: to `/exhausted` would mark a tenant exhausted on its first 429 and skip the
+#: broker's exhaustion threshold, which is the thing that decides it.
+#: COOLDOWN, DISABLED and UNKNOWN are absent on purpose: the worker only ever
+#: holds them because it READ them from the broker (`poll`), and reporting the
+#: broker's own state back to it is not an observation.
+QUOTA_REPORT_ROUTES: dict[ProviderState, str] = {
+    ProviderState.AVAILABLE: "success",
+    ProviderState.THROTTLED: "rate-limit",
+    ProviderState.EXHAUSTED: "rate-limit",
+}
+
+#: Seconds one report may take. Short: it sits on the way to a park, and a
+#: worker waiting on a control-plane service is a worker holding a slot.
+QUOTA_REPORT_TIMEOUT_SECONDS = 5
+
+
+class QuotaReporter(Protocol):
+    def report(
+        self, *, provider: str, tenant_id: str, route: str, body: Mapping[str, Any]
+    ) -> None: ...
+
+
+class BrokerQuotaReporter:
+    """POST one provider outcome to `/v1/quota/{provider}/{tenant}/{route}`.
+
+    Authenticated exactly as the account pool's client is
+    (`accountlease.AccountBroker`): the metadata server's identity token for
+    the broker's audience. The broker derives the tenant from that token and
+    refuses a path naming any other one, so the tenant in the path is a
+    claim this worker cannot widen. No retry: see `update_quota_state`.
+    """
+
+    def __init__(
+        self,
+        base_url: str,
+        *,
+        audience: str | None = None,
+        token_fetcher: Any = None,
+        timeout: int = QUOTA_REPORT_TIMEOUT_SECONDS,
+    ) -> None:
+        self._base = base_url.rstrip("/")
+        self._audience = (audience or self._base).rstrip("/")
+        self._fetch_token = token_fetcher or fetch_identity_token
+        self._timeout = timeout
+
+    @classmethod
+    def for_broker(
+        cls, url: str | None, audience: str | None
+    ) -> "BrokerQuotaReporter | None":
+        """From `WorkerConfig.quota_broker_url`/`quota_broker_audience`, the one
+        reader of the variables the scheduler puts on every worker
+        (`scheduler.dispatch.worker_env`). None when there is no broker."""
+        if not url:
+            return None
+        return cls(url, audience=audience)
+
+    def report(
+        self, *, provider: str, tenant_id: str, route: str, body: Mapping[str, Any]
+    ) -> None:
+        path = (
+            f"/v1/quota/{quote(provider, safe='')}/{quote(tenant_id, safe='')}/{route}"
+        )
+        url = f"{self._base}{path}"
+        req = urllib.request.Request(
+            url, data=json.dumps(dict(body)).encode("utf-8"), method="POST"
+        )
+        req.add_header(
+            "Authorization",
+            f"Bearer {self._fetch_token(self._audience, timeout=self._timeout)}",
+        )
+        req.add_header("Content-Type", "application/json")
+        req.add_header("Accept", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            raise ControlPlaneError(
+                f"the quota broker answered {exc.code} on {path}"
+            ) from exc
+        except (urllib.error.URLError, OSError) as exc:
+            host = urlparse(url).hostname or self._base
+            raise ControlPlaneError(f"could not reach the quota broker at {host}: {exc}") from exc
+
+
 class ControlPlane:
     """Firestore-backed control-plane operations for exactly one attempt."""
 
@@ -400,6 +507,7 @@ class ControlPlane:
         txn_runner: TransactionRunner | None = None,
         heartbeat_extension_seconds: int = 120,
         startup_call_options: Mapping[str, Any] | None = None,
+        quota_reporter: QuotaReporter | None = None,
     ) -> None:
         self._db = db
         self.task_id = task_id
@@ -426,6 +534,21 @@ class ControlPlane:
         # `record_resource_usage`, `record_spend`, `update_quota_state`) do
         # not ask, and keep the library's defaults.
         self._budgeted = False
+        # Where provider outcomes go: the quota broker, which the entrypoint
+        # builds from `WorkerConfig` (`BrokerQuotaReporter.for_broker`). None
+        # means this deployment has no broker; outcomes are then logged and
+        # not recorded.
+        self._quota_reporter: QuotaReporter | None = quota_reporter
+        # provider -> until when the broker already knows of a rate limit,
+        # because this worker reported it or read it back in `poll`. A 429
+        # report inside that window is the same event and is not sent again;
+        # see `update_quota_state`.
+        self._rate_limit_known_until: dict[str, datetime] = {}
+
+    @property
+    def quota_reporter(self) -> QuotaReporter | None:
+        """Where `update_quota_state` sends provider outcomes; None without a broker."""
+        return self._quota_reporter
 
     @property
     def startup_call_options(self) -> dict[str, Any]:
@@ -705,6 +828,14 @@ class ControlPlane:
                 )
                 retry_after = q.get("retry_after_seconds")
                 reset_at = _as_datetime(q.get("reset_at")) or _as_datetime(q.get("cooldown_until"))
+                if provider_paused:
+                    # The broker already holds this stop. A park that follows
+                    # from it must not report it back as a fresh 429.
+                    self._note_rate_limit_known(
+                        provider,
+                        retry_after_seconds=int(retry_after) if retry_after is not None else None,
+                        reset_at=reset_at,
+                    )
 
         return ControlSignals(
             state=_as_state(task.get("state")),
@@ -1049,6 +1180,26 @@ class ControlPlane:
         )
 
     # -- quota -------------------------------------------------------------
+    def _note_rate_limit_known(
+        self,
+        provider: str,
+        *,
+        retry_after_seconds: int | None,
+        reset_at: datetime | None,
+    ) -> None:
+        now = utcnow()
+        candidates: list[datetime] = []
+        if retry_after_seconds is not None:
+            candidates.append(now + timedelta(seconds=max(0, int(retry_after_seconds))))
+        if reset_at is not None:
+            candidates.append(reset_at if reset_at.tzinfo else reset_at.replace(tzinfo=now.tzinfo))
+        # The same default the park decision uses for an unknown wait
+        # (`quota.QuotaSignal.wait_seconds`), so the window this worker treats
+        # as one event is the window it parked for.
+        until = max(candidates) if candidates else now + timedelta(seconds=UNKNOWN_WAIT_SECONDS)
+        known = self._rate_limit_known_until.get(provider)
+        self._rate_limit_known_until[provider] = until if known is None else max(known, until)
+
     def update_quota_state(
         self,
         *,
@@ -1056,76 +1207,94 @@ class ControlPlane:
         state: ProviderState,
         retry_after_seconds: int | None = None,
         reset_at: datetime | None = None,
-    ) -> None:
-        """Publish what this worker learned about the provider.
+    ) -> bool:
+        """Report what this worker learned about the provider to the quota broker.
 
-        The quota broker owns the adaptive limits; the worker only reports the
-        ground truth it just observed (a 429, a retry-after header) so the next
-        admission decision is made with it.
+        THE BROKER IS THE SINGLE WRITER of `quota/{provider}:{tenant}` and of
+        the provider pools' caps, and it applies AIMD to every report
+        (`quota_broker.aimd`): a 429 halves the adaptive target, a success
+        counts toward the next additive increase, and `exhaustion_threshold`
+        consecutive 429s mark the provider EXHAUSTED. This method writes no
+        Firestore document. The rate-limit-run rules this method used to apply
+        to `rate_limit_count` (CP-10, #85) are the broker's now
+        (`aimd._run_count`, `aimd.record_success`).
 
-        `rate_limit_count` IS THE COUNT OF THE CURRENT RATE-LIMIT RUN (CP-10,
-        #85; owner decision 2026-09-25). A run starts at a 429 and ends when a
-        clean run reports the provider AVAILABLE -- here, rule (c) -- or when
-        the broker's `aimd.refresh` retires the cooldown and the reset window,
-        which writes 0 ("The rate-limit run is over"). Provider quota labels the
-        column `429s (this run)`, and three rules make the label true:
+        Which route (`QUOTA_REPORT_ROUTES`): AVAILABLE is a success; THROTTLED
+        and EXHAUSTED are a 429. Any other state is the broker's own, read back
+        by `poll`, and is not reported.
 
-          (a) a NEW document counts 1 only when its first report is itself a
-              429; it used to be seeded with 1 whatever the report was, so a
-              document created by a clean run claimed a 429 nobody saw;
-          (b) a stored count with no `last_429_at` behind it is read as 0
-              before anything is added, so a document seeded that way corrects
-              itself on its next report -- no one-off Firestore write;
-          (c) a report of AVAILABLE writes 0, because `refresh` never resets a
-              document that is already AVAILABLE, so without this the count
-              would carry 429s from runs that are over.
+        ONE REPORT PER RATE-LIMIT WINDOW. The lifecycle reports a runner's 429
+        when it reads `quota.json` and again as it parks on it, and a park on
+        the broker's own stop (preflight, backpressure) reports the stop it
+        read. Each of those would be another halving and another step toward
+        EXHAUSTED for a single provider answer. So a 429 report while a window
+        this worker already reported -- or read from the broker -- is still
+        open is not sent: the broker already has it. A short wait that sleeps
+        the window out and meets a fresh 429 is reported, because the window
+        it would have matched has closed. A success always goes, and closes
+        the window.
 
-        The broker's exhaustion threshold (`AimdConfig.exhaustion_threshold`)
-        therefore counts 429s since the last clean run or retired cooldown. A
-        document no worker reports on again keeps its old count until one does.
-        `last_429_at` is never cleared: `Last 429` keeps its time when the count
-        returns to 0.
+        NEVER RAISES AND NEVER WAITS LONGER THAN ONE SHORT CALL. A failed
+        report is logged and dropped; no retry. The caller's park-and-exit on a
+        429 (invariant 4) does not depend on the broker hearing about it: the
+        park, the lease release and the exit go ahead either way, and the next
+        report from any worker on this tenant brings the broker up to date.
+
+        Returns True when the broker accepted a report.
         """
-        now = utcnow()
-        rate_limited = state in (ProviderState.EXHAUSTED, ProviderState.THROTTLED)
-        payload: dict[str, Any] = {
-            "provider": provider,
-            "tenant_id": self.tenant_id,
-            "state": state.value,
-            "updated_at": now,
-        }
-        if retry_after_seconds is not None:
-            payload["retry_after_seconds"] = int(retry_after_seconds)
-        if reset_at is not None:
-            payload["reset_at"] = reset_at
-        if rate_limited:
-            payload["last_429_at"] = now
-        ref = self._quota_ref(provider)
-        snap = ref.get()
-        if snap.exists:
-            existing = self._assert_tenant(
-                snap.to_dict() or {},
-                kind="quota",
-                document_id=f"{provider}:{self.tenant_id}",
+        route = QUOTA_REPORT_ROUTES.get(state)
+        if route is None:
+            self._log.info(
+                "provider state not reported: it is the broker's own, not an observation",
+                provider=provider,
+                provider_state=state.value,
             )
-            if state == ProviderState.AVAILABLE:
-                # (c) A clean run ends the run.
-                payload["rate_limit_count"] = 0
-            else:
-                # (b) A count with no 429 behind it is no count at all.
-                stored = (
-                    int(existing.get("rate_limit_count", 0))
-                    if existing.get("last_429_at") is not None
-                    else 0
+            return False
+        now = utcnow()
+        if route == "rate-limit":
+            known = self._rate_limit_known_until.get(provider)
+            if known is not None and now < known:
+                self._log.info(
+                    "rate limit not reported again: the broker already has this window",
+                    provider=provider,
+                    known_until=known.isoformat(),
                 )
-                payload["rate_limit_count"] = stored + (1 if rate_limited else 0)
-            ref.update(payload)
+                return False
+        if self._quota_reporter is None:
+            self._log.warning(
+                "provider outcome not reported: no quota broker is configured "
+                "(QUOTA_BROKER_URL is unset)",
+                provider=provider,
+                provider_state=state.value,
+            )
+            return False
+        body: dict[str, Any] = {}
+        if route == "rate-limit" and retry_after_seconds is not None:
+            # The broker bounds it (0..86400); a provider asking for longer is
+            # capped there, by `AimdConfig.max_cooldown_seconds`, anyway.
+            body["retry_after_seconds"] = max(0, min(int(retry_after_seconds), 86_400))
+        if route == "rate-limit" and reset_at is not None:
+            body["reset_at"] = reset_at.isoformat()
+        try:
+            self._quota_reporter.report(
+                provider=provider, tenant_id=self.tenant_id, route=route, body=body
+            )
+        except Exception as exc:
+            self._log.warning(
+                "could not report a provider outcome to the quota broker; carrying on",
+                provider=provider,
+                provider_state=state.value,
+                route=route,
+                error=str(exc)[:300],
+            )
+            return False
+        if route == "rate-limit":
+            self._note_rate_limit_known(
+                provider, retry_after_seconds=retry_after_seconds, reset_at=reset_at
+            )
         else:
-            payload.setdefault("configured_hard_max", 50)
-            # (a) One only when the first report is itself a 429.
-            payload["rate_limit_count"] = 1 if rate_limited else 0
-            payload.setdefault("success_count", 0)
-            ref.set(payload)
+            self._rate_limit_known_until.pop(provider, None)
+        return True
 
     # -- lease release -----------------------------------------------------
     def release_lease(self, reason: str) -> bool:

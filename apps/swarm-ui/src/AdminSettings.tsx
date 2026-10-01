@@ -170,6 +170,17 @@ type SaveMark = 'rereading' | 'saved' | 'unread'
 interface Operand {
   pool: string
   agents: number | null
+  /**
+   * The pool is in the response but has no `hard_limit` (#374). Its ceiling
+   * is unknown, not 0 -- and admission refuses on it, so no figure the other
+   * pools give is this profile's ceiling either.
+   */
+  unset: boolean
+}
+
+/** A pool's configured limit as the editor's text: empty when none was ever set (#374). */
+function limitText(pool: Pool): string {
+  return pool.hard_limit === null ? '' : String(pool.hard_limit)
 }
 
 /**
@@ -192,17 +203,24 @@ function arithmetic(
   pools: string[],
   units: number,
   byName: Map<string, Pool>,
-): { operands: Operand[]; ceiling: number | null; binding: string[] } {
+): { operands: Operand[]; ceiling: number | null; binding: string[]; unset: boolean } {
   const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
-    return { pool, agents: p ? Math.floor(p.effective_limit / w) : null }
+    if (p !== undefined && p.effective_limit === null) return { pool, agents: null, unset: true }
+    return { pool, agents: p ? Math.floor(p.effective_limit as number / w) : null, unset: false }
   })
+
+  // A POOL WITH NO LIMIT SET BINDS THE CARD (#374). Admission refuses on it,
+  // so the smallest of the OTHER pools' ceilings would be a figure nothing
+  // can reach; the card says "no limit set" and marks the pools to set.
+  const unset = operands.filter((o) => o.unset).map((o) => o.pool)
+  if (unset.length > 0) return { operands, ceiling: null, binding: unset, unset: true }
 
   const measured = operands.flatMap((o) => (o.agents === null ? [] : [o.agents]))
   const ceiling = measured.length === 0 ? null : Math.min(...measured)
   const binding = ceiling === null ? [] : operands.filter((o) => o.agents === ceiling).map((o) => o.pool)
-  return { operands, ceiling, binding }
+  return { operands, ceiling, binding, unset: false }
 }
 
 function Body({
@@ -265,12 +283,14 @@ function ProfileCard({
   operands,
   ceiling,
   binding,
+  unset,
 }: {
   name: string
   units: number
   operands: Operand[]
   ceiling: number | null
   binding: string[]
+  unset: boolean
 }) {
   // The unit that used to be a footnote -- "'Ceiling' is how many AGENTS of
   // that profile could run at once, not units" -- is now fused to the figure
@@ -297,7 +317,9 @@ function ProfileCard({
         <b
           className={`ctl-figure${measured ? '' : ' is-absent'}`}
           aria-label={
-            measured
+            unset
+              ? `${name} can run no agents: ${named} ${binding.length === 1 ? 'has' : 'have'} no limit set, so admission refuses. Nobody set ${binding.length === 1 ? 'it' : 'them'} to 0: somebody has to set a limit.`
+              : measured
               ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding.length === 1 ? `${named} is the pool that binds it` : `${named} bind it together: raising any one of them alone leaves it where it is`}.`
               : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
           }
@@ -306,7 +328,7 @@ function ProfileCard({
               `5 agents` read as a count of agents running, which is the other
               figure on this platform with that unit. */}
           {measured && <span className="ctl-figure-unit adm-figure-max">max</span>}
-          {measured ? ceiling : <i className="ctl-em">—</i>}
+          {measured ? ceiling : unset ? <i className="ctl-em">no limit set</i> : <i className="ctl-em">—</i>}
           {measured && <span className="ctl-figure-unit">agents</span>}
         </b>
 
@@ -339,14 +361,16 @@ function ProfileCard({
             >
               <b>{label(o.pool)}</b>
               <span className="adm-value">
-                {o.agents === null ? <i className="ctl-em">—</i> : o.agents}
+                {o.unset ? <i className="ctl-em">no limit set</i> : o.agents === null ? <i className="ctl-em">—</i> : o.agents}
               </span>
             </li>
           ))}
         </ul>
       </div>
       <p className="ctl-card-foot">
-        {binding.length === 0 ? (
+        {unset ? (
+          <>no limit set on {named}</>
+        ) : binding.length === 0 ? (
           <>no pool in this response</>
         ) : (
           <>binds on {named}</>
@@ -423,8 +447,9 @@ interface Editing {
  * name to be typed before it writes one. A raise, or a smaller cut, writes on
  * Save alone.
  */
-export function isDrasticCut(from: number, to: number): boolean {
-  if (to >= from) return false
+export function isDrasticCut(from: number | null, to: number): boolean {
+  // A pool with no limit set (#374) has nothing to be cut from: setting one is a raise.
+  if (from === null || to >= from) return false
   return to === 0 || (from - to) * 2 >= from
 }
 
@@ -483,16 +508,17 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): string[] {
     said.push(
       `Nothing running is stopped: the ${pool.active} units in use finish, and new work waits until fewer than ${after} are in use.`,
     )
-  } else if (after < pool.effective_limit) {
+  } else if (pool.effective_limit !== null && after < pool.effective_limit) {
     said.push(`The ${pool.active} units in use fit under it; nothing is stopped.`)
-  } else if (after > pool.effective_limit) {
+  } else if (pool.effective_limit === null || after > pool.effective_limit) {
     said.push(`${after - pool.active} units free on this pool after the change.`)
   }
   return said
 }
 
 /** `20 → 14 · −30%`. No percentage off a zero. */
-function deltaWords(from: number, to: number): string {
+function deltaWords(from: number | null, to: number): string {
+  if (from === null) return `no limit set → ${to}`
   if (from === 0) return `${from} → ${to}`
   const pct = Math.round(((to - from) / from) * 100)
   return `${from} → ${to} · ${pct < 0 ? '−' : '+'}${Math.abs(pct)}%`
@@ -570,7 +596,7 @@ function PoolEditor({
   const open = editing !== null ? pools.find((p) => p.name === editing.pool) : undefined
   const draft = editing?.draft ?? null
   const held =
-    open !== undefined && draft !== null && !writing.includes(open.name) && draft.trim() !== String(open.hard_limit)
+    open !== undefined && draft !== null && !writing.includes(open.name) && draft.trim() !== limitText(open)
       ? open.name
       : null
 
@@ -758,7 +784,11 @@ function PoolRow({
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="is-num">
-        <span className="adm-ceiling">{pool.effective_limit}</span>
+        {pool.effective_limit === null ? (
+          <span className="adm-ceiling is-unset" title={by.detail}>no limit set</span>
+        ) : (
+          <span className="adm-ceiling">{pool.effective_limit}</span>
+        )}
       </td>
       {showSetBy && (
         <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
@@ -838,8 +868,8 @@ function SideEditor({
   // in follows a re-read -- including one that picked up another operator's
   // change -- instead of showing the old limit as an edit a stray Save would
   // write back.
-  const value = draft ?? String(pool.hard_limit)
-  const dirty = value.trim() !== String(pool.hard_limit)
+  const value = draft ?? limitText(pool)
+  const dirty = value.trim() !== limitText(pool)
   const parsed = Number(value)
   // An empty field is not 0: `Number('')` is 0, and a cleared field must not
   // be one click from closing the pool.
@@ -884,8 +914,8 @@ function SideEditor({
         <dt>In use</dt>
         <dd>{pool.active} units</dd>
         <dt>Ceiling</dt>
-        <dd>{pool.effective_limit} units</dd>
-        {pool.effective_limit !== pool.hard_limit && (
+        <dd>{pool.effective_limit === null ? 'no limit set' : `${pool.effective_limit} units`}</dd>
+        {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>
             <dd>{pool.hard_limit}</dd>

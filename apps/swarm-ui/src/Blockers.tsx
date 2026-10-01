@@ -201,6 +201,12 @@ const CEILING_TAG: Readonly<Record<Verdict, { cls: string; word: string; title: 
     word: 'too small',
     title: "This pool's limit is below what one task of this profile weighs, so it can never admit one at this limit. Waiting changes nothing — somebody has to raise it.",
   },
+  'limit-unset': {
+    // The paused tone: a person acts, as for a pool set to zero (#374).
+    cls: 'paused',
+    word: 'no limit set',
+    title: "This pool has no limit set, so its ceiling was never read and it admits nothing. Nobody set it to zero: somebody has to set a limit.",
+  },
   'below-units-quota': {
     cls: 'capped',
     word: 'too small',
@@ -246,5 +252,6 @@ export function ceilingFigure(blocker: ProfileBlocker, units: number | null = nu
   if (ceiling === 'below-units' || ceiling === 'below-units-quota') {
     return `limit ${blocker.limit} · one task is ${units} units · ${held}`
   }
+  if (ceiling === 'limit-unset') return `no limit set · ${held}`
   return ceiling === 'paused' ? held : `limit 0 · ${held}`
 }

@@ -86,7 +86,7 @@ function capacity(b: ProfileBlocker): Capacity {
       pool({ name: 'tenant:eng', hard_limit: 10, effective_limit: 10, available: 10 }),
       pool({
         name: b.pool, hard_limit: b.limit, effective_limit: b.limit,
-        active: b.active, available: Math.max(0, b.limit - b.active),
+        active: b.active, available: b.limit === null ? null : Math.max(0, b.limit - b.active),
       }),
     ],
     runner_profiles: { browser: browser(b) },

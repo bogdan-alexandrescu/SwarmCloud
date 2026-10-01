@@ -41,6 +41,7 @@ from test_agent_commits_are_kept import (
     _attempt,
     _branch_exists,
     _commit,
+    _random_token,
     _rev,
 )
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
@@ -183,7 +184,9 @@ def test_a_forged_commit_graph_does_not_hide_a_key_in_the_final_tree(
 
     branch = f"{config.git_branch_prefix}{config.task_id}"
     assert out["published"] is False, out
-    assert out.get("final_tree_leak") == "the final tree adds a credential in .env; remove it", out
+    assert out.get("final_tree_leak") == (
+        "the final tree adds a credential in .env (rule registered_secret, line 1); remove it"
+    ), out
     assert not _branch_exists(origin, branch), "a branch was pushed"
     assert KEY.encode() not in _all_object_bytes(origin), "the key reached a pushed object"
 
@@ -383,3 +386,76 @@ def test_the_scans_the_replay_and_the_push_run_in_one_worker_owned_repository(
     assert not (clean / ".git" / "objects" / "info" / "alternates").exists(), (
         "the worker's repository borrows the agent's object store"
     )
+
+
+# -- the tiered guard, end to end (#373) --------------------------------------
+#
+# OWNER DECISION, 2026-09-30. A test of the redaction rules holds text the
+# rules match, and both publish scans refused it: no SwarmCloud agent could
+# publish one (#327's two runs, task_4dac1ded0ffc424a8dcb and
+# task_0b453a13d78b4f2da063). In a test path a generic match now counts only
+# when its value looks like a credential. The per-commit scan and the
+# final-tree scan ask the same question, so the history is kept AND published.
+
+REDACTION_TEST = (
+    "from swarm_redaction import redact\n"
+    "\n"
+    "\n"
+    "def test_json_password_is_masked():\n"
+    "    masked = redact('{\"password\": \"hunter2\"}').text\n"
+    "    assert masked == '{\"password\": \"********\"}'\n"
+    "\n"
+    "\n"
+    "def test_registration_names_are_not_values():\n"
+    "    log.info(\"resolved\", extra={\"secret\": \"tenant-git-token\", \"token\": \"anthropic-api-key\"})\n"
+    "    resolve(secret=\"swarm-tenant-acme-git\")\n"
+)
+
+
+def test_a_redaction_test_is_kept_commit_by_commit_and_published(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    def edit(repo: Path) -> None:
+        tests = repo / "tests" / "unit" / "control_plane"
+        tests.mkdir(parents=True)
+        (tests / "test_json_artifact_masking.py").write_text(REDACTION_TEST)
+        _commit(repo, "Add the masking tests")
+        (repo / "notes.txt").write_text("done\n")
+        _commit(repo, "Add notes")
+
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-373-kept", edit=edit)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is True, out.get("publish_reason")
+    assert "final_tree_leak" not in out, out
+    assert out.get("agent_commits_kept") == 2, out
+    assert "agent_commits_folded" not in out, out
+    assert "tests/unit/control_plane/test_json_artifact_masking.py" in tree_at(origin, branch)
+
+
+def test_a_credential_shaped_token_in_a_test_file_publishes_nothing_and_names_the_line(
+    worker_factory, monkeypatch, origin, local_urls, forge, log_stream
+):
+    token = _random_token(32)
+
+    def edit(repo: Path) -> None:
+        tests = repo / "tests" / "unit"
+        tests.mkdir(parents=True)
+        (tests / "test_client.py").write_text(
+            'MASKED = {"password": "********"}\n'
+            f'SENT = {{"token": "{token}"}}\n'
+        )
+        _commit(repo, "Add the client tests")
+
+    _, config, out = _attempt(worker_factory, monkeypatch, origin, task_id="t-373-refused", edit=edit)
+
+    branch = f"{config.git_branch_prefix}{config.task_id}"
+    assert out["published"] is False, out
+    assert out.get("final_tree_leak") == (
+        "the final tree adds a credential in tests/unit/test_client.py "
+        "(rule key_value_assignment, line 2); remove it"
+    ), out
+    assert token not in str(out), "the value reached the publish result"
+    assert token not in log_stream.getvalue()
+    assert not _branch_exists(origin, branch), "a branch was pushed"
+    assert token.encode() not in _all_object_bytes(origin), "the token reached a pushed object"

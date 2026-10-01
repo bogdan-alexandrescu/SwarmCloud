@@ -99,6 +99,13 @@ class WorkflowStepCreate(StrictModel):
     #: instead of the workflow's `repository_ref` (#264). A step id, never a
     #: ref: the worker derives the branch from the upstream's task id.
     builds_on: str | None = Field(default=None, min_length=1, max_length=64)
+    #: Free-form, like a task's: merged over the workflow's `metadata` onto this
+    #: step's task, with the same reserved keys, size limit and storability
+    #: checks. One key in it means something to the platform:
+    #: `input_layout` (#75), `"by_name"` (the default) or `"by_parent"`, which
+    #: stages each `input_from` file at `<parent step id>/<filename>`. Checked
+    #: by `validation.resolve_input_layout`, which names the accepted values.
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 class WorkflowCreate(StrictModel):

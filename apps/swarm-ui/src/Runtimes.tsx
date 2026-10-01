@@ -342,8 +342,16 @@ function BackendRow({
   // A ceiling of zero admits nothing however empty it is. Without this it
   // reads "ok", which is the wrong answer to "can anything start here".
   const shut = pool !== null && !paused && !over && pool.effective_limit === 0
+  // NO LIMIT SET (#374): admits nothing too, but nobody set it to zero -- the
+  // ceiling was never read. Its own chip, never `admits nothing` at `0`.
+  const unset = pool !== null && !paused && pool.effective_limit === null
   const full =
-    pool !== null && !paused && !over && !shut && pool.active >= pool.effective_limit
+    pool !== null &&
+    !paused &&
+    !over &&
+    !shut &&
+    pool.effective_limit !== null &&
+    pool.active >= pool.effective_limit
   // An unread cell and an unconfigured pool both print a dash, and the two mean
   // different things, so the accessible name says which one this dash is.
   const why = unread
@@ -356,7 +364,7 @@ function BackendRow({
   )
 
   return (
-    <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : full || shut ? 'is-warn full' : undefined}>
+    <tr role="row" className={over ? 'is-bad over' : paused ? 'is-paused paused' : unset ? 'is-paused limit-unset' : full || shut ? 'is-warn full' : undefined}>
       <th role="rowheader" scope="row">
         {/* The identifier the API sent, verbatim. A prettified display name
             would be a two-entry table keyed on a frozen enum, and a backend
@@ -369,8 +377,12 @@ function BackendRow({
           node, so the prose budgets measure the same screen they always did. */}
       <td role="cell" data-label="Runtimes" className="is-num">{members.length}</td>
       <td role="cell" data-label="In use (units)" className="is-num">{pool === null ? dash : pool.active}</td>
-      <td role="cell" data-label="Ceiling" className="is-num">{pool === null ? dash : pool.effective_limit}</td>
-      <td role="cell" data-label="Headroom" className="is-num">{pool === null ? dash : pool.available}</td>
+      <td role="cell" data-label="Ceiling" className="is-num">
+        {pool === null ? dash : pool.effective_limit === null ? <i className="ctl-em">not set</i> : pool.effective_limit}
+      </td>
+      <td role="cell" data-label="Headroom" className="is-num">
+        {pool === null ? dash : pool.available === null ? <i className="ctl-em">—</i> : pool.available}
+      </td>
       <td role="cell" data-label="Status">
         <span className="rt-marks">
           {unread && <span className="ctl-mark is-unread">not read</span>}
@@ -401,13 +413,22 @@ function BackendRow({
               admits nothing
             </span>
           )}
+          {unset && (
+            <span
+              className="ctl-chip is-paused"
+              title="This backend's pool has no limit set, so its ceiling was never read and it admits nothing. Nobody set it to zero: somebody has to set a limit."
+            >
+              <i aria-hidden="true" />
+              no limit set
+            </span>
+          )}
           {full && (
             <span className="ctl-chip is-warn">
               <i aria-hidden="true" />
               full
             </span>
           )}
-          {pool !== null && !paused && !over && !shut && !full && (
+          {pool !== null && !paused && !over && !shut && !unset && !full && (
             <span className="ctl-chip is-ok">
               <i aria-hidden="true" />
               ok

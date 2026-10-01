@@ -512,10 +512,14 @@ def _meta() -> dict:
 def test_run_js_meta_is_a_pure_literal_naming_the_command():
     """Anything but literals in `meta` -- a variable, a call, a spread, a
     template -- and Claude Code drops the command from `/` autocomplete. The
-    plugin's workflows run as /<plugin>:<meta.name>, so this is /sc:run."""
+    plugin's workflows run as /<plugin>:<meta.name>, so this is /sc:swarmcloud.
+
+    Owner decision, 2026-10-01: the workflow is not called `run` -- it reads as
+    SwarmCloud in /workflows, and its rows carry a `[SwarmCloud]` prefix."""
     meta = _meta()
-    assert meta["name"] == _RUN_JS.stem == "run"
-    assert _plugin_name() == "sc", "the command is documented as /sc:run"
+    assert meta["name"] == "swarmcloud", "the command is lowercase: /sc:swarmcloud (owner, 2026-10-01)"
+    assert _plugin_name() == "sc", "the command is documented as /sc:swarmcloud"
+    assert "SwarmCloud" in meta["description"]
     assert isinstance(meta["description"], str) and meta["description"].strip()
     titles = [phase["title"] for phase in meta.get("phases", [])]
     assert titles == ["Submit", "Result"], titles
@@ -624,7 +628,8 @@ async function agent(prompt, opts) {
   opts = opts || {}
   calls.push({ prompt, label: opts.label, phase: opts.phase, agentType: opts.agentType,
                model: opts.model || null, schema: opts.schema ? Object.keys(opts.schema.properties) : null })
-  const key = opts.agentType === 'sc:step' ? 'step:' + opts.label : prompt.split('\n')[0]
+  const stepLine = prompt.split('\n').find((line) => line.startsWith('step_id: '))
+  const key = opts.agentType === 'sc:step' ? 'step:' + (stepLine || '').slice('step_id: '.length) : prompt.split('\n')[0]
   const answer = fixture.answers[key]
   if (answer === undefined) throw new Error('no fixture answer for ' + key)
   if (answer && answer.__throw) throw new Error(answer.__throw)
@@ -730,22 +735,24 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     assert "error" not in got, got.get("error")
     submit, *steps, status = got["calls"]
 
-    assert (submit["agentType"], submit["phase"], submit["label"]) == ("sc:workflow", "Submit", "submit")
+    assert (submit["agentType"], submit["phase"], submit["label"]) == (
+        "sc:workflow", "Submit", "[SwarmCloud] scan · submit")
     lines = submit["prompt"].split("\n")
     assert lines[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC), "BEGIN SPEC"]
     assert lines[-1] == "END SPEC"
     assert json.loads("\n".join(lines[3:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
 
-    # One row per step, labelled by step id, grouped by DAG level -- or by the
-    # stage the spec gives -- and started shallowest first.
+    # One row per step, labelled `[SwarmCloud] <workflow> · stage <n> · <step>`
+    # (owner decision, 2026-10-01), grouped by DAG level -- or by the stage the
+    # spec gives -- and started shallowest first.
     # The submission answered them deepest first; the rows start level 0 first.
     assert [(c["agentType"], c["label"], c["phase"]) for c in steps] == [
-        ("sc:step", "scan-01", "Level 0"),
-        ("sc:step", "scan-02", "Level 0"),
-        ("sc:step", "join", "Level 1"),
-        ("sc:step", "report", "Report"),
+        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-01", "Level 0"),
+        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-02", "Level 0"),
+        ("sc:step", "[SwarmCloud] scan · stage 2 · join", "Level 1"),
+        ("sc:step", "[SwarmCloud] scan · stage Report · report", "Report"),
     ]
-    by_label = {c["label"]: c["prompt"] for c in steps}
+    by_label = {c["label"].rsplit(" · ", 1)[-1]: c["prompt"] for c in steps}
     assert "task_id: task_3" in by_label["join"] and "workflow_id: wf_1" in by_label["join"]
     assert "depends_on: scan-01, scan-02" in by_label["join"]
     # The row's own step id, which it hands to swarm_follow as the check that
@@ -754,7 +761,8 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
 
     # The agents pin the model; the script names none.
     assert all(c["model"] is None for c in got["calls"])
-    assert (status["agentType"], status["phase"]) == ("sc:workflow", "Result")
+    assert (status["agentType"], status["phase"], status["label"]) == (
+        "sc:workflow", "Result", "[SwarmCloud] scan · result")
     assert status["prompt"].startswith("STATUS\nworkflow_id: wf_1")
 
 
@@ -953,7 +961,8 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
 
     assert "error" not in got, got.get("error")
     read, submit = got["calls"][0], got["calls"][1]
-    assert (read["agentType"], read["phase"], read["label"]) == ("sc:workflow", "Submit", "read spec")
+    assert (read["agentType"], read["phase"], read["label"]) == (
+        "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
     lines = submit["prompt"].split("\n")
     assert lines[0] == "SUBMIT" and lines[1] == "spec_digest: " + workflows.spec_digest(_SPEC)
@@ -987,3 +996,71 @@ def test_run_js_still_reports_json_text_that_does_not_parse_as_json(tmp_path):
     got = _run(tmp_path, '{"steps": [', _ANSWERS)
     assert "is not JSON" in got["error"], got
     assert got["calls"] == []
+
+
+# --------------------------------------------------------------------------
+# Rows that are cheap to watch, and named for SwarmCloud (owner decisions,
+# 2026-10-01)
+# --------------------------------------------------------------------------
+
+
+def test_every_row_label_carries_the_swarmcloud_prefix_and_a_step_row_its_stage(tmp_path):
+    got = _run(tmp_path, _SPEC, _ANSWERS)
+    labels = [c["label"] for c in got["calls"]]
+    assert labels and all(label.startswith("[SwarmCloud] ") for label in labels), labels
+    for call in got["calls"]:
+        if call["agentType"] == "sc:step":
+            assert " · stage " in call["label"], call["label"]
+
+
+def test_a_spec_without_a_label_names_its_rows_by_workflow_id(tmp_path):
+    spec = {k: v for k, v in _SPEC.items() if k != "label"}
+    submitted = {**_SUBMITTED, "spec_digest": _bridge_digest(spec)}
+    got = _run(tmp_path, spec, {**_ANSWERS, "SUBMIT": submitted})
+    assert "error" not in got, got.get("error")
+    steps = [c for c in got["calls"] if c["agentType"] == "sc:step"]
+    assert steps[0]["label"] == "[SwarmCloud] wf_1 · stage 1 · scan-01", steps[0]["label"]
+
+
+def test_a_long_workflow_label_is_cut_so_the_stage_and_step_survive(tmp_path):
+    spec = {**_SPEC, "label": "Wave 1 B2: quota data path " + "and a very long tail " * 8}
+    submitted = {**_SUBMITTED, "spec_digest": _bridge_digest(spec)}
+    got = _run(tmp_path, spec, {**_ANSWERS, "SUBMIT": submitted})
+    assert "error" not in got, got.get("error")
+    for call in got["calls"]:
+        assert len(call["label"]) <= 80, call["label"]
+        assert call["label"].startswith("[SwarmCloud] Wave 1 B2"), call["label"]
+    join = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"][2]
+    assert join.endswith("… · stage 2 · join"), join
+
+
+def test_the_step_result_shape_is_unchanged(tmp_path):
+    """Callers of the workflow read these seven fields per step; the slim
+    follow format must not change them."""
+    got = _run(tmp_path, _SPEC, _ANSWERS)
+    steps = [c for c in got["calls"] if c["agentType"] == "sc:step"]
+    assert steps and all(
+        c["schema"] == ["state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error"]
+        for c in steps
+    ), steps[0]["schema"]
+    scan = got["result"]["steps"][0]
+    assert {k: scan[k] for k in ("state", "cost_usd", "duration_s", "pr_url", "artifacts")} == {
+        "state": "SUCCEEDED", "cost_usd": 0.21, "duration_s": 252,
+        "pr_url": "https://github.com/acme/widgets/pull/231", "artifacts": ["a.md"],
+    }
+
+
+def test_the_step_row_follows_the_progress_format_and_never_streams():
+    """Measured 2026-10-01: rows following `format: "lines"` cost 4.0M tokens
+    for one row and ~22M for six three-step workflows. A row follows
+    `format: "progress"`; a step waiting on its parents makes one long call
+    per turn and writes nothing until it starts."""
+    _, body = _load(_PLUGIN / "agents" / "step.md")
+    flat = " ".join(body.split())
+    assert '`format: "progress"`' in flat, "step.md must follow the progress format"
+    assert '"lines"' not in flat, "step.md must not ask for the streamed log"
+    assert "`wait_seconds: 120`" in flat
+    assert "`changed` is `false`" in flat and "write nothing" in flat.lower()
+    assert "`wait_seconds: 600`" in flat, "a waiting step makes one long call per turn"
+    for field in ("state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error"):
+        assert f"`{field}`" in flat, f"step.md no longer answers with {field}"

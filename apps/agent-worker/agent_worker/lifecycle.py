@@ -108,8 +108,11 @@ At step 1 only a named refusal is a 78, and every other API error is a 69
 
 from __future__ import annotations
 
+import base64
+import fnmatch
 import functools
 import json
+import math
 import os
 import re
 import shutil
@@ -120,7 +123,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Iterator, Sequence
+from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, InputRefused, check_inputs
@@ -2991,15 +2994,22 @@ class Worker:
         self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
-    def _leaks_in_added_text(self, text: str) -> bool:
-        """The leak test both publish scans apply to the text a diff ADDS.
+    def _leaks_in_added_text(self, path: str, text: str) -> CredentialHit | None:
+        """The leak test both publish scans apply to the text a file ADDS.
 
-        A registered secret -- the scrub replaces exactly the registered
-        values, so "the scrub changed it" is "a registered value is in it" --
-        or a credential-shaped literal (`_holds_a_credential`), which catches
-        a key the agent minted or pasted and nobody registered.
+        A registered secret, in ANY file -- the scrub replaces exactly the
+        registered values, so "the scrub changed it" is "a registered value
+        is in it", and it is never relaxed for a test path (#373) -- or a
+        credential-shaped literal (`_credential_in`, tiered by `path`), which
+        catches a key the agent minted or pasted and nobody registered.
+
+        The per-commit scan and the final-tree scan both call this, with the
+        file's path, so the two decide the same way for the same file.
         """
-        return str(self._scrub(text)) != text or _holds_a_credential(text)
+        scrubbed = str(self._scrub(text))
+        if scrubbed != text:
+            return CredentialHit(REGISTERED_SECRET_RULE, _first_difference(text, scrubbed))
+        return _credential_in(path, text)
 
     def _scan_overlap(self) -> int:
         """How far the leak scan's windows overlap: the longest credential
@@ -6327,12 +6337,55 @@ SCAN_WINDOW_CHARS = 4 * 1024 * 1024
 SCAN_OVERLAP_CHARS = 64 * 1024
 
 
+class CredentialHit(NamedTuple):
+    """What a leak predicate found in one window of a file's added text: the
+    rule that matched (a `swarm_redaction` rule name, or
+    `REGISTERED_SECRET_RULE`) and where the match starts. Never the value."""
+
+    rule: str
+    offset: int
+
+
+class ScanHit(NamedTuple):
+    """The first leak a diff scan found: the file, the rule, and the line of
+    the new file it is on. This is what a refusal names (#373), and it holds
+    no part of the value."""
+
+    path: str
+    rule: str
+    line: int
+
+
+#: The predicate both publish scans ask about each file's added text:
+#: `(path, text) -> CredentialHit | None` (`Worker._leaks_in_added_text`).
+#: The path is the file's, so the guard can be tiered by it (#373).
+LeakPredicate = Callable[[str, str], "CredentialHit | None"]
+
+#: The rule name a refusal gives for a task's registered secret.
+REGISTERED_SECRET_RULE = "registered_secret"
+
+#: The new-file start line of a `-U0` hunk header: `@@ -a[,b] +c[,d] @@`.
+_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)")
+
+
+def _first_difference(original: str, scrubbed: str) -> int:
+    """Where `scrubbed` first differs from `original`: the start of the first
+    registered value the scrub replaced, near enough to name its line."""
+    limit = min(len(original), len(scrubbed))
+    for index in range(limit):
+        if original[index] != scrubbed[index]:
+            return index
+    return limit
+
+
 class _DiffLeakScanner:
     """Scans a `git diff` stream's ADDED text, file by file, in bounded windows.
 
     `feed` takes the diff's bytes as they arrive (`gitops._git_stream`), in
-    chunks of any size; `close` ends the stream and returns the path of the
-    first file whose added text `leaks`, or None. Nothing is held but the
+    chunks of any size; `close` ends the stream and returns the first hit --
+    the file, the rule `leaks` named, and the new file's line (`ScanHit`) --
+    or None. `leaks` is asked with the file's path, so the guard is tiered by
+    it (#373). Nothing is held but the
     current window, the overlap carried from the one before, and one line's
     first few characters -- a 40 MB single-line file costs a window, not 40 MB.
 
@@ -6354,15 +6407,23 @@ class _DiffLeakScanner:
 
     _HEADS = ("diff --git ", "+++ ", "@@")
 
-    def __init__(self, leaks: Callable[[str], bool], *, window: int, overlap: int) -> None:
+    def __init__(self, leaks: LeakPredicate, *, window: int, overlap: int) -> None:
         import codecs
 
         self._leaks = leaks
         self._window = max(window, 2 * overlap + 1)
         self._overlap = overlap
         self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-        self.hit: str | None = None
+        self.hit: ScanHit | None = None
         self._path = ""
+        # WHERE A HIT IS, IN THE FILE'S OWN LINES (#373): the refusal names the
+        # line. `_file_lines` counts the added lines fed so far, `_window_line`
+        # is the added-line index the current window starts at, and `_hunks`
+        # maps the added-line index each `@@` hunk starts at to the new-file
+        # line it starts at. With `-U0` a hunk's added lines are consecutive.
+        self._file_lines = 0
+        self._window_line = 0
+        self._hunks: list[tuple[int, int]] = []
         self._in_header = True
         self._mode: str | None = None  # None (line start), "add", "header", "skip"
         self._head = ""
@@ -6375,7 +6436,7 @@ class _DiffLeakScanner:
         if self.hit is None:
             self._text(self._decoder.decode(data))
 
-    def close(self) -> str | None:
+    def close(self) -> ScanHit | None:
         if self.hit is None:
             self._text(self._decoder.decode(b"", final=True))
         if self.hit is None:
@@ -6424,7 +6485,7 @@ class _DiffLeakScanner:
             segment = text[i:end]
             if self._mode == "add":
                 self._add(segment)
-            elif self._mode == "header" and len(self._header_line) < 64 * 1024:
+            elif self._mode in ("header", "hunk") and len(self._header_line) < 64 * 1024:
                 self._header_line += segment
             i = end
             if newline >= 0:
@@ -6437,7 +6498,7 @@ class _DiffLeakScanner:
             self._flush_file()
             self._path, self._in_header, self._mode = "", True, "skip"
         elif head.startswith("@@"):
-            self._in_header, self._mode = False, "skip"
+            self._in_header, self._mode, self._header_line = False, "hunk", head
         elif self._in_header:
             if head.startswith("+++ "):
                 self._mode, self._header_line = "header", head
@@ -6459,6 +6520,10 @@ class _DiffLeakScanner:
             if len(name) > 1 and name.startswith('"') and name.endswith('"'):
                 name = name[1:-1]
             self._path = name[2:] if name.startswith("b/") else name
+        elif self._mode == "hunk":
+            start = _HUNK_NEW_START.match(self._header_line)
+            if start is not None:
+                self._hunks.append((self._file_lines, int(start.group(1))))
         self._mode, self._head, self._header_line = None, "", ""
 
     # -- scanning ------------------------------------------------------------
@@ -6466,6 +6531,7 @@ class _DiffLeakScanner:
     def _add(self, text: str) -> None:
         if not text:
             return
+        self._file_lines += text.count("\n")
         self._buf.append(text)
         self._buf_len += len(text)
         if self._buf_len >= self._window:
@@ -6474,26 +6540,43 @@ class _DiffLeakScanner:
     def _scan(self, *, last: bool) -> None:
         text = self._carry + "".join(self._buf)
         self._buf, self._buf_len = [], 0
-        if text and self._leaks(text):
-            self.hit = self._path or "a file"
+        found = self._leaks(self._path, text) if text else None
+        if found:
+            self.hit = ScanHit(
+                self._path or "a file",
+                found.rule,
+                self._file_line(self._window_line + text.count("\n", 0, found.offset)),
+            )
             return
         if last:
             self._carry = ""
             return
         cut = max(len(text) - self._overlap, 0)
         line_start = text.rfind("\n", max(cut - self._overlap, 0), cut)
-        self._carry = text[line_start + 1 :] if line_start >= 0 else text[cut:]
+        carry_from = line_start + 1 if line_start >= 0 else cut
+        self._window_line += text.count("\n", 0, carry_from)
+        self._carry = text[carry_from:]
+
+    def _file_line(self, added_index: int) -> int:
+        """The new file's 1-based line number of the added line at `added_index`."""
+        line = added_index + 1
+        for first, start in self._hunks:
+            if first > added_index:
+                break
+            line = start + (added_index - first)
+        return line
 
     def _flush_file(self) -> None:
         if self._buf:
             self._scan(last=True)
         self._carry = ""
+        self._file_lines, self._window_line, self._hunks = 0, 0, []
 
 
 def _scan_diff_stream(
     argv: list[str],
     *,
-    leaks: Callable[[str], bool],
+    leaks: LeakPredicate,
     overlap: int,
     repo: Path,
     private_dir: Path,
@@ -6501,8 +6584,8 @@ def _scan_diff_stream(
     slug: str,
     timeout_seconds: int,
     logger: Any,
-) -> tuple[int, str | None]:
-    """Run a `git diff` and scan everything it adds; (exit code, leaking path or None)."""
+) -> tuple[int, ScanHit | None]:
+    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None)."""
     scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
     code = _git_stream(
         argv,
@@ -6518,7 +6601,8 @@ def _scan_diff_stream(
 
 
 def _adds_a_credential(diff: str) -> bool:
-    """True when a line this diff ADDS matches a credential pattern.
+    """True when a line this diff ADDS matches a credential pattern, each
+    file judged by its own path (`_credential_in`, #373).
 
     The patterns are `swarm_redaction.RULES`, the same families swarm-api
     masks at read time (owner decision 4, 2026-09-28), so "credential-shaped"
@@ -6535,7 +6619,7 @@ def _adds_a_credential(diff: str) -> bool:
     character before it is not a letter, a digit or `_`. The private-key
     block is exempt: its marker is never part of an identifier.
     """
-    return _holds_a_credential("\n".join(added for _path, added in _added_by_file(diff)))
+    return any(_credential_in(path, added) is not None for path, added in _added_by_file(diff))
 
 
 def _added_by_file(diff: str) -> list[tuple[str, str]]:
@@ -6579,24 +6663,209 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
     return [(name, "\n".join(lines)) for name, lines in files]
 
 
-def _holds_a_credential(added: str) -> bool:
-    """True when `added` -- text a diff adds, its `+` removed -- matches a
-    credential pattern where the match starts a token (`_adds_a_credential`)."""
-    if not added:
+# -- the tiered, path-aware publish guard (#373) ------------------------------
+#
+# OWNER DECISION, 2026-09-30 (#373). The publish scans refused any added text
+# the generic credential rules match, and a test of the redaction rules has to
+# hold exactly such text (`"password": "********"`, `secret="<name>"`), so no
+# SwarmCloud agent could publish one (#327's two runs, #376, #379). The guard
+# is tiered by the file's path:
+#
+# * TIER 1, every file, always refused: a registered secret (checked by the
+#   caller, `Worker._leaks_in_added_text`, never relaxed); a vendor-shaped key,
+#   whose tail must carry an explicit placeholder IN A TEST PATH, so an
+#   `sk-test-aaaa` fixture passes there and is refused anywhere else; a JWT
+#   whose header decodes to JSON naming `alg`; any private key.
+#   PRIVATE KEYS FOLLOW MAIN'S RULE IN EVERY PATH AND TIER: refused exactly
+#   when `swarm_redaction.rules.mask_private_keys` masks something, so any
+#   BEGIN ... PRIVATE KEY marker and any orphan-END tail is refused, a stub
+#   marker under `tests/` included. Owner decision, 2026-10-01: four review
+#   rounds of relaxing it (body length, entropy, DER shape, windows) each
+#   found inputs main refuses and the branch published. #373's real blocker
+#   was the generic key=value rule in redaction tests, not PEM markers; a
+#   test builds its marker at runtime.
+# * TIER 2, outside test paths: the generic rules refuse exactly as before.
+# * TIER 3, in test paths: a generic match refuses only when its value looks
+#   like a credential (`_looks_like_a_credential`). The loose tier is test
+#   CODE only (`is_test_path`).
+#
+# `swarm_redaction.RULES` is unchanged: read-time masking shares it, and a
+# false positive there costs one masked word, not a refused publish.
+#
+# RESIDUAL RISK, accepted by the owner: a weak real password committed under a
+# test path is published. CI's trivy secret scan still runs after the push.
+
+#: The `swarm_redaction` rules that match a NAME followed by a value rather
+#: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
+#: not named here, `jwt` or `private_key_block` is treated as a vendor rule --
+#: the stricter tier -- so a rule added to `RULES` is never silently relaxed.
+GENERIC_CREDENTIAL_RULES = frozenset(
+    {"key_value_assignment", "http_authorization", "http_authorization_scheme"}
+)
+
+#: A vendor key's own prefix, stripped before its tail is judged.
+_VENDOR_PREFIX = re.compile(r"(?:sk-|ya29\.|AIza|gh[pousr]_|github_pat_|xox[abprs]-|AKIA|ASIA)")
+
+#: What a value needs to look like a credential (owner decision, 2026-09-30):
+#: at least this many characters...
+CREDENTIAL_MIN_CHARS = 16
+#: ...and at least this much Shannon entropy per character. Random base62 of
+#: 16 distinct characters is 4.0 bits; English words and repeated fixtures
+#: (`p4ssw0rd-p4ssw0rd` is 3.0) sit below.
+CREDENTIAL_MIN_ENTROPY_BITS = 3.5
+
+#: A value holding any of these is a placeholder, not a credential: a mask,
+#: a run of x, a `<name>` or `${VAR}` slot, or a word that says so.
+_PLACEHOLDER = re.compile(r"\*|x{4,}|<[^>]*>|\$\{[^}]*\}|fake|test|dummy|example", re.IGNORECASE)
+
+#: Where a refusal names a private key: its first BEGIN or END marker.
+_PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
+
+#: Directory names that make a CODE file under them a test file (compared
+#: lower-cased, so `Tests/x.py` is the same as `tests/x.py`). `fixtures/` and
+#: `testdata/` are NOT here: they hold data, and data is judged strictly.
+_TEST_DIRS = frozenset({"tests", "test", "__tests__"})
+#: Only these extensions can be test CODE (owner decision, 2026-10-01). The
+#: loose tier exists so a test may assert on `password="hunter2"`; a config or
+#: data file (.env, .yaml, .json, .toml, .pem, no extension...) is where real
+#: credentials live, so it is judged strictly even under `tests/`.
+_TEST_CODE_EXTENSIONS = frozenset(
+    {".py", ".pyi", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".go", ".rs", ".java",
+     ".kt", ".rb", ".sh", ".bats"}
+)
+#: File names that are test files wherever they sit (matched lower-cased).
+_TEST_FILE = re.compile(r"(?:test_.+\..+|.+_test\..+|.+\.(?:test|spec)\..+)")
+#: NEVER a test path, even under `tests/`: the files real credentials live in.
+#: Matched against the file name; `*credential*` also against every directory.
+_NEVER_TEST_FILES = (".env*", "*.pem", "*.key", "*credential*", "*secret*.json")
+
+
+def is_test_path(path: str) -> bool:
+    """True when `path` (repository-relative, `/`-separated) is test CODE for
+    the publish guard's loose tier (owner decisions, 2026-09-30 and
+    2026-10-01, #373).
+
+    Both must hold: the file has a code extension (`_TEST_CODE_EXTENSIONS`),
+    and it sits under a `tests/`, `test/` or `__tests__/` directory at any
+    depth (case-insensitive) or is named `test_*`, `*_test.*`, `*.test.*` or
+    `*.spec.*`. A file named `*credential*` -- or under a `*credential*`
+    directory -- never is. An empty or unknown path is not one: the guard
+    falls to its stricter tier when it cannot tell.
+    """
+    if not path:
         return False
+    parts = path.split("/")
+    name = parts[-1].lower()
+    if os.path.splitext(name)[1] not in _TEST_CODE_EXTENSIONS:
+        return False
+    if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NEVER_TEST_FILES):
+        return False
+    if any("credential" in part.lower() for part in parts[:-1]):
+        return False
+    if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
+        return True
+    return _TEST_FILE.fullmatch(name) is not None
+
+
+def _shannon_bits(value: str) -> float:
+    """Shannon entropy of `value`'s characters, in bits per character."""
+    if not value:
+        return 0.0
+    counts: dict[str, int] = {}
+    for char in value:
+        counts[char] = counts.get(char, 0) + 1
+    size = len(value)
+    return -sum((n / size) * math.log2(n / size) for n in counts.values())
+
+
+def _looks_like_a_credential(value: str) -> bool:
+    """True when `value` is shaped like a real credential rather than a
+    fixture: at least `CREDENTIAL_MIN_CHARS` characters, letters AND digits,
+    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character, and no
+    placeholder (`_PLACEHOLDER`)."""
+    if len(value) < CREDENTIAL_MIN_CHARS:
+        return False
+    if _PLACEHOLDER.search(value):
+        return False
+    if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
+        return False
+    return _shannon_bits(value) >= CREDENTIAL_MIN_ENTROPY_BITS
+
+
+def _decodes_as_a_jwt(token: str) -> bool:
+    """True when `token`'s first segment base64url-decodes to a JSON object
+    naming `alg`, which every JWT header does. `eyword_only_args`, or an
+    `ey...` run in a fixture, is not one."""
+    header = token.split(".", 1)[0]
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(header + "=" * (-len(header) % 4)))
+    except ValueError:  # binascii.Error, UnicodeDecodeError and JSONDecodeError all are
+        return False
+    return isinstance(decoded, dict) and "alg" in decoded
+
+
+#: Words that mark a vendor-shaped fixture as one.
+_VENDOR_PLACEHOLDER = re.compile(r"example|test|fake|x{4,}", re.IGNORECASE)
+
+
+def _is_explicit_placeholder(tail: str) -> bool:
+    """True when a vendor token's variable part says it is a fixture: it holds
+    EXAMPLE, test, fake or a run of four x, or is one repeated character."""
+    return (
+        _VENDOR_PLACEHOLDER.search(tail) is not None
+        or (len(tail) >= 4 and len(set(tail)) == 1)
+    )
+
+
+def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
+    """Whether one token-starting match of `rule` is a credential, by tier."""
+    if rule.name == "jwt":
+        return _decodes_as_a_jwt(match.group(0))
+    if rule.name in GENERIC_CREDENTIAL_RULES:
+        if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
+            return False
+        if not in_tests:
+            return True  # tier 2: exactly as before
+        value = match.group(0)[len(match.group(1)):]
+        return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
+    # A vendor key: refused outside tests as before; in a test path it passes
+    # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
+    # and digits cannot tell a fixture from a real key: 22% of real-shaped
+    # AKIA tokens passed that judgement.
+    if not in_tests:
+        return True
+    prefix = _VENDOR_PREFIX.match(match.group(0))
+    tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
+    return not _is_explicit_placeholder(tail)
+
+
+def _credential_in(path: str, added: str) -> CredentialHit | None:
+    """The first credential in `added` -- text the file at `path` adds, its
+    `+` removed -- tiered by whether `path` is a test path (#373), or None.
+
+    A pattern match counts only where it starts a token (`_adds_a_credential`);
+    the private-key block is exempt, its marker is never part of an
+    identifier. Rules are asked in `swarm_redaction.RULES` order, and the
+    answer names the rule and where its match starts, never the value.
+    """
+    if not added:
+        return None
+    in_tests = is_test_path(path)
     for rule in CREDENTIAL_RULES:
-        if rule.apply is not None:
+        if rule.apply is not None:  # the private-key block
+            # Main's rule, in every path and tier: refused exactly when
+            # `mask_private_keys` would mask something (owner, 2026-10-01).
             if rule.apply(added, False, False)[1]:
-                return True
+                marker = _PEM_MARKER.search(added)
+                return CredentialHit(rule.name, marker.start() if marker else 0)
             continue
         for match in rule.pattern.finditer(added):
             start = match.start()
             if start and (added[start - 1].isalnum() or added[start - 1] == "_"):
                 continue
-            if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
-                continue
-            return True
-    return False
+            if _match_counts(rule, match, in_tests):
+                return CredentialHit(rule.name, start)
+    return None
 
 
 #: A bare value shaped like a credential: twelve or more token characters,
@@ -6629,7 +6898,7 @@ def _first_leaking_commit(
     *,
     shas: list[str],
     keep: str | None,
-    leaks: Callable[[str], bool],
+    leaks: LeakPredicate,
     git: list[str],
     repo: Path,
     private_dir: Path,
@@ -6731,7 +7000,7 @@ def final_tree_leak(
     *,
     repo: Path,
     base: str | None,
-    leaks: Callable[[str], bool],
+    leaks: LeakPredicate,
     private_dir: Path,
     logs_dir: Path,
     timeout_seconds: int,
@@ -6810,7 +7079,9 @@ def final_tree_leak(
     if code != 0:
         raise GitError("could not diff the branch against the clone base")
     if hit is not None:
-        return f"the final tree adds a credential in {hit}; remove it"
+        # The rule and the line tell the retry what to remove (#373); the
+        # value is never in it, and the caller scrubs the reason anyway.
+        return f"the final tree adds a credential in {hit.path} (rule {hit.rule}, line {hit.line}); remove it"
     return None
 
 
@@ -6828,7 +7099,7 @@ def replay_agent_commits(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
-    leaks: Callable[[str], bool] | None = None,
+    leaks: LeakPredicate | None = None,
     overlap: int = SCAN_OVERLAP_CHARS,
 ) -> int | None:
     """Rewrite each commit on HEAD's first-parent line since `base` as the worker's (#242).
@@ -6841,7 +7112,7 @@ def replay_agent_commits(
     * HEAD does not descend from `base` (the agent reset or checked out
       another line): nothing tells its commits from the repository's;
     * more than `MAX_KEPT_COMMITS` of them;
-    * `leaks` answers True for the text any agent commit ADDS over its parent
+    * `leaks` finds a credential in the text any agent commit ADDS to a file
       (#259 review), read whole in windows overlapping by `overlap`. A kept commit keeps its TREE, so a key the agent added
       in one commit and deleted in the next would be pushed in the first
       one's tree even though the final tree is clean -- and a pushed object

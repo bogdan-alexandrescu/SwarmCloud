@@ -450,3 +450,27 @@ run "the_quota_sweep_has_a_caller_the_broker_will_accept" {
     error_message = "only the quota broker evaluates platform callers; granting the name elsewhere widens who can change a tenant's quota ceiling"
   }
 }
+
+# #380: the reconciler gives back a fenced attempt's account holds through the
+# broker. Without the URL, `BrokerHoldReleaser.from_env` returns None and every
+# fenced hold counts against the pool for its whole TTL. Keys, for the reason
+# the run above gives.
+run "the_reconciler_can_reach_the_broker_to_release_fenced_holds" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    tenants = {}
+  }
+
+  assert {
+    condition = alltrue([
+      for key in ["QUOTA_BROKER_URL", "QUOTA_BROKER_AUDIENCE"] :
+      contains(keys(local.service_env["swarm-reconciler"]), key)
+    ])
+    error_message = "swarm-reconciler has no QUOTA_BROKER_URL/QUOTA_BROKER_AUDIENCE, so a fenced attempt's account holds are never released early (#380)"
+  }
+}

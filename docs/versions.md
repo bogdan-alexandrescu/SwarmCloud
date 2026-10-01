@@ -55,6 +55,40 @@ provider builds and get two different results.
 Every `FROM` carries a digest, so a rebuild in six months produces the same
 toolchain rather than whatever the tag points at that day.
 
+### Agent image toolbox
+
+What an agent in `agent-runtime-base` can run besides the language toolchains
+above (`git`, `jq`, `rg`, `fd`, `curl`, `wget`, `make`, `build-essential` come
+from Debian's apt and move with `apt-get upgrade`). Each row is a vendor's
+prebuilt linux/amd64 release, pinned and sha256-verified in
+`images/agent-runtime-base/Dockerfile`, which records where every checksum
+came from. `tests/unit/scripts/test_agent_toolbox_image.py` fails when this
+table and the Dockerfile disagree.
+
+The versions were chosen **against the promote gate**, not by recency: on
+2026-10-01 each artifact was scanned with trivy 0.74.0 using the release's own
+filter (fixable HIGH/CRITICAL). That is why two of them differ from the
+operator pins in the table at the top.
+
+| Tool | In the image | Default build | Why this version |
+|---|---|---|---|
+| `gh` | **2.102.0** | yes | newest; scan clean |
+| `gcloud` | **587.0.0** | yes | newest; its bundled Python 3.14 is removed (7 fixable HIGHs in its site-packages) and gcloud runs on the image's 3.11 |
+| `kubectl` | **1.36.5** | yes | newest 1.36 patch; operators pin 1.36.3 |
+| `terraform` | **1.16.4** | yes | operators and CI pin 1.16.2, whose Go 1.26.4 stdlib has 9 fixable HIGHs |
+| `checkov` | **3.3.17** | yes | matches CI; isolated `uv tool` env, resolution pinned to 2026-10-01 |
+| `shellcheck` | **0.11.0** | yes | matches the operator pin |
+| `docker` | **29.8.2** | yes | CLI only, from Docker's bookworm `.deb`; no daemon, no socket |
+| `tofu` | **1.13.0** | **no** | no release scans clean: x/mod 0.39.0, grpc 1.83.1 |
+| `tflint` | **0.64.0** | **no** | no release scans clean: Go 1.26.3 stdlib, x/crypto, x/mod, grpc |
+| `trivy` | **0.74.0** | **no** | no release scans clean: grpc 1.82.1 |
+
+The last three are installed only with `--build-arg INSTALL_TOFU_TFLINT_TRIVY=1`.
+The install path is complete and covered by the build's smoke step. It is off
+because the gate refuses the whole image over one tool's dependency. Turn it on
+once each vendor ships a release that scans clean, re-scanning first, or once
+the owner accepts the findings in `.trivyignore.yaml` with an expiry.
+
 ---
 
 ## 1. Node: 24, not 20 — a deliberate departure

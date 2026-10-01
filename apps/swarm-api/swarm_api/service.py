@@ -48,7 +48,7 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_bac
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from .auth import AuthContext
-from .codec import quota_to_api
+from .codec import hard_limit_known, quota_to_api
 from .continuation import resolve_continuation
 from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
@@ -61,10 +61,13 @@ from .store import Store
 from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
+    INPUT_LAYOUT_BY_PARENT,
     DispatchOptions,
     StepSpec,
+    reject_non_finite,
     reject_reserved_metadata,
     resolve_dispatch_options,
+    resolve_input_layout,
     resolve_integrator_step,
     validate_batch_size,
     validate_dag,
@@ -225,6 +228,9 @@ class SubmissionService:
     ) -> Task:
         profile = validate_runner_profile(spec.runner_profile)
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
+        # NaN and +/-Infinity, before the declaration, so the refusal names the
+        # path rather than a bound a NaN compares false against (#294).
+        reject_non_finite(spec.input, step_id=step_id)
         # After the size, so an oversized input is refused for its size. What
         # it may carry is the catalogue's declaration (contract request 25).
         validate_runner_input(
@@ -240,6 +246,7 @@ class SubmissionService:
         # task id per upstream step, so `max_workflow_steps` is its ceiling.
         reject_reserved_metadata(spec.metadata)
         validate_input_size(spec.metadata, 16 * 1024, label="metadata")
+        reject_non_finite(spec.metadata, label="metadata", step_id=step_id)
         validate_storable(spec.metadata, label="metadata")
         resource_class = validate_resource_class_override(profile, resource_class_override)
         timeout = validate_timeout(profile, spec.timeout_seconds)
@@ -351,20 +358,6 @@ class SubmissionService:
                 "continues_task; it cannot start new work"
             )
         tenant = self.tenant_for(ctx)
-        step_specs = [
-            StepSpec(
-                step_id=s.step_id,
-                depends_on=tuple(s.depends_on),
-                # The filenames too, not only the parent ids: validate_dag
-                # refuses two parents staging one filename, and a filename that
-                # is absolute or traverses, before anything is created (#64).
-                input_from=dict(s.input_from),
-                when_step=s.when.step if s.when else None,
-                when_verdicts=tuple(s.when.verdict_in) if s.when else (),
-                builds_on=s.builds_on,
-            )
-            for s in spec.steps
-        ]
         integrator_step_id: str | None = None
         try:
             # The WORKFLOW's own metadata, up front and inside this try. It is
@@ -379,6 +372,29 @@ class SubmissionService:
             # value, and a step's own `input_from` is the only declaration
             # `validate_dag` ever sees (#151).
             reject_reserved_metadata(spec.metadata)
+            # Copied onto every step's task, so refused once, here, without a
+            # step id: it is the workflow's (#294).
+            reject_non_finite(spec.metadata, label="metadata")
+            # Inside the try, because resolving each step's `input_layout`
+            # (#75) can refuse, and a refusal is counted like every other.
+            step_specs = [
+                StepSpec(
+                    step_id=s.step_id,
+                    depends_on=tuple(s.depends_on),
+                    # The filenames too, not only the parent ids: validate_dag
+                    # refuses two parents staging one filename, and a filename
+                    # that is absolute or traverses, before anything is created
+                    # (#64) -- unless the step stages by parent (#75).
+                    input_from=dict(s.input_from),
+                    when_step=s.when.step if s.when else None,
+                    when_verdicts=tuple(s.when.verdict_in) if s.when else (),
+                    builds_on=s.builds_on,
+                    input_layout=resolve_input_layout(
+                        spec.metadata, s.metadata, step_id=s.step_id
+                    ),
+                )
+                for s in spec.steps
+            ]
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
@@ -412,16 +428,25 @@ class SubmissionService:
             for step in spec.steps:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
+                reject_non_finite(step.input, step_id=step.step_id)
                 validate_runner_input(
                     profile, step.input, step_id=step.step_id,
                     repository_url=spec.repository_url,
                 )
                 validate_storable(step.input, step_id=step.step_id)
+                # The step's own metadata, merged as `_build_task` will store
+                # it, under the same rules as any task's metadata.
+                reject_reserved_metadata(step.metadata)
+                step_metadata = {**spec.metadata, **step.metadata}
+                validate_input_size(step_metadata, 16 * 1024, label="metadata")
+                reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
+                validate_storable(step_metadata, label="metadata", step_id=step.step_id)
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
 
         by_id = {s.step_id: s for s in spec.steps}
+        layout_of = {s.step_id: s.input_layout for s in step_specs}
         # The review a gated integrator reads its verdict from is not one of
         # the branches it merges (#264). A review's deliverable is its verdict
         # file; it changes no files, so it pushes no branch, and the integrator
@@ -442,31 +467,38 @@ class SubmissionService:
         for step_id in order:
             source = by_id[step_id]
             parent_task_ids = [step_task_id[dep] for dep in source.depends_on]
+            dispatch_for_step = self._step_dispatch(
+                dispatch,
+                step_id=step_id,
+                integrator_step_id=integrator_step_id,
+                order=order,
+                step_task_id=step_task_id,
+                not_integrated=not_integrated,
+            ).with_routing(
+                # Both name upstream steps, so topological order has
+                # already minted their task ids.
+                builds_on=step_task_id[source.builds_on] if source.builds_on else None,
+                gate_task_id=step_task_id[source.when.step] if source.when else None,
+                gate_verdicts=source.when.verdict_in if source.when else (),
+            )
+            if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
+                # Each parent's STEP id beside the task id the worker sees in
+                # `metadata.input_from`, so it can stage under the step id (#75).
+                dispatch_for_step = dispatch_for_step.with_input_parents(
+                    {step_task_id[src]: src for src in source.input_from}
+                )
             task = self._build_task(
                 spec=TaskCreate(
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={**spec.metadata, "workflow_step": step_id},
+                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
                     timeout_seconds=source.timeout_seconds,
                 ),
                 tenant=tenant,
                 ctx=ctx,
                 now=now,
-                dispatch=self._step_dispatch(
-                    dispatch,
-                    step_id=step_id,
-                    integrator_step_id=integrator_step_id,
-                    order=order,
-                    step_task_id=step_task_id,
-                    not_integrated=not_integrated,
-                ).with_routing(
-                    # Both name upstream steps, so topological order has
-                    # already minted their task ids.
-                    builds_on=step_task_id[source.builds_on] if source.builds_on else None,
-                    gate_task_id=step_task_id[source.when.step] if source.when else None,
-                    gate_verdicts=source.when.verdict_in if source.when else (),
-                ),
+                dispatch=dispatch_for_step,
                 workflow_id=workflow_id,
                 step_id=step_id,
                 depends_on=parent_task_ids,
@@ -663,6 +695,17 @@ class SubmissionService:
             # keeps that true if `pool_names_for` ever grows a name that the
             # visibility filter above would have hidden.
             readable = {n: by_name[n] for n in required if n in by_name}
+            # A POOL WITH NO LIMIT SET IS UNKNOWN, NOT 0 (#374), exactly as
+            # `waiting.waiting_for` reads it: its stand-in 0 would serve this
+            # profile a measured headroom of 0 and a TENANT_LIMIT-at-0 blocker,
+            # the untruth `pool_to_api` stopped serving one step removed. A
+            # paused one stays: a pause refuses at any limit, so it is known.
+            limit_unset = [
+                n for n, p in readable.items() if not hard_limit_known(p) and p.enabled
+            ]
+            for n in limit_unset:
+                del readable[n]
+            unread_pools = [] if listing_complete else [n for n in required if n not in by_name]
             profiles[name] = {
                 "resource_class": profile.resource_class,
                 "backend": backend,
@@ -693,7 +736,7 @@ class SubmissionService:
                     # Absent from a COMPLETE listing means unconfigured, which
                     # is unlimited by construction. Absent from a truncated one
                     # means unread, and the two must never be conflated.
-                    unread=() if listing_complete else [n for n in required if n not in readable],
+                    unread=sorted(unread_pools + limit_unset),
                 ),
             }
 

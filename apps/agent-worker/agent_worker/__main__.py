@@ -101,7 +101,7 @@ from swarm_common.logging_setup import configure_logging
 
 from . import hardening, startup
 from .config import WorkerConfig
-from .control import ControlPlane
+from .control import BrokerQuotaReporter, ControlPlane
 from .errors import ConfigError, ExitCode
 from .lifecycle import Worker, WorkerDeps, _execution_name
 from .logs import build_logger
@@ -185,6 +185,9 @@ def build_worker(
         logger=logger,
         heartbeat_extension_seconds=settings.lease_timeout_seconds,
         startup_call_options=firestore_startup_call_options(),
+        quota_reporter=BrokerQuotaReporter.for_broker(
+            config.quota_broker_url, config.quota_broker_audience
+        ),
     )
     if phases is not None:
         phases.rebind(logger)
