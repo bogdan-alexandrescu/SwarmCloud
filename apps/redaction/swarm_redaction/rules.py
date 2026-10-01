@@ -491,14 +491,123 @@ def _private_key_rule() -> Rule:
 _STATUS_OR_CAPITALISED_WORD = (
     r"(?:not set|unset|missing|\(none\)|none|set|[A-Z][a-z]+)(?=[\"\\,\s]|$)"
 )
+
+#: CODE IS NOT A CREDENTIAL (#370). `swarm artifact <task> swarm-work.patch`
+#: served a patch that no longer applied: this rule masked the value of
+#: `_TOKEN = re.compile(...)`, `_MASK_TOKEN = json.dumps(MASK)`,
+#: `token: str | None` and `f(token=token_var)`, so the `-` and context lines
+#: of every hunk touching them no longer matched the file. A value that is an
+#: EXPRESSION names a credential without holding one, and is now left alone.
+#: A LITERAL is still masked: a quoted string, a bare token-shaped value, and
+#: every `KEY=value` line of an environment dump or an INI file.
+#:
+#: What counts as an expression is decided by the SHAPE of the value, case
+#: sensitively, never by guessing at the language:
+#:
+#:   * after `:` -- only a TYPE ANNOTATION (`_ANNOTATION`: a builtin or typing
+#:     name, a PascalCase name of two or more humps, a dotted name ending in a
+#:     PascalCase one) or `null`. A YAML `secret: missing_link_42` and a JSON
+#:     `"secret":true` are literals and stay masked;
+#:   * after `=` -- `_EXPRESSION`, but ONLY when the name holds a lowercase
+#:     letter or a space precedes the `=`. `GITHUB_TOKEN=unset_me_now_123` is
+#:     an environment dump, where every value is a literal, so an all-capitals
+#:     name glued to its `=` gets no exemption at all;
+#:   * anywhere -- a shell substitution, `$(...)` or `${...}`, quoted or not.
+#:
+#: THE THREE WAYS THE FIRST ATTEMPT AT THIS WENT WRONG (review of
+#: task_a2068d6586ec441fa6e3), and what stops each:
+#:
+#:   1. A bare name was exempt whatever it looked like, so `TOKEN = <36 random
+#:      letters>`, a dotted random value and an INI `password = <word>` were
+#:      served whole. A single bare word is now exempt only when it is a
+#:      credential keyword itself (`token=token`, `secrets = _secrets`) or
+#:      `None`/`True`/`False`/`null`/`undefined`. A multi-word name must be
+#:      CONVENTIONAL -- all-lowercase snake_case, all-capitals SNAKE_CASE,
+#:      camelCase or PascalCase, with words of at most 16 characters -- which
+#:      a random value almost never is: it mixes cases inside a word and runs
+#:      two capitals together. A dotted name must start with `self`/`cls`/
+#:      `this` or END in a multi-word, underscored or keyword name, so
+#:      `correct.horse.battery` stays masked.
+#:   2. Under `password`/`passwd` a value is a human's choice, and
+#:      `my_dog_rex` or `myDogRex` is a plausible one. So under those names a
+#:      bare multi-word name is NOT exempt (`_EXPRESSION_PASSWORD`); a call, a
+#:      dotted name, a keyword (`password=password`) and `None` still are.
+#:   3. Typed parameters (`token: str | None = None`) and keyword arguments
+#:      (`f(token=token_var)`) are the commonest shapes in this repository;
+#:      both are covered above, and the git-apply test changes both.
+#:
+#: Every group the decision reads is POSSESSIVE (`?+`), so a refused
+#: exemption cannot backtrack into a different parse of the name -- dropping
+#: `lc` would turn `token=a_b` into an environment line and mask it.
+#:
+#: THE SHELL FILTER HAS THE SAME EXEMPTIONS (`redact` in scripts/lib/common.sh),
+#: as rules that mark the name before the main rules run; the parity fixture
+#: holds both to one output.
+_KV_WORDS = (
+    r"api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization"
+)
+#: The end of a bare value: what may follow a name in code.
+_END = r"(?=[\s,;)\]}]|$)"
+_KEYWORD_WORD = r"_*(?i:" + _KV_WORDS + r")(?i:s)?"
+_MULTI_WORD = (
+    r"(?:_*[a-z][a-z0-9]{0,15}(?:_[a-z0-9]{1,16})+_*"
+    r"|_*[A-Z][A-Z0-9]{0,15}(?:_[A-Z0-9]{1,16})+_*"
+    r"|_*[a-z]{1,16}[0-9]{0,3}(?:[A-Z][a-z]{1,15}[0-9]{0,3})+"
+    r"|_*[A-Z][a-z]{1,15}[0-9]{0,3}(?:[A-Z][a-z]{1,15}[0-9]{0,3})+)"
+)
+_PART = (
+    r"_*(?:[a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}"
+    r"|[a-z]{1,16}[0-9]{0,3}(?:[A-Z][a-z]{1,15}[0-9]{0,3})+"
+    r"|[A-Z][a-z]{1,15}[0-9]{0,3}(?:[A-Z][a-z]{1,15}[0-9]{0,3})*)"
+)
+_DOTTED = (
+    r"(?:(?:self|cls|this)(?:\." + _PART + r")+"
+    r"|" + _PART + r"(?:\." + _PART + r")*\.(?:" + _MULTI_WORD + r"|_+" + _PART
+    + r"|" + _KEYWORD_WORD + r"))"
+)
+_CALL = r"[A-Za-z_$][A-Za-z0-9_$]{0,63}(?:\.[A-Za-z_$][A-Za-z0-9_$]{0,63})*[(\[]"
+_EXPRESSION_PASSWORD = (
+    r"(?-i:=|(?:await|new|not)[ \t]|" + _CALL
+    + r"|(?:None|True|False|null|undefined|\{\}|\[\]|\(\)|" + _DOTTED + r"|" + _KEYWORD_WORD + r")"
+    + _END + r")"
+)
+_EXPRESSION = (
+    r"(?-i:" + _EXPRESSION_PASSWORD + r"|" + _MULTI_WORD + _END + r")"
+)
+_ANNOTATION = (
+    r"(?-i:(?:str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown"
+    r"|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence"
+    r"|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise"
+    r"|_*[A-Z][a-z]{1,15}[0-9]{0,3}(?:[A-Z][a-z]{1,15}[0-9]{0,3})+"
+    r"|[a-z_][a-z0-9_]{0,31}\.[A-Z][A-Za-z0-9]{0,63})"
+    r"(?=[\s,;)\]}|=>\[]|$)"
+    # One PascalCase word is a type only where a type ends: `credential:
+    # Credential)`, `_token: _Token | None`. Before a comma or the end of the
+    # line it is as likely a YAML value -- `password: Summer` -- and stays masked.
+    r"|_*[A-Z][a-z]{1,15}[0-9]{0,3}(?=[ \t]*[)|\[=]))"
+)
+#: After `:` -- a type annotation, a call or a dotted name (a dict literal's
+#: `"next_page_token": page.next_page_token`), or the end of a shell
+#: `${NAME:-}`. Never a bare word: `secret: missing_link_42` is YAML.
+_COLON_VALUE = (
+    r"(?-i:" + _ANNOTATION + r"|" + _CALL + r"|" + _DOTTED + _END + r"|[-+=?]\})"
+)
+#: Not masked when the value starts with one of these (see above).
+_NOT_A_LITERAL = (
+    r"\"?\$[({]"
+    r"|(?(colon)" + _COLON_VALUE
+    + r"|(?(lc)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")"
+    r"|(?(sp)(?(pw)" + _EXPRESSION_PASSWORD + r"|" + _EXPRESSION + r")|(?!))))"
+)
 KEY_VALUE = _rule(
     "key_value_assignment",
     "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
-    r"((?:\\{0,15}\")?[A-Za-z0-9_.-]*"
-    r"(?:api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)"
+    r"((?:\\{0,15}\")?(?P<lc>(?=(?-i:[A-Z0-9_.-]*[a-z])))?+[A-Za-z0-9_.-]*"
+    r"(?:(?P<pw>password|passwd)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
-    r"(?:\\*\")?[ \t]*(?:(?P<colon>:)|=)[ \t]*(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
+    r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
+    r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
     r"(?(esc)"
     r"(?(colon)(?(plural)(?!" + _STATUS_OR_CAPITALISED_WORD + r")"
     r"|(?(keysuffix)(?!" + _STATUS_OR_CAPITALISED_WORD + r")|))|)"
@@ -523,14 +632,36 @@ KEY_VALUE = _rule(
 #: body lines the block is recognised by.
 #:
 #: `.` never matches a newline in any pattern here (no re.DOTALL).
+#:
+#: AN IDENTIFIER IS NEVER CUT MID-WORD (#370). `ey` and eight more characters
+#: took `key_withheld` as `k` + a JWT, served `key_withhel********`, and broke
+#: the patch holding it; `KeyboardInterrupt` and `KeychainStore` went the same
+#: way, and the `sk-` rule cut `task-bbbbbbbb`. So both rules now start only
+#: where a word starts -- after a character that is not a letter, digit or
+#: `_` -- and a JWT must start `eyJ`, which every JWT does (it is base64 of
+#: `{"`). A token GLUED onto a word is still masked when it is long enough
+#: that no identifier is: `eyJ` and 37 more characters (dots counted -- a JWT
+#: header alone can be 36), `sk-` and 32 more.
+#: The shell filter states each as two expressions, since sed has no
+#: look-around; tests/unit/control_plane/test_patch_artifact_applies.py holds
+#: the four to one output (its values are assembled, so they are not in the
+#: fixture file).
 RULES: tuple[Rule, ...] = (
     _private_key_rule(),
-    _rule("openai_key", "sk-", r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+"),
+    _rule(
+        "openai_key",
+        "sk-",
+        r"(?:(?<![A-Za-z0-9_])|(?=sk-[A-Za-z0-9_-]{32}))(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+",
+    ),
     _rule("google_oauth_access_token", "ya29", r"(ya29\.)[A-Za-z0-9._-]+"),
     # Any JWT: a Google ID token, an IAP assertion, a session cookie. This is
     # the one most likely to appear in a log this platform serves, because it
     # is what every caller of this very API holds.
-    _rule("jwt", "ey", r"(ey[A-Za-z0-9_-]{8})[A-Za-z0-9._-]+"),
+    _rule(
+        "jwt",
+        "ey",
+        r"(?:(?<![A-Za-z0-9_])|(?=eyJ[A-Za-z0-9._-]{37}))(eyJ[A-Za-z0-9_-]{7})[A-Za-z0-9._-]+",
+    ),
     _rule("google_api_key", "AIza", r"(AIza)[A-Za-z0-9_-]{20,}"),
     _rule("github_token", "gh[pousr]_", r"(gh[pousr]_)[A-Za-z0-9]{8,}"),
     _rule("github_pat", "github_pat_", r"(github_pat_)[A-Za-z0-9_]{8,}"),
