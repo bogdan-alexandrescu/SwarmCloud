@@ -381,25 +381,29 @@ _WINDOW = {"from": (_NOW - timedelta(days=2)).isoformat(), "to": (_NOW + timedel
 _AT = _AT_DT.isoformat()
 
 
+#: Each case is a cursor TEMPLATE with a fixed id: "{at}" is replaced by an
+#: in-window instant inside the test body, so the collected ids never depend on
+#: the clock (pytest-xdist workers must collect identical ids).
 @pytest.mark.parametrize(
-    "cursor",
+    "template",
     [
-        f"{_AT}|" + "9" * 50,        # a forged skip: 10**50 - 1
-        f"{_AT}|2147483648",         # one past int32
-        f"{_AT}|501",                # one past HISTORY_PAGE_MAX
-        f"{_AT}|abc",                # not a number
-        f"{_AT}|-1",
-        f"{_AT}|\u0663",            # an Arabic-Indic digit: isdigit() but not ASCII
-        f"{_AT}|",
-        "no-separator",
-        "not-a-time|1",
+        pytest.param("{at}|" + "9" * 50, id="forged-skip-10-pow-50"),
+        pytest.param("{at}|2147483648", id="one-past-int32"),
+        pytest.param("{at}|501", id="one-past-history-page-max"),
+        pytest.param("{at}|abc", id="not-a-number"),
+        pytest.param("{at}|-1", id="negative-skip"),
+        pytest.param("{at}|\u0663", id="arabic-indic-digit"),  # isdigit() but not ASCII
+        pytest.param("{at}|", id="empty-skip"),
+        pytest.param("no-separator", id="no-separator"),
+        pytest.param("not-a-time|1", id="not-a-time"),
     ],
 )
-def test_a_malformed_or_oversized_cursor_is_a_422_never_a_500(client, db, cursor):
+def test_a_malformed_or_oversized_cursor_is_a_422_never_a_500(client, db, template):
     """The cursor's skip count used to size the Firestore read
     (`limit + skip + 1`), so a forged one read an account's whole hold log, and
     past int32 it was an unhandled 500."""
     client.identity.as_platform()
+    cursor = template.format(at=_AT)
 
     response = _history(client, cursor=cursor, **_WINDOW)
 
