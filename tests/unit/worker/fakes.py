@@ -247,6 +247,28 @@ class RecordingExporter:
         self.exports.append((usage, labels))
 
 
+class RecordingQuotaReporter:
+    """Stands in for `control.BrokerQuotaReporter`: records each report.
+
+    `fail` makes every report raise, as an unreachable broker does. The worker
+    must carry on through that (`ControlPlane.update_quota_state`).
+    """
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.reports: list[tuple[str, str, str, dict[str, Any]]] = []
+        self.attempts = 0
+        self._fail = fail
+
+    def report(self, *, provider: str, tenant_id: str, route: str, body: Any) -> None:
+        self.attempts += 1
+        if self._fail is not None:
+            raise self._fail
+        self.reports.append((provider, tenant_id, route, dict(body)))
+
+    def routes(self) -> list[str]:
+        return [route for _, _, route, _ in self.reports]
+
+
 class ExplodingChildProcess:
     """Substituted for `ChildProcess` in tests that must prove nothing ran."""
 
