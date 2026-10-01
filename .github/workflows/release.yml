@@ -99,9 +99,14 @@ on:
         type: boolean
         default: false
 
+# Least privilege at workflow level (epic #352 item 9, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the jobs that authenticate to
+# Google (build, promote, infrastructure, infrastructure-iam, deploy,
+# acceptance). `verify` runs the merged repository's own tests and must not be
+# able to mint one. A job-level `permissions:` block REPLACES this one.
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   # Never two releases to the same environment at once: they would contend for
@@ -337,6 +342,11 @@ jobs:
   promote:
     name: promote (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     needs: [build, approval]
     # No status function, so GitHub also requires every job upstream to have
     # succeeded; the explicit test is what a reader checks. A `skip_build`
@@ -419,6 +429,11 @@ jobs:
   infrastructure:
     name: terraform apply (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     needs: [verify, approval, promote]
     # A status function because a `skip_build` redeploy skips `promote` and
     # must still apply. That is exactly why `needs.approval.result ==
@@ -620,6 +635,11 @@ jobs:
   infrastructure-iam:
     name: terraform apply, IAM (dev-iam)
     runs-on: ubuntu-24.04
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     needs: [infrastructure]
     # !cancelled(), NOT the default (bare success()). success() is not scoped
     # to `needs: [infrastructure]` -- it is false when ANY job upstream,
@@ -689,6 +709,11 @@ jobs:
   deploy:
     name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     needs: [build, approval, infrastructure, infrastructure-iam]
     # Runs only after the apply succeeded, and the apply runs only after the
     # approval succeeded -- so this is behind the same one approval. On dev
