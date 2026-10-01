@@ -6,20 +6,26 @@
 /** `pool_to_api` in codec.py. */
 export interface Pool {
   name: string
-  hard_limit: number
+  /**
+   * null when the pool document carries no `hard_limit` at all (#374): the
+   * ceiling was never set, which is not the same as set to 0. Everything
+   * derived from it (`effective_limit`, `available`) is null with it. Render
+   * it as the `limit-unset` verdict (`blockerCeiling`), never as a number.
+   */
+  hard_limit: number | null
   /** AIMD target. null when nothing has ever lowered it. */
   adaptive_target: number | null
   /** Ceiling derived from provider quota. null when unknown. */
   quota_derived_limit: number | null
   /** min(hard_limit, adaptive_target, quota_derived_limit), floored at 0. */
-  effective_limit: number
+  effective_limit: number | null
   /**
    * WEIGHTED UNITS IN USE, NOT AGENTS. Admission increments by the resource
    * class's `units` -- standard 1, browser 2, large 4 -- so `active: 8` may be
    * two large agents or eight standard ones. Never label this "agents".
    */
   active: number
-  available: number
+  available: number | null
   enabled: boolean
   updated_at: string
 }
@@ -114,7 +120,8 @@ export type HeadroomBasis = 'measured' | 'uncapped' | 'unknown'
 export interface ProfileBlocker {
   pool: string
   reason: string
-  limit: number
+  /** null for `POOL_LIMIT_UNSET` (#374): the pool has no limit set, which is not 0. */
+  limit: number | null
   active: number
   /** 'needs_action' | 'no_room' | null when the reason is in neither. */
   group: string | null
@@ -398,6 +405,8 @@ export const FAMILY_TITLE: Readonly<Record<PoolKind, string>> = {
  * counter that was never released. `make pool-check` exists to find this.
  */
 export function overCeiling(pool: Pool): boolean {
+  // No ceiling was ever set (#374): there is nothing to be over.
+  if (pool.effective_limit === null) return false
   return pool.active > pool.effective_limit
 }
 
@@ -409,6 +418,9 @@ export function overCeiling(pool: Pool): boolean {
  */
 export function setBy(pool: Pool): { term: string; detail: string } {
   const { hard_limit, adaptive_target, quota_derived_limit, effective_limit } = pool
+  if (hard_limit === null) {
+    return { term: 'no limit set', detail: 'This pool has no hard limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.' }
+  }
   if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
     return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
   }
@@ -424,6 +436,7 @@ export function setBy(pool: Pool): { term: string; detail: string } {
  * held down by something, and which something is the whole diagnosis.
  */
 export function limitedBy(pool: Pool): 'adaptive' | 'quota' | null {
+  if (pool.effective_limit === null || pool.hard_limit === null) return null
   if (pool.effective_limit >= pool.hard_limit) return null
   const adaptive = pool.adaptive_target
   const quota = pool.quota_derived_limit
@@ -2182,6 +2195,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
+  POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
 /**
@@ -2235,14 +2249,31 @@ export function reasonCopy(reason: string): string {
  * With `units` null or absent (the catalogue unread, or the caller has none
  * to give) this is exactly what it was before #66: a positive limit is
  * always `full`.
+ *
+ * ONE MORE, FOR #374: `limit-unset`, a pool whose document carries no
+ * `hard_limit` at all. The scheduler names that refusal `POOL_LIMIT_UNSET`
+ * with `limit: null` (scheduler/codec.py): admission reads the missing key as
+ * 0 and refuses, but nobody set the pool to zero, so neither `set-to-zero`
+ * nor `full` is true of it. A person has to set a limit.
  */
-export type Ceiling = 'paused' | 'set-to-zero' | 'zero' | 'full' | 'below-units' | 'below-units-quota'
+export type Ceiling =
+  | 'paused'
+  | 'set-to-zero'
+  | 'zero'
+  | 'full'
+  | 'below-units'
+  | 'below-units-quota'
+  | 'limit-unset'
+
+/** The scheduler's blocker reason for a pool with no `hard_limit` (#374). */
+export const POOL_LIMIT_UNSET = 'POOL_LIMIT_UNSET'
 
 export function blockerCeiling(
   b: { reason: string; pool?: string; limit?: unknown },
   units: number | null = null,
 ): Ceiling {
   if (b.reason === 'MANUAL_PAUSE') return 'paused'
+  if (b.reason === POOL_LIMIT_UNSET) return 'limit-unset'
   if (b.limit !== 0) {
     if (units !== null && typeof b.limit === 'number' && b.limit > 0 && b.limit < units) {
       return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'below-units-quota' : 'below-units'
@@ -2252,9 +2283,9 @@ export function blockerCeiling(
   return b.pool === undefined || poolKind(b.pool) === 'provider' ? 'zero' : 'set-to-zero'
 }
 
-/** The three ceilings no amount of waiting clears: a person has to act. */
+/** The ceilings no amount of waiting clears: a person has to act. */
 export function needsAPerson(c: Ceiling): boolean {
-  return c === 'paused' || c === 'set-to-zero' || c === 'below-units'
+  return c === 'paused' || c === 'set-to-zero' || c === 'below-units' || c === 'limit-unset'
 }
 
 /**
@@ -2284,6 +2315,8 @@ export function ceilingCopy(
       return `${subject} is paused by operator. It admits nothing until somebody resumes it.${held}`
     case 'set-to-zero':
       return `${subject} is paused by operator (limit 0). It admits nothing until somebody raises its limit.${held}`
+    case 'limit-unset':
+      return `${subject} has no limit set, so its ceiling was never read and it admits nothing. Waiting cannot clear it: somebody has to set its limit.${held}`
     case 'zero': {
       const who =
         b.pool !== undefined && poolKind(b.pool) === 'provider'

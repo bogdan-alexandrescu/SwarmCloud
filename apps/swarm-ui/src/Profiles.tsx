@@ -383,10 +383,10 @@ function ProfileCard({ name, profile, byName, tenant, groups, units }: {
                   <td role="cell" data-label="Scope">
                     <span className={`scope ${scope}`}>{scope === 'platform' ? 'platform-wide' : 'this tenant'}</span>
                   </td>
-                  <td role="cell" data-label="Units free" className="n">{row === null ? '—' : row.available}</td>
+                  <td role="cell" data-label="Units free" className="n">{row === null || row.available === null ? '—' : row.available}</td>
                   {/* A paused pool fits 0 however much headroom it reports &mdash; that is
                       a fact admission enforces, not a missing value coalesced to zero. */}
-                  <td role="cell" data-label="Fits" className="n">{row === null ? '—' : paused ? 0 : Math.floor(Math.max(0, row.available) / weight)}</td>
+                  <td role="cell" data-label="Fits" className="n">{row === null ? '—' : paused || row.available === null ? 0 : Math.floor(Math.max(0, row.available) / weight)}</td>
                   <LiftCell
                     // A disabled profile is not priced (CP-3): nothing it
                     // could buy is on offer, so no row carries a figure.
@@ -495,7 +495,7 @@ function ProfileCard({ name, profile, byName, tenant, groups, units }: {
  * card cannot draw one pool two ways.
  */
 interface StatusMark {
-  kind: 'unread' | 'uncapped' | 'paused' | 'limit-0' | 'too-small' | 'full' | 'ok'
+  kind: 'unread' | 'uncapped' | 'paused' | 'limit-unset' | 'limit-0' | 'too-small' | 'full' | 'ok'
   cls: string
   word: string
   say: string
@@ -529,6 +529,18 @@ function statusMark(row: Pool | null, blocker: ProfileBlocker | null, notRead: b
       cls: `ctl-chip ${m.cls}`,
       word: m.word,
       say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker, units)}. ` : ''}${ceilingTitle('paused')}`,
+      row: 'paused',
+    }
+  }
+  // NO LIMIT SET (#374): from the blocker, or from the pool's own null limit.
+  // Not `limit 0` -- nobody set it to zero -- and not `ok`: admission refuses.
+  if (ceiling === 'limit-unset' || row.hard_limit === null) {
+    const m = ceilingMark('limit-unset')
+    return {
+      kind: 'limit-unset',
+      cls: `ctl-chip ${m.cls}`,
+      word: m.word,
+      say: `${blocker !== null ? `${blocker.reason}, ${ceilingFigure(blocker, units)}. ` : ''}${ceilingTitle('limit-unset')}`,
       row: 'paused',
     }
   }

@@ -162,12 +162,14 @@ class FakeQuery:
         filters: tuple[tuple[str, str, Any], ...] = (),
         orders: tuple[tuple[str, str], ...] = (),
         limit_n: int | None = None,
+        after: tuple[Any, ...] | None = None,
     ) -> None:
         self._db = db
         self._path = collection_path
         self._filters = filters
         self._orders = orders
         self._limit = limit_n
+        self._after = after
 
     # -- builders ---------------------------------------------------------
 
@@ -178,6 +180,7 @@ class FakeQuery:
             filters=kwargs.get("filters", self._filters),
             orders=kwargs.get("orders", self._orders),
             limit_n=kwargs.get("limit_n", self._limit),
+            after=kwargs.get("after", self._after),
         )
 
     def where(self, *args: Any, filter: Any = None, **kwargs: Any) -> "FakeQuery":
@@ -194,6 +197,20 @@ class FakeQuery:
 
     def limit(self, count: int) -> "FakeQuery":
         return self._with(limit_n=count)
+
+    def start_after(self, document_fields: Any) -> "FakeQuery":
+        # Only the cursor shape the control plane uses: a dict keyed by the
+        # ordered fields, as the real client normalises it. Anything else
+        # raises rather than paging wrongly.
+        if not isinstance(document_fields, dict) or not self._orders:
+            raise NotImplementedError("fake start_after takes a dict cursor after order_by")
+        values = []
+        for field, _direction in self._orders[: len(document_fields)]:
+            value = document_fields[field]
+            if field == "__name__" and not isinstance(value, str):
+                value = value.id
+            values.append(value)
+        return self._with(after=tuple(values))
 
     def count(self, alias: str | None = None) -> FakeAggregationQuery:
         return FakeAggregationQuery(list(self._rows()))
@@ -224,11 +241,28 @@ class FakeQuery:
             ):
                 matches.append((path, data))
 
+        def key(item: tuple[str, dict[str, Any]], f: str) -> Any:
+            # `__name__` is the document id, which the stored data does not carry.
+            if f == "__name__":
+                return item[0].rsplit("/", 1)[1]
+            return _sortable(_field(item[1], f))
+
         for field, direction in reversed(self._orders):
             matches.sort(
-                key=lambda item, f=field: _sortable(_field(item[1], f)),
+                key=lambda item, f=field: key(item, f),
                 reverse=(direction == DESCENDING),
             )
+
+        if self._after is not None:
+            ordered = self._orders[: len(self._after)]
+
+            def past(item: tuple[str, dict[str, Any]]) -> bool:
+                here = tuple(key(item, f) for f, _ in ordered)
+                if any(d == DESCENDING for _, d in ordered):
+                    raise NotImplementedError("fake start_after pages ascending orders only")
+                return here > self._after
+
+            matches = [item for item in matches if past(item)]
 
         rows = (
             FakeSnapshot(

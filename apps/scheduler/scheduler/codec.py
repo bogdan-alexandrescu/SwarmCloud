@@ -74,10 +74,44 @@ def task_from_dict(data: dict[str, Any]) -> Task:
     )
 
 
+#: The blocker reason for a pool whose document carries no `hard_limit` (#374).
+#: Not a `BlockedReason`: that enum is frozen, and none of its values is true
+#: here -- TENANT_LIMIT / RESOURCE_CLASS_LIMIT "at 0" says somebody set the
+#: pool to zero, and nobody did. The UI reads the same string
+#: (`apps/swarm-ui/src/types.ts`, `blockerCeiling`).
+POOL_LIMIT_UNSET = "POOL_LIMIT_UNSET"
+
+
+class UnsetLimitPool(SlotPool):
+    """A pool whose document has no `hard_limit`: its ceiling is UNKNOWN (#374).
+
+    Not a new type of pool and not a restatement of `SlotPool`: it adds no
+    field and overrides nothing, so every reader that takes a `SlotPool` reads
+    it exactly as the frozen admission transaction reads the same document --
+    `d.get("hard_limit", 0)`, a ceiling of 0, so admission refuses. What it
+    adds is that the 0 is KNOWN to be a stand-in, so `hard_limit_known` can
+    tell "never set" from "set to 0" wherever the difference is said aloud.
+    """
+
+
+def hard_limit_known(pool: SlotPool) -> bool:
+    """False for a pool whose document carried no `hard_limit` (`UnsetLimitPool`)."""
+    return not isinstance(pool, UnsetLimitPool)
+
+
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
-    return SlotPool(
+    """A pool document as a `SlotPool`; an `UnsetLimitPool` when no `hard_limit` was written.
+
+    A missing (or null) `hard_limit` is UNKNOWN, never 0 (#374). The value it
+    carries is the 0 the frozen admission transaction reads for the same
+    document, so arithmetic agrees with admission; `hard_limit_known` is what
+    says it was never set.
+    """
+    raw_limit = data.get("hard_limit")
+    cls = SlotPool if raw_limit is not None else UnsetLimitPool
+    return cls(
         name=name,
-        hard_limit=int(data.get("hard_limit", 0)),
+        hard_limit=int(raw_limit) if raw_limit is not None else 0,
         adaptive_target=data.get("adaptive_target"),
         quota_derived_limit=data.get("quota_derived_limit"),
         active=int(data.get("active", 0)),

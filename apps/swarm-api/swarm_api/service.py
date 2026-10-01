@@ -48,7 +48,7 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_bac
 from swarm_common.states import ParkReason, TaskState, assert_transition
 
 from .auth import AuthContext
-from .codec import quota_to_api
+from .codec import hard_limit_known, quota_to_api
 from .continuation import resolve_continuation
 from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
@@ -695,6 +695,17 @@ class SubmissionService:
             # keeps that true if `pool_names_for` ever grows a name that the
             # visibility filter above would have hidden.
             readable = {n: by_name[n] for n in required if n in by_name}
+            # A POOL WITH NO LIMIT SET IS UNKNOWN, NOT 0 (#374), exactly as
+            # `waiting.waiting_for` reads it: its stand-in 0 would serve this
+            # profile a measured headroom of 0 and a TENANT_LIMIT-at-0 blocker,
+            # the untruth `pool_to_api` stopped serving one step removed. A
+            # paused one stays: a pause refuses at any limit, so it is known.
+            limit_unset = [
+                n for n, p in readable.items() if not hard_limit_known(p) and p.enabled
+            ]
+            for n in limit_unset:
+                del readable[n]
+            unread_pools = [] if listing_complete else [n for n in required if n not in by_name]
             profiles[name] = {
                 "resource_class": profile.resource_class,
                 "backend": backend,
@@ -725,7 +736,7 @@ class SubmissionService:
                     # Absent from a COMPLETE listing means unconfigured, which
                     # is unlimited by construction. Absent from a truncated one
                     # means unread, and the two must never be conflated.
-                    unread=() if listing_complete else [n for n in required if n not in readable],
+                    unread=sorted(unread_pools + limit_unset),
                 ),
             }
 

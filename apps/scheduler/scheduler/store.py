@@ -50,6 +50,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.field_path import FieldPath
 
 from swarm_common.admission import (
     AdmissionConfig,
@@ -318,6 +319,28 @@ class SchedulerStore:
             .limit(limit)
         )
         return [task_from_dict(snap.to_dict()) for snap in query.stream()]
+
+    def parked_page(self, reason: ParkReason, limit: int, after: str | None) -> list[Task]:
+        """One page of the parks on `reason`, in document-id order, after `after`.
+
+        `parked_tasks` has no order, so Firestore answers it with the same first
+        `limit` documents on every drain: once that many parks wait on something
+        that has not cleared, every park after them is never looked at. A sweep
+        that must reach all of them carries the last id of one page into the
+        next drain's `after`, and starts again from the top when a page comes
+        back short. Equality filters ordered by document id are served by the
+        built-in single-field indexes; no composite index is needed.
+        """
+        doc_id = FieldPath.document_id()
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("state", "==", TaskState.PARKED.value))
+            .where(filter=FieldFilter("park_reason", "==", reason.value))
+            .order_by(doc_id)
+        )
+        if after is not None:
+            query = query.start_after({doc_id: after})
+        return [task_from_dict(snap.to_dict()) for snap in query.limit(limit).stream()]
 
     def get_task(self, task_id: str) -> Task | None:
         snap = self._db.collection(TASKS).document(task_id).get()
@@ -602,6 +625,43 @@ class SchedulerStore:
         )
         if outcome.applied:
             self.append_event(task, EventType.READY, detail or {})
+        return outcome
+
+    def dead_letter_parked(
+        self, task: Task, reason: str, *, detail: dict[str, Any] | None = None
+    ) -> GuardedWrite:
+        """End a PARKED task that may not be retried: PARKED -> DEAD_LETTERED.
+
+        For a park whose task has used its last attempt. Returning it to READY
+        would lease attempt N+1 of N, because admission does not check the
+        retry cap (`swarm_common.models.retries_exhausted` says why the rule
+        lives where it does). PARKED -> FAILED is not a legal transition;
+        DEAD_LETTERED is.
+
+        Guarded exactly as `promote_to_ready` is, on the state AND the park
+        reason the caller read. The task holds no capacity in PARKED, so there
+        is no lease to release and none is touched. `end_cause` is written as
+        null: no `EndCause` value names this ending, and the contract says a
+        writer ending a task for a reason with no value writes None.
+        """
+        assert_transition(task.state, TaskState.DEAD_LETTERED)
+        now = self._now()
+        outcome = self._write_if_unchanged(
+            "dead_letter",
+            task,
+            {
+                "state": TaskState.DEAD_LETTERED.value,
+                "next_eligible_at": None,
+                "blocked_by": [],
+                "completed_at": now,
+                "last_error": reason[:1000],
+                "end_cause": None,
+                "updated_at": now,
+            },
+            same_park_reason=True,
+        )
+        if outcome.applied:
+            self.append_event(task, EventType.DEAD_LETTERED, {"reason": reason, **(detail or {})})
         return outcome
 
     def mark_dispatched(
