@@ -446,15 +446,6 @@ describe('D2: compact data inside generous chrome', () => {
     )
     style.remove()
   })
-
-  it('gives a control in the frame a target taller than a data row', () => {
-    const style = withStyles()
-    const { container } = render(<button className="ctl-nav-link" />)
-    expect(
-      Number.parseInt(getComputedStyle(container.querySelector('button')!).minHeight, 10),
-    ).toBeGreaterThanOrEqual(30)
-    style.remove()
-  })
 })
 
 // ===========================================================================
@@ -2046,11 +2037,9 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
    * scrolls, and it only covers what passes under it if it paints the ground
    * behind it.
    *
-   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the product
-   * header, the breadcrumb head and the page head scroll with the page, the
-   * rail is sticky only in a column of its own at 900px and up, and below
-   * 900px it is static. If one of them starts to stick over the column (#139
-   * keeps a sticky phone strip open), this fails and asks for its height.
+   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the
+   * breadcrumb head and the page head scroll with the page. If one of them
+   * starts to stick over the column, this fails and asks for its height.
    *
    * MUTATION: drop `position: sticky` from the group heading, or its ground.
    * A later topic lands with its group heading gone. MUTATION:
@@ -2134,10 +2123,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       }
 
       // Nothing ELSE sticks over the column, so there is no second head to clear.
-      const heads = fragment('<header class="brand"></header><div class="ctl-head"></div><div class="head"></div>')
-      const over = [...heads.children]
-      if (env.width < 900) over.push(pick(fragment('<nav class="ctl-rail"></nav>'), '.ctl-rail'))
-      for (const el of over) {
+      // (The product header and the rail's phone strip were on this list until
+      // the Sky spine replaced both, rebrand 2026-10-01.)
+      const heads = fragment('<div class="ctl-head"></div><div class="head"></div>')
+      for (const el of [...heads.children]) {
         const pos = cascade(STYLES, el, ['position'], env).winner?.value ?? 'static'
         expect(
           /sticky|fixed/.test(pos),
@@ -2238,17 +2227,32 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
-    // MUTATION: `color: var(--info)` back on `.ctl-nav-util button.is-on`, or
-    // drop the rule's surface step or its rule.
+    // RE-POINTED BY THE REBRAND (2026-10-01): the utility corner is the Sky
+    // spine's foot (App.tsx `ctl-nav-util sk-foot`), and its buttons are spine
+    // items. A current Help or API reads is marked exactly as a current
+    // section is -- the same fill, ink and leading bar -- at every width.
+    // MUTATION: any rule on `.ctl-nav-util button` that restyles them (the
+    // rail's underline, left rule and padding outranked `.sk-ri` until the
+    // rail's rules were deleted), or an accent on the utility's on-state.
     const f = fragment(
-      '<nav class="ctl-rail"><div class="ctl-nav-util"><button class="is-on" aria-current="page">API reads</button></div></nav>',
+      '<nav class="sk-spine"><button class="sk-ri is-on" aria-current="page">Work</button>' +
+        '<div class="ctl-nav-util sk-foot"><button class="sk-ri is-on" aria-current="page">API reads</button></div></nav>',
     )
-    const b = pick(f, 'button')
-    expect(won(b, 'color', WIDE)).toBe('var(--text)')
-    expect(won(b, ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
-    expect(won(b, ['border-left-color', 'border-left', 'border-color', 'border'], WIDE)).toBe('var(--text)')
-    // Below 900px the strip is horizontal and the rule is the bottom edge.
-    expect(won(b, ['border-bottom-color', 'border-bottom', 'border-color', 'border'], PHONE)).toBe('var(--text)')
+    const [section, util] = [...f.querySelectorAll('button')] as [Element, Element]
+    for (const env of [WIDE, PHONE]) {
+      for (const prop of ['color', 'background', 'background-color', 'padding', 'border', 'border-left', 'text-decoration', 'text-decoration-line']) {
+        expect(won(util, prop, env), `${prop} at ${env.width}`).toBe(won(section, prop, env))
+      }
+      expect(won(util, 'content', env, 'before'), `the current utility draws no bar at ${env.width}`).toBe(
+        won(section, 'content', env, 'before'),
+      )
+      expect(won(util, ['background', 'background-color'], env, 'before')).toBe(
+        won(section, ['background', 'background-color'], env, 'before'),
+      )
+    }
+    // And the bar is really there, so the equalities above are not two nulls.
+    expect(won(section, 'content', WIDE, 'before')).not.toBeNull()
+    expect(won(section, ['background', 'background-color'], WIDE)).not.toBeNull()
   })
 
   it('CH-7: the `?` glyph is as tall as it is wide, not stretched by the button floor', () => {
@@ -2264,9 +2268,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('CH-8: every control reaches 44px at 390, by height or by hit area, with the type unchanged', () => {
     const f = fragment(
       '<div class="app">' +
-        '<nav class="ctl-rail"><button class="ctl-nav-link">Work</button>' +
-        '<div class="ctl-rail-tabs"><button role="tab">Agents</button></div>' +
-        '<div class="ctl-nav-util"><button>?</button></div></nav>' +
         '<div class="ctl-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
@@ -2278,10 +2279,9 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     )
     // MUTATION: move any of these phone rules above the base rule it has to
     // beat -- which is how `.ctl-seg > button` shipped -- or delete it.
+    // (The rail's three item kinds were on this list until the Sky spine
+    // replaced the rail, rebrand 2026-10-01.)
     for (const sel of [
-      '.ctl-nav-link',
-      '.ctl-rail-tabs button',
-      '.ctl-nav-util button',
       '.ctl-seg > button',
       '.limit-edit input',
       '.limit-edit button',
@@ -2357,18 +2357,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, '.scope'), ['margin-left', 'margin'], PHONE)).toBe('0')
     // MUTATION: drop `overflow-wrap: anywhere` from the identity cells.
     expect(won(pick(f, 'td.mono'), 'overflow-wrap', PHONE)).toBe('anywhere')
-  })
-
-  it('CH-14: the rail\'s items scroll into view clear of the fade', () => {
-    // MUTATION: drop `scroll-margin-inline-end` from any of the three.
-    const f = fragment(
-      '<nav class="ctl-rail"><button class="ctl-nav-link is-on">Work</button>' +
-        '<div class="ctl-rail-tabs"><button role="tab" aria-selected="true">Agents</button></div>' +
-        '<div class="ctl-nav-util"><button class="is-on">?</button></div></nav>',
-    )
-    for (const sel of ['.ctl-nav-link', '.ctl-rail-tabs button', '.ctl-nav-util button']) {
-      expect(won(pick(f, sel), 'scroll-margin-inline-end', PHONE), sel).toBe('var(--rail-fade)')
-    }
   })
 
   it('CH-15: the breadcrumb holds one line and the read age holds one width', () => {

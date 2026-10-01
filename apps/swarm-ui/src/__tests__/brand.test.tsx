@@ -1,5 +1,5 @@
-// THE PRODUCT FRAME, AS BEHAVIOUR: the mark, the header, the environment, and
-// the two frame-level defects (B17, B19).
+// THE PRODUCT FRAME, AS BEHAVIOUR: the mark, the frame (the Sky spine since the
+// rebrand), the environment, and the two frame-level defects (B17, B19).
 //
 // WHY THESE ARE RENDERED ASSERTIONS AND NOT SOURCE GREPS. A verifier on an
 // earlier wave neutered a guard in this app with `false &&` and the suite
@@ -23,14 +23,13 @@
 // file fails to resolve here instead of reading a stale copy from disk.
 import STYLES from '../styles.css?raw'
 import INDEX_HTML from '../../index.html?raw'
-import { describe, expect, it, vi } from 'vitest'
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import {
   COMPACT,
   EnvironmentBadge,
   MARK_COMPACT_MAX,
-  ProductHeader,
   SwarmMark,
   classifyEnvironment,
   envTreatment,
@@ -497,7 +496,7 @@ describe('the badge shouts only where shouting is a safety signal', () => {
     // typescale.test.ts's sheet grep went red.
     //
     // So this renders the REAL frame (`App`: `.ctl-frame > .ctl-scroll >
-    // header.brand > .brand-row > .brand-env`) and asks every rule in every
+    // .sk-app > .sk-side > .sk-panel > .sk-pill` since the rebrand) and asks every rule in every
     // sheet in the document, at every breakpoint, whether it reaches the label
     // or any ancestor and shouts (`shoutingRules`). That includes the shipped
     // `styles.css` and any sheet a screen has injected by then.
@@ -525,104 +524,117 @@ describe('the badge shouts only where shouting is a safety signal', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The header
+// The frame: the Sky spine (rebrand 2026-10-01)
 // ---------------------------------------------------------------------------
+//
+// RE-POINTED BY THE REBRAND. These held the product header -- mark, wordmark,
+// environment, tenant, signed-in principal -- and the header is gone: the Sky
+// spine (Spine.tsx) draws all five now, in its spine and its panel. Each
+// assertion below is the header's, asked of the element that carries the same
+// fact today, on the REAL shell with its real identity read answered through
+// `fetch`.
 
-describe('the product header', () => {
+/** jsdom's own default, which every other test file runs at. */
+const DEFAULT_URL = 'http://localhost:3000/'
+
+/** Put the tab on a host (vitest's `jsdom` global; brand.environment.test.tsx). */
+function atUrl(url: string): void {
+  const dom = (globalThis as unknown as { jsdom?: { reconfigure(o: { url: string }): void } }).jsdom
+  if (dom === undefined) throw new Error('vitest exposes no jsdom global, so this file cannot set the host')
+  dom.reconfigure({ url })
+}
+
+const json = (status: number, body: unknown): Response =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+
+/**
+ * Render the real `SkyShell` with the identity read answering `answer`
+ * (`null`: it never answers), the build declaring `build` ('' declares
+ * nothing) and the tab on `host`.
+ */
+async function sky(answer: Response | null, build = 'dev', host = 'localhost'): Promise<HTMLElement> {
+  atUrl(host === 'localhost' ? DEFAULT_URL : `https://${host}/`)
+  // Fixtures off, so the identity read goes through `fetch`; `resetModules`
+  // makes api.ts read the flag again (chrome.shared.test.tsx's `liveApp`).
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.stubEnv('VITE_SWARM_ENV', build)
+  vi.resetModules()
+  globalThis.fetch = vi.fn((input: RequestInfo | URL) => {
+    if (!String(input).includes('/v1/tenants/me')) return Promise.resolve(json(503, {}))
+    return answer === null ? new Promise<Response>(() => {}) : Promise.resolve(answer.clone())
+  }) as unknown as typeof fetch
+  const { SkyShell } = await import('../Spine')
+  const { container } = render(
+    <SkyShell section="overview" tab="now" title="Overview" go={() => {}} foot={null}>
+      {null}
+    </SkyShell>,
+  )
+  return container
+}
+
+describe('the frame', () => {
+  afterEach(() => atUrl(DEFAULT_URL))
+
   it('carries the logo, the wordmark, the environment and who you are', async () => {
-    render(
-      <ProductHeader
-        load={async () => ({ status: 'ok', data: me(), fetchedAt: Date.now() })}
-        declaredEnv="dev"
-        host="localhost"
-      />,
-    )
-    expect(document.querySelector('.brand-mark')).toBeTruthy()
-    expect(document.querySelector('.brand-word')?.textContent).toBe('SwarmCloud')
-    // WHAT MOVED: this pinned the literal 'DEV'. The owner decided on
-    // 2026-09-24 (design-system.md §13.6) that a quiet environment is written
-    // in sentence case like every other string this console authors, so what
-    // is pinned now is that the badge NAMES dev and does not SHOUT it -- the
-    // casing rule itself is the describe block below.
-    const name = document.querySelector('.brand-env-name')?.textContent ?? ''
+    const c = await sky(json(200, me()))
+    expect(c.querySelector('.sk-spine .sk-hive .brand-mark')).toBeTruthy()
+    expect(c.querySelector('.sk-panel .sk-wm')?.textContent).toBe('SwarmCloud')
+    // The pill NAMES dev and does not SHOUT it (design-system.md §13.6); the
+    // casing rule itself is the describe block above.
+    const name = c.querySelector('.sk-panel .sk-pill')?.textContent ?? ''
     expect(name.toLowerCase()).toBe('dev')
-    expect(name, 'a non-production badge is shouting').not.toBe(name.toUpperCase())
-    expect(await screen.findByText('u-bogdan')).toBeTruthy()
-    expect(screen.getByText('someone@saga.xyz')).toBeTruthy()
+    expect(name, 'a non-production pill is shouting').not.toBe(name.toUpperCase())
+    // Who you are: the tenant by name with its id in the title, and the
+    // signed-in principal in the panel's foot.
+    await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+    expect(c.querySelector('.sk-tenant b')?.getAttribute('title')).toBe('u-bogdan')
+    expect(c.querySelector('.sk-pfoot small')?.textContent).toBe('someone@saga.xyz')
   })
 
   it('never renders an identity it has not read', async () => {
-    // THE HONESTY RULE, IN THE FRAME. A header that leaves the tenant slot
+    // THE HONESTY RULE, IN THE FRAME. A frame that leaves the tenant slot
     // blank while `/v1/tenants/me` is failing is this platform's defining bug
     // in the one place every screen shows.
-    render(
-      <ProductHeader
-        load={async () => ({
-          status: 'error',
-          error: {
-            kind: 'session_expired',
-            httpStatus: 401,
-            code: 'unauthenticated',
-            message: 'The IAP assertion had expired.',
-          },
-        })}
-        declaredEnv="dev"
-        host="localhost"
-      />,
-    )
-    const who = await waitFor(() => {
-      const el = document.querySelector('.brand-who.is-unread')
-      expect(el).toBeTruthy()
-      return el!
-    })
-    // RE-POINTED BY CH-20: the slot is the tenant key and the kit's `not read`
-    // mark, and the error heading is the slot's accessible name rather than a
-    // sentence in a 52px bar.
-    expect(who.querySelector('.brand-k')?.textContent).toBe('tenant')
-    expect(who.querySelector('.ctl-mark.is-unread')?.textContent).toBe('not read')
-    expect(who.getAttribute('aria-label') ?? '').toContain('Your session expired')
-    // And no invented tenant anywhere in the bar.
-    expect(document.querySelector('.brand-who .id')).toBeNull()
+    const c = await sky(json(401, { error: { code: 'unauthenticated', message: 'The IAP assertion had expired.' } }))
+    await waitFor(() => expect(c.querySelector('.sk-tenant b')?.textContent).toBe('not read'))
+    expect(c.querySelector('.sk-tenant')?.getAttribute('role')).toBe('status')
+    expect(c.querySelector('.sk-pfoot b')?.textContent).toBe('not read')
+    // And no invented tenant or principal anywhere in the frame.
+    expect(c.querySelector('.sk-cp'), 'a copy control for a tenant id nobody read').toBeNull()
+    expect(c.textContent).not.toContain('u-bogdan')
+    expect(c.querySelector('.sk-pfoot small')).toBeNull()
+    expect(c.querySelector('.sk-pbar .sk-tn')).toBeNull()
   })
 
-  it('says it is still reading rather than showing an empty slot', () => {
-    render(<ProductHeader load={() => new Promise(() => {})} declaredEnv="dev" host="localhost" />)
-    // RE-POINTED BY CH-20: the tenant key, then "reading…" -- CH-2's word for
-    // a read in flight, at every width. It was the sentence "Reading who you
-    // are…", which is what doubled the header's height at 390.
-    const pending = document.querySelector('.brand-who.is-pending')
-    expect(pending?.querySelector('.brand-k')?.textContent).toBe('tenant')
-    expect(pending?.textContent).toContain('reading…')
-    expect(document.querySelector('.brand-who .id')).toBeNull()
+  it('says it is still reading rather than showing an empty slot', async () => {
+    const c = await sky(null)
+    expect(c.querySelector('.sk-tenant b')?.textContent).toBe('reading…')
+    expect(c.querySelector('.sk-tenant small')?.textContent).toBe('tenant')
+    expect(c.querySelector('.sk-pfoot b')?.textContent).toBe('reading…')
+    expect(c.querySelector('.sk-cp')).toBeNull()
   })
 
-  it('marks an admin, because /v1/admin answering is a fact about you', async () => {
-    render(
-      <ProductHeader
-        load={async () => ({ status: 'ok', data: me({ is_admin: true }), fetchedAt: Date.now() })}
-        declaredEnv="dev"
-        host="localhost"
-      />,
-    )
-    expect(await screen.findByText('admin')).toBeTruthy()
+  it('marks an admin, because /v1/admin answering is a fact about you, and only an admin', async () => {
+    const admin = await sky(json(200, me({ is_admin: true })))
+    await waitFor(() => expect(admin.querySelector('.sk-pfoot .sk-adm')?.textContent).toBe('admin'))
+    // In one row with the principal it is a fact about.
+    expect(admin.querySelector('.sk-pfrow')?.textContent).toContain('someone')
+    cleanup()
+    const plain = await sky(json(200, me()))
+    await waitFor(() => expect(plain.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
+    expect(plain.querySelector('.sk-adm'), 'a non-admin is tagged admin').toBeNull()
   })
 
-  it('prints NO environment word it did not measure', () => {
-    render(
-      <ProductHeader
-        load={() => new Promise(() => {})}
-        declaredEnv={undefined}
-        host="swarm.saga.xyz"
-      />,
-    )
-    const badge = document.querySelector('.brand-env')!
-    // Scoped to the badge on purpose: an address elsewhere in the bar may
+  it('prints NO environment word it did not measure', async () => {
+    const c = await sky(null, '', 'swarm.saga.xyz')
+    const pill = c.querySelector('.sk-panel .sk-pill')!
+    // Scoped to the pill on purpose: an address elsewhere in the frame may
     // legitimately contain the letters "dev".
-    expect(badge.textContent).not.toMatch(/\bdev\b/i)
-    expect(badge.textContent).toContain('ENVIRONMENT UNKNOWN')
-    // The host it could not classify is printed, so the reader can act on it.
-    expect(badge.textContent).toContain('swarm.saga.xyz')
-    expect(document.querySelector('.brand-bar')).toBeTruthy()
+    expect(pill.textContent).not.toMatch(/\bdev\b/i)
+    expect(pill.textContent).toBe('ENVIRONMENT UNKNOWN')
+    // The host it could not classify is named, so the reader can act on it.
+    expect(pill.getAttribute('title') ?? '').toContain('swarm.saga.xyz')
+    expect(c.querySelector('.sk-prodbar')).toBeTruthy()
   })
 
   it('and no screen prints one of its own any more', async () => {
@@ -641,16 +653,17 @@ describe('the product header', () => {
 })
 
 // ---------------------------------------------------------------------------
-// CH-20 -- at 560px and below the header is one row
+// CH-20 -- the identity at phone width
 // ---------------------------------------------------------------------------
 //
-// At 390 the header doubled to about 100px and the admin badge wrapped alone
-// onto a third line, against design-system.md §7.2's "the header keeps its
-// height". These are asked of the CASCADE at a stated width (cssgate.ts),
-// because jsdom applies no media query.
+// At 390 the product header doubled to about 100px and the admin badge wrapped
+// alone onto a third line, against design-system.md §7.2's "the header keeps
+// its height". The header is gone; the phone's header is the spine's
+// `.sk-pbar`, and the identity is in the drawer's panel. These are asked of
+// the CASCADE at a stated width (cssgate.ts), because jsdom applies no media
+// query.
 
 const PHONE_W: CascadeEnv = { width: 390 }
-const MID_W: CascadeEnv = { width: 720 }
 const WIDE_W: CascadeEnv = { width: 1440 }
 
 /** Not drawn, but still in the accessibility tree: `display: none` is not this. */
@@ -667,95 +680,51 @@ function notDrawn(el: Element, env: CascadeEnv): boolean {
   return painted(el, 'display', env) === 'none' || visuallyHidden(el, env)
 }
 
-describe('CH-20: at 560px and below the product header is one row', () => {
-  async function admin(): Promise<void> {
-    render(
-      <ProductHeader
-        load={async () => ({ status: 'ok', data: me({ is_admin: true }), fetchedAt: Date.now() })}
-        declaredEnv="dev"
-        host="localhost"
-      />,
-    )
-    await screen.findByText('admin')
-  }
+describe('CH-20: the identity at phone width', () => {
+  afterEach(() => atUrl(DEFAULT_URL))
 
-  it('keeps the signed-in principal and the admin tag in one unit that never wraps', async () => {
-    // So above 560px "admin" cannot wrap onto a line of its own.
-    // MUTATION: render the tag outside `.brand-who-me`, or let the unit wrap.
-    await admin()
-    const unit = document.querySelector('.brand-who-me')
-    expect(unit, 'no .brand-who-me unit').not.toBeNull()
-    expect(unit!.querySelector('.brand-admin')?.textContent).toBe('admin')
-    expect(unit!.textContent).toContain('someone@saga.xyz')
-    for (const env of [MID_W, WIDE_W]) {
-      const nowrap =
-        painted(unit!, 'white-space', env) === 'nowrap' || painted(unit!, 'flex-wrap', env) === 'nowrap'
-      expect(nowrap, `the unit wraps at ${env.width}`).toBe(true)
-    }
+  it('holds the phone header to one row at 390, and draws none above it', async () => {
+    // MUTATION: let the title wrap, or drop the header's fixed height.
+    const c = await sky(json(200, me({ is_admin: true })))
+    await waitFor(() => expect(c.querySelector('.sk-pbar .sk-tn')?.textContent).toBe('Bogdan'))
+    const bar = c.querySelector('.sk-pbar')!
+    expect(painted(bar, 'display', PHONE_W)).toBe('flex')
+    expect(painted(bar, 'height', PHONE_W)).toBe('44px')
+    expect(painted(bar, 'display', WIDE_W)).toBe('none')
+    const title = c.querySelector('.sk-pbar b')!
+    expect(painted(title, 'white-space', PHONE_W)).toBe('nowrap')
+    expect(painted(title, 'text-overflow', PHONE_W)).toBe('ellipsis')
+    // The environment rides in the same row, as the same verdict as the panel's.
+    expect(c.querySelector('.sk-pbar .sk-pill')?.textContent).toBe(c.querySelector('.sk-panel .sk-pill')?.textContent)
   })
 
-  it('holds one row at 390: the mark, the environment, the tenant key and id, the admin tag', async () => {
-    // MUTATION: `flex-wrap: wrap` back on the row, the wordmark drawn, or any
-    // of the three hidden facts drawn again -- or the id or the tag hidden.
-    await admin()
-    const row = document.querySelector('.brand-row')!
-    expect(painted(row, 'flex-wrap', PHONE_W)).toBe('nowrap')
-    expect(painted(row, ['gap', 'column-gap'], PHONE_W)).toBe('var(--ctl-s2)')
-    expect(painted(document.querySelector('.brand-word')!, 'display', PHONE_W)).toBe('none')
-    // The link keeps its name from the mark's title.
-    expect(document.querySelector('.brand-home svg')?.getAttribute('aria-label')).toBe('SwarmCloud')
-
-    // NOT DRAWN, BUT STILL ANNOUNCED: the display name and the principal.
-    for (const sel of ['.brand-who-name', '.brand-who-principal']) {
-      const el = document.querySelector(sel)
-      expect(el, `${sel} is not rendered at all`).not.toBeNull()
-      expect(visuallyHidden(el!, PHONE_W), `${sel} is drawn at 390`).toBe(true)
-      expect(notDrawn(el!, WIDE_W), `${sel} is hidden at 1440`).toBe(false)
-    }
-
-    // DRAWN: the tenant id and the admin tag. Only the id gives way.
-    // RE-POINTED (CH-20's copy): the id is inside its own copy control now,
-    // and the control is what gives way in the row; the id ellipsizes in it.
-    const copy = document.querySelector('.brand-who > .brand-id')!
-    expect(copy, 'the tenant id is not in its copy control').not.toBeNull()
-    const id = copy.querySelector(':scope > .id')!
-    expect(notDrawn(copy, PHONE_W), 'the tenant id is hidden at 390').toBe(false)
-    expect(notDrawn(document.querySelector('.brand-admin')!, PHONE_W), 'the admin tag is hidden at 390').toBe(false)
-    expect(painted(copy, 'min-width', PHONE_W)).toBe('0')
-    expect(painted(id, 'white-space', PHONE_W)).toBe('nowrap')
-    expect(painted(id, 'text-overflow', PHONE_W)).toBe('ellipsis')
-    expect(painted(id, ['overflow', 'overflow-x'], PHONE_W)).toBe('hidden')
-    expect(painted(id, 'min-width', PHONE_W)).toBe('0')
-    expect(copy.getAttribute('title'), 'the cut id keeps its full value').toBe('u-bogdan')
-  })
-
-  it('makes the cut tenant id its own copy control: whole in its title and in what it copies', async () => {
-    // The decision: the id ellipsizes "with its full value in `title` and in
-    // a copy (the AH-11 precedent)". A CSS ellipsis leaves the text intact,
-    // but selecting a cut id in a 52px bar on a phone is not a copy anyone
-    // can rely on. The control IS the id, so it costs the row no width -- a
-    // separate button would take the 60-70px the id keeps at 390.
-    // MUTATION: render the id as a plain span again, copy anything but the
-    // whole id, or say nothing when the copy lands or fails.
+  it('makes the tenant id a copy control: whole in its title and in what it copies', async () => {
+    // The decision: the id is given "with its full value in `title` and in a
+    // copy (the AH-11 precedent)". MUTATION: copy anything but the whole id,
+    // or say nothing when the copy lands.
     const writeText = vi.fn(async (_: string) => {})
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     try {
-      await admin()
-      const copy = document.querySelector<HTMLElement>('.brand-who > .brand-id')
-      expect(copy?.tagName, 'the tenant id is not a control').toBe('BUTTON')
-      expect(copy!.getAttribute('type')).toBe('button')
-      expect(copy!.getAttribute('title')).toBe('u-bogdan')
-      expect(copy!.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(
-        /copy.*u-bogdan/i,
-      )
+      const c = await sky(json(200, me()))
+      const copy = await waitFor(() => {
+        const el = c.querySelector<HTMLElement>('.sk-tenant .sk-cp')
+        expect(el).not.toBeNull()
+        return el!
+      })
+      expect(copy.tagName, 'the tenant id is not a control').toBe('BUTTON')
+      expect(copy.getAttribute('type')).toBe('button')
+      expect(copy.getAttribute('title')).toBe('u-bogdan')
+      expect(copy.getAttribute('aria-label') ?? '', 'the control does not say what it copies').toMatch(/copy.*u-bogdan/i)
       await act(async () => {
-        fireEvent.click(copy!)
+        fireEvent.click(copy)
       })
       expect(writeText).toHaveBeenCalledWith('u-bogdan')
-      // Said, not silent: the outcome is announced beside the control.
-      expect(document.querySelector('.brand-who [role="status"]')?.textContent ?? '').toMatch(/tenant id copied/)
-      // §7.2: a 44px target at 560px and below, the type unchanged.
-      expect(Number.parseFloat(painted(copy!, 'min-height', PHONE_W) ?? '0')).toBeGreaterThanOrEqual(44)
+      // Said, not silent: the outcome is announced beside the control, and
+      // the announcement is not drawn.
+      const said = c.querySelector('.sk-tenant [role="status"]')!
+      expect(said.textContent ?? '').toMatch(/tenant id copied/)
+      expect(painted(said, 'width', WIDE_W)).toBe('1px')
+      expect(painted(said, 'overflow', WIDE_W)).toBe('hidden')
     } finally {
       delete (navigator as unknown as { clipboard?: unknown }).clipboard
     }
@@ -769,11 +738,16 @@ describe('CH-20: at 560px and below the product header is one row', () => {
       configurable: true,
     })
     try {
-      await admin()
-      await act(async () => {
-        fireEvent.click(document.querySelector('.brand-who > .brand-id')!)
+      const c = await sky(json(200, me()))
+      const copy = await waitFor(() => {
+        const el = c.querySelector<HTMLElement>('.sk-tenant .sk-cp')
+        expect(el).not.toBeNull()
+        return el!
       })
-      const said = document.querySelector('.brand-who [role="status"]')?.textContent ?? ''
+      await act(async () => {
+        fireEvent.click(copy)
+      })
+      const said = c.querySelector('.sk-tenant [role="status"]')?.textContent ?? ''
       expect(said).not.toMatch(/tenant id copied/)
       expect(said).toMatch(/refused/)
     } finally {
@@ -798,18 +772,25 @@ describe('CH-20: at 560px and below the product header is one row', () => {
   })
 
   it('draws the admin marker as a grey hairline tag, not an accent pill', async () => {
-    // The same treatment as `.brand-env.is-nonprod`. MUTATION: the --info tint back.
-    await admin()
-    const tag = document.querySelector('.brand-admin')!
-    expect(painted(tag, ['background', 'background-color'], WIDE_W)).toBe('var(--surface-2)')
+    // CH-20's ruling: the accent is not spent on a fact about you, beside the
+    // one pill that is allowed to be loud. MUTATION: an accent or --info tint
+    // on `.sk-adm`.
+    const c = await sky(json(200, me({ is_admin: true })))
+    const tag = await waitFor(() => {
+      const el = c.querySelector('.sk-adm')
+      expect(el).not.toBeNull()
+      return el!
+    })
     expect(painted(tag, 'color', WIDE_W)).toBe('var(--text-dim)')
-    expect(painted(tag, ['border', 'border-color'], WIDE_W) ?? '').toMatch(/^1px solid var\(--line\)$/)
+    expect(painted(tag, ['border', 'border-color'], WIDE_W) ?? '').toMatch(/^1px solid var\(--line(-soft)?\)$/)
+    const fill = painted(tag, ['background', 'background-color'], WIDE_W)
+    expect(fill === null || !/--info|--sk-/.test(fill), `the admin tag is filled with ${fill}`).toBe(true)
   })
 
   it('leaves nothing at the retired 720px breakpoint', () => {
     // 720 is not one of §7.1's five. MUTATION: the 720 rule back.
     const at720 = flatRules(STYLES).filter(
-      (r) => r.conditions.some((c) => /\b720px\b/.test(c)) && /\.brand-/.test(r.selector),
+      (r) => r.conditions.some((c) => /\b720px\b/.test(c)) && /\.(brand|sk)-/.test(r.selector),
     )
     expect(at720.map((r) => `${r.conditions.join(' ')} ${r.selector}`)).toEqual([])
   })
@@ -927,14 +908,14 @@ describe('B19: the console uses the glass it is given', () => {
    * expressions of the same idea disagreed by 4px. `--ctl-gutter` is now THE
    * distance between two top-level regions — the page's side padding and the
    * rail-to-work gap — and `--app-pad` is a constant alias of it, kept by name
-   * because the product header lines its wordmark up with `.app` through it.
+   * because the content column reads it by that name.
    *
    * So the thing that grows with the viewport is `--ctl-gutter`, and that is
-   * what this reads. The second half of the test is unchanged and is still the
-   * claim that matters: `.brand-row` and `.app` must resolve the SAME token,
-   * or the wordmark drifts away from the rail at the first breakpoint.
+   * what this reads, and `.app` must resolve it through `--app-pad`. (The
+   * product header's `.brand-row` was held to the same token until the Sky
+   * spine replaced the header, rebrand 2026-10-01.)
    */
-  it('grows its gutter at wide breakpoints, and the header follows it', () => {
+  it('grows its gutter at wide breakpoints, and the content column reads it', () => {
     const style = withStyles()
     const sheet = style.sheet!
 
@@ -955,20 +936,13 @@ describe('B19: the console uses the glass it is given', () => {
     const pad = getComputedStyle(document.documentElement).getPropertyValue('--app-pad').trim()
     expect(pad, '--app-pad no longer derives from --ctl-gutter').toBe('var(--ctl-gutter)')
 
-    // The header sits OUTSIDE `.app` so its environment bar can reach both
-    // viewport edges; this is what keeps its wordmark lined up with the
-    // content column anyway, at every one of those breakpoints.
-    const { container } = render(<div className="brand-row" />)
-    const row = getComputedStyle(container.querySelector('.brand-row')!)
+    // The content column reads the page gutter and the page cap. (The product
+    // header's `.brand-row` used to be held to the same two tokens so its
+    // wordmark lined up with this column; the header went with the Sky spine,
+    // rebrand 2026-10-01, and the spine's panel is a column of its own.)
     // The shorthand, read whole: jsdom does not expand `padding` into its four
     // longhands when the value is a custom property, so asking for
     // `paddingLeft` would silently answer "" and pass.
-    expect(row.padding).toContain('var(--app-pad)')
-    expect(row.maxWidth).toBe('var(--app-max)')
-
-    // ALIGNMENT IS THE CLAIM, so both sides of it are asserted: the content
-    // column has to be reading the same two tokens, or the wordmark drifts
-    // away from the nav at the first breakpoint.
     const app = render(<div className="app" />)
     const appStyle = getComputedStyle(app.container.querySelector('.app')!)
     expect(appStyle.padding).toContain('var(--app-pad)')
