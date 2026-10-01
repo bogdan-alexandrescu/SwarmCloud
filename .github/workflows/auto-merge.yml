@@ -68,7 +68,11 @@ jobs:
     runs-on: ubuntu-24.04
     if: github.event.label.name == 'ready' && github.event.pull_request.state == 'open'
     permissions:
-      # contents: read -- the base branch's protection summary (the gate).
+      # contents: read -- the base branch's classic protection summary
+      #   (`branches/{branch}`, the gate, item 3). The same item's effective
+      #   rules (`rules/branches/{branch}`, rulesets included) need only
+      #   repository Metadata read, which every GITHUB_TOKEN carries whatever
+      #   `permissions:` says, and the endpoint is public on a public repo.
       # checks: read -- the head commit's check runs (the gate, item 5): a
       #   path-filtered workflow's checks are not required, but one that DID
       #   run and is failing or still running must still hold the merge.
@@ -135,13 +139,31 @@ jobs:
           # 3. Nothing to wait for. With no required check on the base branch,
           #    auto-merge has no condition to hold on, and the pull request
           #    merges at once, red or not.
+          #    main is protected by a repository RULESET (main-protection,
+          #    24160219; owner decision 2026-09-29), not classic branch
+          #    protection, whose `.protection` block on `branches/main` is off
+          #    and empty. Reading only that block refused every `ready` label
+          #    (2026-10-01, #412, #403). So the count is the union of the
+          #    branch's EFFECTIVE rules -- every ruleset that applies, via
+          #    `rules/branches/{branch}` -- and classic protection's checks,
+          #    unique by name, so a repository that moves back to classic
+          #    protection still counts. Paginated: the rules list is a page of
+          #    rules, and `jq -s add` joins however many pages come back.
           branch="$(mktemp)"
           gh api "repos/${GH_REPO}/branches/${BASE_REF}" >"${branch}"
-          required="$(jq '[ (.protection.required_status_checks.contexts // [])[],
-                            ((.protection.required_status_checks.checks // [])[] | .context) ]
-                          | unique | length' "${branch}")"
+          rules="$(mktemp)"
+          gh api --paginate "repos/${GH_REPO}/rules/branches/${BASE_REF}?per_page=100" >"${rules}"
+          required_names="$(mktemp)"
+          {
+            jq -r '(.protection.required_status_checks.contexts // [])[],
+                   ((.protection.required_status_checks.checks // [])[] | .context)' "${branch}"
+            jq -rs 'add // [] | .[]
+                    | select(.type == "required_status_checks")
+                    | (.parameters.required_status_checks // [])[] | .context' "${rules}"
+          } >"${required_names}"
+          required="$(jq -Rs 'split("\n") | map(select(length > 0)) | unique | length' "${required_names}")"
           if [[ "${required}" -eq 0 ]]; then
-            refuse "\`${BASE_REF}\` has no required status checks, so auto-merge would merge this now whether CI is green or not. The owner applies branch protection with the command in docs/ci.md."
+            refuse "\`${BASE_REF}\` has no required status checks in its rulesets or its branch protection, so auto-merge would merge this now whether CI is green or not. The owner sets them on the \`main-protection\` ruleset with the command in docs/ci.md."
           fi
 
           # 4. No App, no merge. Merging with the GITHUB_TOKEN instead would
@@ -152,7 +174,7 @@ jobs:
 
           # 5. A check that already ran on this head and is failing or still
           #    running must hold the merge too, even when it is not one of
-          #    the required checks above. Branch protection requires only the
+          #    the required checks above. The ruleset requires only the
           #    checks that run on EVERY pull request (docs/ci.md); a
           #    path-filtered workflow such as application.yml or terraform.yml
           #    is not required, but when a pull request's changes DO trigger
