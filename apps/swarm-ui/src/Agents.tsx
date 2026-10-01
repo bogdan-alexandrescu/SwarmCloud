@@ -951,7 +951,7 @@ function TaskRow({
           uppercase was, because the word no longer competes with the hue for
           the same channel. The mark is `aria-hidden` inside the primitive, so
           a screen reader gets the word once. */}
-      <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+      <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
 
       {/* ONE LINE, NOT THREE. This was a flex COLUMN -- profile over model over
           id -- which is what made a 30px row 72px tall and the list read as

@@ -1,3 +1,4 @@
+import { MarkGlyph, STATE_MARK } from './marks'
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -64,6 +65,7 @@ import {
   type Task,
   type TaskEvent,
   type TaskInputCopy,
+  type TaskState,
   type Tone,
 } from './types'
 
@@ -373,12 +375,28 @@ export type ChipTone = Tone | 'unknown' | 'info' | 'paused'
  * for one. Agents draws it forty times a screen; AttemptTimeline draws the
  * attempt outcome with it; this file draws the run's own state.
  */
-export function Chip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
+export function Chip({ tone, state, children }: { tone: ChipTone; state?: TaskState; children: ReactNode }) {
+  // A TASK STATE draws the brand mark (marks.tsx, rebrand 2026-10-01): one
+  // shape and one hue per state, the half disc, the haloed disc, the pause
+  // bars, the ring and so on. Any other chip keeps the tone's mark.
+  const brand = state === undefined ? null : STATE_MARK[state]
   return (
-    <span className={`ctl-chip is-${chipTone(tone)}`}>
+    <span
+      className={`ctl-chip is-${chipTone(tone)}`}
+      data-mark={brand?.mark}
+      data-hue={brand?.hue}
+    >
       {/* Decoration only. The word beside it carries the meaning, because a
           colour-only chip fails in a greyscale incident screenshot. */}
-      <i aria-hidden />
+      {brand === null ? (
+        <i aria-hidden />
+      ) : (
+        <i aria-hidden>
+          <svg viewBox="0 0 12 12" focusable="false">
+            <MarkGlyph mark={brand.mark} />
+          </svg>
+        </i>
+      )}
       {children}
     </span>
   )
@@ -626,7 +644,7 @@ function Headline({
             state
             <HelpCard topic="capacity" />
           </b>
-          <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+          <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
         </span>
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
             drawn after the chip's key (AH-24, above).

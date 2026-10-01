@@ -12908,3 +12908,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-st.is-neu { color: var(--s-neu); }
 .sk-st-w { color: var(--text); font-size: var(--t-micro); }
 .sk-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* --- Help H1: the search across all topics -------------------------------- */
+.help-search { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 0 0 var(--ctl-s5); }
+.help-search input { font: var(--t-body)/var(--lh-body) var(--font); padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
+
+/* --- a task state's chip draws its brand mark (marks.tsx) ---------------- */
+.ctl-chip[data-mark][data-hue] > i { width: 12px; height: 12px; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; display: inline-flex; flex: none; }
+.ctl-chip[data-mark][data-hue] > i::before, .ctl-chip[data-mark][data-hue] > i::after { content: none; }
+.ctl-chip[data-mark][data-hue] > i > svg { width: 12px; height: 12px; }
+.ctl-chip[data-hue='live'] > i { color: var(--s-live); }
+.ctl-chip[data-hue='park'] > i { color: var(--s-park); }
+.ctl-chip[data-hue='bad'] > i { color: var(--s-bad); }
+.ctl-chip[data-hue='neu'] > i { color: var(--s-neu); }
