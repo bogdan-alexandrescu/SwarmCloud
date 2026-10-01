@@ -1382,3 +1382,102 @@ def test_a_stub_marker_and_a_certificate_shaped_der_in_a_test_file_passes(worker
     cert = bytes.fromhex("3082") + len(inner).to_bytes(2, "big") + inner
     text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
     assert _rule_for(worker, "tests/test_x.py", text) is None
+
+
+# --- #411 third review: encrypted keys and an orphan END ---------------------
+#
+# An encrypted PKCS#8 opens SEQUENCE { SEQUENCE { OID PBES2 ... } OCTET STRING },
+# so its first element is a SEQUENCE and the INTEGER 0/1 shape check missed it.
+# A traditional encrypted PEM carries `Proc-Type` / `DEK-Info` headers and then
+# raw ciphertext after a blank line. Both are built at run time.
+
+
+def _der(tag: int, payload: bytes) -> bytes:
+    return bytes([tag, 0x82]) + len(payload).to_bytes(2, "big") + payload
+
+
+def _encrypted_pkcs8(oid_hex: str = "06092a864886f70d01050d") -> bytes:
+    # PBES2 by default; 06092a864886f70d010503 is PBES1, ...010c0103 is PKCS#12.
+    alg = _der(0x30, bytes.fromhex(oid_hex) + _RNG.randbytes(40))
+    return _der(0x30, alg + _der(0x04, _RNG.randbytes(300)))
+
+
+ENCRYPTED_BODIES = {
+    "pbes2": lambda: _encrypted_pkcs8(),
+    "pbes1": lambda: _encrypted_pkcs8("06092a864886f70d010503"),
+    "pkcs12": lambda: _encrypted_pkcs8("060a2a864886f70d010c0103"),
+}
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_in_an_f_string_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'BODY = "{body}"\n'
+            f'K = f"{_begin(" ENCRYPTED")}\\n{{BODY}}\\n{_end(" ENCRYPTED")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_by_percent_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'key_b64 = "{body}"\n'
+            f'K = "{_begin(" ENCRYPTED")}\\n%s\\n{_end(" ENCRYPTED")}" % key_b64\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(ENCRYPTED_BODIES))
+def test_an_encrypted_pkcs8_in_a_private_key_b64_variable_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(ENCRYPTED_BODIES[which]())
+    text = (f'private_key_b64 = "{body}"\n'
+            f'HEAD = "{_begin(" ENCRYPTED")}"\nTAIL = "{_end(" ENCRYPTED")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def _traditional_encrypted_pem(with_end: bool) -> str:
+    cipher = _b64(_RNG.randbytes(96))
+    lines = [cipher[i : i + 64] for i in range(0, len(cipher), 64)]
+    out = [_begin(" RSA"), "Proc-Type: 4,ENCRYPTED",
+           "DEK-Info: AES-128-CBC," + _RNG.randbytes(16).hex().upper(), "", *lines]
+    if with_end:
+        out.append(_end(" RSA"))
+    return "\n".join(out) + "\n"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("with_end", [True, False])
+def test_a_traditional_encrypted_pem_is_refused(worker_factory, path, with_end):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, path, _traditional_encrypted_pem(with_end)) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+def test_a_marker_followed_by_dek_info_alone_is_refused(worker_factory, path):
+    worker, _, _ = worker_factory()
+    text = f"{_begin(' RSA')}\nDEK-Info: AES-256-CBC,{_RNG.randbytes(16).hex()}\n"
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+@pytest.mark.parametrize("path", OUTSIDE_PATHS)
+@pytest.mark.parametrize("which", sorted(KEY_BODIES))
+def test_an_orphan_end_with_a_split_begin_is_refused(worker_factory, path, which):
+    worker, _, _ = worker_factory()
+    body = _b64(KEY_BODIES[which]())
+    text = (f'HEAD = "-----BEGIN" + " RSA PRIVATE" + " KEY-----"\n'
+            f'BODY = "{body}"\n'
+            f'TAIL = "{_end(" RSA")}"\n')
+    assert _rule_for(worker, path, text) == "private_key_block"
+
+
+def test_a_stub_marker_and_a_certificate_with_a_context_sequence_in_tests_passes(worker_factory):
+    worker, _, _ = worker_factory()
+    # Certificate: SEQUENCE { SEQUENCE { [0] { INTEGER 2 } ... } ... }, `a0 03`.
+    tbs = _der(0x30, bytes.fromhex("a003020102") + _RNG.randbytes(300))
+    cert = _der(0x30, tbs + _RNG.randbytes(100))
+    text = f'{_pkcs8("MIIEowIBAAKCAQEA")}\nCERT = "{_b64(cert)}"\n'
+    assert _rule_for(worker, "tests/test_x.py", text) is None
