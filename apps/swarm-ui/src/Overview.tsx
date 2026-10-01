@@ -1,3 +1,4 @@
+import { LifecycleBand, RecentFailures, WaitingWhy } from './OverviewRegions'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -342,8 +343,13 @@ export function OverviewScreen() {
           this one is the subject of the page. The duplicate tile is GONE --
           §14 of the sheet is about an absence occupying its space, not about
           a fact occupying two. */}
-      <section className="section ov-lead">
+      <section className="section ov-lead" id="ov-needs">
         <AttentionLead checks={checks} />
+      </section>
+
+      {/* O1 (overview.html, 2026-10-01): the lifecycle band under the lead. */}
+      <section className="section" id="ov-band">
+        <LifecycleBand tasks={tasks} />
       </section>
 
       {/* REGION 2 -- THE STATE OF THE PLATFORM.
@@ -373,7 +379,7 @@ export function OverviewScreen() {
             overflow inventory, where the same rows in a 400px card rendered
             `mock · 1…` for `mock · 15 can start`. */}
         <div className="ov-grid">
-          <section className="ctl-card ov-running">
+          <section className="ctl-card ov-running" id="ov-running">
             <CardHead title="Running" href="#work/running" cta="agents" />
             <RunningBody tasks={tasks} stats={stats} />
           </section>
@@ -386,6 +392,16 @@ export function OverviewScreen() {
                 section this product no longer has. */}
             <CardHead title="Spend" href="#work/timeline" cta="timeline" explain="token-cost" />
             <SpendBody state={spend} tasks={tasks} />
+          </section>
+
+        </div>
+
+        {/* O1: "Waiting, and why" beside Headroom -- the two halves of
+            "why has mine not started". */}
+        <div className="ov-pair">
+          <section className="ctl-card ov-waiting" id="ov-waiting">
+            <CardHead title="Waiting, and why" href="#work/running/waiting" cta="agents" />
+            <WaitingWhy tasks={tasks} />
           </section>
 
           {/* TWO CARDS BECAME ONE PANEL, AND THAT IS AN INFORMATION
@@ -403,7 +419,7 @@ export function OverviewScreen() {
               One panel, one title, two labelled groups inside it. The groups
               keep their own provenance foot, because they are two different
               reads and a single foot would have to average two ages. */}
-          <section className="ctl-card ov-headroom">
+          <section className="ctl-card ov-headroom" id="ov-headroom">
             {/* THE LINK WORD IS THE DESTINATION'S NAME (OV-11). It read
                 `pools →` and opened Profile headroom, a different tab from
                 the Pools one a reader expected; every other card head says
@@ -416,7 +432,7 @@ export function OverviewScreen() {
               title="Headroom"
               note={tenant === null ? undefined : `tenant ${tenant}`}
               href="#capacity/profiles"
-              cta="profile headroom"
+              cta="by runner profile"
               explain="pools-all-at-once"
             />
             <div className="ov-groups">
@@ -450,6 +466,11 @@ export function OverviewScreen() {
             </div>
           </section>
         </div>
+      </section>
+
+      <section className="section ov-failures" id="ov-failures">
+        <CardHead title="Recent failures" href="#work/running/recent/failed" cta="agents" />
+        <RecentFailures tasks={tasks} />
       </section>
     </>
   )

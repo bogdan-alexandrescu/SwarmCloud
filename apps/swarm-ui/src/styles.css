@@ -11615,7 +11615,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      four-column utilisation rows beside three account rows) and it is the one
      that spans. */
   .ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .ov-headroom { grid-column: 1 / -1; }
+  /* Headroom sits beside "Waiting, and why" in `.ov-pair` since O1, so it no
+     longer spans the grid. */
 }
 
 /* ---- the lead ----------------------------------------------------------- */
@@ -12934,3 +12935,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .ctl-list-snap { display: inline-flex; gap: 6px; align-items: center; }
 .ctl-list-snap kbd { font: var(--t-micro)/var(--lh-micro) var(--mono); border: 1px solid var(--line-soft); border-radius: 4px; padding: 0 4px; color: var(--text-dim); }
+
+/* --- Overview O1: the lifecycle band, the pair, the task lists ------------ */
+.ov-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
+.ov-band-cell { background: var(--surface-2); border-radius: 9px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ov-band-k { font-size: var(--t-micro); color: var(--text-dim); }
+.ov-band-v { font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
+.ov-band-cell small { font-size: var(--t-micro); color: var(--text-dim); }
+.ov-band-foot { grid-column: 1 / -1; margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+.ov-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); margin-top: var(--ctl-gutter); }
+@media (min-width: 1100px) { .ov-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+.ov-list { list-style: none; margin: 0; padding: 0; }
+.ov-list-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); color: inherit; text-decoration: none; }
+.ov-list-why { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); }
