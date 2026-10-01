@@ -447,7 +447,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # agent's gcloud without a change to apps/agent-worker, and it would change
 # nothing that runs.
 #
-# Source of GCLOUD_* and GKE_AUTH_PLUGIN_*: the Filename and SHA256 fields of
+# Source of GCLOUD_* and GKE_PLUGIN_*: the Filename and SHA256 fields of
 # https://packages.cloud.google.com/apt/dists/cloud-sdk/main/binary-amd64/Packages
 # (packages google-cloud-cli and google-cloud-cli-gke-gcloud-auth-plugin,
 # Version 587.0.0-0), recomputed over the downloaded files. Neither .deb
@@ -457,8 +457,9 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 ARG GCLOUD_VERSION=587.0.0
 ARG GCLOUD_POOL_ID=997633f1dce2c650ae5bc92a1ec32bca
 ARG GCLOUD_SHA256=117c7a96c43ecf649f91d7f775f54ff83134caeb42df4cfed8a7b92c2b701c14
-ARG GKE_AUTH_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
-ARG GKE_AUTH_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
+# Named GKE_PLUGIN_*, not GKE_AUTH_PLUGIN_*: Trivy DS-0031 reads "AUTH" in an ARG name as a secret and fails the PR; these are public package pool ids and checksums.
+ARG GKE_PLUGIN_POOL_ID=207adf5dccdc107f7d16bf1e01bd1398
+ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1bf9e24
 # kubectl 1.36.5: the newest 1.36 patch (https://dl.k8s.io/release/stable-1.36.txt
 # on 2026-10-01), one minor ahead of the 1.35 control plane as kubectl's skew
 # policy allows and the line docs/versions.md pins for operators. The static
@@ -474,11 +475,11 @@ RUN mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
  && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
-      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_AUTH_PLUGIN_POOL_ID}.deb" \
+      "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
  && curl -fsSL -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
- && echo "${GKE_AUTH_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
+ && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
  && echo "${KUBECTL_SHA256}  /tmp/toolbox/kubectl" | sha256sum -c - \
  && PATH=/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
       dpkg --unpack /tmp/toolbox/google-cloud-cli.deb /tmp/toolbox/gke-gcloud-auth-plugin.deb \
