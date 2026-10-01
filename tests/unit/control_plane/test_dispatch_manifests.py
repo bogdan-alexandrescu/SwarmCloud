@@ -252,8 +252,15 @@ def test_cloud_run_job_never_retries_on_its_own(settings, tenant):
     )
 
 
-def test_cloud_run_workspace_is_disk_backed_not_memory(settings, tenant):
+def test_cloud_run_workspace_is_the_memory_tmpfs_terraform_gives_its_jobs(settings, tenant):
+    # INVERTED 2026-10-01 (gap audit D7). This asserted the workspace was NOT
+    # memory-backed -- it pinned the Preview disk-backed volume, on BETA, that
+    # CONTRACT.md's "Correction (workspace storage)" says this platform does
+    # not use. The field-by-field comparison with terraform's module is
+    # tests/unit/scheduler/test_scheduler_job_matches_terraform_job.py.
     from google.cloud import run_v2
+
+    from scheduler.dispatch import workspace_size_gib
 
     dispatcher = CloudRunJobDispatcher(settings, client=FakeJobsClient())
     profile = RUNNER_PROFILES["claude-code"]
@@ -261,11 +268,9 @@ def test_cloud_run_workspace_is_disk_backed_not_memory(settings, tenant):
 
     volume = job.template.template.volumes[0]
     assert volume.name == "workspace"
-    assert volume.empty_dir.medium != run_v2.EmptyDirVolumeSource.Medium.MEMORY, (
-        "a memory-backed workspace is charged against the container's RAM"
-    )
+    assert volume.empty_dir.medium == run_v2.EmptyDirVolumeSource.Medium.MEMORY
     assert volume.empty_dir.size_limit == (
-        f"{RESOURCE_CLASSES[profile.resource_class].disk_gib}Gi"
+        f"{workspace_size_gib(RESOURCE_CLASSES[profile.resource_class])}Gi"
     )
 
 

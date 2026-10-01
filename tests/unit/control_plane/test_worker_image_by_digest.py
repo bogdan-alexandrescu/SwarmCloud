@@ -30,7 +30,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from swarm_common.models import Lease, Task, Tenant
-from swarm_common.profiles import RUNNER_PROFILES
+from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES
 from swarm_common.states import TaskState
 
 from scheduler.dispatch import (
@@ -194,12 +194,29 @@ class ExistingJobsClient:
     """A Jobs API holding one job, as `get_job` would return it."""
 
     def __init__(self, *, managed_by: str, image: str) -> None:
+        from google.api import launch_stage_pb2
         from google.cloud import run_v2
 
+        from scheduler.dispatch import workspace_size_gib
+
+        # The launch stage and workspace volume a CURRENT job carries (GA, a
+        # MEMORY tmpfs sized for claude-code's class), so these tests see only
+        # the image differ. Without them, the dispatcher's workspace check
+        # (gap audit D7) would rightly rebuild the job as a Preview-disk one.
+        workspace = run_v2.Volume(
+            name="workspace",
+            empty_dir=run_v2.EmptyDirVolumeSource(
+                medium=run_v2.EmptyDirVolumeSource.Medium.MEMORY,
+                size_limit=f"{workspace_size_gib(RESOURCE_CLASSES['standard'])}Gi",
+            ),
+        )
         self.job = run_v2.Job(
             labels={"managed-by": managed_by},
+            launch_stage=launch_stage_pb2.LaunchStage.GA,
             template=run_v2.ExecutionTemplate(
-                template=run_v2.TaskTemplate(containers=[run_v2.Container(image=image)])
+                template=run_v2.TaskTemplate(
+                    containers=[run_v2.Container(image=image)], volumes=[workspace]
+                )
             ),
         )
         self.updated: list = []
