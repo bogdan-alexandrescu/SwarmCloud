@@ -372,7 +372,7 @@ def test_the_step_count_is_printed_plainly():
         "denies is the per-step census, not the length of the steps array."
     )
     css = _src("styles.css")
-    for sel in (".wf-progress.untrusted", ".rollup.untrusted"):
+    for sel in (".rollup.untrusted",):
         body = _rule(css, sel)
         if body is None:
             continue

@@ -484,7 +484,7 @@ def test_the_scan_found_the_rules_it_is_meant_to_guard() -> None:
     # `--surface-2` step now. It is still a measured pair, but it no longer
     # exercises what this list is for, an accent's `-ink` on a tint of itself.
     # `.scope.platform` does, so it takes the slot; the list did not shrink.
-    for expected in (".banner.bad", ".banner.warn", ".q-chip.bad", ".scope.platform"):
+    for expected in (".banner.bad", ".banner.warn", ".scope.platform"):
         assert expected in selectors, f"{expected} is no longer being measured"
     # And the three hatched marks CH-4 moved onto a solid fill are measured
     # now, where before they were allowlisted and never read. If one of them

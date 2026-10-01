@@ -21,7 +21,7 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { loadCapacity, loadMe } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
@@ -364,6 +364,70 @@ export function SkyShell({
   const [drawer, setDrawer] = useState(false)
   const [fly, setFly] = useState<Exclude<SpineSection, null> | null>(null)
   const flyTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  const sideRef = useRef<HTMLDivElement | null>(null)
+  const flyRef = useRef<HTMLDivElement | null>(null)
+  const openerRef = useRef<HTMLButtonElement | null>(null)
+
+  // THE PHONE DRAWER IS A DIALOG IN BEHAVIOUR: focus moves into it on open, Tab
+  // wraps inside it, Escape closes it, and focus returns to the button that
+  // opened it (the cleanup, so every way of closing -- Escape, the scrim, a
+  // navigation -- restores it the same way).
+  useEffect(() => {
+    if (!drawer) return
+    const side = sideRef.current
+    const focusables = () =>
+      side === null
+        ? []
+        : Array.from(side.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'))
+    focusables()[0]?.focus()
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        setDrawer(false)
+        return
+      }
+      if (e.key !== 'Tab') return
+      const items = focusables()
+      if (items.length === 0) return
+      const first = items[0]!
+      const last = items[items.length - 1]!
+      const active = document.activeElement
+      if (e.shiftKey && (active === first || !(side?.contains(active) ?? false))) {
+        e.preventDefault()
+        last.focus()
+      } else if (!e.shiftKey && (active === last || !(side?.contains(active) ?? false))) {
+        e.preventDefault()
+        first.focus()
+      }
+    }
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('keydown', onKey)
+      openerRef.current?.focus()
+    }
+  }, [drawer])
+
+  // THE COLLAPSED SPINE'S FLYOUT CLOSES WHEN FOCUS LEAVES THE SPINE AND THE
+  // FLYOUT, and on Escape, which hands focus back to the section button that
+  // opened it. Opening it on focus without these left it up over the page for
+  // a keyboard user, with no way to dismiss it short of moving the mouse.
+  const closeFly = (refocus: boolean) => {
+    if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+    const was = fly
+    setFly(null)
+    if (refocus && was !== null) sideRef.current?.querySelector<HTMLElement>(`[data-sec="${was}"]`)?.focus()
+  }
+  const onFlyBlur = (e: ReactFocusEvent) => {
+    const to = e.relatedTarget instanceof Node ? e.relatedTarget : null
+    if (to !== null && ((sideRef.current?.contains(to) ?? false) || (flyRef.current?.contains(to) ?? false))) return
+    closeFly(false)
+  }
+  const onFlyKey = (e: ReactKeyboardEvent) => {
+    if (e.key !== 'Escape' || fly === null) return
+    e.preventDefault()
+    e.stopPropagation()
+    closeFly(true)
+  }
 
   const toggle = useCallback(() => {
     setCollapsed((c) => {
@@ -410,7 +474,7 @@ export function SkyShell({
   }
 
   const spine = (
-    <nav className="sk-spine" aria-label="Sections">
+    <nav className="sk-spine" aria-label="Sections" onBlur={onFlyBlur} onKeyDown={onFlyKey}>
       <a className="sk-hive" href="/overview" onClick={(e) => (e.preventDefault(), nav('overview/now'))}>
         <SwarmMark size={44} paint="sky" title="SwarmCloud" />
       </a>
@@ -426,6 +490,7 @@ export function SkyShell({
           <button
             key={s.key}
             type="button"
+            data-sec={s.key}
             className={`sk-ri${on ? ' is-on' : ''}`}
             aria-current={on ? 'page' : undefined}
             title={locked ? `${s.label} (admins only)` : s.label}
@@ -495,7 +560,7 @@ export function SkyShell({
     <div className={`sk-app${collapsed ? ' is-collapsed' : ''}${drawer ? ' has-drawer' : ''}`} data-env={env.kind}>
       {t.bar && <div className="sk-prodbar" aria-hidden />}
       <header className="sk-pbar">
-        <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} onClick={() => setDrawer(true)}>
+        <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} ref={openerRef} onClick={() => setDrawer(true)}>
           <Icon name="menu" />
         </button>
         <SwarmMark size={22} paint="sky" />
@@ -504,12 +569,12 @@ export function SkyShell({
         <EnvPill label={t.label} prod={t.bar} title={t.explain} mini />
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
-      <div className="sk-side">
+      <div className="sk-side" ref={sideRef}>
         {spine}
         {!collapsed || drawer ? panel : null}
       </div>
       {collapsed && fly !== null && !drawer && (
-        <Flyout section={fly} tab={section === fly ? tab : ''} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} />
+        <Flyout section={fly} tab={section === fly ? tab : ''} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
       )}
       <main className="sk-main">{children}</main>
     </div>
@@ -794,20 +859,29 @@ function Flyout({
   nav,
   onEnter,
   onLeave,
+  flyRef,
+  onBlur,
+  onKeyDown,
 }: {
   section: Exclude<SpineSection, null>
   tab: string
   nav: (to: string) => void
   onEnter: () => void
   onLeave: () => void
+  flyRef: RefObject<HTMLDivElement | null>
+  onBlur: (e: ReactFocusEvent) => void
+  onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
   if (section !== 'work' && section !== 'capacity' && section !== 'admin') return null
   const lit = rowFor(section, tab)
+  const name = section === 'work' ? 'Work' : section === 'capacity' ? 'Capacity' : 'Admin'
+  // A plain labelled group of buttons, not role="menu": a menu promises arrow
+  // keys and roving focus, which this does not have. Tab walks it.
   return (
-    <div className={`sk-flyout is-${section}`} onMouseEnter={onEnter} onMouseLeave={onLeave} role="menu">
-      <b>{section === 'work' ? 'Work' : section === 'capacity' ? 'Capacity' : 'Admin'}</b>
+    <div className={`sk-flyout is-${section}`} ref={flyRef} onMouseEnter={onEnter} onMouseLeave={onLeave} onBlur={onBlur} onKeyDown={onKeyDown} role="group" aria-label={`${name} pages`}>
+      <b>{name}</b>
       {PANEL_PAGES[section].map((p) => (
-        <button key={p.key} type="button" role="menuitem" className={p.key === lit ? 'is-on' : ''} onClick={() => nav(p.to)}>
+        <button key={p.key} type="button" className={p.key === lit ? 'is-on' : ''} onClick={() => nav(p.to)}>
           {p.label}
         </button>
       ))}

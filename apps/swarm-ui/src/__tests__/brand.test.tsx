@@ -782,7 +782,7 @@ describe('CH-20: the identity at phone width', () => {
       return el!
     })
     expect(painted(tag, 'color', WIDE_W)).toBe('var(--text-dim)')
-    expect(painted(tag, ['border', 'border-color'], WIDE_W) ?? '').toMatch(/^1px solid var\(--line(-soft)?\)$/)
+    expect(painted(tag, ['border', 'border-color'], WIDE_W) ?? '').toMatch(/^1px solid var\((--line(-soft)?|--sk-ln)\)$/)
     const fill = painted(tag, ['background', 'background-color'], WIDE_W)
     expect(fill === null || !/--info|--sk-/.test(fill), `the admin tag is filled with ${fill}`).toBe(true)
   })

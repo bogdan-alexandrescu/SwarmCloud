@@ -1,4 +1,4 @@
-import { useEffect, useId, useState, useSyncExternalStore } from 'react'
+import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
@@ -447,7 +447,22 @@ function PoolEditor({
     if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
   }, [landed, target])
 
-  const close = (pool: string) => setEditing((e) => (e?.pool === pool ? null : e))
+  // CLOSING THE EDITOR RETURNS FOCUS TO THE ROW'S EDIT CONTROL. The editor
+  // unmounts with the focused control inside it, which would drop a keyboard
+  // reader to the top of the document. The focus is moved after the commit, in
+  // the effect below, because the Edit button is disabled while another pool's
+  // unsaved value is held and is enabled only once the editor is gone.
+  const refocus = useRef<string | null>(null)
+  const close = (pool: string) => {
+    refocus.current = pool
+    setEditing((e) => (e?.pool === pool ? null : e))
+  }
+  useEffect(() => {
+    if (editing !== null || refocus.current === null) return
+    const row = document.getElementById(`limit-${refocus.current}`)
+    refocus.current = null
+    row?.querySelector<HTMLButtonElement>('.limit-edit button')?.focus()
+  }, [editing])
 
   // AN UNSAVED VALUE IS NOT THROWN AWAY BY A CLICK ELSEWHERE. Opening another
   // pool replaces the one editor, so while the open editor holds a typed value
@@ -768,7 +783,19 @@ function SideEditor({
   const impact = next === null ? [] : impactOf(pool, next, capacity)
 
   return (
-    <aside className="adm-side" aria-labelledby={titleId} data-pool={pool.name}>
+    <aside
+      className="adm-side"
+      aria-labelledby={titleId}
+      data-pool={pool.name}
+      onKeyDown={(e) => {
+        // Escape closes the editor -- but not while a write is in flight: the
+        // value is already on its way, and closing would hide the outcome.
+        if (e.key !== 'Escape' || busy || e.defaultPrevented) return
+        e.preventDefault()
+        setError(null)
+        onClose()
+      }}
+    >
       <h3 className="adm-side-title" id={titleId}>
         {poolLabel(pool.name)}
         <span className="ctl-sub">{pool.name}</span>

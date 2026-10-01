@@ -685,7 +685,7 @@ export function fromHash(): Route {
  */
 export function fromLocation(): Route {
   const { pathname, search, hash } = window.location
-  if (isLegacyHash(hash, LEGACY_HEADS)) return fromHash()
+  if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
   const p = pathToAddress(pathname, search, hash)
   if (p === null) return fromAddress('')
   const r = fromAddress(p.address)
@@ -912,7 +912,7 @@ export function App() {
   useEffect(() => {
     const onPop = () => setAt(fromLocation())
     const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS)) setAt(fromHash())
+      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
@@ -922,7 +922,7 @@ export function App() {
       const a = target?.closest?.('a[href]') ?? null
       if (a === null || a.getAttribute('target') === '_blank' || a.hasAttribute('download')) return
       const href = a.getAttribute('href') ?? ''
-      if (href.startsWith('#') && isLegacyHash(href, LEGACY_HEADS)) {
+      if (href.startsWith('#') && isLegacyHash(href, LEGACY_HEADS, window.location.pathname)) {
         e.preventDefault()
         go(href.slice(1))
       } else if (/^\/(?!\/|v1\/)/.test(href) && pathToAddress(href.split(/[?#]/)[0] ?? '') !== null) {

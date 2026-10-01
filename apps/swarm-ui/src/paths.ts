@@ -175,9 +175,12 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
  * `/help/<group>` a bare topic id is an anchor, and `help` is not one, so the
  * two never collide. Anything else is left to the browser.
  */
-export function isLegacyHash(hash: string, heads: readonly string[]): boolean {
+export function isLegacyHash(hash: string, heads: readonly string[], pathname = ''): boolean {
   const h = hash.replace(/^#/, '')
   if (h === '') return false
+  // On `/help/...` a bare `#topic` is ALWAYS an in-page anchor. A topic id may
+  // equal a section id (`capacity`, help.ts), and the section would win.
+  if (pathname.startsWith('/help/') && !h.includes('/')) return false
   const head = h.split(/[/?]/)[0] ?? ''
   return heads.includes(head)
 }
