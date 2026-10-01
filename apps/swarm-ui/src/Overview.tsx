@@ -201,7 +201,7 @@ export function OverviewScreen() {
   // is deliberately the reads rather than a clock. Two checks measure an age
   // and one of them decides whether a workflow is stalled; re-deriving on a
   // ticking clock would re-render every card on this screen once a second to
-  // move a threshold that is ten minutes wide.
+  // move a threshold that is twelve minutes wide.
   const checks = useMemo(
     () =>
       deriveChecks(
