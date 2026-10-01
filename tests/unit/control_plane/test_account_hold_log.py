@@ -495,3 +495,27 @@ def test_an_unknown_account_is_refused_by_name(client):
     response = client.get("/v1/accounts/eng:nope/holds")
 
     assert response.status_code == 422
+
+
+#: Instants the interpreter parses and then cannot convert to UTC, or cannot
+#: subtract a span from: each raised OverflowError, an unhandled 500.
+_OVERFLOWING = [
+    pytest.param({"from": "0001-01-01T00:00:00+01:00", "to": _WINDOW["to"]}, id="from-underflows-in-utc"),
+    pytest.param({"to": "9999-12-31T23:59:59-01:00"}, id="to-overflows-in-utc"),
+    pytest.param({"to": "0001-01-05T00:00:00Z"}, id="default-span-underflows"),
+    pytest.param({"cursor": "0001-01-01T00:00:00+01:00|0", **_WINDOW}, id="cursor-underflows-in-utc"),
+    pytest.param({"cursor": "2020-01-01T00:00:00+00:00|0", **_WINDOW}, id="cursor-older-than-retention"),
+    pytest.param({"from": "2020-01-01T00:00:00+00:00", "to": "2020-01-02T00:00:00+00:00"}, id="window-older-than-retention"),
+    pytest.param({"to": "2999-01-01T00:00:00+00:00"}, id="to-in-the-far-future"),
+]
+
+
+@pytest.mark.parametrize("params", _OVERFLOWING)
+def test_an_instant_outside_the_retained_range_is_a_422_never_a_500(client, db, params):
+    """Every instant (from, to, cursor) must lie within
+    [now - HOLD_LOG_RETENTION - 1 day, now + 1 day]."""
+    client.identity.as_platform()
+
+    response = _history(client, **params)
+
+    assert response.status_code == 422, (params, response.status_code, response.text[:200])

@@ -435,3 +435,68 @@ def test_an_unknown_scope_is_refused(client):
     response = client.get(f"/v1/accounts/{SHARED}/holders", params={"scope": "everyone"},
                           headers=auth_header("alice"))
     assert response.status_code == 422
+
+
+_OUT_OF_RANGE = [
+    pytest.param({"from": "0001-01-01T00:00:00+01:00", "to": "2026-09-30T00:00:00Z"}, id="from-underflows-in-utc"),
+    pytest.param({"to": "9999-12-31T23:59:59-01:00"}, id="to-overflows-in-utc"),
+    pytest.param({"to": "0001-01-05T00:00:00Z"}, id="default-span-underflows"),
+    pytest.param({"cursor": "0001-01-01T00:00:00+01:00|0"}, id="cursor-underflows-in-utc"),
+    pytest.param({"cursor": "2020-01-01T00:00:00+00:00|0"}, id="cursor-older-than-retention"),
+    pytest.param({"to": "2999-01-01T00:00:00+00:00"}, id="to-in-the-far-future"),
+]
+
+
+@pytest.mark.parametrize("user", ["alice", "bob"])
+@pytest.mark.parametrize("params", _OUT_OF_RANGE)
+def test_an_instant_outside_the_retained_range_is_a_422_before_the_broker_is_asked(
+    client, broker, user, params
+):
+    """Not an AccountPoolUnavailable (503) made of the broker's own 500."""
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header(user), params=params)
+
+    assert response.status_code == 422, (params, response.status_code, response.text[:200])
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+def test_a_borrower_cursor_built_from_a_foreign_span_is_a_422_and_costs_one_lookup(client, broker):
+    foreign = SPANS[SHARED][2]["assigned_at"]  # an eng span; bob is research
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{foreign}|0"})
+
+    assert response.status_code == 422, response.text[:200]
+    # The one bounded lookup that refused it, and no page read after.
+    assert [c for c in broker.calls if c[0] == "hold_history" and c[4] == f"{foreign}|0"] == []
+    assert len([c for c in broker.calls if c[0] == "hold_history"]) <= 1
+
+
+def test_a_borrower_cursor_at_an_arbitrary_instant_is_a_422_and_reads_no_page(client, broker):
+    arbitrary = _iso(NOW - timedelta(minutes=17, seconds=3))
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{arbitrary}|0"})
+
+    assert response.status_code == 422, response.text[:200]
+    assert [c for c in broker.calls if c[0] == "hold_history" and c[4] is not None] == []
+
+
+def test_a_borrower_cursor_this_service_issued_pages_normally(client, broker):
+    own = SPANS[SHARED][0]["assigned_at"]  # research's own span
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": f"{own}|1"})
+
+    assert response.status_code == 200, response.text[:200]
+    assert any(c[0] == "hold_history" and c[4] == f"{own}|1" for c in broker.calls)
+
+
+def test_an_owner_and_a_platform_cursor_are_not_checked_against_spans(client, broker):
+    arbitrary = _iso(NOW - timedelta(minutes=17, seconds=3))
+
+    owner = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
+                       params={"cursor": f"{arbitrary}|0"})
+    admin = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("root"),
+                       params={"cursor": f"{arbitrary}|0", "scope": "platform"})
+
+    assert owner.status_code == 200 and admin.status_code == 200
