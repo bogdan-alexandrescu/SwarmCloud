@@ -180,20 +180,23 @@ describe('a strip row shows its agent on hover and on focus', () => {
   it('draws the card on keyboard focus too, and ↓ moves it to the next row', async () => {
     const c = await land([STEP, LONE], LONE.id)
     document.documentElement.dataset.agentList = 'strip'
-    const first = rowOf(c, 'fix-heartbeat')
-    const second = rowOf(c, 'bbbbbbbb')
+    // THE LIST'S OWN ORDER, whatever it sorts by: ↓ goes to the next row in the
+    // document, so the pair is read off the DOM rather than assumed.
+    const [first, second] = [...c.querySelectorAll<HTMLElement>('.row.is-compact')]
+    expect(first && second, 'the list drew fewer than two compact rows').toBeTruthy()
+    const nameOf = (row: HTMLElement) => row.querySelector('.cr-name b')?.textContent ?? ''
 
-    act(() => first.focus())
-    expect(screen.getByRole('tooltip').textContent).toContain('fix-heartbeat')
+    act(() => first!.focus())
+    expect(screen.getByRole('tooltip').textContent).toContain(nameOf(first!))
 
-    fireEvent.keyDown(first, { key: 'ArrowDown' })
+    fireEvent.keyDown(first!, { key: 'ArrowDown' })
     expect(document.activeElement).toBe(second)
     const cards = screen.getAllByRole('tooltip')
     expect(cards).toHaveLength(1)
-    expect(cards[0]!.textContent).toContain('bbbbbbbb')
-    expect(cards[0]!.textContent).toContain('priya')
+    expect(cards[0]!.textContent).toContain(nameOf(second!))
+    expect(cards[0]!.textContent).not.toContain(nameOf(first!))
 
-    act(() => second.blur())
+    act(() => second!.blur())
     expect(screen.queryByRole('tooltip')).toBeNull()
   })
 
