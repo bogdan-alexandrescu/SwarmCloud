@@ -439,10 +439,34 @@ def lease_from_dict(data: dict[str, Any]) -> Lease:
 # Pools / quota / tenants
 # --------------------------------------------------------------------------
 
+class UnsetLimitPool(SlotPool):
+    """A pool whose document has no `hard_limit`: its ceiling is UNKNOWN (#374).
+
+    Adds no field and overrides nothing, so every reader that takes a
+    `SlotPool` reads it as the frozen admission transaction reads the same
+    document -- `d.get("hard_limit", 0)`, a ceiling of 0. What it adds is that
+    the 0 is KNOWN to be a stand-in: `pool_to_api` serves the limit as null,
+    because a 0 on the wire says an operator set the pool to zero, and nobody
+    did. The scheduler's codec carries the same class (the two images do not
+    import each other).
+    """
+
+
+def hard_limit_known(pool: SlotPool) -> bool:
+    """False for a pool whose document carried no `hard_limit` (`UnsetLimitPool`)."""
+    return not isinstance(pool, UnsetLimitPool)
+
+
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
-    return SlotPool(
+    """A pool document as a `SlotPool`; an `UnsetLimitPool` when no `hard_limit` was written.
+
+    A missing (or null) `hard_limit` is UNKNOWN, never 0 (#374).
+    """
+    raw_limit = data.get("hard_limit")
+    cls = SlotPool if raw_limit is not None else UnsetLimitPool
+    return cls(
         name=name,
-        hard_limit=int(data.get("hard_limit", 0)),
+        hard_limit=int(raw_limit) if raw_limit is not None else 0,
         adaptive_target=data.get("adaptive_target"),
         quota_derived_limit=data.get("quota_derived_limit"),
         active=int(data.get("active", 0)),
@@ -588,14 +612,18 @@ def _age_seconds(at: datetime | None, now: datetime | None) -> float | None:
 
 
 def pool_to_api(pool: SlotPool) -> dict[str, Any]:
+    # A ceiling nobody set is served as null, and so is everything computed
+    # from it: an effective limit or an availability derived from a stand-in 0
+    # is the same untruth one step removed (#374).
+    known = hard_limit_known(pool)
     return {
         "name": pool.name,
-        "hard_limit": pool.hard_limit,
+        "hard_limit": pool.hard_limit if known else None,
         "adaptive_target": pool.adaptive_target,
         "quota_derived_limit": pool.quota_derived_limit,
-        "effective_limit": pool.effective_limit,
+        "effective_limit": pool.effective_limit if known else None,
         "active": pool.active,
-        "available": pool.available,
+        "available": pool.available if known else None,
         "enabled": pool.enabled,
         "updated_at": pool.updated_at,
     }

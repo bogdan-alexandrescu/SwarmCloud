@@ -148,6 +148,17 @@ type SaveMark = 'rereading' | 'saved' | 'unread'
 interface Operand {
   pool: string
   agents: number | null
+  /**
+   * The pool is in the response but has no `hard_limit` (#374). Its ceiling
+   * is unknown, not 0 -- and admission refuses on it, so no figure the other
+   * pools give is this profile's ceiling either.
+   */
+  unset: boolean
+}
+
+/** A pool's configured limit as the editor's text: empty when none was ever set (#374). */
+function limitText(pool: Pool): string {
+  return pool.hard_limit === null ? '' : String(pool.hard_limit)
 }
 
 /**
@@ -170,17 +181,24 @@ function arithmetic(
   pools: string[],
   units: number,
   byName: Map<string, Pool>,
-): { operands: Operand[]; ceiling: number | null; binding: string[] } {
+): { operands: Operand[]; ceiling: number | null; binding: string[]; unset: boolean } {
   const w = units > 0 ? units : 1
   const operands: Operand[] = pools.map((pool) => {
     const p = byName.get(pool)
-    return { pool, agents: p ? Math.floor(p.effective_limit / w) : null }
+    if (p !== undefined && p.effective_limit === null) return { pool, agents: null, unset: true }
+    return { pool, agents: p ? Math.floor(p.effective_limit as number / w) : null, unset: false }
   })
+
+  // A POOL WITH NO LIMIT SET BINDS THE CARD (#374). Admission refuses on it,
+  // so the smallest of the OTHER pools' ceilings would be a figure nothing
+  // can reach; the card says "no limit set" and marks the pools to set.
+  const unset = operands.filter((o) => o.unset).map((o) => o.pool)
+  if (unset.length > 0) return { operands, ceiling: null, binding: unset, unset: true }
 
   const measured = operands.flatMap((o) => (o.agents === null ? [] : [o.agents]))
   const ceiling = measured.length === 0 ? null : Math.min(...measured)
   const binding = ceiling === null ? [] : operands.filter((o) => o.agents === ceiling).map((o) => o.pool)
-  return { operands, ceiling, binding }
+  return { operands, ceiling, binding, unset: false }
 }
 
 function Body({
@@ -241,12 +259,14 @@ function ProfileCard({
   operands,
   ceiling,
   binding,
+  unset,
 }: {
   name: string
   units: number
   operands: Operand[]
   ceiling: number | null
   binding: string[]
+  unset: boolean
 }) {
   // The unit that used to be a footnote -- "'Ceiling' is how many AGENTS of
   // that profile could run at once, not units" -- is now fused to the figure
@@ -273,7 +293,9 @@ function ProfileCard({
         <b
           className={`ctl-figure${measured ? '' : ' is-absent'}`}
           aria-label={
-            measured
+            unset
+              ? `${name} can run no agents: ${named} ${binding.length === 1 ? 'has' : 'have'} no limit set, so admission refuses. Nobody set ${binding.length === 1 ? 'it' : 'them'} to 0: somebody has to set a limit.`
+              : measured
               ? `${ceiling} agents of ${name} can run at once. That is the smallest ceiling across the ${operands.length} pools this profile takes, and ${binding.length === 1 ? `${named} is the pool that binds it` : `${named} bind it together: raising any one of them alone leaves it where it is`}.`
               : `No ceiling can be computed for ${name}: none of the pools it takes are in this response, so the figure is not measured rather than zero.`
           }
@@ -282,7 +304,7 @@ function ProfileCard({
               `5 agents` read as a count of agents running, which is the other
               figure on this platform with that unit. */}
           {measured && <span className="ctl-figure-unit adm-figure-max">max</span>}
-          {measured ? ceiling : <i className="ctl-em">—</i>}
+          {measured ? ceiling : unset ? <i className="ctl-em">no limit set</i> : <i className="ctl-em">—</i>}
           {measured && <span className="ctl-figure-unit">agents</span>}
         </b>
 
@@ -315,14 +337,16 @@ function ProfileCard({
             >
               <b>{label(o.pool)}</b>
               <span className="adm-value">
-                {o.agents === null ? <i className="ctl-em">—</i> : o.agents}
+                {o.unset ? <i className="ctl-em">no limit set</i> : o.agents === null ? <i className="ctl-em">—</i> : o.agents}
               </span>
             </li>
           ))}
         </ul>
       </div>
       <p className="ctl-card-foot">
-        {binding.length === 0 ? (
+        {unset ? (
+          <>no limit set on {named}</>
+        ) : binding.length === 0 ? (
           <>no pool in this response</>
         ) : (
           <>binds on {named}</>
@@ -443,7 +467,7 @@ function PoolEditor({
   // loses nothing.
   const heldPool = editing?.draft != null ? pools.find((p) => p.name === editing.pool) : undefined
   const held =
-    heldPool !== undefined && !writing.includes(heldPool.name) && editing!.draft!.trim() !== String(heldPool.hard_limit)
+    heldPool !== undefined && !writing.includes(heldPool.name) && editing!.draft!.trim() !== limitText(heldPool)
       ? heldPool.name
       : null
 
@@ -626,10 +650,13 @@ function PoolRow({
   // follows a re-read -- including one that picked up another operator's
   // change -- instead of showing the old limit as an edit a stray `save`
   // would write back.
-  const value = editing?.draft ?? String(pool.hard_limit)
-  const dirty = value.trim() !== String(pool.hard_limit)
+  // A pool with no limit set (#374) starts from an empty field, never the
+  // text "null"; any valid number typed into it is a change.
+  const value = editing?.draft ?? limitText(pool)
+  const dirty = value.trim() !== limitText(pool)
   const parsed = Number(value)
-  const valid = Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
+  // `Number('')` is 0: an empty field is no value, never a write of 0.
+  const valid = value.trim() !== '' && Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
   const invalid = open && dirty && !valid
   const by = setBy(pool)
   const editable = isEditable(pool)
@@ -670,7 +697,11 @@ function PoolRow({
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="is-num">
-        <span className="adm-ceiling">{pool.effective_limit}</span>
+        {pool.effective_limit === null ? (
+          <span className="adm-ceiling is-unset" title={by.detail}>no limit set</span>
+        ) : (
+          <span className="adm-ceiling">{pool.effective_limit}</span>
+        )}
       </td>
       {showSetBy && (
         <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>

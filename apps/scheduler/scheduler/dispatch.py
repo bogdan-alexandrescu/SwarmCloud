@@ -193,9 +193,11 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
 #: node and pulling the image; the lifecycle's counts from `Worker.__init__`,
 #: minutes later. So the Job controller SIGTERMed the pod first, and on SIGTERM
 #: the lifecycle takes its INTERRUPTION path instead (`_handle_interruption`):
-#: it parks the task PARKED/SCHEDULED_RETRY with `next_eligible_at=now`. Nothing
-#: in the platform promotes a SCHEDULED_RETRY park, so a task that simply ran
-#: out of time never became FAILED and its workflow never finished -- the
+#: it parks the task PARKED/SCHEDULED_RETRY with `next_eligible_at=now`. At the
+#: time nothing promoted a SCHEDULED_RETRY park (the scheduler's
+#: `_promote_scheduled_retries` does now, and dead-letters a spent last attempt),
+#: so a task that simply ran out of time never became FAILED and its workflow
+#: never finished -- and even now it would burn a retry on a timeout -- the
 #: "workflow stuck" symptom of incident wf_ebb3ab2d65664707a559, reached through
 #: its own fix (review of PR #31). Cloud Run had the same race with a margin of
 #: seconds.

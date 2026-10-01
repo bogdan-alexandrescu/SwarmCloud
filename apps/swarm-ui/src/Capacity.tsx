@@ -9,6 +9,7 @@ import { blockerVerdict, classUnits, headroomFigure, useResourceClasses, verdict
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
+  POOL_LIMIT_UNSET,
   blockerCeiling,
   ceilingCopy,
   headroomFor,
@@ -530,14 +531,23 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
       <td role="cell" data-label="Scope">{scope}</td>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
       <td role="cell" data-label="Ceiling (units)" className="is-num">
-        {pool.effective_limit}
-        {pool.effective_limit < pool.hard_limit && (
-          <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-            /{pool.hard_limit}
-          </span>
+        {pool.effective_limit === null || pool.hard_limit === null ? (
+          // No limit set (#374): unknown, so no number -- not even a 0.
+          <i className="ctl-em" title={by.detail}>not set</i>
+        ) : (
+          <>
+            {pool.effective_limit}
+            {pool.effective_limit < pool.hard_limit && (
+              <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+                /{pool.hard_limit}
+              </span>
+            )}
+          </>
         )}
       </td>
-      <td role="cell" data-label="Headroom" className="is-num">{pool.available}</td>
+      <td role="cell" data-label="Headroom" className="is-num">
+        {pool.available === null ? <i className="ctl-em">—</i> : pool.available}
+      </td>
       <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
       <td role="cell" data-label="Status">
         <span className="cap-marks">
@@ -582,9 +592,17 @@ function classifyPool(pool: Pool): PoolClass {
   const paused = isPaused(pool)
   const over = overCeiling(pool)
   const limit = pool.effective_limit
+  // NO LIMIT SET (#374) is neither `limit 0` nor `ok`: the ceiling was never
+  // read, admission refuses on it, and a person has to set one. The verdict is
+  // the blockers' own `limit-unset`, so the screens cannot disagree.
+  const unset = !paused && limit === null
   const zero = !paused && !over && limit === 0
-  const full = !over && limit > 0 && pool.active >= limit
-  const ceiling = zero ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 }) : null
+  const full = !over && limit !== null && limit > 0 && pool.active >= limit
+  const ceiling = zero
+    ? blockerCeiling({ reason: '', pool: pool.name, limit: 0 })
+    : unset
+      ? blockerCeiling({ reason: POOL_LIMIT_UNSET, pool: pool.name, limit: null })
+      : null
   const zeroTone = ceiling !== null && needsAPerson(ceiling) ? 'is-paused' : 'is-bad'
 
   const chips: PoolClass['chips'] = []
@@ -596,6 +614,15 @@ function classifyPool(pool: Pool): PoolClass {
       cls: 'is-bad',
       word: 'over ceiling',
       title: `${pool.active} units are held against a ceiling of ${limit}. Admission cannot produce this, so it is drift: a limit lowered under running work, or a slot never released. 'make pool-check' finds these.`,
+    })
+  }
+  if (unset) {
+    chips.push({
+      cls: zeroTone,
+      word: 'no limit set',
+      title:
+        ceilingCopy({ reason: POOL_LIMIT_UNSET, pool: pool.name, limit: null, active: pool.active }, 'This pool') ??
+        'This pool has no limit set.',
     })
   }
   if (zero) {
@@ -614,7 +641,7 @@ function classifyPool(pool: Pool): PoolClass {
   // grey screen is what a healthy platform looks like.
   if (chips.length === 0) chips.push({ cls: 'is-ok', word: 'ok', title: 'Read, capped, not paused, and not at its ceiling.' })
 
-  const track = over ? 'is-bad' : paused ? 'is-paused' : zero ? zeroTone : full ? 'is-warn' : undefined
+  const track = over ? 'is-bad' : paused ? 'is-paused' : zero || unset ? zeroTone : full ? 'is-warn' : undefined
   const row =
     track === undefined
       ? undefined
@@ -624,7 +651,9 @@ function classifyPool(pool: Pool): PoolClass {
           ? 'is-paused paused'
           : zero
             ? `${zeroTone} limit-0`
-            : 'is-warn full'
+            : unset
+              ? `${zeroTone} limit-unset`
+              : 'is-warn full'
   return { chips, row, track }
 }
 
@@ -653,7 +682,7 @@ function PoolMarks({ marks }: { marks: PoolClass }) {
  */
 function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
   const limit = pool.effective_limit
-  const ratio = limit > 0 ? Math.min(1, pool.active / limit) : 0
+  const ratio = limit !== null && limit > 0 ? Math.min(1, pool.active / limit) : 0
   const marks = classifyPool(pool)
 
   return (
@@ -667,7 +696,8 @@ function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
         {/* `/ 0` FOR A CEILING OF ZERO, not "no ceiling" (CP-14). A pool at 0
             has a ceiling, and it is zero -- the `limit 0` mark below says so,
             and a unit reading "no ceiling" beside it contradicted the mark. */}
-        <span className="ctl-figure-unit">{`/ ${limit}`}</span>
+        {/* No limit set (#374): the ceiling is unknown, so no `/ 0`. */}
+        <span className="ctl-figure-unit">{limit === null ? '/ no limit set' : `/ ${limit}`}</span>
       </b>
 
       {/* THE ONE TRACK (§6.4), and it is the shared one (./primitives.tsx):
@@ -693,16 +723,23 @@ function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
       {/* THE TONE IS THE CLASSIFICATION'S (CP-14), so the track says what
           the chip and the table's row say: a full pool is warn here too, not
           bad, and there is no 80% band of this card's own. */}
+      {/* THE ONE CEILING THAT WAS NEVER READ (#374): a pool with no limit
+          set draws the not-measured hatch, which is exactly what it is. The
+          `no limit set` chip beside it carries the tone. */}
       <UtilTrack
-        pct={limit > 0 ? ratio * 100 : 100}
+        pct={limit === null ? null : limit > 0 ? ratio * 100 : 100}
         tone={marks.track}
-        meter={{
-          /* "units", not "agents": admission counts weighted units, so 8 may
-             be two large agents or eight standard ones. */
-          label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`,
-          now: pool.active,
-          max: limit,
-        }}
+        meter={
+          limit === null
+            ? { label: `${poolLabel(pool.name)}: ${pool.active} units in use, no limit set`, now: pool.active, max: 0 }
+            : {
+                /* "units", not "agents": admission counts weighted units, so 8 may
+                   be two large agents or eight standard ones. */
+                label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`,
+                now: pool.active,
+                max: limit,
+              }
+        }
       />
 
       {/* The scope first, then the same marks the table draws -- `ok`

@@ -995,7 +995,7 @@ function MetricStrip({
         href="#capacity/pools"
         label="Units held"
         value={global ? global.active : null}
-        unit={global ? `of ${global.effective_limit}` : undefined}
+        unit={global ? (global.effective_limit === null ? 'no limit set' : `of ${global.effective_limit}`) : undefined}
         foot={staleFoot(capacity, 'read')}
         reading={capacity.status === 'loading'}
         unread={capacity.status === 'error' ? errorHeading(capacity.error) : null}
@@ -1394,8 +1394,11 @@ function ProfileRow({
   // Averaging a profile's pools would draw a comfortable half-full bar for a
   // profile that cannot start anything because one of its six pools is at
   // zero -- precisely the failure this card exists to make visible.
-  const known = binding !== null && binding.effective_limit > 0
-  const ratio = known ? binding.active / binding.effective_limit : 0
+  // A binding pool with no limit set (#374) has no ratio: its ceiling is
+  // unknown, and the figure says so rather than `/ 0`.
+  const bindingLimit = binding?.effective_limit ?? null
+  const known = binding !== null && bindingLimit !== null && bindingLimit > 0
+  const ratio = known ? binding.active / bindingLimit : 0
   const paused = binding !== null && isPaused(binding)
   const over = binding !== null && overCeiling(binding)
 
@@ -1482,7 +1485,9 @@ function ProfileRow({
                 may weigh more than one of them. */}
             <span className="ctl-util-of">
               {' '}
-              / {binding.effective_limit} {binding.effective_limit === 1 ? 'unit' : 'units'}
+              {bindingLimit === null
+                ? '/ no limit set'
+                : `/ ${bindingLimit} ${bindingLimit === 1 ? 'unit' : 'units'}`}
             </span>
           </>
         ) : (

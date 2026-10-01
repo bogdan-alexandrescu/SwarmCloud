@@ -33,10 +33,11 @@ from datetime import datetime, timedelta
 from typing import Any, Callable
 
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
-from swarm_common.models import EndCause, Lease, Task, Tenant, utcnow
+from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
+from swarm_common.states import PENDING_STATES, BlockedReason, EventType, ParkReason, TaskState
 
+from .codec import POOL_LIMIT_UNSET, hard_limit_known
 from .credentials import AccountPool, CredentialSource, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -208,6 +209,13 @@ class DrainReport:
     promoted_dependencies: int = 0
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
+    #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
+    promoted_scheduled_retries: int = 0
+    #: MANUAL_PAUSE parks returned to READY once what paused them cleared.
+    promoted_manual_pauses: int = 0
+    #: SCHEDULED_RETRY parks on a task that had used its last attempt, ended
+    #: DEAD_LETTERED instead of retried (`_promote_scheduled_retries`).
+    dead_lettered: int = 0
     #: Workflows this drain found failed under `on_step_failure: fail_workflow`
     #: and swept. Their cancels are in `cancelled` like every other cancel.
     #: This field says how many workflows those cancels came from.
@@ -268,6 +276,10 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
+        self._unset_limit_pools: frozenset[str] | None = None
+        # Where each paged park sweep resumes (`_parked_window`). Kept across
+        # drains on purpose: that is what moves the window.
+        self._park_cursors: dict[ParkReason, str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
         cutoff = settings.on_step_failure_enforced_since
         log.info(
@@ -303,6 +315,7 @@ class Scheduler:
         self._tenant_cache: dict[str, Tenant | None] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
+        self._unset_limit_pools = None
         self._swept_workflows = set()
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
@@ -319,6 +332,8 @@ class Scheduler:
 
         report.promoted_dependencies = self._promote_dependencies(report)
         report.promoted_credentials = self._promote_credentials(report)
+        report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
+        report.promoted_manual_pauses = self._promote_manual_pauses(report)
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm(report)
 
@@ -540,12 +555,13 @@ class Scheduler:
                 task, units=units, backend=backend.value, config=self._admission
             )
         except AdmissionDenied as denied:
-            recorded = self._store.record_blockers(task, denied.reasons)
+            reasons = self._name_unset_limits(denied.reasons)
+            recorded = self._store.record_blockers(task, reasons)
             if not recorded.applied:
                 # A `not_ready` denial: another scheduler admitted it first.
                 self._count_stale(recorded, report)
             report.denied += 1
-            first = denied.reasons[0] if denied.reasons else {}
+            first = reasons[0] if reasons else {}
             reason = str(first.get("reason", "unknown"))
             report.blockers[reason] = report.blockers.get(reason, 0) + 1
             self._metrics.denied.labels(reason=reason).inc()
@@ -720,6 +736,42 @@ class Scheduler:
             write=outcome.write, reason=outcome.reason or "unknown"
         ).inc()
 
+    def _name_unset_limits(self, reasons: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Admission's blockers, with a ceiling nobody set named as that (#374).
+
+        The frozen admission transaction reads a pool document with no
+        `hard_limit` as limit 0 and refuses with the pool's ordinary reason --
+        TENANT_LIMIT at 0, which says an operator set the pool to zero. Nobody
+        did. Refusing is still right (nothing says how much may run there), so
+        the refusal stands; only its record changes: `POOL_LIMIT_UNSET`, limit
+        null. A pause stays a pause, since it refuses at any ceiling.
+
+        Which pools have no limit is read once per drain, and only once a
+        denial needs it. A blocker is renamed only when admission reported it
+        at 0, which a stand-in 0 always is: a limit written during the drain
+        and actually full is reported at its own positive limit, untouched.
+        """
+        if not any(isinstance(b, dict) and b.get("pool") for b in reasons):
+            return reasons
+        if self._unset_limit_pools is None:
+            self._unset_limit_pools = frozenset(
+                name for name, pool in self._store.pools().items() if not hard_limit_known(pool)
+            )
+        unset = self._unset_limit_pools
+        if not unset:
+            return reasons
+        named: list[dict[str, Any]] = []
+        for blocker in reasons:
+            if (
+                isinstance(blocker, dict)
+                and blocker.get("pool") in unset
+                and blocker.get("reason") != BlockedReason.MANUAL_PAUSE.value
+                and blocker.get("limit") == 0
+            ):
+                blocker = {**blocker, "reason": POOL_LIMIT_UNSET, "limit": None}
+            named.append(blocker)
+        return named
+
     def _park(
         self,
         task: Task,
@@ -779,12 +831,15 @@ class Scheduler:
         through before it can start. Asking "which steps failed recently"
         instead would mean a query over FAILED tasks, which grows with history,
         re-read on every drain to rediscover workflows that were finished long
-        ago. The price of doing it this way: a workflow whose every
-        remaining step is PARKED on a reason the scheduler never reads
-        (MANUAL_PAUSE, BUDGET_EXHAUSTED, SCHEDULED_RETRY) is swept only when one
-        of those steps is promoted and reaches admission. Until then it holds no
-        capacity, so it costs nothing (invariant 1). Only the derived state
-        lags: it reads PARKED rather than FAILED.
+        ago. Every park reason anything writes is read by a sweep that calls
+        this (`_promote_scheduled_retries` and `_promote_manual_pauses` were
+        the last two). BUDGET_EXHAUSTED is the one reason no sweep reads, and
+        nothing writes it: there are no budgets (owner, 2026-10-01). A
+        workflow whose remaining steps are all parked on a reason that has not
+        cleared -- a disabled tenant, a retry not yet due -- is swept when its
+        sweep's moving window next reaches them (`_parked_window`: within
+        ceil(parks / sweep size) drains); until then it holds no
+        capacity, so it costs nothing (invariant 1).
 
         WHAT IT DOES NOT PROMISE: that nothing starts after the failure. The
         verdict is cached for the drain, so a failure a worker or the reconciler
@@ -1007,6 +1062,141 @@ class Scheduler:
                     report=report,
                 ):
                     promoted += 1
+        return promoted
+
+    def _parked_window(self, reason: ParkReason) -> list[Task]:
+        """The next `dependency_sweep_size` parks on `reason`, resuming where the last drain stopped.
+
+        The two sweeps below leave a park in place while what parked it has not
+        cleared -- a retry not yet due, a tenant still disabled. With a fixed
+        window, that many such parks ahead in the index would hide every park
+        behind them for ever, which is the defect these sweeps exist to end.
+        So the window moves: a full page leaves its last id as the next drain's
+        start, and a short page sends the next drain back to the top. Every
+        park is looked at within ceil(parks / sweep size) drains.
+        """
+        size = self._settings.dependency_sweep_size
+        page = self._store.parked_page(reason, size, self._park_cursors.get(reason))
+        self._park_cursors[reason] = page[-1].id if len(page) >= size else None
+        return page
+
+    def _promote_scheduled_retries(self, report: DrainReport) -> int:
+        """Return SCHEDULED_RETRY parks to READY once their `next_eligible_at` has passed.
+
+        The worker writes this park when it is SIGTERMed
+        (`lifecycle._handle_interruption`), with `next_eligible_at=now`, and
+        until this sweep nothing ended it: the task, and any workflow it was a
+        step of, sat PARKED for ever. A park with no instant at all is due: the
+        reason means "retry", and nothing would ever supply a later time.
+
+        THE RETRY CAP DECIDES WHAT AN INTERRUPTED LAST ATTEMPT BECOMES.
+        Admission does not check `max_attempts`, so READY on a task that has
+        used its last attempt would lease one more than the cap -- the defect
+        `retries_exhausted` exists for. Such a task is ended DEAD_LETTERED
+        (PARKED -> FAILED is not a legal transition), or CANCELLED when a cancel
+        was requested, and counted in `report.dead_lettered` / `cancelled`.
+
+        Promotion is `promote_to_ready`, guarded on the state and park reason
+        this sweep read, so two drains racing promote it once. It writes the
+        task alone: no lease, no pool count. Only admission, later, takes
+        capacity (invariant 1).
+        """
+        promoted = 0
+        now = self._now()
+        for task in self._parked_window(ParkReason.SCHEDULED_RETRY):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            eligible_at = task.next_eligible_at
+            if eligible_at is not None and eligible_at > now:
+                continue
+            if task.retries_exhausted():
+                self._end_exhausted_retry(task, report)
+                continue
+            if self._promote(
+                task,
+                kind="scheduled_retry",
+                detail={
+                    "reason": "retry_due",
+                    "park_reason": ParkReason.SCHEDULED_RETRY.value,
+                    "was_eligible_at": eligible_at.isoformat() if eligible_at else None,
+                },
+                report=report,
+            ):
+                promoted += 1
+        return promoted
+
+    def _end_exhausted_retry(self, task: Task, report: DrainReport) -> None:
+        text = (
+            f"interrupted on its last attempt ({task.attempt_count} of "
+            f"{task.max_attempts}); retries exhausted"
+        )
+        if task.cancel_requested:
+            self._cancel(
+                task, text, report, why="cancel_requested", end_cause=EndCause.CANCEL_REQUESTED
+            )
+            return
+        outcome = self._store.dead_letter_parked(
+            task, text, detail={"park_reason": ParkReason.SCHEDULED_RETRY.value}
+        )
+        if outcome.applied:
+            report.dead_lettered += 1
+        else:
+            self._count_stale(outcome, report)
+
+    def _promote_manual_pauses(self, report: DrainReport) -> int:
+        """Return MANUAL_PAUSE parks to READY once what paused them has cleared.
+
+        `_admit_one` writes this park for a tenant that is missing or disabled
+        and for a runner profile the catalogue no longer has. Nothing read it
+        back, so re-enabling the tenant did not start its work. The sweep asks
+        the same questions admission asked, and promotes only when every one
+        is now answered:
+
+          * the profile is in the catalogue;
+          * the tenant exists and is enabled;
+          * no pool the task must clear is switched off. Compared as
+            `enabled is False`, never by defaulting: a pool document with no
+            `enabled` field is on, as admission reads it, and only an explicit
+            False is a pause (`resume-swarm.sh` is what writes it back).
+
+        A paused pool does not by itself park a task -- admission leaves the
+        task READY with a MANUAL_PAUSE blocker -- so the pool question is the
+        one that holds an operator's pause in place until it is lifted, rather
+        than re-readying work into a pool that will refuse it.
+
+        Guarded like every promotion; it writes the task alone (invariant 1).
+        """
+        parked = self._parked_window(ParkReason.MANUAL_PAUSE)
+        if not parked:
+            return 0
+        pools = self._store.pools()
+        promoted = 0
+        for task in parked:
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            profile = RUNNER_PROFILES.get(task.runner_profile)
+            if profile is None:
+                continue
+            tenant = self._tenant(task.tenant_id)
+            if tenant is None or tenant.enabled is False:
+                continue
+            required = pool_names_for(
+                tenant_id=task.tenant_id,
+                provider=task.provider,
+                resource_class=task.resource_class,
+                runner_profile=task.runner_profile,
+                backend=resolve_backend(profile).value,
+            )
+            paused = [name for name in required if name in pools and pools[name].enabled is False]
+            if paused:
+                continue
+            if self._promote(
+                task,
+                kind="manual_pause",
+                detail={"reason": "pause_lifted", "park_reason": ParkReason.MANUAL_PAUSE.value},
+                report=report,
+            ):
+                promoted += 1
         return promoted
 
     def _prewarm(self, report: DrainReport) -> int:

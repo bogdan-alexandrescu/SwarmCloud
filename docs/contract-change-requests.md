@@ -7954,3 +7954,60 @@ schedule back toward ~90 s, which is what lost the two attempts #401 recorded.
 3. Concurrency counts from `LEASED`: unchanged.
 5. Fencing: a worker that starts after the deadline is still fenced; the
    deadline is later.
+
+---
+
+## 38. `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374)
+
+**Status: PROPOSED (functionality wave 1, lane B1, 2026-10-01).** Numbered 38
+on the assumption 37 is the last entry on main; renumber if another branch has
+taken it.
+
+### What is true today
+
+`acquire_lease_in_transaction` reads each pool document with
+`hard_limit=d.get("hard_limit", 0)` (`swarm_common/admission.py`), so a pool
+document with no `hard_limit` key -- written by hand, or by a writer that set
+only `enabled` -- is a ceiling of 0. `evaluate_capacity` then refuses through it
+with the pool's ordinary reason (`TENANT_LIMIT`, `RESOURCE_CLASS_LIMIT`, ...)
+and `limit: 0`, which says an operator set the pool to zero. Nobody did.
+`BlockedReason` has no value for "this ceiling was never set".
+
+What #374's fix does without touching the contract: both `pool_from_dict`s
+return an `UnsetLimitPool` (a `SlotPool` subclass that adds no field) for such
+a document; `pool_to_api` serves its `hard_limit`, `effective_limit` and
+`available` as null; `/v1/capacity` analyses its profiles as `unknown`; and
+the scheduler, after admission has refused, rewrites that pool's blocker to
+`POOL_LIMIT_UNSET` with `limit: null` (`scheduler/loop.py`,
+`_name_unset_limits`). That last step is a relabel AFTER the frozen function
+has spoken: the string is not a `BlockedReason`, and it depends on the
+scheduler re-reading which pools are unset.
+
+### The requested change
+
+* `BlockedReason.POOL_LIMIT_UNSET = "POOL_LIMIT_UNSET"`, in the needs-action
+  group (`headroom.NEEDS_ACTION`).
+* `evaluate_capacity` (and the transaction's pool read) treat a missing or
+  null `hard_limit` as unknown: still a refusal, reported as
+  `{"pool": name, "reason": POOL_LIMIT_UNSET, "limit": None, ...}`, checked
+  after `MANUAL_PAUSE` (a pause refuses at any limit, so it stays the reason).
+* `SlotPool.hard_limit: int | None`, `effective_limit` None when it is None.
+
+### What it would break if accepted
+
+* Every reader of `SlotPool.effective_limit` as an `int` must handle None
+  (the API codec, headroom, the scheduler's metrics, `reconciler` pool checks).
+* `scheduler/loop.py` `_name_unset_limits` and the `UnsetLimitPool` class in
+  both codecs become dead and are removed in the same change.
+* `tests/unit/control_plane/test_blocker_groups.py` grows the new member.
+
+### If it is declined
+
+The relabel stays. Its weakness: a blocker recorded by any path other than the
+scheduler's drain (none today) would still say `TENANT_LIMIT` at 0.
+
+### Invariants
+
+2. All-or-nothing reservation: unchanged; an unset pool still refuses.
+3. Concurrency counts from `LEASED`: unchanged.
+7. `requests == limits`: unaffected; this is the pool ceiling, not a pod spec.

@@ -1084,6 +1084,8 @@ export function ProfileFacts({ name, profile, pools }: { name: string; profile: 
               : <>
                 {binding && (isPaused(binding)
                   ? <> — <code>{binding.name}</code> is paused and admits nothing at all</>
+                  : binding.effective_limit === null
+                  ? <> — <code>{binding.name}</code> has no limit set and admits nothing until somebody sets one</>
                   : <> — held down by <code>{binding.name}</code>, {binding.active} of {binding.effective_limit} weighted units in use</>)}.
               </>}
           </>
