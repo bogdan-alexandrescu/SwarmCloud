@@ -1827,6 +1827,13 @@ redact() {
   # dump, where every value is a literal: $envname marks it first so the code
   # rules pass it by, and the mark comes out before the assignment rules run.
   local envname=$'\002'
+  # A SECRET RUN (`swarm_redaction.rules._SECRET_RUN`): 16 or more of
+  # [A-Za-z0-9+/=_-] holding a digit and a letter, or -- with no digit -- a
+  # lowercase letter and a shape no name has (`_NAME_RUN`: every capital
+  # starts a hump of two lowercase letters, or is `Id`, bar one at the end). sed cannot look ahead, so every
+  # run of 16 is marked with $secretrun, the marks on runs that are not one
+  # come off again, and no exemption rule matches across a mark.
+  local secretrun=$'\003'
   local ci_kw='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
   # The same words without `password`/`passwd`, whose values are a human's
   # choice: under those, a bare multi-word name is not exempt.
@@ -1847,17 +1854,31 @@ redact() {
   local v_end='([,;[:space:]]|$|[])}]+([,;[:space:]]|$))'
   local v_kwword="_*(${ci_kw})[Ss]?"
   # A camelCase hump: a capital and two lowercase letters or more, or `Id`.
+  # A repeated group is written `(G)(G)*`, never `(G)+`: macOS sed matched
+  # `self(\.(...|[a-z]{1,16}(H)+|(H)+))+$` against `self.` and 38 lowercase
+  # letters, which no part of it can match (measured 2026-09-30); the
+  # unrolled form is the same language and BSD sed gets it right.
   local v_hump='([A-Z][a-z]{2,15}|Id)[0-9]{0,3}'
-  local v_multi="(_*[a-z][a-z0-9]{0,15}(_[a-z0-9]{1,16})+_*|_*[A-Z][A-Z0-9]{0,15}(_[A-Z0-9]{1,16})+_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})+|_*${v_hump}(${v_hump})+)"
-  local v_part="_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})+|${v_hump}(${v_hump})*)"
-  local v_first="_*([a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})+|${v_hump}(${v_hump})*)"
-  local v_dotted="((self|cls|this)(\\.${v_part})+|${v_first}(\\.${v_part})*\\.(${v_multi}|_+${v_part}|${v_kwword}))"
-  local v_args="(\\([^(){};]{0,160}(\\([^(){};]{0,160}\\)[^(){};]{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_.]{0,63}|\"[^\"]{0,128}\"|'[^']{0,128}')\\])"
+  # A multi-word name is exempt only when one of its words is a credential
+  # word (`_CREDENTIAL_NAME`; owner decision 2026-09-30).
+  local v_cred="(_*([a-z][a-z0-9]{0,15}_)*(token|secret|key|password|passwd|credential|auth|api)s?(_[a-z0-9]{1,16})*_*|_*([A-Z][A-Z0-9]{0,15}_)*(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?(_[A-Z0-9]{1,16})*_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*|_*(token|secret|key|password|passwd|credential|auth|api)s?[0-9]{0,3}(${v_hump})(${v_hump})*|_*(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*)"
+  local v_part="_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
+  local v_first="_*([a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
+  # `_DOTTED`, in two expressions -- its `self.` branch and the rest -- so
+  # each fits BSD sed.
+  local v_dotted_self="(self|cls|this)(\\.${v_part})(\\.${v_part})*"
+  local v_dotted_tail="${v_first}(\\.${v_part})*\\.(${v_cred}|_+${v_part}|${v_kwword})"
+  # What an argument may be made of (`_ARG`), plus $keep: an argument list
+  # may hold a keyword argument an earlier rule here already marked
+  # (`light=theme == "x"`). The call rules use `#` as the s-command
+  # delimiter: this class holds a `/`.
+  local v_argc="[]A-Za-z0-9_.,:=*'\" +/%\\[${keep}-]"
+  local v_args="(\\(${v_argc}{0,160}(\\(${v_argc}{0,160}\\)${v_argc}{0,160}){0,2}\\)|\\[(-?[0-9]{1,6}|[A-Za-z_][A-Za-z0-9_]{0,63}|\"[^\"${secretrun}]{0,128}\"|'[^'${secretrun}]{0,128}')\\])"
   local v_call="${v_first}(\\.${v_part})*${v_args}([,;[:space:]]|\$|[])}]+([,;[:space:]]|\$)|\\.[a-z_])"
   local v_shell='"?[$](\([a-z][a-z0-9_-]{0,31}[ )]|\{[A-Za-z_][A-Za-z0-9_]{0,63}:?-?\}|\{\{ )'
   local v_builtin='(str|bytes|int|float|bool|None|Any|object|string|number|boolean|unknown|null|undefined|list|dict|tuple|set|frozenset|type|Path|Optional|Union|Sequence|Mapping|Iterable|Iterator|Callable|Literal|Record|Array|Promise)([],;)}|=>[:space:][]|$)'
-  local v_type_end='([[:blank:]]+[|=][[:blank:]]|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
-  local v_annotation="(_*${v_hump}(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.${v_hump}(${v_hump})*)${v_type_end}"
+  local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
+  local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
   local v_word='(={1,2}[[:blank:]]|(await|new|not)[[:blank:]]|(None|True|False|null|undefined|\{\}|\[\]|\(\))([,;[:space:]]|$|[])}]+([,;[:space:]]|$)))'
   # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
   # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
@@ -2007,6 +2028,7 @@ redact() {
   LC_ALL=C awk ${awk_opts[@]+"${awk_opts[@]}"} "${pem}" | sed -E \
     -e "s/${keep}//g" \
     -e "s/${envname}//g" \
+    -e "s/${secretrun}//g" \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{26}[A-Za-z0-9_-]*/\1********/g' \
     -e 's/(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1\2********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
@@ -2022,19 +2044,26 @@ redact() {
     -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
     -e "s/(${wide_key})([[:space:]]*:[[:space:]]*\"?)(([A-Z][a-z]+)([\"\\,[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
+    -e "s#(^|[^A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{16,})#\\1${secretrun}\\2#g" \
+    -e "s#${secretrun}(([A-Z][a-z][a-z+/=_-]|Id|[a-z+/=_-])*([A-Z][a-z]?)?)([^A-Za-z0-9+/=_-]|\$)#\\1\\4#g" \
+    -e "s#${secretrun}([A-Z+/=_-]*)([^A-Za-z0-9+/=_-]|\$)#\\1\\2#g" \
+    -e "s#${secretrun}([0-9+/=_-]*)([^A-Za-z0-9+/=_-]|\$)#\\1\\2#g" \
     -e "s/${code_key}([:=][[:blank:]]*${v_shell})/\\1${keep}\\3/g" \
     -e "s/${code_key}(:[[:blank:]]*${v_builtin})/\\1${keep}\\3/g" \
-    -e "s/${code_key}(:[[:blank:]]*${v_dotted}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_dotted_self}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(:[[:blank:]]*${v_dotted_tail}${v_end})/\\1${keep}\\3/g" \
     -e "s/${code_key}(:[[:blank:]]*[-+=?]\\}(\"|[[:space:]]|\$))/\\1${keep}\\3/g" \
     -e "s/${code_key_np}(:[[:blank:]]*${v_annotation})/\\1${keep}\\6/g" \
-    -e "s/${code_key_np}(:[[:blank:]]*${v_call})/\\1${keep}\\6/g" \
+    -e "s#${code_key_np}(:[[:blank:]]*${v_call})#\\1${keep}\\6#g" \
     -e "s/(^|[^A-Za-z0-9_.-])(${up_name}(\\\\*\")?)=/\\1\\2${envname}=/g" \
     -e "s/${code_key}(=[[:blank:]]*${v_word})/\\1${keep}\\3/g" \
-    -e "s/${code_key}(=[[:blank:]]*${v_dotted}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_dotted_self}${v_end})/\\1${keep}\\3/g" \
+    -e "s/${code_key}(=[[:blank:]]*${v_dotted_tail}${v_end})/\\1${keep}\\3/g" \
     -e "s/${code_key}(=[[:blank:]]*${v_kwword}${v_end})/\\1${keep}\\3/g" \
-    -e "s/${code_key_np}(=[[:blank:]]*${v_call})/\\1${keep}\\6/g" \
-    -e "s/${code_key_np}(=[[:blank:]]*${v_multi}${v_end})/\\1${keep}\\6/g" \
+    -e "s#${code_key_np}(=[[:blank:]]*${v_call})#\\1${keep}\\6#g" \
+    -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
+    -e "s/${secretrun}//g" \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
     -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
     -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
