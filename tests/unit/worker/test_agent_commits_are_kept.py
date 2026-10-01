@@ -951,25 +951,38 @@ def test_an_added_line_that_reads_like_a_file_header_is_still_scanned():
         ("tests/unit/worker/helpers.py", True),
         ("test/fixture.go", True),
         ("web/src/__tests__/App.jsx", True),
-        ("pkg/parse/testdata/input.txt", True),
-        ("fixtures/sample.json", True),
         ("apps/swarm-api/tests/conftest.py", True),
         ("src/test_module.py", True),
+        ("src/app/test_settings.py", True),
+        ("tests/unit/control_plane/test_json_artifact_masking.py", True),
         ("test_top_level.py", True),
         ("pkg/parse/parse_test.go", True),
+        ("src/module_test.py", True),
         ("web/src/App.test.tsx", True),
         ("web/src/App.spec.ts", True),
         ("web/src/util.test.js", True),
         ("web/src/util.spec.jsx", True),
-        ("tests/fixtures/secrets.yaml", True),
+        ("web/src/App.test.py", True),
+        ("Tests/x.py", True),
+        ("src/TESTS/x.sh", True),
+        # Config and data files are strict everywhere, under tests/ too.
+        ("pkg/parse/testdata/input.txt", False),
+        ("fixtures/sample.json", False),
+        ("tests/fixtures/secrets.yaml", False),
+        ("tests/secrets.yaml", False),
+        ("tests/prod.env", False),
+        ("tests/service-account.json", False),
+        ("deploy/fixtures/prod.yaml", False),
+        ("testdata/aws_config", False),
+        ("tests/settings.toml", False),
+        ("tests/app.ini", False),
+        ("tests/Makefile", False),
         ("src/app.py", False),
         ("testing/helpers.py", False),
         ("contest/entry.py", False),
         ("src/latest/app.py", False),
         ("src/test.py", False),
         ("src/mytest_module.py", False),
-        ("src/module_test.py", False),
-        ("web/src/App.test.py", False),
         ("web/src/App.tests.ts", False),
         ("", False),
         # NEVER a test path, even under tests/: the files real credentials live in.
@@ -1066,7 +1079,6 @@ TEST_ONLY_ALLOWED = [
 def test_a_generic_match_in_a_test_path_passes_unless_credential_shaped(worker_factory, text):
     worker, _, _ = worker_factory()
     assert _rule_for(worker, "tests/unit/control_plane/test_json_artifact_masking.py", text) is None
-    assert _rule_for(worker, "fixtures/expected.json", text) is None
 
 
 @pytest.mark.parametrize(
@@ -1230,3 +1242,45 @@ def test_the_per_commit_scan_reads_a_test_files_path():
     in_src = f"+++ b/src/mask.py\n@@ -0,0 +1 @@\n+{line}\n"
     assert lifecycle._adds_a_credential(in_tests) is False
     assert lifecycle._adds_a_credential(in_src) is True
+
+
+def _akia() -> str:
+    """A real-shaped AWS access key id: AKIA and 16 random upper/digits, never
+    carrying a placeholder word by accident."""
+    while True:
+        tail = "".join(_RNG.choice(string.ascii_uppercase + string.digits) for _ in range(16))
+        if not lifecycle._PLACEHOLDER.search(tail):
+            return _shape("AK", "IA", tail)
+
+
+def test_no_real_shaped_aws_key_passes_under_tests():
+    """The reviewer measured 22.15% passing the entropy/digit judgement."""
+    from agent_worker.lifecycle import _credential_in
+
+    refused = sum(
+        _credential_in("tests/test_x.py", f"AWS_KEY = {_akia()!r}\n") is not None
+        for _ in range(200)
+    )
+    assert refused == 200
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        _shape("key = '", "AK", "IA", "IOSFODNN7", "EXAMPLE", "'\n"),
+        _shape("key = '", "gh", "p_", "x" * 36, "'\n"),
+        _shape("key = '", "AK", "IA", "A" * 16, "'\n"),
+    ],
+    ids=["aws-example", "github-xxxx", "repeated-character"],
+)
+def test_an_explicit_placeholder_vendor_token_passes_under_tests(worker_factory, text):
+    worker, _, _ = worker_factory()
+    assert _rule_for(worker, "tests/test_x.py", text) is None
+    assert _rule_for(worker, "src/app.py", text) is not None
+
+
+def test_a_placeholder_token_in_a_config_file_under_tests_is_refused(worker_factory):
+    worker, _, _ = worker_factory()
+    text = _shape("key: ", "AK", "IA", "IOSFODNN7", "EXAMPLE", "\n")
+    assert _rule_for(worker, "tests/secrets.yaml", text) is not None
+    assert _rule_for(worker, "tests/test_x.py", text) is None
