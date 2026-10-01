@@ -12255,7 +12255,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-mh { display: flex; justify-content: space-between; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-mh b { color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; }
 .sk-bar { height: 5px; border-radius: 3px; background: var(--line-soft); overflow: hidden; display: flex; }
-.sk-bar i { display: block; height: 100%; background: var(--sk-ac); }
+.sk-bar > i { display: block; height: 100%; background: var(--sk-ac); }
 .sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
 .sk-pfoot { border-top: 1px solid var(--line-soft); padding: 10px 16px 0; display: flex; flex-direction: column; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; }
@@ -12456,7 +12456,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .cap-mx b.cap-mx-zero { color: var(--s-warn); }
 .cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
 .cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 4px; }
-.cap-mx tr.is-open > * { background: var(--surface-2); }
+.cap-mx tr.is-open > td, .cap-mx tr.is-open > th { background: var(--surface-2); }
 .cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
 .cap-mx-lift { font-size: var(--t-meta); color: var(--text-dim); white-space: normal; }
 .cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
@@ -12477,7 +12477,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .acct-pane { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .acct-pane-empty { margin: 0; padding: 16px; border: 1px dashed var(--line-soft); border-radius: 10px; font-size: var(--t-meta); }
 .acct-pane-detail .acct-detail { border-radius: 10px; }
-table.accounts tr.is-chosen > * { background: var(--surface-2); }
+table.accounts tr.is-chosen > td, table.accounts tr.is-chosen > th { background: var(--surface-2); }
 table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 /* (Capacity rules go above this line.) */
 

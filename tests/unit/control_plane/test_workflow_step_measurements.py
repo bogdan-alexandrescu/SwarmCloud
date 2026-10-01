@@ -282,8 +282,15 @@ def test_the_step_node_reaches_its_inputs_and_outputs():
     # The drawer that route opens is the one whose tabs are the input and
     # output and the attempts: the router resolves `task/<id>` and
     # `task/<id>/attempts` to the same drawer.
-    router = body_of(src("App.tsx"), "function fromHash(")
+    router = body_of(src("App.tsx"), "export function fromAddress(")
     assert "tail[0] === 'task'" in router, "the router no longer opens the task drawer"
+    # REBRAND: the address has a real path, `/agents/<tab>/<id>`, and a pasted
+    # or reloaded path reads back to the address above (paths.ts), so the link
+    # still reaches the drawer from the address bar and not only from a click.
+    from_path = body_of(src("paths.ts"), "export function pathToAddress(")
+    assert "`work/task/${rest.join('/')}`" in from_path, (
+        "a reloaded `/agents/<tab>/<id>` no longer reads back to the task drawer"
+    )
 
 
 def test_every_step_figure_goes_through_measure():
@@ -636,92 +643,80 @@ def test_the_dag_fills_the_width_it_is_given():
 
 
 
+def _overview_grids() -> list[tuple[str, int, int]]:
+    """Each Overview grid as (class, panels it holds, tracks it has when widest).
+
+    THE OVERVIEW CHANGED SHAPE WITH THE REBRAND (2026-10-01) and the guarantee
+    this pair of tests holds did not: `.ov-grid` is TWO panels (Running, Spend)
+    in two tracks and `.ov-pair` is TWO panels (Waiting, Headroom) in two, so no
+    row ends with a panel alone and the old `.ov-headroom` span that managed a
+    three-in-two orphan is gone. What is read is the markup's panel count and
+    the sheet's track count, so adding a third panel to either grid -- the
+    change that brings the orphan back -- fails here until something spans it.
+    """
+    css = src("styles.css")
+    ov = src("Overview.tsx")
+
+    def panels(start: str, end: str) -> int:
+        assert start in ov and end in ov, f"{start} / {end} is not in Overview.tsx; the count would be vacuous"
+        block = ov[ov.index(start) : ov.index(end)]
+        return len(re.findall(r'<section className="ctl-card\b', block))
+
+    grid_tracks = re.search(r"\.ov-grid \{ grid-template-columns: repeat\((\d+), ", css)
+    pair_tracks = re.search(
+        r"\.ov-pair \{ grid-template-columns: ((?:minmax\(0, 1fr\) ?)+)\}", css
+    )
+    assert grid_tracks is not None, "`.ov-grid` declares no explicit track count"
+    assert pair_tracks is not None, "`.ov-pair` declares no explicit track count"
+    return [
+        ("ov-grid", panels('className="ov-grid"', 'className="ov-pair"'), int(grid_tracks.group(1))),
+        ("ov-pair", panels('className="ov-pair"', 'id="ov-failures"'), pair_tracks.group(1).count("minmax")),
+    ]
+
+
 def test_no_overview_row_ends_with_a_blank_right_column():
     """The property, not the grid that used to satisfy it.
 
-    IT WAS five panels in `.ov-cols` over two and three tracks, and the orphan
-    was managed with `:last-child:nth-child(odd)` and
-    `:last-child:nth-child(3n + 2)` parity rules. The landing page was then
-    rewritten -- `.ov-cols` and both parity rules are gone -- and this
-    assertion went red while the guarantee it exists for held perfectly:
-    `.ov-grid` is THREE panels over ONE breakpoint, and the one that would be
-    left alone in the second row is named and spans (`.ov-headroom`).
-
-    So what is asserted is the guarantee. For every grid on this page that
-    declares a fixed track count: the track count is EXPLICIT (an auto-fitting
-    list cannot be asked how many tracks it produced, so no rule below it can
-    be known to be correct), and if the panel count leaves an orphan in the
-    last row, some child is given a span.
-
-    READ FROM styles.css, where the Overview block lives since U8 folded the
-    `OVERVIEW_CSS` template literal into the sheet (design-system.md §9.5
-    asked for this test to be rewritten in the same change). The sheet has a
-    dozen `@media (min-width: 1280px)` blocks, so the breakpoint is found as
-    the one that sets `.ov-grid`'s tracks rather than as the first one.
+    For every Overview grid that declares a fixed track count: the track count
+    is EXPLICIT (an auto-fitting list cannot be asked how many tracks it
+    produced, so no rule below it can be known to be correct), the grid holds
+    panels, and if the panel count leaves an orphan in the last row some panel
+    is given a span in the sheet.
     """
     css = src("styles.css")
-
-    grids = re.findall(r"\n\.(ov-[a-z-]+) \{([^}]*)\}", css, re.S)
-    multi = [
-        (name, body)
-        for name, body in grids
-        if "display: grid" in body and f".{name} {{ grid-template-columns: repeat(" in css
-    ]
-    assert multi, "no Overview grid declares a fixed multi-track layout any more"
-
-    for name, body in multi:
-        # EXPLICIT TRACKS. This is the assertion the parity rules depended on
-        # and it is the one that still matters: `auto-fit` makes the number of
-        # tracks a runtime property of the container width, and nothing written
-        # in CSS can then know which panel lands last.
-        assert "auto-fit" not in body and "auto-fill" not in body, (
-            f".{name} fits its own tracks, so nothing knows which panel lands in "
-            f"the last row"
+    for name, count, tracks in _overview_grids():
+        body = re.search(rf"\n\.{name} \{{([^}}]*)\}}", css, re.S)
+        assert body is not None, f".{name} has no rule"
+        assert "auto-fit" not in css.split(f".{name} {{ grid-template-columns:")[1].split("}")[0], (
+            f".{name} fits its own tracks, so nothing knows which panel lands in the last row"
         )
-
-    # AND NO ORPHAN IS LEFT UNMANAGED. `.ov-grid` holds three panels over two
-    # tracks, so exactly one would sit alone; it spans. Asserted as a span
-    # existing inside the same breakpoint that sets the track count, because a
-    # span outside it would apply at the stacked width too, where it means
-    # nothing and hides the mistake.
-    two_track = next(
-        (
-            m for m in re.finditer(r"@media \(min-width: 1280px\) \{(.*?)\n\}", css, re.S)
-            if ".ov-grid {" in m.group(1)
-        ),
-        None,
-    )
-    assert two_track is not None, "the Overview grid has no two-track breakpoint"
-    assert ".ov-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }" in two_track.group(1)
-    assert "grid-column: 1 / -1" in two_track.group(1), (
-        "three panels in two tracks leaves one alone in the second row, and "
-        "nothing spans it, so the right column ends blank under a column that "
-        "is still going"
-    )
+        assert count >= 1, f".{name} holds no panels in Overview.tsx; the count is vacuous"
+        orphan = count % tracks != 0
+        spans = re.search(r"\.ov-(?:running|spend|waiting|headroom) \{ grid-column: 1 / -1", css)
+        assert not orphan or spans, (
+            f"{count} panels in {tracks} tracks leaves one alone in the last row of "
+            f".{name}, and nothing spans it, so the right column ends blank under a "
+            "column that is still going"
+        )
 
 
 def test_no_overview_panel_spans_tracks_from_an_inline_style():
     """An inline `gridColumn` shifts every rule below it invisibly.
 
-    RENAMED FROM `test_the_alarm_span_is_in_css_where_the_parity_rules_can_see_it`,
-    because the alarm span it was named after is deliberately gone: the
-    `has-alarm` class fed the old five-card grid's orphan handling, and
-    Overview.tsx says so where the count used to be computed -- "the grid
-    because three panels in two tracks has no orphan to manage".
-
-    What survives is the assertion that mattered, and it is the whole test now:
-    a track span lives in CSS where every other rule can be read against it.
-    An inline style is invisible to the stylesheet, so a panel spanning from
-    one silently invalidates every layout rule that follows.
+    A track span lives in CSS where every other rule can be read against it.
+    An inline style is invisible to the stylesheet, so a panel spanning from one
+    silently invalidates every layout rule that follows. Since the rebrand the
+    Overview's two grids hold two panels in two tracks, so no panel spans at
+    all -- which is only coherent while neither grid has an orphan, and that is
+    asserted here too, so deleting the span cannot be paired with a grid that
+    needs it.
     """
     ov = src("Overview.tsx")
     assert "gridColumn" not in ov, "a panel still spans tracks from an inline style"
-    # The span lives in the sheet now (U8 folded Overview's injected CSS into
-    # styles.css), which is where "every other rule can be read against it"
-    # was always pointing.
-    assert re.search(r"\.ov-headroom \{ grid-column:", src("styles.css")), (
-        "no panel spans tracks at all now; if that is deliberate, the grid must "
-        "have no orphan -- which is what the test above measures"
+    spans = re.search(r"\.ov-(?:running|spend|waiting|headroom) \{ grid-column:", src("styles.css"))
+    orphans = [name for name, count, tracks in _overview_grids() if count % tracks != 0]
+    assert spans or not orphans, (
+        f"no panel spans tracks, and {orphans} leaves a panel alone in its last row"
     )
 
 
