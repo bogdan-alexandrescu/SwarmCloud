@@ -94,6 +94,16 @@ describe('taskGroup: the Waiting tab split, by blockerGroup with the task units'
     // The control: the same limit-1 pool for a task it fits under is a wait.
     expect(taskGroup({ ...TOO_SMALL, resource_class: 'standard' }, 1)).toBe('no_room')
   })
+
+  it('files a task behind an over-ceiling (drift) pool under needs action', () => {
+    const drift = waiting({
+      id: 'tsk_driftpool',
+      blocked_by: [{ pool: 'global', reason: 'GLOBAL_LIMIT', limit: 4, active: 6 }],
+    })
+    expect(taskGroup(drift, 1)).toBe('needs_action')
+    // The control: at the ceiling exactly is full, and waiting is the answer.
+    expect(taskGroup(FULL, 1)).toBe('no_room')
+  })
 })
 
 describe('the Agents list splits Waiting into Needs action and No room', () => {
@@ -152,6 +162,9 @@ describe('poolGroup: the same rule, read off a pool', () => {
     expect(poolGroup(byName.get('resource:standard')!)).toBe('needs_action')
     expect(poolGroup(byName.get('runner:codex')!)).toBe('needs_action')
     expect(poolGroup(byName.get('global')!)).not.toBe('needs_action')
+    // Drift: active above the ceiling is not merely full.
+    expect(poolGroup(pool('global', { active: 6, effective_limit: 4, available: 0 }))).toBe('needs_action')
+    expect(poolGroup(pool('global', { active: 4, effective_limit: 4, available: 0 }))).not.toBe('needs_action')
     expect(poolGroup(byName.get('provider:anthropic')!)).not.toBe('needs_action')
     // Without the class weight a limit of 1 is not known to be too small.
     expect(poolGroup(byName.get('resource:browser')!, null)).not.toBe('needs_action')

@@ -143,10 +143,8 @@ describe('metadata and hypotheticals carry no state hue (CP-13)', () => {
     }
   })
 
-  it('draws a counterfactual effect in ink, not in the healthy hue', () => {
-    // MUTATION: `.cf-effect { color: var(--ok) }` back.
-    expect(declared(CSS, '.cf-effect', 'color')).toBe('var(--text)')
-  })
+  // The counterfactual effect's rule (`.cf-effect`) was deleted with the
+  // `+N if lifted` column that drew it: no source renders it (2026-10-01).
 })
 
 describe('the token-mix bar left no rules behind (#227)', () => {
@@ -231,7 +229,7 @@ describe('a healthy or factual mark carries no state hue (CH-17)', () => {
 describe('the last healthy greens are neutral, like the chip and the dot (CP-14, CH-17 follow-up)', () => {
   // THE FOLLOW-UP SETTLED ON #85, 2026-09-25. Three healthy-state greens were
   // in neither decision's text and are the same ruling: the pool card's track
-  // fill, the provider card's ok edge, and Accounts' success box heading
+  // fill, and Accounts' success box heading
   // together with the legacy `.tag.ok`. A healthy state is a fact, not a
   // verdict. Two greys, by kind: a mark or a fill (the track, the chip, the
   // dot) takes the primitives' `--text-faint` per CH-17; a WORD (the success
@@ -242,9 +240,8 @@ describe('the last healthy greens are neutral, like the chip and the dot (CP-14,
   // is shown red on its own: the heading would otherwise stop the block
   // before the tag's line ran.
   //
-  // MUTATION: `var(--ok)` back on the fill, the edge, the box's border, its
-  // tint, its heading or the tag; `--text-faint` on the heading or the tag;
-  // or the ok edge drawn as the unknown card's.
+  // MUTATION: `var(--ok)` back on the fill, the box's border, its tint, its
+  // heading or the tag; or `--text-faint` on the heading or the tag.
   const hosts: HTMLElement[] = []
   afterEach(() => {
     for (const h of hosts.splice(0)) h.remove()
@@ -252,11 +249,6 @@ describe('the last healthy greens are neutral, like the chip and the dot (CP-14,
 
   const HEALTHY: ReadonlyArray<{ what: string; selector: string; props: readonly string[] }> = [
     { what: "the pool card's healthy fill", selector: '.pool .ctl-track > i', props: ['background', 'background-color'] },
-    {
-      what: "the ok provider card's left edge",
-      selector: '.pool.prov.ok',
-      props: ['border-left-color', 'border-left', 'border-color', 'border'],
-    },
     { what: "the success box's edge", selector: '.state.acct-ok', props: ['border-color', 'border'] },
     { what: "the success box's fill", selector: '.state.acct-ok', props: ['background', 'background-color'] },
     { what: "the success box's heading", selector: '.state.acct-ok > h3', props: ['color'] },
@@ -294,18 +286,6 @@ describe('the last healthy greens are neutral, like the chip and the dot (CP-14,
     it(`draws the legacy ok tag in the word grey, --text-dim, in the ${theme} theme`, () => {
       const env = { width: 1440, theme }
       isGrey(painted(build('.tag.ok', hosts), 'color', env), '--text-dim', 'the ok tag')
-    })
-
-    it(`draws a healthy provider card's edge unlike an unknown one's, in the ${theme} theme`, () => {
-      // With the hue gone, a grey 3px rule on the ok card would be the unknown
-      // card's own rule (`.pool.prov.unknown`, 3px `--text-faint`): a provider
-      // nobody has read drawn as one that is fine. §6.7 draws no form for a
-      // healthy row, and `.source.ok` lost its rule for the same reason
-      // (CH-17), so the ok card keeps the card's plain edge.
-      const env = { width: 1440, theme }
-      expect(shapeOf(build('.pool.prov.ok', hosts), env), 'an ok and an unknown provider card share a silhouette').not.toBe(
-        shapeOf(build('.pool.prov.unknown', hosts), env),
-      )
     })
   }
 })

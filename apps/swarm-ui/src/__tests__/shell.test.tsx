@@ -1268,21 +1268,21 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 
     /**
      * A HEAD WITH TWO ROWS, IN EVERY PLACE A HELD RULE NAMES A HEAD CELL
-     * (#223's review). Four of them:
+     * (#223's review). Three of them:
      *  - Tenants', as drawn: the name's head spans both rows, so the first
      *    cell of the second row is `Max active`;
      *  - one that opens with a group spanning the name column, so the head's
      *    first cell spans two columns and is the head of no one column;
-     *  - Pools' family table and Profile headroom's table (CP-18), which below
-     *    900px restate the held ceiling on their head's first cell because
-     *    CP-18's own percentage widths out-rank it -- the restatement is a held
-     *    rule too, and it must name the same one corner.
+     *  - Pools' family table (CP-18), which below 900px restates the held
+     *    ceiling on its head's first cell because CP-18's own percentage widths
+     *    out-rank it -- the restatement is a held rule too, and it must name
+     *    the same one corner.
      * At 390 each is scrolling with its name column held: only a corner that is
      * the first row's first cell AND one column wide is held, carries the held
      * width, and paints. Every other head cell is not sticky, takes no held
      * width, and paints nothing. At 1440 nothing is held and nothing paints.
      *
-     * MUTATION: widen the held rule's head branch, the corner's rule, or either
+     * MUTATION: widen the held rule's head branch, the corner's rule, or the
      * CP-18 restatement back to every head row (`thead > tr > th:first-child`),
      * or drop `:not([colspan])` from any of them.
      */
@@ -1298,17 +1298,12 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
         '<div class="cap-families"><div class="ctl-table is-scroll"><table><thead>' +
         '<tr><th scope="col" rowspan="2">Family</th><th scope="colgroup" colspan="2" class="is-num">Units</th></tr>' +
         '<tr><th scope="col" class="is-num">In use</th><th scope="col" class="is-num">Ceiling</th></tr>' +
-        '</thead><tbody><tr><th scope="row">global</th><td class="is-num">3</td><td class="is-num">8</td></tr></tbody></table></div></div>' +
-        '<section class="section panel"><dl class="kv"><dt>weight</dt><dd>1</dd></dl><div class="table-wrap is-scroll">' +
-        '<table class="pools"><thead>' +
-        '<tr><th scope="col" rowspan="2">Headroom</th><th scope="colgroup" colspan="2" class="n">Units</th></tr>' +
-        '<tr><th scope="col" class="n">Free</th><th scope="col" class="n">Held</th></tr>' +
-        '</thead><tbody><tr><th scope="row">global</th><td class="n">5</td><td class="n">3</td></tr></tbody></table></div></section>'
+        '</thead><tbody><tr><th scope="row">global</th><td class="is-num">3</td><td class="is-num">8</td></tr></tbody></table></div></div>'
       document.body.appendChild(host)
       try {
-        expect(host.querySelectorAll('thead').length).toBe(4)
-        expect(host.querySelectorAll('thead > tr:nth-child(2)').length, 'a fixture head lost its second row').toBe(4)
-        const CORNERS = ['Tenant', 'Family', 'Headroom']
+        expect(host.querySelectorAll('thead').length).toBe(3)
+        expect(host.querySelectorAll('thead > tr:nth-child(2)').length, 'a fixture head lost its second row').toBe(3)
+        const CORNERS = ['Tenant', 'Family']
         const HELD = /min\(45vw,\s*20ch\)/
         let asked = 0
         let held = 0
@@ -1342,8 +1337,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
             }
           }
         }
-        expect(asked).toBe(THEMES.length * WIDTHS.length * 17)
-        // Three real corners, at 390 only, in each theme; the spanning group is not one.
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 13)
+        // Two real corners, at 390 only, in each theme; the spanning group is not one.
         expect(held).toBe(THEMES.length * CORNERS.length)
       } finally {
         host.remove()
@@ -1931,22 +1926,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(basis?.value, 'the message has to wrap under the field, not widen the cell').toMatch(/(^|\s)100%$/)
   })
 
-  it('AH-19: Pool limits\' operand figures align right in a fixed tabular track', () => {
-    // MUTATION: drop the operand grid, or lower it to (0,3,0) so the
-    // primitive's flex row wins by order.
-    const f = fragment(
-      '<ul class="ctl-facts is-rows adm-operands"><li class="ctl-fact"><b>anthropic · u-bogdan</b>25</li></ul>',
-    )
-    const li = pick(f, 'li')
-    expect(won(li, 'display', WIDE)).toBe('grid')
-    const template = won(li, 'grid-template-columns', WIDE) ?? ''
-    const last = splitTop(template, ' ').at(-1)
-    expect(ch(last), `the figure track is ${last}; it must be a fixed width in characters`).toBeGreaterThanOrEqual(6)
-    expect(won(li, 'justify-items', WIDE)).toBe('end')
-    expect(won(li, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
-    expect(won(pick(f, 'b'), 'justify-self', WIDE), 'the key stays left').toBe('start')
-  })
-
   it('AH-18: a Help topic is a row of its region, and the deep-linked one takes the selection treatment', () => {
     // §13.3: a region is `.section`, and what repeats inside it draws nothing.
     // Every topic was a bordered, filled, rounded panel written inline.
@@ -2274,7 +2253,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="sbf-go">Send</button>' +
-        '<div class="wfb-step"><button class="sbf-offer">url</button></div>' +
         '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
         '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
         '</div>',
@@ -2289,7 +2267,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '.limit-edit button',
       '.ol-table-toggle',
       '.sbf-go',
-      '.wfb-step .sbf-offer',
     ]) {
       expect(px(won(pick(f, sel), 'min-height', PHONE)), `${sel} at 390`).toBeGreaterThanOrEqual(44)
     }
@@ -2431,15 +2408,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     }
   })
 
-  it('TS-7: an offer inside a workflow step is a step off the step card', () => {
-    // MUTATION: drop the `--surface` fill from `.wfb-step .sbf-offer`.
-    const f = fragment('<div class="app"><div class="wfb-step"><button class="sbf-offer">url</button></div></div>')
-    const card = won(pick(f, '.wfb-step'), ['background', 'background-color'], WIDE)
-    const offer = won(pick(f, '.sbf-offer'), ['background', 'background-color'], WIDE)
-    expect(card).not.toBeNull()
-    expect(offer, 'the offer is painted in its own card\'s fill, at zero contrast').not.toBe(card)
-  })
-
   it('TS-13: the submit form selects without the accent and spends none on emphasis', () => {
     // MUTATION: the blue border/tint back on `.is-on`, the count back to
     // `--info`, or the consequence rule back to `--info`.
@@ -2487,17 +2455,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // deleted with it -- the ledger draws only work that ended. TS-22's rule
     // is held here for the pairs that remain: the Workflows row's segments and
     // the ledger's keys share one declaration each.
-    // MUTATION: give a key its own fill again.
-    const f = fragment(
-      '<span class="wf-meter"><i class="wf-seg failed"></i><i class="wf-seg cancelled"></i></span>' +
-        '<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>',
-    )
-    const cancelled = won(pick(f, '.wf-seg.cancelled'), ['background', 'background-image'], WIDE)
-    expect(cancelled).toMatch(/gradient/)
-    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toBe(cancelled)
-    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toBe(
-      won(pick(f, '.wf-seg.failed'), ['background', 'background-color'], WIDE),
-    )
+    // The Workflows row's segments (`.wf-meter > .wf-seg`) were deleted with the
+    // row that drew them (2026-10-01: no source rendered `.wf-meter` any more),
+    // so the ledger's keys are held to the fills they drew from them.
+    // MUTATION: drop a key's fill.
+    const f = fragment('<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>')
+    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toMatch(/gradient/)
+    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toContain('var(--')
   })
 
   it('TS-24: the dependency disclosure has a marker, a hover and a focus ring', () => {
@@ -2513,26 +2477,17 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(shut!, 'outline', { ...WIDE, states: ['focus-visible'] }) ?? '', 'no focus ring').toContain('var(--info)')
   })
 
-  it('CP-18: the family tables and the profile tables each share one set of columns', () => {
+  it('CP-18: the family tables share one set of columns', () => {
     // `table-layout: fixed` takes the widths from the head row, which is the
     // same in every table of a screen, so the columns line up down the page.
-    // MUTATION: drop `table-layout: fixed`, or the head widths, from either.
+    // MUTATION: drop `table-layout: fixed`, or the head widths.
     const pools = fragment(
       '<div class="cap-families"><div class="ctl-card"><div class="ctl-card-body"><div class="ctl-table is-stacked"><table>' +
         '<thead><tr><th>Pool</th><th class="is-num">In use (units)</th></tr></thead></table></div></div></div></div>',
     )
-    const profiles = fragment(
-      '<section class="section panel"><dl class="kv"></dl><div class="table-wrap is-stacked"><table class="pools">' +
-        '<thead><tr><th>Pool it must clear</th><th>Scope</th><th class="n">Units free</th></tr></thead></table></div></section>',
-    )
-    for (const [label, host, num] of [
-      ['Pools', pools, 'th.is-num'],
-      ['Profile headroom', profiles, 'th.n'],
-    ] as const) {
-      expect(won(pick(host, 'table'), 'table-layout', WIDE), label).toBe('fixed')
-      expect(won(pick(host, 'th'), 'width', WIDE), `${label}: the name column`).toMatch(/%$/)
-      expect(won(pick(host, num), 'width', WIDE), `${label}: a figure column`).toMatch(/%$/)
-    }
+    expect(won(pick(pools, 'table'), 'table-layout', WIDE), 'Pools').toBe('fixed')
+    expect(won(pick(pools, 'th'), 'width', WIDE), 'Pools: the name column').toMatch(/%$/)
+    expect(won(pick(pools, 'th.is-num'), 'width', WIDE), 'Pools: a figure column').toMatch(/%$/)
   })
 
   it('CP-19: the fields in an open account take the panel\'s width', () => {
@@ -2587,13 +2542,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, 'div'), 'width', WIDE)).toBe('max-content')
   })
 
-  it('WF-16: the flags column is reserved on every row, and a mix chip is whole or absent', () => {
-    // MUTATION: `[flags] minmax(0, auto)` back.
-    const f = fragment('<button class="wf-bar"></button><span class="wf-mix"><span class="wf-chip">mock</span></span>')
-    const flags = trackAfter(won(pick(f, '.wf-bar'), 'grid-template-columns', WIDE), 'flags')
-    expect(flags, 'a content-sized flags track takes width from the name on the rows that have a flag').not.toMatch(
-      /auto|content/,
-    )
+  it('WF-16: a mix chip is whole or absent', () => {
+    // The flags-column half of WF-16 went with `.wf-bar`, the board row whose
+    // grid it held: no source renders that row any more (2026-10-01).
+    const f = fragment('<span class="wf-mix"><span class="wf-chip">mock</span></span>')
     // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
     // mid-word; or drop the one-chip height that hides the second line.
     const mix = pick(f, '.wf-mix')

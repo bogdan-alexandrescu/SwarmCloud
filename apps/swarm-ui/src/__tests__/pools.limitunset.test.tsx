@@ -9,16 +9,17 @@
 // edit field with the text "null".
 //
 // MUTATION: drop the `unset` branch in Capacity's `classifyPool`, or the
-// `unset` operand in AdminSettings' `arithmetic`. The chip, the ceiling cell
+// editor's empty-field handling in AdminSettings. The chip, the ceiling cell
 // or the editor's field then falls back to `ok`, `0` or "null", and the case
-// below that reads it fails by name.
+// below that reads it fails by name. (The per-profile card that drew `no limit
+// set` as a profile's ceiling was removed, owner decision 2026-10-01.)
 //
 // The pool card and the Headroom column this file once also read were removed
 // with the Capacity redesign; the table row's Ceiling and Use cells carry the
 // same facts now.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { Capacity, Pool, RunnerProfile } from '../types'
@@ -105,24 +106,14 @@ describe('Capacity draws a pool with no limit set as that, not as ok or limit 0'
 })
 
 describe('Pool limits draws a pool with no limit set as that, not as 0 agents', () => {
-  it('says the profile has no limit set rather than computing a ceiling', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<AdminSettingsScreen />)
-    const title = await screen.findByText('claude-code', { selector: '.ctl-card-title' }, WAIT)
-    const card = title.closest('.ctl-card') as HTMLElement
-    expect(card.querySelector('.ctl-figure')!.textContent).toContain('no limit set')
-    expect(card.querySelector('.ctl-figure')!.textContent).not.toMatch(/\d/)
-    const operand = card.querySelector('li[title="tenant:eng"]') as HTMLElement
-    expect(operand.className).toContain('is-binding')
-    expect(operand.querySelector('.adm-value')!.textContent).toBe('no limit set')
-    expect(card.querySelector('.ctl-card-foot')!.textContent).toContain('no limit set')
-  })
-
   it('opens the editor on an empty field, not "null", and will not save an empty field as 0', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await screen.findByText('claude-code', { selector: '.ctl-card-title' }, WAIT)
-    const row = document.getElementById('limit-tenant:eng') as HTMLElement
+    const row = await waitFor(() => {
+      const el = document.getElementById('limit-tenant:eng')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    }, WAIT)
     expect(row.querySelector('.adm-ceiling')!.textContent).toBe('no limit set')
     fireEvent.click(row.querySelector('button[aria-label^="Edit ceiling for tenant:eng"]') as HTMLElement)
     const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement

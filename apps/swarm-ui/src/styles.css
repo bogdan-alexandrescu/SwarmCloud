@@ -680,8 +680,6 @@ body {
    the font size. */
 .sub,
 .state p,
-.ctl-section-q,
-.ctl-ref-lead,
 .ctl-empty > p,
 .node-why,
 .muted.small,
@@ -692,7 +690,7 @@ body {
 .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 4px; }
 /* 650 -> 600: sec 2 says weight moves 400 -> 500 -> 600 and stops, and the h1
    was the one rule in the sheet that went past its own ladder. */
-.head h1 { font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; margin: 0; letter-spacing: -0.01em; }
+.head h1 { font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; margin: 0; }
 /* `.head .env` USED TO LIVE HERE and is deleted with its markup. It rendered a
    hardcoded "dev" beside every screen title -- a word nothing in this app had
    measured, repeated on sixteen screens. The environment is drawn once now, by
@@ -1421,14 +1419,12 @@ body {
    workflow is named, so it stays in the document outline -- and the button
    inside it turns the uppercase back off for its own contents. B17's rule on
    `.id` is what keeps the id lowercase regardless. */
-.wf-h { margin: 0; position: relative; }
 /* THE ROW'S WIDTH, FOR THE ROW. `.wf-bar` cannot ask a container query about
    itself, and the heading around it is exactly as wide (the button is
    `width: 100%`, and the heading has no padding), so the heading is the
    container `[progress]`'s floor is chosen by (#223). A card is a stretched
    item of the board's column, so the heading's width never came from its
    contents, and inline-size containment changes nothing else about it. */
-.wf-card > .wf-h { container: wf-row / inline-size; }
 /* ONE `grid-template-columns` WITH NAMED LINES, AND THE BREAKPOINTS REDEFINE
    ONLY THAT ONE DECLARATION (§6.8). Hetzner writes every list this way; the
    value is that a column's job is readable in the template itself rather than
@@ -1444,139 +1440,19 @@ body {
    looking for -- 24px in from the row's own edge, so ten rows had ten ragged
    starts. An 8px state mark is a far better use of that column: it is the one
    field that is legible at a glance without being read. */
-.wf-bar {
-  width: 100%;
-  display: grid;
-  grid-template-columns:
-    [state] 10px
-    [name] minmax(0, 1.3fr)
-    /* `state not derived` -- what an underived read prints instead of a state
-       -- is 123px, and a 92px track cut it to "state not deri…". The one
-       string this column exists to carry honestly was the one it truncated. */
-    [word] max-content
-    /* 1.2fr gave the progress column ~135px against "1/5 done · 1 not started"
-       needing 173px, so it ellipsed to "1/5 done · 1 not st…" -- and what the
-       ellipsis ate was the COUNT OF WHAT HAS NOT STARTED, which is the half of
-       the sentence a reader is scanning for. The floor was raised from 18ch to
-       24ch to hold that form, AND IT DID NOT (#222, measured 2026-09-26):
-       24ch of the row's own 13px sans is 196.5px at 1440, and the track also
-       holds the 54px meter and its 8px gap, so the sentence got 134.5px. While
-       the text was `flex: 0 0 auto` that did not show as a cut -- the sentence
-       painted over `[shape]` instead, by 26.9px for the 173px form -- and once
-       it was contained (`.wf-progress-text`) every census with a tail ended in
-       an ellipsis at 1440.
-
-       33ch HOLDS THE TWO-DIGIT RUNNING FORM, IN A ROW AT LEAST 620px WIDE
-       (owner decisions 2026-09-26, on #223). 33ch is 270.2px; less the meter
-       and its gap it leaves the sentence 208.2px, and "12/30 done · 18 not
-       started" -- 27 characters of the 12px mono -- needs 195px. Measured in
-       Chrome 153 against this sheet at a 1150px row (the 1440 work column):
-       "1/5 done · 1 not started" 173 of 173px and "12/30 done · 18 not
-       started" 195 of 195px are whole; "10/30 done · 1 failed · 19
-       cancelled" shows 208 of its 260px. THE COST, at every row from 800 to
-       1150px: `[name]`, `[shape]` and `[mix]` are 29.0, 20.1 and 24.6px
-       narrower than at 24ch (12.9, 8.9 and 10.9 than at 29ch). At 1150 that
-       is 150.7, 104.4 and 127.5px, so a 22-character workflow id (180px)
-       shows 151px of itself and ends in an ellipsis, whole in its `title`;
-       at 24ch it was whole.
-
-       BELOW 620px THE FLOOR IS 12ch (98.25px). The work column gets that
-       narrow at 1440 only with the inspector open beside it, where a 33ch
-       floor ran the row's grid past its right edge. The switch is a container
-       query on the row's own width (`.wf-h` is the `wf-row` container, just
-       below), and it changes only this floor, through
-       `--wf-progress-floor`: 12ch is the fallback here, 33ch is set by the
-       `@container` rule. Measured in Chrome, the caret stays inside the row
-       down to these widths, with an age of "23h ago" / "just now": `running`
-       445 / 455px, `succeeded` 460 / 465, `dead_lettered` 490 / 495, `state
-       not derived` 520 / 525. JUST PAST THE SWITCH the 33ch floor is too wide
-       for a long word: from 620px the caret is outside until 630 / 640px for
-       `succeeded`, 660 / 670 for `dead_lettered` and 690 / 695 for `state not
-       derived` (and at exactly 620 for `running` with "just now"). There
-       `.wf-bar`'s `overflow: hidden` is the last resort, and the caret is
-       clipped rather than painted outside.
-
-       The containment on `.wf-progress-text` stays for every census the
-       floor does not hold, and the open card states the whole census as a
-       fact (`.wf-census`), so a cut sentence reads whole without a pointer.
-       workflow.board.test.tsx holds the floor against the two-digit running
-       form at 1150 and the 12ch floor, and a running row's caret, at 480. */
-    [progress] minmax(var(--wf-progress-floor, 12ch), 1.2fr)
-    [shape] minmax(0, 0.9fr)
-    [mix] minmax(0, 1.1fr)
-    [spend] 96px
-    /* `[started]` (#376) is added between here and `[age]` only in a row at
-       least 720px wide -- the `@container wf-row` rule below. One more track
-       is one more column gap, and at a 620px row that gap alone put the caret
-       7px outside the row (workflow.board.test.tsx). */
-    [age] max-content
-    /* RESERVED, NOT CONTENT-SIZED (WF-16). `minmax(0, auto)` sized this track
-       per row to whatever the row carried, and each row is its own grid -- so
-       the one row with `cancel requested` in it took ~140px out of the fr
-       tracks and its id ellipsed at 1440 while the rows around it did not.
-       140px is that tag, the only flag this column draws: 16 characters of
-       --t-meta mono (~125px) plus the tag's 12px of padding and 2px of border.
-       Every row keeps it whether it has a flag or not, which is §14's rule:
-       an absent thing occupies the space it would have occupied. */
-    [flags] minmax(0, 140px)
-    [actions] 16px;
-  align-items: center; gap: var(--ctl-s3);
-  text-align: left; text-transform: none; letter-spacing: normal;
-  color: var(--text); font-family: var(--font); font-size: var(--t-meta);
-  line-height: var(--lh-meta); font-weight: 400;
-  background: var(--surface); border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm); padding: var(--ctl-s2) var(--ctl-s3);
-  /* THE ROW CLIPS AT ITS OWN BORDER (#223), AS A LAST RESORT (owner
-     decision 2026-09-26). The first defence is the floor giving way in a
-     narrow row (`[progress]`, above): the work column gets narrow when the
-     inspector is open beside it (from 1100px up it is a column of its own,
-     480px and resizable), and there a fixed floor ran the grid past the
-     row's right edge, the flags and the caret painted outside the box. What
-     still overflows -- a row narrower than its fixed tracks, or a long state
-     word just past the 620px switch, both measured in the note above -- is
-     clipped here rather than painted outside. The row's own focus ring is an
-     outline, which its overflow does not clip. workflow.board.test.tsx holds
-     it at every template's width. */
-  overflow: hidden;
-  cursor: pointer;
-  transition: border-color var(--ctl-dur) ease;
-}
 /* THE WIDE FLOOR, WHERE THE ROW HAS ROOM FOR IT: the `[progress]` note in
    the template above. A container query, not a media query, because what
    narrows the row at 1440 is the inspector opening beside the board, and no
    media query fires for that. */
-@container wf-row (min-width: 620px) {
-  .wf-bar { --wf-progress-floor: 33ch; }
-}
 /* THE WORKFLOW'S START (#376), where the row has room for it: the template
    above with one track more, `[started]`, the start derived from the earliest
    step over the submit time. A 0 floor, so it is the track that yields first;
    the open card states both whole at every width. Every other track is the
    template above's -- change one, change both. */
-@container wf-row (min-width: 720px) {
-  .wf-bar {
-    grid-template-columns:
-      [state] 10px
-      [name] minmax(0, 1.3fr)
-      [word] max-content
-      [progress] minmax(var(--wf-progress-floor, 12ch), 1.2fr)
-      [shape] minmax(0, 0.9fr)
-      [mix] minmax(0, 1.1fr)
-      [spend] 96px
-      [started] minmax(0, max-content)
-      [age] max-content
-      [flags] minmax(0, 140px)
-      [actions] 16px;
-  }
-  .wf-bar .wf-started { display: flex; }
-}
 /* HUELESS ON HOVER (§1.3). The accent already carries the link colour, the
    focus ring and a live state on this same row; spending it on "the cursor is
    over this" as well is what made blue stop meaning anything. A boundary that
    steps from --line to --text-faint is just as legible and costs no hue. */
-.wf-bar:hover { border-color: var(--text-faint); }
-.wf-bar:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.wf-card.is-open .wf-bar { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
 /* `[actions]`. Its own column at the right edge, right-aligned so the caret
    sits on the row's edge rather than floating in a 16px box. */
 .wf-caret {
@@ -1584,19 +1460,10 @@ body {
   color: var(--text-faint);
   font-size: var(--t-micro); line-height: var(--lh-micro);
 }
-.wf-bar .id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* `[name]` IS THE LABEL OVER THE ID (#330). One cell, two lines: the spec's
    label in the row's own ink leads, and the id -- still whole in its title --
    drops to a second line in the faint micro mono every secondary fact on the
    row uses. With no label the cell is the id alone, one line, as before. */
-.wf-name { display: flex; flex-direction: column; min-width: 0; }
-.wf-label {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font-weight: 600; color: var(--text);
-}
-.wf-name.has-label > .id {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
-}
 /* THE ROW'S PULL REQUEST (#330). A sibling of `.wf-bar`, never inside it (an
    anchor in a button is invalid), laid over the right end of the reserved
    `[flags]` track: past the caret's 16px column, the grid gap and the bar's
@@ -1604,13 +1471,6 @@ body {
    one, so a `cancel requested` tag ellipses rather than running under it.
    Hidden with `[flags]` below 900px; the open card states it as a fact there.
    `.wf-h` is its containing block (`position: relative` on the rule above). */
-.wf-pr {
-  position: absolute; top: 50%; transform: translateY(-50%);
-  right: calc(var(--ctl-s3) * 2 + 16px + 1px);
-  max-width: 10ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-}
-.wf-card.has-pr .wf-flags { padding-right: 10ch; }
 /* WEIGHT 500, NOT 600. The id beside it is the datum and outranks it; a state
    word set heavier than the identity it qualifies inverts the hierarchy (§2).
    The mark at `[state]` is what makes it scannable, not the weight. */
@@ -1633,7 +1493,6 @@ body {
    clip then guarantees nothing inside it -- the census sentence or the 54px
    meter -- paints into `[shape]`, at any width, whatever the template gives
    the track. `.wf-progress-text` below is what gives way first. */
-.wf-progress { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow: hidden; }
 /* A FILLED METER IS A CLAIM THAT THE NUMBERS BEHIND IT ARE A CENSUS. When the
    server reports an incomplete rollup, `.wf-meter-fill` IS NOT RENDERED -- the
    React branch does not draw it -- because a two-thirds-full bar over a failed
@@ -1658,7 +1517,6 @@ body {
        coloured for being healthy (§6.7): a board of green bars spends the
        eye's whole severity budget on the workflows that are fine. (It was
        `--info` by exemption until the owner's 2026-09-24 decision in §6.4.) */
-.wf-meter { flex: none; width: 54px; }
 /* A FINISHED ROW'S OUTCOME COMPOSITION (WF-1, settled on #83, 2026-09-25).
    A terminal row draws one `.wf-seg` per outcome in this same track, each its
    share of the steps, instead of a progress fill (`Progress` in
@@ -1670,7 +1528,6 @@ body {
    §6.4 decision and CH-17 keep free of healthy hue -- a finished run is a
    fact, not a verdict. Solid, full height, so it stays a different shape from
    the flat bars in greyscale. */
-.wf-meter > .wf-seg.succeeded { background: var(--text-dim); }
 /* A FAILED STEP IS NEVER NARROWER THAN ITS OWN CUT (review of #183). TS-4's
    failed form draws its 2px `--surface` cut INSIDE the segment, and the
    meter's content is 51px (54, less the 3px axis, under border-box), so one
@@ -1683,40 +1540,6 @@ body {
    succeeded and cancelled paint from their first pixel.
    `workflow.board.test.tsx` "one failed or dead-lettered step of thirty"
    computes the painted width from this sheet. */
-.wf-meter > .wf-seg.failed,
-.wf-meter > .wf-seg.dead-lettered { min-width: 4px; }
-.wf-progress-text {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
-  /* THE SENTENCE GIVES WAY, AND SAYS SO WHERE IT IS CUT (#222). This was
-     `flex: 0 0 auto`, on the argument that the grid column was wide enough
-     and that the shape and mix columns, being `fr`, would give way instead if
-     anything had to. They cannot: every `.wf-bar` is its own grid, and a grid
-     does not widen a track for an item that overflows it -- the item paints
-     over the next track. On dev at release 350c244, at 1440, "10/30 done · 1
-     failed · 19 cancelled" (36 characters of 12px mono, about 260px) painted
-     over the stage shape beside it: `[progress]` was `minmax(24ch, 1.2fr)`,
-     24ch of the row's own 13px sans, and the 54px meter and its gap take 62px
-     of that. The ellipsis here never fired, because a box as wide as its
-     content has nothing to cut.
-
-     So the text shrinks (`flex: 0 1 auto` with `min-width: 0`) and ends in an
-     ellipsis on one line -- §6.8: a row's cells do not wrap, which is what
-     keeps its height constant -- and `.wf-progress` clips at its track. The
-     whole sentence is in the text's `title` (Workflows.tsx `Progress`), the
-     meter's accessible name gives the same counts in words, and the open
-     card states it whole as a fact (`.wf-census`), which is the route that
-     needs no pointer (§7.3: cut on screen, whole somewhere a reader can get
-     to). At 1440 the sentence gets 208.2px since `[progress]`'s floor went
-     to 33ch in a row at least 620px wide (the note in the template above):
-     the running forms, "12/30 done · 18 not started" (195px, measured) and
-     shorter, are whole, and a failed or cancelled clause -- up to 260px -- is
-     still cut, as is every census in a row under 620px. The containment
-     stays for exactly that. workflow.board.test.tsx
-     holds it at every width the sentence is drawn. */
-  flex: 0 1 auto;
-  min-width: 0;
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
 /* NO STRIKE-THROUGH. Struck text says "this figure is wrong"; what an
    underived rollup means is "the census behind this figure was not taken",
    and the step count beside it was read from an array and is correct. The
@@ -1728,8 +1551,6 @@ body {
    CELL on a phone -- the strongest available way of saying "nothing is wrong
    here". The hatched track above does not drop, at any width, and it says the
    same thing without a word in it. */
-.wf-progress.untrusted { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
-.wf-progress.untrusted .wf-progress-text { color: var(--warn); }
 
 /* INVENTORY F11 -- THE ONE GENUINE ESCAPE IN THE BASELINE SET.
    `.wf-shape-text` was `white-space: nowrap` with nothing to contain it, inside
@@ -1805,28 +1626,11 @@ body {
 /* #376: the workflow's start over its submit time. The start is in the row's
    ink; the submit is the age column's faint micro. */
 /* Not drawn below a 720px row, which has no `[started]` track (above). */
-.wf-started {
-  display: none; flex-direction: column; align-items: flex-end; min-width: 0; overflow: hidden;
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
-  white-space: nowrap; font-variant-numeric: tabular-nums;
-}
-.wf-started-sub { color: var(--text-faint); }
 .wf-times { margin-bottom: var(--ctl-s2); }
 
-.wf-when {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint);
-  /* 56px against "just now" at 58px: a two-pixel clip that took the last
-     glyph off the most-read age on the board. The column is content-sized
-     now rather than guessed. */
-  white-space: nowrap; text-align: right;
-}
 /* The reserved track is a ceiling as well as a floor, so what is inside it
    ellipses at the edge instead of painting into `[actions]`. */
-.wf-flags { display: flex; justify-content: flex-end; min-width: 0; overflow: hidden; }
-.wf-flags > .tag { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* `chains only` (#330), beside the mode control in the board's chrome. */
-.wf-chains { display: inline-flex; align-items: center; gap: var(--ctl-s2); }
-.wf-chains > label { display: inline-flex; align-items: center; gap: var(--ctl-s1); cursor: pointer; }
 
 /* THE TWO FACT STRIPS IN AN OPEN CARD, and between them they replaced four
    paragraphs totalling 72 words (§6.13).
@@ -2554,19 +2358,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
      does not: `.ctl-dot`'s default is a hollow ring and `.is-underived` is a
      ring with a bar through it, so the two absences stay apart at 390px with
      no word at all. */
-  .wf-bar {
-    grid-template-columns:
-      [state] 10px
-      [name] minmax(0, 1fr)
-      [progress] 54px
-      [shape] 72px
-      [actions] 16px;
-    gap: var(--ctl-s2);
-    /* 44px touch target (§7.2). The type does not grow with it -- a row that
-       is easier to hit is not a row that needs bigger text. */
-    min-height: 44px;
-  }
-  .wf-state, .wf-mix, .wf-spend, .wf-started, .wf-when, .wf-flags, .wf-progress-text, .wf-pr { display: none; }
+  .wf-state, .wf-mix, .wf-spend { display: none; }
   /* The open body loses the chrome padding it does not have room for; the
      canvas inside it keeps its own computed width and scrolls, and is NOT
      scaled to fit. Scaling a twenty-step graph onto a 358px column turns
@@ -2578,17 +2370,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
 @media (min-width: 561px) and (max-width: 900px) {
   /* Tablet. The mix and the spend go; the state word and the age come back,
      because at this width `[name]` no longer needs every spare pixel. */
-  .wf-bar {
-    grid-template-columns:
-      [state] 10px
-      [name] minmax(0, 1.4fr)
-      [word] 88px
-      [progress] minmax(0, 1fr)
-      [shape] minmax(0, 0.8fr)
-      [age] 56px
-      [actions] 16px;
-  }
-  .wf-mix, .wf-spend, .wf-started, .wf-flags, .wf-pr { display: none; }
+  .wf-mix, .wf-spend { display: none; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2619,11 +2401,9 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    Amber and an explicit word carry it instead, which is what every other
    unconfirmed reading on this platform already does. The count itself is never
    given this class; see `.wf-size` and `censusLine` in Workflows.tsx. */
-.rollup.untrusted,
-.rollup .unconfirmed {
+.rollup.untrusted {
   color: var(--warn);
 }
-.rollup .unconfirmed { border-bottom: 1px dotted color-mix(in srgb, var(--warn) 55%, transparent); }
 
 /* An unread state is NOT a muted state. Dashed, amber, and it says so in the
    node -- the one thing it must never be mistaken for is "idle". */
@@ -2843,19 +2623,6 @@ table.pools thead th {
   color: var(--text-faint);
 }
 table.pools .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
-/* PROFILE HEADROOM'S TABLES SHARE ONE SET OF COLUMNS (CP-18), for the reason
-   `.cap-families` gives: one table per runner profile, one schema, and each
-   sized its own columns, so the columns zigzagged from profile to profile.
-   The selector is structural because the markup names no screen class: the
-   table that follows a profile's `dl.kv` facts inside its panel. Fixed layout
-   with the widths on the head row -- the pool a third, each figure an eighth,
-   scope and status splitting the rest -- and cells allowed to wrap, since a
-   fixed column no longer grows to fit its content. */
-.section.panel > dl.kv + .table-wrap > table.pools { table-layout: fixed; }
-.section.panel > dl.kv + .table-wrap > table.pools > thead th:first-child { width: 33%; }
-.section.panel > dl.kv + .table-wrap > table.pools > thead th.n { width: 12.5%; }
-.section.panel > dl.kv + .table-wrap > table.pools th,
-.section.panel > dl.kv + .table-wrap > table.pools td { white-space: normal; overflow-wrap: anywhere; }
 table.pools tbody tr.over   { background: color-mix(in srgb, var(--bad) 8%, transparent); }
 table.pools tbody tr.paused { background: color-mix(in srgb, var(--paused) 7%, transparent); }
 table.pools .pool-name { font-weight: 500; }
@@ -3081,14 +2848,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* A FIELD'S CONTRACT, FUSED TO ITS LABEL (§8.4.3). `input (JSON object) —
    claude-code reads input.prompt` is a label; the same words under the
    textarea were a paragraph. */
-.t-label-note {
-  margin-left: var(--ctl-s2);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--text-dim);
-}
-.t-label-note code { font-size: var(--t-micro); color: var(--text-dim); }
 /* `.ctl-panel-note a` drew the accent under its own rule. It is a branch of the
    `.ctl-link` list in sec 9b now (CH-5), so the rule that painted it blue is
    gone rather than left to out-rank the primitive. */
@@ -3274,7 +3033,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 
    THE RUN GROUP CARRIES NO PARAGRAPH SELECTORS, and that is the visible half
    of this pass. `.muted`, `.muted.small`, `.warn-text`, `.err-origin`,
-   `.provenance`, `.blocker-copy` and `dl.kv` between them drew about 700 words
+   `.provenance` and `.blocker-copy` between them drew about 700 words
    across these four screens; they are still in the sheet because other screens
    use them, and the run group no longer reaches for any of them except
    `.warn-text` on the one git error that is a server string. */
@@ -3783,16 +3542,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    between them; inset, it traces the row it belongs to. */
 .row.clickable:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 
-/* key/value grid used by every detail panel */
-dl.kv {
-  display: grid;
-  grid-template-columns: minmax(96px, auto) minmax(0, 1fr);
-  gap: 5px 14px;
-  margin: 0;
-  font-size: var(--t-body);
-}
-dl.kv dt { color: var(--text-faint); font-size: var(--t-meta); }
-dl.kv dd { margin: 0; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .mono { font-family: var(--mono); font-size: var(--t-body); }
 
 /* ------------------------------------------------------------------------ */
@@ -4015,7 +3764,6 @@ ol.timeline li::before {
 .banner.neutral { background: var(--surface); color: var(--text-dim); }
 /* Never collapsed, never truncated: an admin reading their own tenant's four
    running tasks as the platform total is a truth bug, not a layout choice. */
-.scope-word { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .count-chip {
   display: inline-block;
   margin-right: 10px;
@@ -4031,10 +3779,7 @@ ol.timeline li::before {
 .headline strong { color: var(--bad); }
 /* Information, not breakage. */
 .admin-only { color: var(--info); }
-.sub-h { margin: 14px 0 6px; font-size: var(--t-meta); color: var(--text-faint); font-weight: 600; }
 
-.row.fail-row { grid-template-columns: 92px minmax(0, 1fr) 54px 76px; }
-.row.fail-row .err { grid-column: 1 / -1; margin-top: 6px; }
 /* OVER THE CEILING (AG-15). `83/3` and `4/3` -- a task that has used more
    attempts than it is allowed, which the platform should make impossible --
    rendered as ordinary figures in Agents and in the workflow Table. This rule
@@ -4064,42 +3809,12 @@ ol.timeline li::before {
   margin-bottom: 10px;
 }
 .stack > i { background: var(--text-faint); border-right: 1px solid var(--bg); }
-.stack > i.human { background: var(--warn); }
-dl.kv dt.needs-human { color: var(--warn); font-weight: 600; }
 
-.q-row {
-  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
-      padding: 7px 0; border-bottom: 1px solid var(--line-soft);
-      font-size: var(--t-body);
-}
-.q-reason { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
-.q-count { color: var(--text-dim); }
-.q-pool { color: var(--text-faint); font-family: var(--mono); font-size: var(--t-micro); }
-.q-chip {
-  padding: 1px 8px; border-radius: 999px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-}
-.q-chip.bad { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad-ink); }
-/* Never an ABSENT chip: absence reads as "not drained". */
-.q-chip.unknown { background: var(--surface-2); color: var(--text-faint); }
-
-.pool.prov .prov-meta { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); margin-bottom: 8px; }
-/* AN OK PROVIDER CARD DRAWS NO EDGE RULE (CP-14 / CH-17 follow-up, #85,
-   2026-09-25). It was a 3px `--ok` rule. Neutral cannot mean a grey 3px rule:
-   that is `.pool.prov.unknown`'s own rule below, and a provider nobody has
-   read would then look like one that is fine. §6.7 draws a form only where a
-   row is abnormal, and the dock's `.source.ok` lost its rule for the same
-   reason (CH-17), so the ok card keeps the card's plain 1px edge.
-   `encoding.hues.test.ts` holds the two silhouettes apart. */
-.pool.prov.wait    { border-left: 3px solid var(--warn); }
-.pool.prov.bad     { border-left: 3px solid var(--bad); }
-.pool.prov.unknown { border-left: 3px solid var(--text-faint); }
 .tag.wait { color: var(--warn); }
 .tag.unknown { color: var(--text-faint); }
 .tag.live { color: var(--info); }
 
 /* error banner + timeline extras */
-.err-origin { margin: 0 0 8px; font-size: var(--t-body); color: var(--text-dim); }
 /* Never one-line-truncated: it is the reason the page was opened. */
 pre.err.full { max-height: none; white-space: pre-wrap; }
 .ev-badge {
@@ -4176,14 +3891,11 @@ a.copy { display: inline-block; text-decoration: none; }
    row's failed and dead-lettered segments are this failed rule, its cancelled
    segment the flat bars below. Its succeeded segment is not `--ok` -- see
    `.wf-seg.succeeded` in the Workflows block. */
-.wf-meter > .wf-seg.failed,
-.wf-meter > .wf-seg.dead-lettered,
 .ol-k.is-bad,
 .ol-meter > .ol-seg.failed {
   background: var(--bad);
   box-shadow: inset 2px 0 0 var(--surface);
 }
-.wf-meter > .wf-seg.cancelled,
 .ol-k.is-ended,
 .ol-k.is-after-cancel,
 .ol-meter > .ol-seg.cancelled {
@@ -4281,23 +3993,9 @@ a.copy { display: inline-block; text-decoration: none; }
     45deg, var(--surface), var(--surface) 6px, var(--surface-2) 6px, var(--surface-2) 12px
   );
 }
-.pill-refresh {
-  margin-left: auto; padding: 3px 10px;
-  border: 1px solid var(--line); border-radius: 6px;
-  background: var(--surface); color: var(--text-dim);
-  font-size: var(--t-body); cursor: pointer;
-}
-.pool-group.bad    > h2 { color: var(--bad); }
-.pool-group.warn   > h2 { color: var(--warn); }
-.pool-group.paused > h2 { color: var(--paused); }
-.pool-group .split-row { grid-template-columns: minmax(0, 1fr) 110px 62px 100px; }
 .sr-by { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); text-align: right; }
 .sr-bar > i.bad { background: var(--bad); }
 
-@media (max-width: 640px) {
-  .pool-group .split-row { grid-template-columns: minmax(0, 1fr) 62px; }
-  .pool-group .sr-bar, .pool-group .sr-by { display: none; }
-}
 
 /* An admin gate is information, not breakage. Blue, no retry button, and no
    "this is a failure to read the platform" line -- nothing failed. */
@@ -4316,17 +4014,11 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
 .silent.alive         { color: var(--text-dim); }
 .silent.silent        { color: var(--warn); }
 .silent.presumed-dead { color: var(--bad); }
-.legend-kv { margin-top: 12px; }
-.legend-kv dt.alive         { color: var(--text-dim); }
-.legend-kv dt.silent        { color: var(--warn); }
-.legend-kv dt.presumed-dead { color: var(--bad); }
-.q-row .client-side { flex-basis: 100%; }
 
 /* ---- admin limit editor ---- */
 /* POOL LIMITS (#132). The profile card's figure is a ceiling, `max 5
    agents`: the word before it is set as the unit after it is, with its gap on
    the side that faces the figure. */
-.ctl-figure-unit.adm-figure-max { margin-left: 0; margin-right: 4px; }
 /* The row a link from Tenants named, outlined in the link accent so it is
    found without moving anything. An outline and not a fill: the sheet gives
    no head cell a fill of its own (WF-21), and the row's name is a `th`. */
@@ -4401,7 +4093,6 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    rule added for this one. A screen may not restyle a screen it does not own,
    and it is not enough that nobody has claimed the name yet.                   */
 
-.settings-tabs { margin-bottom: 18px; }
 
 /* ---- the pool table ---- */
 table.pools.accounts td.acct-window,
@@ -4476,14 +4167,8 @@ table.pools.accounts td.n { white-space: nowrap; }
 .acct-foot > .acct-clause { white-space: nowrap; }
 
 /* ---- warnings, the block `cs status` prints under its table ---- */
-.acct-warnings {
-  margin: 12px 0 0; padding: 0 0 0 18px;
-  font-size: var(--t-body); line-height: var(--lh-body); color: var(--warn);
-}
-.acct-warnings li { margin-bottom: 4px; }
 
 /* ---- one account, opened ---- */
-tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 /* THE OPEN ACCOUNT IS A SELECTION, SO IT IS MARKED LIKE ONE (CP-23). It was a
    3px `--info` rule: the accent, spent on "this row is open", on the screen
    whose chips already use `--info` for a fact. §1.3 is the rule for every
@@ -4592,21 +4277,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
 .state.acct-ok h3 { color: var(--text-dim); }
 
 /* ---- the instructions, which are part of the product ---- */
-.acct-instructions h3 {
-  margin: 20px 0 6px; font-size: var(--t-body); font-weight: 600; color: var(--text);
-}
-.acct-instructions h3:first-of-type { margin-top: 4px; }
-.acct-instructions p { margin: 0 0 8px; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
-.acct-instructions ul, .acct-instructions ol {
-  margin: 0 0 10px; padding-left: 20px;
-  font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim);
-}
-.acct-instructions li { margin-bottom: 6px; }
-.acct-instructions strong { color: var(--text); }
-.acct-instructions code {
-      font: var(--t-body)/var(--lh-body) var(--mono); padding: 1px 4px; border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2); overflow-wrap: anywhere;
-}
 
 @media (max-width: 560px) {
   /* `.acct-bar { display: none }` WAS HERE (CP-25). The window's track is the
@@ -5113,7 +4783,6 @@ tr.acct-detail-row > td { padding: 0; background: var(--surface); }
   line-height: var(--lh-lead);
   font-weight: 600;
   color: var(--text);
-  letter-spacing: -0.01em;
 }
 /* THE QUALIFIER SLOT. Muted, right-aligned, mono, and it does not wrap: it is
    a fact about the card, so it reads as chrome and never competes with the
@@ -5375,7 +5044,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   font-size: var(--t-figure);
   line-height: var(--lh-figure);
   font-weight: 600;
-  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
@@ -5677,7 +5345,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 
    NONE OF THE THREE CARRIES TEXT — see rule 2 at the top of this block. A
    caption belongs in a sibling, which is also where a screen reader wants it. */
-.ctl-hold { min-height: var(--hold-h, 180px); }
 .ctl-ghost {
   height: calc(var(--rows, 4) * var(--row-h));
   border-radius: var(--ctl-radius-sm);
@@ -6071,7 +5738,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   line-height: var(--lh-title);
   /* 650 -> 600. See `.head h1`: the ladder stops at 600. */
   font-weight: 600;
-  letter-spacing: -0.02em;
   color: var(--text);
 }
 .ctl-page-head > .is-end { margin-left: auto; }
@@ -6255,50 +5921,15 @@ a.ctl-metric:focus-visible .ctl-metric-label,
    because rows that no longer draw their own outline are a LIST, and 4px of
    nothing between two invisible boxes is just a ragged rhythm. `--row-h` and
    the mono/sans split carry the scanning. */
-.ctl-lines { display: flex; flex-direction: column; }
-.ctl-line {
-  display: grid;
-  align-items: center;
-  gap: var(--ctl-s3);
-  min-height: var(--row-h);
-  padding: 4px var(--ctl-s3);
-  border: 0;
-  border-radius: var(--ctl-radius-sm);
-  background: transparent;
-  text-align: left;
-  transition: background-color var(--ctl-dur) ease;
-}
 /* The hover that the border used to carry. A fill step is also the only
    affordance that still reads when eight of these sit directly on each other. */
-.ctl-line:hover { background: var(--surface-2); }
-.ctl-line:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.ctl-line > * {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* The expanded half. Square at the top, because it joins the row above it;
    its own radius at the bottom. The surface steps DOWN rather than up: the
    detail is inside the row, not on top of it. */
-.ctl-line-body {
-  /* The surface step was always doing the work here; the border beside it was
-     a second statement of the same fact (§B5.3). What says "this detail
-     belongs to the row above" is that both are filled and the pair has one
-     shared corner, not that a line goes round them. */
-  border: 0;
-  border-radius: 0 0 var(--ctl-radius-sm) var(--ctl-radius-sm);
-  padding: var(--ctl-pad-chrome);
-  background: var(--surface-2);
-}
 /* A row whose detail is open keeps its own bottom corners square so the two
    read as one object. */
 /* An open row takes the fill its body has, so the two read as one object, and
    squares the corners they share. */
-.ctl-line.is-open {
-  background: var(--surface-2);
-  border-radius: var(--ctl-radius-sm) var(--ctl-radius-sm) 0 0;
-}
 
 /* -------------------------------------------------------------------------- */
 /* Em dash: the absent measurement                                             */
@@ -6398,7 +6029,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   font-size: var(--t-figure);
   font-weight: 600;
   line-height: var(--lh-figure);
-  letter-spacing: -0.02em;
   /* Tabular, so a strip of figures does not jitter as they tick. */
   font-variant-numeric: tabular-nums;
 }
@@ -7307,20 +6937,6 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    looks. Hence a banner, not a toast: at 390pt a toast sits under the thumb
    and gets dismissed by accident. */
 
-.ctl-stale-note {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--ctl-s2);
-  margin-bottom: var(--ctl-s3);
-  padding: var(--ctl-s3);
-  border: 1px solid color-mix(in srgb, var(--warn) 55%, var(--line));
-  border-radius: var(--radius);
-  background: color-mix(in srgb, var(--warn) 6%, var(--surface));
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-  color: var(--text-dim);
-}
-.ctl-stale-note strong { color: var(--warn); }
 
 /* The body under that banner. Dimming is the signal that everything below is
    from an earlier read; the left rule keeps that legible once the dimming has
@@ -7970,19 +7586,8 @@ table.pools tbody tr.unmeasured {
   );
 }
 
-.blocker-group { margin-top: 12px; }
-.blocker-group > h3 {
-  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
-  margin: 0 0 6px;
-  font-size: var(--t-meta); font-weight: 600; color: var(--text-dim);
-}
 /* The heading carries the remedy, not just the category: "somebody has to act"
    is the whole reason the two groups are separated. */
-.blocker-group.needs-action > h3 { color: var(--warn); }
-.blocker-group-note {
-  font: 400 var(--t-micro)/var(--lh-micro) var(--font); letter-spacing: 0; text-transform: none;
-  color: var(--text-faint);
-}
 
 .blocker-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
 .blocker-row {
@@ -7999,12 +7604,8 @@ table.pools tbody tr.unmeasured {
 .blocker-row.is-paused { border-left-color: var(--paused); }
 .blocker-row.is-bad    { border-left-color: var(--bad); }
 .blocker-row.is-warn   { border-left-color: var(--warn); }
-.blocker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.blocker-pool { font-size: var(--t-body); background: transparent; color: var(--text); }
-.blocker-reason { font: 700 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
 /* The numbers that made it fail, on the entry that failed -- never rolled up
    into a single figure at the top of the panel. */
-.blocker-at { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .blocker-row .blocker-copy { display: block; margin: 3px 0 0; }
 
 /* The submit box has one column and no room for the fraction on its own line. */
@@ -8021,11 +7622,9 @@ table.pools tbody tr.unmeasured {
    including the row that says it "could not be measured". Green on a
    hypothetical reads as a result somebody got. The effect is a figure and is
    drawn as one; the dimmed cells below are the zeros and the unmeasured. */
-.cf-effect { color: var(--text); }
 /* The zeros on a binding pool are the valuable half -- they say which ceilings
    are POINTLESS to raise alone -- so they are dimmed rather than hidden, and
    never coloured as a result. A green "no change" reads as a success. */
-td.cf-lift.is-pointless .cf-effect { color: var(--text-faint); }
 
 /* `.admission-details` LIVED HERE AND IS GONE (B4.5). It was Pools' per-profile
    `<details>`, holding the incompleteness note and the counterfactual --
@@ -8035,9 +7634,6 @@ td.cf-lift.is-pointless .cf-effect { color: var(--text-faint); }
    admission arithmetic already goes. The incompleteness itself stayed on
    Pools, as `.ctl-mark.is-unread` in the row it belongs to. */
 
-@media (max-width: 640px) {
-  .blocker-at { margin-left: 0; flex-basis: 100%; }
-}
 
 /* ---------------------------------------------------------------------------
    B28 -- the stop control
@@ -8696,7 +8292,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* An eyebrow used as a toolbar's left-hand label rather than as a block
    heading: the primitive's bottom margin would push it off the toolbar's
    baseline. */
-.cap-eyebrow,
 .rt-eyebrow { margin: 0; }
 
 /* Consecutive top-level cards on these screens. `.ctl-cards` owns the gap
@@ -8807,10 +8402,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    table's Scope column, since the family note both used to share is gone.
    Metadata, so the qualifier treatment -- mono, muted, no hue, no box; the
    strip's own gap separates it from the first mark. */
-.cap-pool-scope {
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
-  color: var(--text-dim);
-}
 
 /* THE CARDS VIEW. `auto-fit` at a 240px floor gives four across a wide display
    and one at 390px with no breakpoint; `min(100%, 240px)` is what stops a
@@ -8830,18 +8421,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    whitespace, which is how all five references lay out a card grid that does
    not happen to be full. Nothing about `--track-h` moved: 8px is still 8px,
    still the geometry Workflows was signed off at (§6.4). */
-.cap-pool-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 320px));
-  /* The column gap is the LARGE step and the row gap is not, which is the one
-     asymmetry on this screen worth writing down. A tile's own figure is
-     right-aligned at its right edge and the next tile's name starts at its
-     left edge, so at 12px `0 / 6` and `smoke` read as one phrase on one line.
-     Vertically there is no such collision -- the track already separates one
-     row from the next -- so the rows stay at `--ctl-s3`. */
-  column-gap: var(--ctl-s5);
-  row-gap: var(--ctl-s3);
-}
 /* B4.6: THE TILE IS A LINE AND A TRACK, AND IT IS NOT BOXED.
    Two things were wrong with it and they compounded.
 
@@ -8864,33 +8443,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    THE FIGURE STEP IS STILL SPENT HERE, ONCE PER TILE (§6.2), and it is
    `--t-figure` at 22px rather than the old 30 -- so a row of five tiles is now
    five modest numbers instead of five posters. */
-.cap-pool {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  column-gap: var(--ctl-s2);
-  row-gap: var(--ctl-s1);
-  min-width: 0;
-}
-.cap-pool-name {
-  font: 500 var(--t-body)/var(--lh-body) var(--mono);
-  color: var(--text);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 /* One figure per tile, and the pool's occupancy is it. The track underneath is
    the same fact as a proportion rather than a second figure, which is why it
    is a track and not a second number. `nowrap` because "5 / 20" broken across
    two lines is two numbers. */
-.cap-pool-figure {
-  margin: 0;
-  justify-self: end;
-  white-space: nowrap;
-}
 /* The track and the marks each take the whole width under the line. */
-.cap-pool > .ctl-util-track,
-.cap-pool > .cap-marks { grid-column: 1 / -1; }
 
 /* B4.6: THE PHONE GETS ITS PROPORTION BACK, AND THIS IS AN HONESTY FIX.
    `styles.css` line ~5179 drops `.ctl-util-track` outright at <=560px, and its
@@ -8911,9 +8468,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
    Scoped to `.cap-pool`, which is this screen's tile; `.ctl-util` rows on every
    other screen keep the rule exactly as it stands. */
-@media (max-width: 560px) {
-  .cap-pool > .ctl-util-track { display: block; }
-}
 
 /* -- Runtimes -------------------------------------------------------------- */
 
@@ -9228,24 +8782,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-act > select { flex: none; }
 .sbf-act > input { flex: 1 1 140px; min-width: 0; }
 
-/* ---- the offers ---- */
-/* THE DISCOVERY SURFACE. Every key here is one a runner actually reads, with
-   the runner's own account of it underneath, so the answer to "what can I put
-   in this?" is on the screen instead of in a schema somebody has to find.
-   A fill, not a box: nine bordered pills is nine boxes. */
-.sbf-add { display: flex; flex-wrap: wrap; gap: var(--ctl-s2); margin-top: var(--ctl-s2); }
-.sbf-offer {
-  display: grid; gap: 1px; text-align: left; align-content: start;
-  border: 0; border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2);
-  padding: var(--ctl-s2) var(--ctl-s3);
-  max-width: 252px; min-height: 0;
-}
-.sbf-offer > .mono, .sbf-offer > span:first-child { font-size: var(--t-body); color: var(--text); }
-.sbf-offer-note { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.sbf-offer:not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 88%, var(--text)); }
-.sbf-offer.is-own > span:first-child { color: var(--text-dim); }
-
 /* ---- the one place to act ---- */
 .sbf-send {
   display: grid; gap: var(--ctl-s3);
@@ -9346,17 +8882,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    key still arrives, as `.sbf-note` under the field, at the moment it is
    actually needed — after it has been added. The task screen has the width and
    keeps the note on the offer itself. */
-/* `--surface`, NOT THE STEP'S OWN `--surface-2` (TS-7). An offer is a filled
-   chip and a step card is a filled card, and both were `--surface-2`: the
-   offers were drawn at zero contrast against the card they sit in, which made
-   them invisible -- and they are the only way to give a browser step its url.
-   One step UP from the card, as the task screen's offers are one step up from
-   its panel, and the hover steps toward ink from there. */
-.wfb-step .sbf-offer { max-width: none; padding: 3px var(--ctl-s2); background: var(--surface); }
-.wfb-step .sbf-offer:not(:disabled):hover { background: color-mix(in srgb, var(--surface) 88%, var(--text)); }
-.wfb-step .sbf-offer-note { display: none; }
-.wfb-step .sbf-offer > .mono, .wfb-step .sbf-offer > span:first-child { font-size: var(--t-micro); }
-.wfb-step .sbf-add { gap: var(--ctl-s1); }
 /* The unread mark, its words and its `?` are three flex items in a 340px row;
    at `--t-meta` the glyph wrapped alone onto a third line. */
 .wfb-step .ctl-panel-note { font-size: var(--t-micro); gap: var(--ctl-s1) var(--ctl-s2); }
@@ -9370,7 +8895,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font-size: var(--t-body);
 }
 .wfb-add:not(:disabled):hover { background: color-mix(in srgb, var(--surface-2) 88%, var(--text)); color: var(--text); }
-.wfb-add-say { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-faint); }
 .wfb-add.is-stage { width: 100%; margin-top: var(--ctl-s3); }
 
 /* The dependency refinement, behind the answer it already has. The summary
@@ -9957,10 +9481,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     white-space: nowrap;
   }
 
-  /* POOLS AND PROFILE HEADROOM SCROLL (CP-18 is a wide-screen rule). CP-18
-     gives both `table-layout: fixed` at `width: 100%`, percentage widths on the
-     head row, and cells that wrap anywhere, so that six family tables -- and
-     every profile's headroom table -- share their column positions. That is
+  /* POOLS SCROLL (CP-18 is a wide-screen rule). CP-18 gives the family
+     tables `table-layout: fixed` at `width: 100%`, percentage widths on the
+     head row, and cells that wrap anywhere, so that six family tables
+     share their column positions. That is
      right where the tables fit. Below 900px it sized each table to the phone:
      a fixed-layout table at 100% never overflows, so there was nothing to
      scroll and the held column held nothing, while "In use (units)" wrapped to
@@ -9968,26 +9492,21 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      is sized by its content, its cells do not wrap, and it scrolls. The
      columns no longer line up from one table to the next below 900px; each
      table scrolls on its own, so there is no shared x to keep. */
-  .cap-families .ctl-table.is-scroll > table,
-  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools {
+  .cap-families .ctl-table.is-scroll > table {
     table-layout: auto;
     width: max-content;
     min-width: 100%;
   }
-  .cap-families .ctl-table.is-scroll > table > * > tr > :not(:first-child),
-  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > * > tr > :not(:first-child) {
+  .cap-families .ctl-table.is-scroll > table > * > tr > :not(:first-child) {
     width: auto;
     white-space: nowrap;
     overflow-wrap: normal;
   }
-  /* CP-18's third for Profile headroom's name column out-ranks the held
-     ceiling, so it is restated here. (Its quarter on Pools stopped out-ranking
-     it once the held rule named the head's first row; it is restated beside
-     the other so the two cannot drift.) Both name the same one corner the held
+  /* CP-18's quarter on Pools' name column is restated here so it is not
+     out-ranked by the held ceiling. It names the same one corner the held
      rule does -- the head's first row, one column wide -- so a second head
      row's first cell keeps CP-18's share and never takes the held width. */
-  .cap-families .ctl-table.is-scroll > table > thead > tr:first-child > th:first-child:not([colspan]),
-  .section.panel > dl.kv + .table-wrap.is-scroll > table.pools > thead > tr:first-child > th:first-child:not([colspan]) {
+  .cap-families .ctl-table.is-scroll > table > thead > tr:first-child > th:first-child:not([colspan]) {
     width: min(45vw, 20ch);
   }
 
@@ -10001,12 +9520,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      and the wrapper's two 1px borders -- so it reads in place at every scroll
      offset. `white-space: normal` because `table.pools td` is nowrap and a
      cell's descendants inherit it. */
-  .is-scroll tr.acct-detail-row > td > .acct-detail {
-    position: sticky;
-    left: 0;
-    width: calc(100vw - 2 * var(--app-pad) - 2px);
-    white-space: normal;
-  }
 }
 
 /* --------------------------------------------------------------------------
@@ -10069,7 +9582,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    it wrapped to `claude-` / `code` and `anthropic · u-` / `bogdan`, which
    breaks an identifier across a line -- the one thing §B17 says must not
    happen to a string a reader may need to paste. */
-.adm-operands { --fact-key: 20ch; }
 /* THE CEILINGS ARE A COLUMN OF FIGURES, SO THEY ALIGN LIKE ONE (AH-19). The
    value was whatever width its digits happened to be, left-aligned after the
    key, so a `5` sat under the `2` of `25` and the smallest ceiling on the card
@@ -10080,17 +9592,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    the bold of the binding row), in tabular figures. (0,4,0), because the
    primitive's `.ctl-facts.is-rows > .ctl-fact` is (0,3,0) and lays it out as a
    flex row. */
-.ctl-facts.is-rows.adm-operands > .ctl-fact {
-  display: grid;
-  grid-template-columns: auto 7ch;
-  justify-content: start;
-  justify-items: end;
-  font-variant-numeric: tabular-nums;
-}
-.ctl-facts.is-rows.adm-operands > .ctl-fact > b {
-  justify-self: start;
-  width: var(--fact-key, 9ch);
-}
 /* The value takes the rest of the line and wraps inside it. `min-width: 0` is
    what lets a long image name wrap instead of forcing the row wider than the
    card, which is how `demo-runtime-viewport` used to widen a 340px track. */
@@ -11097,7 +10598,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font-size: var(--t-lead);
   line-height: var(--lh-lead);
   font-weight: 600;
-  letter-spacing: -0.01em;
   color: var(--text);
 }
 /* THE COVERAGE, ON THE TITLE'S OWN BLOCK RATHER THAN IN A FOOT AT THE BOTTOM
@@ -11243,7 +10743,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font-size: var(--t-figure);
   line-height: var(--lh-figure);
   font-weight: 600;
-  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
   color: var(--text);
 }
@@ -11528,13 +11027,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .limit-edit button,
   .sbf-go {
     min-height: 44px;
-  }
-
-  /* An offer chip is a box that can grow; its key stays at the chip's own
-     step and centres in the taller chip. */
-  .wfb-step .sbf-offer {
-    min-height: 44px;
-    align-content: center;
   }
 
   .ctl-q-glyph,
@@ -12197,6 +11689,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   --sk-ac: #7cc8f8;
   --sk-acs: #10294a;
   --sk-acl: #1f4a7a;
+  /* The Navigation mock-up's --f-ln: the nav chrome's structural hairlines
+     (panel edge, tenant block, page-kids rule, footer rule, admin tag, theme
+     switch). The owner picked these over the 3:1 divider rule on 2026-10-01;
+     spacing.test.tsx names the exemption. #dde5ee light, #1d3049 dark. */
+  --sk-ln: #1d3049;
   --sk-hv: #11233b;
   --s-live: #4cd9a0;
   --s-liveb: #0d2e25;
@@ -12215,6 +11712,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     --sk-ac: #0369a1;
     --sk-acs: #e5f3fc;
     --sk-acl: #b6daf2;
+    --sk-ln: #dde5ee;
     --sk-hv: #eef4fa;
     --s-live: #0a7a55;
     --s-liveb: #e3f5ee;
@@ -12235,6 +11733,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   --sk-ac: #0369a1;
   --sk-acs: #e5f3fc;
   --sk-acl: #b6daf2;
+  --sk-ln: #dde5ee;
   --sk-hv: #eef4fa;
   --s-live: #0a7a55;
   --s-liveb: #e3f5ee;
@@ -12252,7 +11751,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* --- the frame ---------------------------------------------------------- */
 .sk-app { display: flex; min-height: 100%; position: relative; background: var(--bg); color: var(--text); font-family: var(--font); }
 .sk-prodbar { position: fixed; left: 0; right: 0; top: 0; height: 3px; background: var(--sk-prod); z-index: 30; }
-.sk-side { display: flex; gap: 4px; flex: none; position: sticky; top: 0; height: 100vh; height: 100dvh; z-index: 10; }
+/* No gap: the picked mock-up draws the spine and the panel touching, with the
+   panel's own edge as the only seam (owner decision 2026-10-01). The spacing
+   probe names this one boundary as an exemption (spacing.test.tsx). */
+.sk-side { display: flex; flex: none; position: sticky; top: 0; height: 100vh; height: 100dvh; z-index: 10; }
 .sk-main { flex: 1; min-width: 0; }
 .sk-main > .app { max-width: none; padding-top: 16px; }
 
@@ -12282,21 +11784,21 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
 
 /* --- the panel: 236px ---------------------------------------------------- */
-.sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
+.sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--sk-ln); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
 .sk-ph { display: flex; align-items: center; gap: 8px; padding: 2px 10px 12px 16px; }
-.sk-wm { font-weight: 650; font-size: var(--t-lead); letter-spacing: -.015em; white-space: nowrap; }
+.sk-wm { font-weight: 650; font-size: var(--t-lead); white-space: nowrap; }
 .sk-wm span { color: var(--sk-ac); }
-.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-ac); background: var(--sk-acs); margin-left: auto; }
+.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
 .sk-pill.is-prod { background: var(--sk-prod); color: #fff; border-color: var(--sk-prod); }
 .sk-pill.is-mini { font-size: var(--t-micro); padding: 3px 4px; margin-left: 0; }
 .sk-ibtn { border: 0; background: none; color: var(--text-dim); padding: 5px; border-radius: 6px; display: inline-flex; cursor: pointer; }
 .sk-ibtn:hover { background: var(--sk-hv); color: var(--text); }
-.sk-tenant { display: flex; align-items: center; gap: 9px; margin: 0 10px 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+.sk-tenant { display: flex; align-items: center; gap: 9px; margin: 0 10px 8px; padding: 8px 10px; border: 1px solid var(--sk-ln); border-radius: 10px; background: var(--surface); }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
-.sk-cp { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-ac); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
+.sk-cp { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
 .sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sk-pscroll { flex: 1; overflow-y: auto; min-height: 0; }
 .sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
@@ -12309,7 +11811,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-pk.is-dis, .sk-pk:disabled { opacity: .5; cursor: not-allowed; }
 .sk-lk { width: 12px; height: 12px; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--line); padding-left: 8px; display: flex; flex-direction: column; }
+.sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
 .sk-kid { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border: 0; border-radius: 6px; background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-recent { margin: 2px 10px 6px 38px; font-size: var(--t-micro); color: var(--text-dim); }
@@ -12321,16 +11823,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-bar { height: 5px; border-radius: 2px; background: var(--line-soft); overflow: hidden; display: flex; }
 .sk-bar > i { display: block; height: 100%; background: var(--sk-ac); }
 .sk-mw { font-size: var(--t-micro); color: var(--s-warn); }
-.sk-pfoot { margin-top: 4px; border-top: 1px solid var(--line); padding: 10px 16px 0; display: flex; flex-direction: column; }
+.sk-pfoot { margin-top: 4px; border-top: 1px solid var(--sk-ln); padding: 10px 16px 0; display: flex; flex-direction: column; }
 .sk-pfrow { display: flex; align-items: center; gap: 6px; }
 .sk-pfoot b { font-size: var(--t-micro); }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; }
-.sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--line); border-radius: 10px; }
+.sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--sk-ln); border-radius: 10px; }
 .sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
 .sk-theme button:hover { background: var(--sk-hv); }
 .sk-theme button.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
-.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--line); border-radius: 2px; padding: 1px 4px; }
+.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
 
 /* --- collapsed: the spine alone, a flyout per section -------------------- */
 .sk-flyout { position: fixed; left: 90px; top: 150px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
@@ -12363,7 +11865,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* --- the Submit chooser (/submit) ---------------------------------------- */
 .sk-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
-.sk-chooser h1 { margin: 0; font-size: var(--t-title); letter-spacing: -.015em; }
+.sk-chooser h1 { margin: 0; font-size: var(--t-title); }
 .sk-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
 .sk-choice { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 20px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-choice:hover { border-color: var(--sk-ac); }
@@ -12509,7 +12011,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* ======================================================================== */
 /* --- Capacity (capacity.html): ceilings, matrix, accounts --------------- */
 /* ======================================================================== */
-/* Ceilings: "Needs a look" leads, in the warning hue's soft surface. */
+/* Ceilings: "Needs action" leads (the pools a person has to act on), in the warning hue's soft surface. */
 .cap-needs { border-color: color-mix(in srgb, var(--s-warn) 50%, transparent); }
 .cap-needs .ctl-card-title { color: var(--text); }
 .cap-use { display: grid; grid-template-columns: minmax(64px, 1fr) 44px; gap: 8px; align-items: center; min-width: 130px; }
@@ -12530,7 +12032,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
 .cap-mx-lift { font-size: var(--t-meta); color: var(--text-dim); white-space: normal; }
 .cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-.cap-mx-detail-head { margin: var(--ctl-gutter) 0 8px; }
 
 /* Runtimes: the pools each runtime must clear, each one a link. */
 .rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }

@@ -75,10 +75,13 @@ function capacity(over: Partial<Capacity> = {}): Capacity {
   }
 }
 
-/** The Pool limits card for one runner profile. */
-async function limitCard(name: string): Promise<HTMLElement> {
-  const title = await screen.findByText(name, { selector: '.ctl-card-title' }, WAIT)
-  return title.closest('.ctl-card') as HTMLElement
+/**
+ * Pool limits has drawn its ceilings: the first editor row is on screen. (It
+ * waited on a per-profile card's title until those cards were removed, owner
+ * decision 2026-10-01.)
+ */
+async function limitsDrawn(): Promise<void> {
+  await waitFor(() => expect(document.querySelector('tr[id^="limit-"]')).not.toBeNull(), WAIT)
 }
 
 /** The editor row for one pool, found by the id a link can name (#132). */
@@ -110,54 +113,15 @@ function input(name: string): HTMLInputElement {
   return screen.getByLabelText(`Hard limit for ${name}`, { exact: false }) as HTMLInputElement
 }
 
-describe('Pool limits names every pool that binds (AH-1)', () => {
-  it('marks every operand equal to the minimum, not the first of them', async () => {
+describe('Pool limits draws no per-profile card (owner decision 2026-10-01)', () => {
+  it('draws the ceilings alone: no Binding pool eyebrow, no profile card, no operand list', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    const card = await limitCard('claude-code')
-    const binding = [...card.querySelectorAll('.adm-operands > li.is-binding')].map((li) => li.getAttribute('title'))
-    expect(binding.sort()).toEqual(['global', 'tenant:eng'])
-    expect(card.querySelector('li[title="resource:standard"]')!.className).not.toContain('is-binding')
-  })
-
-  it('names all of them in the foot and in the figure’s accessible name', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<AdminSettingsScreen />)
-    const card = await limitCard('claude-code')
-    const foot = card.querySelector('.ctl-card-foot')!.textContent ?? ''
-    expect(foot).toContain('global')
-    expect(foot).toContain('eng')
-    const figure = card.querySelector('.ctl-figure')!.getAttribute('aria-label') ?? ''
-    expect(figure).toContain('global')
-    expect(figure).toContain('eng')
-  })
-
-  it('never prints two different pools under one label', async () => {
-    api.loadCapacity.mockResolvedValue(
-      ok(
-        capacity({
-          pools: [pool('resource:browser'), pool('runner:browser')],
-          runner_profiles: { browser: profile(['resource:browser', 'runner:browser']) },
-        }),
-      ),
-    )
-    render(<AdminSettingsScreen />)
-    const card = await limitCard('browser')
-    const labels = [...card.querySelectorAll('.adm-operands > li > b')].map((b) => b.textContent ?? '')
-    expect(labels.length).toBe(2)
-    expect(new Set(labels).size, `two pools share a label: ${labels.join(' | ')}`).toBe(2)
-    expect(card.querySelector('.ctl-card-foot')!.textContent).not.toMatch(/browser and browser/)
-  })
-
-  it('puts each operand’s figure in its own element, so it can sit on a numeric track (AH-19)', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<AdminSettingsScreen />)
-    const card = await limitCard('claude-code')
-    for (const li of card.querySelectorAll('.adm-operands > li')) {
-      const value = li.querySelector('.adm-value')
-      expect(value, `${li.getAttribute('title')}: the figure is a bare text node`).not.toBeNull()
-      expect(value!.textContent).toMatch(/^\d+$|^—$/)
-    }
+    await limitsDrawn()
+    expect(screen.queryByText('Binding pool')).toBeNull()
+    expect(document.querySelector('.ctl-cards')).toBeNull()
+    expect(document.querySelector('.adm-operands')).toBeNull()
+    expect(screen.queryByText('claude-code', { selector: '.ctl-card-title' })).toBeNull()
   })
 })
 
@@ -165,51 +129,12 @@ describe('Pool limits labels its units on both figures (CP-24)', () => {
   it('says (units) on In use and on Ceiling, and in the stacked keys', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     const heads = [...document.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
     expect(heads).toContain('In use (units)')
     expect(heads).toContain('Ceiling (units)')
     for (const td of document.querySelectorAll('td[data-label^="In use"], td[data-label^="Ceiling"]')) {
       expect(td.getAttribute('data-label')).toContain('(units)')
-    }
-  })
-})
-
-/**
- * AH-22. THE FIGURE CAP, ENFORCED RATHER THAN WRITTEN DOWN.
- *
- * design-system §2: one `--t-figure` per card. Pool limits draws one per
- * profile card -- five on the live screen -- and that is the peer-grid case §2
- * now names: every card states the same measure in the same unit (agents), and
- * they are compared card to card, not read as a KPI wall. What the cap forbids
- * is a SECOND figure inside one card, which is what makes a card a wall. This
- * is a guard on shipped behaviour, so it cannot be pushed red first: the
- * screen already keeps it, and nothing held it there.
- *
- * MUTATION: draw the binding pool's own figure as a second `.ctl-figure`.
- */
-describe('Pool limits keeps one figure per card (AH-22)', () => {
-  it('draws exactly one .ctl-figure in every profile card, the tied and the untied', async () => {
-    api.loadCapacity.mockResolvedValue(
-      ok(
-        capacity({
-          runner_profiles: {
-            'claude-code': profile(['global', 'tenant:eng', 'resource:standard']),
-            browser: profile(['resource:standard'], 2),
-            // A profile whose pools are not in the response: its figure is the
-            // absent em dash, and it is still the card's one figure.
-            ghost: profile(['runner:ghost']),
-          },
-        }),
-      ),
-    )
-    render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
-    const cards = [...document.querySelectorAll('.ctl-card')]
-    expect(cards.length, 'fewer profile cards than profiles').toBeGreaterThanOrEqual(3)
-    for (const card of cards) {
-      const title = card.querySelector('.ctl-card-title')?.textContent ?? '?'
-      expect(card.querySelectorAll('.ctl-figure').length, `${title} draws more than one figure`).toBeLessThanOrEqual(1)
     }
   })
 })
@@ -226,7 +151,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     api.loadCapacity.mockResolvedValueOnce(ok(capacity())).mockResolvedValueOnce(ok(after))
     api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
 
     fireEvent.change(input('global'), { target: { value: '25' } })
     fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
@@ -258,7 +183,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
       .mockReturnValueOnce(new Promise<Result<Capacity>>((resolve) => (land = resolve)))
     api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
 
     fireEvent.change(input('global'), { target: { value: '25' } })
     fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
@@ -280,7 +205,7 @@ describe('saving a ceiling re-reads without throwing the screen away (AH-7)', ()
     })
     api.setPoolLimit.mockResolvedValue({ status: 'ok', data: {}, fetchedAt: Date.now() })
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
 
     fireEvent.change(input('global'), { target: { value: '25' } })
     fireEvent.click(within(side()).getByRole('button', { name: 'Save' }))
@@ -298,7 +223,7 @@ describe('an invalid ceiling is marked on its input (AH-8)', () => {
   it('sets aria-invalid, points at the message, and puts the message below the control row', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
 
     const field = input('global')
     expect(field.getAttribute('aria-invalid')).not.toBe('true')
@@ -359,7 +284,7 @@ describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)',
   it('draws one family per group, in POOL_FAMILY_ORDER, under the Pools eyebrows', async () => {
     api.loadCapacity.mockResolvedValue(ok(everyFamily()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     const families = [...document.querySelectorAll('.adm-family')]
     const titles = families.map((f) => f.querySelector('.ctl-card-title')?.textContent)
     expect(titles).toEqual(['Global', 'Tenants', 'Resource classes', 'Runner profiles', 'Backends', 'Providers'])
@@ -374,7 +299,7 @@ describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)',
   it('gives every row an id a link can name', async () => {
     api.loadCapacity.mockResolvedValue(ok(everyFamily()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     expect(rowIds().sort()).toEqual(everyFamily().pools.map((p) => `limit-${p.name}`).sort())
   })
 
@@ -383,7 +308,7 @@ describe('Pool limits groups its ceilings the way Capacity > Pools does (#132)',
     try {
       api.loadCapacity.mockResolvedValue(ok(everyFamily()))
       render(<AdminSettingsScreen />)
-      await limitCard('claude-code')
+      await limitsDrawn()
       await waitFor(() => expect(editorRow('tenant:research').classList.contains('is-target')).toBe(true), WAIT)
       expect(document.querySelectorAll('tr.is-target').length).toBe(1)
     } finally {
@@ -396,7 +321,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
   it('draws no input, save or cancel until a row is edited, and then only in that row', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     // At rest: every row is its value and an edit control.
     expect(document.querySelectorAll('tbody input').length, 'a row draws a field nobody opened').toBe(0)
     expect(screen.queryAllByRole('button', { name: 'Save' })).toHaveLength(0)
@@ -436,7 +361,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
   it('keeps other rows’ edit disabled while the open row holds an unsaved value', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     fireEvent.change(input('global'), { target: { value: '7' } })
     const other = within(editorRow('tenant:eng')).getByRole('button', { name: /^Edit ceiling for tenant:eng/ })
     expect((other as HTMLButtonElement).disabled, 'a click elsewhere would drop the typed 7').toBe(true)
@@ -449,7 +374,7 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
   it('says lowering evicts nothing beside the open editor, not in the caption', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     // What a reader sees: the `?` card's copy is in the DOM whether it is
     // open or shut, and is not on the glass.
     const seen = () => {
@@ -481,25 +406,13 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
       ),
     )
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     expect(document.body.textContent ?? '').not.toMatch(/configured/)
     const quotaRow = editorRow('provider:anthropic')
     expect(quotaRow.querySelector('td[data-label="Set by"]')?.textContent).toBe('provider quota')
     // A family where everything is as configured draws no Set by column at all.
     const global = document.querySelector('.adm-family')!
     expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).not.toContain('Set by')
-  })
-
-  it('labels each profile card’s figure as a ceiling', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<AdminSettingsScreen />)
-    const card = await limitCard('claude-code')
-    const figure = card.querySelector('.ctl-figure')!
-    // Read part by part: the gaps between the parts are margins, not text.
-    const parts = [...figure.childNodes].map((n) => (n.textContent ?? '').trim()).filter(Boolean)
-    expect(parts.join(' ')).toBe('max 10 agents')
-    // Still the card's one figure (AH-22): the word is a unit, not a second number.
-    expect(figure.querySelector('.adm-figure-max')!.classList.contains('ctl-figure-unit')).toBe(true)
   })
 })
 
@@ -508,7 +421,7 @@ describe('Pool limits filters its rows by name at phone width (#132)', () => {
     media(false)
     api.loadCapacity.mockResolvedValue(ok(everyFamily()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     expect(screen.queryByRole('searchbox', { name: /filter pools/i })).toBeNull()
   })
 
@@ -516,7 +429,7 @@ describe('Pool limits filters its rows by name at phone width (#132)', () => {
     media(true)
     api.loadCapacity.mockResolvedValue(ok(everyFamily()))
     render(<AdminSettingsScreen />)
-    await limitCard('claude-code')
+    await limitsDrawn()
     const box = screen.getByRole('searchbox', { name: /filter pools/i })
     fireEvent.change(box, { target: { value: 'ENG' } })
     expect(rowIds()).toEqual(['limit-tenant:eng'])

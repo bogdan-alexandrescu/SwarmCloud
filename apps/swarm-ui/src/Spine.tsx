@@ -382,13 +382,20 @@ export function SkyShell({
     [go],
   )
 
-  // N opens Submit, from anywhere but a field.
+  // N opens Submit -- the promise the spine's "Submit (N)" makes -- from
+  // anywhere but a field. Ignored: a key typed into an input, a textarea, a
+  // select or anything contenteditable (it is a letter there); any modifier,
+  // Shift included (the browser's and the OS's); and a key another handler
+  // already consumed, such as the diff view's next-file `n`. `closest`, not
+  // `isContentEditable`: the target is often a span inside the editable
+  // element, and jsdom does not implement `isContentEditable` at all.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'n' && e.key !== 'N') return
-      if (e.metaKey || e.ctrlKey || e.altKey) return
-      const el = e.target as HTMLElement | null
-      if (el !== null && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return
+      const el = e.target instanceof Element ? e.target : null
+      if (el !== null && el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
+      if (el instanceof HTMLElement && el.isContentEditable) return
       e.preventDefault()
       nav('submit')
     }
