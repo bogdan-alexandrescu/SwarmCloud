@@ -6741,6 +6741,11 @@ _PEM_BODY_CHARS = re.compile(r"[A-Za-z0-9+/=\s\"'`,\\]*")
 #: is read over this many characters after BEGIN, or to the first blank line.
 _PEM_WINDOW_CHARS = 4 * 1024
 _PEM_BLANK_LINE = re.compile(r"\n[ \t]*\r?\n")
+#: A traditional encrypted PEM's headers. A BEGIN marker followed by either
+#: within the window is a real key with no further judgement: stubs never
+#: carry them. The one blank line after them is not the end of the body.
+_PEM_ENCRYPTED_HEADER = re.compile(r"(?:Proc-Type:[ \t]*4,[ \t]*ENCRYPTED|DEK-Info:)")
+_PEM_HEADER_THEN_BLANK = re.compile(r"(?:Proc-Type|DEK-Info):[^\n]*\n[ \t]*\r?\n")
 #: A base64 run: what is left of a line once its prefix and glue are gone.
 _BASE64_RUN = re.compile(r"[A-Za-z0-9+/]+")
 _BASE64_RUN_AT_LEAST = re.compile(r"[A-Za-z0-9+/]{%d,}={0,2}" % _PEM_DER_MIN_CHARS)
@@ -6877,7 +6882,35 @@ def _prefix_is_der_private_key(raw: bytes) -> bool:
         if not 1 <= count <= 4:
             return False
         at = 2 + count
-    return raw[at : at + 3] in (b"\x02\x01\x00", b"\x02\x01\x01")
+    if raw[at : at + 3] in (b"\x02\x01\x00", b"\x02\x01\x01"):
+        return True
+    return _opens_with_an_encryption_algorithm(raw, at)
+
+
+#: OID prefixes (DER content, without tag and length) of PKCS#5 PBES1/PBES2
+#: (1.2.840.113549.1.5.*) and PKCS#12 PBE (1.2.840.113549.1.12.1.*).
+_ENCRYPTION_OIDS = (bytes.fromhex("2a864886f70d0105"), bytes.fromhex("2a864886f70d010c01"))
+
+
+def _opens_with_an_encryption_algorithm(raw: bytes, at: int) -> bool:
+    """True when `raw[at:]` is a SEQUENCE opening with an OID under PKCS#5 or
+    PKCS#12: the AlgorithmIdentifier of an encrypted PKCS#8
+    (`SEQUENCE { SEQUENCE { OID PBES2 ... } OCTET STRING }`). A certificate's
+    inner SEQUENCE opens with `a0 03` (the version) or an INTEGER instead."""
+    if raw[at : at + 1] != b"\x30" or len(raw) < at + 3:
+        return False
+    if raw[at + 1] < 0x80:
+        inner = at + 2
+    else:
+        count = raw[at + 1] & 0x7F
+        if not 1 <= count <= 4:
+            return False
+        inner = at + 2 + count
+    if raw[inner : inner + 1] != b"\x06" or len(raw) < inner + 2:
+        return False
+    length = raw[inner + 1]
+    oid = raw[inner + 2 : inner + 2 + length]
+    return length < 0x80 and oid.startswith(_ENCRYPTION_OIDS)
 
 
 def _run_is_a_private_key(run: str) -> bool:
@@ -6923,6 +6956,12 @@ def _windowed_body(text: str, start: int, stop: int) -> str:
     `_PEM_WINDOW_CHARS`: from each line only its longest base64 run, so a
     log prefix (`2026-09-30T12:00:01Z INFO`) and any glue are dropped."""
     window = text[start : min(stop, start + _PEM_WINDOW_CHARS)]
+    # Step over exactly one blank line that directly follows the headers.
+    headed = None
+    for headed in _PEM_HEADER_THEN_BLANK.finditer(window):
+        pass
+    if headed is not None:
+        window = window[headed.end() :]
     blank = _PEM_BLANK_LINE.search(window)
     if blank is not None:
         window = window[: blank.start()]
@@ -6945,6 +6984,8 @@ def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
     if "PRIVATE KEY-----" not in text:
         return None
     for marker in begin.finditer(text):
+        if _PEM_ENCRYPTED_HEADER.search(text, marker.end(), marker.end() + _PEM_WINDOW_CHARS):
+            return marker.start()
         end = _PEM_END_MARKER.search(text, marker.end(), marker.end() + _PEM_BLOCK_MAX_CHARS)
         if end is not None:
             raw = text[marker.end() : end.start()]
@@ -6961,7 +7002,8 @@ def _first_real_private_key(text: str, begin: re.Pattern[str]) -> int | None:
             return marker.start()
     # A marker whose own body is no key may still have its key elsewhere in
     # the file; look at all of the added text, by shape only.
-    first = begin.search(text)
+    # An END marker alone counts too: its BEGIN may be split or unchanged.
+    first = begin.search(text) or _PEM_END_MARKER.search(text)
     if first is not None and _key_outside_the_block(text):
         return first.start()
     return None
