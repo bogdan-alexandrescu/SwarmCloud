@@ -87,10 +87,21 @@ def create_workflow(
 def list_workflows(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
+    state: list[str] | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """One page of the tenant's workflows, newest first.
+
+    `state` (repeatable) keeps only the workflows whose DERIVED state is one of
+    those named -- the bridge's `sc workflows` asks for the unfinished ones
+    (owner decision 2026-10-02: running workflows show in Claude Code without
+    attaching each by id). It filters THIS page after the rollup, because the
+    stored state is the cache this module exists not to trust, so a filtered
+    page can be short or empty and still carry a `next_page_token`; page on
+    until the token is null.
+    """
     page = ctx.store.list_workflows(
         tenant_id,
         limit=paged_limit(ctx, limit),
@@ -98,6 +109,9 @@ def list_workflows(
         submitted_by=submitted_by,
     )
     results, report = ctx.rollups.for_workflows(tenant_id, page.items)
+    if state:
+        wanted = set(state)
+        results = [r for r in results if r.to_api().get("state") in wanted]
     return {
         # Each step's input is masked by its own task's masker, from the step
         # tasks the rollup already read (the PR #229 review); a step whose task

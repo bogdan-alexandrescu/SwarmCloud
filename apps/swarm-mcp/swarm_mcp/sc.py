@@ -66,7 +66,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Callable, Sequence
 
-from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
+from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
 from . import render
 from .client import SwarmClient, SwarmError, outputs_of
@@ -592,6 +592,264 @@ def cmd_trouble(client: SwarmClient, args, out) -> int:
         ] + render.render_trouble(findings, style)
         _emit(lines, out)
     return code
+
+
+# --------------------------------------------------------------------------
+# Running workflows: `sc workflows`, `swarm_workflows` and the session hook
+# --------------------------------------------------------------------------
+#
+# Owner decision, 2026-10-02: a workflow running in SwarmCloud shows in Claude
+# Code as live [SwarmCloud] rows WITHOUT anyone attaching it by id. This is the
+# read every part of that stands on -- the `sc workflows` view, the MCP tool
+# `swarm_workflows` that `/sc attach --all` lists through, and the plugin's
+# SessionStart hook (`--session-start`). It writes nothing.
+
+#: The workflow states that are not over: every task state outside
+#: TERMINAL_STATES, and UNKNOWN -- what the API derives when it could not read
+#: every step, which is a workflow nobody has shown to be finished. Asked of
+#: the route by name, so a tenant's finished history is never paged through.
+ACTIVE_WORKFLOW_STATES: tuple[str, ...] = tuple(
+    s.value for s in TaskState if s not in TERMINAL_STATES
+) + ("UNKNOWN",)
+
+_TERMINAL_VALUES = frozenset(s.value for s in TERMINAL_STATES)
+
+#: Pages of `GET /v1/workflows` read before the list says it stopped short.
+#: The route filters each page after its rollup, so a tenant with a long
+#: finished history can need several pages to reach an old running workflow.
+WORKFLOW_LIST_PAGES = 4
+WORKFLOW_PAGE_SIZE = 50
+
+#: Running workflows read in detail (one `GET /v1/workflows/{id}` each, for the
+#: label and the current steps). Beyond this many the list still names them,
+#: says they were not read, and costs nothing more; `/sc attach --all` follows
+#: at most 10 anyway.
+WORKFLOW_DETAIL_READS = 20
+
+#: How many workflows the session-start context names one by one.
+SESSION_START_NAMED = 10
+
+
+def _label_of(envelope: dict[str, Any]) -> str | None:
+    """The spec's `label`, as the step tasks carry it (`metadata.unit`).
+
+    The frozen `Workflow` has no metadata field; `workflows.submit` puts the
+    label on every step task, so it is read back from the first that has one.
+    """
+    for task in envelope.get("tasks") or []:
+        unit = (task.get("metadata") or {}).get("unit") if isinstance(task, dict) else None
+        if isinstance(unit, str) and unit.strip():
+            return unit.strip()
+    return None
+
+
+def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
+    created = render.parse_time(workflow.get("created_at"))
+    entry: dict[str, Any] = {
+        "workflow_id": workflow.get("workflow_id"),
+        "label": None,
+        "state": workflow.get("state"),
+        "created_at": workflow.get("created_at"),
+        "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+        "steps_total": len(workflow.get("steps") or []),
+        "current_steps": None,
+    }
+    return with_console(entry, workflow)
+
+
+def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
+    """The label and the unfinished steps, from one workflow read."""
+    from . import workflows
+
+    try:
+        envelope = workflows.fetch(client, str(entry["workflow_id"]))
+    except SwarmError as exc:
+        entry["steps_unread_because"] = str(exc)
+        return entry
+    workflow = envelope["workflow"]
+    if workflow.get("state"):
+        entry["state"] = workflow["state"]
+    entry["label"] = _label_of(envelope)
+    links = {
+        step.get("step_id"): step
+        for step in workflow.get("steps") or []
+        if isinstance(step, dict)
+    }
+    current = []
+    for row in workflows.step_rows(envelope):
+        if row.get("state") in _TERMINAL_VALUES:
+            continue
+        step = {"step_id": row.get("step_id"), "task_id": row.get("task_id"), "state": row.get("state")}
+        if row.get("park_reason"):
+            step["park_reason"] = row["park_reason"]
+        current.append(with_console(step, links.get(row.get("step_id"))))
+    entry["current_steps"] = current
+    return entry
+
+
+def running_workflows(
+    client: SwarmClient,
+    *,
+    now: datetime | None = None,
+    pages: int = WORKFLOW_LIST_PAGES,
+    detail_reads: int = WORKFLOW_DETAIL_READS,
+) -> dict[str, Any]:
+    """The caller's tenant's workflows that are not over, newest first.
+
+    The tenant is the API's: `GET /v1/workflows` answers for the caller's own
+    tenant (`tenant_scope`), and nothing here names one. The route is asked for
+    `ACTIVE_WORKFLOW_STATES` and the answer is filtered AGAIN, because a
+    deployment older than that filter ignores the parameter and serves every
+    workflow -- and attaching a finished one would start rows with nothing to
+    watch. A workflow whose detail read says it has since finished is dropped
+    for the same reason. Raises `SwarmError` when the list itself cannot be
+    read: "could not ask" is never an empty list.
+    """
+    now = now or datetime.now(timezone.utc)
+    found: list[dict[str, Any]] = []
+    tenant: str | None = None
+    token: str | None = None
+    for _ in range(max(1, pages)):
+        page = client.workflows(
+            states=ACTIVE_WORKFLOW_STATES, limit=WORKFLOW_PAGE_SIZE, page_token=token
+        )
+        tenant = tenant or page.get("tenant_id")
+        for workflow in page["workflows"]:
+            if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
+                found.append(_running_entry(workflow, now))
+        token = page.get("next_page_token") or None
+        if token is None:
+            break
+
+    detailed = found[: max(0, detail_reads)]
+    if detailed:
+        with ThreadPoolExecutor(max_workers=min(8, len(detailed))) as pool:
+            list(pool.map(lambda entry: _read_detail(client, entry), detailed))
+    for entry in found[len(detailed):]:
+        entry["steps_unread_because"] = (
+            f"only the newest {detail_reads} running workflows are read step by step"
+        )
+    listed = [entry for entry in found if entry.get("state") not in _TERMINAL_VALUES]
+    out: dict[str, Any] = {
+        "tenant_id": tenant,
+        "count": len(listed),
+        "complete": token is None,
+        "workflows": listed,
+    }
+    if token is not None:
+        out["incomplete_because"] = (
+            f"stopped after {pages} pages of {WORKFLOW_PAGE_SIZE} workflows; older "
+            "running workflows, if any, are not listed"
+        )
+    return out
+
+
+def _age_text(seconds: Any) -> str:
+    if not isinstance(seconds, int):
+        return "age unknown"
+    if seconds < 60:
+        return "<1m old"
+    if seconds < 3600:
+        return f"{seconds // 60}m old"
+    if seconds < 86400:
+        return f"{seconds // 3600}h {seconds % 3600 // 60:02d}m old"
+    return f"{seconds // 86400}d old"
+
+
+def _steps_text(entry: dict[str, Any]) -> str:
+    steps = entry.get("current_steps")
+    if steps is None:
+        return "steps not read"
+    if not steps:
+        return "no unfinished step"
+    return ", ".join(f"{s.get('step_id')} {s.get('state') or 'state not read'}" for s in steps)
+
+
+def session_start_context(listing: dict[str, Any]) -> str | None:
+    """What the SessionStart hook tells the session, or None when nothing runs.
+
+    A hook cannot start a Workflow; the context makes the session's first
+    action the attach, and says how to turn this off.
+    """
+    running = listing.get("workflows") or []
+    if not running:
+        return None
+    count = len(running)
+    noun = "workflow is" if count == 1 else "workflows are"
+    named = []
+    for entry in running[:SESSION_START_NAMED]:
+        label = f' "{entry["label"]}"' if entry.get("label") else ""
+        named.append(
+            f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+            f"{_age_text(entry.get('age_seconds'))})"
+        )
+    if count > SESSION_START_NAMED:
+        named.append(f"and {count - SESSION_START_NAMED} more")
+    tenant = f" for tenant {listing['tenant_id']}" if listing.get("tenant_id") else ""
+    return (
+        f"{count} SwarmCloud {noun} running{tenant} and not shown in this session: "
+        + "; ".join(named)
+        + ". Before anything else, run `/sc attach --all` to show them as live "
+        "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
+        "step and follows at most 10 workflows. (This notice comes from the sc "
+        "plugin's SessionStart hook; turn off its `auto_attach` option to stop it.)"
+    )
+
+
+def cmd_workflows(client: SwarmClient, args, out) -> int:
+    if getattr(args, "session_start", False):
+        # THE HOOK'S MODE: silent on everything but a running workflow. A
+        # session must start the same whether or not SwarmCloud answered, so a
+        # failure prints nothing and exits 0 -- the hook script discards
+        # stderr anyway, and this keeps the CLI from relying on that.
+        try:
+            context = session_start_context(running_workflows(client))
+        except Exception:  # noqa: BLE001 - nothing may stop a session starting
+            return EXIT_OK
+        if context:
+            out.write(
+                json.dumps(
+                    {
+                        "hookSpecificOutput": {
+                            "hookEventName": "SessionStart",
+                            "additionalContext": context,
+                        }
+                    }
+                )
+                + "\n"
+            )
+        return EXIT_OK
+
+    listing, failure = _attempt(lambda: running_workflows(client))
+    if args.json:
+        out.write(
+            json.dumps(listing if listing is not None else {"error": str(failure)}, indent=2, default=str)
+            + "\n"
+        )
+        return EXIT_OK if listing is not None else EXIT_FAIL
+    style = style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
+    if listing is None:
+        _emit([render.section("workflows", "", style), f"  could not be read: {failure}"], out)
+        return EXIT_FAIL
+    running = listing["workflows"]
+    lines = [render.section("workflows", f"{len(running)} running", style)]
+    if not running:
+        lines.append("  none running")
+    for entry in running:
+        label = f"  {entry['label']}" if entry.get("label") else ""
+        lines.append(
+            f"  {entry.get('workflow_id')}{label}  {entry.get('state')}  "
+            f"{_age_text(entry.get('age_seconds'))}"
+        )
+        lines.append(f"    now: {_steps_text(entry)}")
+        if entry.get("console"):
+            lines.append(f"    console: {entry['console']}")
+    if not listing.get("complete"):
+        lines.append(f"  {listing.get('incomplete_because')}")
+    if running:
+        lines.append("  show them as live rows in Claude Code: /sc attach --all")
+    _emit(lines, out)
+    return EXIT_OK
 
 
 def _dump(snap: Snapshot, out) -> None:
@@ -1619,6 +1877,16 @@ def build_parser() -> argparse.ArgumentParser:
     r = sub.add_parser("trouble", help="what is wrong right now (exit 3 if anything is down)")
     _common(r, root=False)
     r.set_defaults(func=cmd_trouble)
+
+    wf = sub.add_parser(
+        "workflows", help="your tenant's running workflows: label, current steps, age, console"
+    )
+    _common(wf, root=False)
+    wf.add_argument(
+        "--session-start", action="store_true",
+        help="print the plugin's SessionStart hook output, and nothing when none run or on failure",
+    )
+    wf.set_defaults(func=cmd_workflows)
 
     # -- which deployment, and who you are on it -------------------------
     li = sub.add_parser(
