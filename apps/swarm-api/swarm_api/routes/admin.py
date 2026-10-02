@@ -16,18 +16,23 @@ Draining and disabling are different operations and both exist on purpose:
 
 from __future__ import annotations
 
-import os
-from typing import Any
-
 from fastapi import APIRouter, Depends, Query
 
 from swarm_common.models import ProviderState
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..auth import AuthContext
-from ..codec import lease_to_api, pool_to_api, quota_to_api, tenant_to_api
+from ..codec import (
+    lease_to_api,
+    pool_attribution,
+    pool_to_api,
+    quota_to_api,
+    task_to_api,
+    tenant_to_api,
+)
 from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import NotFound, ValidationFailed
+from ..heartbeats import heartbeat_grace_seconds
 from ..schemas import (
     DrainRequest,
     LimitRequest,
@@ -35,27 +40,17 @@ from ..schemas import (
     ProviderEnableRequest,
     TenantLimitsRequest,
 )
+from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
-
-def _heartbeat_grace_seconds(core: Any) -> int:
-    """Resolve the grace EXACTLY as ReconcilerConfig.from_env does.
-
-    `reconciler/config.py:82-85` reads HEARTBEAT_GRACE_SECONDS and otherwise
-    derives max(90, heartbeat_interval_seconds * 3). If this diverges, the UI
-    colours a row amber at a threshold the reconciler does not act on, which
-    is worse than showing no threshold at all.
-    """
-    raw = os.environ.get("HEARTBEAT_GRACE_SECONDS")
-    if raw is not None:
-        try:
-            return int(raw)
-        except ValueError:
-            pass
-    return max(90, core.heartbeat_interval_seconds * 3)
+#: The grace now lives in `swarm_api.heartbeats`, which the task routes read
+#: too (#179). The old name stays bound to the SAME function, not a copy, for
+#: the importers that predate the move (tests/browser/fixtures.py,
+#: tests/unit/control_plane/test_lease_heartbeat_route.py).
+_heartbeat_grace_seconds = heartbeat_grace_seconds
 
 
 def _check_provider(provider: str) -> str:
@@ -93,6 +88,12 @@ def get_dispatch(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """The control document, with `dispatch_state` and `control_document` (U26).
+
+    `dispatch_paused` is False for a missing document, as the scheduler reads
+    it; `dispatch_state: unknown` / `control_document: missing` say that the
+    False is a default, not a switch someone set. See `Store.get_control`.
+    """
     return ctx.store.get_control()
 
 
@@ -394,8 +395,15 @@ def list_pools(
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """Every pool, with who last changed it through an admin route (#133).
+
+    `admin_changed_by` / `admin_changed_at` are served HERE, on the admin read
+    Admin > Pool limits uses, and deliberately not on `/v1/capacity`: that
+    route serves pools to every tenant member, and an admin's email is not
+    tenant data. Both are null for a pool no admin route has changed.
+    """
     pools = sorted(ctx.store.list_pools(), key=lambda p: p.name)
-    return {"pools": [pool_to_api(p) for p in pools]}
+    return {"pools": [{**pool_to_api(p), **pool_attribution(p)} for p in pools]}
 
 
 @router.get("/leases")
@@ -501,7 +509,7 @@ def list_leases(
     return {
         "leases": rows,
         "thresholds": {
-            "heartbeat_grace_seconds": _heartbeat_grace_seconds(core),
+            "heartbeat_grace_seconds": heartbeat_grace_seconds(core),
             "lease_timeout_seconds": core.lease_timeout_seconds,
         },
         "evaluated_at": now,
@@ -518,6 +526,47 @@ def list_leases(
         "truncated": scan.truncated,
         # Rows state / overdue_only ran over.
         "examined": scan.examined,
+    }
+
+
+@router.get("/failures")
+def list_failures(
+    limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """FAILED tasks across every tenant, newest first (U19, P6).
+
+    `GET /v1/tasks?state=FAILED` is tenant-scoped, and every task index leads
+    with tenant_id, so "what is failing on the platform" had no answer short of
+    one listing per tenant. This is that read, for a FULL admin only: it is not
+    in `auth.POOL_ADMIN_ROUTES`, so the narrow pool-admin capability is refused
+    by `admin_auth` like on every other admin route.
+
+    Each row is a task row as `GET /v1/tasks` serves it -- masked by the task's
+    own masker, `tenant_id` included, which says whose it is -- with its
+    account read per tenant on the page (`accounts_for` never reads across
+    tenants). A FAILED task holds no lease, so `waiting_for` and the heartbeat
+    fields are null. Paged by the same `created_at` cursor as `GET /v1/tasks`.
+    """
+    page = ctx.store.list_failures(limit=paged_limit(ctx, limit), page_token=page_token)
+    by_tenant: dict[str, list] = {}
+    for task in page.items:
+        by_tenant.setdefault(task.tenant_id, []).append(task)
+    accounts: dict[str, dict] = {}
+    for tenant_id, tasks in by_tenant.items():
+        accounts.update(accounts_for(ctx.db, tenant_id, tasks))
+    return {
+        "tasks": [
+            task_to_api(
+                task,
+                account=accounts.get(task.id),
+                console_url=ctx.settings.console_url,
+            )
+            for task in page.items
+        ],
+        "next_page_token": page.next_page_token,
     }
 
 

@@ -29,6 +29,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# Every task this suite submits, so "Capacity was returned" can ask about
+# these and nothing else: the tenant it runs in is shared with other work.
+SMOKE_TASK_IDS=()
+smoke_track_task() { [[ -z "$1" ]] || SMOKE_TASK_IDS+=("$1"); }
+
 step "Smoke test: ${PROJECT_ID} / ${ENVIRONMENT}"
 require_platform
 info "api ${API_URL:-$(api_url)}"
@@ -203,6 +208,7 @@ if api_post "/tasks" "${injected}" >"${evil_body}"; then
   evil_id="$(jq -r '.id // .task_id // empty' <"${evil_body}")"
   rm -f "${evil_body}"
   if [[ -n "${evil_id}" ]]; then
+    smoke_track_task "${evil_id}"
     sleep 2
     got_class="$(task_field "${evil_id}" '.resource_class // "?"')"
     expected_class="standard"
@@ -232,9 +238,12 @@ fi
 
 # ---------------------------------------------------------------------------
 t_case "Baseline capacity before submitting"
+# Context for a reader of the log, and nothing more: these count the WHOLE
+# tenant, which other work shares, so no assertion compares against them.
+# "Capacity was returned" asks about the suite's own tasks instead.
 BASE_HOLDING="$(holding_capacity)"
 BASE_LEASES="$(active_leases)"
-t_info "tasks holding capacity: ${BASE_HOLDING}, active leases: ${BASE_LEASES}"
+t_info "tenant-wide, including other work: tasks holding capacity: ${BASE_HOLDING}, active leases: ${BASE_LEASES}"
 t_pass "baseline captured"
 
 # ---------------------------------------------------------------------------
@@ -463,6 +472,7 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
     t_fail "${BACKEND}: submission failed for profile ${BPROFILE}"
     continue
   fi
+  smoke_track_task "${B_TASK_ID}"
   EXERCISED=$(( EXERCISED + 1 ))
   t_info "${BACKEND}: task ${B_TASK_ID}"
   b_final=""
@@ -488,6 +498,7 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
     if [[ "${b_final}" == "SUCCEEDED" ]]; then
       t_check_browser_fixture "${BACKEND} (${BPROFILE})" "${TIMEOUT}" \
         "$(profile_extra "${BPROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"smoke-test-fixture"}}')" || true
+      smoke_track_task "${FIXTURE_TASK_ID}"
     else
       t_case "${BACKEND} (${BPROFILE}): a browser task loads a page the check wrote; its pixels and text come back"
       t_skip "${BACKEND} (${BPROFILE}): not submitted -- the about:blank task above did not succeed (${b_final:-no state}), so Chromium was never seen to start"
@@ -540,6 +551,7 @@ RUN_ID="$(test_run_id)"
 # profile_extra: the generic fixture's clone, nothing for the other profiles.
 MAIN_EXTRA="$(profile_extra "${PROFILE}" | jq -c '. + {"priority":10,"metadata":{"source":"smoke-test"}}')"
 TASK_ID="$(submit_task "${PROFILE}" "$(profile_input "${PROFILE}" "${RUN_ID}")" "${MAIN_EXTRA}")" || die "submission failed"
+smoke_track_task "${TASK_ID}"
 t_info "task ${TASK_ID}"
 
 if final="$(wait_for_state "${TASK_ID}" "SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED" "${TIMEOUT}")"; then
@@ -572,10 +584,26 @@ done
 
 # ---------------------------------------------------------------------------
 t_case "Capacity was returned"
-if wait_until "capacity to return to ${BASE_HOLDING}" 120 holding_at_most "${BASE_HOLDING}"; then
-  t_pass "tasks holding capacity back to baseline (${BASE_HOLDING})"
+# ONLY THE SMOKE'S OWN TASKS. This compared the whole tenant's capacity-holding
+# tasks against a baseline, and the tenant is shared with the owner's
+# SwarmCloud lanes: release 36977343635 failed here on a lane that started
+# during the smoke, in the run that printed this task's lease released. See
+# own_capacity_holders in testlib.sh.
+OWN_TASKS=0
+for own_id in ${SMOKE_TASK_IDS[@]+"${SMOKE_TASK_IDS[@]}"}; do
+  if [[ -n "${own_id}" ]]; then OWN_TASKS=$(( OWN_TASKS + 1 )); fi
+done
+if [[ "${OWN_TASKS}" -eq 0 ]]; then
+  t_fail "the suite recorded no task of its own, so whether capacity was returned cannot be checked"
+elif wait_until "the smoke's ${OWN_TASKS} task(s) to hold no capacity" 120 own_capacity_released "${SMOKE_TASK_IDS[@]}"; then
+  t_pass "none of the smoke's ${OWN_TASKS} task(s) holds capacity: every one is out of a holding state and every lease it took is released"
+elif OWN_HOLDERS="$(own_capacity_holders "${SMOKE_TASK_IDS[@]}")"; then
+  assert_le "$(printf '%s' "${OWN_HOLDERS}" | grep -c .)" 0 "smoke tasks holding capacity after completion"
+  while IFS= read -r own_holder; do
+    [[ -z "${own_holder}" ]] || t_info "still held: ${own_holder}"
+  done <<<"${OWN_HOLDERS}"
 else
-  assert_le "$(holding_capacity)" "${BASE_HOLDING}" "tasks holding capacity after completion"
+  t_fail "could not read the smoke's own tasks and leases, so whether capacity was returned is unknown (a failed read, not evidence either way)"
 fi
 # Every lease the task held, named by its events. This read
 # `current_lease_id`, which the worker clears as the task ends, so it was

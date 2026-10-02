@@ -973,6 +973,60 @@ t_check_leases_released() {
   return 0
 }
 
+# own_capacity_holders TASK_ID... -> one line per unit of capacity THOSE tasks
+# still hold: `ID state STATE` for a task in CONCURRENCY_STATES, `ID lease
+# LEASE_ID` for each lease its events name that is not released. Nothing when
+# they hold nothing.
+#
+# WHY NOT holding_capacity. That counts every task in the tenant, and the smoke
+# suite runs in `eng`, where the owner's SwarmCloud lanes run at the same time.
+# Release 36977343635 (2026-10-02) failed "tasks holding capacity after
+# completion: 1 > 0" in the same run that printed the smoke task's own lease
+# released: the 1 was a lane that started during the smoke. A baseline does not
+# fix that, because the other work moves while the suite runs. Asking only
+# about the tasks the suite submitted is exact.
+#
+# BOTH the state and the leases, because each is half of the record: the
+# worker writes the terminal state first and releases the lease after it
+# (control.finish), so a terminal task whose lease never came back is the leak
+# this exists to catch, and a task still in a holding state is capacity held
+# whatever its leases say.
+#
+# Fails -- never prints nothing -- when given no task, when a read did not
+# answer, when a task does not exist, or when a lease its events name does not
+# exist: none of those is evidence that capacity came back.
+own_capacity_holders() {
+  local id state held_state lease leases at
+  [[ $# -gt 0 ]] || return 1
+  for id in "$@"; do
+    [[ -n "${id}" ]] || return 1
+    state="$(task_state "${id}")" || return 1
+    [[ -n "${state}" && "${state}" != "MISSING" ]] || return 1
+    for held_state in "${CONCURRENCY_STATES[@]}"; do
+      if [[ "${state}" == "${held_state}" ]]; then
+        printf '%s state %s\n' "${id}" "${state}"
+      fi
+    done
+    leases="$(task_lease_ids "${id}")" || return 1
+    while IFS= read -r lease; do
+      [[ -n "${lease}" ]] || continue
+      at="$(lease_released_at "${lease}")" || return 1
+      case "${at}" in
+        null)       printf '%s lease %s\n' "${id}" "${lease}" ;;
+        missing|"") return 1 ;;
+      esac
+    done <<<"${leases}"
+  done
+  return 0
+}
+
+# Predicate for wait_until: the tasks hold nothing, read and confirmed.
+own_capacity_released() {
+  local holders
+  holders="$(own_capacity_holders "$@")" || return 1
+  [[ -z "${holders}" ]]
+}
+
 # Everything a test creates is tagged so cleanup can find it again and so a
 # human reading Firestore can tell test traffic from real work.
 test_run_id() { printf 'test-%s-%s' "${SUITE_NAME}" "$(date -u +%Y%m%d%H%M%S)"; }

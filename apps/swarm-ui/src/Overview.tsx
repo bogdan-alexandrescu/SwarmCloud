@@ -1763,12 +1763,16 @@ function startKey(t: Task): number {
   return Number.isFinite(v) ? v : Number.MAX_SAFE_INTEGER
 }
 
-function RunningRow({ task, silentFor }: { task: Task; silentFor?: number | undefined }) {
+export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number | undefined }) {
   return (
     <tr>
       <th scope="row">
+        {/* NAMED BY ITS STEP (#94): four running steps of one workflow read
+            `scan-01`, `scan-04`, `scan-05`, `scan-06`, not four `claude-code`.
+            A standalone task has no step and is named by its profile, as
+            before; the whole id stays on the sub-line either way. */}
         <a className="ctl-link ov-link" href={`#work/task/${encodeURIComponent(task.id)}`}>
-          {task.runner_profile}
+          {task.step_id ?? task.runner_profile}
         </a>
         <span className="ctl-sub">{task.id}</span>
         {/* THE WORKFLOW IT IS A STEP OF (#90). The card listed agents with no
@@ -2833,7 +2837,10 @@ function AttentionLead({ checks }: { checks: Check[] }) {
                   : `clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
               }
             >
-              {ran}/{checks.length} ran
+              {/* LABELLED (#98): `8/8` two lines under the head's `reads 8/8`
+                  was a second unlabelled fraction of a different thing. This
+                  one counts the CHECKS that ran, and says so first. */}
+              checks {ran}/{checks.length}
             </span>
             {blind.length > 0 && (
               <>

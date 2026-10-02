@@ -380,6 +380,30 @@ export function SkyShell({
   const sideRef = useRef<HTMLDivElement | null>(null)
   const flyRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef<HTMLButtonElement | null>(null)
+  const appRef = useRef<HTMLDivElement | null>(null)
+  const scrollerRef = useRef<HTMLElement | null>(null)
+  const [scroll, setScroll] = useState<PageScroll>('top')
+
+  // THE PHONE HEADER GIVES BACK ITS HEIGHT ON SCROLL, AND A LONG PAGE GETS A
+  // WAY BACK UP (#139). The scroller is the frame's `.ctl-scroll`, not the
+  // window: the dock is a row of the frame, so the page scrolls inside it.
+  // Read on every scroll event, which is a comparison and a state write that
+  // React drops when the band has not changed.
+  useEffect(() => {
+    const scroller = appRef.current?.closest<HTMLElement>('.ctl-scroll') ?? null
+    scrollerRef.current = scroller
+    if (scroller === null) return
+    const onScroll = () => setScroll(scrollBand(scroller.scrollTop, scroller.clientHeight))
+    onScroll()
+    scroller.addEventListener('scroll', onScroll, { passive: true })
+    return () => scroller.removeEventListener('scroll', onScroll)
+  }, [])
+  const toTop = () => {
+    const scroller = scrollerRef.current
+    if (scroller === null) return
+    scroller.scrollTop = 0
+    setScroll('top')
+  }
 
   // THE PHONE DRAWER IS A DIALOG IN BEHAVIOUR: focus moves into it on open, Tab
   // wraps inside it, Escape closes it, and focus returns to the button that
@@ -577,7 +601,11 @@ export function SkyShell({
   )
 
   return (
-    <div className={`sk-app${collapsed ? ' is-collapsed' : ''}${drawer ? ' has-drawer' : ''}`} data-env={env.kind}>
+    <div
+      ref={appRef}
+      className={`sk-app${collapsed ? ' is-collapsed' : ''}${drawer ? ' has-drawer' : ''}${scroll === 'top' ? '' : ' is-scrolled'}`}
+      data-env={env.kind}
+    >
       {t.bar && <div className="sk-prodbar" aria-hidden />}
       <header className="sk-pbar">
         <button type="button" className="sk-ibtn" aria-label="Open the menu" aria-expanded={drawer} ref={openerRef} onClick={() => setDrawer(true)}>
@@ -596,9 +624,39 @@ export function SkyShell({
       {collapsed && fly !== null && !drawer && (
         <Flyout section={fly} tab={section === fly ? tab : ''} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
       )}
-      <main className="sk-main">{children}</main>
+      <main className="sk-main">
+        {children}
+        {/* A WAY BACK UP, once the page is more than a screen long and the
+            reader is past the first screen of it (#139). Drawn below 760px
+            only (styles.css): above it the spine never scrolls away. */}
+        {scroll === 'far' && (
+          <button type="button" className="sk-top" onClick={toTop}>
+            &#8593; Top
+          </button>
+        )}
+      </main>
     </div>
   )
+}
+
+/** How far down the page the reader is, in the three bands the phone chrome uses. */
+export type PageScroll = 'top' | 'down' | 'far'
+
+/**
+ * Past the phone header's own height (44px) the header compacts to 36px:
+ * by then the page's title row has gone under it, and what the reader needs
+ * from it is the way to the menu, not 8px of padding (#139, §6.15's 25%
+ * chrome budget). Past one scrollport -- floored at 600px, so a short phone
+ * in landscape is not offered `Top` after one swipe -- the `Top` control
+ * appears.
+ */
+export const COMPACT_AFTER_PX = 44
+export const TOP_AFTER_MIN_PX = 600
+
+export function scrollBand(scrollTop: number, viewport: number): PageScroll {
+  if (scrollTop > Math.max(viewport, TOP_AFTER_MIN_PX)) return 'far'
+  if (scrollTop > COMPACT_AFTER_PX) return 'down'
+  return 'top'
 }
 
 function initials(email: string): string {

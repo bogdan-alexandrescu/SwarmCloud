@@ -231,6 +231,10 @@ def _waits_on_parents(task: dict[str, Any]) -> bool:
     return state in ("SUBMITTED", "QUEUED") or (state == "PARKED" and task.get("park_reason") == _DEPENDENCY_WAIT)
 
 
+#: The four token counts `record_spend` writes on an attempt document.
+_TOKEN_FIELDS = ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens")
+
+
 def _spend(client: SwarmClient, task_id: str) -> tuple[str, str]:
     """`(tokens, cost)` words: summed over attempts, or one word for unknown."""
     try:
@@ -241,8 +245,11 @@ def _spend(client: SwarmClient, task_id: str) -> tuple[str, str]:
         a.get("cost_usd") for a in attempts
         if isinstance(a.get("cost_usd"), (int, float)) and not isinstance(a.get("cost_usd"), bool)
     ]
+    # EVERY KIND THE ATTEMPT RECORDED, cache reads and writes included (#322):
+    # input + output alone read 10,007 for a run that used 1.41M tokens. A
+    # kind no attempt recorded adds nothing, and none at all is `unrecorded`.
     counts = [
-        a.get(field) for a in attempts for field in ("input_tokens", "output_tokens")
+        a.get(field) for a in attempts for field in _TOKEN_FIELDS
         if isinstance(a.get(field), int) and not isinstance(a.get(field), bool)
     ]
     tokens = _tokens(sum(counts)) if counts else "tokens unrecorded"

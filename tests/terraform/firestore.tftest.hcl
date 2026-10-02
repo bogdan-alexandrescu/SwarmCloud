@@ -341,3 +341,38 @@ run "a_bench_database_with_a_live_name_is_refused" {
 
   expect_failures = [var.bench_database_id]
 }
+
+run "the_owner_filter_and_the_failures_listing_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/tasks?submitted_by=... (U5):
+  #   tasks where tenant_id == T and submitted_by == S order by created_at DESC
+  # tenant_id leads, so the owner filter narrows a tenant and never crosses one.
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-tenant-submitter-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[1].field_path == "submitted_by" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].field_path == "created_at" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].order == "DESCENDING"
+    )
+    error_message = "GET /v1/tasks?submitted_by needs (tenant_id, submitted_by, created_at DESC)"
+  }
+
+  # GET /v1/admin/failures (U19):
+  #   tasks where state == FAILED order by created_at DESC, across tenants
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-state-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-state-created"].query_scope == "COLLECTION" &&
+      google_firestore_index.this["tasks-state-created"].fields[0].field_path == "state" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "GET /v1/admin/failures needs (state, created_at DESC) at collection scope"
+  }
+}

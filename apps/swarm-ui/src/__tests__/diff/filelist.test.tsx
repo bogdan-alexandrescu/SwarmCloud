@@ -198,11 +198,10 @@ describe('the diff file list', () => {
     expect(document.querySelectorAll('.diff a[href]')).toHaveLength(0)
   })
 
-  it('filters by path, and / focuses the filter', () => {
+  it('filters by path', () => {
     render(<DiffView patch={FOUR} />)
-    expect(fireEvent.keyDown(scroller(), { key: '/' })).toBe(false)
+    // `/` is find in the diff (find.test.tsx); the filter is reached by Tab or a click.
     const box = screen.getByRole('searchbox', { name: 'Filter files by path' })
-    expect(document.activeElement).toBe(box)
     fireEvent.change(box, { target: { value: 'DOCS' } })
     expect(listRows().map((r) => r.getAttribute('data-path'))).toEqual(['docs/guide.md'])
     expect(nav().textContent).toContain('1 of 4 shown')

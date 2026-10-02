@@ -225,6 +225,23 @@ def test_cost_tokens_and_checkpoint_are_read_not_invented(swarm, world, compact)
     assert "checkpoint" in line and "checkpoint none" not in line, line
 
 
+def test_tokens_count_the_cache_too(swarm, world, compact):
+    # #322: input + output alone read 10,007 for a run that used 1.41M.
+    _running(world)
+    world.db.docs["attempts/att_1"].update(
+        {
+            "input_tokens": 52,
+            "output_tokens": 9_955,
+            "cache_read_input_tokens": 1_337_190,
+            "cache_creation_input_tokens": 59_715,
+        }
+    )
+
+    (line,) = compact.watch_progress(swarm, ["task_a"])["progress"]
+
+    assert "1.4M tok" in line, line
+
+
 def test_a_figure_that_was_not_recorded_says_so_in_one_word(swarm, world, compact):
     _running(world)
 

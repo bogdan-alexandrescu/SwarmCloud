@@ -148,6 +148,7 @@ import {
   matchesFilters,
   ownersOf,
   parseWorkflowQuery,
+  phoneSummary,
   profilesOf,
   rowWhy,
   SORT_LABEL,
@@ -4034,6 +4035,12 @@ function WorkflowListRow({
       <td className="wfl-name">
         <a href={workflowHref(workflow.workflow_id, query)}>{label ?? workflow.workflow_id}</a>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {/* Drawn at ≤560 only, where the done, failed and age columns are
+            off the right edge (#109); the cells say it wide, so hidden from
+            assistive technology to keep one reading of each fact. */}
+        <span className="wfl-phone" aria-hidden>
+          {phoneSummary(workflow, now)}
+        </span>
         {why !== null && <RowWhyLine why={why} />}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>

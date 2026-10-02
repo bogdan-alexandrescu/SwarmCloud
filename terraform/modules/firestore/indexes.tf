@@ -109,6 +109,36 @@ locals {
       ]
     }
 
+    # GET /v1/tasks?submitted_by=... (U5) -- the owner filter, applied IN the
+    # query when it is the only filter besides the tenant, so pages are full
+    # and the cursor is exact. Combined with state, workflow_id or
+    # runner_profile it is a post-filter instead (Store.list_tasks), so no
+    # four-field index is needed. A google_firestore_index takes no labels, so
+    # managed-by=swarm-terraform cannot be written on it; the type is listed in
+    # scripts/lib/unlabelable-types.json (:78) for the destroy and plan guards.
+    "tasks-tenant-submitter-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "submitted_by", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
+    # GET /v1/admin/failures (U19) -- FAILED tasks across every tenant, newest
+    # first. The one task listing with no tenant filter (full admin only), so
+    # no tenant-leading index can serve it. No labels possible, as above
+    # (scripts/lib/unlabelable-types.json:78).
+    "tasks-state-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     "tasks-tenant-state-updated" = {
       collection  = "tasks"
       query_scope = "COLLECTION"

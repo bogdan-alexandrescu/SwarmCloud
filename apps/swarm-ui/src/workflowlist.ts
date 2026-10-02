@@ -23,6 +23,7 @@ import {
   reasonCopy,
   stepState,
   TERMINAL_STATES,
+  timeAgo,
   type Task,
   type TaskState,
   type Workflow,
@@ -366,4 +367,28 @@ export function rowWhy(w: Workflow, taskById: ReadonlyMap<string, Task> | null):
     }
   }
   return null
+}
+
+/**
+ * THE ROW'S COMPACT LINE AT PHONE WIDTH (#109): `9/30 · 4✕ · 2h ago`. At 390
+ * the list scrolls sideways and the done, failed and age columns sit off the
+ * right edge, so each row alone did not say how it ended or when. This line
+ * carries the three under the name. The failed count is drawn only when there
+ * is one, and only from a COMPLETE census: over a partial read it would be a
+ * wrong number (`rollupLine`'s rule), so the line keeps the step count alone.
+ * The age is since submission, the one instant every workflow has.
+ */
+export function phoneSummary(w: Pick<Workflow, 'steps' | 'rollup' | 'created_at'>, now: number): string {
+  const total = w.steps.length
+  const roll = w.rollup
+  const parts: string[] = []
+  if (roll && roll.complete) {
+    parts.push(`${roll.counts.SUCCEEDED ?? 0}/${total}`)
+    const failed = roll.counts.FAILED ?? 0
+    if (failed > 0) parts.push(`${failed}✕`)
+  } else {
+    parts.push(`${total} step${total === 1 ? '' : 's'}`)
+  }
+  if (Number.isFinite(Date.parse(w.created_at))) parts.push(timeAgo(w.created_at, now))
+  return parts.join(' · ')
 }
