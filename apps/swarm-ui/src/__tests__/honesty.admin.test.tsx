@@ -410,9 +410,12 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     expect(document.body.textContent ?? '').not.toMatch(/configured/)
     const quotaRow = editorRow('provider:anthropic')
     expect(quotaRow.querySelector('td[data-label="Set by"]')?.textContent).toBe('provider quota')
-    // A family where everything is as configured draws no Set by column at all.
+    // A family where everything is as configured still draws the Set by
+    // column, so every family has the same columns (#503) -- but its cells
+    // are empty: `configured` there is the column restating the Ceiling.
     const global = document.querySelector('.adm-family')!
-    expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).not.toContain('Set by')
+    expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).toContain('Set by')
+    expect(editorRow('global').querySelector('td[data-label="Set by"]')?.textContent).toBe('')
   })
 })
 
@@ -593,9 +596,13 @@ describe('Provider quota never draws an old reading as a current verdict (CP-9)'
     expect((cell.textContent ?? '').toLowerCase()).toContain('available')
   })
 
+  // SINCE #503 `available` IS ONE PICTURE: the neutral word, no verdict mark,
+  // fresh or stale -- it was a grey dot on one row and QUEUED's ring on
+  // another. What says a reading is old is the stale mark, and only that, so
+  // a current reading is the one WITHOUT it.
   it('draws a reading well inside twice the broker’s interval as current', async () => {
     const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(4) })]))
-    expect(cell.querySelector('.ctl-chip.is-ok')).not.toBeNull()
+    expect(cell.querySelector('.quota-state[data-tone="neu"]')?.textContent).toBe('available')
     expect(cell.querySelector('.ctl-stale-mark')).toBeNull()
   })
 
@@ -607,7 +614,8 @@ describe('Provider quota never draws an old reading as a current verdict (CP-9)'
 
   it('keeps a verdict that is not ok on a stale reading, and marks its age', async () => {
     const cell = state(await renderQuota([quota({ state: 'THROTTLED', updated_at: minutesAgo(60) })]))
-    expect(cell.querySelector('.ctl-chip.is-warn')).not.toBeNull()
+    // A condition, so the amber warning triangle (brand §3), kept on a stale row.
+    expect(cell.querySelector('.quota-state [data-mark="warn"]')).not.toBeNull()
     expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('1h')
   })
 

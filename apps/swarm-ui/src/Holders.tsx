@@ -1,9 +1,11 @@
 import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
 import { HelpCard } from './HelpCard'
-import { Mark, UtilRow } from './primitives'
+import { StateMark, WarnMark } from './marks'
+import { Mark } from './primitives'
 import { HOLDERS_POLL_MS, useLinkedPool } from './capacityPoll'
 import { Screen } from './Shell'
+import './styles/capacity.css'
 import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
@@ -80,11 +82,12 @@ function coverageSay(rows: number, c: LeaseCoverage, what: string): string {
  * that agree".
  *
  * ON SOURCING: docs/web-ui/02-cluster-state.md is cut off mid-sentence in
- * §4.1 and has no Screen C section. The four parts below come from
- * README.md's one-line description -- lease list, in-flight units, class mix,
+ * §4.1 and has no Screen C section. The parts below came from README.md's
+ * one-line description -- lease list, in-flight units, class mix,
  * accounting-drift check -- and everything else from the data traps in §1.1
  * and from what the routes actually send. Nothing here is presented as spec
- * that is not.
+ * that is not. Since the #503 audit the layout is capacity.html frame 6's:
+ * the lease table first, drift per pool under it, and no class-mix card.
  *
  * THE DRIFT CHECK IS THE POINT. Admission increments every pool in a lease's
  * list by the lease's `units`, in the same transaction that writes the lease.
@@ -185,17 +188,24 @@ export function HoldersScreen() {
       }}
     >
       {(board) => {
-        // READ ONCE, PASSED TO ALL THREE. The drift check, the class mix and
-        // the table are three computations over the same rows, and a coverage
-        // decided three times is three chances for one of them to look whole.
+        // READ ONCE, PASSED TO BOTH. The drift check and the table are two
+        // computations over the same rows, and a coverage decided twice is
+        // two chances for one of them to look whole.
         const coverage = leaseCoverage(board.page)
+        const drift = driftRows(board, coverage)
         return (
           <>
-            <div className="ctl-cards hold-top">
-              <Drift board={board} coverage={coverage} />
-              <ClassMix rows={board.page.leases} coverage={coverage} />
-            </div>
+            {/* THE TABLE FIRST, DRIFT UNDER IT (capacity.html frame 6, the
+                #503 audit). The question this page is opened with is "what is
+                holding capacity"; whether the two records of that agree is the
+                check under it. A disagreement is still the first thing on the
+                page -- as one callout naming the pool, above the table -- so
+                moving the card down hides nothing. The Class mix card is gone
+                with the summary card: the pick has neither, and the Units
+                column and each lease's pools say what it said. */}
+            <DriftCallout rows={drift} coverage={coverage} rowsRead={board.page.leases.length} />
             <HolderTable rows={board.page.leases} coverage={coverage} page={board.page} />
+            <Drift board={board} coverage={coverage} rows={drift} />
           </>
         )
       }}
@@ -255,16 +265,105 @@ function coverageMark(rows: number, c: LeaseCoverage, what: string): ReactNode {
   return <Mark kind={c.kind === 'cut' ? 'partial' : 'absent'} say={coverageSay(rows, c, what)} />
 }
 
-function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCoverage }) {
+/** One pool's two records of the units held: the leases' sum and its counter. */
+interface DriftRow {
+  name: string
+  held: number
+  /** The pool's own counter, or null when no counter for it was read. */
+  active: number | null
+}
+
+/**
+ * Units held per pool, from the leases, beside that pool's own counter --
+ * every pool the comparison may honestly make, agreeing ones included
+ * (capacity.html frame 6 draws them all: From leases, Counter, Delta).
+ *
+ * Over a CUT or unreported window, only pools that at least one loaded lease
+ * names are compared: a pool no loaded lease mentions may be named by a lease
+ * the window left out, and showing it with a lease side of 0 would manufacture
+ * a delta out of an absence. null when the counters were not read.
+ */
+function driftRows(board: HoldersBoard, coverage: LeaseCoverage): DriftRow[] | null {
+  if (board.pools === null) return null
+  const byPool = new Map<string, number>()
+  for (const l of board.page.leases) {
+    if (!Array.isArray(l.pools)) continue
+    const units = typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : null
+    if (units === null) continue
+    for (const p of l.pools) byPool.set(p, (byPool.get(p) ?? 0) + units)
+  }
+  // OVER EVERY LIVE LEASE, EVERY POOL IS COMPARED (CP-7, visual QA 2026-09-25).
+  // A pool no loaded lease names used to be skipped, on the grounds that its
+  // lease side of 0 would be an absence dressed as a measurement -- which is
+  // true of a CUT window and false of a complete one. When `leaseCoverage`
+  // says no live lease was left out, and the rows are not filtered to one
+  // tenant (a tenant's leases say nothing about the platform's `global`
+  // counter), a pool no lease names holds 0 units BY MEASUREMENT. A counter
+  // above that is the leak this card exists to find.
+  if (coverage.kind === 'complete' && board.page.tenant_id === null) {
+    for (const p of board.pools) if (!byPool.has(p.name)) byPool.set(p.name, 0)
+  }
+  const pools = board.pools
+  return Array.from(byPool.entries())
+    .map(([name, held]) => {
+      const pool = pools.find((p) => p.name === name)
+      return { name, held, active: pool ? pool.active : null }
+    })
+    .sort((a, b) => b.held - a.held || a.name.localeCompare(b.name))
+}
+
+function disagrees(r: DriftRow): boolean {
+  return r.active !== null && r.active !== r.held
+}
+
+/**
+ * THE DISAGREEMENT, NAMED ABOVE THE TABLE (capacity.html frame 6's callout).
+ * One line per pool whose counter differs from its leases. Over every live
+ * lease that is evidence; over a cut or unreported window it may be the
+ * leases the window left out, and the line says so rather than calling it a
+ * leak. Nothing when every compared pool agrees, or the counters were unread.
+ */
+function DriftCallout({
+  rows,
+  coverage,
+  rowsRead,
+}: {
+  rows: DriftRow[] | null
+  coverage: LeaseCoverage
+  rowsRead: number
+}) {
+  const off = (rows ?? []).filter(disagrees)
+  if (off.length === 0) return null
+  return (
+    <div className="hold-callout" role="status">
+      <WarnMark />
+      <div>
+        {off.map((r) => {
+          const d = (r.active as number) - r.held
+          return (
+            <p key={r.name}>
+              <b className="mono">{r.name}</b> counts {Math.abs(d)} {d > 0 ? 'more' : 'fewer'} than its leases.
+            </p>
+          )
+        })}
+        {/* Over a cut or unreported window the leases left out may be the
+            difference, which is said once rather than called a leak. */}
+        {coverage.kind !== 'complete' && <p>{coverageSay(rowsRead, coverage, 'This')}</p>}
+      </div>
+    </div>
+  )
+}
+
+function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: LeaseCoverage; rows: DriftRow[] | null }) {
   const rowsRead = board.page.leases.length
 
   /* THE COUNTERS ARE GONE, SO THERE IS NO FIGURE AT ALL.
      Not a zero, not an empty table: `.ctl-mark.is-unread` plus a dash in the
      figure slot. The detail the server gave is the card's note, which is one
      line and does not wrap -- the long form is the help topic. */
-  if (board.pools === null) {
+  if (rows === null) {
     return (
-      <section className="ctl-card">
+      <section className="ctl-card hold-drift">
         <DriftHead note="not compared" />
         <div className="ctl-card-body">
           <b
@@ -285,34 +384,7 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
     )
   }
 
-  const byPool = new Map<string, number>()
-  for (const l of board.page.leases) {
-    if (!Array.isArray(l.pools)) continue
-    const units = typeof l.units === 'number' && Number.isFinite(l.units) ? l.units : null
-    if (units === null) continue
-    for (const p of l.pools) byPool.set(p, (byPool.get(p) ?? 0) + units)
-  }
-  // OVER EVERY LIVE LEASE, EVERY POOL IS COMPARED (CP-7, visual QA 2026-09-25).
-  // A pool no loaded lease names used to be skipped, on the grounds that its
-  // lease side of 0 would be an absence dressed as a measurement -- which is
-  // true of a CUT window and false of a complete one. When `leaseCoverage`
-  // says no live lease was left out, and the rows are not filtered to one
-  // tenant (a tenant's leases say nothing about the platform's `global`
-  // counter), a pool no lease names holds 0 units BY MEASUREMENT. A counter
-  // above that is the leak this card exists to find, and it was the one leak
-  // the card could not see.
-  if (coverage.kind === 'complete' && board.page.tenant_id === null) {
-    for (const p of board.pools) if (!byPool.has(p.name)) byPool.set(p.name, 0)
-  }
-
-  const rows = Array.from(byPool.entries())
-    .map(([name, held]) => {
-      const pool = board.pools?.find((p) => p.name === name)
-      return { name, held, active: pool ? pool.active : null }
-    })
-    .sort((a, b) => b.held - a.held)
-
-  const disagreeing = rows.filter((r) => r.active !== null && r.active !== r.held)
+  const disagreeing = rows.filter(disagrees)
   const compared = rows.filter((r) => r.active !== null).length
   // A DELTA IS EVIDENCE ONLY OVER EVERY LIVE LEASE. Over a cut window the
   // lease side is short by whatever the window left out, so a counter above it
@@ -321,7 +393,7 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
   const mark = coverageMark(rowsRead, coverage, 'This comparison')
 
   return (
-    <section className="ctl-card">
+    <section className="ctl-card hold-drift">
       {/* §8.4(2): the coverage qualifier, one line, mono, right-aligned. This
           is the sentence "computed over the N rows returned" as an attribute of
           the card rather than a paragraph under it -- and when the rows are not
@@ -335,20 +407,7 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
           </>
         }
       />
-
-      {disagreeing.length === 0 ? (
-        /* A MEASURED ZERO -- WHEN IT IS ONE. The figure is a digit, because the
-           comparison ran and its answer is nought, and the mark beside it is
-           what keeps that apart from the unread case above, which has no digit
-           at all. Over a partial set of leases the same nought is not a real
-           zero across the fleet, so the mark says `partial` instead. */
-        <div className="ctl-card-body">
-          <b className="ctl-figure">0</b>
-          <div className="hold-mark">
-            {mark ?? <span className="ctl-mark is-zero">real zero</span>}
-          </div>
-        </div>
-      ) : (
+      {rows.length > 0 && (
         <div className="ctl-card-body is-flush">
           <div className="ctl-table is-stacked">
             <table role="table">
@@ -361,17 +420,28 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
                 </tr>
               </thead>
               <tbody role="rowgroup">
-                {disagreeing.map((r) => (
-                  <tr role="row" key={r.name} className="is-warn">
-                    <th role="rowheader" scope="row">
+                {rows.map((r) => (
+                  <tr role="row" key={r.name} className={disagrees(r) ? 'is-warn' : undefined}>
+                    <th role="rowheader" scope="row" title={r.name}>
                       {poolLabel(r.name)}
                       <span className="ctl-sub">{r.name}</span>
                     </th>
                     <td role="cell" data-label="From leases" className="is-num">{r.held}</td>
-                    <td role="cell" data-label="Counter" className="is-num">{r.active}</td>
+                    <td role="cell" data-label="Counter" className="is-num">
+                      {r.active === null ? <span className="ctl-em" title="No counter for this pool was read">—</span> : r.active}
+                    </td>
                     <td role="cell" data-label="Delta" className="is-num">
-                      {r.active !== null ? (r.active > r.held ? '+' : '') : ''}
-                      {r.active !== null ? r.active - r.held : <span className="ctl-em">—</span>}
+                      {r.active === null ? (
+                        <span className="ctl-em" title="No counter to compare with">—</span>
+                      ) : disagrees(r) ? (
+                        <span className="hold-delta">
+                          <WarnMark />
+                          {r.active > r.held ? '+' : ''}
+                          {r.active - r.held}
+                        </span>
+                      ) : (
+                        '0'
+                      )}
                     </td>
                   </tr>
                 ))}
@@ -386,103 +456,15 @@ function Drift({ board, coverage }: { board: HoldersBoard; coverage: LeaseCovera
           command, not as two sentences. A comparison computed over a truncated
           page is not the same claim as one computed over the fleet, and the
           row count -- out of the total, when the route said there was more --
-          is what says which this is. When a table of deltas is on the card the
-          coverage mark rides here, beside the count it qualifies; with no table
-          it is already beside the 0. */}
+          is what says which this is. AGREEMENT OVER EVERY LIVE LEASE is a
+          measured zero, and the mark says so; over a partial set the same
+          agreement is `partial` (or `not measured`), never `real zero`. */}
       <div className="ctl-card-foot">
-        {disagreeing.length > 0 && mark}
+        {mark ?? (disagreeing.length === 0 && <span className="ctl-mark is-zero">real zero</span>)}{' '}
         over {ofTotal(rowsRead, coverage)} row{rowsRead === 1 && coverage.kind !== 'cut' ? '' : 's'}
         {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} live not listed`}
         {' · '}
         <code>make pool-check</code>
-      </div>
-    </section>
-  )
-}
-
-/**
- * Class mix, from each lease's own `resource:<class>` pool.
- *
- * NOT inferred by inverting `units`. That works today because 1, 2 and 4 are
- * distinct, and silently picks the wrong class the first time two classes
- * share a weight.
- *
- * vCPU and memory are deliberately NOT shown. They live in RESOURCE_CLASSES
- * in the frozen contract, this screen has no route that exposes them, and
- * hand-copying them here is the restatement drift check-contract-parity.sh
- * exists to catch. Its TypeScript section would now catch such a copy, which
- * is not a reason to make one: the fix is to serve the numbers, as
- * /v1/resource-classes does for the run-detail screen. See
- * docs/audits/2026-09-20/data-gaps-found-by-fanout.md.
- */
-function ClassMix({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverage }) {
-  const byClass = new Map<string, { leases: number; units: number }>()
-  let unclassified = 0
-
-  for (const l of rows) {
-    const pool = Array.isArray(l.pools) ? l.pools.find((p) => p.startsWith('resource:')) : undefined
-    if (!pool) {
-      unclassified++
-      continue
-    }
-    const cls = pool.slice('resource:'.length)
-    const e = byClass.get(cls) ?? { leases: 0, units: 0 }
-    e.leases++
-    if (typeof l.units === 'number' && Number.isFinite(l.units)) e.units += l.units
-    byClass.set(cls, e)
-  }
-
-  const entries = Array.from(byClass.entries()).sort((a, b) => b[1].units - a[1].units)
-  const max = Math.max(1, ...entries.map(([, e]) => e.units))
-
-  return (
-    <section className="ctl-card">
-      <div className="ctl-card-head">
-        {/* NO `?` (B7.4). Every figure in this card is already labelled in
-            units -- the bars are units, the table column below says
-            `Units (weighted)` -- so `units-not-agents` here was an argument
-            for a convention the card follows in front of the reader. It is one
-            click away in the rail's Help section and is linked from the three
-            screens whose figures it actually disambiguates. */}
-        <h2 className="ctl-card-title">Class mix</h2>
-        {/* A LEASE THAT NAMES NO CLASS IS COUNTED IN NO CLASS, and the note is
-            where that is said -- not folded into `standard`, which would
-            understate the rest. It was a two-clause sentence; it is now the
-            qualifier on the card whose total it qualifies. */}
-        {/* AND A MIX OVER A CUT WINDOW IS THE MIX OF THE ROWS, not of the
-            fleet: the leases the route left out are in no class here, so the
-            note says what the bars are out of. */}
-        {(unclassified > 0 || coverage.kind !== 'complete') && (
-          <span className="ctl-card-note">
-            {unclassified > 0 && `${unclassified} unclassified`}
-            {unclassified > 0 && coverage.kind !== 'complete' && ' · '}
-            {coverage.kind === 'cut' && `${ofTotal(rows.length, coverage)} leases`}
-            {coverage.kind === 'unreported' && 'coverage unreported'}
-          </span>
-        )}
-      </div>
-      <div className="ctl-card-body">
-        {entries.length === 0 ? (
-          <div className="hold-mark">
-            {coverageMark(rows.length, coverage, 'This mix') ?? (
-              <span className="ctl-mark is-zero">real zero</span>
-            )}
-          </div>
-        ) : (
-          entries.map(([cls, e]) => (
-            // THE SHARED ROW AND TRACK (./primitives.tsx). This card drew its
-            // own track by hand; a class whose leases carried no finite unit
-            // count now draws the measured-zero tick rather than a zero-width
-            // fill, which was indistinguishable from a bar that failed to paint.
-            <UtilRow
-              key={cls}
-              name={<b>{cls}</b>}
-              track={{ pct: (e.units / max) * 100 }}
-              figure={`${e.units}u`}
-              by={`${e.leases} lease${e.leases === 1 ? '' : 's'}`}
-            />
-          ))
-        )}
       </div>
     </section>
   )
@@ -545,8 +527,11 @@ function HolderTable({
             </button>
           </span>
         )}
-        {/* Only where there is a choice: one tenant's rows filter to nothing new. */}
-        {tenants.length > 1 && (
+        {/* ALWAYS, AS THE PICK DRAWS IT (capacity.html frame 6, #503): All and
+            each tenant in the rows. It was drawn only for two tenants or more,
+            so on a board one tenant holds the table had no filter at all and
+            nothing said whose rows they were; `All | eng` says it. */}
+        {tenants.length > 0 && (
           <div className="ctl-seg hold-tenants" role="group" aria-label="Tenant">
             <button type="button" aria-pressed={tenant === null} onClick={() => setTenant(null)}>
               All
@@ -600,13 +585,16 @@ function HolderTable({
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
                   <td role="cell" data-label="Units (weighted)" className="is-num">{l.units}</td>
                   <td role="cell" data-label="Dispatch">
-                    {/* The state, as a word AND as a shape -- `.ctl-dot`
-                        carries the silhouette so the column survives
-                        greyscale and a colour-blind reader. */}
-                    <span className={`ctl-chip ${l.dispatch_state === 'LEASED' ? 'is-warn' : 'is-ok'}`}>
-                      <i aria-hidden="true" />
-                      {l.dispatch_state === 'LEASED' ? 'awaiting' : 'dispatched'}
-                    </span>
+                    {/* BRAND §3'S HOLDING-CAPACITY MARK (#503). LEASED and
+                        DISPATCHED both hold a slot and are not yet working, so
+                        both are the half-filled teal-green disc -- the mark is
+                        what says "this costs capacity" (invariant 1). The word
+                        says which: awaiting a backend, or asked of one. It was
+                        a grey dot chip, the healthy-and-free picture. */}
+                    <StateMark
+                      state={l.dispatch_state === 'LEASED' ? 'LEASED' : 'DISPATCHED'}
+                      label={l.dispatch_state === 'LEASED' ? 'awaiting' : 'dispatched'}
+                    />
                   </td>
                   <td role="cell" data-label="Gen" className="is-num">{l.generation}</td>
                   <td role="cell" data-label="Held for" className="is-num">

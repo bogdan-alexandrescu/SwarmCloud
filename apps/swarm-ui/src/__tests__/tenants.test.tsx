@@ -17,7 +17,8 @@
 // The api module is replaced so the table renders from tenants built here.
 // Every block was pushed before the change it demands.
 
-import STYLES from '../styles.css?raw'
+import SHEET from '../styles.css?raw'
+import ADMIN from '../styles/admin.css?raw'
 import { describe, expect, it, vi } from 'vitest'
 import { act, render, screen } from '@testing-library/react'
 
@@ -25,6 +26,10 @@ import type { Result } from '../fetch'
 import { HELP } from '../help'
 import type { Tenant } from '../types'
 import { cascade, type CascadeEnv } from './cssgate'
+
+// The shell's sheet and the Admin section's own (styles/admin.css), in the
+// order the app loads them.
+const STYLES = `${SHEET}\n${ADMIN}`
 
 const api = vi.hoisted(() => ({
   loadTenants: vi.fn(),
@@ -148,12 +153,14 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
       expect(value!.textContent).toBe(full)
       // ON HOVER: the full value is the element's title.
       expect(value!.getAttribute('title')).toBe(full)
-      // At 1440, a bounded, clipped, one-line box with an ellipsis.
-      // MUTATION: drop any of the four, or the width cap.
+      // At 1440, a clipped, one-line box with an ellipsis that gives way to
+      // its column (#503): a flex item allowed to shrink below its text.
+      // MUTATION: drop any of the four, or the shrink.
       expect(won(value!, 'text-overflow', WIDE)).toBe('ellipsis')
       expect(won(value!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
       expect(won(value!, 'white-space', WIDE)).toBe('nowrap')
-      expect(won(value!, 'max-width', WIDE) ?? '', 'no width cap').toMatch(/^\d+ch$/)
+      expect(won(value!, 'min-width', WIDE), 'the identity cannot shrink below its text').toBe('0')
+      expect(won(value!.parentElement!, 'display', WIDE)).toBe('flex')
       // At 390 the table scrolls with the tenant column held (CH-13), and the
       // identity shows WHOLE on its line: a cut identity is a different
       // identity, and a scrolling table has room for it.
@@ -165,27 +172,54 @@ describe('Tenants puts the status beside the name and fits at 1440 (AH-11)', () 
   })
 })
 
-describe('Tenants scrolls at 390 with the tenant held, under its two-row head (CH-13, AH-12)', () => {
-  it('holds the tenant column and nothing from the Configured group', async () => {
+describe('Tenants fits at 1440 and keeps every copy control on screen (#503)', () => {
+  it('lays the roster out fixed above 900px, from a colgroup of one col per head', async () => {
     const c = await roster()
-    // A data table of nine columns: it scrolls sideways, it does not stack.
+    const table = c.querySelector('table')!
+    expect(table.classList.contains('ten-table'), `the table is ${table.className}`).toBe(true)
+    // One head row, as the Tenants frame draws it: a two-row head was what
+    // the held-column rule had to be taught to skip (CH-13).
+    expect(c.querySelectorAll('thead tr')).toHaveLength(1)
+    const heads = [...c.querySelectorAll('thead th')].map(visible)
+    expect(heads).toEqual(['Tenant', 'Status', 'Kind', 'Principal', 'Enforced', 'Configured', 'Credentials', 'Identity'])
+    const cols = [...table.querySelectorAll(':scope > colgroup > col')]
+    expect(cols, 'the colgroup does not match the head').toHaveLength(heads.length)
+    // MUTATION: drop `table-layout: fixed` from `.ten-table` in admin.css.
+    expect(won(table, 'table-layout', WIDE)).toBe('fixed')
+    expect(won(table, 'width', WIDE)).toBe('100%')
+    // Every column has a width, and they add up to the table: a fixed table
+    // whose widths came to more than 100% would overflow its panel again.
+    const widths = cols.map((col) => won(col, 'width', WIDE) ?? '')
+    for (const w of widths) expect(w, 'a column with no width').toMatch(/^\d+(\.\d+)?%$/)
+    expect(widths.reduce((n, w) => n + parseFloat(w), 0)).toBe(100)
+    // Below 900px it is sized by its content and scrolls (CH-13).
+    expect(won(table, 'table-layout', PHONE)).not.toBe('fixed')
+    // The rule is in the Admin section's own sheet, not the shell's.
+    expect(ADMIN).toMatch(/table\.ten-table\s*\{[^}]*table-layout:\s*fixed/)
+  })
+
+  it('draws the copy control outside the span that truncates, so the ellipsis never cuts it', async () => {
+    const c = await roster()
+    for (const label of ['Principal', 'Identity']) {
+      const cell = row(c, 'u-sw-c90291').querySelector(`td[data-label="${label}"]`)!
+      const ident = cell.querySelector('.ten-ident')!
+      const button = cell.querySelector('button.ten-copy')!
+      // MUTATION: put the button inside `.ten-ident`.
+      expect(ident.contains(button), `the ${label} copy control is inside the truncating span`).toBe(false)
+      expect(button.parentElement).toBe(ident.parentElement)
+      // It keeps its width while the identity gives way.
+      expect(won(button, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)$/)
+    }
+  })
+
+  it('holds the tenant column at 390', async () => {
+    const c = await roster()
     const wrap = c.querySelector('table.pools')!.parentElement!
     expect(wrap.classList.contains('is-scroll'), `the wrapper is ${wrap.className}`).toBe(true)
     expect(wrap.classList.contains('is-stacked')).toBe(false)
-    // The held column is the name: its head (which spans both head rows) and
-    // every row's header cell.
-    const head = [...c.querySelectorAll('thead tr:first-child th')].find((th) => visible(th) === 'Tenant')!
+    const head = [...c.querySelectorAll('thead th')].find((th) => visible(th) === 'Tenant')!
     expect(won(head, 'position', PHONE)).toBe('sticky')
     expect(won(row(c, 'eng').querySelector('th')!, 'position', PHONE)).toBe('sticky')
-    // THE SECOND HEAD ROW'S FIRST CELL IS `Max active`, a figure's head from
-    // the middle of the table, and the held-column rule names cells by
-    // `:first-child`. Held, it sat over the Tenant head at every offset.
-    // MUTATION: widen the held rule's head branch in the CH-13 block of
-    // styles.css from `thead > tr:first-child` back to every head row.
-    const maxActive = c.querySelector('thead tr:nth-child(2) th:first-child')!
-    expect(visible(maxActive)).toBe('Max active')
-    expect(won(maxActive, 'position', PHONE), 'a Configured head is held at the left edge').not.toBe('sticky')
-    expect(won(maxActive, 'white-space', PHONE)).toBe('nowrap')
   })
 })
 
@@ -199,19 +233,17 @@ describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
     expect(enforced('smoke')).toBe('4')
   })
 
-  it('groups the registry values under Configured, after Enforced', async () => {
+  it('puts the registry values in Configured, after Enforced, max active then units', async () => {
     const c = await roster()
-    const top = [...c.querySelectorAll('thead tr:first-child th')]
-    const labels = top.map(visible)
+    const labels = [...c.querySelectorAll('thead th')].map(visible)
     const enforcedAt = labels.indexOf('Enforced')
     const configuredAt = labels.indexOf('Configured')
     expect(enforcedAt, `no Enforced column in ${labels.join(' | ')}`).toBeGreaterThan(-1)
-    expect(configuredAt, `no Configured group in ${labels.join(' | ')}`).toBeGreaterThan(enforcedAt)
-    const group = top[configuredAt] as HTMLTableCellElement
-    expect(group.colSpan, 'the group does not span the two values').toBe(2)
-    expect(group.getAttribute('scope')).toBe('colgroup')
-    const under = [...c.querySelectorAll('thead tr:nth-child(2) th')].map(visible)
-    expect(under).toEqual(['Max active', 'Units'])
+    expect(configuredAt, `no Configured column in ${labels.join(' | ')}`).toBe(enforcedAt + 1)
+    const cell = row(c, 'u-sw-c90291').querySelector('td[data-label="Configured"]')!
+    expect(visible(cell)).toBe('2 · 4u')
+    // Both values by name, for a reader who does not know the short form.
+    expect(cell.querySelector('span')!.getAttribute('aria-label')).toBe('max active 2, capacity units 4')
   })
 
   it('explains Enforced through a help link, outside the column head and at every width', async () => {

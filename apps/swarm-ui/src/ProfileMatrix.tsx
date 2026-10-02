@@ -1,5 +1,6 @@
 import { Fragment, useState } from 'react'
 import { isPaused } from './fetch'
+import { WarnMark } from './marks'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -178,9 +179,12 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                     ))}
                     <td role="cell" data-label="Can start" className="is-num">
                       {off ? (
-                        <span className="ctl-chip is-bad">
-                          <i aria-hidden="true" />
-                          disabled
+                        // A CONDITION, NOT A STATE (brand §3, #503): the red
+                        // diamond is FAILED's, a task that ended in error. A
+                        // disabled profile is a standing refusal by the
+                        // platform, which is the amber warning triangle.
+                        <span title={profile.disabled_reason || 'refused by the platform'}>
+                          <WarnMark label="disabled" />
                         </span>
                       ) : (
                         <b className={head.agents === 0 ? 'cap-mx-zero' : undefined}>

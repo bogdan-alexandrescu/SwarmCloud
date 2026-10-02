@@ -1,0 +1,251 @@
+/*
+ * ADMIN: Pool limits (L2 side editor), Tenants and Platform counts, as picked
+ * in docs/web-ui/mockups/admin-help.html and drawn to components.html A: 32px
+ * rows, pill chips, 12px type floor, sentence case, no letter-spacing. Corners
+ * are 6px for controls and 10px for cards, the scale spacing.test.tsx holds
+ * every corner to today (0/2/6/10/14/999); A's 8/12 lands with lane U0's
+ * tokens. They are literals because the spacing probe substitutes var() in
+ * styles.css only.
+ *
+ * ONE SHEET PER SECTION (owner, 2026-10-02): the seven UI lanes ran at once,
+ * so each section's rules live in its own file and styles.css keeps the shell
+ * and the shared primitives. The `Adm*` components that draw these rules are
+ * local stand-ins for the shared set lane U0 is building, named so a later
+ * pass can swap them. __tests__/sections.stylesheet.test.ts runs the
+ * stylesheet gate and the type rules over this file.
+ */
+
+/* -- Pool limits ---------------------------------------------------------- */
+/* POOL LIMITS L2, THE SIDE EDITOR (owner's pick 2026-10-01). The families keep
+   the full width until a pool is picked; then the editor takes a column beside
+   them, so the table stays still while editing. Below 1100px it stacks under
+   the families, where `autoFocus` on its field brings it into view. */
+.adm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
+.adm-side {
+  display: flex; flex-direction: column; gap: 8px; min-width: 0;
+  padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac);
+  border-radius: 10px; background: var(--surface);
+}
+@media (min-width: 1100px) {
+  .adm-split.is-editing { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
+  .adm-split.is-editing > .adm-side { position: sticky; top: 12px; }
+}
+.adm-side-title { margin: 0; display: flex; flex-direction: column; gap: 2px; font: 600 var(--t-lead)/var(--lh-lead) var(--font); }
+.adm-side-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); }
+.adm-side-facts dt { color: var(--text-dim); }
+.adm-side-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
+.adm-side-k { font-size: var(--t-micro); color: var(--text-dim); }
+.adm-side-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-side-field > label { flex-basis: 100%; }
+.adm-side input {
+  min-height: 36px; padding: 3px 8px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--bg); color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.adm-side-field > input { width: 96px; font-variant-numeric: tabular-nums; }
+.adm-side input:disabled { opacity: .5; cursor: not-allowed; }
+.adm-side input[aria-invalid='true'] { border-color: var(--warn); }
+.adm-delta { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--sk-ac); }
+.adm-impact { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.adm-drastic { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--bad); border-radius: 6px; }
+.adm-drastic-why { margin: 0; font-size: var(--t-meta); color: var(--bad-ink); }
+.adm-side-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-side-actions > button {
+  min-height: 36px; padding: 4px 12px;
+  border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface); color: var(--text);
+  font-size: var(--t-body); cursor: pointer;
+}
+.adm-side-actions > button.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); font-weight: 600; }
+.adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
+.adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
+.adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
+/* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
+.adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.adm-changed > time { color: var(--text-dim); }
+/* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
+   a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
+   outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
+   own change back to them, not a fault. */
+.adm-over { display: inline-block; padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+.adm-family tr.is-editing > th[scope="row"],
+.adm-family tr.is-editing > td { background: var(--sk-acs); }
+@media (max-width: 560px) {
+  .adm-side input,
+  .adm-side-actions > button { min-height: 44px; }
+}
+
+/* What lowering does, in the open editor and on a line of its own, so the
+   row that grows is the one being edited. */
+.limit-note {
+  margin-top: 4px;
+  font: var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-faint);
+}
+/* The phone's filter over the pool names: the full width of the column. */
+.adm-filter > input {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 44px;
+  padding: 3px 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+/* EVERY FAMILY TABLE, ONE SET OF COLUMN WIDTHS (#503). The families share the
+   columns (AdminSettings.tsx `LIMIT_COLUMNS`) and `.cap-families` already lays
+   them out fixed; the widths are set on the colgroup so they are the same in
+   every family whatever its head row says, which puts `edit` -- after a
+   ceiling figure of fixed width -- at one x down the page. At 1440 with the
+   84+236px nav the work column is about 1024px, and about 660px with the side
+   editor open; a fixed table at 100% wraps its cells and never overflows
+   either. ABOVE 900px ONLY: below it `.cap-families` sizes each table to its
+   content and scrolls it with the pool column held, and a column width here
+   would only fight that. */
+@media (min-width: 900px) {
+  table.adm-limits { table-layout: fixed; width: 100%; }
+  table.adm-limits > colgroup > col.adm-col-pool { width: 26%; }
+  table.adm-limits > colgroup > col.adm-col-use { width: 12%; }
+  table.adm-limits > colgroup > col.adm-col-ceiling { width: 26%; }
+  table.adm-limits > colgroup > col.adm-col-by { width: 14%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 22%; }
+}
+/* THE CEILING'S SLOT IS A FIXED WIDTH, right-aligned, so the figure lines up
+   down the column and `edit` after it starts at the same x in every row. Six
+   characters hold the route's largest limit (100000). */
+.adm-ceiling {
+  display: inline-block;
+  width: 6ch;
+  margin-inline-end: var(--ctl-s2);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.adm-ceiling.is-unset { color: var(--text-dim); }
+.adm-ceiling-cell > .limit-edit { vertical-align: middle; }
+.adm-unset { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+.adm-changed-none { color: var(--text-faint); }
+
+/* -- Tenants ---------------------------------------------------------------- */
+/* TENANTS: the status is a mark and a word (brand.html vocabulary), and a
+   tenant with no key of its own carries the amber warning, not a red tag. */
+.ten-status { white-space: nowrap; }
+
+/* AN IDENTITY AND ITS COPY CONTROL (#134, Activity.tsx `Ident`). The value is
+   the item that gives way; the control keeps its width. (The wide table's
+   rules for the pair come after these, below, so they win at 900px up.) The status beside it
+   says whether the copy landed, in the faint tone of a note, and is empty
+   until a copy is asked for. At 560px and under the control is §7.2's 44px
+   target. */
+.ten-ident-row {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  min-width: 0;
+}
+.ten-copy {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  cursor: copy;
+}
+.ten-copy:hover { color: var(--text); border-color: var(--info); }
+.ten-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ten-copy-said {
+  color: var(--text-faint);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap;
+}
+.ten-copy-said:empty { display: none; }
+@media (max-width: 560px) {
+  .ten-copy {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}
+/* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
+   fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
+   tone of a qualifier under a figure; this line qualifies no figure -- it
+   says a column is absent and why none can exist -- so it takes `--text`.
+   Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
+.ctl-panel-note.ten-budget { color: var(--text); }
+
+/* TENANTS FITS AT 1440 (#503, measured with the 84+236px nav). The roster was
+   sized by its content with a 20ch cap on each identity, arithmetic done
+   against a 200px rail: with the wider nav the work column is about 1024px,
+   the table ran past it, and the Identity column's copy buttons were clipped
+   at the right edge. Now the layout is fixed and the colgroup splits the
+   width, so the table is the panel's width by construction: the two identity
+   columns take what the six short ones leave, each identity gives way with an
+   ellipsis, and the copy control beside it -- outside the span that
+   truncates -- keeps its width and is always on screen.
+
+   ABOVE 900px ONLY. Below it the table scrolls sideways with the tenant
+   column held (CH-13, §7.3), so there is no panel edge to fit: each identity
+   shows whole on its one line and the reader pans to it. A cut identity is a
+   different identity, and the scrolling table has room for all of it. */
+@media (min-width: 900px) {
+  table.ten-table { table-layout: fixed; width: 100%; }
+  table.ten-table > thead > tr > th,
+  table.ten-table > tbody > tr > th,
+  table.ten-table > tbody > tr > td { white-space: normal; overflow-wrap: anywhere; }
+  table.ten-table > colgroup > col.ten-col-tenant { width: 11%; }
+  table.ten-table > colgroup > col.ten-col-status { width: 10%; }
+  table.ten-table > colgroup > col.ten-col-kind { width: 7%; }
+  table.ten-table > colgroup > col.ten-col-principal { width: 19%; }
+  table.ten-table > colgroup > col.ten-col-enforced { width: 8%; }
+  table.ten-table > colgroup > col.ten-col-configured { width: 9%; }
+  table.ten-table > colgroup > col.ten-col-credentials { width: 14%; }
+  table.ten-table > colgroup > col.ten-col-identity { width: 22%; }
+  .ten-ident-row { display: flex; flex-wrap: wrap; }
+  .ten-ident {
+    display: block;
+    flex: 1 1 0;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  /* What a copy said takes a line of its own, so `principal copied` never
+     squeezes the identity it is about. */
+  .ten-copy-said { flex-basis: 100%; }
+}
+
+/* -- Platform counts -------------------------------------------------------- */
+/* PLATFORM COUNTS: THE RUN IS A BUTTON BESIDE THE TITLE (#503, frames 4-5 of
+   admin-help.html). It was an underlined `.sub button` inside the provenance
+   sentence, which read as a link in prose rather than the one billed action
+   on the page. Drawn to components.html A -- 32px tall, primary before the
+   first run and plain after it, when it is a re-run -- except the radius:
+   A's 8px is off spacing.test.tsx's corner scale (0, 2, 6, 10, 14, 999), so
+   the control takes the scale's control radius, 6px. */
+.counts-run-btn {
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  white-space: nowrap;
+  cursor: pointer;
+  align-self: center;
+}
+.counts-run-btn.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); }
+.counts-run-btn:not(:disabled):hover { border-color: var(--info); }
+.counts-run-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.counts-run-btn:disabled { opacity: .6; cursor: progress; }
+.counts-run-btn > .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+@media (max-width: 560px) {
+  .counts-run-btn { min-height: 44px; }
+}
+/* BEFORE THE FIRST RUN (#135): both cards drawn, each with the neutral
+   `not measured` mark and the words `not run yet`, so the page has its shape
+   before the press. Not a task-state mark: nothing here is a task. */
+.counts-notrun .ctl-card-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }

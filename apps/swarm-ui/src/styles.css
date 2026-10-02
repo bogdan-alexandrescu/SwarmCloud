@@ -453,6 +453,16 @@ body {
 :where(.app button:not(:disabled):hover) { color: var(--text); border-color: var(--text-faint); }
 :where(.app button:disabled) { opacity: .45; cursor: not-allowed; }
 
+/* BORDERLESS BUTTONS IN A SECTION SHEET. A section sheet (src/styles/*.css)
+   loads BEFORE this file, and jsdom (spacing.test.tsx) resolves the cascade by
+   source order alone, so the zero-specificity `:where(.app button)` border
+   above out-ranks a section rule that says `border: 0` -- the probe then
+   graded a 1px --line boundary on the warning callout (2.74:1) and the chosen
+   row (2.89:1) that no browser draws. Restated here, after it, for the two
+   capacity.css buttons that are meant to be borderless. */
+.acct-callout .acct-link,
+.acct-li > .acct-open { border: 0; }
+
 /* A LINK NOBODY STYLED IS STILL A `.ctl-link`, NOT THE BROWSER'S BLUE (CH-5).
    The 2026-09-25 QA pass found three anchors with no class at all -- API
    reads' "What these mean ->", the workflow inspector's "run ->" and the
@@ -2402,82 +2412,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   table.pools th, table.pools td { padding: 6px 8px; }
 }
 
-/* -- Admin › Tenants (AH-11, AH-12) ----------------------------------------- */
-
-/* THE LONG IDENTITIES ARE SHORTENED ON THE WIDE TABLE, AND ONLY THERE (AH-11).
-   At 1440 the Status column sat past the panel edge behind a scrollbar this
-   platform never paints, pushed there by `nowrap` on two identity columns: a
-   principal that is itself a 55-character service account, and the tenant's
-   own service account at 55-65. So each is one clipped line with an ellipsis
-   and a width cap. The element keeps every character -- a selection copies
-   the whole address -- and carries it as its `title` for hover.
-
-   WHY 20ch. The work column at 1440 is 1144px (a 200px rail, 32px gutters).
-   Measured off the live roster, the other seven columns come to about 700px
-   with their padding -- Tenant ~114, Status ~96, Kind ~58, Enforced ~108
-   (sized when it still carried a `?`; its head is the word alone now), Max
-   active ~98, Units ~59, Credentials ~165 -- which leaves ~440 for the two
-   identities. 20ch of 14px mono is ~168px, plus 20px of padding,
-   twice: ~376, and the table fits with ~70px to spare for a non-overlay
-   scrollbar and a longer tenant id. That is arithmetic from one screenshot
-   and a font metric, not a measurement of the new layout; the next release's
-   screenshots are the measurement.
-
-   ABOVE 900px ONLY. Below it the table scrolls sideways with the tenant
-   column held (CH-13, §7.3), so there is no panel edge for the identity to
-   push anything past: it shows whole, on its one line, and the reader pans
-   to it. A cut identity is a different identity, and the scrolling table has
-   room for all of it. */
-@media (min-width: 900px) {
-  .ten-ident {
-    display: block;
-    max-width: 20ch;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-}
-/* AN IDENTITY AND ITS COPY CONTROL, ON ONE LINE (#134, Activity.tsx
-   `Ident`). The value is the item that gives way; the control keeps its
-   width. The status beside it says whether the copy landed, in the faint
-   tone of a note, and is empty until a copy is asked for. At 560px and under
-   the control is §7.2's 44px target. */
-.ten-ident-row {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  min-width: 0;
-}
-.ten-copy {
-  flex: none;
-  padding: 1px 8px;
-  border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text-dim);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  cursor: copy;
-}
-.ten-copy:hover { color: var(--text); border-color: var(--info); }
-.ten-copy:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.ten-copy-said {
-  color: var(--text-faint);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  white-space: nowrap;
-}
-.ten-copy-said:empty { display: none; }
-@media (max-width: 560px) {
-  .ten-copy {
-    min-width: 44px;
-    min-height: 44px;
-  }
-}
-/* THE BUDGET NOTE IS A PLAIN FACT, IN PLAIN INK (AH-21). AG-5 defines a plain
-   fact as no mark and no dimming. `.ctl-panel-note` is `--text-faint`, the
-   tone of a qualifier under a figure; this line qualifies no figure -- it
-   says a column is absent and why none can exist -- so it takes `--text`.
-   Two classes, so it outranks `.ctl-panel-note` wherever that rule sits. */
-.ctl-panel-note.ten-budget { color: var(--text); }
+/* -- Admin › Tenants: styles/admin.css ----------------------------------- */
 
 /* ------------------------------------------------------------------------ */
 /* Agents screen (Screen A)                                                  */
@@ -3640,25 +3575,6 @@ table.pools tbody tr.presumed-dead { background: color-mix(in srgb, var(--bad) 9
    found without moving anything. An outline and not a fill: the sheet gives
    no head cell a fill of its own (WF-21), and the row's name is a `th`. */
 tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
-/* What lowering does, under the open editor and on a line of its own, so the
-   row that grows is the one being edited. */
-.limit-note {
-  margin-top: 4px;
-  font: var(--t-micro)/var(--lh-micro) var(--font);
-  color: var(--text-faint);
-}
-/* The phone's filter over the pool names: the full width of the column. */
-.adm-filter > input {
-  flex: 1 1 auto;
-  min-width: 0;
-  min-height: 44px;
-  padding: 3px 10px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: 6px;
-  background: var(--bg);
-  color: var(--text);
-  font: var(--t-body)/var(--lh-body) var(--mono);
-}
 .limit-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .limit-edit input {
   width: 74px; padding: 3px 7px;
@@ -3691,8 +3607,8 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 /* ------------------------------------------------------------------------ */
 /* Settings -> Accounts                                                      */
 /* ------------------------------------------------------------------------ */
-/* The pool table is `cs status`'s five columns and nothing else, so nothing
-   below widens it: the controls live in a row you open. Two treatments carry
+/* The list, the split and the pane are styles/capacity.css (A1, #503); what
+   stays here is shared by the list item and the pane. Two treatments carry
    the whole screen and neither may be decorative --
 
      .acct-projected   a figure that is stale or describes a window that has
@@ -3710,19 +3626,6 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
    rule added for this one. A screen may not restyle a screen it does not own,
    and it is not enough that nobody has claimed the name yet.                   */
 
-
-/* ---- the pool table ---- */
-table.pools.accounts td.acct-window,
-table.pools.accounts td.n { white-space: nowrap; }
-
-.acct-open {
-  display: inline-flex; align-items: center; gap: 6px;
-  padding: 0; border: none; background: none;
-  color: var(--text); font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
-}
-.acct-open:hover { color: var(--info); }
-    .acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: 3px; border-radius: var(--ctl-radius-sm); }
-    .acct-caret { color: var(--text-faint); font-size: var(--t-micro); width: 10px; }
 
 .acct-pct { font-variant-numeric: tabular-nums; }
 /* The mark stays legible even when the figure beside it is greyed: colour is
@@ -7816,10 +7719,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    all six, so every column starts at the same x in every family: the pool
    name a quarter, each figure an eighth, and the rest split between "Set by"
    and the status. Cells may wrap now, because a fixed column no longer grows
-   to fit, and a nowrap cell would paint into its neighbour instead. */
+   to fit, and a nowrap cell would paint into its neighbour instead.
+   THE WIDTHS THEMSELVES ARE THE TABLES' `<colgroup>` (#503), in
+   styles/capacity.css: a quarter and two eighths left the Use track an eighth,
+   narrower than its own minimum, and its figure painted over the State chip. */
 .cap-families .ctl-table > table { table-layout: fixed; }
-.cap-families .ctl-table > table > thead th:first-child { width: 25%; }
-.cap-families .ctl-table > table > thead th.is-num { width: 12.5%; }
 .cap-families .ctl-table th,
 .cap-families .ctl-table td { white-space: normal; overflow-wrap: anywhere; }
 
@@ -7989,22 +7893,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   min-width: 0;
 }
 
-/* B4.6: THE STATE CELL SUPPLIES THE GAP, BECAUSE THE PILL NO LONGER DOES.
-   `.tag.acct-state` was a bordered box, so its own border supplied the
-   separation between the state and the `skipped here` mark beside it.
-   `.ctl-chip` has no border -- that is the point of §6.6 -- so with nothing
-   between them the two rendered as `availableSKIPPED HERE`: one word to a
-   reader skimming the column, and a second fact lost.
-
-   A MARGIN, NOT A FLEX GAP, AND THE REASON IS THE TABLE. `display: flex` on a
-   `<td>` takes the cell out of the table layout algorithm -- the browser wraps
-   it in an anonymous cell -- and this column's width is decided by that
-   algorithm alongside four others that must stay aligned with their `<th>`s.
-   A gap is not worth re-deciding the column model for, so the chip carries a
-   trailing margin and the cell stays a cell. The margin is on `.ctl-chip`
-   scoped to this cell, never on the primitive: nine other screens draw chips
-   that are not followed by a mark. */
-.acct-statecell > .ctl-chip { margin-right: var(--ctl-s2); }
 
 /* ==========================================================================
    §B20. THE SUBMIT FLOWS — Submit.tsx and SubmitWorkflow.tsx
@@ -11106,135 +10994,11 @@ span.sk-ttile { cursor: default; }
 /* ======================================================================== */
 /* --- Capacity (capacity.html): ceilings, matrix, accounts --------------- */
 /* ======================================================================== */
-/* Ceilings: "Needs action" leads (the pools a person has to act on), in the warning hue's soft surface. */
-.cap-needs { border-color: color-mix(in srgb, var(--s-warn) 50%, transparent); }
-.cap-needs .ctl-card-title { color: var(--text); }
-.cap-use { display: grid; grid-template-columns: minmax(64px, 1fr) 44px; gap: 8px; align-items: center; min-width: 130px; }
-.cap-use-pct { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); text-align: right; font-variant-numeric: tabular-nums; }
-.cap-links { white-space: nowrap; font-size: var(--t-meta); color: var(--text-faint); }
-
-/* By runner profile: the matrix. The binding cell is outlined in the warning
-   hue -- amber is for warnings only, and the pool that runs out first is one. */
-.cap-mx { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--ctl-gutter); }
-.cap-mx td.is-num b { display: block; font: 650 var(--t-body)/var(--lh-body) var(--font); font-variant-numeric: tabular-nums; }
-.cap-mx td.is-num small { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.cap-mx td.is-binding { outline: 2px solid var(--s-warn); outline-offset: -4px; border-radius: 6px; background: var(--s-warnb); }
-.cap-mx td.cap-mx-na { color: var(--text-faint); }
-.cap-mx b.cap-mx-zero { color: var(--s-warn); }
-.cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
-.cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
-.cap-mx tr.is-open > td, .cap-mx tr.is-open > th[scope="row"] { background: var(--surface-2); }
-.cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
-/* Runs out first (#124): each binding pool on a line, its Fits under it in
-   the cell-figure grey; the opened row's per-pool table marks the binding
-   rows with the matrix's own amber edge. */
-.cap-mx-first { white-space: normal; }
-.cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
-.cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.cap-mx-fits { margin-bottom: 8px; }
-.cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
-.cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
-
-/* Runtimes: the pools each runtime must clear, each one a link. */
-.rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.rt-pool-chip { font-size: var(--t-micro); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; color: var(--info); text-decoration: none; }
-.rt-pool-chip:hover { border-color: var(--info); }
-
-/* Holders: the tenant filter beside "Every holder". */
-.hold-tenants { margin-left: 8px; }
-/* Holders narrowed to the pool a Pools link named (#125), with the way back. */
-.hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
-.hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
-.hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
-
-/* Accounts (#127): the sign-in form behind its control; the window Clears
-   counts down and when a label was last given out, faint, under the figure. */
-.acct-add-bar { display: flex; justify-content: flex-end; margin: 0 0 var(--ctl-gutter); }
-.acct-given, .acct-clears-win { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); font-weight: 400; }
-
-/* Accounts: the list and the chosen account side by side; stacked on a phone. */
-.acct-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
-@media (min-width: 1100px) { .acct-split { grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); } }
-.acct-pane { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
-.acct-pane-empty { margin: 0; padding: 16px; border: 1px dashed var(--line-soft); border-radius: 10px; font-size: var(--t-meta); }
-.acct-pane-detail .acct-detail { border-radius: 10px; }
-table.accounts tr.is-chosen > td, table.accounts tr.is-chosen > th[scope="row"] { background: var(--surface-2); }
-table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 /* (Capacity rules go above this line.) */
 
 
-/* ======================================================================== */
-/* --- Admin (admin-help.html): Pool limits L2, Tenants, Platform counts -- */
-/* ======================================================================== */
-/* POOL LIMITS L2, THE SIDE EDITOR (owner's pick 2026-10-01). The families keep
-   the full width until a pool is picked; then the editor takes a column beside
-   them, so the table stays still while editing. Below 1100px it stacks under
-   the families, where `autoFocus` on its field brings it into view. */
-.adm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
-.adm-side {
-  display: flex; flex-direction: column; gap: 8px; min-width: 0;
-  padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac);
-  border-radius: var(--radius); background: var(--surface);
-}
-@media (min-width: 1100px) {
-  .adm-split.is-editing { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
-  .adm-split.is-editing > .adm-side { position: sticky; top: 12px; }
-}
-.adm-side-title { margin: 0; display: flex; flex-direction: column; gap: 2px; font: 600 var(--t-lead)/var(--lh-lead) var(--font); }
-.adm-side-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); }
-.adm-side-facts dt { color: var(--text-dim); }
-.adm-side-facts dd { margin: 0; font-variant-numeric: tabular-nums; }
-.adm-side-k { font-size: var(--t-micro); color: var(--text-dim); }
-.adm-side-field { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.adm-side-field > label { flex-basis: 100%; }
-.adm-side input {
-  min-height: 36px; padding: 3px 8px;
-  border: 1px solid var(--ctl-bd); border-radius: 6px;
-  background: var(--bg); color: var(--text);
-  font: var(--t-body)/var(--lh-body) var(--mono);
-}
-.adm-side-field > input { width: 96px; font-variant-numeric: tabular-nums; }
-.adm-side input:disabled { opacity: .5; cursor: not-allowed; }
-.adm-side input[aria-invalid='true'] { border-color: var(--warn); }
-.adm-delta { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--sk-ac); }
-.adm-impact { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
-.adm-drastic { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px solid var(--bad); border-radius: 6px; }
-.adm-drastic-why { margin: 0; font-size: var(--t-meta); color: var(--bad-ink); }
-.adm-side-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.adm-side-actions > button {
-  min-height: 36px; padding: 4px 12px;
-  border: 1px solid var(--ctl-bd); border-radius: 6px;
-  background: var(--surface); color: var(--text);
-  font-size: var(--t-body); cursor: pointer;
-}
-.adm-side-actions > button.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); font-weight: 600; }
-.adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
-.adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
-.adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
-/* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
-.adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
-.adm-changed > time { color: var(--text-dim); }
-/* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
-   a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
-   outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
-   own change back to them, not a fault. */
-.adm-over { display: inline-block; margin-inline-start: var(--ctl-s2); padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
-.adm-family tr.is-editing > th[scope="row"],
-.adm-family tr.is-editing > td { background: var(--sk-acs); }
-@media (max-width: 560px) {
-  .adm-side input,
-  .adm-side-actions > button { min-height: 44px; }
-}
-
-/* TENANTS: the status is a mark and a word (brand.html vocabulary), and a
-   tenant with no key of its own carries the amber warning, not a red tag. */
-.ten-status { white-space: nowrap; }
-
-/* PLATFORM COUNTS before the first run (#135): both cards drawn, each saying
-   `not run` in its figure slot, so the page has its shape before the press. */
-.counts-notrun .ctl-card-body { display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }
-/* (Admin rules go above this line.) */
+/* Admin (admin-help.html): Pool limits, Tenants and Platform counts are in
+   styles/admin.css, imported by their screens. */
 
 
 /* ======================================================================== */

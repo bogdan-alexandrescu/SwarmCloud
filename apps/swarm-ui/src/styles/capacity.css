@@ -1,0 +1,324 @@
+/*
+ * CAPACITY: Pools (Ceilings, By runner profile), Runtimes, Holders, Accounts
+ * and Provider quota, as picked in docs/web-ui/mockups/capacity.html (C1, the
+ * profile matrix, A1) and drawn to components.html A: 32px rows, pill chips,
+ * 12px type floor, sentence case, no letter-spacing. Corners are 6px for
+ * controls and 10px for cards, the scale spacing.test.tsx holds every corner
+ * to today (0/2/6/10/14/999); A's 8/12 lands with lane U0's tokens. They are
+ * literals because the spacing probe substitutes var() in styles.css only.
+ *
+ * ONE SHEET PER SECTION (owner, 2026-10-02): the seven UI lanes ran at once,
+ * so each section's rules live in its own file and styles.css keeps the shell
+ * and the shared primitives. The `cap-` / `rt-` / `hold-` / `quota-` names are
+ * this section's; the `Cap*` components that draw them are local stand-ins for
+ * the shared set lane U0 is building, named so a later pass can swap them.
+ * __tests__/sections.stylesheet.test.ts runs the stylesheet gate and the type rules over this file.
+ */
+
+/* -- Pools, Runtimes, Holders, Provider quota ----------------------------- */
+
+/* The in-page view strip under the Pools heading (capacity.html C1, frames 0
+   and 3): Ceilings | By runner profile. components.html A's segmented control
+   -- one bordered pill-ended group, 32px tall, the current view in the
+   accent's soft fill -- drawn locally until the shared one lands. */
+.cap-seg {
+  display: inline-flex;
+  align-self: flex-start;
+  gap: var(--ctl-s1);
+  padding: var(--ctl-s1);
+  margin: 0 0 var(--ctl-s3);
+  /* A control's own boundary, so --line (3:1 on the page), not the nav
+     hairline --sk-ln (1.2-1.4:1). The segments sit 4px apart rather than
+     touching, so no rule between them is needed. */
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.cap-seg a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  font-size: var(--t-micro);
+  color: var(--text-dim);
+  text-decoration: none;
+  border-radius: 2px;
+}
+.cap-seg a[aria-current="page"] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.cap-seg a:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+
+/* Ceilings: "Needs action" leads (the pools a person has to act on), in the
+   warning hue's soft surface. */
+.cap-needs { border-color: color-mix(in srgb, var(--s-warn) 50%, transparent); }
+.cap-needs .ctl-card-title { color: var(--text); }
+
+/* SEVEN COLUMNS, ONE WIDTH EACH, IN EVERY FAMILY (#503, CP-18). The tables are
+   fixed-layout so a column starts at the same x in every family; these are
+   the widths. They add to 100%, so no column takes room from its neighbour,
+   and Use gets the widest figure column: the old quarter-and-eighths left it
+   narrower than its own track, and the figure painted over the State chip. */
+.cap-c-pool { width: 23%; }
+.cap-c-num { width: 11%; }
+.cap-c-use { width: 18%; }
+.cap-c-state { width: 13%; }
+.cap-c-by { width: 11%; }
+.cap-c-links { width: 13%; }
+/* A head is one line: "Leased (units)" fits its eleventh at 1440 with the nav
+   open, and at a narrower desktop it ellipsizes (its title says it whole)
+   rather than wrapping to two lines or painting into its neighbour. */
+.cap-pools thead th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The pool's id and its scope share the line under its name (CP-2): one
+   sub-line, not a second row of height. */
+.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.cap-sub .ctl-sub { display: inline; }
+.cap-scope { color: var(--text-faint); }
+
+/* THE USE CELL: the bar shrinks, the figure does not. The figure's track is
+   its own content width and never wraps, and the bar takes what is left --
+   down to nothing -- so a narrow column loses bar, never figure, and nothing
+   overflows into State. */
+.cap-use {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+.cap-use-pct {
+  white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.cap-links { white-space: nowrap; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* Below 900px each family table scrolls on its own and sizes to its content
+   (styles.css, "POOLS SCROLL"), so the desktop widths stand down. */
+@media (max-width: 899px) {
+  .cap-pools col { width: auto; }
+}
+
+/* By runner profile: the matrix. The binding cell is outlined in the warning
+   hue -- amber is for warnings only, and the pool that runs out first is one. */
+.cap-mx { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--ctl-s3); }
+.cap-mx td.is-num b { display: block; font: 650 var(--t-body)/var(--lh-body) var(--font); font-variant-numeric: tabular-nums; }
+.cap-mx td.is-num small { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx td.is-binding { outline: 2px solid var(--s-warn); outline-offset: -4px; border-radius: 6px; background: var(--s-warnb); }
+.cap-mx td.cap-mx-na { color: var(--text-faint); }
+.cap-mx b.cap-mx-zero { color: var(--s-warn); }
+.cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+.cap-mx tr.is-open > td, .cap-mx tr.is-open > th[scope="row"] { background: var(--surface-2); }
+.cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
+/* Runs out first (#124): each binding pool on a line, its Fits under it in
+   the cell-figure grey; the opened row's per-pool table marks the binding
+   rows with the matrix's own amber edge. */
+.cap-mx-first { white-space: normal; }
+.cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
+.cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx-fits { margin-bottom: 8px; }
+.cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
+.cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+
+/* Runtimes: the cards lead (capacity.html frame 5), each listing the pools it
+   must clear as linked pill chips; Backends follows, Sizing is last. */
+.rt-cards { margin-bottom: var(--ctl-s5); }
+.rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.rt-pool-chip { font-size: var(--t-micro); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; color: var(--info); text-decoration: none; }
+.rt-pool-chip:hover { border-color: var(--info); }
+/* SIZING FITS ITS CARD (#503): "Resolves from" lists every runtime that
+   resolves to a class, and a nowrap list ran past the card's right edge. It
+   is the one prose-shaped column in the table, so it wraps. */
+.rt-sizing td[data-label="Resolves from"] { white-space: normal; overflow-wrap: anywhere; }
+
+/* Holders: the table first, its All / per-tenant filter in its head; the
+   drift callout above it when a counter disagrees; drift per pool below. */
+.hold-tenants { margin-left: 8px; }
+.hold-callout {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  margin: 0 0 var(--ctl-s3);
+  padding: 10px 12px;
+  border: 1px solid var(--s-warn);
+  border-radius: 10px;
+  background: var(--s-warnb);
+  font-size: var(--t-meta);
+  color: var(--text);
+}
+.hold-callout p { margin: 0; }
+.hold-drift { margin-top: var(--ctl-s5); }
+.hold-drift tr.is-warn td[data-label="Delta"] { color: var(--text); font-weight: 600; }
+.hold-delta { display: inline-flex; align-items: center; gap: 6px; }
+/* Holders narrowed to the pool a Pools link named (#125), with the way back. */
+.hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
+.hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+/* Provider quota (capacity.html frame 11): eight columns that fit 1440 with
+   the nav open. Fixed layout with the widths below, so Reported is never
+   pushed past the card's edge; the pool name is the one long value, and it
+   ellipsizes with its whole name in its title. */
+.quota-table > table { table-layout: fixed; width: 100%; }
+.quota-table col.quota-c-tenant { width: 11%; }
+.quota-table col.quota-c-state { width: 15%; }
+.quota-table col.quota-c-cap { width: 9%; }
+.quota-table col.quota-c-feeds { width: 25%; }
+.quota-table col.quota-c-left { width: 11%; }
+.quota-table col.quota-c-429s { width: 10%; }
+.quota-table col.quota-c-last { width: 9%; }
+.quota-table col.quota-c-rep { width: 10%; }
+.quota-table thead th { white-space: normal; }
+.quota-feeds a {
+  display: block;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.quota-state { display: inline-flex; align-items: center; gap: 7px; font-size: var(--t-micro); color: var(--text); }
+@media (max-width: 899px) {
+  .quota-table > table { table-layout: auto; width: max-content; min-width: 100%; }
+  .quota-table col { width: auto; }
+}
+
+
+/* -- Accounts ------------------------------------------------------------- */
+/* A1, "Split, like Agents" (frames 7-10; audit #503). One card: the compact
+   list on the left, the chosen account on the right. On a phone the list is
+   the page, and a chosen account is a page of its own with `‹ Accounts`.
+   RADII ON THE CONSOLE'S SCALE (0, 2, 6, 10, 14, pill), which spacing.test.tsx
+   enforces: the card is 10 and a control or tile 6 (literals, because the
+   gate does not resolve a custom property here), the nearest steps to components.html A's 12 and 8. */
+
+/* Which window Clears counts down, and when an account was last given out:
+   faint, under the figure (#127). */
+.acct-given, .acct-clears-win { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); font-weight: 400; }
+
+/* The sign-in callout: a condition, so the warning hue's soft surface. */
+.acct-callout {
+  display: flex; gap: 10px; align-items: flex-start;
+  margin: 0 0 var(--ctl-gutter); padding: 10px 14px;
+  border: 1px solid var(--s-warn);
+  border-radius: 10px; background: var(--s-warnb);
+  font-size: var(--t-meta); color: var(--text);
+}
+.acct-callout > .sk-st { margin-top: 3px; }
+.acct-callout-body { display: grid; gap: 4px; min-width: 0; }
+.acct-callout-body p { margin: 0; }
+.acct-link {
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: inherit; color: var(--sk-ac); text-decoration: underline;
+}
+.acct-link:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+.acct-split {
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: stretch;
+  border: 1px solid var(--line); border-radius: 10px;
+  background: var(--surface); overflow: hidden;
+}
+@media (min-width: 901px) {
+  .acct-split { grid-template-columns: minmax(0, 380px) minmax(0, 1fr); min-height: 560px; }
+}
+
+/* The list: a panel inside the card, so it gives up its own frame. */
+.acct-split > .acct-list {
+  display: flex; flex-direction: column; min-width: 0;
+  margin: 0; padding: 0; border: 0; border-radius: 0; background: none;
+}
+@media (min-width: 901px) {
+  .acct-split > .acct-list { border-right: 1px solid var(--line); }
+}
+.acct-list-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
+}
+.acct-list-head > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.acct-add {
+  display: inline-flex; align-items: center; gap: 6px; flex: none;
+  height: 32px; padding: 0 12px; border: 1px solid var(--sk-ac); border-radius: 6px;
+  background: var(--sk-ac); color: var(--bg);
+  font: 600 var(--t-meta)/var(--lh-flush) var(--font); cursor: pointer;
+}
+.acct-add svg { width: 12px; height: 12px; }
+.acct-add:disabled { opacity: .5; cursor: not-allowed; }
+.acct-add:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+
+.acct-items { list-style: none; margin: 0; padding: 0; }
+.acct-li { position: relative; border-bottom: 1px solid var(--line-soft); }
+.acct-li.is-chosen { background: var(--sk-acs); }
+.acct-li.is-chosen::before {
+  content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px; background: var(--sk-ac);
+}
+.acct-li > .acct-open {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: baseline;
+  width: 100%; min-height: 32px; padding: 8px 12px 2px 14px;
+  border: 0; background: none; color: var(--text); text-align: left; cursor: pointer;
+  font: inherit;
+}
+.acct-li > .acct-open:hover { background: var(--sk-hv); }
+.acct-li > .acct-open:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.acct-li-name {
+  font-weight: 600; font-size: var(--t-meta);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.acct-li .acct-window { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.acct-li-line {
+  grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: 0 4px;
+  font-size: var(--t-micro); color: var(--text-dim); min-width: 0;
+}
+.acct-li-line .sk-st-w { font-size: var(--t-micro); }
+.acct-li .acct-clears-win { display: inline; }
+.acct-li-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+  padding: 0 12px 8px 14px; font-size: var(--t-micro); color: var(--text-faint); min-width: 0;
+}
+.acct-li-meta .raw { font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; }
+.acct-li-meta .acct-given { display: inline; }
+.acct-li-meta .acct-why { display: inline; margin: 0; }
+.acct-split > .acct-list > .ctl-facts { padding: 8px 12px 0; }
+.acct-split > .acct-list > .acct-foot { margin: auto 0 0; padding: 8px 12px; font-size: var(--t-micro); }
+
+/* An account state that is not one the console knows: faint, no mark. */
+.acct-state.is-unknown { color: var(--text-faint); }
+
+/* The pane: the chosen account. */
+.acct-pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 14px 16px; }
+.acct-split .acct-pane-detail .acct-detail { border-left: 0; background: none; padding: 0; }
+.acct-back {
+  display: none; align-self: flex-start;
+  padding: 0; border: 0; background: none; cursor: pointer;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac);
+}
+.acct-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+.acct-dhead { display: grid; gap: 4px; min-width: 0; }
+.acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
+.acct-pill {
+  display: inline-flex; align-items: center; padding: 1px 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  font-size: var(--t-micro); color: var(--text-dim);
+}
+.acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+
+.acct-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
+.acct-tile {
+  display: flex; flex-direction: column; gap: 2px; min-width: 0;
+  padding: 8px 10px; border-radius: 6px; background: var(--sk-hv);
+}
+.acct-tile > small { font-size: var(--t-micro); color: var(--text-dim); }
+.acct-tile > b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+.acct-tile > i { font-style: normal; font-size: var(--t-micro); color: var(--text-dim); }
+.acct-tile.acct-projected > b, .acct-tile.acct-unmeasured > b { color: var(--text-faint); }
+
+/* The phone: the list is the page; a chosen account is a page (frame 10). An
+   add form that is open shows under the list, so the list keeps its button. */
+@media (max-width: 560px) {
+  .acct-split:not(.is-detail):not(.is-adding) > .acct-pane { display: none; }
+  .acct-split.is-detail > .acct-list { display: none; }
+  .acct-split.is-detail .acct-back { display: inline-flex; }
+  .acct-pane { padding: 12px; }
+}

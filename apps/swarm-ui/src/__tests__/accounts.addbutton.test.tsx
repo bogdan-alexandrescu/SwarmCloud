@@ -1,16 +1,17 @@
-// ACCOUNTS: THE TABLE FILLS THE SCREEN, AND EVERY COLUMN SAYS WHAT IT MEASURES
+// ACCOUNTS: THE LIST FILLS THE SCREEN, AND EVERY FIGURE SAYS WHAT IT MEASURES
 // (#127).
 //
-// Already true before this file, and pinned here: the table is titled
-// `Subscription accounts` (it was `The pool`, which collided with the Pools
-// tab), and its five column heads are still `cs status`'s -- renaming one would
-// break that parity, so every addition below is INSIDE a cell, never a head.
+// Pinned here: the list is titled `Subscription accounts` (it was `The pool`,
+// which collided with the Pools tab). It was `cs status`'s five-column table
+// until A1 (#503) made it a compact list beside the chosen account; the five
+// facts are still there, as the item's 5h figure and clears line and the
+// pane's 5h / 7d / Clears tiles, under the same words.
 //
 // What this file added:
 //   * the sign-in form sits behind an `Add account` button -- except when the
 //     pool is empty (the form is the one control that fixes that) or a
 //     sign-in is already under way (hiding it would hide a live link);
-//   * the Clears cell names its window visibly (`5h window`), not only in a
+//   * Clears names its window visibly (`5h`, `5h window`), not only in a
 //     `title=`;
 //   * each label carries a faint `last given out` sub-line;
 //   * the `~ is projected` legend is drawn only when a `~` is on screen, and
@@ -102,9 +103,9 @@ async function mount(accounts: Account[]): Promise<void> {
 }
 
 function rowOf(label: string): HTMLElement {
-  const btn = [...document.querySelectorAll('.acct-open')].find((b) => b.textContent?.includes(label))
+  const btn = [...document.querySelectorAll('.acct-li > .acct-open')].find((b) => b.textContent?.includes(label))
   expect(btn, `no row for ${label}`).toBeTruthy()
-  return btn!.closest('tr') as HTMLElement
+  return btn!.closest('li') as HTMLElement
 }
 
 describe('the sign-in form is behind a control (#127)', () => {
@@ -126,22 +127,28 @@ describe('the sign-in form is behind a control (#127)', () => {
   })
 })
 
-describe('the table names itself and qualifies its columns (#127)', () => {
-  it('is titled Subscription accounts and keeps cs status\'s five heads', async () => {
+describe('the list names itself and qualifies its figures (#127, #503)', () => {
+  it('is titled Subscription accounts, and carries cs status\'s facts under its words', async () => {
     await mount([live()])
-    const title = document.querySelector('section.acct-list > h2')
-    expect(title, 'the table card has no title').not.toBeNull()
+    const title = document.querySelector('section.acct-list .acct-list-head > h2')
+    expect(title, 'the list has no title').not.toBeNull()
     expect(title!.firstChild?.textContent?.trim()).toBe('Subscription accounts')
-    const heads = [...document.querySelectorAll('table.accounts thead th')].map((th) => (th.textContent ?? '').trim())
-    expect(heads).toEqual(['Account', '5h used', '7d used', 'Clears', 'State'])
+    // A1: no table heads. The item carries 5h; the pane's tiles carry 5h, 7d
+    // and Clears, each under its word.
+    expect(document.querySelector('table.accounts')).toBeNull()
+    expect(rowOf('laptop').querySelector('[data-label="5h used"]')).not.toBeNull()
+    const tiles = [...document.querySelectorAll('.acct-tiles > .acct-tile > small')].map((t) => t.textContent)
+    expect(tiles).toEqual(['5h used', '7d used', 'Clears', 'Last given out'])
   })
 
-  it('says which window Clears counts down, in the cell', async () => {
+  it('says which window Clears counts down, on the item and on the tile', async () => {
     await mount([live()])
-    const clears = rowOf('laptop').querySelector('td[data-label="Clears"]')!
-    const win = clears.querySelector('.acct-clears-win')
+    const line = rowOf('laptop').querySelector('[data-label="Clears"]')!
+    const win = line.querySelector('.acct-clears-win')
     expect(win, 'the window is named only in a tooltip').not.toBeNull()
-    expect(win!.textContent).toBe('5h window')
+    expect(win!.textContent).toBe('5h')
+    const tile = document.querySelector('.acct-tiles > [data-label="Clears"] .acct-clears-win')
+    expect(tile!.textContent).toBe('5h window')
   })
 
   it('carries a last given out sub-line under each label, including never', async () => {
