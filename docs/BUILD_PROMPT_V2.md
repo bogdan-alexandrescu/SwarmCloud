@@ -257,7 +257,7 @@ tenant.
 > The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
 > MCP tools for a session that is not running a workflow script:
 > `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
-> one request (`apps/swarm-mcp/swarm_mcp/server.py:1330`), and `swarm_collect`
+> one request (`apps/swarm-mcp/swarm_mcp/server.py:1337`), and `swarm_collect`
 > gathers the results.
 
 ```js
@@ -349,7 +349,7 @@ runs the mechanism.
 > `sc account add --label <label> [--lend-to <tenant>]`,
 > `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
 > asks for the label typed back. `sc accounts` is the read-only list. `add`
-> (`apps/swarm-mcp/swarm_mcp/sc.py:846`) runs four steps:
+> (`apps/swarm-mcp/swarm_mcp/sc.py:847`) runs four steps:
 >
 > 1. It calls `POST /v1/accounts/authorize`
 >    (`apps/swarm-api/swarm_api/routes/accounts.py:258`), which returns the
