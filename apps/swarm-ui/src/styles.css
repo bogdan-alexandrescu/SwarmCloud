@@ -8370,57 +8370,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: 600 var(--t-meta)/var(--lh-flush) var(--mono); font-style: normal;
 }
 
-/* ---- the runner catalogue, as rows ---- */
-/* INVARIANT 10, MADE VISIBLE. A `<select>` hid the one thing that makes
-   caller-named execution safe: what each name actually selects. A row per
-   profile shows its room and whether this tenant holds the key it needs
-   (#114, `RunnerPicker`, drawn by both Submit forms), and a disabled profile
-   shows the platform's own reason instead of vanishing from the list. */
-.sbf-runners { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; display: grid; gap: 2px; }
-/* INSIDE A WORKFLOW STEP, a ~370px column holding one picker per step: the
-   rows close up so five runners do not make one step a screen tall. */
-.sbf-runners.is-compact { margin: 0; gap: 0; }
-.sbf-runners.is-compact .sbf-runner { padding: var(--ctl-s1) var(--ctl-s2); min-height: 0; }
-/* The radio's margin DECLARED, not the user agent's `ex`-based default: the
-   step card is a surface, and the inset from its edge to the first text has to
-   be a length the spacing sweep can add up. The column gap spaces it. */
-.sbf-runners.is-compact .sbf-runner > input { margin: 0; }
-/* A GRID, so the radio occupies its own column and the two text lines stack
-   beside it rather than under it. */
-.sbf-runner {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: baseline;
-  column-gap: var(--ctl-s2); row-gap: 1px;
-  padding: var(--ctl-s2) var(--ctl-s3);
-  background: transparent;
-  /* DECLARED AND TRANSPARENT, the pattern §13.5 names: a rule that appeared
-     only on selection would shift every row sideways by 2px at the moment the
-     list most needs to hold still. */
-  border-left: 2px solid transparent;
-  border-radius: var(--ctl-radius-sm);
-  min-height: var(--row-h);
-  cursor: pointer;
-}
-.sbf-runner > input { grid-row: 1; grid-column: 1; align-self: center; }
-.sbf-runner > span { grid-column: 2; }
-.sbf-runner:hover { background: var(--surface-2); }
-.sbf-runner.is-on { background: var(--surface-2); border-left-color: var(--text); }
-/* The reason a profile is refused is the most useful line in the row, so the
-   row is NOT dimmed away — the name and the facts are, and the reason is not. */
-.sbf-runner.is-off { cursor: not-allowed; }
-.sbf-runner.is-off:hover { background: transparent; }
-.sbf-runner.is-off .sbf-runner-name,
-.sbf-runner.is-off .sbf-runner-facts { color: var(--text-faint); }
-.sbf-runner-name { font: 500 var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
-.sbf-runner.is-on .sbf-runner-name { font-weight: 600; }
-.sbf-runner-facts { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
-/* A MISSING KEY IS THE ONE FACT IN THE ROW SOMEBODY HAS TO ACT ON: a task
-   under it is parked until the key is registered. Warn ink, the refusal
-   reason's own, and the words carry it without the hue. */
-.sbf-runner-miss { color: var(--warn-ink); }
-
 .sbf-room {
   display: grid; gap: var(--ctl-s2); max-width: var(--measure); min-width: 0;
   background: var(--surface-2); border-radius: var(--ctl-radius-sm);
@@ -8520,17 +8469,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-send .ctl-fact { justify-content: space-between; gap: var(--ctl-s3); }
 .sbf-send .ctl-fact > b { flex: none; }
 .sbf-send .warn-text { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-/* THE ONE FILLED CONTROL IN THE CONSOLE, and it is ink rather than a hue: the
-   references put their primary action in the text colour, not in a sixth
-   saturated hue (§B4.2). It is the only button on either screen that commits
-   anything. */
+/* THE ONE CONTROL ON EITHER FORM THAT COMMITS ANYTHING. Its fill is the
+   accent, and pale when disabled, from styles/submit.css (`.sb-go`,
+   submit.html F1/G1); this keeps its size. */
 .sbf-go {
   width: 100%; min-height: 34px;
   justify-content: center;
-  background: var(--text); border-color: var(--text); color: var(--bg);
   font-weight: 600;
 }
-.sbf-go:not(:disabled):hover { background: var(--text-dim); border-color: var(--text-dim); color: var(--bg); }
 
 /* ==========================================================================
    The workflow plan — stages, not a list
@@ -11842,18 +11788,6 @@ span.sk-ttile { cursor: default; }
   }
 }
 
-/* --- the Submit chooser (/submit) ---------------------------------------- */
-.sk-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
-.sk-chooser h1 { margin: 0; font-size: var(--t-title); }
-.sk-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
-.sk-choice { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 20px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
-.sk-choice:hover { border-color: var(--sk-ac); }
-.sk-choice b { font-size: var(--t-lead); }
-.sk-choice span { color: var(--text-dim); }
-.sk-choice em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); }
-.sk-recent-empty { border: 1px dashed var(--line-soft); border-radius: 10px; padding: 14px 16px; }
-.sk-recent-empty p { margin: 4px 0 0; color: var(--text-dim); font-size: var(--t-micro); }
-
 /* --- the state marks: one mark and one hue per state (marks.tsx) -------- */
 .sk-st { display: inline-flex; align-items: center; gap: 7px; }
 .sk-st svg { width: 12px; height: 12px; flex: none; }
@@ -11929,11 +11863,6 @@ span.sk-ttile { cursor: default; }
 .ov-list > li { border-bottom: 1px solid var(--line-soft); }
 .ov-list-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 0; color: inherit; text-decoration: none; }
 .ov-list-why { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); }
-
-/* --- Submit a workflow: If a step fails, Priority (submit.html) ---------- */
-.sbf-wf-opts { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 var(--ctl-gutter); font-size: var(--t-meta); }
-.sbf-wf-opts legend { padding: 0; margin-bottom: 4px; color: var(--text-dim); }
-.sbf-wf-opts input[type='number'] { width: 7em; font: var(--t-body)/var(--lh-body) var(--mono); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 
 /* ======================================================================== */
 /* --- Workflows V2 (workflows.html): list, one workflow, switcher -------- */

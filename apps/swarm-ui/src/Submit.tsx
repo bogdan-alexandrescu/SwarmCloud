@@ -27,6 +27,7 @@ import {
   type RunnerProfile,
   type Task,
 } from './types'
+import './styles/submit.css'
 
 /**
  * Submit one task -- and the honest constraints on doing so.
@@ -794,12 +795,15 @@ export function SubmitScreen() {
   )
 }
 
-/** One numbered move of the flow. A row draws nothing (§13.3); the ordinal is
- *  a `--surface-2` disc, the same line-to-step substitution §13.3 made for the
- *  help glyph. */
-export function Move({ n, title, aside, children }: { n: number; title: string; aside?: ReactNode; children: ReactNode }) {
+/** One numbered move of the flow: a card, its ordinal an accent disc
+ *  (submit.html F1 and G1). `dim` is a move not yet reached -- on the task
+ *  form, steps 2 and 3 before a runner is chosen. Dimmed, not disabled: what
+ *  it holds is still readable and still reachable by the keyboard. */
+export function Move({ n, title, aside, dim = false, children }: {
+  n: number; title: string; aside?: ReactNode; dim?: boolean; children: ReactNode
+}) {
   return (
-    <section className="sbf-move">
+    <section className={`sbf-move sb-step${dim ? ' is-dim' : ''}`}>
       <h2 className="sbf-move-h"><i className="sbf-move-n" aria-hidden="true">{n}</i>{title}{aside}</h2>
       {children}
     </section>
@@ -949,7 +953,7 @@ function Form({ capacity }: { capacity: Capacity }) {
 
         {/* NO `aside` (B7.4): this was the second copy of `input-is-opaque` on
             one screen, four hundred lines from the first. */}
-        <Move n={2} title="Say what it should do">
+        <Move n={2} title="Say what it should do" dim={chosen === ''}>
           {/* A STATE, NOT AN INSTRUCTION (TS-23). "Choose a runner first --
               what it reads is what this asks for." was a how-to line and a
               rationale; step 1 is directly above. */}
@@ -966,7 +970,7 @@ function Form({ capacity }: { capacity: Capacity }) {
             is the same word `resolve_dispatch_options` takes, and it is what
             keeps `integrate` and the carrier off this form -- with one line
             pointing to the workflow form -- rather than a 422 later. */}
-        <Move n={3} title="Choose what happens to the result">
+        <Move n={3} title="Choose what happens to the result" dim={chosen === ''}>
           <DispatchChoice
             draft={dispatch}
             onChange={setDispatch}
@@ -1024,6 +1028,13 @@ function Form({ capacity }: { capacity: Capacity }) {
               <b>result</b>
               {dispatch.strategy}
             </li>
+            {/* WHERE IT LANDS, AND WHAT THAT COSTS (F1). `_build_task` stores
+                a task at READY, or PARKED when its key is missing or it waits
+                on a dependency; invariant 1 says neither holds capacity. */}
+            <li className="ctl-fact">
+              <b>lands as</b>
+              READY or PARKED · costs nothing
+            </li>
             {/* WHAT THE CLICK COMMITS TO (#115), each read from the value the
                 button and the request are built from: the chosen profile's
                 weight and pool count (`in each of`, never `x`, which reads as a
@@ -1052,9 +1063,10 @@ function Form({ capacity }: { capacity: Capacity }) {
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
-          <button type="submit" className="sbf-go" disabled={outcome.kind === 'sending' || blocked}>
+          <button type="submit" className="sbf-go sb-go" disabled={outcome.kind === 'sending' || blocked}>
             {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
           </button>
+          <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {outcome.kind === 'refused' && outcome.unattributed && (
             <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>
           )}

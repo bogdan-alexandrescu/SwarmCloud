@@ -22,7 +22,6 @@
 // the value, rather than adding the element to a list of exceptions here.
 
 import STYLES from '../styles.css?raw'
-import { ALL_CSS } from './sheets'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
@@ -147,15 +146,28 @@ function merge(parts: Report[]): Report {
  * exists does not change with the theme, because the light block in
  * `styles.css` redefines colour tokens and nothing else.
  */
+/**
+ * A SECTION'S OWN SHEET (`src/styles/*.css`, imported by its screen) IS PART
+ * OF WHAT SHIPS. Vitest's `css: true` injects it into the test document
+ * UNRESOLVED, so without this every `var()` in it read as "unresolved" here.
+ * Resolved like the main sheet and placed BEFORE it -- the order the app loads
+ * them, since main.tsx imports App (and so every screen's sheet) first. The
+ * resolved copy comes after the injected one in the document, so it is the
+ * one the cascade picks.
+ */
+const SECTION_SHEETS = Object.values(
+  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
+)
+const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
+
 async function sweep(): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
-    // Every shipped sheet (sheets.ts): the canonical components' rules are in
-    // src/styles/components.css, and a probe over styles.css alone would
-    // measure the shell's buttons with no border at all.
-    dark: resolveSheet(ALL_CSS, 'dark'),
-    light: resolveSheet(ALL_CSS, 'light'),
+    // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
+    // components' rules in components.css among them) as well as styles.css.
+    dark: resolveSheet(SHEET, 'dark'),
+    light: resolveSheet(SHEET, 'light'),
   }
-  const tables = { dark: tokenTables(STYLES).dark, light: tokenTables(STYLES).light }
+  const tables = { dark: tokenTables(SHEET).dark, light: tokenTables(SHEET).light }
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of ROUTES) {
