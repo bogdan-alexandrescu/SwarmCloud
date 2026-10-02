@@ -59,7 +59,7 @@ from typing import TYPE_CHECKING, Any, Mapping
 
 from swarm_common import specsign
 
-from .errors import ConfigError, SpecSignatureInvalid
+from .errors import ConfigError, SpecSignatureInvalid, WorkerError
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import WorkerConfig
@@ -321,6 +321,29 @@ def verify_step_spec(
             return SpecCheck(reason="legacy_unsigned", task_id=task_id)
         raise SpecSignatureInvalid("unsigned", task_id=task_id)
 
+    key_version, hexdigest = _verify_signed(doc, task_id=task_id, cfg=cfg)
+
+    # 5. The execution's environment agrees with what was signed.
+    disagreement = _environment_agrees(doc, cfg)
+    if disagreement is not None:
+        raise SpecSignatureInvalid(
+            "environment_mismatch", task_id=task_id, key_version=key_version, digest=hexdigest,
+            detail=f"{disagreement} disagrees with the signed spec",
+        )
+    return SpecCheck(reason="verified", task_id=task_id, key_version=key_version, digest=hexdigest)
+
+
+def _verify_signed(doc: Mapping[str, Any], *, task_id: str, cfg: "WorkerConfig") -> tuple[str, str]:
+    """Checks 2 to 4 over a document that carries a signature and a version.
+
+    Returns `(key version, hex digest)`; raises `SpecSignatureInvalid`.
+    Shared by this execution's own spec and the upstream specs a worker
+    action depends on (`verify_upstream_spec`), so the two can never verify
+    by different rules.
+    """
+    signature = doc.get("spec_signature")
+    version = doc.get("spec_key_version")
+
     # 2. A format this worker knows.
     if doc.get("spec_format") not in KNOWN_FORMATS or isinstance(doc.get("spec_format"), bool):
         raise SpecSignatureInvalid(
@@ -349,12 +372,83 @@ def verify_step_spec(
         raise SpecSignatureInvalid(
             "signature_mismatch", task_id=task_id, key_version=version, digest=hexdigest
         )
+    return version, hexdigest
 
-    # 5. The execution's environment agrees with what was signed.
-    disagreement = _environment_agrees(doc, cfg)
-    if disagreement is not None:
-        raise SpecSignatureInvalid(
-            "environment_mismatch", task_id=task_id, key_version=version, digest=hexdigest,
-            detail=f"{disagreement} disagrees with the signed spec",
+
+# ---------------------------------------------------------------------------
+# The upstream specs a worker action depends on (#295)
+# ---------------------------------------------------------------------------
+
+
+class UpstreamSpecUnverified(WorkerError):
+    """An upstream step's spec that a worker action depends on did not verify.
+
+    NOT `SpecSignatureInvalid`: that cause is this execution's OWN spec.
+    Contract request 34's own text gives an upstream failure the acting
+    step's cause instead -- MERGE_REFUSED for `merge`, VERDICT_REFUSED for
+    `post-verdict` -- with `result_summary.spec_check.reason` set to
+    `upstream:<task id>:<why>`, `<why>` being CR 34's vocabulary verbatim
+    (`unsigned`, `signature_mismatch`, ...), and `workflow_mismatch` for a
+    verified spec of another workflow (docs/merge-step.md §6 row 42, §6a
+    row 5).
+    """
+
+    def __init__(self, upstream_task_id: str, why: str, *, key_version: str | None = None) -> None:
+        self.upstream_task_id = upstream_task_id
+        self.why = why
+        self.key_version = key_version
+        self.reason = f"upstream:{upstream_task_id}:{why}"
+        super().__init__(f"the signed spec of upstream task {upstream_task_id} did not verify: {why}")
+
+    def spec_check(self) -> dict[str, str | None]:
+        return {
+            "reason": self.reason,
+            "task_id": self.upstream_task_id,
+            "key_version": self.key_version,
+        }
+
+
+def verify_upstream_spec(
+    doc: Mapping[str, Any],
+    *,
+    upstream_task_id: str,
+    workflow_id: str | None,
+    cfg: "WorkerConfig",
+) -> SpecCheck:
+    """Checks 1 to 4 over an UPSTREAM task's document, and its workflow.
+
+    Raises `UpstreamSpecUnverified`. Three differences from the own-spec
+    check, each deliberate:
+
+    * NO LEGACY WINDOW. An unsigned upstream spec is `unsigned`, whatever
+      SPEC_SIGNATURE_MODE says: the merge chain is enabled only once #342 is
+      enforced (docs/merge-step.md §10), and a merge or a posted verdict
+      resting on a step nobody signed is exactly what it exists to refuse.
+    * NO ENVIRONMENT CHECK (5): the upstream ran in another execution, whose
+      environment this one cannot see.
+    * THE WORKFLOW MUST BE THIS ONE. The signature makes the upstream's
+      `workflow_id` a fact, and an upstream of another workflow -- a
+      verified spec, honestly signed, of a step this chain never ran -- is
+      `workflow_mismatch`.
+
+    A worker with no keys is `ConfigError` (CANNOT_START), as for its own
+    spec: its configuration, never a tenant's attack.
+    """
+    if not cfg.spec_verify_keys or not cfg.spec_signing_key:
+        raise ConfigError(
+            "SPEC_VERIFY_KEYS or SPEC_SIGNING_KEY is empty: this worker has no key to verify "
+            "an upstream spec with"
         )
-    return SpecCheck(reason="verified", task_id=task_id, key_version=version, digest=hexdigest)
+    if not doc.get("spec_signature") or not doc.get("spec_key_version"):
+        raise UpstreamSpecUnverified(upstream_task_id, "unsigned")
+    try:
+        version, hexdigest = _verify_signed(doc, task_id=upstream_task_id, cfg=cfg)
+    except SpecSignatureInvalid as exc:
+        raise UpstreamSpecUnverified(
+            upstream_task_id, exc.reason, key_version=exc.key_version
+        ) from None
+    if not workflow_id or doc.get("workflow_id") != workflow_id:
+        raise UpstreamSpecUnverified(upstream_task_id, "workflow_mismatch", key_version=version)
+    return SpecCheck(
+        reason="verified", task_id=upstream_task_id, key_version=version, digest=hexdigest
+    )

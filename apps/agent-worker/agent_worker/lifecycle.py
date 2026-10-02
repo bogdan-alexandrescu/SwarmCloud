@@ -126,7 +126,13 @@ from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
-from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, InputRefused, check_inputs
+from swarm_common.profiles import (
+    RESOURCE_CLASSES,
+    RUNNER_PROFILES,
+    InputRefused,
+    WorkerAction,
+    check_inputs,
+)
 from swarm_common.states import EventType, ParkReason, TaskState
 from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
@@ -176,6 +182,9 @@ from .errors import (
     TenantMismatchError,
     WorkerError,
 )
+from . import forge as forge_mod
+from . import merge as merge_mod
+from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, probe_repository, open_pull_request
 from .gitops import (
@@ -350,6 +359,7 @@ CONTROL_PLANE_OUTAGE = "control_plane_outage"
 #: mints them, and nothing that could make the derived branch name a path
 #: (`..`, `/`) or an option (a leading `-`).
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+_FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: How `forge.open_pull_request` words the forge's own refusal of a pull
 #: request (its 422 with no open one to reuse), as opposed to a forge that
@@ -535,6 +545,14 @@ class Worker:
         # kill the test runner. Returns the PIDs still alive after the reap --
         # empty means clean, non-empty means refuse to publish.
         self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
+        # A worker action's seams (#295): the forge transport (None is the
+        # real, no-redirect one in `forge._open`), the environment its Job's
+        # forge record is read from, and the bounded pause between two
+        # `mergeable` reads. Replaceable so a unit test talks to no forge and
+        # waits for nothing.
+        self.forge_transport: forge_mod.Transport | None = None
+        self.action_environ: Any = os.environ
+        self.action_sleep: Callable[[float], Any] = time.sleep
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -553,6 +571,9 @@ class Worker:
         #: `_title_from_issue_input` falls back to "Fixes #N".
         self._issue_title: str | None = None
         self._clone_base: str | None = None
+        #: The commit this attempt's clone checked out, recorded as
+        #: `result_summary.git.clone_commit` (#295, merge-step.md §3).
+        self._clone_commit: str | None = None
         # The clone base the PUBLISH trusts, which is not always the one above.
         # `_clone_base` may come from `work/.swarm/clone-base`, a file in the
         # agent's HOME (its working directory's parent, when it starts in the
@@ -923,6 +944,140 @@ class Worker:
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
 
+    # ------------------------------------------------------------------
+    # worker actions (#295): merge and post-verdict, no runner
+    # ------------------------------------------------------------------
+    def _run_worker_action(
+        self,
+        action: WorkerAction,
+        task: dict[str, Any],
+        staged: list[inputs_mod.StagedInput],
+    ) -> Outcome:
+        """Perform `action` in this process and end the task by its outcome.
+
+        No runner child is started, so there is nothing to supervise, stop or
+        harvest. The lease is heartbeaten from a thread while the action talks
+        to the forge (`_heartbeat_meanwhile`): a merge reads several lists.
+        No checkpoint is written: there is no workspace work to keep, and a
+        lost attempt repeats the action, which the pinned head makes either a
+        no-op or a refusal (merge-step.md §6 row 39).
+        """
+        ws = self.ws
+        assert ws is not None
+        workflow_id = task.get("workflow_id")
+        workflow_id = workflow_id if isinstance(workflow_id, str) else None
+        ctx = post_verdict_mod.ActionContext(
+            tenant_id=self.cfg.tenant_id,
+            task_id=self.cfg.task_id,
+            attempt_id=self.cfg.attempt_id,
+            workflow_id=workflow_id,
+            dispatch=self._dispatch_block(),
+            store=self.store,
+            fetch_upstream=lambda upstream: inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=upstream,
+                tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            ),
+            verify_upstream=lambda upstream, doc: specverify.verify_upstream_spec(
+                doc, upstream_task_id=upstream, workflow_id=workflow_id, cfg=self.cfg
+            ),
+            read_app_key=self._read_action_app_key,
+            environ=self.action_environ,
+            recheck=self._action_recheck,
+            reap=self.reap_before_publish,
+            unprotected=self._git_token_refusal(),
+            scrub=lambda text: str(self._scrub(text)),
+            log=self.log,
+            branch_prefix=self.cfg.git_branch_prefix,
+            staged={item.filename: ws.work / item.path for item in staged},
+            transport=self.forge_transport,
+            sleep=self.action_sleep,
+            # B13r builds `merge_human_gate` (owner decision): its value reaches
+            # the merge here, and True ends the step SUCCEEDED awaiting a
+            # person, every check passed and nothing merged. Until B13r it is
+            # off, which is the merge as merge-step.md §5 designs it.
+            human_gate=False,
+            max_in_worker_retry_delay_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            register_secret=self.log.register_secret,
+        )
+        self.phases.enter("worker_action")
+        self.log.info("worker action: no runner is started", action=action.value)
+        run = merge_mod.run_merge if action is WorkerAction.MERGE else (
+            post_verdict_mod.run_post_verdict
+        )
+        with self._heartbeat_meanwhile(f"worker_action:{action.value}"):
+            outcome = run(ctx)
+        return self._end_worker_action(action, outcome)
+
+    def _read_action_app_key(self) -> forge_mod.AppKey:
+        """This action's App key, from `swarm-tenant-<tenant>-<provider>`.
+
+        `provider` is the profile's (`git-merge`, `git-review`), read by this
+        Job's own service account, the secret's sole accessor. Registered with
+        the logger's redaction at once, as `resolve_git_token` does a token.
+        A tenant that has not registered the provider raises
+        `CredentialMissing`, which parks the task at no cost.
+        """
+        provider = self.cfg.profile.provider or ""
+        tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
+        if provider not in tenant.credentials or self.secret_client is None:
+            raise CredentialMissing(self.cfg.tenant_id, provider)
+        payload = self.secret_client.access(tenant.secret_name(provider))
+        self.log.register_secret(payload.strip())
+        key = forge_mod.parse_app_key(payload)
+        self.log.register_secret(key.private_key)
+        del payload
+        self.log.info("worker action credential read", secret=tenant.secret_name(provider))
+        return key
+
+    def _action_recheck(self) -> bool:
+        """Fencing (raising `FencedError`), then whether a cancel was requested."""
+        signals = self.control.validate_generation()
+        return bool(getattr(signals, "cancel_requested", False))
+
+    def _end_worker_action(
+        self, action: WorkerAction, outcome: "post_verdict_mod.ActionOutcome"
+    ) -> Outcome:
+        """End the task the way the action's outcome says (merge-step.md §6, §6a)."""
+        if outcome.credential_missing is not None:
+            return self._park_credential_missing(outcome.credential_missing)
+        summary = self._upload_outputs()
+        summary["merge" if action is WorkerAction.MERGE else "verdict"] = self._scrub(
+            dict(outcome.summary)
+        )
+        if outcome.spec_check is not None:
+            summary["spec_check"] = dict(outcome.spec_check)
+        self._export_metrics()
+        error = str(self._scrub(outcome.message[:4000])) if outcome.message else None
+        refusal = outcome.summary.get("refusal") if isinstance(outcome.summary, dict) else None
+        code = refusal.get("code") if isinstance(refusal, dict) else None
+        if outcome.retryable:
+            state = self.control.fail_retryably(
+                exit_code=outcome.exit_code,
+                error=error or "the worker action failed",
+                cause=str(code or action.value),
+                result_summary=summary,
+                retry_delay_seconds=outcome.retry_delay_seconds,
+                detail={"worker_action": action.value},
+                end_cause=outcome.end_cause,
+            )
+            self.log.warning("worker action failed retryably", action=action.value, code=code)
+            return Outcome(exit_code=ExitCode.FAILED, state=state)
+        self.control.finish(
+            state=outcome.state,
+            exit_code=outcome.exit_code,
+            error=None if outcome.state is TaskState.SUCCEEDED else error,
+            result_summary=summary,
+            end_cause=outcome.end_cause,
+        )
+        if outcome.state is TaskState.SUCCEEDED:
+            self.log.info("worker action succeeded", action=action.value)
+        else:
+            self.log.error("worker action ended", action=action.value, code=code,
+                           end_cause=outcome.end_cause.value if outcome.end_cause else None)
+        return Outcome(exit_code=outcome.exit_code, state=outcome.state)
+
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
@@ -1080,6 +1235,24 @@ class Worker:
         waiting_on = self._incomplete_parents(task)
         if waiting_on:
             return functools.partial(self._park_dependency_incomplete, waiting_on)
+
+        # ---- STEP 4a': a WORKER ACTION starts no runner (contract request 33)
+        # `merge` and `post-verdict` name a `WorkerAction` in the frozen
+        # catalogue and have no runner_argv: the worker performs the action
+        # itself, so no agent ever runs under the Job identity that holds the
+        # App key (docs/merge-step.md §0, §1.3). Nothing an agent step needs is
+        # done: no checkpoint is restored, nothing is cloned, no runner input
+        # is written and no runner credential is read. The declared inputs
+        # are staged (the merge's proof.json), inside the startup window like
+        # every other step's. The action itself runs after the window closes,
+        # because it talks to the forge (`_run_worker_action`).
+        action = cfg.profile.worker_action
+        if action is not None:
+            _recheck_runner_input(cfg.runner_profile, task.get("input"))
+            self._task = task
+            self.phases.enter("stage_inputs")
+            staged_inputs = self._stage_declared_inputs(task)
+            return functools.partial(self._run_worker_action, action, task, staged_inputs)
 
         # ---- STEP 4b: restore the latest checkpoint ---------------------
         self.phases.enter("restore_checkpoint")
@@ -1880,6 +2053,11 @@ class Worker:
             nothing = self._published_nothing(summary)
             if nothing is not None:
                 return self._fail_for_published_nothing(nothing, summary, exit_code=0)
+            # LAST before the success, so an attempt that fails above never
+            # leaves a write-once verdict behind it for its retry to meet.
+            unpublished = self._publish_review_verdict(summary)
+            if unpublished is not None:
+                return unpublished
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -1904,6 +2082,83 @@ class Worker:
             error=self._scrub(str(error)[:4000]) if error else f"runner exited {result.exit_code}",
             result_summary=summary,
         )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _publish_review_verdict(self, summary: dict[str, Any]) -> Outcome | None:
+        """The review step's `review.json`, written once to the verdicts prefix (CR 36).
+
+        Only `claude-code-review` publishes: its service account is the one
+        identity that may create under `tenants/<tenant>/verdicts/` (the M2
+        bucket split), so a verdict there was written by a review worker and
+        by nothing an agent of another step controls. The path is
+        `post_verdict.verdict_key`, from this execution's tenant, its signed
+        workflow id and its own task id; `post-verdict` and `merge` derive the
+        same path from their own signed specs (docs/merge-step.md §4.3).
+
+        Returns None when there is nothing to publish (another profile, or a
+        task outside a workflow, whose verdict nothing reads) or it was
+        published; otherwise the attempt's end:
+
+          * no `review.json`, or one that is not the schema: the attempt
+            fails retryably, OUTPUTS_MISSING once its attempts are spent --
+            the agent may write a usable one next time;
+          * A DIFFERENT OBJECT IS ALREADY AT THE PATH: refused, FAILED with
+            PUBLISH_REFUSED, never retried. The prefix is write-once
+            (`ifGenerationMatch=0`), and a retry would meet the same object.
+            The same bytes again are already published, not refused;
+          * the store could not be written: retryable, OUTPUTS_MISSING.
+        """
+        if self.cfg.runner_profile != post_verdict_mod.REVIEW_PROFILE:
+            return None
+        workflow_id = (self._task or {}).get("workflow_id")
+        ws = self.ws
+        if not isinstance(workflow_id, str) or not workflow_id or ws is None:
+            return None
+        name = post_verdict_mod.VERDICT_FILENAME
+        try:
+            key = post_verdict_mod.verdict_key(self.cfg.tenant_id, workflow_id, self.cfg.task_id)
+            # Not followed if it is a link: the artifacts directory is the
+            # agent's, and the verdict is the bytes of a file it wrote there.
+            fd = os.open(ws.artifacts / name, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+            with os.fdopen(fd, "rb") as handle:
+                data = handle.read(post_verdict_mod.MAX_REVIEW_BYTES + 1)
+            post_verdict_mod.parse_review(data)
+        except (OSError, post_verdict_mod.VerdictUnreadable) as exc:
+            reason = (
+                f"verdict_unpublished: the review wrote no usable {name} "
+                f"({exc if isinstance(exc, post_verdict_mod.VerdictUnreadable) else type(exc).__name__})"
+            )
+            return self._fail_verdict_unpublished(reason, summary, retryable=True,
+                                                  end_cause=EndCause.OUTPUTS_MISSING)
+        try:
+            result = post_verdict_mod.publish_verdict(self.store, key, data)
+        except post_verdict_mod.VerdictAlreadyPublished as exc:
+            return self._fail_verdict_unpublished(f"verdict_exists: {exc}", summary,
+                                                  retryable=False,
+                                                  end_cause=EndCause.PUBLISH_REFUSED)
+        except Exception as exc:  # noqa: BLE001 - an outage of the store, retried
+            return self._fail_verdict_unpublished(
+                f"verdict_unpublished: the verdict could not be written ({type(exc).__name__})",
+                summary, retryable=True, end_cause=EndCause.OUTPUTS_MISSING,
+            )
+        summary["verdict_published"] = {"key": key, "result": result}
+        self.log.info("review verdict published", key=key, result=result)
+        return None
+
+    def _fail_verdict_unpublished(
+        self, reason: str, summary: dict[str, Any], *, retryable: bool, end_cause: EndCause
+    ) -> Outcome:
+        error = str(self._scrub(reason[:4000]))
+        summary["verdict_published"] = {"refused": error}
+        self.log.error("the review's verdict was not published", reason=error)
+        if retryable:
+            state = self.control.fail_retryably(
+                exit_code=0, error=error, cause="verdict_unpublished",
+                result_summary=summary, end_cause=end_cause,
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=state)
+        self.control.finish(state=TaskState.FAILED, exit_code=0, error=error,
+                            result_summary=summary, end_cause=end_cause)
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _carry_parked_uploads(self, summary: dict[str, Any]) -> None:
@@ -2357,6 +2612,20 @@ class Worker:
         """
         ws = self.ws
         assert ws is not None
+        if self.cfg.profile.never_restore_checkpoint:
+            # CONTRACT REQUEST 36 (merge-step.md §10 item 4a): a profile that
+            # sets the flag restores NOTHING, on any attempt, not only the
+            # first -- `claude-code-review` judges the head it checks out, and
+            # a workspace an earlier attempt (or a planter) left behind is
+            # not that head. Before `_recorded_checkpoint`, so not even the
+            # pointer is followed. Checkpointing itself stays on (invariant
+            # 8): only the restore is skipped.
+            self.log.info(
+                "no checkpoint is restored; starting from an empty workspace",
+                reason="the runner profile never restores a checkpoint",
+                runner_profile=self.cfg.runner_profile,
+            )
+            return
         record = self._recorded_checkpoint(task)
         if record is None:
             return
@@ -2515,6 +2784,11 @@ class Worker:
             self._clone_base = (
                 recorded if recorded and recorded != EMPTY_CLONE_BASE else None
             ) or self._read_clone_base()
+            # The commit this step's clone started from, as the manifest the
+            # worker wrote records it -- never the marker in the tree.
+            self._clone_commit = (
+                recorded if isinstance(recorded, str) and _FULL_SHA_RE.fullmatch(recorded) else None
+            )
             return {
                 "path": REPO_DIR_NAME,
                 "from_checkpoint": True,
@@ -2526,15 +2800,27 @@ class Worker:
         # is fixing. Either way the branch is derived from a task id with
         # this worker's own prefix, never read as a name, exactly as the
         # integrator's contributor branches are.
-        builds_on = self._dispatch_builds_on()
-        continued = continuation_mod.clone_ref(task.get("metadata"), self.cfg.git_branch_prefix)
+        #
+        # A `single-pr` READER or AMENDER (#295, docs/merge-step.md §3) clones
+        # the author's branch, `swarm/<pr_author>`, derived from the author's
+        # task id in the signed dispatch block -- never a branch name read
+        # from metadata -- and nothing below chooses for it. An author, and
+        # every other strategy, is unchanged.
+        pr_branch = (
+            self._pr_author_branch() if self._pr_role() in ("reader", "amender") else ""
+        )
+        builds_on = "" if pr_branch else self._dispatch_builds_on()
+        continued = "" if pr_branch else continuation_mod.clone_ref(
+            task.get("metadata"), self.cfg.git_branch_prefix
+        )
         # `carrier: branches` (D13): a step whose parent kept its work on a
         # branch starts from that branch, instead of from the default branch
         # with the parent's patch to apply. Asked only when nothing above
         # chose a branch, so `continues` and `builds_on` keep their meaning.
-        carried = "" if continued or builds_on else self._carrier_parent(task)
+        carried = "" if pr_branch or continued or builds_on else self._carrier_parent(task)
         ref = (
-            continued
+            pr_branch
+            or continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
             or (self.cfg.repository_ref or task.get("repository_ref"))
@@ -2548,7 +2834,7 @@ class Worker:
         # pinned. `_upstream_base_pin` reads nothing for a root step or a
         # non-workflow task, which is therefore unchanged.
         pinned_sha: str | None = None
-        if not (continued or builds_on or carried):
+        if not (pr_branch or continued or builds_on or carried):
             pinned_sha, self._base_pin = self._upstream_base_pin(task)
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
@@ -2600,6 +2886,10 @@ class Worker:
                 "pushed when that step publishes -- it was not found or could "
                 "not be fetched"
                 if builds_on
+                else f"; this step reads the pull request's branch {ref}, which its "
+                "author pushes when it publishes -- it was not found or could not "
+                "be fetched"
+                if pr_branch
                 else ""
             )
             if refusal:
@@ -2610,6 +2900,9 @@ class Worker:
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
         self._repo_url = clone.url
         self._clone_base = clone.commit
+        # `result_summary.git.clone_commit` (merge-step.md §3): the only record
+        # of which head a reader actually saw. Known in this process.
+        self._clone_commit = clone.commit
         # Known in this process, so trusted; and recorded in every checkpoint
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
@@ -2623,6 +2916,8 @@ class Worker:
         }
         if builds_on:
             info["builds_on"] = builds_on
+        if pr_branch:
+            info["pr_role"] = self._pr_role()
         if carried:
             info["carried_from"] = carried
         if self._base_pin is not None:
@@ -3600,9 +3895,9 @@ class Worker:
         review that edits no file is a review that did its job.
 
         The strategy is read raw, not through `_dispatch_strategy`, which
-        reads `single-pr` as `collect` (this worker does not publish it yet):
-        an author that changed nothing is still a step that owed a pull
-        request.
+        reads `single-pr` as `collect` (`_publish_git` reads its role through
+        `_pr_role` instead): an author that changed nothing is still a step
+        that owed a pull request.
         """
         block = self._dispatch_block()
         raw = block.get("strategy")
@@ -5601,6 +5896,40 @@ class Worker:
             )
         return raw.strip()
 
+    def _pr_role(self) -> str:
+        """This step's part in a `single-pr` pull request, or "" under any other strategy.
+
+        `author`, `reader`, `amender` or `none` (a worker action), as
+        swarm-api's `validation.PR_ROLES` writes them. AN UNRECOGNISED ROLE
+        READS AS `reader`, for the reason an unknown strategy reads as
+        `collect`: a reader pushes nothing, the one outcome that cannot
+        surprise a caller.
+        """
+        block = self._dispatch_block()
+        raw = block.get("strategy")
+        if not (isinstance(raw, str) and raw.strip().lower() == "single-pr"):
+            return ""
+        role = block.get("pr_role")
+        role = role.strip().lower() if isinstance(role, str) else ""
+        return role if role in ("author", "reader", "amender", "none") else "reader"
+
+    def _pr_author_branch(self) -> str:
+        """`swarm/<pr_author>`: the branch a reader clones and an amender pushes to.
+
+        Derived from the author's TASK id in the signed dispatch block with
+        this worker's own prefix, never read as a name, exactly as the
+        integrator's contributor branches are. A value that is not a task id
+        is refused: guessed, the step would read or amend some other branch.
+        """
+        raw = self._dispatch_block().get("pr_author")
+        if not isinstance(raw, str) or not _TASK_ID_RE.match(raw.strip()):
+            raise WorkerError(
+                f"this single-pr step's dispatch block names pr_author {str(raw)[:80]!r}, "
+                "which is not a task id; the pull request's branch cannot be derived "
+                "from it, so nothing was cloned or pushed"
+            )
+        return f"{self.cfg.git_branch_prefix}{raw.strip()}"
+
     def _dispatch_carrier(self) -> str:
         """Where a step's work is kept for the next step. Defaults to checkpoints.
 
@@ -5676,6 +6005,8 @@ class Worker:
 
         base = self._clone_base or self._read_clone_base()
         out: dict[str, Any] = {"base": base}
+        if self._clone_commit:
+            out["clone_commit"] = self._clone_commit
         if self._base_pin is not None:
             out["base_pin"] = dict(self._base_pin)
         if base is None and self._publish_base == EMPTY_CLONE_BASE:
@@ -5957,6 +6288,24 @@ class Worker:
         # Task would be a frozen-contract change; the request to type it is
         # recorded in docs/contract-change-requests.md.
         strategy = self._dispatch_strategy()
+        # `single-pr` (#295, docs/merge-step.md §3) publishes by ROLE: the
+        # author pushes its own branch and opens the one pull request, as
+        # `direct-pr` does; the amender fast-forward pushes to the AUTHOR's
+        # branch and opens nothing; a reader pushes nothing at all, whatever
+        # it changed -- review and proof only write their JSON.
+        pr_role = self._pr_role()
+        if pr_role in ("reader", "none"):
+            return {
+                "strategy": "single-pr",
+                "pr_role": pr_role,
+                "published": False,
+                "publish_reason": (
+                    f"strategy is 'single-pr' and this step's pr_role is {pr_role!r}: "
+                    "it pushes nothing and opens nothing"
+                ),
+            }
+        if pr_role:
+            strategy = "single-pr"
         # `carrier: branches` PUSHES under every strategy (D13): the branch is
         # where the step's work is kept for the next step, so a `collect` step
         # pushes it too -- and opens nothing, below.
@@ -6019,8 +6368,12 @@ class Worker:
 
         # Its own `<prefix><task id>`, or the branch a fix step continues (#263).
         try:
-            branch = continuation_mod.publish_branch(
-                (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+            # The amender's branch is the author's, derived from its task id;
+            # `push_branch` never forces, so its push only fast-forwards.
+            branch = self._pr_author_branch() if pr_role == "amender" else (
+                continuation_mod.publish_branch(
+                    (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+                )
             )
         except WorkerError as exc:
             out["published"] = False
@@ -6030,6 +6383,8 @@ class Worker:
 
         role = self._dispatch_role() if strategy == "integrate" else ""
         out["role"] = role or None
+        if pr_role:
+            out["pr_role"] = pr_role
 
         # NO AGENT PROCESS IS ALIVE ONCE THE TOKEN IS IN HAND. This is the one
         # place the credential-bearing publish begins -- everything below carries
@@ -6342,6 +6697,14 @@ class Worker:
         # ONE. The branch is the deliverable here; the integrator merges it.
         if carrier == "branches":
             self._carrier_pushed = {"name": branch, "head": str(pushed or work_head or "")}
+        if pr_role == "amender":
+            out["published"] = True
+            out["publish_reason"] = (
+                "strategy is 'single-pr' and this step is the amender: it fast-forward "
+                f"pushed the author's branch {branch} and opened nothing; the author's "
+                "pull request carries the push"
+            )
+            return out
         if strategy == "collect":
             # Reached only with `carrier: branches` (D13): the branch is the
             # carrier, and `collect` still opens nothing.
@@ -6759,11 +7122,10 @@ class Worker:
             return False
         if not (self.cfg.repository_url or task.get("repository_url")):
             return False
-        strategy = self._dispatch_strategy()
-        opens = strategy == "direct-pr" or (
-            strategy == "integrate" and self._dispatch_role() == "integrator"
-        )
-        return opens and self._title_from_issue_input(task) is None
+        # `_opens_pull_request`: `direct-pr`, the `integrate` integrator, and
+        # a `single-pr` author, whose `pr-title.txt` is what the review sees
+        # and the merge refuses any other title against (merge-step.md §3).
+        return self._opens_pull_request() and self._title_from_issue_input(task) is None
 
     def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
         """"<issue title> (#N)", or "Fixes #N" with no title to hand.

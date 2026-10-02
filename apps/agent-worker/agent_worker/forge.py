@@ -38,12 +38,15 @@ requests" has no mechanism to do so -- not a quota it would exhaust first.
 
 from __future__ import annotations
 
+import base64
 import json
+import re
+import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from typing import Any, Callable
-from urllib.parse import urlparse
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping
+from urllib.parse import quote, urlencode, urlparse
 
 _UA = "swarmcloud-agent-worker"
 _TIMEOUT = 30
@@ -412,3 +415,508 @@ def _update_pull_request(
         created=False,
         updated=status == 200,
     )
+
+
+# ---------------------------------------------------------------------------
+# The pinned forge client: the merge and post-verdict worker actions (#295)
+# ---------------------------------------------------------------------------
+#
+# WHY A SECOND CLIENT. `_request` above serves the tenant's `-git` token, read
+# by a worker an agent runs beside, against a host parsed out of the task's
+# `repository_url`. The worker actions hold something worth far more -- an
+# installation token minted from a GitHub App key no agent has held
+# (docs/merge-step.md §0, §2.1) -- and so they talk to ONE host, fixed by the
+# Job's Terraform-rendered environment and never by anything a tenant writes
+# (§2.1b), through a client that:
+#
+#   * refuses at construction any host but `api.github.com`, by exact string
+#     equality: `api.github.com.example` and `evil.example/api.github.com`
+#     are not it;
+#   * NEVER FOLLOWS A REDIRECT. urllib's default opener follows 301/302/303/
+#     307/308 and resends the Authorization header to wherever `Location`
+#     points. A redirect is how a credential leaves the pinned host, and
+#     GitHub's API has no legitimate reason to answer any of these calls with
+#     one, so a 3xx raises `ForgeRedirectRefused` instead (§2.1b, §6 row 33);
+#   * follows `Link: rel="next"` only to the same host, over https, and stops
+#     at a page and item cap rather than reading for ever (§5): a list it
+#     could not finish is `PaginationCapReached`, never "checked and clean";
+#   * carries the token in the Authorization header ONLY -- never a URL, a
+#     query string, an exception message or a log line. It has no logger at
+#     all, and its repr names the host and nothing else.
+
+#: The one host the worker actions' credentials go to (§2.1b). The Job's
+#: FORGE_HOST must be exactly this; an Enterprise Server host is not
+#: supported by this client, so it is refused rather than guessed at.
+PINNED_API_HOST = "api.github.com"
+API_VERSION = "2022-11-28"
+#: GitHub's own largest page.
+PER_PAGE = 100
+#: The most pages one list read follows before it refuses. 30 pages of 100 is
+#: GitHub's own 3000-item cap on `pulls/{n}/files`, the longest list a merge
+#: reads; every other list (check runs, reviews, rules) is far shorter.
+MAX_PAGES = 30
+
+_LINK_NEXT = re.compile(r'<([^>]+)>\s*;\s*rel="?next"?')
+
+
+class ForgeRefused(ForgeError):
+    """The client refused to make or continue a request. `code` names why."""
+
+    code = "forge_refused"
+
+
+class ForgeRedirectRefused(ForgeRefused):
+    """The forge answered 3xx, and the client did not follow it."""
+
+    code = "forge_redirect_refused"
+
+    def __init__(self, status: int, path: str) -> None:
+        super().__init__(
+            f"the forge answered {status} to {path}; a credentialed request never "
+            "follows a redirect (docs/merge-step.md §2.1b)"
+        )
+        self.status = status
+
+
+class ForgeHostRefused(ForgeRefused):
+    """A host, or a next-page URL, that is not the pinned one."""
+
+    code = "forge_host_invalid"
+
+
+class PaginationCapReached(ForgeRefused):
+    """A list read reached its cap before its last page."""
+
+    code = "pagination_cap"
+
+
+class ForgeUnavailable(ForgeError):
+    """Unreachable, 5xx, or rate-limited: an outage, not an answer.
+
+    `retry_after_seconds` is the forge's own `retry-after` (or the time until
+    `x-ratelimit-reset`), when it gave one.
+    """
+
+    def __init__(self, message: str, *, retry_after_seconds: int | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ForgeAnswered(ForgeError):
+    """The forge answered with a status the caller did not expect."""
+
+    def __init__(self, status: int, path: str, message: str = "") -> None:
+        super().__init__(
+            f"the forge answered {status} to {path}" + (f": {message}" if message else "")
+        )
+        self.status = status
+
+
+@dataclass(frozen=True)
+class ForgeResponse:
+    status: int
+    data: Any
+    headers: Mapping[str, str] = field(default_factory=dict)
+
+
+#: `(request) -> (status, headers, body)`. The production transport is
+#: `_open`; a test passes its own, which is the one seam the client has.
+Transport = Callable[[urllib.request.Request], tuple[int, Mapping[str, str], bytes]]
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Answer every redirect with None, so urllib raises it as an HTTPError.
+
+    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
+    default one, so no other handler follows it either.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], bytes]:
+    """Send one request with the no-redirect opener; a 3xx comes back as itself."""
+    try:
+        with _NO_REDIRECT_OPENER.open(request, timeout=_TIMEOUT) as response:
+            return response.status, dict(response.headers.items()), response.read()
+    except urllib.error.HTTPError as exc:
+        body = exc.read() if exc.fp is not None else b""
+        return exc.code, dict(exc.headers.items()) if exc.headers else {}, body
+    except urllib.error.URLError as exc:
+        raise ForgeUnavailable(f"could not reach the forge: {exc.reason}") from None
+    except (TimeoutError, OSError) as exc:
+        raise ForgeUnavailable(f"could not reach the forge: {type(exc).__name__}") from None
+
+
+def _retry_after(headers: Mapping[str, str], *, now: float | None = None) -> int | None:
+    lowered = {k.lower(): v for k, v in headers.items()}
+    raw = lowered.get("retry-after")
+    if raw is not None and str(raw).strip().isdigit():
+        return int(str(raw).strip())
+    reset = lowered.get("x-ratelimit-reset")
+    if reset is not None and str(reset).strip().isdigit():
+        current = time.time() if now is None else now
+        return max(0, int(str(reset).strip()) - int(current))
+    return None
+
+
+def _message_of(data: Any) -> str:
+    return str(data.get("message") or "")[:300] if isinstance(data, dict) else ""
+
+
+class PinnedForgeClient:
+    """Requests to `api.github.com` alone, with no redirect followed. See above."""
+
+    def __init__(
+        self, *, token: str, host: str = PINNED_API_HOST, transport: Transport | None = None
+    ) -> None:
+        if host != PINNED_API_HOST:
+            # Not lower-cased first: FORGE_HOST is rendered by Terraform, and
+            # one that is not exactly the pinned form is a misconfiguration to
+            # refuse, not a spelling to repair.
+            raise ForgeHostRefused(
+                f"the forge host {host[:100]!r} is not {PINNED_API_HOST}; the worker "
+                "actions send their credential to that host only"
+            )
+        if not token:
+            raise ForgeRefused("no token: the pinned client never sends an anonymous request")
+        self._host = host
+        self.__token = token
+        self._transport = transport or _open
+
+    def __repr__(self) -> str:
+        return f"PinnedForgeClient(host={self._host!r})"
+
+    @property
+    def host(self) -> str:
+        return self._host
+
+    def _url(self, path: str, query: Mapping[str, Any] | None) -> str:
+        if not path.startswith("/") or "//" in path or "://" in path or "?" in path or "#" in path:
+            raise ForgeRefused("a request path is one absolute path on the pinned host")
+        url = f"https://{self._host}{path}"
+        if query:
+            url += "?" + urlencode({k: v for k, v in query.items() if v is not None})
+        return url
+
+    def _send(self, method: str, url: str, path: str, payload: Any) -> ForgeResponse:
+        body = json.dumps(payload).encode() if payload is not None else None
+        req = urllib.request.Request(url, data=body, method=method)
+        req.add_header("Authorization", f"Bearer {self.__token}")
+        req.add_header("Accept", "application/vnd.github+json")
+        req.add_header("X-GitHub-Api-Version", API_VERSION)
+        req.add_header("User-Agent", _UA)
+        if body is not None:
+            req.add_header("Content-Type", "application/json")
+        status, headers, raw = self._transport(req)
+        if 300 <= status < 400:
+            raise ForgeRedirectRefused(status, path)
+        text = raw.decode("utf-8", errors="replace") if raw else ""
+        try:
+            data = json.loads(text) if text.strip() else None
+        except json.JSONDecodeError:
+            data = {"message": text[:300]}
+        if status >= 500 or status == 429 or (
+            status == 403 and str({k.lower(): v for k, v in headers.items()}.get(
+                "x-ratelimit-remaining", "")) == "0"
+        ):
+            raise ForgeUnavailable(
+                f"the forge answered {status} to {path}"
+                + (f": {_message_of(data)}" if _message_of(data) else ""),
+                retry_after_seconds=_retry_after(headers),
+            )
+        return ForgeResponse(status=status, data=data, headers=headers)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        payload: Any = None,
+        query: Mapping[str, Any] | None = None,
+    ) -> ForgeResponse:
+        """One request. Raises on a redirect or an outage; returns any other answer."""
+        return self._send(method, self._url(path, query), path, payload)
+
+    def get(self, path: str, *, query: Mapping[str, Any] | None = None) -> ForgeResponse:
+        return self.request("GET", path, query=query)
+
+    def get_ok(self, path: str, *, query: Mapping[str, Any] | None = None) -> Any:
+        """GET, and the body of a 200, or `ForgeAnswered`."""
+        response = self.get(path, query=query)
+        if response.status != 200:
+            raise ForgeAnswered(response.status, path, _message_of(response.data))
+        return response.data
+
+    def paginate(
+        self,
+        path: str,
+        *,
+        query: Mapping[str, Any] | None = None,
+        key: str | None = None,
+        max_items: int | None = None,
+        max_pages: int = MAX_PAGES,
+    ) -> list[Any]:
+        """Every item of a list endpoint, to its last page, or a refusal.
+
+        `key` names the list inside an object body (`check_runs`); None reads
+        a body that is the list itself. REACHING `max_items` IS A REFUSAL even
+        on the last page: GitHub truncates `pulls/{n}/files` at 3000 without
+        saying so, so a list that long cannot be told from one cut short.
+        """
+        url = self._url(path, {**(query or {}), "per_page": PER_PAGE})
+        items: list[Any] = []
+        for _page in range(max_pages):
+            response = self._send("GET", url, path, None)
+            if response.status != 200:
+                raise ForgeAnswered(response.status, path, _message_of(response.data))
+            data = response.data
+            page = data.get(key) if key is not None and isinstance(data, dict) else data
+            if not isinstance(page, list):
+                raise ForgeAnswered(response.status, path, "the body is not a list")
+            items.extend(page)
+            if max_items is not None and len(items) >= max_items:
+                raise PaginationCapReached(
+                    f"{path} reached {max_items} items; the list cannot be read completely"
+                )
+            link = {k.lower(): v for k, v in response.headers.items()}.get("link", "")
+            match = _LINK_NEXT.search(link or "")
+            if match is None:
+                return items
+            nxt = urlparse(match.group(1))
+            if nxt.scheme != "https" or nxt.hostname != self._host or nxt.port is not None \
+                    or nxt.username or nxt.password:
+                raise ForgeHostRefused(
+                    f"the next page of {path} is not on {self._host}; not followed"
+                )
+            url = match.group(1)
+        raise PaginationCapReached(f"{path} has more than {max_pages} pages; not read further")
+
+    def rules_for_branch(self, owner: str, repo: str, branch: str) -> list[dict[str, Any]]:
+        """`GET /repos/{o}/{r}/rules/branches/{branch}`: every rule on the branch.
+
+        GitHub's one endpoint that merges every applicable ruleset's rules and
+        classic protection into one list (docs/merge-step.md §5.2), so the
+        required checks are never read from one source without the other.
+        The same read as auto-merge.yml's gate 3. Paginated.
+        """
+        rules = self.paginate(
+            f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+            f"/rules/branches/{quote(branch, safe='')}"
+        )
+        return [rule for rule in rules if isinstance(rule, dict)]
+
+
+@dataclass(frozen=True)
+class RequiredCheck:
+    context: str
+    #: The App the rule pins the check to (`integration_id` in a ruleset's
+    #: rule), or None when the rule names only the context.
+    app_id: int | None
+
+
+def required_status_checks(rules: list[dict[str, Any]]) -> list[RequiredCheck]:
+    """The required checks every `required_status_checks` rule names, once each."""
+    seen: dict[tuple[str, int | None], RequiredCheck] = {}
+    for rule in rules:
+        if rule.get("type") != "required_status_checks":
+            continue
+        parameters = rule.get("parameters") if isinstance(rule.get("parameters"), dict) else {}
+        for check in parameters.get("required_status_checks") or []:
+            if not isinstance(check, dict) or not isinstance(check.get("context"), str):
+                continue
+            raw = check.get("integration_id", check.get("app_id"))
+            app_id = raw if isinstance(raw, int) and not isinstance(raw, bool) else None
+            seen.setdefault((check["context"], app_id), RequiredCheck(check["context"], app_id))
+    return list(seen.values())
+
+
+# -- the forge record a worker-action Job carries (§2.1b) --------------------
+
+
+@dataclass(frozen=True)
+class ForgeTarget:
+    host: str
+    owner: str
+    repo: str
+    review_app_id: int | None = None
+    review_app_bot_id: int | None = None
+
+    @property
+    def full_name(self) -> str:
+        return f"{self.owner}/{self.repo}"
+
+
+_NAME_PART = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
+
+
+def forge_target_from_env(
+    environ: Mapping[str, str], *, need_bot_id: bool = False
+) -> ForgeTarget:
+    """FORGE_HOST/OWNER/REPO and the review App's ids, from the Job's environment.
+
+    Terraform renders them onto the merge and post-verdict Jobs only
+    (terraform/infra/locals.tf, `forge_env_names`); a task never supplies
+    them. Missing or malformed is `ForgeHostRefused` (code
+    `forge_host_invalid`), which the action ends CANNOT_START (§6 row 14).
+    """
+    host = (environ.get("FORGE_HOST") or "").strip()
+    owner = (environ.get("FORGE_OWNER") or "").strip()
+    repo = (environ.get("FORGE_REPO") or "").strip()
+    if host != PINNED_API_HOST:
+        raise ForgeHostRefused(
+            f"FORGE_HOST is {host[:100]!r}, not {PINNED_API_HOST}" if host
+            else "FORGE_HOST is not set on this Job"
+        )
+    if not _NAME_PART.match(owner) or not _NAME_PART.match(repo):
+        raise ForgeHostRefused("FORGE_OWNER or FORGE_REPO is missing or malformed on this Job")
+
+    def number(name: str) -> int | None:
+        raw = (environ.get(name) or "").strip()
+        if not raw:
+            return None
+        if not raw.isdigit():
+            raise ForgeHostRefused(f"{name} is not a number")
+        return int(raw)
+
+    bot = number("REVIEW_APP_BOT_ID")
+    if need_bot_id and bot is None:
+        raise ForgeHostRefused("REVIEW_APP_BOT_ID is not set on this Job")
+    return ForgeTarget(host, owner, repo, number("REVIEW_APP_ID"), bot)
+
+
+# -- a GitHub App key, and the installation token minted from it (§2.1, §2.2) -
+
+
+class AppRejected(ForgeError):
+    """The App key was refused (401), or the App is not installed on the repository (404)."""
+
+
+@dataclass(frozen=True)
+class AppKey:
+    app_id: int
+    #: Never in a repr, an exception or a log line.
+    private_key: str = field(repr=False)
+
+
+def parse_app_key(payload: str) -> AppKey:
+    """The JSON object a `-git-merge`/`-git-review` secret holds: an integer
+    `app_id` and the App's PEM as `private_key` (docs/merge-step.md §2.1).
+    A refusal names the shape, never the content."""
+    try:
+        data = json.loads(payload)
+    except (TypeError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        raise ForgeRefused("the App secret is not a JSON object of app_id and private_key")
+    app_id = data.get("app_id")
+    if isinstance(app_id, str) and app_id.strip().isdigit():
+        app_id = int(app_id.strip())
+    key = data.get("private_key")
+    if isinstance(app_id, bool) or not isinstance(app_id, int) or not isinstance(key, str) \
+            or "PRIVATE KEY" not in key:
+        raise ForgeRefused("the App secret is not a JSON object of app_id and private_key")
+    return AppKey(app_id=app_id, private_key=key)
+
+
+def _b64url(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode("ascii")
+
+
+def app_jwt(key: AppKey, *, now: int | None = None) -> str:
+    """An RS256 JWT for the App, valid for nine minutes (GitHub allows ten).
+
+    Issued 60 s in the past, GitHub's own advice for clock drift. Signed in
+    this process with `cryptography`; the key reaches no file, environment
+    variable, argv or subprocess.
+    """
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import padding, rsa
+
+    issued = int(time.time() if now is None else now) - 60
+    header = _b64url(json.dumps({"alg": "RS256", "typ": "JWT"}, separators=(",", ":")).encode())
+    claims = _b64url(json.dumps(
+        {"iat": issued, "exp": issued + 600, "iss": str(key.app_id)}, separators=(",", ":")
+    ).encode())
+    try:
+        private = serialization.load_pem_private_key(key.private_key.encode("ascii"), password=None)
+    except (ValueError, TypeError, UnicodeEncodeError):
+        raise ForgeRefused("the App secret's private_key is not a PEM private key") from None
+    if not isinstance(private, rsa.RSAPrivateKey):
+        raise ForgeRefused("the App secret's private_key is not an RSA key")
+    signing_input = f"{header}.{claims}".encode("ascii")
+    signature = private.sign(signing_input, padding.PKCS1v15(), hashes.SHA256())
+    return f"{header}.{claims}.{_b64url(signature)}"
+
+
+@dataclass(frozen=True)
+class InstallationToken:
+    #: Never in a repr, an exception or a log line.
+    token: str = field(repr=False)
+    expires_at: str
+    installation_id: int
+    app_id: int
+
+
+def mint_installation_token(
+    *,
+    key: AppKey,
+    owner: str,
+    repo: str,
+    permissions: Mapping[str, str],
+    transport: Transport | None = None,
+    now: int | None = None,
+) -> InstallationToken:
+    """`GET /repos/{o}/{r}/installation` with the App's JWT, then one token for
+    that repository alone with exactly `permissions` (§2.2 step 7).
+
+    The installation read is also the proof the App is installed on THIS
+    repository. 401 and 404 are `AppRejected` (§6 rows 16, 6a row 7).
+    """
+    jwt = app_jwt(key, now=now)
+    client = PinnedForgeClient(token=jwt, transport=transport)
+    del jwt
+    path = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/installation"
+    found = client.get(path)
+    if found.status in (401, 403, 404):
+        raise AppRejected(
+            f"the App {key.app_id} was refused or is not installed on {owner}/{repo} "
+            f"({found.status})"
+        )
+    if found.status != 200 or not isinstance(found.data, dict) \
+            or not isinstance(found.data.get("id"), int):
+        raise ForgeAnswered(found.status, path, _message_of(found.data))
+    installation = int(found.data["id"])
+    minted = client.request(
+        "POST",
+        f"/app/installations/{installation}/access_tokens",
+        payload={"repositories": [repo], "permissions": dict(permissions)},
+    )
+    if minted.status in (401, 403, 404, 422):
+        raise AppRejected(
+            f"the App {key.app_id} could not mint a token for {owner}/{repo} ({minted.status})"
+        )
+    data = minted.data if isinstance(minted.data, dict) else {}
+    token = data.get("token")
+    if minted.status != 201 or not isinstance(token, str) or not token:
+        raise ForgeAnswered(minted.status, "/app/installations/{id}/access_tokens",
+                            _message_of(minted.data))
+    return InstallationToken(
+        token=token,
+        expires_at=str(data.get("expires_at") or ""),
+        installation_id=installation,
+        app_id=key.app_id,
+    )
+
+
+def revoke_installation_token(client: PinnedForgeClient) -> bool:
+    """`DELETE /installation/token` (§2.2 step 11). Never raises: an unrevoked
+    token still expires within the hour; the revoke makes the window seconds."""
+    try:
+        return client.request("DELETE", "/installation/token").status == 204
+    except ForgeError:
+        return False
