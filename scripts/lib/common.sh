@@ -1430,6 +1430,49 @@ tenant_namespace() {
   printf '%s%s' "${TENANT_NAMESPACE_PREFIX}" "$1"
 }
 
+# --- the #295 accounts: merge, post-verdict, review ------------------------
+#
+# READ OFF terraform/modules/service_account_ids, NOT RESTATED. That module's
+# `action_accounts` table is the one definition of which per-tenant account a
+# provider brings into being, which of them is the SOLE reader of its
+# provider's secret, and which read another provider's key beside the worker
+# (docs/merge-step.md §1.3, §10 item 4). scripts/register-tenant.sh grants the
+# same secrets outside terraform's apply, and a second copy of the table here
+# is the copy that would drift: a renamed suffix would bind an account nothing
+# runs as, and a dropped `sole_accessor` would put an App key back on the
+# worker. An entry this cannot parse makes the table empty, and the callers
+# refuse on an empty table rather than guess.
+SA_IDS_MODULE="${REPO_ROOT}/terraform/modules/service_account_ids/main.tf"
+
+# tf_action_accounts  ->  one line per entry of `action_accounts`:
+#   <profile>|<suffix>|<gating provider>|<sole_accessor>|<also_reads, comma-joined>
+tf_action_accounts() {
+  [[ -f "${SA_IDS_MODULE}" ]] || return 0
+  sed -n -E \
+    -e 's/^[[:space:]]*"([a-z0-9-]+)"[[:space:]]*=[[:space:]]*\{[[:space:]]*suffix[[:space:]]*=[[:space:]]*"([a-z0-9-]+)",[[:space:]]*provider[[:space:]]*=[[:space:]]*"([a-z0-9-]+)",[[:space:]]*sole_accessor[[:space:]]*=[[:space:]]*(true|false),[[:space:]]*also_reads[[:space:]]*=[[:space:]]*\[([^]]*)\][[:space:]]*\}[[:space:]]*$/\1|\2|\3|\4|\5/p' \
+    "${SA_IDS_MODULE}" \
+    | sed -E -e 's/[" ]//g'
+}
+
+# tf_action_account_prefix  ->  the module's `action_account_prefix`.
+tf_action_account_prefix() {
+  [[ -f "${SA_IDS_MODULE}" ]] || return 0
+  sed -n -E 's/^[[:space:]]*action_account_prefix[[:space:]]*=[[:space:]]*"([a-z0-9-]+)"[[:space:]]*$/\1/p' \
+    "${SA_IDS_MODULE}" | head -n 1
+}
+
+# tenant_action_account_id TENANT PROFILE  ->  that profile's account id for
+# the tenant, `<prefix><tenant><suffix>` exactly as the module's `action_ids`
+# builds it. Non-zero, and nothing printed, when the module has no such profile.
+tenant_action_account_id() {
+  local tenant="$1" profile="$2" prefix line
+  prefix="$(tf_action_account_prefix)"
+  [[ -n "${prefix}" ]] || return 1
+  line="$(tf_action_accounts | awk -F'|' -v p="${profile}" '$1 == p { print; exit }')"
+  [[ -n "${line}" ]] || return 1
+  printf '%s%s%s' "${prefix}" "${tenant}" "$(printf '%s' "${line}" | cut -d'|' -f2)"
+}
+
 # states_json ARRAY_ELEMENTS...  ->  ["A","B",...]
 # Used to hand one of the sets above to jq as --argjson, so a jq expression can
 # iterate the set instead of naming its members. bash 3.2 has no way to pass an
