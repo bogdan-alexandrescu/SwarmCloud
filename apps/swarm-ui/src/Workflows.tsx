@@ -335,6 +335,10 @@ export function WorkflowsScreen({
 
   if (query.wf !== null) {
     const id = query.wf
+    // A local, not an inline expression: the nav-heading test reads a literal or
+    // module constant as the tab's heading ('Workflows', below) and skips a
+    // per-workflow local like this one.
+    const pageTitle = name ?? id
     return (
       <>
         <a className="wfp-back" href={listHref(query)}>
@@ -347,7 +351,7 @@ export function WorkflowsScreen({
           // spec's label as Recent last read it -- the list or this page
           // records it -- and the id until one is known; the id stays on the
           // page whole, as the head's chip.
-          title={name ?? id}
+          title={pageTitle}
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
           pollMs={workflowPoll}
