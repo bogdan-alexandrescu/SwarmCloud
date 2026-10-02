@@ -134,6 +134,12 @@ session = plan["sessions"][min(runs - 1, len(plan["sessions"]) - 1)]
 say({"type": "system", "subtype": "init", "session_id": session})
 mode = plan["modes"][min(runs - 1, len(plan["modes"]) - 1)]
 reset = int(time.time()) + 3600
+if mode.startswith("flood_"):
+    # Past the stdout cap before anything the watcher must act on is printed.
+    for i in range(plan.get("flood_lines", 0)):
+        say({"type": "assistant", "session_id": session, "message": {"content": [
+            {"type": "text", "text": "padding %d " % i + "x" * 1000}]}})
+    mode = mode[len("flood_"):]
 if mode == "exhaust":
     say({"type": "assistant", "session_id": session,
          "message": {"content": [{"type": "tool_use", "id": "t1", "name": "Bash"}]}})
@@ -142,6 +148,8 @@ if mode == "exhaust":
     say({"type": "user", "session_id": session, "parent_tool_use_id": None,
          "message": {"content": [{"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}})
     time.sleep(30)
+    # Reached only by a CLI nobody stopped at its turn boundary.
+    (plan_dir / "overslept").write_text("1")
     sys.exit(0)
 if mode == "turns":
     for i in range(200):
@@ -193,7 +201,8 @@ class _Secrets(FakeSecretClient):
         return super().access(secret_name, version)
 
 
-def _run(db, worker_factory, tmp_path, broker, *, modes, unreadable=(), timeout=60):
+def _run(db, worker_factory, tmp_path, broker, *, modes, unreadable=(), timeout=60,
+         flood_lines=0, **overrides):
     tokens = {f"swarm-account-{TENANT}--{label}": _token()
               for label in ("first", "second", "third")}
     sessions = [str(uuid.uuid4()) for _ in modes]
@@ -202,10 +211,12 @@ def _run(db, worker_factory, tmp_path, broker, *, modes, unreadable=(), timeout=
     secrets = _Secrets(tokens, unreadable=unreadable)
     worker, config, _ = worker_factory(
         runner_profile="claude-code", secret_client=secrets, timeout_seconds=timeout,
+        **overrides,
     )
     worker._account_broker = broker
     plan = tmp_path / "plan"
-    (plan / "plan.json").write_text(json.dumps({"modes": modes, "sessions": sessions}))
+    (plan / "plan.json").write_text(json.dumps(
+        {"modes": modes, "sessions": sessions, "flood_lines": flood_lines}))
     code = worker.run()
     runs_file = plan / "runs.jsonl"
     runs = [json.loads(line) for line in runs_file.read_text().splitlines()] if (
@@ -286,6 +297,48 @@ def test_a_drain_moves_the_agent_at_its_next_turn_boundary(
     # At most once per turn, never per stream line: the fake prints three
     # lines a turn, and fewer status reads than turns were ever made.
     assert len(broker.statuses) <= 200
+
+
+#: A stdout cap small enough that the flood passes it: the head is 32 KiB and
+#: the CLI prints about 200 KiB before the event that matters.
+_SMALL_CAP = 64 * 1024
+
+
+def test_an_exhausted_account_still_swaps_after_the_stream_passes_its_cap(
+    db, worker_factory, tmp_path, cli, log_stream
+):
+    # The B11 review: the capture file stops growing at its head, so a watcher
+    # reading the FILE saw no turn boundary and no reading past the cap.
+    broker = FakeBroker()
+    code, worker, runs, tokens, sessions = _run(
+        db, worker_factory, tmp_path, broker, modes=["flood_exhaust", "finish"],
+        flood_lines=200, max_stdout_bytes=_SMALL_CAP,
+    )
+
+    assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
+    assert not (tmp_path / "plan" / "overslept").exists(), (
+        "the CLI was not stopped at its turn boundary: the swap waited for it to exit")
+    assert [s["reason"] for s in broker.swaps] == ["exhausted"]
+    assert [r["resume"] for r in runs] == [None, sessions[0]]
+    assert runs[1]["token"] == tokens[f"swarm-account-{TENANT}--second"]
+    assert EventType.PARKED.value not in _types(db)
+
+
+def test_a_drain_still_moves_the_agent_after_the_stream_passes_its_cap(
+    db, worker_factory, tmp_path, cli, log_stream
+):
+    broker = FakeBroker(move="drain")
+    code, worker, runs, tokens, sessions = _run(
+        db, worker_factory, tmp_path, broker, modes=["flood_turns", "finish"],
+        flood_lines=200, max_stdout_bytes=_SMALL_CAP,
+    )
+
+    assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
+    assert [s["reason"] for s in broker.swaps] == ["drain"]
+    assert [r["resume"] for r in runs] == [None, sessions[0]]
+    assert EventType.PARKED.value not in _types(db)
+    # The readings printed past the cap reached the broker too (S15).
+    assert any("seven_day" in windows for _acct, windows in broker.readings)
 
 
 def test_a_fenced_attempts_swap_is_refused_and_it_stands_down(

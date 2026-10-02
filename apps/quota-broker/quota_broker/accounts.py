@@ -565,6 +565,12 @@ class Account:
         precisely the wrong direction to be wrong in. Each window is dated by
         its own `observed_at`, or by the account's for a window stored before
         windows carried one.
+
+        A window no reading mentions is KEPT, never dropped: a window the
+        provider stops reporting stays stored until its `resets_at` passes,
+        after which `choose()` no longer counts it. That is harmless, and it is
+        the price of the merge -- absence from one reading is not evidence the
+        window is gone.
         """
         merged = dict(self.windows)
         changed = False

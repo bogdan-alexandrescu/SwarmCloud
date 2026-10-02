@@ -299,6 +299,51 @@ def test_a_rejected_reading_stops_at_the_next_turn_boundary(tmp_path):
     assert json.loads(channel.read_text())["readings"]["five_hour"]["utilization"] == 1.0
 
 
+def test_a_capture_tap_sees_every_byte_past_the_cap(tmp_path):
+    import io
+
+    from agent_worker.procman import StreamCapture
+
+    seen: list[bytes] = []
+    stream = b"".join(b"line %05d\n" % i for i in range(5000))
+    capture = StreamCapture(tmp_path / "out", 4096, keep_tail=True, on_chunk=seen.append)
+    capture.pump(io.BufferedReader(io.BytesIO(stream)))
+
+    assert b"".join(seen) == stream, "the tap gets the stream, not the capped file"
+    assert capture.truncated and (tmp_path / "out").stat().st_size < len(stream)
+
+
+def test_a_capture_tap_that_raises_never_breaks_the_capture(tmp_path):
+    import io
+
+    from agent_worker.procman import StreamCapture
+
+    def broken(_chunk: bytes) -> None:
+        raise RuntimeError("tap failed")
+
+    capture = StreamCapture(tmp_path / "out", 1 << 20, keep_tail=True, on_chunk=broken)
+    capture.pump(io.BufferedReader(io.BytesIO(b"a\nb\n")))
+    assert (tmp_path / "out").read_bytes() == b"a\nb\n"
+
+
+def test_a_tapped_watcher_reads_the_pipe_and_not_the_file(tmp_path):
+    from agent_worker.runners.cliagent import AccountStreamWatcher
+
+    stdout, channel = tmp_path / "out", tmp_path / "chan.json"
+    stdout.write_text("")
+    w = AccountStreamWatcher(stdout, channel, None)
+    feed = w.tap()
+    reset = int(datetime.now(timezone.utc).timestamp()) + 600
+    rejected = json.dumps({"type": "rate_limit_event", "rate_limit_info": {
+        "status": "rejected", "rateLimitType": "five_hour", "resetsAt": reset}})
+    # Split across two chunks, and never written to the (capped) file.
+    feed((rejected[:20]).encode())
+    assert w.poll() is None
+    feed((rejected[20:] + "\n" + json.dumps({"type": "user"}) + "\n").encode())
+    assert w.poll() == "exhausted"
+    assert stdout.read_text() == ""
+
+
 def _fake_cli(tmp_path: Path) -> Path:
     script = tmp_path / "fake-cli"
     script.write_text(

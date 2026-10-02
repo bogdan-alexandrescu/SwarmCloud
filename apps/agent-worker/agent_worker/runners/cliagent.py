@@ -40,11 +40,12 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
@@ -179,9 +180,10 @@ class CliAgentSpec:
 # An attempt holding a pool account can move to another account mid-run
 # (S13/S14) and forwards its rate-limit readings to the broker (S15). The
 # worker owns the hold and the broker; THIS process owns the CLI and its
-# stream. They talk through two small files in the attempt's `work/`, named by
-# the worker in the environment, and only when the attempt holds an account
-# (the worker sets the variables then and never otherwise):
+# stream. They talk through two small files in the attempt's private directory
+# (`ws.private`, never the agent's working tree), named by the worker in the
+# environment, and only when the attempt holds an account (the worker sets the
+# variables then and never otherwise):
 #
 #   ACCOUNT_STREAM_ENV  written here, read by the worker: the session id, the
 #                       latest reading of each window, how many turns have
@@ -271,6 +273,14 @@ class AccountStreamWatcher:
 
     It never raises on what the stream contains; a line that is not JSON is
     not an event.
+
+    THE STREAM COMES FROM THE PIPE, NOT THE FILE, once `tap()` is called (the
+    B11 review). The capture file of a `keep_tail` run stops growing at its
+    head and holds the end in memory until the CLI exits, so a watcher reading
+    the file saw nothing of a long session past the cap: no turn boundary, no
+    reading, no drain. `_run_watched` hands `tap()`'s callable to the child's
+    stdout capture, which calls it with every chunk before the cap applies.
+    Without a tap (a test driving the watcher by hand) it reads the file.
     """
 
     def __init__(self, stdout_path: Path, channel: Path, move: Path | None) -> None:
@@ -279,6 +289,8 @@ class AccountStreamWatcher:
         self._move = move
         self._offset = 0
         self._partial = b""
+        self._fed: list[bytes] | None = None
+        self._fed_lock = threading.Lock()
         self.session_id: str | None = None
         self.readings: dict[str, dict[str, Any]] = {}
         self.turns = 0
@@ -320,16 +332,37 @@ class AccountStreamWatcher:
             self.write()
         return stop
 
-    def _new_events(self) -> list[dict[str, Any]]:
+    def tap(self) -> Callable[[bytes], None]:
+        """The callable the stdout capture feeds; from now on the file is not read."""
+        self._fed = []
+        return self._feed
+
+    def _feed(self, chunk: bytes) -> None:
+        # The capture's pump thread. Drained every `_WATCH_SECONDS` by `poll`,
+        # so what is held here is a quarter second of output at most.
+        with self._fed_lock:
+            if self._fed is not None:
+                self._fed.append(chunk)
+
+    def _read_new(self) -> bytes:
+        if self._fed is not None:
+            with self._fed_lock:
+                chunk = b"".join(self._fed)
+                self._fed = []
+            return chunk
         try:
             with self._stdout.open("rb") as stream:
                 stream.seek(self._offset)
                 chunk = stream.read()
         except OSError:
-            return []
+            return b""
+        self._offset += len(chunk)
+        return chunk
+
+    def _new_events(self) -> list[dict[str, Any]]:
+        chunk = self._read_new()
         if not chunk:
             return []
-        self._offset += len(chunk)
         data = self._partial + chunk
         lines = data.split(b"\n")
         self._partial = lines.pop()
@@ -409,6 +442,7 @@ def _run_watched(
         logger=log,
         keep_tail=True,
         log_argv=log_argv,
+        stdout_tap=watcher.tap(),
     )
     child.start()
     deadline = time.monotonic() + limits.timeout_seconds
