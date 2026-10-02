@@ -26,6 +26,15 @@ The token itself is the tenant's own, resolved from
 `swarm-tenant-<tenant>-git`, never a platform-wide one: a single token that can
 clone every tenant's repositories would make one malicious repository in one
 tenant a credential compromise for all of them (invariant 9).
+
+And it goes only to the forge it was issued for (#307). The URL is the task
+submitter's claim, so `_write_credentials` stores the token only for an https
+URL whose host passes `forge.may_receive_forge_token` -- the same rule the
+issue fetch uses -- and writes nothing for any other host. A clone of another
+host runs without a credential, as a public read: a public repository there
+still clones, and a private one fails with an error that says the credential
+was withheld and why. Refusing outright would gain nothing (no credential
+leaves either way) and would turn away public repositories that work today.
 """
 
 from __future__ import annotations
@@ -41,6 +50,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlparse, urlunparse, quote
 
+from .forge import may_receive_forge_token
 from .procman import run_child
 
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
@@ -120,19 +130,65 @@ def validate_ref(ref: str | None) -> str | None:
     return ref
 
 
-def _write_credentials(url: str, token: str, private_dir: Path) -> Path:
+def _credential_host(url: str) -> str | None:
+    """The host to store the forge token for, or None when `url` gets none.
+
+    None unless the URL is https, carries no port and no userinfo, and its
+    host passes `forge.may_receive_forge_token` (#307). The port and userinfo
+    refusals match `forge.parse_repo`: github.com serves git on 443 alone, and
+    `https://github.com@evil.example/` is a URL whose host is evil.example.
+
+    The host is returned as the URL spells it, not lower-cased: git matches a
+    stored credential's host case-sensitively against the URL it is fetching,
+    so an entry for `github.com` would not answer a clone of `GitHub.com`.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme != "https" or "@" in parsed.netloc:
+        return None
+    try:
+        if parsed.port is not None:
+            return None
+    except ValueError:
+        return None
+    if not may_receive_forge_token(parsed.hostname):
+        return None
+    return parsed.netloc
+
+
+def _withheld_note(url: str, token: str | None) -> str:
+    """The sentence a failed git command carries when it ran without the
+    tenant's credential because of the host rule -- so a private repository on
+    another host fails with the reason, not with a bare authentication error."""
+    if not token or _credential_host(url) is not None:
+        return ""
+    host = urlparse(url).hostname or "this host"
+    return (
+        f" (git ran without the tenant's git credential: it is sent only to "
+        f"github.com, and {host} is not github.com)"
+    )
+
+
+def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     """Store `https://x-access-token:<token>@host` for git's `store` helper.
+
+    Returns None, and writes nothing, when `url`'s host is not one the token
+    may go to (`_credential_host`, #307). Every caller adds the `store` helper
+    only for a returned path, so git then has no credential to send anywhere --
+    including to a host a redirect sends it to, because git asks its helpers
+    again for the redirect target's host and this file names one host only.
 
     `private_dir` is the worker's own scratch directory, never the one the agent
     is given as TMPDIR, and `shallow_clone` removes the file in a `finally`.
     """
-    parsed = urlparse(url)
+    host = _credential_host(url)
+    if host is None:
+        return None
     private_dir.mkdir(parents=True, exist_ok=True)
     cred_file = private_dir / ".git-credentials"
     entry = urlunparse(
         (
-            parsed.scheme,
-            f"x-access-token:{quote(token, safe='')}@{parsed.netloc}",
+            "https",
+            f"x-access-token:{quote(token, safe='')}@{host}",
             "",
             "",
             "",
@@ -208,7 +264,13 @@ def shallow_clone(
     cred_file: Path | None = None
     if token:
         cred_file = _write_credentials(url, token, private_dir)
-        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+        if cred_file is None:
+            logger.info(
+                "git credential withheld: the host is not the forge the token was issued for",
+                host=urlparse(url).hostname,
+            )
+        else:
+            config_args += ["-c", f"credential.helper=store --file={cred_file}"]
 
     is_sha = bool(ref and _SHA_RE.match(ref))
     if is_sha:
@@ -250,7 +312,8 @@ def shallow_clone(
             if result.exit_code != 0:
                 tail = (logs_dir / f"git-{index}.err.log").read_text(errors="replace")[-2000:]
                 raise GitError(
-                    f"git step {index} failed with exit {result.exit_code}: {tail.strip()}"
+                    f"git step {index} failed with exit {result.exit_code}"
+                    f"{_withheld_note(url, token)}: {tail.strip()}"
                 )
     finally:
         # The clone is the only thing that ever needs this file. Leaving it on
@@ -2250,10 +2313,10 @@ def push_branch(
     # `_TOKEN_SAFE` first (its trailing `credential.helper=` RESETS the helper
     # list), then the worker's own helper -- so the worker's is the only helper
     # git can consult for this token. This runs in a worker-owned publish repo.
-    config_args = [
-        *_TOKEN_SAFE,
-        "-c", f"credential.helper=store --file={cred_file}",
-    ]
+    # No helper at all for a host the token may not go to (#307).
+    config_args = [*_TOKEN_SAFE]
+    if cred_file is not None:
+        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
     try:
         # `--no-follow-tags`: the refspec names one branch, but `push.followTags`
         # in the clone's config -- the agent's to set -- would push every
@@ -2276,14 +2339,15 @@ def push_branch(
             err = logs_dir / "git-publish-push.err.log"
             if err.exists():
                 tail = err.read_text(errors="replace")[-1200:].strip()
-            raise GitError(f"push failed with exit {code}: {tail}")
+            raise GitError(f"push failed with exit {code}{_withheld_note(url, token)}: {tail}")
     finally:
         # Same discipline as the clone: the credential exists for the length of
         # one git invocation and no longer. The runner has already exited by
         # the time this runs, but a park can bring another one back into the
         # same workspace, so "nobody is looking right now" is not a guarantee.
         try:
-            cred_file.unlink(missing_ok=True)
+            if cred_file is not None:
+                cred_file.unlink(missing_ok=True)
         except OSError as exc:
             logger.error("could not remove the git credential file", error=str(exc))
 
@@ -2508,10 +2572,14 @@ def merge_branches(
     cred_file = _write_credentials(url, token, private_dir)
     # As in `push_branch`: `_TOKEN_SAFE` resets the credential-helper list before
     # the worker's own helper is added, and this runs in a worker-owned publish
-    # repository -- the contributor fetch below carries the token.
+    # repository -- the contributor fetch below carries the token. No helper at
+    # all for a host the token may not go to (#307).
+    credential_args = (
+        ["-c", f"credential.helper=store --file={cred_file}"] if cred_file is not None else []
+    )
     config_args = [
         *_TOKEN_SAFE,
-        "-c", f"credential.helper=store --file={cred_file}",
+        *credential_args,
         # The merge commits are the worker's, not the agent's. Without these
         # git refuses to commit at all in a container with no global config,
         # and the merge fails for a reason that reads like a conflict. All six
@@ -2598,7 +2666,8 @@ def merge_branches(
             merged.append(branch)
     finally:
         try:
-            cred_file.unlink(missing_ok=True)
+            if cred_file is not None:
+                cred_file.unlink(missing_ok=True)
         except OSError as exc:
             logger.error("could not remove the git credential file", error=str(exc))
 

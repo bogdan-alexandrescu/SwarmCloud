@@ -112,11 +112,17 @@ interface Persisted {
   reauth: Record<string, SignIn>
   /** The add-an-account sign-in. */
   signin: SignIn
+  /**
+   * Whether `Add account` has opened the form (#127). Held here, not in the
+   * form, because a reload remounts the screen and must not fold a form
+   * somebody opened.
+   */
+  adding: boolean
 }
 
 type Patch = (fn: (p: Persisted) => Persisted) => void
 
-const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind: 'idle' } }
+const EMPTY_UI: Persisted = { open: {}, refresh: {}, reauth: {}, signin: { kind: 'idle' }, adding: false }
 
 /**
  * Capacity -> Accounts. The Claude subscriptions this platform runs agents on.
@@ -333,8 +339,53 @@ function Body({
     <>
       <Broken accounts={accounts} scope={board.page.tenant_id} />
       <Pool board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
-      <AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
+      <AddGate accounts={accounts} ui={ui} patch={patch}>
+        <AddAccount board={board} accounts={accounts} ui={ui} patch={patch} reload={reload} />
+      </AddGate>
       <HelpLinks topics={ACCOUNT_TOPICS} />
+    </>
+  )
+}
+
+/**
+ * THE SIGN-IN FORM, BEHIND A CONTROL (#127). It was always drawn, and filled
+ * half the screen of somebody who came to watch the pool. Two cases still
+ * draw it with no click, because hiding it there would hide the answer:
+ *
+ *   * an EMPTY pool -- the form is the one control that fixes it, and the
+ *     empty state says "add the first one below";
+ *   * a sign-in UNDER WAY or just finished -- its link, its code box and its
+ *     report are the form, and folding them away mid-sign-in loses them.
+ */
+function AddGate({
+  accounts,
+  ui,
+  patch,
+  children,
+}: {
+  accounts: Account[]
+  ui: Persisted
+  patch: Patch
+  children: ReactNode
+}) {
+  const busy = ui.signin.kind !== 'idle'
+  if (accounts.length === 0) return <>{children}</>
+  const open = ui.adding || busy
+  return (
+    <>
+      <div className="acct-add-bar">
+        <button
+          type="button"
+          className="acct-add"
+          aria-expanded={open}
+          // Nothing to fold while a sign-in is under way: see above.
+          disabled={busy}
+          onClick={() => patch((p) => ({ ...p, adding: !p.adding }))}
+        >
+          Add account
+        </button>
+      </div>
+      {open && children}
     </>
   )
 }
@@ -571,7 +622,13 @@ function Pool({
           </>
         )}
         <ReadingAges accounts={accounts} />{' '}
-        &middot; <span className="acct-clause">~ is projected, not measured</span>
+        {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127). Unconditional, it
+            explained a mark nothing on the screen carried; with none on
+            screen the clause says so, which is itself a reading. */}
+        &middot;{' '}
+        <span className="acct-clause">
+          {anyProjected(accounts, now) ? '~ is projected, not measured' : 'no projected figures'}
+        </span>
         {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
             of the two is the STALE MARK. This console draws three different
             things -- a measured value, a value too old to trust, and one nobody
@@ -651,6 +708,12 @@ function PoolRows({
             {account.label}
           </button>
           <span className="raw">{account.account_id}</span>
+          {/* LAST GIVEN OUT, ON THE ROW (#127). It was only in the opened
+              pane, so a pool no worker can reach -- every account `never` --
+              looked like a healthy idle one until each row was opened. */}
+          <span className="acct-given">
+            {neverAssigned(account) ? 'never given out' : `given out ${timeAgo(account.last_assigned_at as string)}`}
+          </span>
         </th>
         <WindowCell reading={five} window="five-hour" label="5h used" />
         <WindowCell reading={seven} window="seven-day" label="7d used" />
@@ -869,6 +932,10 @@ function ClearsCell({
   }
   const reading = readingOf(account, binding.key)
   const windowName = binding.key.replace(/_/g, '-')
+  // WHICH WINDOW, VISIBLY (#127). The column head stays `cs status`'s
+  // `Clears`; the window it counts down is under the figure, in the words the
+  // two columns before it use, rather than only in a `title=`.
+  const which = <span className="acct-clears-win">{windowWord(binding.key)} window</span>
 
   // A binding window that has ALREADY reset does not have a countdown; it has
   // happened. "~now" would be arithmetic pretending to be an answer, and it
@@ -883,6 +950,7 @@ function ClearsCell({
         title={`The ${windowName} window, the binding one, passed its reset ${timeAgo(binding.window.resets_at)}. It has cleared; no reading taken since has arrived, so the figures on this row still describe the window before it.`}
       >
         cleared
+        {which}
       </td>
     )
   }
@@ -915,6 +983,7 @@ function ClearsCell({
       >
         <span className="acct-tilde">~</span>
         now
+        {which}
       </td>
     )
   }
@@ -936,8 +1005,33 @@ function ClearsCell({
     >
       {uncertain && <span className="acct-tilde">~</span>}
       {clearsIn(binding.window.resets_at, now)}
+      {which}
     </td>
   )
+}
+
+/** `five_hour` -> `5h`, `seven_day` -> `7d`, the columns' own words; any other window by its name. */
+function windowWord(key: string): string {
+  if (key === FIVE_HOUR) return '5h'
+  if (key === SEVEN_DAY) return '7d'
+  return key.replace(/_/g, '-')
+}
+
+/**
+ * Whether any `~` is on screen: a projected 5h or 7d reading, or a Clears
+ * cell `ClearsCell` marks -- a binding window already reset, past its instant,
+ * or chosen from a projected reading. The legend follows it (#127).
+ */
+function anyProjected(accounts: Account[], now: number): boolean {
+  return accounts.some((a) => {
+    if (isProjected(readingOf(a, FIVE_HOUR)) || isProjected(readingOf(a, SEVEN_DAY))) return true
+    const binding = bindingWindow(a)
+    if (binding === null) return false
+    if (binding.window.reset) return true
+    const at = new Date(binding.window.resets_at).getTime()
+    if (Number.isFinite(at) && at <= now) return true
+    return isProjected(readingOf(a, binding.key))
+  })
 }
 
 /** The second line under a state chip, when there is a real one to write. */

@@ -1122,8 +1122,9 @@ const LINK: CSSProperties = { color: 'var(--text-dim)' }
  *
  * WHY A LIST OF LINKS RATHER THAN NOTHING. The legends this replaces were the
  * only index of what a screen's marks mean, and deleting one takes the index
- * out along with the essay. So the titles stay on the surface -- two to six
- * words each -- and the paragraphs live at `#help/<id>`.
+ * out along with the essay. So the subjects stay on the surface -- two to six
+ * words each, asserted by `help.guidance.test.tsx` -- and the paragraphs live
+ * at `#help/<id>`.
  *
  * NOTHING MEASURED MAY DEPEND ON IT. A screen that needs this footer followed
  * before an absent figure can be told from a zero has moved a fact rather than
@@ -1149,8 +1150,11 @@ export function HelpLinks({
     <p style={LINKS}>
       <span>{label}</span>
       {topics.map((id) => (
-        <a key={id} href={`#${HELP[id].anchor}`} style={LINK}>
-          {HELP[id].title}
+        // THE SUBJECT, NOT THE CLAIM (#131). The claim ran to twelve words on
+        // some topics, and a footer of claims read as a wall of sentences;
+        // the subject is two to six words, and the claim stays on hover.
+        <a key={id} href={`#${HELP[id].anchor}`} style={LINK} title={HELP[id].title}>
+          {HELP[id].subject}
         </a>
       ))}
     </p>

@@ -112,6 +112,7 @@ from .inspect import (
     _as_text,
     _decode_window,
     _enter_key,
+    _iso,
     _with_sentence,
     parse_checkpoint_key,
 )
@@ -916,6 +917,9 @@ class CheckpointContent:
                 "key": ref.archive_key,
                 "uri": reader.uri(ref.archive_key),
                 "bytes": archive.size if archive is not None else None,
+                # The archive object's GCS `updated` from the same listing
+                # (#172); null when it is absent or the store gave no time.
+                "object_updated_at": _iso(archive.updated) if archive is not None else None,
             },
             "manifest": manifest,
             "status": "ok",

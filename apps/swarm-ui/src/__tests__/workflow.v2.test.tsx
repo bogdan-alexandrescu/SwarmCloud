@@ -162,7 +162,7 @@ function rowIds(): string[] {
 describe('the list address', () => {
   it('parses and writes one canonical query, and drops what it does not know', () => {
     const q = wl.parseWorkflowQuery('owner=priya&state=failed&q=core&profile=codex&junk=1')
-    expect(q).toEqual({ wf: null, tab: 'graph', state: 'failed', q: 'core', owner: 'priya', profile: 'codex' })
+    expect(q).toEqual({ wf: null, tab: 'graph', state: 'failed', q: 'core', owner: 'priya', profile: 'codex', sort: 'state' })
     expect(wl.workflowQueryString(q)).toBe('state=failed&q=core&owner=priya&profile=codex')
     expect(wl.parseWorkflowQuery('state=bogus&tab=table').state).toBe('all')
     // A tab means nothing on the list, so it is not written there.

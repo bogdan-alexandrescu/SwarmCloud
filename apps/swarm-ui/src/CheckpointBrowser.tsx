@@ -4,7 +4,7 @@ import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { encoded, errorHeading, noteFixtureProbe, read, route, type ApiError, type Result } from './fetch'
-import { bytesLabel, type ArtifactContent } from './types'
+import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
 /**
  * THE CHECKPOINT BROWSER. Owner decision 2026-09-24 on redesign-v2 S3 (A3).
@@ -82,7 +82,13 @@ export interface CheckpointFiles {
   attempt_id: string
   checkpoint_id: string
   prefix: string
-  archive: { key: string; uri: string; bytes: number | null }
+  archive: {
+    key: string
+    uri: string
+    bytes: number | null
+    /** The archive object's GCS `updated` (#172); null when absent or unreported. */
+    object_updated_at?: string | null
+  }
   manifest: {
     status: 'present' | 'absent' | 'unreadable'
     detail: string | null
@@ -576,6 +582,10 @@ function Listing({
         <li className="ctl-fact">
           <b>archive</b>
           {bytesLabel(data.archive.bytes)}
+          {/* The bucket's own time for the archive object (#172). Nothing
+              when it reported none: the manifest's `created_at` is a
+              different fact, and is not borrowed here. */}
+          {typeof data.archive.object_updated_at === 'string' && ` · written ${timeAgo(data.archive.object_updated_at)}`}
         </li>
         <li className={`ctl-fact${data.file_count_agrees === false ? ' is-absent' : ''}`}>
           <b>manifest</b>
@@ -925,6 +935,7 @@ async function fixtureFiles(
         key: `${prefix}/archive.tar.gz`,
         uri: `gs://swarm-artifacts/${prefix}/archive.tar.gz`,
         bytes: absent ? null : 18_442_240,
+        object_updated_at: absent ? null : new Date(Date.now() - 4 * 60_000).toISOString(),
       },
       manifest: {
         status: absent ? 'unreadable' : 'present',

@@ -233,7 +233,7 @@ describe('Tenants shows the ceiling admission enforces (AH-12)', () => {
     )
     expect(links, 'no help link reaches the Tenants fields topic').toHaveLength(1)
     const link = links[0]!
-    expect(link.textContent).toBe(HELP['tenant-fields'].title)
+    expect(link.textContent).toBe(HELP['tenant-fields'].subject)
     // AT EVERY WIDTH. While this table was stacked below 900px, §B6.3 hid
     // its head row, which is why a link there would have been the CP-11
     // defect again: focusable and invisible. It scrolls now (CH-13), and

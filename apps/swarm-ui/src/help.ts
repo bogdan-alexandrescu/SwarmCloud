@@ -207,6 +207,13 @@ export interface HelpTopic {
    */
   see?: readonly TopicId[]
   group: HelpGroupId
+  /**
+   * The topic's name, two to six words: what the Help index and every footer
+   * index print (#130, #131). Not the claim -- that is `title`.
+   */
+  subject: string
+  /** What to do, or where to look: the last thing the topic draws (#131). */
+  act: HelpAct
 }
 
 /** The route the Help section lives at. One spelling, used by the router. */
@@ -217,7 +224,7 @@ export function helpAnchor(topic: TopicId): string {
   return `${HELP_ROUTE}/${topic}`
 }
 
-type TopicSpec = Omit<HelpTopic, 'anchor'>
+type TopicSpec = Omit<HelpTopic, 'anchor' | 'subject' | 'act'>
 
 const SPECS: Record<TopicId, TopicSpec> = {
   // REWRITTEN FROM design-system.md §8.6 (AH-2). The old text taught an
@@ -1520,12 +1527,434 @@ const SPECS: Record<TopicId, TopicSpec> = {
 }
 
 /**
+ * WHERE A TOPIC'S ACTION CAN SEND A READER (#131): the screens a topic is
+ * answered on, by the router's own address, with the name the panel gives
+ * each. An address here that the router does not know is caught by
+ * `src/__tests__/help.guidance.test.tsx`, and a name that drifts from the
+ * panel's label is caught there too.
+ */
+export const HELP_PLACES = {
+  'overview/now': 'Overview',
+  'work/running': 'Agents',
+  'work/workflows': 'Workflows',
+  'work/timeline': 'Timeline',
+  submit: 'Submit',
+  'capacity/pools': 'Ceilings',
+  'capacity/profiles': 'By runner profile',
+  'capacity/catalogue': 'Runtimes',
+  'capacity/holders': 'Holders',
+  'capacity/accounts': 'Subscription accounts',
+  'capacity/quota': 'Provider quota',
+  'admin/limits': 'Pool limits',
+  'admin/tenants': 'Tenants',
+  'admin/counts': 'Platform counts',
+  reference: 'API reads',
+} as const
+
+export type HelpPlace = keyof typeof HELP_PLACES
+
+/**
+ * What to do about what the topic describes, or where to look (#131: "what
+ * you are seeing / what it means / what to do"). It is the last thing a topic
+ * draws on the Help page. `at` links the screen that answers it.
+ */
+export interface HelpAct {
+  say: string
+  at?: HelpPlace
+}
+
+/**
+ * THE SUBJECT AND THE ACTION, PER TOPIC (#130, #131).
+ *
+ * `subject` is the topic's NAME, two to six words -- what the Help index and
+ * every footer index (`HelpLinks`) print. The `title` stays the claim, word for
+ * word, because the `?` card beside a figure opens with it and renaming it is
+ * the owner's choice rather than this record's.
+ *
+ * Kept as its own `Record<TopicId, ...>` rather than inside each spec so a new
+ * topic without one is a type error in one place, and so the claims and
+ * paragraphs above are not rewritten to carry it. The prose rule from the
+ * header holds here too: no state, park reason, pool name or figure.
+ */
+const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
+  'absent-vs-zero': {
+    subject: 'Absent, zero, unread and stale',
+    act: { say: 'Read the mark before the number: only a digit is a measurement. A “not read” mark means re-read the screen, not that the figure is zero.' },
+  },
+  'read-failed': {
+    subject: 'A failed read',
+    act: { say: 'Re-read the screen, and if the failure persists, check which route is failing and for how long.', at: 'reference' },
+  },
+  'token-cost': {
+    subject: 'Token cost',
+    act: { say: 'Treat a missing cost as unknown, not cheap; the attempt’s own record says whether its runner reported tokens.', at: 'work/timeline' },
+  },
+  'tokens-reported': {
+    subject: 'Who reports tokens',
+    act: { say: 'Check the runner profile before reading a missing count as zero use.', at: 'capacity/catalogue' },
+  },
+  'projected-not-measured': {
+    subject: 'The tilde mark',
+    act: { say: 'Re-read before acting on a figure with a tilde, and check how old its reading is.' },
+  },
+  'partial-read': {
+    subject: 'Several failed reads',
+    act: { say: 'Look at each failing route on its own; the message describes only the first.', at: 'reference' },
+  },
+  'binding-window': {
+    subject: 'Utilisation of an account',
+    act: { say: 'Watch the window that refuses first; refilling the other one frees nothing.', at: 'capacity/accounts' },
+  },
+  'all-clear-basis': {
+    subject: 'What an all-clear covers',
+    act: { say: 'Read how many checks ran before trusting a short list; a check that could not run is not a pass.', at: 'overview/now' },
+  },
+  'ambiguous-write': {
+    subject: 'A write with no answer',
+    act: { say: 'Re-read and look for what the write would have made before repeating it.' },
+  },
+  'success-rate': {
+    subject: 'The success rate',
+    act: { say: 'Read the band, not the point, when few tasks were decided; read cancels in their own lane.', at: 'work/timeline' },
+  },
+  'outcome-buckets': {
+    subject: 'Timeline buckets',
+    act: { say: 'Leave the current bucket out of any comparison until it is sealed, and re-read a hatched one.', at: 'work/timeline' },
+  },
+  'failure-classes': {
+    subject: 'Failure classes',
+    act: { say: 'Open a failed task to read its recorded cause; an unmatched class still counts as a failure.', at: 'work/running' },
+  },
+  'withheld-total': {
+    subject: 'A withheld total',
+    act: { say: 'Re-read until every part arrives; do not add the parts by hand.' },
+  },
+  'blockers-at-an-instant': {
+    subject: 'Why work is refused',
+    act: { say: 'Re-read before acting on a refusal, then look at the pool it names.', at: 'capacity/pools' },
+  },
+  'attempt-documents': {
+    subject: 'When an attempt exists',
+    act: { say: 'For a task with no attempt, look at capacity, not at the worker: nothing has been reserved yet.', at: 'capacity/pools' },
+  },
+  'event-paging': {
+    subject: 'Event paging',
+    act: { say: 'Treat an attempt with no events on the page as unknown; its later events may be on a page not fetched.' },
+  },
+  'masking-is-serve-time': {
+    subject: 'Artifact masking',
+    act: { say: 'If the masked count is above zero, rotate the credential that was found; masking does not clean the bucket.' },
+  },
+  'checkpoints': {
+    subject: 'What a checkpoint holds',
+    act: { say: 'Open an agent’s checkpoints to see how recent its last one is and how much a restart would lose.', at: 'work/running' },
+  },
+  'cpu-figures': {
+    subject: 'CPU figures',
+    act: { say: 'Compare the peak with the limit; a peak at the limit means the size is too small for the work.', at: 'capacity/catalogue' },
+  },
+  'oom-near-miss': {
+    subject: 'The memory near-miss flag',
+    act: { say: 'When the flag is set, pick a larger size for that work before it is killed.', at: 'capacity/catalogue' },
+  },
+  'peak-memory': {
+    subject: 'Peak memory',
+    act: { say: 'Wait for the attempt to end before reading its peak; a missing one after the end is unknown, not small.' },
+  },
+  'api-reads': {
+    subject: 'The reads behind a screen',
+    act: { say: 'Open the reads to see which route is failing and how old its last good payload is.', at: 'reference' },
+  },
+  capacity: {
+    subject: 'What reserves capacity',
+    act: { say: 'To see what is holding capacity now, look at the holders.', at: 'capacity/holders' },
+  },
+  'requests-are-ceilings': {
+    subject: 'Requests equal limits',
+    act: { say: 'Treat a bar near its limit as a risk, and move that work to a larger size.', at: 'capacity/catalogue' },
+  },
+  states: {
+    subject: 'Task states',
+    act: { say: 'Filter the agent list by state to see which tasks hold capacity and which are waiting.', at: 'work/running' },
+  },
+  'workspace-memory': {
+    subject: 'Workspace memory',
+    act: { say: 'Count the workspace against the memory ceiling; a large clone needs a larger size.', at: 'capacity/catalogue' },
+  },
+  'pools-all-at-once': {
+    subject: 'Every pool or none',
+    act: { say: 'Raise the pool that binds, not another one; the runner-profile view outlines it.', at: 'capacity/profiles' },
+  },
+  'units-not-agents': {
+    subject: 'Units, not agents',
+    act: { say: 'Divide a pool’s headroom by the size’s weight to get agents.', at: 'capacity/profiles' },
+  },
+  'what-a-pool-is': {
+    subject: 'What a pool is',
+    act: { say: 'See every pool, its ceiling and what is in use now.', at: 'capacity/pools' },
+  },
+  'paused-vs-full': {
+    subject: 'Paused or full',
+    act: { say: 'A full pool admits again as work finishes. A paused one needs an operator to resume it; raising its ceiling does not.', at: 'capacity/pools' },
+  },
+  'admin-gate-not-failure': {
+    subject: 'Admin-only routes',
+    act: { say: 'Nothing to fix. To read these routes, ask for the platform admin group.' },
+  },
+  'tenant-fields': {
+    subject: 'Tenants columns',
+    act: { say: 'To change a tenant’s ceiling, follow its Enforced figure to the pool it sets.', at: 'admin/tenants' },
+  },
+  'platform-counts': {
+    subject: 'Platform counts',
+    act: { say: 'Run the count when you need the figures; it is priced per run, so it does not refresh on its own.', at: 'admin/counts' },
+  },
+  'poll-cadence': {
+    subject: 'What re-polls',
+    act: { say: 'Press refresh on a figure that does not re-poll, and read its age before comparing it.' },
+  },
+  'tenant-scope': {
+    subject: 'Whose figures these are',
+    act: { say: 'Read a ceiling as your own tenant’s; for every tenant’s task counts, run Platform counts.', at: 'admin/counts' },
+  },
+  'park-on-missing-credential': {
+    subject: 'A missing credential',
+    act: { say: 'Register an account for that provider, or the task waits for ever.', at: 'capacity/accounts' },
+  },
+  'pool-freshness': {
+    subject: 'A pool’s timestamp',
+    act: { say: 'Do not read a pool’s timestamp as a change time; Pool limits says what is recorded about changes.', at: 'admin/limits' },
+  },
+  'provider-quota-states': {
+    subject: 'Provider quota states',
+    act: { say: 'Look for throttled providers first, and treat unknown as no information.', at: 'capacity/quota' },
+  },
+  'quota-row-fields': {
+    subject: 'Quota cap and the 429 run',
+    act: { say: 'Check which value binds the pool before raising anything.', at: 'capacity/pools' },
+  },
+  'quota-document-absent': {
+    subject: 'A provider with no document',
+    act: { say: 'Nothing to fix: the provider has not been driven yet.', at: 'capacity/quota' },
+  },
+  'ceiling-change-evicts-nothing': {
+    subject: 'Lowering a ceiling',
+    act: { say: 'To free capacity now, cancel work; lowering a ceiling only stops new work being admitted.', at: 'admin/limits' },
+  },
+  'lease-and-pool-are-two-records': {
+    subject: 'Leases and pool counters',
+    act: { say: 'Compare the two over a full page before calling a difference a leak.', at: 'capacity/holders' },
+  },
+  'runner-profile-by-name': {
+    subject: 'Runner profiles by name',
+    act: { say: 'Pick a runner profile by name; to see what each name decides, read the runtimes.', at: 'capacity/catalogue' },
+  },
+  'not-a-machine-inventory': {
+    subject: 'Dispatch topology',
+    act: { say: 'For what is running now, look at the agents, not the runtimes.', at: 'work/running' },
+  },
+  'declared-vs-resolved-backend': {
+    subject: 'Declared and resolved backend',
+    act: { say: 'Read the resolved backend for where work goes.', at: 'capacity/catalogue' },
+  },
+  'catalogue-from-route': {
+    subject: 'Where the runtimes come from',
+    act: { say: 'Re-read the runtimes to see a catalogue change; nothing in the console needs editing.', at: 'capacity/catalogue' },
+  },
+  'credential-names-not-values': {
+    subject: 'Credential names',
+    act: { say: 'To check what your tenant holds, look at its accounts.', at: 'capacity/accounts' },
+  },
+  'what-sets-it-apart-is-arithmetic': {
+    subject: 'Runtime differences and disabled',
+    act: { say: 'Move work off a disabled runtime; the card gives the reason it was disabled.', at: 'capacity/catalogue' },
+  },
+  'runtime-needs-no-provider': {
+    subject: 'Runtimes without a credential',
+    act: { say: 'Nothing to register: these run for any tenant.', at: 'capacity/catalogue' },
+  },
+  'dispatch-strategies': {
+    subject: 'Dispatch strategies',
+    act: { say: 'Pick the strategy by what you want published, and read the count on the option before submitting.', at: 'submit' },
+  },
+  'integrate-needs-final-step': {
+    subject: 'Integrating into one pull request',
+    act: { say: 'Give the workflow exactly one step nothing depends on, or pick another strategy.', at: 'submit' },
+  },
+  'dispatch-carrier': {
+    subject: 'The step carrier',
+    act: { say: 'Pick it as a recorded preference only; nothing reads it yet.', at: 'submit' },
+  },
+  'repository-url': {
+    subject: 'The repository url',
+    act: { say: 'Give a repository url for any strategy that pushes.', at: 'submit' },
+  },
+  'dispatch-absent-is-old-api': {
+    subject: 'A missing dispatch block',
+    act: { say: 'Read it as an older deployment; it says nothing about what the run published.' },
+  },
+  'input-is-opaque': {
+    subject: 'The task input',
+    act: { say: 'Write the input for the agent; check it yourself, because nothing else will.', at: 'submit' },
+  },
+  'workflow-stages': {
+    subject: 'Workflow stages',
+    act: { say: 'Open a workflow to see which stage each step is in and what a failure cancelled.', at: 'work/workflows' },
+  },
+  'room-unknown-not-zero': {
+    subject: 'Unknown room',
+    act: { say: 'Re-read the pools before deciding there is no room.', at: 'capacity/pools' },
+  },
+  'sign-in-not-paste': {
+    subject: 'Adding an account',
+    act: { say: 'Start the sign-in from the account pool.', at: 'capacity/accounts' },
+  },
+  'credential-split': {
+    subject: 'The two account secrets',
+    act: { say: 'Nothing to do: the split is automatic. Revoke the account’s sign-in if a pod is compromised.' },
+  },
+  'credential-refresh-sweep': {
+    subject: 'Credential refresh',
+    act: { say: 'Leave refreshing to the sweep; press refresh on one account only to check it.', at: 'capacity/accounts' },
+  },
+  'refresh-now-probe': {
+    subject: 'The refresh button',
+    act: { say: 'Press it to find out whether one account’s credential can be exchanged now.', at: 'capacity/accounts' },
+  },
+  'reauth-required': {
+    subject: 'Re-authentication required',
+    act: { say: 'Sign in again under the same label; nothing else clears it.', at: 'capacity/accounts' },
+  },
+  'reauth-does-not-unpause': {
+    subject: 'Signing in keeps state',
+    act: { say: 'After signing in, set the account’s state back yourself if it was stopped.', at: 'capacity/accounts' },
+  },
+  'second-browser-application': {
+    subject: 'A second organisation',
+    act: { say: 'Use a second browser application, not a private window, to sign in as another organisation.' },
+  },
+  'signin-paste-the-code': {
+    subject: 'Pasting the code',
+    act: { say: 'Paste the whole string the callback page shows.' },
+  },
+  'signin-deadlines': {
+    subject: 'Sign-in deadlines',
+    act: { say: 'Paste the code soon after the callback page shows it; the provider’s clock is not shown.' },
+  },
+  'signin-verify-by-reload': {
+    subject: 'Checking a sign-in landed',
+    act: { say: 'Reload the account pool and look for the label before signing in again.', at: 'capacity/accounts' },
+  },
+  'signin-201-no-name': {
+    subject: 'An unnamed success',
+    act: { say: 'Reload the account pool to find the account by its label.', at: 'capacity/accounts' },
+  },
+  'signin-is-over': {
+    subject: 'An expired sign-in',
+    act: { say: 'Reload the account pool; if the label is not there, start a new sign-in.', at: 'capacity/accounts' },
+  },
+  'signin-still-open': {
+    subject: 'A refused paste',
+    act: { say: 'Paste the code again; the sign-in is still waiting.' },
+  },
+  'signin-route-missing': {
+    subject: 'Sign-in not deployed',
+    act: { say: 'Ask an operator to deploy an API that serves the sign-in route; nothing was created.' },
+  },
+  'signin-is-anthropics-page': {
+    subject: 'The provider’s sign-in page',
+    act: { say: 'Sign in on the provider’s page as you normally would, then paste the code it shows.' },
+  },
+  'signin-holds-label-and-lending': {
+    subject: 'Label and lending at sign-in',
+    act: { say: 'To change either, start a new sign-in; lending can also be edited on the account afterwards.', at: 'capacity/accounts' },
+  },
+  'signin-keeps-readings': {
+    subject: 'Replacing a credential',
+    act: { say: 'Sign in under the existing label to replace only the credential.', at: 'capacity/accounts' },
+  },
+  'account-label-rules': {
+    subject: 'Account labels',
+    act: { say: 'Use lowercase letters, digits and dashes, short.' },
+  },
+  'account-owned-by-one-tenant': {
+    subject: 'Account ownership',
+    act: { say: 'Check the tenant the session names before starting a sign-in.', at: 'capacity/accounts' },
+  },
+  lending: {
+    subject: 'Lending an account',
+    act: { say: 'Name the tenants to lend to on the account, and edit the list later as needed.', at: 'capacity/accounts' },
+  },
+  'lending-narrows-isolation': {
+    subject: 'Lending and isolation',
+    act: { say: 'Lend only to tenants you trust with the account’s token, and take the lending back when it is no longer needed.', at: 'capacity/accounts' },
+  },
+  'lent-account': {
+    subject: 'An account lent to you',
+    act: { say: 'Ask the owning tenant to pause, drain or re-sign-in the account.' },
+  },
+  'advisory-vs-lease': {
+    subject: 'The advisory agent count',
+    act: { say: 'For who really holds what, read the holders.', at: 'capacity/holders' },
+  },
+  'account-states': {
+    subject: 'Account states',
+    act: { say: 'Pause to stop new work, drain to move it off, and sign in again to clear the verdict.', at: 'capacity/accounts' },
+  },
+  'state-change-reason': {
+    subject: 'State-change reasons',
+    act: { say: 'Give a reason with every state change; the next reader needs it.', at: 'capacity/accounts' },
+  },
+  'account-removal-is-reversible': {
+    subject: 'Removing an account',
+    act: { say: 'To bring a removed account back, sign in again under the same label.', at: 'capacity/accounts' },
+  },
+  'provider-defines-windows': {
+    subject: 'Provider windows',
+    act: { say: 'Open the account row to read a window that has no column of its own.', at: 'capacity/accounts' },
+  },
+  'accounts-table-shape': {
+    subject: 'The accounts table',
+    act: { say: 'Open a row for everything the table does not show.', at: 'capacity/accounts' },
+  },
+  'no-amber-band': {
+    subject: 'No amber band',
+    act: { say: 'Watch for a window that is fully spent; nothing short of that is a verdict.', at: 'capacity/accounts' },
+  },
+  'never-assigned-pool': {
+    subject: 'A never-assigned pool',
+    act: { say: 'If no account in the pool was ever assigned, check that workers can reach it.', at: 'capacity/accounts' },
+  },
+  'unreadable-documents': {
+    subject: 'Unreadable account documents',
+    act: { say: 'When documents were skipped, read every count over the pool as a lower bound, and fix the bad document.', at: 'capacity/accounts' },
+  },
+  'skipped-for-this-tenant': {
+    subject: 'Skipped for your tenant',
+    act: { say: 'Fix your tenant’s access to the account’s secret; the account is healthy.', at: 'capacity/accounts' },
+  },
+  'subscription-only-no-api-key': {
+    subject: 'Subscription sign-ins only',
+    act: { say: 'Add the account by signing in; an API key has nowhere to go.', at: 'capacity/accounts' },
+  },
+  'refresh-token-required': {
+    subject: 'A refused credential',
+    act: { say: 'Sign in again so the answer carries both halves.', at: 'capacity/accounts' },
+  },
+  'clipboard-secure-context': {
+    subject: 'A refused clipboard',
+    act: { say: 'Select the link on screen and copy it by hand.' },
+  },
+}
+
+/**
  * The exported record. `anchor` is filled in here, from the id, so the two can
- * never disagree and no caller can invent a third spelling.
+ * never disagree and no caller can invent a third spelling. `subject` and `act`
+ * come from `GUIDE`.
  */
 export const HELP: Readonly<Record<TopicId, HelpTopic>> = Object.freeze(
   Object.fromEntries(
-    (Object.keys(SPECS) as TopicId[]).map((id) => [id, { ...SPECS[id], anchor: helpAnchor(id) }]),
+    (Object.keys(SPECS) as TopicId[]).map((id) => [id, { ...SPECS[id], ...GUIDE[id], anchor: helpAnchor(id) }]),
   ) as Record<TopicId, HelpTopic>,
 )
 

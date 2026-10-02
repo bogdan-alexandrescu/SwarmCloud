@@ -52,6 +52,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | open |
 | 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | open |
 | 44 | `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED` (functionality wave 1, lane B4) | open |
+| 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 
 ---
 
@@ -8418,3 +8419,42 @@ timeline keeps drawing the release as a lease release.
    generation either way, and a fenced exit emits neither event.
 9. Tenant isolation: unaffected; the event carries the account id, the
    provider and a bool, never a secret's name or payload.
+
+---
+
+## 45. `profiles.py`: the catalogue does not say which runner profiles report a cost
+
+**Status:** open, filed 2026-10-02 with #72. A request, not a change.
+
+### What is true today
+
+`GET /v1/attempts` `coverage` (#72) splits rows without a `cost_usd` into
+"a profile that never reports a cost" and "spent and recorded nothing". The
+frozen `RunnerProfile` (`apps/common/swarm_common/profiles.py`) does not say
+which profiles report one, so swarm-api restates it as
+`COST_REPORTING_RUNNERS` (`apps/swarm-api/swarm_api/routes/attempts.py`),
+matched against each profile's `runner_argv`, and reads `cost_declared` as
+"reports only when the input asks" because the mock is the only declared
+profile. A unit test holds the set to modules under
+`apps/agent-worker/agent_worker/runners` and pins the mock as the only
+declared profile.
+
+### The requested change
+
+```python
+    #: Whether an attempt on this profile records `cost_usd`: "always" for the
+    #: CLI runners that parse a usage block, "on_input" for a runner that
+    #: reports one only when its input carries it (the mock), "never" otherwise.
+    reports_cost: Literal["always", "on_input", "never"] = "never"
+```
+
+### What it would break if accepted
+
+Nothing that exists. swarm-api drops `COST_REPORTING_RUNNERS` and the
+`cost_declared` stand-in and reads the field; the UI's `types.ts` gains it if
+the profiles route serves it.
+
+### If it is declined
+
+The restatement stays, held by its test; a new cost-reporting runner module
+counts as "never reports" until someone adds it to the set.

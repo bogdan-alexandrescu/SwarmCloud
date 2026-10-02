@@ -38,7 +38,13 @@ interface PanelPage {
   key: string
   label: string
   to: string
-  kids?: { key: string; label: string; to: string }[]
+  /**
+   * An admin page among pages that are not (#136): drawn with the `admin`
+   * mark. Never set in the Admin section, whose heading already says it.
+   * `spine.labels.test.tsx` holds these to App.tsx `SECTIONS`' admin flags.
+   */
+  admin?: boolean
+  kids?: { key: string; label: string; to: string; admin?: boolean }[]
 }
 
 const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting: 'Waiting', recent: 'Recent' }
@@ -76,7 +82,7 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
       to: 'capacity/accounts',
       kids: [
         { key: 'accounts', label: 'Subscription accounts', to: 'capacity/accounts' },
-        { key: 'quota', label: 'Provider quota', to: 'capacity/quota' },
+        { key: 'quota', label: 'Provider quota', to: 'capacity/quota', admin: true },
       ],
     },
   ],
@@ -782,6 +788,7 @@ function PanelPages({
               onClick={() => nav(p.to)}
             >
               <span className="sk-pl">{p.label}</span>
+              {p.admin === true && <span className="sk-adm">admin</span>}
               {shut && <Icon name="lock" className="sk-ic sk-lk" />}
             </button>
             {on && p.kids !== undefined && (
@@ -789,6 +796,7 @@ function PanelPages({
                 {p.kids.map((k) => (
                   <button key={k.key} type="button" className={`sk-kid${k.key === tab ? ' is-on' : ''}`} onClick={() => nav(k.to)}>
                     {k.label}
+                    {k.admin === true && <span className="sk-adm">admin</span>}
                   </button>
                 ))}
               </div>

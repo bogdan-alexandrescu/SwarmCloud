@@ -1490,13 +1490,16 @@ without hovering.
 **Honesty cases:**
 - `null` cost/tokens → the existing sentence treatment, unchanged.
 - `0` checkpoints → a digit, unchanged.
-- **Spend coverage.** `record_spend` has one caller, `lifecycle.py:694`, and the
-  comment fourteen lines above it says it is "the ONLY call that passes
-  `publish=True`. The agent exited on its own here; the other five call sites
-  are parks and crashes." A quota park, a cancel, a SIGTERM, a crash and a
-  generation fence all record **nothing** — and those are the expensive
-  attempts. Any rolled-up cost figure must carry "not recorded for N of M
-  attempts". `09-history-timeline.png` already does this correctly at the
+- **Spend coverage.** *(Corrected for #72: this note first said `record_spend`
+  had one caller and that a park, a cancel, a SIGTERM, a crash and a fence all
+  recorded nothing. No longer true of the worker.)* `lifecycle.py`
+  `_upload_outputs` records spend "SPEND FIRST" on every exit that writes a
+  terminal or parked state, and `_cleanup` records it again for a crash with a
+  live runner and for a mid-run fence. What is still true is that the worker
+  can only record what the runner reported, and a CLI runner killed on SIGTERM
+  writes nothing (`agent_worker/runners/mock.py`) — the expensive gap. Any
+  rolled-up cost figure must carry "not recorded for N of M attempts", and
+  `GET /v1/attempts` `coverage.not_recorded` is that N (S3 below). `09-history-timeline.png` already does this correctly at the
   history scale ("1 of 7 · 14% of rows carry usage") and the inspector must
   match.
 - Only `claude-code` and `codex` emit a usage block at all; `mock`, `generic`
@@ -2007,12 +2010,49 @@ No route sums cost across tasks. `Store.list_attempts` already accepts
 ```
 GET /v1/attempts?since=<iso8601>&until=<iso8601>&limit=&page_token=
  -> {"attempts": [...], "next_page_token": str | null,
-     "coverage": {"attempts": int, "with_spend": int}}
+     "coverage": {"scope": "page", "attempts": int, "finished": int,
+                  "with_spend": int, "in_flight_unreported": int,
+                  "not_reported_by_profile": int, "not_recorded": int,
+                  "profile_unknown": int}}
 ```
 
 `coverage` is not decoration. It is what lets the caller render "1 of 7" without
 a second pass, and without it the N+1 loop gets written in the browser by
 whoever builds History.
+
+**What a row without a cost means (#72).** "2 of 7" alone cannot say what the
+other 5 are, so every row without a `cost_usd` is counted in exactly one of four
+buckets, and `with_spend + in_flight_unreported + not_reported_by_profile +
+not_recorded + profile_unknown == attempts`:
+
+1. *In flight.* The attempt is still live: `completed_at` is null AND its task
+   still holds its lease at its generation — the same `attempt_is_over`
+   judgement `/answer` and the drawer use. It has not failed to report, it has
+   not finished. `in_flight_unreported`. A null `completed_at` alone is NOT in
+   flight: a worker hard-killed (OOM, SIGKILL after the grace period, node loss)
+   never writes it, and on a terminal task, a superseded generation or a
+   released lease that row is judged by its profile like any finished one —
+   otherwise the attempts that spent and recorded nothing would hide here
+   forever. (A running row that already carries a cost is in `with_spend`;
+   spend is written before `completed_at`.)
+2. *A profile that never reports a cost.* Only the claude-code and codex runners
+   parse a usage block — matched on the catalogue's `runner_argv`, so
+   `claude-code-review` counts — and `mock` reports one only when its input
+   carries `spend.total_cost_usd`. `generic`, `browser`, the worker actions and
+   an un-asked `mock` are `not_reported_by_profile`: no cost by design.
+3. *Spent and recorded nothing.* Finished, on a profile that reports a cost,
+   with none recorded — the SIGTERMed CLI run. `not_recorded` is the only bucket
+   that is a gap in a spend total; draw it as one — but as an upper bound on
+   unrecorded spend, not a count of costly runs: an attempt that ended before
+   the agent ran (a fence exit, an input refusal, a quota park before any
+   usage) spent nothing and lands here too. A row whose task is gone, or
+   names a profile the catalogue no longer holds, is `profile_unknown`, never
+   guessed into either side.
+4. *Page or window.* `scope` is `"page"`: every counter is this page's. A caller
+   wanting "N of M this week" sums each counter across the pages; the counters
+   add, the ratios do not. `finished` counts rows that have ended by the
+   judgement in 1, with or without a cost, so it can exceed the rows carrying
+   `completed_at`. A row whose task is gone has ended: nothing holds its lease.
 
 Should also decide whether `models`, `num_turns` and `thinking_tokens` become
 queryable. `control.py:501-504` deliberately leaves them in the untyped

@@ -473,6 +473,19 @@ export function setBy(pool: Pool): { term: string; detail: string } {
   if (hard_limit === null) {
     return { term: 'no limit set', detail: 'This pool has no hard limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.' }
   }
+  // THE ZERO A QUOTA STATE FORCES (#128). `quota_derived_limit_for`
+  // (quota_broker/aimd.py) returns 0 for EXHAUSTED, DISABLED and COOLDOWN, and
+  // for a `cooldown_until` still in the future, so this pool admits nothing
+  // until the state clears -- a different remedy from a provider cap that is
+  // merely lower, which is what `provider quota` says. The pool document does
+  // not carry the state, so the detail names the one other way to a 0 (a quota
+  // cap configured at 0) rather than claiming which it was.
+  if (quota_derived_limit === 0 && effective_limit === 0 && hard_limit > 0) {
+    return {
+      term: 'quota state',
+      detail: `The provider's quota state (EXHAUSTED, DISABLED or COOLDOWN, or a cooldown still running) forces this to 0 until it clears; configured is ${hard_limit}. Provider quota shows the state, and the one other way to this 0: a quota cap set to 0.`,
+    }
+  }
   if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
     return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
   }
@@ -1411,6 +1424,68 @@ export function leaseLiveliness(
     }
   }
   return { kind: 'alive', copy: 'Beating normally. Nothing will touch this.' }
+}
+
+/**
+ * One row of `GET /v1/leases` (routes/leases.py, #179): the current lease
+ * heartbeat of one of the caller's slot-holding tasks. Tenant-scoped, so a
+ * member who is not an admin reads it -- unlike `LeaseRow`, which only
+ * `/v1/admin/leases` serves.
+ *
+ * `heartbeat_at` and `silent_seconds` are NULL until the worker's first beat,
+ * never the lease's creation time: "never beat" and "beat long ago" are
+ * different facts, and a booting agent is not a silent one. Before the first
+ * beat the reconciler judges the lease by `dispatch_overdue` alone.
+ */
+export interface LeaseHeartbeat {
+  task_id: string
+  lease_id: string
+  attempt_id: string
+  generation: number
+  /** LEASED, DISPATCHED, STARTING or RUNNING -- a row exists for no other. */
+  task_state: TaskState
+  /** The LEASE's state, only ever LEASED or DISPATCHED; see `LeaseRow`. */
+  dispatch_state: 'LEASED' | 'DISPATCHED' | string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  /** Seconds since `heartbeat_at`, at the page's `read_at`; null if never beaten. */
+  silent_seconds: number | null
+  /**
+   * The reconciler's rule, judged server-side: beaten at least once and quiet
+   * for longer than `thresholds.heartbeat_grace_seconds`.
+   */
+  silent: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+}
+
+/**
+ * `GET /v1/leases`. The thresholds arrive with the data for the reason
+ * `LeasePage` says: the grace is the reconciler's, resolved server-side, and
+ * a constant here would warn at a boundary the reconciler does not act on.
+ */
+export interface LeaseHeartbeatPage {
+  tenant_id: string
+  /** The clock each row's `silent_seconds` was taken against. */
+  read_at: string
+  thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
+  heartbeats: LeaseHeartbeat[]
+}
+
+/**
+ * The page's rows whose worker has gone silent, by task id -- what a list row
+ * looks itself up in to decide whether it draws a `--warn` why line. Only
+ * `silent` decides it, so a lease that has never beaten (a booting worker) is
+ * never in the map.
+ */
+export function silentWorkersByTask(page: LeaseHeartbeatPage): Map<string, LeaseHeartbeat> {
+  const out = new Map<string, LeaseHeartbeat>()
+  for (const row of page.heartbeats) {
+    if (row.silent) out.set(row.task_id, row)
+  }
+  return out
 }
 
 /** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
@@ -3752,6 +3827,13 @@ export interface CheckpointFile {
   name: string
   key: string
   bytes: number
+  /**
+   * The object's own GCS `updated`, from the same listing (#172). Null when
+   * the store reported no time -- never the checkpoint's `created_at`, which
+   * is the manifest's claim and not the bucket's. Absent from an API older
+   * than #172.
+   */
+  object_updated_at?: string | null
 }
 
 export interface CheckpointRecord {

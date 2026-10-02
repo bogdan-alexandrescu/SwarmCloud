@@ -13,7 +13,7 @@ import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, TaskAccount, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AttemptRow, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -2008,6 +2008,20 @@ export async function loadLeases(): Promise<Result<LeasePage>> {
   return read<LeasePage>(route('/v1/admin/leases?active_only=true&limit=200'), (d) => d.leases.length === 0)
 }
 
+/**
+ * The current lease heartbeat of each of the caller's slot-holding tasks
+ * (`GET /v1/leases`, #179). TENANT-SCOPED, not admin-gated: this is how a
+ * member's Agents list says a worker has gone silent without reading
+ * `/v1/admin/leases` or one task's events per row.
+ *
+ * Empty is a real answer -- no task of this tenant holds a slot -- because the
+ * route serves every live lease of the tenant, unpaged.
+ */
+export async function loadLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>> {
+  if (USE_FIXTURES) return fixtureLeaseHeartbeats()
+  return read<LeaseHeartbeatPage>(route('/v1/leases'), (d) => d.heartbeats.length === 0)
+}
+
 /** Every attempt of one task, newest first. Tenant-scoped. */
 export async function loadAttempts(taskId: string): Promise<Result<{ attempts: AttemptRow[] }>> {
   if (USE_FIXTURES) return fixtureAttempts(taskId)
@@ -2078,6 +2092,58 @@ async function fixtureLeases(): Promise<Result<LeasePage>> {
       active_beyond_window: 0,
       truncated: false,
       examined: 4,
+    },
+  }
+}
+
+async function fixtureLeaseHeartbeats(): Promise<Result<LeaseHeartbeatPage>> {
+  await new Promise((r) => setTimeout(r, 150))
+  noteFixtureProbe(route('/v1/leases'), 150, true)
+  // FROM THE TASK FIXTURE, so every row joins a task the Agents list draws:
+  // a heartbeat for a task id no row has would exercise nothing.
+  const page = await fixtureTasks()
+  const held = page.status === 'ok'
+    ? page.data.tasks.filter((t) => CONCURRENCY_STATES.has(t.state) && t.current_lease_id !== null)
+    : []
+  const now = Date.now()
+  const iso = (secAgo: number) => new Date(now - secAgo * 1000).toISOString()
+  const grace = 90
+  const row = (task: (typeof held)[number], i: number): LeaseHeartbeat => {
+    // One of each treatment, so all three are visible while working on the
+    // list: a silent worker, one that has never beaten (a booting worker is
+    // not a silent one), and healthy ones. The LEASED task is the booting
+    // one: no container has run for it yet.
+    const kind = i === 0 ? 'silent' : task.state === 'LEASED' ? 'never' : 'well'
+    const silent = kind === 'silent' ? grace + 240 : kind === 'never' ? null : 12
+    return {
+      task_id: task.id,
+      lease_id: task.current_lease_id ?? '',
+      attempt_id: `att_${task.id.slice(-4)}_${task.current_generation}`,
+      generation: task.current_generation,
+      task_state: task.state,
+      dispatch_state: task.state === 'LEASED' ? 'LEASED' : 'DISPATCHED',
+      // The booting one was admitted a minute ago and its dispatch deadline
+      // is still ahead; the others were admitted long enough ago that theirs
+      // has passed, which `dispatch_overdue` reports whether or not the worker
+      // beats (`Lease.dispatch_overdue`, contract change request 9).
+      created_at: iso(kind === 'never' ? 60 : 900),
+      dispatch_deadline: iso(kind === 'never' ? -420 : 420),
+      expires_at: iso(kind === 'silent' ? 30 : -120),
+      heartbeat_at: silent === null ? null : iso(silent),
+      silent_seconds: silent,
+      silent: kind === 'silent',
+      expired: kind === 'silent',
+      dispatch_overdue: kind !== 'never',
+    }
+  }
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: {
+      tenant_id: 'u-bogdan',
+      read_at: new Date(now).toISOString(),
+      thresholds: { heartbeat_grace_seconds: grace, lease_timeout_seconds: 120 },
+      heartbeats: held.map(row),
     },
   }
 }

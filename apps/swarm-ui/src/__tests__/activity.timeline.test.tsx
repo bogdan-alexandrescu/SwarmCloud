@@ -69,6 +69,7 @@ vi.mock('../api', async (importOriginal) => {
 
 const { ActivityScreen, TenantsScreen } = await import('../Activity')
 const { IDLE_POLL_MS } = await import('../Agents')
+const { TASK_PAGE_LIMIT } = await import('../api')
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1224,6 +1225,118 @@ describe('the eight cards', () => {
 // ---------------------------------------------------------------------------
 // The help it links, which has to be true of the page it is linked from
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The figures open the rows behind them (#116), and add up (#123)
+// ---------------------------------------------------------------------------
+
+describe('timeline figures open the rows behind them (#116) and add up (#123)', () => {
+  it('links a day’s cancels to the Agents list too, and every drill-down states the window it shows', async () => {
+    const d = ledgerFixture()
+    const cancelled = d.buckets[10]!.cancelled!.total
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const links = [...root.querySelectorAll<HTMLAnchorElement>('.ol-actions .ol-drill')]
+    const hrefs = links.map((a) => a.getAttribute('href'))
+    expect(hrefs).toEqual(['#work/running/recent/failed', '#work/running/recent/cancelled'])
+    expect(links[1]!.textContent).toContain(`${cancelled} cancelled that day`)
+    // The Agents list reads its own window, not the ledger's span: each link says which.
+    for (const a of links) expect(a.textContent).toContain(`newest ${TASK_PAGE_LIMIT} agents`)
+  })
+
+  it('counts dead-lettered as failed on the drill-down, the one definition the drawing uses', async () => {
+    const d = ledgerFixture()
+    d.buckets[10] = { ...d.buckets[10]!, failed: 3, dead_lettered: 2 }
+    const root = await timeline(d)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    expect(root.querySelector('.ol-actions .ol-drill')!.textContent).toContain('5 failed that day')
+  })
+
+  it('makes each Reliability row a link that narrows the page to that profile, and writes the hash', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')
+    expect(link, 'the profile row is static').not.toBeNull()
+    expect(link!.getAttribute('href')).toBe('#work/timeline?profile=claude-code')
+    fireEvent.click(link!)
+    expect(onView).toHaveBeenLastCalledWith('profile=claude-code')
+  })
+
+  it('narrows a person row to that submitter, and draws no link for work with no submitter recorded', async () => {
+    const d = ledgerFixture()
+    d.groups = {
+      ...d.groups,
+      by: 'submitted_by',
+      rows_total: 2,
+      rows: [{ ...d.groups.rows[0]!, key: 'a@saga.xyz' }, { ...d.groups.rows[1]!, key: '' }],
+    }
+    const root = await timeline(d, { view: 'group=submitted_by' })
+    const c = card(root, /^Reliability/)
+    const href = c.querySelector('tbody tr[data-key="a@saga.xyz"] th a')!.getAttribute('href')!
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\?/, ''))
+    expect(q.getAll('submitted_by')).toEqual(['a@saga.xyz'])
+    expect(q.get('group')).toBe('submitted_by')
+    expect(c.querySelector('tbody tr[data-key=""] th a'), 'a filter on "nobody" is offered').toBeNull()
+  })
+
+  it('narrows a tenant row to that tenant, in platform scope', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'tenant_id', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'personal' }] }
+    const root = await timeline(d, { view: 'scope=platform&group=tenant_id' }, { admin: true })
+    const href = card(root, /^Reliability/).querySelector('tbody tr[data-key="personal"] th a')!.getAttribute('href')!
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\?/, ''))
+    expect(q.getAll('tenant')).toEqual(['personal'])
+    expect(q.get('group')).toBe('tenant_id')
+  })
+
+  it('prints Succeeded beside Failed and Cancelled, so every row’s Ended adds up without arithmetic', async () => {
+    const root = await timeline()
+    const c = card(root, /^Reliability/)
+    const heads = [...c.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
+    const at = (name: RegExp) => heads.findIndex((h) => name.test(h))
+    const [ended, succeeded, failed, cancelled] = [/^Ended$/, /^Succeeded$/, /^Failed/, /^Cancelled/].map(at)
+    expect(succeeded, 'no Succeeded column').toBeGreaterThan(-1)
+    const rows = [...c.querySelectorAll('tbody tr')]
+    expect(rows.length).toBe(4)
+    for (const r of rows) {
+      const cells = [...r.children].map((x) => (x.textContent ?? '').trim())
+      const n = (i: number) => Number((cells[i] ?? '').split(' ')[0])
+      expect(n(succeeded!) + n(failed!) + n(cancelled!), `${r.getAttribute('data-key')} does not add up`).toBe(n(ended!))
+    }
+  })
+
+  it('reads out succeeded, failed, dead-lettered and cancelled that sum to finished, for the span and for one bucket', async () => {
+    const root = await timeline()
+    const sum = () => {
+      const r = readout(root).map(Number)
+      return { parts: r[1]! + r[2]! + r[3]! + r[4]!, finished: r[9]! }
+    }
+    const span = sum()
+    expect(span.parts).toBe(span.finished)
+    fireEvent.mouseEnter(cols(root)[10]!)
+    const day = sum()
+    expect(day.parts).toBe(day.finished)
+  })
+
+  it('writes a person filter in the case the address reads it back in, so the link does not land unfiltered', async () => {
+    const d = ledgerFixture()
+    d.groups = { ...d.groups, by: 'submitted_by', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'Ana@Saga.xyz' }] }
+    const onView = vi.fn()
+    const root = await timeline(d, { view: 'group=submitted_by', onView })
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr th a')!
+    fireEvent.click(link)
+    expect(new URLSearchParams(onView.mock.calls.at(-1)![0] as string).getAll('submitted_by')).toEqual(['ana@saga.xyz'])
+  })
+
+  it('leaves a modified click to the browser, so a row can open in a new tab', async () => {
+    const onView = vi.fn()
+    const root = await timeline(ledgerFixture(), { view: '', onView })
+    onView.mockClear()
+    const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')!
+    fireEvent.click(link, { ctrlKey: true })
+    expect(onView).not.toHaveBeenCalled()
+  })
+})
 
 describe('the help the Timeline links', () => {
   it('has a success-rate topic that says cancels are left out and nothing decided is a gap', () => {

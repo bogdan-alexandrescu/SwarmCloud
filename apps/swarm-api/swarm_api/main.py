@@ -27,6 +27,7 @@ from .routes import (
     attempts,
     checkpoints,
     health,
+    leases,
     outcomes,
     platform,
     tasks,
@@ -83,6 +84,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # Attempts across every task of the caller's tenant. Tenant-scoped like
     # the per-task attempts route, not admin-gated: they are the caller's own.
     app.include_router(attempts.router)
+    # Each slot-holding task's lease heartbeat (#179). Tenant-scoped, so a
+    # member's Agents list can say a worker has gone silent without the
+    # admin-gated /v1/admin/leases.
+    app.include_router(leases.router)
     # What the work in a span ended as, by when it ended (#185). Tenant-scoped;
     # platform scope only behind require_admin, which the route runs first.
     app.include_router(outcomes.router)

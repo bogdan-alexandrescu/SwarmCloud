@@ -988,8 +988,31 @@ body {
    a loading row flashing as hard as a live agent -- instead of the .5 <-> .85
    written here. Two names now, one per job, and `stylesheet.gate.test.ts`
    fails on any name declared twice. */
-.skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: ctl-placeholder-pulse 1.4s ease-in-out infinite; }
 @keyframes ctl-placeholder-pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
+/* THE SHARED LOADING BAR (#113), every screen's `SkeletonRows`. It sat on
+   `--surface-2`, about 1.03:1 against the light page -- loading drawn and not
+   seen -- and `--ctl-pending` sweeps over that same `--surface-2`, so swapping
+   the class would not have fixed it. The contrast step itself changes:
+   `--text-faint` mixed into the surface, 1.5:1 or better against both `--bg`
+   and `--surface` in both themes (workflow.readability.test.tsx), with a
+   lighter band sweeping across it on `ctl-sweep` -- the same step and sweep
+   as the Workflows list's `.wfl-skel`. A sweep says "in flight" where a
+   breath at this contrast read as a dim, finished bar. */
+.skeleton {
+  border-radius: var(--track-radius);
+  background-color: color-mix(in srgb, var(--text-faint) 45%, var(--surface));
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
 
 /* THE PENDING ROW'S GEOMETRY, out of a React inline style and into the sheet.
    `Shell.tsx` wrote `{ height: 38, marginBottom: 6, borderRadius: 8 }` inline,
@@ -9732,6 +9755,22 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-link.is-data .wf-edge-halo { stroke-width: 6.5; }
 .wf-link.is-declared .wf-edge { stroke-dasharray: 6 4; }
 
+/* THE GRAPH'S KEY (#108): three short edges painted by the rules above, each
+   with its one word. At the end of the zoom strip, pushed right so it never
+   sits between the zoom control and what the control explains. The micro
+   step is this sheet's 12px floor. */
+.wf-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ctl-s3);
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.wf-key-item { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
+.wf-key-sample { flex: none; overflow: visible; }
+.wf-key-word { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
 /* The `(plan.md)` on a node's dependency line. Staged: one step brighter than
    the line around it, because it is a reported fact. Declared and not yet
    reported: the dashed underline every absent figure on this canvas wears.
@@ -10139,6 +10178,25 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .wf-panel > .wf-inspect { border-radius: 0; border-width: 0; }
 }
+
+/* THE TABLE'S AND THE TIMELINE'S INSPECTOR, NEXT TO THE PICKED STEP (#110).
+   At 1100px and up these views use the split above, so the panel docks in
+   the same right-hand column the Graph's does; the component decides the
+   width (`DOCK_QUERY` in Workflows.tsx) because below it the inspector is in
+   a different place in the DOM, not merely a different box. Below 1100 it is
+   a full-width row directly under the picked table row, or a grid row
+   spanning both of the Timeline's columns under the picked track. Inside a
+   table that scrolls sideways it sticks to the left edge and stays within the
+   viewport, so the reader never scrolls the table to read it. */
+.wf-viewbar + .wf-split.is-rows { margin-top: var(--ctl-s3); }
+.wf-inline-row > td { padding: 0 0 var(--ctl-s2); border-bottom: 1px solid var(--line); }
+.wf-inline {
+  position: sticky; left: 0;
+  max-width: calc(100vw - var(--ctl-s3) * 4);
+}
+.wf-inline > .wf-inspect { margin-top: var(--ctl-s1); }
+.wf-tl-inline { grid-column: 1 / -1; min-width: 0; }
+.wf-tl-inline > .wf-inspect { margin-top: 0; }
 
 /* -------------------------------------------------------------------------- */
 /* 14b. The inspector charts  (charts/AttemptPhases, PeakMemory,               */
@@ -11939,6 +11997,38 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .help-search { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 0 0 var(--ctl-s5); }
 .help-search input { font: var(--t-body)/var(--lh-body) var(--font); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
 
+/* --- Help #130: the topic index, the action, the copyable anchor --------- */
+/* THE INDEX IS A STICKY LIST BESIDE THE COLUMN WHERE THERE IS ROOM, AND A
+   SELECT ON A PHONE. Both are in the document; the width picks one, so no
+   script has to know the breakpoint. The list comes first in the document
+   (HelpSection.tsx) and is placed in the second column here. `top: 0` sticks
+   it to `.ctl-scroll`, the same scroller the group headings stick to. */
+.help-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 240px); gap: var(--ctl-gutter); align-items: start; }
+.help-body { grid-column: 1; grid-row: 1; min-width: 0; }
+.help-index { grid-column: 2; grid-row: 1; position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: var(--ctl-s2) 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.help-index ul { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; }
+.help-index li { margin: 0; }
+.help-index a { display: block; padding: 2px var(--ctl-s2); border-inline-start: 2px solid transparent; color: var(--text-dim); text-decoration: none; }
+.help-index a:hover { color: var(--text); }
+.help-index a[aria-current='location'] { color: var(--text); border-inline-start-color: var(--text); }
+.help-index-group { display: block; padding: 0 var(--ctl-s2) 2px; font-weight: 600; color: var(--text); }
+.help-index-pick { display: none; }
+.help-index-pick select { font: var(--t-body)/var(--lh-body) var(--font); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+@media (max-width: 899px) {
+  .help-layout { display: block; }
+  .help-index { display: none; }
+  .help-index-pick { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 0 0 var(--ctl-s5); }
+}
+/* WHAT TO DO (#131): the topic's last line, in ink, so it reads as the
+   answer rather than one more paragraph of rationale. */
+.help-topic > .help-topic-act { margin: var(--ctl-s3) 0 0; max-width: var(--measure); font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.help-topic-act > b { font-weight: 600; margin-inline-end: var(--ctl-s1); }
+/* The anchor is a link and a copy control now, at the anchor line's step. */
+.help-topic-anchor > a { color: var(--text-dim); }
+.help-topic-anchor > button { padding: 0 var(--ctl-s1); border: 1px solid var(--line-soft); border-radius: 4px; background: none; color: var(--text-dim); font: inherit; cursor: pointer; }
+.help-topic-anchor > button:hover { color: var(--text); }
+.help-topic-anchor > [role='status'] { color: var(--text-dim); }
+
 /* --- a task state's chip draws its brand mark (marks.tsx) ---------------- */
 .ctl-chip[data-mark][data-hue] > i { width: 12px; height: 12px; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; display: inline-flex; flex: none; }
 .ctl-chip[data-mark][data-hue] > i::before, .ctl-chip[data-mark][data-hue] > i::after { content: none; }
@@ -12031,6 +12121,40 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-clear { font: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+.wfl-started { color: var(--text-dim); white-space: nowrap; }
+.wfl-dur { white-space: nowrap; }
+.wfl-dur.is-absent { color: var(--text-faint); }
+.wfl-filters select:disabled,
+.wfl-filters input:disabled,
+.wfl-seg button:disabled { cursor: progress; }
+/* THE LIST'S LOADING BARS (#113). The shared `.skeleton` is a full-width
+   38px row; these are line-height bars inside the real cells. They take the
+   same contrast step as `.skeleton` -- `--text-faint` mixed into the card's
+   own surface, 1.5:1 or better against both `--bg` and `--surface` in both
+   themes (workflow.readability.test.tsx) -- and sweep a lighter band across it.
+   They sit inside the real cells at the line's own height, so a skeleton row
+   is as tall as a loaded one and the first row lands where it was. */
+.wfl-skel {
+  display: block;
+  max-width: 100%;
+  height: 1em;
+  margin: calc((var(--lh-meta) * 1em - 1em) / 2) 0;
+  border-radius: var(--ctl-radius-sm);
+  background-color: color-mix(in srgb, var(--text-faint) 45%, var(--surface));
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+.wfl-skel.is-sub { height: var(--t-micro); }
+.wfl-table .num .wfl-skel { margin-left: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .wfl-skel { animation: none; }
+}
 
 /* One workflow (workflows.html B): the back link, the head, the confirm. */
 .wfp-back { display: inline-block; margin-bottom: 6px; font-size: var(--t-meta); color: var(--sk-ac); text-decoration: none; }
@@ -12085,7 +12209,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 .cap-mx tr.is-open > td, .cap-mx tr.is-open > th[scope="row"] { background: var(--surface-2); }
 .cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
-.cap-mx-lift { font-size: var(--t-meta); color: var(--text-dim); white-space: normal; }
+/* Runs out first (#124): each binding pool on a line, its Fits under it in
+   the cell-figure grey; the opened row's per-pool table marks the binding
+   rows with the matrix's own amber edge. */
+.cap-mx-first { white-space: normal; }
+.cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
+.cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx-fits { margin-bottom: 8px; }
+.cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
 .cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 
 /* Runtimes: the pools each runtime must clear, each one a link. */
@@ -12096,6 +12227,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* Holders: the tenant filter beside "Every holder". */
 .hold-tenants { margin-left: 8px; }
+/* Holders narrowed to the pool a Pools link named (#125), with the way back. */
+.hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
+.hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+/* Accounts (#127): the sign-in form behind its control; the window Clears
+   counts down and when a label was last given out, faint, under the figure. */
+.acct-add-bar { display: flex; justify-content: flex-end; margin: 0 0 var(--ctl-gutter); }
+.acct-given, .acct-clears-win { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); font-weight: 400; }
 
 /* Accounts: the list and the chosen account side by side; stacked on a phone. */
 .acct-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
@@ -12156,6 +12296,14 @@ table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 .adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
 .adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
 .adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
+/* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
+.adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.adm-changed > time { color: var(--text-dim); }
+/* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
+   a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
+   outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
+   own change back to them, not a fault. */
+.adm-over { display: inline-block; margin-inline-start: var(--ctl-s2); padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .adm-family tr.is-editing > th[scope="row"],
 .adm-family tr.is-editing > td { background: var(--sk-acs); }
 @media (max-width: 560px) {
