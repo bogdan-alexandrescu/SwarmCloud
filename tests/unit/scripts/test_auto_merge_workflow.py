@@ -807,3 +807,121 @@ def test_docs_say_auto_merge_must_be_allowed_on_the_repository():
     text = CI_DOC.read_text()
     assert "allow_auto_merge=true" in text
     assert "auto-merge.yml" in text
+
+
+# ---------------------------------------------------------------------------
+# Parity: the merge step restates gates 1, 3 and 5 (#295, merge-step.md §8)
+# ---------------------------------------------------------------------------
+#
+# ONE RULE, TWO STATEMENTS. The `merge` worker action
+# (apps/agent-worker/agent_worker/merge.py) restates this gate's title rule
+# (1), its required-checks-exist rule (3) and its no-failing-or-running-check
+# rule (5). Every rule restated in a second place here has drifted, so the
+# table below runs each case through BOTH -- the gate's real shell, against
+# the fake `gh` above, and the merge's own functions -- and fails when they
+# answer differently, except where the table says they DELIBERATELY differ.
+# Where they differ the merge is always the stricter: it is the unattended
+# path, and §8 forbids it ever being looser than the human one.
+
+from agent_worker import forge as worker_forge  # noqa: E402
+from agent_worker import merge as worker_merge  # noqa: E402
+
+#: (title, gate refuses, merge refuses, why they differ or None)
+TITLE_PARITY = [
+    ("[swarm] task_01J9ZK3Q8R", True, True, None),
+    ("[Swarm] task_x", True, True, None),
+    ("   [swarm] task_x", True, True, None),
+    ("\t[SWARM] TASK_abc and more", True, True, None),
+    ("A fact-style headline", False, False, None),
+    ("s] task_x", False, False, None),
+    ("[swarm] output truncated marker is counted", False, False, None),
+    ("Fix [swarm] task_ handling in the integrator", False, True,
+     "the worker's own pr-title.txt rule (#214) refuses the retired shape anywhere"),
+    ("[swarm]task_x", False, True,
+     "the worker's own pr-title.txt rule (#214) allows any spacing"),
+]
+
+
+@pytest.mark.parametrize(("title", "gate_refuses", "merge_refuses", "why"), TITLE_PARITY,
+                         ids=[t[0] for t in TITLE_PARITY])
+def test_the_merge_steps_title_rule_matches_gate_1(run_gate, title, gate_refuses, merge_refuses, why):
+    proc, _calls, _comments = run_gate(title, PROTECTED)
+    assert (proc.returncode != 0) is gate_refuses, (title, proc.stderr)
+    assert worker_merge.title_is_placeholder(title) is merge_refuses, title
+    if gate_refuses:
+        assert merge_refuses, f"the merge step is looser than gate 1 on {title!r}"
+    if gate_refuses != merge_refuses:
+        assert why, f"{title!r}: the two disagree and the table does not say why"
+
+
+#: (status, conclusion, gate refuses, merge refuses, why they differ or None)
+CHECK_PARITY = [
+    ("completed", "success", False, False, None),
+    ("completed", "skipped", False, False, None),
+    ("completed", "neutral", False, False, None),
+    ("completed", "failure", True, True, None),
+    ("completed", "timed_out", True, True, None),
+    ("completed", "action_required", True, True, None),
+    ("completed", "cancelled", True, True, None),
+    ("in_progress", None, True, True, None),
+    ("queued", None, True, True, None),
+    ("completed", "stale", False, True,
+     "gate 5 holds only on four conclusions; the merge tolerates only success, skipped, neutral"),
+    ("completed", "startup_failure", False, True,
+     "gate 5 holds only on four conclusions; the merge tolerates only success, skipped, neutral"),
+]
+
+
+@pytest.mark.parametrize(("status", "conclusion", "gate_refuses", "merge_refuses", "why"),
+                         CHECK_PARITY, ids=[f"{c[0]}-{c[1]}" for c in CHECK_PARITY])
+def test_the_merge_steps_other_check_rule_matches_gate_5(
+    run_gate, status, conclusion, gate_refuses, merge_refuses, why
+):
+    run = {"name": "terraform", "status": status, "conclusion": conclusion}
+    proc, _calls, _comments = run_gate("A fact-style headline", PROTECTED, check_runs=[run])
+    assert (proc.returncode != 0) is gate_refuses, (run, proc.stderr)
+    assert worker_merge.other_check_blocks(run) is merge_refuses, run
+    if gate_refuses:
+        assert merge_refuses, f"the merge step is looser than gate 5 on {run}"
+    if gate_refuses != merge_refuses:
+        assert why
+
+
+def test_a_required_check_must_be_success_or_skipped_where_gate_5_tolerates_neutral(run_gate):
+    """Deliberate (§5.2 3, the owner's rule): `neutral` on a REQUIRED check
+    holds the merge step; the gate lets it through."""
+    run = {"name": "ci-gate", "status": "completed", "conclusion": "neutral"}
+    proc, _calls, _comments = run_gate("A fact-style headline", PROTECTED, check_runs=[run])
+    assert proc.returncode == 0
+    assert worker_merge.required_check_state([run]) == "failed"
+    assert worker_merge.required_check_state([{**run, "conclusion": "success"}]) == "green"
+    assert worker_merge.required_check_state([]) == "pending"
+
+
+@pytest.mark.parametrize(
+    ("rules", "branch", "gate_refuses"),
+    [([], UNPROTECTED, True), (RULESET_RULES, RULESET_ONLY_BRANCH, False)],
+    ids=["no-required-checks", "main-protection"],
+)
+def test_the_merge_steps_required_set_matches_gate_3(run_gate, rules, branch, gate_refuses):
+    """Gate 3 and the merge read the same endpoint, `rules/branches/{base}`,
+    and agree on whether a required set exists. The merge then refuses every
+    required check with no `integration_id` (M5, `required_check_unpinned`) --
+    which today is all five of main-protection's: deliberate, since a legacy
+    status from any token could satisfy an unpinned check."""
+    proc, _calls, _comments = run_gate("A fact-style headline", branch, rules=rules)
+    assert (proc.returncode != 0) is gate_refuses, proc.stderr
+    required = worker_forge.required_status_checks(rules)
+    assert (not required) is gate_refuses
+    if required:
+        assert {c.context for c in required} == set(RULESET_CHECKS)
+        assert all(c.app_id is None for c in required)
+
+
+def test_the_merge_squashes_under_the_same_subject_as_the_gate(job: dict):
+    """`--subject "${PR_TITLE} (#${PR_NUMBER})"` there, `commit_title` here."""
+    script = _step(job, "merge")["run"]
+    assert '--subject "${PR_TITLE} (#${PR_NUMBER})"' in script
+    source = (REPO / "apps" / "agent-worker" / "agent_worker" / "merge.py").read_text()
+    assert '"commit_title": f"{title} (#{number})"' in source
+    assert '"merge_method": "squash"' in source
