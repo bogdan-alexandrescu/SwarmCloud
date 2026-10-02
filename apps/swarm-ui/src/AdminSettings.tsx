@@ -15,6 +15,7 @@ import {
   type PoolKind,
 } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import './styles/admin.css'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -465,7 +466,7 @@ function changeOf(pool: Pool): { by: string; at: string } | null {
 }
 
 /** `ops@… · 3h ago`, with the instant on the `time` element. */
-function Changed({ change, now, as: Tag }: { change: { by: string; at: string }; now: number; as: 'dd' | 'p' }) {
+function Changed({ change, now, as: Tag }: { change: { by: string; at: string }; now: number; as: 'dd' | 'p' | 'span' }) {
   return (
     <Tag className="adm-changed">
       {change.by} · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
@@ -630,6 +631,21 @@ function PoolEditor({
   )
 }
 
+/**
+ * THE COLUMNS OF EVERY FAMILY TABLE, ONCE (#503). One list, so no family can
+ * draw a column another does not -- the defect that moved `edit` -- and the
+ * colgroup and the head are drawn from the same entries. `key` names the
+ * `col` class the widths in styles/admin.css are written against.
+ */
+const LIMIT_COLUMNS = [
+  { key: 'pool', head: 'Pool', num: false },
+  // The unit rides on the column name (§8.4.3), on BOTH figures (CP-24).
+  { key: 'use', head: 'In use (units)', num: true },
+  { key: 'ceiling', head: 'Ceiling (units)', num: false },
+  { key: 'by', head: 'Set by', num: false },
+  { key: 'changed', head: 'Last changed', num: false },
+] as const
+
 function Family({
   kind,
   pools,
@@ -651,10 +667,6 @@ function Family({
   admin: boolean | null
   onOpen: (pool: string) => void
 }) {
-  // `Set by` ONLY WHERE IT SAYS SOMETHING (#132). On a pool whose ceiling is
-  // its configured value the column read `configured` on every row, which is
-  // the column restating the Ceiling beside it.
-  const showSetBy = pools.some((p) => setBy(p).term !== 'configured')
   return (
     <section className="ctl-card adm-family">
       <div className="ctl-card-head">
@@ -662,16 +674,29 @@ function Family({
       </div>
       <div className="ctl-card-body is-flush">
         <div className="ctl-table is-scroll">
-          <table role="table">
+          {/* EVERY FAMILY TABLE HAS THE SAME COLUMNS, IN THE SAME ORDER, AT THE
+              SAME WIDTHS (#503, measured at 1440). `Set by` was drawn only in a
+              family where some pool was not at its configured value, so the
+              Providers table had a column the others did not and its `edit`
+              sat at x≈1068 against x≈828 everywhere else: the one control on
+              the screen moved from table to table. The columns are L2's
+              (admin-help.html), and `.adm-limits` (styles/admin.css) fixes
+              their widths through this colgroup, so `edit` -- first in the
+              Ceiling cell, after a figure of fixed width -- is at one x in
+              every family. */}
+          <table role="table" className="adm-limits">
+            <colgroup>
+              {LIMIT_COLUMNS.map((c) => (
+                <col key={c.key} className={`adm-col-${c.key}`} />
+              ))}
+            </colgroup>
             <thead role="rowgroup">
               <tr role="row">
-                <th role="columnheader" scope="col">Pool</th>
-                {/* The unit rides on the column name (§8.4.3), on BOTH figures
-                    (CP-24). */}
-                <th role="columnheader" scope="col" className="is-num">In use (units)</th>
-                <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
-                {showSetBy && <th role="columnheader" scope="col">Set by</th>}
-                <th role="columnheader" scope="col">Change</th>
+                {LIMIT_COLUMNS.map((c) => (
+                  <th key={c.key} role="columnheader" scope="col" className={c.num ? 'is-num' : undefined}>
+                    {c.head}
+                  </th>
+                ))}
               </tr>
             </thead>
             <tbody role="rowgroup">
@@ -680,7 +705,6 @@ function Family({
                   key={p.name}
                   pool={p}
                   mark={saved[p.name] ?? null}
-                  showSetBy={showSetBy}
                   open={editing === p.name}
                   target={target === p.name}
                   locked={held !== null && held !== p.name}
@@ -699,7 +723,6 @@ function Family({
 function PoolRow({
   pool,
   mark,
-  showSetBy,
   open,
   target,
   locked,
@@ -709,7 +732,6 @@ function PoolRow({
   pool: Pool
   /** What the last save of this row said. Held by the screen, not the row (AH-7). */
   mark: SaveMark | null
-  showSetBy: boolean
   /** This pool's side editor is the one open. */
   open: boolean
   /** The row a link named (#134). */
@@ -722,6 +744,8 @@ function PoolRow({
   const by = setBy(pool)
   const editable = isEditable(pool)
   const refused = admin === false
+  const change = changeOf(pool)
+  const now = useNow(AGE_TICK_MS)
   const classes = [isPaused(pool) ? 'is-paused' : '', target ? 'is-target' : '', open ? 'is-editing' : '']
     .filter(Boolean)
     .join(' ')
@@ -737,32 +761,20 @@ function PoolRow({
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
-      <td role="cell" data-label="Ceiling (units)" className="is-num">
+      <td role="cell" data-label="Ceiling (units)" className="adm-ceiling-cell">
+        {/* THE FIGURE, THEN EDIT, THEN WHAT THE ROW SAYS ABOUT ITSELF. The
+            figure has a fixed width (`.adm-ceiling`), so `edit` starts at the
+            same x in every row of every family, and the tags after it -- over
+            ceiling, read-only, saved -- wrap below rather than push it. */}
         {pool.effective_limit === null ? (
-          <span className="adm-ceiling is-unset" title={by.detail}>no limit set</span>
+          // A dash in the figure's slot, its reason on it, and the words after
+          // `edit` -- so the words cannot widen the slot and move `edit`.
+          <span className="adm-ceiling is-unset" title={by.detail} aria-label={`No limit set. ${by.detail}`}>
+            —
+          </span>
         ) : (
           <span className="adm-ceiling">{pool.effective_limit}</span>
         )}
-        {/* OVER ITS CEILING, AND NEUTRAL (#133). A ceiling lowered below what
-            is in use is a legal state Help explains
-            (`ceiling-change-evicts-nothing`): the work in flight finishes and
-            nothing new is admitted. So the mark is neutral, not the fault or the
-            warning colour -- it is an operator's own change read back. */}
-        {pool.effective_limit !== null && pool.active > pool.effective_limit && (
-          <span
-            className="adm-over"
-            title={`${pool.active - pool.effective_limit} units over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
-          >
-            over ceiling
-          </span>
-        )}
-      </td>
-      {showSetBy && (
-        <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
-          {by.term === 'configured' ? null : by.term}
-        </td>
-      )}
-      <td role="cell" data-label="Change">
         <span className="limit-edit">
           {/* A pool nothing can write gets no editor to open: an enabled
               control that silently does nothing is worse than none. The
@@ -786,6 +798,24 @@ function PoolRow({
           >
             edit
           </button>
+          {/* OVER ITS CEILING, AND NEUTRAL (#133). A ceiling lowered below what
+              is in use is a legal state Help explains
+              (`ceiling-change-evicts-nothing`): the work in flight finishes and
+              nothing new is admitted. So the mark is neutral, not the fault or
+              the warning colour -- it is an operator's own change read back. */}
+          {pool.effective_limit !== null && pool.active > pool.effective_limit && (
+            <span
+              className="adm-over"
+              title={`${pool.active - pool.effective_limit} units over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
+            >
+              over ceiling
+            </span>
+          )}
+          {pool.effective_limit === null && (
+            <span className="adm-unset" title={by.detail}>
+              no limit set
+            </span>
+          )}
           {!editable && <span className="client-side">read-only</span>}
           {mark !== null && <span className="tag ok">saved</span>}
           {mark === 'unread' && (
@@ -794,6 +824,23 @@ function PoolRow({
             </span>
           )}
         </span>
+      </td>
+      {/* EMPTY WHERE THE CEILING IS THE CONFIGURED VALUE (#132): `configured`
+          on every such row was the column restating the Ceiling beside it.
+          The column itself is in every family now (#503). */}
+      <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
+        {by.term === 'configured' ? null : by.term}
+      </td>
+      <td role="cell" data-label="Last changed">
+        {/* THE LAST ADMIN WRITE, OR A DASH WITH ITS REASON. Never `updated_at`,
+            which admission rewrites on every lease (NOT_RECORDED_WHY). */}
+        {change === null ? (
+          <i className="ctl-em adm-changed-none" title={NOT_RECORDED_WHY} aria-label={NOT_RECORDED_WHY}>
+            —
+          </i>
+        ) : (
+          <Changed change={change} now={now} as="span" />
+        )}
       </td>
     </tr>
   )

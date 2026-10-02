@@ -63,6 +63,7 @@ import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
+import './styles/admin.css'
 
 /**
  * Where the Timeline's sentences live. Typed as `TopicId` rather than spelled
@@ -1268,11 +1269,11 @@ export function TenantsScreen() {
       {(d) => (
         <section className="section">
           {/* `is-scroll` (CH-13, design-system.md §7.3), for the same reason
-              as the People table above: nine columns compared down the
+              as the People table above: eight columns compared down the
               roster is a data table, so below 900px it scrolls sideways with
               the tenant column held in view; only records of four columns or
               fewer stack. It was `is-stacked`, because at 390pt everything
-              from `Max active` rightwards sat behind a scrollbar this
+              from `Enforced` rightwards sat behind a scrollbar this
               platform does not paint, and a tenant row whose visible part
               ends at `Principal` says nothing about whether that tenant can
               run anything at all. The held column is what answers that now:
@@ -1285,15 +1286,26 @@ export function TenantsScreen() {
               anything is the first thing this roster is read for, so it
               cannot be the column that falls off, and at 390 it is the first
               column past the held name. The identities are shortened on the
-              wide table instead (`.ten-ident`, styles.css). */}
+              wide table instead (`.ten-ident`, styles/admin.css). */}
           <div className="table-wrap is-scroll">
-            <table className="pools" role="table">
+            {/* FITTED AT 1440 (#503). `.ten-table` (styles/admin.css) lays the
+                roster out fixed above 900px with these widths, so it is the
+                panel's width and never wider: with the 84+236px nav it ran
+                past the panel edge and clipped Identity's copy buttons. One
+                head row, as admin-help.html's Tenants frame draws it: the two
+                registry values are one Configured column, `max · units`. */}
+            <table className="pools ten-table" role="table">
+              <colgroup>
+                {TENANT_COLUMNS.map((c) => (
+                  <col key={c} className={`ten-col-${c}`} />
+                ))}
+              </colgroup>
               <thead role="rowgroup">
                 <tr role="row">
-                  <th role="columnheader" scope="col" rowSpan={2}>Tenant</th>
-                  <th role="columnheader" scope="col" rowSpan={2}>Status</th>
-                  <th role="columnheader" scope="col" rowSpan={2}>Kind</th>
-                  <th role="columnheader" scope="col" rowSpan={2}>Principal</th>
+                  <th role="columnheader" scope="col">Tenant</th>
+                  <th role="columnheader" scope="col">Status</th>
+                  <th role="columnheader" scope="col">Kind</th>
+                  <th role="columnheader" scope="col">Principal</th>
                   {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
                       registry values were printed bare, and the figure that
                       binds -- the smaller, which every writer of the tenant
@@ -1304,22 +1316,15 @@ export function TenantsScreen() {
                       THE HEAD IS ITS LABEL AND NOTHING ELSE. The decided help
                       link is under the table, not a `?` in here: a glyph in a
                       `<th>` publishes its HelpNote as part of the column's
-                      name, which a screen reader then reads on every cell, and
-                      while this table was stacked below 900px §B6.3 hid this
-                      row while leaving it in the tab order. It scrolls now
-                      (CH-13), so the row shows, but the first reason stands. */}
-                  <th role="columnheader" scope="col" rowSpan={2} className="n">
+                      name, which a screen reader then reads on every cell. */}
+                  <th role="columnheader" scope="col" className="n">
                     Enforced
                   </th>
-                  <th role="columnheader" scope="colgroup" colSpan={2} className="n">
+                  <th role="columnheader" scope="col" className="n">
                     Configured
                   </th>
-                  <th role="columnheader" scope="col" rowSpan={2}>Credentials</th>
-                  <th role="columnheader" scope="col" rowSpan={2}>Identity</th>
-                </tr>
-                <tr role="row">
-                  <th role="columnheader" scope="col" className="n">Max active</th>
-                  <th role="columnheader" scope="col" className="n">Units</th>
+                  <th role="columnheader" scope="col">Credentials</th>
+                  <th role="columnheader" scope="col">Identity</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
@@ -1352,8 +1357,18 @@ export function TenantsScreen() {
                         <Enforced tenant={t} />
                       </a>
                     </td>
-                    <td role="cell" data-label="Max active" className="n">{t.max_active}</td>
-                    <td role="cell" data-label="Units" className="n">{t.capacity_units}</td>
+                    <td role="cell" data-label="Configured" className="n">
+                      {/* Max active, then capacity units: the two values
+                          Enforced is the smaller of. Each word is on the
+                          cell's name, so the short form is never the only
+                          way to read it. */}
+                      <span
+                        title={`max active ${t.max_active} · capacity units ${t.capacity_units}`}
+                        aria-label={`max active ${t.max_active}, capacity units ${t.capacity_units}`}
+                      >
+                        {t.max_active} · {t.capacity_units}u
+                      </span>
+                    </td>
                     <td role="cell" data-label="Credentials">
                       {t.credentials.length > 0 ? (
                         // `.tags`, the wrapper every other run of tags in this
@@ -1430,7 +1445,8 @@ export function TenantsScreen() {
 /**
  * AN IDENTITY, SHORTENED ON THE WIDE TABLE, AND ITS COPY (#134).
  *
- * Above 900px `.ten-ident` cuts the value to 20ch with an ellipsis (AH-11).
+ * Above 900px `.ten-ident` cuts the value to its column with an ellipsis
+ * (AH-11, #503), and the copy control sits outside it so it is never cut.
  * The text under the ellipsis is whole, but selecting a cut 60-character
  * address out of a table cell is not a copy anyone can rely on -- so a button
  * beside it copies all of it, as the header's tenant id does (Brand.tsx
@@ -1481,6 +1497,9 @@ function Ident({ value, noun }: { value: string; noun: string }) {
     </span>
   )
 }
+
+/** The roster's columns, in order: the `col` classes styles/admin.css sizes. */
+const TENANT_COLUMNS = ['tenant', 'status', 'kind', 'principal', 'enforced', 'configured', 'credentials', 'identity'] as const
 
 /** Where the Enforced column, and the budget the table leaves out, are explained. */
 const TENANT_HELP: TopicId = 'tenant-fields'
