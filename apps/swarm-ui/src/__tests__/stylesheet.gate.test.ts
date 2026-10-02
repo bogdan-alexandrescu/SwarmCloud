@@ -23,7 +23,6 @@
 // being read quietly from disk.
 
 import STYLES from '../styles.css?raw'
-import AGENTS_CSS from '../styles/agents.css?raw'
 import { describe, expect, it } from 'vitest'
 
 import { cascade, conditionHolds, gate, specificity } from './cssgate'
