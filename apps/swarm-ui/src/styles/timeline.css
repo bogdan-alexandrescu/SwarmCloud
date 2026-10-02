@@ -160,7 +160,8 @@
   align-items: baseline;
 }
 .tl-strip1 b {
-  font-size: 17px;
+  font-size: var(--t-title);
+  line-height: var(--lh-title);
   font-weight: 650;
   color: var(--text);
   font-variant-numeric: tabular-nums;
@@ -369,7 +370,7 @@
   align-items: center;
   overflow: hidden;
   white-space: nowrap;
-  font: var(--t-micro) / 16px var(--mono);
+  font: var(--t-micro) / var(--lh-micro) var(--mono);
   padding: 0 5px;
   color: var(--text);
   box-sizing: border-box;
@@ -464,7 +465,7 @@
   background: var(--surface);
 }
 .tl-card-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.tl-card-head h2 { margin: 0; font-size: 17px; }
+.tl-card-head h2 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); }
 .tl-close {
   margin-left: auto;
   min-width: 32px;
