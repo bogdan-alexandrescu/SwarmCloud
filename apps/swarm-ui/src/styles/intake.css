@@ -97,7 +97,7 @@
    as one button. */
 .in-seg {
   flex: none; display: inline-flex; gap: 4px; padding: 2px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
 }
 .in-seg-o {
   position: relative;
