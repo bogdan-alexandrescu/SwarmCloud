@@ -78,6 +78,8 @@ END_CAUSES = [
     "verdict_failed",
     # Contract request 29 (#259), applied 2026-10-02: the worker refused to publish.
     "publish_refused",
+    # Contract request 41: a child cancelled because of its parent.
+    "child_cascade",
 ]
 
 
@@ -157,7 +159,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     assert outcomes._FAILURE_OF_CAUSE["publish_refused"] == "publish_refused"
     assert dict(outcomes.FAILURE_CLASSES)["inputs_unavailable"] == "inputs unavailable"
     assert [k for k, _ in outcomes.CANCEL_CAUSES] == [
-        "requested", "after_failure", "after_cancel", "workflow_sweep", "other",
+        "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",
     ]
     assert dict(outcomes.CANCEL_CAUSES)["after_cancel"] == "after a cancel"
     # Both versions moved, so every stored day is re-derived under the new rules.
@@ -376,11 +378,11 @@ def test_the_route_splits_the_cascade_and_reads_each_task_s_cause(api):
 
     assert sep22["cancelled"] == {
         "total": 6, "requested": 4, "after_failure": 1, "after_cancel": 1,
-        "workflow_sweep": 0, "other": 0,
+        "workflow_sweep": 0, "child_cascade": 0, "other": 0,
     }, "c4 followed a FAILED parent and k3 a CANCELLED one: two different cascades"
     assert sep23["cancelled"] == {
         "total": 2, "requested": 1, "after_failure": 0, "after_cancel": 1,
-        "workflow_sweep": 0, "other": 0,
+        "workflow_sweep": 0, "child_cascade": 0, "other": 0,
     }
     assert sep23["failure_classes"]["inputs_unavailable"] == 1, sep23["failure_classes"]
     assert sep23["failure_classes"]["timeout"] == 1, "t1's cause says timeout; its text never did"
@@ -420,7 +422,7 @@ def test_the_derive_follows_a_failure_s_cascade_up_through_days_it_did_not_read(
     assert sep20["cancelled"]["after_failure"] == 1
     assert sep21["cancelled"] == {
         "total": 2, "requested": 0, "after_failure": 2, "after_cancel": 0,
-        "workflow_sweep": 0, "other": 0,
+        "workflow_sweep": 0, "child_cascade": 0, "other": 0,
     }, "c and d followed a's failure, through b; nobody cancelled anything"
     wfc = next(r for r in body["workflows_failed"]["rows"] if r["workflow_id"] == "wfc")
     assert wfc["cascade_cancelled"] == 3

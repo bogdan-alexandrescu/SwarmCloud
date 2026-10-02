@@ -200,6 +200,10 @@ COVERED_REWRITES: dict[str, Callable[[dict[str, Any]], None]] = {
     "max_attempts": _set("max_attempts", 9),
     "provider": _set("provider", "openai"),
     "model": _set("model", "some-other-model"),
+    # Contract request 42: a child's parent is signed, so a rewrite that
+    # attaches a task to (or detaches it from) a parent's cascade is refused.
+    "parent_task_id": _set("parent_task_id", "task_someone_elses"),
+    "parent_attempt_id": _set("parent_attempt_id", "att_rewritten"),
 }
 
 
@@ -332,10 +336,22 @@ def test_a_version_of_the_right_key_that_was_not_published_is_refused(
     _assert_refused(db, witness, "foreign_key_version", rc=worker.run())
 
 
+def test_a_task_signed_at_format_1_still_runs(db, worker_factory):
+    """Contract request 42's rollout: format 1 verifies under format 1's projection."""
+    seed_attempt(db, task_id=TASK)
+    doc = db.doc(f"tasks/{TASK}")
+    spec_keys.sign_document(doc, TASK, spec_format=1)
+    worker, _, _ = worker_factory(task_id=TASK)
+    rc = worker.run()
+    task = db.doc(f"tasks/{TASK}")
+    assert rc == ExitCode.OK, (rc, task.get("last_error"), task.get("result_summary"))
+    assert task["state"] == TaskState.SUCCEEDED.value
+
+
 def test_an_unknown_format_is_refused(db, worker_factory, witness):
     seed_attempt(db, task_id=TASK)
     doc = spec_keys.sign_document(db.doc(f"tasks/{TASK}"), TASK)
-    doc["spec_format"] = 2
+    doc["spec_format"] = 3
     worker, _, _ = worker_factory(task_id=TASK)
     _assert_refused(db, witness, "unknown_format", rc=worker.run())
 

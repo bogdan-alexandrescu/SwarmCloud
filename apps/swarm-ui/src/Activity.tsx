@@ -61,6 +61,7 @@ import {
 import { StateMark, WarnMark } from './marks'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
+import { TimelinePages } from './TimelineLanes'
 import { useInView } from './useInView'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
@@ -188,7 +189,7 @@ export function ActivityScreen({
       const next = narrowedTo(view, by, key)
       if (next === null) return null
       const q = serializeView(next)
-      return { href: q === '' ? '#work/timeline' : `#work/timeline?${q}`, open: () => setView(next) }
+      return { href: q === '' ? '#work/timeline/outcomes' : `#work/timeline/outcomes?${q}`, open: () => setView(next) }
     },
     [view, setView],
   )
@@ -395,6 +396,9 @@ export function ActivityScreen({
           {pending ? 'reading…' : 'refresh'}
         </button>
       </PageHead>
+
+      {/* Outcomes is the Timeline's second page now (timeline.html pick A); Lanes is /timeline. */}
+      <TimelinePages at="outcomes" />
 
       <LedgerToolbar
         view={view}

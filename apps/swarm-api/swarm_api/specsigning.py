@@ -163,9 +163,17 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
     (503); on either, no task carries a signature.
     """
     digests: list[bytes] = []
+    formats: list[int] = []
     for task in tasks:
+        stored = task.to_firestore()
+        # Format 1 for a task that names no parent, so a worker built before
+        # contract request 42 keeps verifying every non-child task.
+        spec_format = specsign.signing_format(stored)
+        formats.append(spec_format)
         try:
-            canonical = specsign.canonical_step_spec(task.to_firestore(), task_id=task.id)
+            canonical = specsign.canonical_step_spec(
+                stored, task_id=task.id, spec_format=spec_format
+            )
         except specsign.SpecNotCanonical as exc:
             raise NonCanonicalInput(
                 "a value in this task has no canonical form and cannot be signed: an integer "
@@ -193,7 +201,7 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
         raise SpecSigningUnavailable(
             "the step spec could not be signed; nothing was stored"
         ) from exc
-    for task, result in zip(tasks, signed):
+    for task, result, spec_format in zip(tasks, signed, formats):
         task.spec_signature = base64.b64encode(result.signature).decode("ascii")
         task.spec_key_version = result.key_version
-        task.spec_format = specsign.SPEC_FORMAT
+        task.spec_format = spec_format

@@ -135,6 +135,10 @@ class ParkReason(str, Enum):
     # Multi-tenant addition: the tenant has not registered a key for the
     # provider this runner profile requires.
     CREDENTIAL_MISSING = "CREDENTIAL_MISSING"
+    #: The task's agent asked to await the child tasks it submitted. Promoted by
+    #: the scheduler when every child is terminal; see docs/design/child-tasks.md.
+    #: Contract request 40, applied 2026-10-02.
+    CHILDREN_INCOMPLETE = "CHILDREN_INCOMPLETE"
 
 
 class BlockedReason(str, Enum):

@@ -63,6 +63,15 @@ variable "services" {
     concurrency           = optional(number, 80)
     request_timeout       = optional(string, "300s")
     env                   = optional(map(string), {})
+    # Environment variables read from Secret Manager at instance start: name ->
+    # { secret id, version }. The VALUE never passes through terraform -- only
+    # the reference does -- so it is never in a plan or the state (a managed
+    # secret version would put the plaintext there). Platform secrets only; a
+    # tenant's provider key is a Job's `secret_env`, never a service's.
+    secret_env = optional(map(object({
+      secret  = string
+      version = optional(string, "latest")
+    })), {})
     # Extra OIDC audiences this service accepts, alongside its own URL. Present
     # so a caller and a receiver can agree on an audience that is a constant
     # rather than a URL only known after apply -- without it, a service cannot

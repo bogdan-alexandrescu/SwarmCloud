@@ -166,6 +166,14 @@ class Workspace:
         """
         return self.work / "credential.json"
 
+    @property
+    def children_dir(self) -> Path:
+        """The child-task spool (docs/design/child-tasks.md §6.4): the agent's
+        requests and await, the worker's responses and staged results. Under
+        `work/` so a checkpoint carries which requests were answered; a control
+        name, so no declared input or working-folder upload can take it."""
+        return self.work / ".swarm-children"
+
     def control_file_names(self) -> frozenset[str]:
         """The names of the control files this class places inside `work/`.
 

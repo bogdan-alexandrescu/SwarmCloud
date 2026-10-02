@@ -13,7 +13,7 @@ import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
-  AttemptRow, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
+  AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
   RunnerInputContract, Runtime, TaskState,
   TaskWindow, Tenant,
   Workflow, WorkflowPage,
@@ -2081,6 +2081,72 @@ export async function loadAttempts(taskId: string): Promise<Result<{ attempts: A
     route(`/v1/tasks/{id}/attempts?limit=${ATTEMPT_PAGE_LIMIT}`, { id: taskId }),
     (d) => d.attempts.length === 0,
   )
+}
+
+/**
+ * ONE PAGE OF THE TENANT'S ATTEMPTS ACROSS TASKS: `GET /v1/attempts`, the
+ * bars of the Timeline's Lanes page (redesign-v2 S4, the UI half). `since`
+ * is inclusive and `until` exclusive on `created_at`, both ISO instants; rows
+ * come newest first; `pageToken` asks for the page after one already read.
+ * No attempt in the window is `empty`, which is an answer, not a failure.
+ */
+export async function loadAttemptsPage(opts: {
+  since: string
+  until: string
+  pageToken?: string | null
+}): Promise<Result<AttemptsPage>> {
+  if (USE_FIXTURES) return fixtureAttemptsPage(opts.since, opts.until)
+  const q = new URLSearchParams({ since: opts.since, until: opts.until, limit: String(ATTEMPT_PAGE_LIMIT) })
+  if (opts.pageToken) q.set('page_token', opts.pageToken)
+  return read<AttemptsPage>(route('/v1/attempts', {}, q), (d) => d.attempts.length === 0)
+}
+
+/**
+ * ONE PAGE OF ONE TASK'S EVENTS, NEWEST FIRST by default (`order=desc`), and
+ * the page after it by `pageToken`: the UI half of redesign-v2 S1. Every
+ * other event read in this client asks for the OLDEST page, so a long run
+ * shows its beginning; a timeline lane needs its end.
+ */
+export async function loadTaskEventsPage(
+  taskId: string,
+  opts: { order?: 'asc' | 'desc'; pageToken?: string | null },
+): Promise<Result<TaskEventsPage>> {
+  const order = opts.order ?? 'desc'
+  if (USE_FIXTURES) return fixtureEventsPage(taskId, order)
+  const q = new URLSearchParams({ limit: String(EVENT_PAGE_LIMIT), order })
+  if (opts.pageToken) q.set('page_token', opts.pageToken)
+  // An empty page is still a page: "no events" is drawn as such, not as a failure.
+  return read<TaskEventsPage>(route('/v1/tasks/{id}/events', { id: taskId }, q), () => false)
+}
+
+async function fixtureAttemptsPage(since: string, until: string): Promise<Result<AttemptsPage>> {
+  const tasks = await fixtureTasks()
+  noteFixtureProbe(route('/v1/attempts'), 200, true)
+  if (tasks.status !== 'ok') return { status: 'empty', fetchedAt: Date.now() }
+  const lo = Date.parse(since)
+  const hi = Date.parse(until)
+  const rows: AttemptRow[] = []
+  for (const t of tasks.data.tasks) {
+    const got = await fixtureAttempts(t.id)
+    if (got.status === 'ok') rows.push(...got.data.attempts)
+  }
+  const inWindow = rows
+    .filter((a) => Date.parse(a.created_at) >= lo && Date.parse(a.created_at) < hi)
+    .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))
+  if (inWindow.length === 0) return { status: 'empty', fetchedAt: Date.now() }
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { tenant_id: 'u-bogdan', read_at: new Date().toISOString(), attempts: inWindow, next_page_token: null, coverage: { scope: 'page' } },
+  }
+}
+
+async function fixtureEventsPage(taskId: string, order: 'asc' | 'desc'): Promise<Result<TaskEventsPage>> {
+  const detail = await fixtureAgentDetail(taskId)
+  if (detail.status !== 'ok') return detail.status === 'error' ? detail : { status: 'ok', fetchedAt: Date.now(), data: { events: [], next_page_token: null } }
+  const events = [...(detail.data.events ?? [])].sort((a, b) => Date.parse(a.at) - Date.parse(b.at))
+  if (order === 'desc') events.reverse()
+  return { status: 'ok', fetchedAt: Date.now(), data: { events, next_page_token: null } }
 }
 
 async function fixtureLeases(): Promise<Result<LeasePage>> {

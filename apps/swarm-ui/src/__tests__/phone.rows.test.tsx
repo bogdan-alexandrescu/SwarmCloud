@@ -3,7 +3,9 @@
 //
 //   #94   Overview's Running rows showed `claude-code` over the task id, four
 //         times for four steps of one workflow. The step is the name now; a
-//         standalone task keeps its profile, and the whole id stays under it.
+//         standalone task is named by its id (`agentName`), the profile is on
+//         the sub-line (O1's "Agent · profile"), and the whole id is the
+//         link's title.
 //   #109  At 390 the workflow list scrolls sideways and its done, failed and
 //         age columns sit off the right edge: `.wfl-phone` carries
 //         `9/30 · 4✕ · 2h ago` under the name. The step Table drops runner and
@@ -13,7 +15,7 @@
 //         ONE view switch and the list ONE state switch -- pinned here so a
 //         third does not come back.
 //
-// MUTATIONS, one per block: print `runner_profile` in RunningRow again; drop
+// MUTATIONS, one per block: name a RunningRow by `runner_profile` again; drop
 // the failed count or the age from `phoneSummary`; delete the ≤560 runner /
 // inputs rule; draw the fade unconditionally or never; add a `ctl-seg` to
 // Workflows.tsx.
@@ -52,15 +54,18 @@ describe('#94: an Overview running agent is named by its step', () => {
     return container.querySelector('th')!
   }
 
-  it('reads the step, with the whole id on the sub-line', () => {
-    const th = row({ id: 'task_9c0ade75fd0c4f1c9a6e', workflow_id: 'wf_one', step_id: 'scan-04' })
-    expect(th.querySelector('a')?.textContent).toBe('scan-04')
-    expect(th.querySelector('.ctl-sub')?.textContent).toBe('task_9c0ade75fd0c4f1c9a6e')
+  it('reads the step, with the profile on the sub-line and the whole id as the title', () => {
+    const th = row({ id: 'task_9c0ade75fd0c4f1c9a6e', runner_profile: 'codex', workflow_id: 'wf_one', step_id: 'scan-04' })
+    const name = th.querySelector('a.ov-name')!
+    expect(name.textContent).toBe('scan-04')
+    expect(name.getAttribute('title')).toBe('task_9c0ade75fd0c4f1c9a6e')
+    expect(th.querySelector('.ov-sub')?.textContent).toBe('codex · wf_one')
   })
 
-  it('keeps the profile for a standalone agent, which has no step', () => {
-    const th = row({ runner_profile: 'claude-code', workflow_id: null, step_id: null })
-    expect(th.querySelector('a')?.textContent).toBe('claude-code')
+  it('names a standalone agent by its id, which has no step, with its profile under it', () => {
+    const th = row({ id: 'task_alone', runner_profile: 'claude-code', workflow_id: null, step_id: null })
+    expect(th.querySelector('a.ov-name')?.textContent).toBe('task_alone')
+    expect(th.querySelector('.ov-sub')?.textContent).toBe('claude-code')
   })
 })
 

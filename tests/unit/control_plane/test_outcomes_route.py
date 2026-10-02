@@ -273,7 +273,7 @@ def test_every_bucket_is_served_with_its_exact_counts(api):
     # c4 followed f1, which FAILED: after a failure, not after a cancel (#185, decision 2).
     assert sep22["cancelled"] == {
         "total": 4, "requested": 3, "after_failure": 1, "after_cancel": 0,
-        "workflow_sweep": 0, "other": 0,
+        "workflow_sweep": 0, "child_cascade": 0, "other": 0,
     }
     assert sep22["ended"] == 7
     assert sep22["rate"] == wilson(2, 3)

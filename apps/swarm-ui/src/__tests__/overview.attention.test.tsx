@@ -32,7 +32,7 @@ const api = vi.hoisted(() => ({
 }))
 vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
-const { OverviewScreen, accountRowsShown } = await import('../Overview')
+const { OverviewScreen } = await import('../Overview')
 
 function ok<T>(data: T): Result<T> {
   return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-09-23T10:00:00Z' }
@@ -170,9 +170,10 @@ function page(tasks: Task[]): Result<TaskPage> {
   return ok({ tasks, next_page_token: null, tenant_id: 'eng' } as TaskPage)
 }
 
+/** The Needs a look card whose title matches. Its title is `.ov-att-t b`, its link word `.ov-att-go`. */
 function problem(el: HTMLElement, pattern: RegExp): HTMLElement {
-  const row = [...el.querySelectorAll<HTMLElement>('.ov-problem')].find((p) => pattern.test(text(p.querySelector('b'))))
-  expect(row, `no attention item matches ${pattern}: ${[...el.querySelectorAll('.ov-problem b')].map(text).join(' | ')}`).toBeDefined()
+  const row = [...el.querySelectorAll<HTMLElement>('a.ov-att')].find((p) => pattern.test(text(p.querySelector('.ov-att-t b'))))
+  expect(row, `no check card matches ${pattern}: ${[...el.querySelectorAll('.ov-att-t b')].map(text).join(' | ')}`).toBeDefined()
   return row!
 }
 
@@ -180,50 +181,20 @@ function problem(el: HTMLElement, pattern: RegExp): HTMLElement {
 // #89
 // ---------------------------------------------------------------------------
 
-describe('#89: overview account headroom keeps the headline account and the busy one on screen', () => {
+describe('#89: overview account headroom names the account its figure is', () => {
   /**
-   * The issue's own picture: four accounts, sorted least-room first and cut
-   * to three, so the account with the MOST room -- the headline's -- is the
-   * one that gets cut, and the one serving agents goes with it.
+   * #89 was the account the headline's figure came from being cut from the
+   * rows under it. O1 draws the pool as one line, and the line names that
+   * account beside its figure, so the two cannot be separated.
    *
-   * MUTATION: go back to `sort(rank).slice(0, ACCOUNT_ROWS)`.
+   * MUTATION: print the figure without the account it belongs to.
    */
-  const FOUR = [
-    account('a', 0.95),
-    account('b', 0.9),
-    account('c', 0.8),
-    account('roomy', 0.28),
-  ]
-
-  it('draws the headline’s own account as a row, and its figure matches', async () => {
-    const el = await mount({ loadAccountPool: ok(accountsPage(FOUR)) })
-    const figure = text(el.querySelector('.ov-headroom .ctl-dial .ctl-dial-figure'))
-    expect(figure).toBe('28% used · roomy')
-    const names = [...el.querySelectorAll('.ov-headroom .ov-dialrow-rows .ctl-util-name b')].map(text)
-    expect(names, 'the headline’s account was cut from the rows').toContain('roomy')
-    expect(names.length).toBe(3)
-  })
-
-  it('keeps every account serving agents, then fills worst-first', () => {
-    const accounts = [
-      account('a', 0.95),
-      account('b', 0.9),
-      account('busy', 0.6, { assigned: 2 }),
-      account('roomy', 0.28),
-    ]
-    const shown = accountRowsShown(accounts, 'eng:roomy').map(({ a }) => a.label)
-    // Pinned: roomy (headline) and busy (assigned > 0); one slot left, worst first.
-    expect(shown).toEqual(['a', 'busy', 'roomy'])
-  })
-
-  it('shows every pinned account even when they outnumber the slots', () => {
-    const accounts = [
-      account('a', 0.95, { assigned: 1 }),
-      account('b', 0.9, { assigned: 1 }),
-      account('c', 0.8, { assigned: 1 }),
-      account('roomy', 0.28),
-    ]
-    expect(accountRowsShown(accounts, 'eng:roomy').map(({ a }) => a.label)).toEqual(['a', 'b', 'c', 'roomy'])
+  it('names the best account beside its own figure', async () => {
+    const el = await mount({
+      loadAccountPool: ok(accountsPage([account('a', 0.95), account('b', 0.9), account('c', 0.8), account('roomy', 0.28)])),
+    })
+    const best = [...el.querySelectorAll('.ov-headroom .ov-acc > span')].map(text).find((t) => t.startsWith('best'))
+    expect(best).toMatch(/^best roomy at 28% of its five-hour window · read (just now|\d+[smhd] ago)$/)
   })
 })
 
@@ -243,7 +214,7 @@ describe('#90: the overview names the workflow a failure came from', () => {
     ]
     const el = await mount({ loadTasks: page(tasks) })
     const p = problem(el, /failed task/)
-    expect(text(p.querySelector('b'))).toMatch(/2 in workflow wf-nightly/)
+    expect(text(p.querySelector('.ov-att-t b'))).toMatch(/2 in workflow wf-nightly/)
   })
 
   /**
@@ -269,19 +240,16 @@ describe('#91: the overview shows how much work is waiting, and says waiting cos
    * MUTATION: drop the Waiting tile, count a CONCURRENCY state into it, or
    * point its link anywhere but the Waiting tab.
    */
-  it('counts QUEUED, READY and PARKED from /v1/stats and links the Waiting tab', async () => {
+  it('counts QUEUED, READY and PARKED from /v1/stats and links the Waiting list', async () => {
     const el = await mount({
-      loadStats: ok({ ...STATS, tasks_by_state: { QUEUED: 12, READY: 4, PARKED: 5, RUNNING: 5, LEASED: 1 } }),
+      loadStats: ok({ ...STATS, tasks_by_state: { QUEUED: 12, READY: 4, PARKED: 5, RUNNING: 5, LEASED: 1, DISPATCHED: 0, STARTING: 0 } }),
     })
-    const tile = [...el.querySelectorAll<HTMLElement>('.ctl-metrics .ctl-metric')].find((t) =>
-      text(t.querySelector('.ctl-metric-label')).startsWith('Waiting'),
-    )
-    expect(tile, 'the figure strip has no Waiting tile').toBeDefined()
-    expect(text(tile!.querySelector('.ctl-metric-value'))).toMatch(/^21/)
-    const href = tile!.getAttribute('href') ?? tile!.querySelector('a')?.getAttribute('href')
-    expect(href).toBe('#work/running/waiting')
+    const cell = [...el.querySelectorAll<HTMLElement>('#ov-band .ov-lc')].find((c) => text(c.querySelector('.ov-lc-h span')) === 'Waiting')
+    expect(cell, 'the band has no Waiting figure').toBeDefined()
+    expect(text(cell!.querySelector('.ov-lc-n'))).toBe('21')
     // The wording on the surface says waiting creates no demand.
-    expect(text(tile)).toMatch(/no capacity/)
+    expect(text(cell!.querySelector('.ov-lc-h small'))).toBe('costs nothing')
+    expect(el.querySelector('#ov-waiting .ctl-card-head a')?.getAttribute('href')).toBe('#work/running/waiting')
   })
 })
 
@@ -298,11 +266,11 @@ describe('#92: the overview’s attention items say which workers are silent and
       loadLeases: ok(leasePage([lease('tsk_quiet_a', 300), lease('tsk_quiet_b', 200), lease('tsk_fine', 10)])),
     })
     const p = problem(el, /silent/)
-    const headline = text(p.querySelector('b'))
+    const headline = text(p.querySelector('.ov-att-t b'))
     expect(headline).toMatch(/tsk_quiet_a/)
     expect(headline).toMatch(/tsk_quiet_b/)
     expect(headline).not.toMatch(/tsk_fine/)
-    expect(text(p.querySelector('a'))).toMatch(/^holders/)
+    expect(text(p.querySelector('.ov-att-go'))).toMatch(/^holders/)
   })
 
   /**
@@ -314,7 +282,7 @@ describe('#92: the overview’s attention items say which workers are silent and
       task({ id: 'tsk_f2', state: 'FAILED', updated_at: ago(120), completed_at: ago(120) }),
     ]
     const el = await mount({ loadTasks: page(tasks) })
-    expect(text(problem(el, /failed task/).querySelector('b'))).toMatch(/newest 3m ago/)
+    expect(text(problem(el, /failed task/).querySelector('.ov-att-t b'))).toMatch(/newest 3m ago/)
   })
 
   /**

@@ -308,6 +308,23 @@ class SchedulerSettings:
     #: decision, 2026-10-01).
     pr_console_links: bool = False
 
+    # --- child tasks (docs/design/child-tasks.md) --------------------------
+    #: `swarm-child-key` (SWARM_CHILD_KEY), from Secret Manager, held by this
+    #: service and swarm-api only. The dispatcher mints each attempt's one-use
+    #: registration nonce with it (§3.2 step 1). EMPTY MEANS NO CHILD PATH: no
+    #: nonce is passed and the worker offers its agent no spool. Not in the
+    #: repr, so a logged settings object cannot carry it.
+    child_key: str = field(default="", repr=False)
+    #: swarm-api's address and token audience, passed to a worker that has a
+    #: child path so it can call the worker-only child routes. Platform
+    #: settings, never a caller's (invariant 10). Omitted when empty.
+    swarm_api_url: str = ""
+    swarm_api_audience: str = ""
+    #: How long an awaiting parent waits for its children before the
+    #: outstanding ones are cancelled and it is promoted (§7, F7). A day covers
+    #: a full daily provider quota reset with margin.
+    child_await_max_seconds: int = 86400
+
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
@@ -376,6 +393,10 @@ class SchedulerSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
+            child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
+            swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
+            swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
+            child_await_max_seconds=_int("CHILD_AWAIT_MAX_SECONDS", 86400),
             project_id=core.project_id,
             region=core.region,
             artifact_registry_host=registry,

@@ -26,6 +26,9 @@ function blankComments(css: string): string {
 
 const ZERO = /^(?:normal|0(?:\.0+)?(?:px|em|rem)?|initial|inherit|unset)$/
 
+/** Each screen's own sheet (src/styles/<screen>.css), read the same way. */
+const SCREEN_SHEETS = import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })
+
 describe('letter-spacing', () => {
   it('the scan reads the real sheet', () => {
     expect(STYLES.length, 'styles.css read as almost nothing').toBeGreaterThan(10000)
@@ -40,6 +43,20 @@ describe('letter-spacing', () => {
         if (!ZERO.test(value)) tracked.push(`styles.css:${i + 1} letter-spacing: ${value}`)
       }
     })
+    expect(tracked).toEqual([])
+  })
+
+  it('tracks no text in any screen sheet under src/styles/ either', () => {
+    expect(Object.keys(SCREEN_SHEETS).length, 'the glob read no screen sheet').toBeGreaterThan(0)
+    const tracked: string[] = []
+    for (const [path, sheet] of Object.entries(SCREEN_SHEETS)) {
+      blankComments(sheet).split('\n').forEach((line, i) => {
+        for (const m of line.matchAll(/letter-spacing\s*:\s*([^;}]+)/g)) {
+          const value = (m[1] ?? '').replace(/!important/, '').trim()
+          if (!ZERO.test(value)) tracked.push(`${path}:${i + 1} letter-spacing: ${value}`)
+        }
+      })
+    }
     expect(tracked).toEqual([])
   })
 

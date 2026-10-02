@@ -15,7 +15,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
-from swarm_common.models import retries_exhausted, utcnow
+from swarm_common.models import EndCause, retries_exhausted, utcnow
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, TaskState
 
 
@@ -47,6 +47,28 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+#: The marker the child cascade sets on a child cancelled because of its
+#: parent (docs/design/child-tasks.md §3.4), `swarm_api.validation.
+#: CHILD_CASCADE_METADATA_KEY` restated: this image carries neither swarm-api
+#: nor the scheduler. tests/unit/worker/test_end_cause_reconciler.py
+#: holds it equal to both.
+CHILD_CASCADE_METADATA_KEY = "child_cascade"
+
+
+def cancel_end_cause(metadata: Any) -> EndCause:
+    """Why a cancelled task ended: CHILD_CASCADE when its parent's cancel, end
+    or await deadline flagged it (contract request 41), else CANCEL_REQUESTED.
+
+    The rule `agent_worker.control.cancel_end_cause` and
+    `scheduler.children.cancel_end_cause` apply, so a flagged child whose
+    worker died ends `child_cascade` here exactly as it would had its worker
+    finished it.
+    """
+    if isinstance(metadata, dict) and metadata.get(CHILD_CASCADE_METADATA_KEY):
+        return EndCause.CHILD_CASCADE
+    return EndCause.CANCEL_REQUESTED
 
 
 #: Where a task records the attempts the reconciler took back because they
