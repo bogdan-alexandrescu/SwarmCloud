@@ -681,3 +681,96 @@ class TestCli:
         text = bs.render(result)
         assert "FAIL" in text
         assert "1 failing" in text
+
+
+# ---------------------------------------------------------------------------
+# The prompt-cache TTL cost table (#323): read-only, and honest about what the
+# platform does not record
+# ---------------------------------------------------------------------------
+
+
+def _attempt(start, end, writes, reads):
+    return {
+        "started_at": start, "completed_at": end,
+        "cache_creation_input_tokens": writes, "cache_read_input_tokens": reads,
+    }
+
+
+class TestCacheTtlTable:
+    def test_break_even_is_the_share_1h_must_turn_into_reads(self):
+        # 2(1 - f) + 0.1 f = 1.25  ->  f = 0.75 / 1.9
+        assert bs.cache_ttl_break_even(0.1) == pytest.approx(0.75 / 1.9)
+        # A cheaper read lowers the bar, never raises it.
+        assert bs.cache_ttl_break_even(0.025) < bs.cache_ttl_break_even(0.1)
+        with pytest.raises(ValueError):
+            bs.cache_ttl_break_even(2.0)
+
+    def test_costs_are_priced_at_the_two_write_multipliers(self):
+        table = bs.cache_ttl_table([{
+            "task_id": "t", "runner_profile": "claude-code",
+            "attempts": [_attempt("2026-10-01T00:00:00Z", "2026-10-01T00:10:00Z", 1000, 10000)],
+        }])
+        row = table["profiles"]["claude-code"]
+        assert row["cost_5m"] == pytest.approx(1.25 * 1000 + 0.1 * 10000)
+        assert row["cost_1h_no_reuse"] == pytest.approx(2.0 * 1000 + 0.1 * 10000)
+        assert row["cross_attempt_write_share"] == 0.0
+        assert "cannot pay" in row["note"]
+
+    def test_only_a_resume_5_to_60_minutes_later_counts_as_reusable(self):
+        """Under 5 minutes the 5m entry is still warm; over an hour both are cold."""
+        attempts = [
+            _attempt("2026-10-01T00:00:00Z", "2026-10-01T00:10:00Z", 1000, 0),
+            _attempt("2026-10-01T00:12:00Z", "2026-10-01T00:20:00Z", 100, 0),   # 2 min: warm anyway
+            _attempt("2026-10-01T00:40:00Z", "2026-10-01T00:50:00Z", 700, 0),   # 20 min: 1h holds it
+            _attempt("2026-10-01T02:00:00Z", "2026-10-01T02:10:00Z", 200, 0),   # 70 min: cold on both
+        ]
+        table = bs.cache_ttl_table([{"task_id": "t", "runner_profile": "codex", "attempts": attempts}])
+        row = table["profiles"]["codex"]
+        assert row["cross_attempt_writes"] == 700
+        assert row["cross_attempt_write_share"] == pytest.approx(700 / 2000)
+        assert row["cost_1h_cross_attempt_best"] == pytest.approx(2.0 * 1300 + 0.1 * 700)
+
+    def test_a_share_over_break_even_says_it_could_pay_and_no_more(self):
+        attempts = [
+            _attempt("2026-10-01T00:00:00Z", "2026-10-01T00:10:00Z", 100, 0),
+            _attempt("2026-10-01T00:30:00Z", "2026-10-01T00:40:00Z", 900, 0),
+        ]
+        row = bs.cache_ttl_table(
+            [{"task_id": "t", "runner_profile": "claude-code", "attempts": attempts}]
+        )["profiles"]["claude-code"]
+        assert row["cross_attempt_write_share"] == pytest.approx(0.9)
+        assert "could pay" in row["note"] and "confirm" in row["note"]
+
+    def test_an_unreported_attempt_is_not_a_free_one(self):
+        """Rule 1 in cost form: missing cache fields are counted, never zero."""
+        table = bs.cache_ttl_table([{
+            "task_id": "t", "runner_profile": "mock",
+            "attempts": [{"started_at": "2026-10-01T00:00:00Z",
+                          "cache_creation_input_tokens": None, "cache_read_input_tokens": None}],
+        }])
+        row = table["profiles"]["mock"]
+        assert row["status"] == "not_measured"
+        assert row["unreported"] == 1
+        assert "cost_5m" not in row
+
+    def test_dollars_only_when_the_operator_supplies_a_price(self):
+        task = {"task_id": "t", "runner_profile": "claude-code",
+                "attempts": [_attempt("2026-10-01T00:00:00Z", None, 1_000_000, 0)]}
+        assert "usd_5m" not in bs.cache_ttl_table([task])["profiles"]["claude-code"]
+        row = bs.cache_ttl_table([task], base_usd_per_mtok=4.0)["profiles"]["claude-code"]
+        assert row["usd_5m"] == pytest.approx(5.0)
+        assert row["usd_1h_no_reuse"] == pytest.approx(8.0)
+
+    def test_the_cli_reads_one_task_per_line(self, tmp_path):
+        path = tmp_path / "attempts.jsonl"
+        path.write_text(json.dumps({
+            "task_id": "t", "runner_profile": "claude-code",
+            "attempts": [_attempt("2026-10-01T00:00:00Z", None, 10, 100)],
+        }) + "\n")
+        result = subprocess.run(
+            [sys.executable, str(BENCHSTAT), "cache-ttl", "--input", str(path), "--json"],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert result.returncode == 0, result.stderr
+        table = json.loads(result.stdout)
+        assert table["profiles"]["claude-code"]["cost_5m"] == pytest.approx(12.5 + 10.0)

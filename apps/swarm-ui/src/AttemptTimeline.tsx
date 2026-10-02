@@ -1,12 +1,12 @@
 import { useCallback } from 'react'
-import { Chip, Em, Mark, attemptLabel, type ChipTone } from './AgentDetail'
+import { Chip, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
 import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
-import { TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, type TaskEvent } from './types'
+import { REASON_COPY, TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, type TaskEvent } from './types'
 
 /**
  * One task, attempt by attempt. Replaces the flat event list in the drawer, which
@@ -384,7 +384,15 @@ function AttemptCard({
           </ul>
         )}
 
-        {a?.error != null && <pre className="err full">{a.error}</pre>}
+        {/* A PARKED ATTEMPT'S `error` IS ITS PARK REASON, NOT A STDERR TAIL
+            (#163), so it does not go in the red `pre`. The token is already
+            in the chip; the line under it is the reason's copy, and only when
+            this screen has copy for it -- `reasonCopy`'s raw-token fallback
+            would print the chip's word a second time. */}
+        {a?.error != null && !isParked(a) && <pre className="err full">{a.error}</pre>}
+        {a !== null && isParked(a) && a.error != null && REASON_COPY[a.error] !== undefined && (
+          <p className="blocker-copy">{REASON_COPY[a.error]}</p>
+        )}
 
         {g.events.length === 0 && eventsRead && (
           <p className="att-none">
@@ -440,6 +448,13 @@ function AttemptCard({
  */
 function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
   if (a.exit_code === 0) return { label: 'exit 0', tone: 'ok' }
+  // PARKED IS NOT A FAILURE (#163). The worker ends a parked attempt with
+  // `exit_code: 75` and the ParkReason in `error`, and without this branch the
+  // line below drew it as `exit 75` in the failure tone -- a quota park read
+  // as a crash. `info` is the neutral bar: a fact about the attempt, not a
+  // verdict on it. The reason is printed verbatim, the token the platform
+  // wrote, as the detail pane prints `park_reason`.
+  if (isParked(a)) return parkedOutcome(a)
   // `bad`, not `.tag`'s `full`. `full` was a pool word borrowed for a failure
   // colour; the chip vocabulary names the thing it means, and `is-bad` is the
   // diamond -- the one mark on the screen with corners.

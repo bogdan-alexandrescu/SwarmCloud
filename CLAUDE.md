@@ -316,6 +316,14 @@ and waiting inside agents made lanes carry 300-500k tokens on every turn.
   and hand off to a fresh agent.
 * **Territory.** Stop and ask before editing a file your brief did not name. Keep
   scratch files under `scratchpad/<branch>/`.
+* **Nothing you add may look like a credential.** The worker refuses to publish a
+  diff whose added lines match its credential scan, after all the work is done
+  (3 of 6 lanes lost, 2026-10-02). Build every fake token, key or password at
+  runtime (`"sk-" + "x" * 40`, `secrets.token_hex`), never as one literal. Never
+  touch a secret-shaped `NAME = "..."` line you do not need to — a trailing comma
+  re-adds it. A SwarmCloud agent runs `scripts/publish-scan.sh` before finishing
+  and fixes every `path:line rule` it prints; a laptop lane leaves it to CI
+  (its push never meets the worker; CI's secret scan still reads it).
 * **One review, and only where it matters.** Credentials, tenant isolation,
   redaction and IAM get a review. It reports blockers and majors; minors go to the
   wave epic.

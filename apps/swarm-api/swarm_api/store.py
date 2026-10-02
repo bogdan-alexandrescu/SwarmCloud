@@ -296,6 +296,31 @@ class LeaseScan:
     active_beyond_window: int
 
 
+def _skipped_entries(value: Any) -> list[dict[str, Any]]:
+    """A stored `artifacts_skipped`, as `{name, cause}` entries.
+
+    The worker writes `{name, cause}` entries (#165) and the API serves them
+    in that shape (owner decision, 2026-10-02): one list, each name carrying
+    its own cause, rather than names with a side table a reader has to join.
+    A summary from before causes holds bare names, and Firestore keeps it;
+    those are served with `cause: None` -- unknown, not "no cause". Anything
+    else in the list is dropped rather than stringified into a fake name.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            cause = entry.get("cause")
+            out.append({"name": name, "cause": cause if isinstance(cause, str) and cause else None})
+        elif isinstance(entry, str):
+            out.append({"name": entry, "cause": None})
+    return out
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """What one task's `result_summary` says it wrote, unresolved.
@@ -322,7 +347,9 @@ class ArtifactManifest:
     """
 
     artifacts: list[dict[str, Any]]
-    skipped: list[str]
+    #: `{name, cause}` per skipped file (#165): `cap`, `upload_error`,
+    #: `refused`, or None for a name from a summary written before causes.
+    skipped: list[dict[str, Any]]
     artifact_bytes: Any
     complete: bool
     over_cap: int | None = None
@@ -1053,9 +1080,7 @@ class Store:
         entries = summary.get("artifacts")
         if not isinstance(entries, list):
             entries = []
-        skipped = summary.get("artifacts_skipped")
-        if not isinstance(skipped, list):
-            skipped = []
+        skipped = _skipped_entries(summary.get("artifacts_skipped"))
         # `result_summary` is written once, by `finish()`, at terminal state.
         # Until then "no artifacts yet" and "produced none" are the same empty
         # list, and only this flag tells them apart.
@@ -1067,7 +1092,7 @@ class Store:
             over_cap = 0
         return ArtifactManifest(
             artifacts=[dict(e) for e in entries if isinstance(e, dict)],
-            skipped=[str(name) for name in skipped],
+            skipped=skipped,
             artifact_bytes=summary.get("artifact_bytes"),
             complete=complete,
             over_cap=over_cap if complete else None,

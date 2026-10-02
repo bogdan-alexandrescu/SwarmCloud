@@ -59,6 +59,8 @@ Usage
     benchstat.py compare   --current SUMMARY.json --baseline BASELINE.json
                            [--thresholds THRESHOLDS.json] [--json]
     benchstat.py baseline  --current SUMMARY.json --output BASELINE.json
+    benchstat.py cache-ttl --input TASK_ATTEMPTS.jsonl [--read-multiplier 0.1]
+                           [--base-usd-per-mtok N] [--json]
     benchstat.py self-test
 
 `compare` exits 0 only when every verdict is `ok` or `new`.
@@ -623,6 +625,172 @@ def render(result: dict[str, Any]) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Prompt-cache TTL: a read-only cost table (#323)
+# ---------------------------------------------------------------------------
+
+#: Anthropic prompt-cache prices as multiples of a model's base input price:
+#: a write is 1.25x on the default 5-minute TTL and 2x on the 1-hour TTL. A
+#: read is 0.1x on most models but NOT all (0.05x on Claude Opus 5.5, 0.025x on
+#: Claude Fable 5.1), so the read multiplier is a parameter, not a constant.
+#: Multipliers rather than dollars so no per-model price is restated here to
+#: go stale; `--base-usd-per-mtok` converts when the operator supplies one.
+CACHE_WRITE_5M = 1.25
+CACHE_WRITE_1H = 2.0
+DEFAULT_CACHE_READ = 0.1
+
+#: The window where the 1-hour TTL can pay at all: a prefix re-used less than
+#: 5 minutes after its last use is still warm on the default TTL, and one
+#: re-used more than an hour later is cold on both.
+FIVE_MINUTES_S = 300.0
+ONE_HOUR_S = 3600.0
+
+
+def cache_ttl_break_even(read_multiplier: float = DEFAULT_CACHE_READ) -> float:
+    """The share of cache-write tokens 1h must turn into reads to cost no more.
+
+    5m: every write costs 1.25. 1h: every write costs 2.0, except a fraction f
+    that the longer TTL turns into reads at `r`. Equal when
+    2(1 - f) + r f = 1.25, so f = 0.75 / (2 - r): 39.5% at r = 0.1.
+    """
+    if not 0 <= read_multiplier < CACHE_WRITE_1H:
+        raise ValueError(f"read multiplier must be in [0, {CACHE_WRITE_1H}), got {read_multiplier}")
+    return (CACHE_WRITE_1H - CACHE_WRITE_5M) / (CACHE_WRITE_1H - read_multiplier)
+
+
+def _attempt_start(attempt: dict[str, Any]) -> float | None:
+    started = _epoch(attempt.get("started_at"))
+    return started if started is not None else _epoch(attempt.get("created_at"))
+
+
+def _tokens(value: Any) -> int | None:
+    if value is None or isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value)
+
+
+def cache_ttl_table(
+    tasks: Iterable[dict[str, Any]],
+    *,
+    read_multiplier: float = DEFAULT_CACHE_READ,
+    base_usd_per_mtok: float | None = None,
+) -> dict[str, Any]:
+    """Per runner profile: what the cache cost on 5m, and what 1h would have.
+
+    Input: one dict per task, `{"task_id", "runner_profile", "attempts": [...]}`
+    with each attempt as `GET /v1/tasks/{id}/attempts` serves it.
+
+    WHAT THIS CAN SEE, AND WHAT IT CANNOT. The platform records each attempt's
+    TOTAL cache writes and reads, not the per-request split by TTL or the gaps
+    between requests inside an attempt. So the table states two facts and one
+    bound, and never a "switch" verdict it cannot support:
+
+      * `cost_5m` -- the cache cost as billed, in base-input-token equivalents;
+      * `cost_1h_no_reuse` -- the same writes at 2x, the floor of the downside;
+      * `cross_attempt_write_share` -- the share of writes made by attempts
+        that started 5-60 minutes after the task's previous attempt ended:
+        a retry or a resume after a park, whose prefix a 1-hour entry could
+        still have held. An UPPER bound for that source, since not all of a
+        resumed attempt's writes are the earlier prefix, and blind to gaps
+        inside one attempt (a tool call that runs past five minutes).
+
+    An attempt that reports neither cache field is counted in `unreported`
+    and contributes nothing -- an unreported spend is not a zero spend.
+    """
+    break_even = cache_ttl_break_even(read_multiplier)
+    groups: dict[str, dict[str, Any]] = {}
+    for task in tasks:
+        profile = str(task.get("runner_profile") or "unknown")
+        g = groups.setdefault(profile, {
+            "tasks": 0, "attempts": 0, "reported": 0, "unreported": 0,
+            "writes": 0, "reads": 0, "cross_attempt_writes": 0, "gap_unknown": 0,
+        })
+        g["tasks"] += 1
+        attempts = [a for a in (task.get("attempts") or []) if isinstance(a, dict)]
+        attempts.sort(key=lambda a: (_attempt_start(a) is None, _attempt_start(a) or 0.0))
+        previous_end: float | None = None
+        for index, attempt in enumerate(attempts):
+            g["attempts"] += 1
+            w = _tokens(attempt.get("cache_creation_input_tokens"))
+            r = _tokens(attempt.get("cache_read_input_tokens"))
+            if w is None and r is None:
+                g["unreported"] += 1
+            else:
+                g["reported"] += 1
+                g["writes"] += w or 0
+                g["reads"] += r or 0
+                if index > 0 and w:
+                    start = _attempt_start(attempt)
+                    if start is None or previous_end is None:
+                        g["gap_unknown"] += 1
+                    elif FIVE_MINUTES_S < start - previous_end <= ONE_HOUR_S:
+                        g["cross_attempt_writes"] += w
+            previous_end = _epoch(attempt.get("completed_at"))
+
+    rows: dict[str, Any] = {}
+    for profile, g in sorted(groups.items()):
+        w, r, e = g["writes"], g["reads"], g["cross_attempt_writes"]
+        row: dict[str, Any] = dict(g)
+        if g["reported"] == 0:
+            row["status"] = "not_measured"
+            row["note"] = "no attempt reported cache tokens; nothing can be priced"
+            rows[profile] = row
+            continue
+        cost_5m = CACHE_WRITE_5M * w + read_multiplier * r
+        cost_1h_no_reuse = CACHE_WRITE_1H * w + read_multiplier * r
+        cost_1h_best = CACHE_WRITE_1H * (w - e) + read_multiplier * (e + r)
+        share = (e / w) if w else None
+        row.update({
+            "status": "ok",
+            "cost_5m": cost_5m,
+            "cost_1h_no_reuse": cost_1h_no_reuse,
+            "cost_1h_cross_attempt_best": cost_1h_best,
+            "cross_attempt_write_share": share,
+            "break_even_share": break_even,
+        })
+        if base_usd_per_mtok is not None:
+            for key in ("cost_5m", "cost_1h_no_reuse", "cost_1h_cross_attempt_best"):
+                row[key.replace("cost_", "usd_")] = row[key] * base_usd_per_mtok / 1e6
+        if not w:
+            row["note"] = "no cache writes: the TTL changes nothing"
+        elif share is not None and share >= break_even:
+            row["note"] = ("cross-attempt re-use alone could pay for 1h, if those writes are the "
+                           "earlier prefix; confirm with the per-TTL split before switching")
+        else:
+            row["note"] = ("cross-attempt re-use alone cannot pay for 1h; only gaps inside an "
+                           "attempt, which are not recorded, could")
+        rows[profile] = row
+    return {
+        "read_multiplier": read_multiplier,
+        "write_multipliers": {"5m": CACHE_WRITE_5M, "1h": CACHE_WRITE_1H},
+        "break_even_share": break_even,
+        "base_usd_per_mtok": base_usd_per_mtok,
+        "profiles": rows,
+    }
+
+
+def render_cache_ttl(table: dict[str, Any]) -> str:
+    lines = [
+        f"cache cost in base-input-token equivalents (writes 5m x{CACHE_WRITE_5M}, "
+        f"1h x{CACHE_WRITE_1H}, reads x{table['read_multiplier']}); 1h pays only if at least "
+        f"{table['break_even_share']:.1%} of writes become reads",
+        f"{'profile':<16} {'attempts':>8} {'unrep':>5} {'writes':>12} {'reads':>12} "
+        f"{'cost 5m':>12} {'1h no reuse':>12} {'1h best':>12} {'x-att share':>11}",
+    ]
+    for profile, r in table["profiles"].items():
+        if r["status"] != "ok":
+            lines.append(f"{profile:<16} {r['attempts']:>8} {r['unreported']:>5}  not measured: {r['note']}")
+            continue
+        share = "-" if r["cross_attempt_write_share"] is None else f"{r['cross_attempt_write_share']:.1%}"
+        lines.append(
+            f"{profile:<16} {r['attempts']:>8} {r['unreported']:>5} {r['writes']:>12} {r['reads']:>12} "
+            f"{r['cost_5m']:>12.0f} {r['cost_1h_no_reuse']:>12.0f} "
+            f"{r['cost_1h_cross_attempt_best']:>12.0f} {share:>11}"
+        )
+        lines.append(f"{'':<16} {r['note']}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -662,6 +830,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     p = sub.add_parser("baseline", help="record a summary as the new baseline")
     p.add_argument("--current", required=True)
     p.add_argument("--output", required=True)
+
+    p = sub.add_parser("cache-ttl", help="attempts.jsonl -> 5m vs 1h prompt-cache cost table")
+    p.add_argument("--input", required=True)
+    p.add_argument("--read-multiplier", type=float, default=DEFAULT_CACHE_READ)
+    p.add_argument("--base-usd-per-mtok", type=float)
+    p.add_argument("--json", action="store_true")
+    p.add_argument("--output")
 
     sub.add_parser("self-test", help="the engine's own assertions, offline")
 
@@ -723,6 +898,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             + (f", {len(dropped)} excluded as not measured: {', '.join(dropped)}" if dropped else "")
             + "\n"
         )
+        return 0
+
+    if args.command == "cache-ttl":
+        tasks = [
+            json.loads(line)
+            for line in Path(args.input).read_text().splitlines()
+            if line.strip()
+        ]
+        table = cache_ttl_table(
+            tasks,
+            read_multiplier=args.read_multiplier,
+            base_usd_per_mtok=args.base_usd_per_mtok,
+        )
+        text = (
+            json.dumps(table, indent=2, sort_keys=True) + "\n"
+            if args.json
+            else render_cache_ttl(table) + "\n"
+        )
+        _write(args.output, text)
         return 0
 
     if args.command == "self-test":

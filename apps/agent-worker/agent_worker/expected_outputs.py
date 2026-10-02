@@ -30,8 +30,9 @@ The owner chose option (b) on #149, and this module is the worker's half of it:
                           it passes the agent (`with_instructions`)
     worker, _finalise     names any that are missing, in one log line and in
                           result_summary[MISSING_SUMMARY_KEY], and, when the
-                          runner finished cleanly, FAILS THE ATTEMPT RETRYABLY
-                          with those names as its cause
+                          runner finished cleanly, FAILS THE ATTEMPT with
+                          those names as its cause: retryably only when a
+                          retry can produce them (#165, `retryable`)
 
 INSTRUCTIONS ALONE WERE MEASURED NOT TO BE ENOUGH. On the third run,
 `wf_06a3a949d2c242c3b0e9` (2026-09-25), every prompt named `$SWARM_ARTIFACTS_DIR`
@@ -48,7 +49,12 @@ A MISSING EXPECTED OUTPUT FAILS THE ATTEMPT, RETRYABLY (owner decision on
 shipped). The cause names the missing files. The task goes back to READY and
 is admitted again as a new attempt while it has attempts left, and ends FAILED
 once `max_attempts` is spent (`control.fail_retryably`), after which its
-dependants are cancelled like any failed parent's. Only an attempt whose runner
+dependants are cancelled like any failed parent's. NOT RETRIED when the cause
+is one a retry cannot change (#165, owner decision 2026-09-28): the artifact
+cap, a refused file, or a `swarm-work.patch` the harvest could not write (an
+empty diff, a patch over its cap, no clone base) end the task FAILED at once.
+Only a file never written, or one whose upload raised, is retried
+(`RETRYABLE_CAUSES`). Only an attempt whose runner
 finished cleanly is failed this way: a runner that failed, timed out or was
 stopped keeps its own cause, and the missing names are recorded beside it.
 
@@ -59,13 +65,12 @@ out). The dependant stages from the attempt that SUCCEEDS, so every expected
 output must be written again by the retry, not only the one that was missing.
 The agent is given the same instructions, which list every name.
 
-An attempt that is going to be retried PUBLISHES NOTHING, as a parked one does
-not: its work is not finished, and the retry publishes it. Published now, the
-retry would push again from the final checkpoint, which is taken before the
-publish step auto-commits the agent's uncommitted changes; when it did, the
-retry's commit does not descend from the pushed one and the push, which is
-never forced, is refused as a non-fast-forward. The last attempt publishes
-like any other failed attempt (`lifecycle._publish_withheld`).
+An attempt with a missing expected output PUBLISHES NOTHING, the last attempt
+included (#165): the push and the pull request wait until the upload manifest
+has passed this check (`lifecycle._publish_checked`), so an attempt that is
+failed or retried has pushed nothing. A retry's own push would otherwise be
+refused as a non-fast-forward: the final checkpoint is taken before the publish
+step auto-commits the agent's uncommitted changes.
 
 A NAME THE PLATFORM WRITES ITSELF IS NEVER IN THE INSTRUCTIONS
 (`without_platform_names`). A dependant may stage the upstream's
@@ -104,7 +109,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
@@ -129,6 +134,10 @@ METADATA_KEY = "expected_outputs"
 #: The key in `task.result_summary` that names the expected outputs this attempt
 #: did not upload. Present only when at least one is missing.
 MISSING_SUMMARY_KEY = "expected_outputs_missing"
+
+#: Beside it, `[{name, cause}]` for the same names, in the same order (#165):
+#: why each is missing, one of the `CAUSE_*` values below.
+MISSING_CAUSES_SUMMARY_KEY = "expected_outputs_missing_causes"
 
 
 @dataclass(frozen=True)
@@ -348,29 +357,129 @@ def missing_outputs(names: Sequence[str], produced: Iterable[str]) -> list[str]:
     return [name for name in names if name not in have]
 
 
-def missing_cause(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
-    """Which files are missing, and in which way. The cause a retry names.
+#: WHY a file in `$SWARM_ARTIFACTS_DIR` was not uploaded, or an expected one is
+#: missing (#165, owner decision 2026-09-28). `_upload_outputs` records one per
+#: skipped file in `result_summary.artifacts_skipped`, and the missing-output
+#: check reads it to decide whether a retry can help.
+#:
+#: The artifact cap (bytes, or the file-count cap) and a file refused at read
+#: (a link, an unstorable or over-long name): the next attempt writes the same
+#: file into the same cap. `swarm-work.patch` the harvest did not write: the
+#: diff was empty, it was over the patch cap and discarded, or there was no
+#: clone base to diff against. Each is a property of the work or the
+#: repository, which a retry restores unchanged.
+CAUSE_CAP = "cap"
+CAUSE_REFUSED = "refused"
+CAUSE_EMPTY_DIFF = "empty_diff"
+CAUSE_PATCH_OMITTED = "patch_omitted"
+CAUSE_NO_BASE = "no_base"
+#: The two a retry CAN change: the store raised on the upload, or the file was
+#: never written. Only these leave a missing output retryable.
+CAUSE_UPLOAD_ERROR = "upload_error"
+CAUSE_NOT_WRITTEN = "not_written"
+RETRYABLE_CAUSES = frozenset({CAUSE_UPLOAD_ERROR, CAUSE_NOT_WRITTEN})
 
-    A file that was written but not uploaded is named separately, because the
-    remedy is different: it is the artifact cap or an upload error, not the
-    agent's prompt. `inputs.artifact_reference` makes the same distinction on
-    the dependant's side.
+#: `task.result_summary.artifacts_skipped` entries are `{name, cause}` (#165,
+#: owner decision 2026-09-28), one per skipped name, capped at 50. A summary
+#: written before causes were recorded holds bare names, and Firestore keeps
+#: those documents, so every reader goes through the two functions below,
+#: which accept both. swarm-api normalises the same way before it answers, and
+#: keeps its HTTP `artifacts_skipped` a list of names (with the causes beside
+#: it as `artifacts_skipped_causes`), so no API client changes shape.
+def skipped_entries(value: Any) -> list[tuple[str, str | None]]:
+    """`(name, cause)` for each entry of a stored `artifacts_skipped`.
+
+    A legacy bare-name entry has cause None: the attempt that wrote it did not
+    say why, and guessing the cap is the assumption #165 removed.
     """
-    skipped_set = set(skipped)
-    over_cap = [name for name in missing if name in skipped_set]
-    absent = [name for name in missing if name not in skipped_set]
-    parts: list[str] = []
-    if absent:
-        parts.append(
-            "not written to $SWARM_ARTIFACTS_DIR: " + ", ".join(absent)
-        )
-    if over_cap:
-        parts.append("written but not uploaded: " + ", ".join(over_cap))
-    return "; ".join(parts)
+    if not isinstance(value, list):
+        return []
+    out: list[tuple[str, str | None]] = []
+    for entry in value:
+        if isinstance(entry, str):
+            out.append((entry, None))
+        elif isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            cause = entry.get("cause")
+            out.append((entry["name"], cause if isinstance(cause, str) and cause else None))
+    return out
+
+
+def skipped_names(value: Any) -> list[str]:
+    """The names in a stored `artifacts_skipped`, whichever shape wrote it."""
+    return [name for name, _ in skipped_entries(value)]
+
+#: What each cause says, in a missing-output cause and a dependant's refusal.
+_CAUSE_TEXT = {
+    CAUSE_NOT_WRITTEN: "not written to $SWARM_ARTIFACTS_DIR",
+    CAUSE_CAP: "written but not uploaded: over the artifact cap (cap)",
+    CAUSE_UPLOAD_ERROR: "written but not uploaded: the upload failed (upload_error)",
+    CAUSE_REFUSED: (
+        "written but not uploaded: refused when read -- a link, not a regular "
+        "file, or a name no object can carry (refused)"
+    ),
+    CAUSE_EMPTY_DIFF: "not written: the agent's diff was empty (empty_diff)",
+    CAUSE_PATCH_OMITTED: (
+        "not written: the diff was over the patch cap and was discarded (patch_omitted)"
+    ),
+    CAUSE_NO_BASE: "not written: there is no clone base to diff against (no_base)",
+}
+
+
+def cause_text(cause: str) -> str:
+    """One cause, as the phrase a log line, an error and a refusal use."""
+    return _CAUSE_TEXT.get(cause, f"not uploaded ({cause})")
+
+
+def patch_cause(git: Any) -> str | None:
+    """Why the harvest wrote no `swarm-work.patch`, from `result_summary["git"]`.
+
+    None when the harvest failed (its `error`), which a retry may not meet, and
+    when it did write one. No harvest at all (no repository) is `no_base`:
+    there is nothing a patch could be taken against, on this attempt or the next.
+    """
+    if git is None:
+        return CAUSE_NO_BASE
+    if not isinstance(git, dict) or git.get("error"):
+        return None
+    if git.get("patch"):
+        return None
+    if git.get("patch_omitted"):
+        return CAUSE_PATCH_OMITTED
+    if not git.get("base"):
+        return CAUSE_NO_BASE
+    return CAUSE_EMPTY_DIFF
+
+
+def causes_of(missing: Sequence[str], causes: Mapping[str, str]) -> dict[str, str]:
+    """Each missing name with its cause; a name with none recorded was not written."""
+    return {name: causes.get(name, CAUSE_NOT_WRITTEN) for name in missing}
+
+
+def retryable(missing: Sequence[str], causes: Mapping[str, str]) -> bool:
+    """Whether a retry can produce every missing name (#165).
+
+    False as soon as ONE of them has a cause a retry cannot change: the
+    dependant needs every file, so a retry that can at best write the others
+    still leaves it without one.
+    """
+    return all(cause in RETRYABLE_CAUSES for cause in causes_of(missing, causes).values())
+
+
+def missing_cause(missing: Sequence[str], *, causes: Mapping[str, str] | None = None) -> str:
+    """Which files are missing, and why. The cause a failed attempt names.
+
+    Grouped by cause, in the order of `missing`, so a file the cap kept out is
+    never described as one the agent did not write: the remedy is different
+    (`inputs.artifact_reference` says the same thing on the dependant's side).
+    """
+    grouped: dict[str, list[str]] = {}
+    for name, cause in causes_of(missing, causes or {}).items():
+        grouped.setdefault(cause, []).append(name)
+    return "; ".join(f"{cause_text(cause)}: " + ", ".join(names) for cause, names in grouped.items())
 
 
 def missing_line(
-    missing: Sequence[str], *, skipped: Iterable[str] = (), consequence: str = ""
+    missing: Sequence[str], *, causes: Mapping[str, str] | None = None, consequence: str = ""
 ) -> str:
     """One log line naming the missing files, and what that costs this attempt.
 
@@ -380,18 +489,28 @@ def missing_line(
     """
     line = (
         "expected outputs missing, so a later step that stages them would fail ("
-        + missing_cause(missing, skipped=skipped)
+        + missing_cause(missing, causes=causes)
         + ")."
     )
     return f"{line} {consequence}" if consequence else line
 
 
-def missing_error(missing: Sequence[str], *, skipped: Iterable[str] = ()) -> str:
-    """`last_error` for an attempt failed for missing expected outputs."""
+def missing_error(missing: Sequence[str], *, causes: Mapping[str, str] | None = None) -> str:
+    """`last_error` for an attempt failed for missing expected outputs.
+
+    Says whether it is retried, from the causes (`retryable`).
+    """
+    known = causes or {}
+    head = "expected outputs missing (" + missing_cause(missing, causes=known) + "). "
+    if retryable(missing, known):
+        return (
+            head
+            + "A later step of this workflow stages them from this task, so the "
+            "attempt failed; it is retried while the task has attempts left, and "
+            "the retry must write every expected output again."
+        )
     return (
-        "expected outputs missing ("
-        + missing_cause(missing, skipped=skipped)
-        + "). A later step of this workflow stages them from this task, so the "
-        "attempt failed; it is retried while the task has attempts left, and "
-        "the retry must write every expected output again."
+        head
+        + "A later step of this workflow stages them from this task, and another "
+        "attempt would meet the same cause, so the task failed without a retry."
     )

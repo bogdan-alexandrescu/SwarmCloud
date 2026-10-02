@@ -317,8 +317,10 @@ def list_artifacts(
     `complete` is the field that stops an empty list being read as an answer: it
     is false until the task reaches a terminal state and the worker writes its
     result summary, so "no artifacts yet" and "this task produced none" are
-    distinguishable. `artifacts_skipped` names the files the worker dropped at
-    the size cap, for the same reason, and `artifacts_over_cap` counts the files
+    distinguishable. `artifacts_skipped` lists the files the worker wrote and
+    did not upload, for the same reason, as `{name, cause}` entries: the cause
+    the worker recorded (`cap`, `upload_error`, `refused`; #165), or null for
+    a name from an older summary. `artifacts_over_cap` counts the files
     past the 500-file cap (#227): null until `complete`, 0 when none were.
     `complete` alone does not mean nothing was left out.
 

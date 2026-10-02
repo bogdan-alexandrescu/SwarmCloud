@@ -36,6 +36,10 @@ output "firestore_database" {
   value = module.firestore.database_name
 }
 
+output "firestore_bench_database" {
+  value = module.firestore.bench_database_name
+}
+
 output "firestore_indexes" {
   value = module.firestore.index_names
 }

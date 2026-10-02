@@ -289,18 +289,34 @@ first alone was measured not to be enough.
    `work/repo/artifacts` as well, hidden from git with the clone's
    `.git/info/exclude` so it never reaches the agent's diff; see
    [agent-output.md](agent-output.md) for when it is not made.
-3. **A missing expected output fails the attempt, retryably** (owner decision
-   on #149, 2026-09-25). If an attempt's runner finishes cleanly and one of its
-   expected outputs was not uploaded, the attempt FAILS with the missing names
-   as its cause, in `last_error`, in `result_summary.expected_outputs_missing`,
-   in one log line and in a `retrying` event. The cause says whether the file
-   was never written, or was written and not uploaded (the artifact cap). The
-   task goes back to READY and runs again as a new attempt while it has
-   attempts left, and ends FAILED once `max_attempts` is spent, which cancels
-   its dependants as any failed parent does. A requested cancel still ends it
-   CANCELLED. **A dependant therefore never starts on a parent that did not
-   write what it promised.** A runner that fails, times out or is stopped
-   keeps its own cause, and the missing names are recorded next to it.
+3. **A missing expected output fails the attempt** (owner decision on #149,
+   2026-09-25), **retryably only when a retry can help** (#165, 2026-09-28).
+   If an attempt's runner finishes cleanly and one of its expected outputs was
+   not uploaded, the attempt FAILS with the missing names as its cause, in
+   `last_error`, in `result_summary.expected_outputs_missing` (and, name by
+   name, `expected_outputs_missing_causes`) and in one log line. The worker
+   records WHY each file it did not upload was skipped: each
+   `result_summary.artifacts_skipped` entry is `{name, cause}` (a summary
+   from before #165 holds bare names, and every reader accepts both; the
+   API's artifact listing serves the same `{name, cause}` entries, a bare
+   name as `cause: null`), and the cause decides:
+   * **not retried** -- `cap` (the artifact byte or file cap), `refused` (a
+     link, not a regular file, or a name no object can carry), and for
+     `swarm-work.patch` `empty_diff`, `patch_omitted` (over the patch cap) or
+     `no_base`. The next attempt would write the same file into the same cap,
+     against the same repository, so the task ends FAILED at once, with
+     `end_cause: outputs_missing`, whatever attempts are left;
+   * **retried** -- a file never written (`not_written`), or one whose upload
+     raised (`upload_error`). The task goes back to READY, with a `retrying`
+     event, and runs again as a new attempt while it has attempts left, and
+     ends FAILED once `max_attempts` is spent.
+
+   Either way a FAILED parent cancels its dependants as any failed parent
+   does, and a requested cancel still ends it CANCELLED. **A dependant
+   therefore never starts on a parent that did not write what it promised.**
+   A runner that fails, times out or is stopped keeps its own cause, and the
+   missing names are recorded next to it. A dependant that tries to stage a
+   skipped file is told the cause the parent recorded, not an assumed cap.
 
 None of this makes an agent write the file; the third layer makes it cost at
 most `max_attempts` upstream attempts instead of the rest of the workflow. A
@@ -310,13 +326,22 @@ prompt that names the file and the directory as well does no harm.
 the checkpoint the failed attempt took as it ended, and only `work/` is
 checkpointed. So the retry must write every expected output again, not only the
 one that was missing. The agent is given the same instructions, which list every
-name. **An attempt that is going to be retried publishes nothing**, as a parked
-attempt does not: its work is not finished. Published, the retry's own push
-could be refused as a non-fast-forward, because the final checkpoint is taken
-before the publish step auto-commits the agent's changes. The last attempt
-publishes like any other failed one. A file that was written and then not
-uploaded (the cap, an upload error) is found missing only after the publish
-step, so that attempt has published and is still retried.
+name.
+
+**Nothing is published until the upload manifest has passed the check**
+(#165, owner decision 2026-09-28). The worker harvests the repository and
+uploads the artifacts first; the push and the pull request are made only
+after the missing-output check has found every expected output in the
+manifest. An attempt that is then failed or retried -- the last attempt
+included -- has pushed nothing and opened no pull request; its
+`result_summary.git.publish_reason` says why. Before this the publish ran
+first, from a listing of the directory, so a file present and then not
+uploaded (the cap, an upload error) left a branch and a pull request behind an
+attempt the check then failed, and the last attempt published whatever it
+had. A step with `carrier: branches` still pushes its committed work at each
+checkpoint taken after its runner stopped (the carrier, not the publish; see
+[design/dispatch-and-integration.md](design/dispatch-and-integration.md)
+4.3), so its branch can hold the work of an attempt that then failed.
 
 **`metadata.expected_outputs` belongs to the service.** A caller cannot set it:
 `POST /v1/tasks`, `POST /v1/tasks/batch`, or a workflow whose own `metadata`
@@ -339,12 +364,16 @@ What this deliberately does not do:
   task with no repository does upload what its agent created there (#184),
   for a reader of the Artifacts tab, under `workdir/<path>`, which is not the
   name a dependant stages.
-* **It does not carry the artifacts directory across a park or a retry.** Only
-  `work/` is checkpointed, and a resumed attempt starts with an empty artifacts
-  directory. A dependant stages from the attempt that SUCCEEDED, so a file
-  written before a park and not written again after the resume is missing, and
-  that attempt fails for it, retryably. That was already true of
-  `$SWARM_ARTIFACTS_DIR`; the link extends it to `./artifacts`.
+* **It does not carry the artifacts directory across a retry.** Only `work/`
+  is checkpointed, and a resumed attempt starts with an empty artifacts
+  directory. A PARK is different (#166, owner decision 2026-09-28): a parked
+  attempt uploads what its agent wrote, and the attempt that finishes lists
+  those uploads it did not replace in its own `result_summary.artifacts`, BY
+  REFERENCE -- `{name, bytes, uri: <the parked attempt's object>,
+  carried_from: <its attempt id>}`, nothing downloaded again. They count as
+  present for the check, a dependant stages them from the parked attempt's
+  object, and a name the finishing attempt uploaded itself wins. An attempt
+  that failed retryably carries nothing forward.
 * **It does not tell a retry which file it left out.** The retried agent gets
   the same prompt and the same list, which names every expected output.
 
