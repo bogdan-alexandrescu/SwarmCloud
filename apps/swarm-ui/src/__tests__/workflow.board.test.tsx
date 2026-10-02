@@ -10,17 +10,15 @@
 //
 // THE FOUR CLAIMS:
 //
-//  1. The COLLAPSED row tells a fan-out from a chain. Five steps in parallel
-//     and five steps in a line have the same id, the same state, the same
-//     fraction done and the same spend; if the row draws them identically it
-//     has thrown away the only field that is not recoverable from the others.
+//  1. The list row tells a fan-out from a chain (moved to workflow.v2.test.tsx
+//     with the rebrand, 2026-10-01, when the board's own row was removed).
 //  2. A step that HAS NOT STARTED shows an absence, never `0s`. And the other
 //     half of the same rule, which is the half that gets lost while fixing the
 //     first: a step that really did take zero seconds shows the digit `0`.
 //  3. An expanded node still carries the NAME, the STATUS and the RUNNER
 //     PROFILE -- the three facts it has always carried.
 //  4. Spend that nobody reported reads "not reported", never `$0.00`; a
-//     reported zero reads as a number.
+//     reported zero reads as a number (on the list row: workflow.v2.test.tsx).
 
 import STYLES from '../styles.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -205,13 +203,11 @@ function pinTheClock(): void {
 function CardHarness({
   workflow,
   taskById,
-  expanded,
   cardKey = 0,
   zoom = 'auto',
 }: {
   workflow: Workflow
   taskById: Map<string, Task> | null
-  expanded: boolean
   cardKey?: number
   /** The semantic-zoom tier to start at. `auto` is what the board lands on and
    *  is what every case that is not specifically about the zoom uses. */
@@ -229,7 +225,6 @@ function CardHarness({
       key={cardKey}
       workflow={workflow}
       taskById={taskById}
-      expanded={expanded}
       zoom={choice}
       onZoom={(_id, next) => setChoice(next)}
       // `ready` with a null usage is "the attempt read landed and this board
@@ -237,7 +232,6 @@ function CardHarness({
       // not `reading`, which would put every figure behind a placeholder and
       // make the assertions below pass for the wrong reason.
       usage={{ kind: 'ready', usage: null }}
-      onToggle={noop}
       openStages={stages}
       onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
       reload={noop}
@@ -248,11 +242,10 @@ function CardHarness({
 function card(
   w: Workflow,
   taskById: Map<string, Task> | null = new Map(),
-  expanded = false,
   zoom: 'auto' | ZoomTier = 'auto',
 ) {
   return render(
-    <CardHarness workflow={w} taskById={taskById} expanded={expanded} zoom={zoom} />,
+    <CardHarness workflow={w} taskById={taskById} zoom={zoom} />,
   )
 }
 
@@ -289,147 +282,22 @@ function withStyles(): HTMLStyleElement {
 }
 
 // ---------------------------------------------------------------------------
-// 1. The collapsed row carries the topology
+// 1. The list lands without a canvas
 // ---------------------------------------------------------------------------
 
-describe('the collapsed row', () => {
-  it('distinguishes a fan-out from a chain', () => {
-    const a = card(chain())
-    const chainBar = a.container.querySelector('.wf-bar')!
-    const b = card(fanOut())
-    const fanBar = b.container.querySelector('.wf-bar')!
-
-    // The widths, in words. This is the part a screen reader gets.
-    expect(chainBar.textContent).toContain('1 → 1 → 1')
-    expect(fanBar.textContent).toContain('1 → 5 → 1')
-    expect(chainBar.textContent).not.toContain('1 → 5 → 1')
-
-    // NO DRAWING ON THIS ROW ANY MORE. The mini-map was a ~60px thumbnail of
-    // the DAG, and at that size a six-node graph is a smudge -- it took the
-    // width a legible fact could have used and gave back a picture nobody can
-    // read. The graph is what EXPANDING is for, and the expanded canvas is
-    // pinned by 'draws a real edge for every real dependency' below.
-    expect(chainBar.querySelector('.wf-mini')).toBeNull()
-    expect(fanBar.querySelector('.wf-mini')).toBeNull()
-
-    // So the shape text above is the whole of the collapsed row's claim about
-    // topology, and it has to carry the distinction on its own. It does: the
-    // widths differ, and the hover sentence names the kind.
-    const shapeTitle = (bar: Element) =>
-      bar.querySelector('.wf-shape')!.getAttribute('title') ?? ''
-    expect(shapeTitle(chainBar)).toMatch(/chain/i)
-    expect(shapeTitle(fanBar)).toMatch(/fan-out|join/i)
-  })
-
-  it('names the shape in words a reader can hover', () => {
-    const a = card(chain())
-    expect(a.container.querySelector('.wf-shape')!.getAttribute('title')).toContain('chain')
-    const b = card(fanOut())
-    const label = b.container.querySelector('.wf-shape')!.getAttribute('title')!
-    expect(label).toContain('parallel')
-    expect(label).toContain('converge')
-  })
-
-  it('carries the id, the derived state and the progress on one line', () => {
-    const { container } = card(chain())
-    const bar = container.querySelector('.wf-bar')!
-    expect(bar.querySelector('.id')!.textContent).toBe('wf_chain')
-    expect(bar.querySelector('.wf-state')!.textContent).toContain('running')
-    expect(bar.querySelector('.wf-progress-text')!.textContent).toContain('1/3 done')
-    // One row, one bar: the graph is NOT drawn until it is opened.
-    expect(container.querySelector('.wf-canvas')).toBeNull()
-  })
-
-  it('draws NO FILL over a rollup the server could not complete, and hatches the track', () => {
-    // RE-POINTED, and it pins a STRONGER claim than it used to.
-    //
-    // WHAT MOVED. This asserted `.wf-meter` was absent and that the amber
-    // words read `2 of 3 steps: state unread`. Drawing no track at all was a
-    // defect at 390px: `.wf-progress-text` is one of the columns that drops
-    // below 560px, so a workflow whose census could not be read rendered an
-    // EMPTY CELL on a phone -- the strongest available way of saying "nothing
-    // is wrong here". The track is now drawn and HATCHED, which is
-    // design-system.md §6.4's `.is-unknown`: no fill and no axis, because
-    // there is no scale to start.
-    //
-    // WHERE THE WORDS WENT. `state unread` is still on the surface, in
-    // `.wf-progress-text`, shortened to `steps unread` -- the colon and the
-    // restatement were the only part a reader could not get from the hatch.
-    // The sentence that explains WHY is the track's `aria-label`, and the
-    // argument is at `#help/read-failed`.
-    //
-    // WHAT IS PINNED, and it is the half that carries the invariant: the
-    // track exists, it is hatched, and NO FILL ELEMENT IS RENDERED. A fill
-    // would be a width, and a width is a measurement of a census that failed.
-    const w = workflow('wf_partial', chain().steps, {
-      rollup: {
-        state: 'UNKNOWN',
-        complete: false,
-        reason: 'step_read_budget_exhausted',
-        counts: {},
-        unreadable_steps: ['build', 'ship'],
-        unstarted_steps: [],
-        steps_read: 1,
-      },
-    })
-    const { container } = card(w)
-    const meter = container.querySelector('.wf-meter')!
-    expect(meter, 'no track is drawn at all, so a phone shows an empty cell').toBeTruthy()
-    expect(meter.className).toContain('is-unknown')
-    // The shared primitive draws it, so the hatch and the missing axis are one
-    // rule rather than a second hand-rolled bar (§6.4).
-    expect(meter.className).toContain('ctl-track')
-    expect(
-      meter.querySelector('.wf-meter-fill'),
-      'a fill was rendered over a census the server could not complete',
-    ).toBeNull()
-    expect(container.querySelector('.wf-progress.untrusted')!.textContent).toBe(
-      '2 of 3 steps unread',
-    )
-    // No digit may reach the reader as a proportion: the only figures here are
-    // the counts, which were read off an array and are exact.
-    expect(meter.getAttribute('style')).toBeNull()
-    // And the sentence is reachable without a mouse.
-    expect(meter.getAttribute('aria-label')).toContain('not a stalled workflow')
-  })
-
-  it('opens on click and closes again', () => {
-    function Harness() {
-      const [open, setOpen] = useState(false)
-      const [stages, setStages] = useState<Record<string, boolean>>({})
-      return (
-        <WorkflowCard
-          workflow={fanOut()}
-          taskById={new Map()}
-          expanded={open}
-          usage={{ kind: 'ready', usage: null }}
-          onToggle={(_id, was) => setOpen(!was)}
-          openStages={stages}
-          onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
-          reload={noop}
-        />
-      )
-    }
-    const { container } = render(<Harness />)
-    const bar = container.querySelector('.wf-bar')!
-    expect(bar.getAttribute('aria-expanded')).toBe('false')
-    expect(container.querySelector('.wf-canvas')).toBeNull()
-
-    fireEvent.click(bar)
-    expect(bar.getAttribute('aria-expanded')).toBe('true')
-    expect(container.querySelector('.wf-canvas')).toBeTruthy()
-
-    fireEvent.click(bar)
-    expect(container.querySelector('.wf-canvas')).toBeNull()
-  })
-
-  it('is what the board lands on, before anything is clicked', async () => {
-    // Through the real screen and the real fixture, so "collapsed by default"
-    // is a property of the product rather than of a prop passed in a test.
+describe('the list', () => {
+  it('V2: /workflows lands on the full-width list, one row per workflow and no canvas', async () => {
+    // Workflows V2 (owner's pick, 2026-10-01): the console's /workflows is the
+    // list; a workflow's graph is on its own page.
     render(<WorkflowsScreen />)
     await screen.findByText('wf_audit_01', {}, { timeout: 4000 })
-    await waitFor(() => expect(document.querySelectorAll('.wf-bar').length).toBeGreaterThan(0))
+    const rows = document.querySelectorAll('.wfl-table tbody tr')
+    expect(rows.length).toBeGreaterThan(0)
     expect(document.querySelector('.wf-canvas')).toBeNull()
+    // Each row links to that workflow's page.
+    const row = document.querySelector('.wfl-table tr[data-workflow="wf_audit_01"]')
+    expect(row, 'no row for wf_audit_01').toBeTruthy()
+    expect(row!.querySelector('.wfl-name > a')?.getAttribute('href')).toBe('/workflows/wf_audit_01')
   })
 })
 
@@ -513,7 +381,7 @@ describe('how long a step has taken', () => {
 
   it('shows an ABSENCE for a step that has not started, and never 0s', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true, 'details')
+    const { container } = card(w, tasks, 'details')
     const publish = nodeNamed(container, 'publish')
     const dur = publish.querySelector('.node-dur')!
 
@@ -527,7 +395,7 @@ describe('how long a step has taken', () => {
 
   it('shows a MEASURED zero as a digit, which is the half that gets lost', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true, 'details')
+    const { container } = card(w, tasks, 'details')
     const dur = nodeNamed(container, 'instant').querySelector('.node-dur')!
     expect(dur.textContent).toBe('ran 0s')
     expect(dur.className).toContain('is-ran')
@@ -535,7 +403,7 @@ describe('how long a step has taken', () => {
 
   it('keeps waiting, running, parked and finished as four different things', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true, 'details')
+    const { container } = card(w, tasks, 'details')
     const text = (name: string) => nodeNamed(container, name).querySelector('.node-dur')!.textContent
 
     // The measured run this was designed against: five parallel steps each
@@ -559,7 +427,7 @@ describe('how long a step has taken', () => {
     // A task_id with no task behind it. Its timings were not looked at, which
     // is not the same as its having taken no time.
     const w = workflow('wf_unread', [step('ghost', [], { task_id: 'task_missing' })])
-    const { container } = card(w, new Map(), true, 'details')
+    const { container } = card(w, new Map(), 'details')
     const dur = nodeNamed(container, 'ghost').querySelector('.node-dur')!
     expect(dur.textContent).toBe('duration unread')
     expect(dur.textContent).not.toMatch(/\d/)
@@ -589,7 +457,7 @@ describe('the expanded canvas', () => {
       i === 1 ? { ...s, task_id: 'task_scan_a' } : s,
     )
     tasks.set('task_scan_a', task('task_scan_a', 'RUNNING', { started_at: iso(-92_000) }))
-    const { container } = card({ ...w, steps }, tasks, true)
+    const { container } = card({ ...w, steps }, tasks)
     // FIVE PARALLEL STEPS ARE NO LONGER A BAND, AND THAT IS SEMANTIC ZOOM.
     // They were: five is one over `STAGE_FITS`, so this canvas used to land with
     // that stage collapsed and this test used to open it. Five `details` nodes
@@ -620,7 +488,7 @@ describe('the expanded canvas', () => {
   })
 
   it('draws a real edge for every real dependency', () => {
-    const { container } = card(fanOut(), new Map(), true)
+    const { container } = card(fanOut(), new Map())
     const edges = container.querySelectorAll('.wf-edge')
     expect(edges).toHaveLength(10)
     for (const e of edges) expect(e.getAttribute('d')).toMatch(/^M [\d.]+ [\d.]+ C /)
@@ -638,7 +506,7 @@ describe('the expanded canvas', () => {
     // collapsed stage has none, so all 26 of these vanished. Both endpoints
     // resolve through the STEP, and a step in a band attaches to the band.
     const { w, tasks } = wideStage(13)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     expect(container.querySelector('.wf-band')).toBeTruthy()
     expect(container.querySelectorAll('.node')).toHaveLength(2)
     // 13 into `report` and 13 out of `plan`, none of which has a node at
@@ -680,9 +548,7 @@ describe('the expanded canvas', () => {
         <WorkflowCard
           workflow={{ ...w, steps }}
           taskById={tasks}
-          expanded
           usage={{ kind: 'ready', usage: null }}
-          onToggle={noop}
           openStages={stages}
           onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
           loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
@@ -694,7 +560,7 @@ describe('the expanded canvas', () => {
     // Drawn at the `details` tier rather than collapsed -- see the first case in
     // this block.
     expect(container.querySelectorAll('.node')).toHaveLength(7)
-    const before = window.location.hash
+    const before = window.location.href
     const node = nodeNamed(container, 'scan-a')
     // A CONTROL, NOT A LINK: nothing on the card navigates.
     expect(node.tagName, 'the node is still a link that leaves the workflow').toBe('BUTTON')
@@ -705,7 +571,7 @@ describe('the expanded canvas', () => {
     expect(container.querySelector('.wf-inspect')).toBeNull()
 
     fireEvent.click(node)
-    expect(window.location.hash, 'clicking a node navigated').toBe(before)
+    expect(window.location.href, 'clicking a node navigated').toBe(before)
     expect(nodeNamed(container, 'scan-a').getAttribute('aria-pressed')).toBe('true')
     const inspector = container.querySelector<HTMLElement>('.wf-inspect')
     expect(inspector, 'clicking a node did not fill the inspector').toBeTruthy()
@@ -743,7 +609,7 @@ describe('the expanded canvas', () => {
    * positions now that the node is an anchor with a sibling stop control.
    */
   it('lays the levels out in dependency order, top to bottom', () => {
-    const { container } = card(fanOut(), new Map(), true)
+    const { container } = card(fanOut(), new Map())
     // NOTHING TO OPEN, AND THE PROPERTY IS UNCHANGED. The five parallel steps
     // are drawn at the `details` tier now rather than collapsed into a band, and
     // neither zoom nor collapsing is allowed to change WHERE they sit: the flow
@@ -839,7 +705,7 @@ describe('a stage too wide to draw', () => {
 
   it('never draws a stage wider than the column the canvas has', () => {
     const { w, tasks } = wideStage(13)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const canvas = container.querySelector<HTMLElement>('.wf-canvas')!
     const drawn = Number.parseFloat(canvas.style.width)
 
@@ -879,7 +745,7 @@ describe('a stage too wide to draw', () => {
       null,
     ]
     const { w, tasks } = wideStage(13, states)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const band = container.querySelector('.wf-band')!
 
     expect(band.querySelector('.wf-band-n')!.textContent).toBe('13 steps')
@@ -898,7 +764,7 @@ describe('a stage too wide to draw', () => {
     states[7] = 'FAILED'
     states[11] = 'CANCELLED'
     const { w, tasks } = wideStage(13, states)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const band = container.querySelector('.wf-band')!
 
     // FIRST, not merely present. `.wf-band-counts` clips rather than wraps --
@@ -910,13 +776,14 @@ describe('a stage too wide to draw', () => {
     // Visually distinguishable WITHOUT being expanded and without being read:
     // somebody scanning for what broke must not have to open four bands.
     expect(band.className).toContain('has-failure')
-    // And not by colour alone.
-    expect(band.querySelector('.wf-band-count.is-bad .ctl-dot.is-bad')).toBeTruthy()
+    // And not by colour alone: the brand's failed mark (the solid diamond),
+    // in the failure hue (marks.tsx; rebrand 2026-10-01).
+    expect(band.querySelector('.wf-band-count.is-bad [data-mark="failed"][data-hue="bad"]')).toBeTruthy()
     expect(band.getAttribute('aria-label')).toContain('1 failed and 1 cancelled.')
 
     // THE MODIFIER MEANS SOMETHING ONLY IF A CLEAN STAGE DOES NOT CARRY IT.
     const clean = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
-    const b = card(clean.w, clean.tasks, true)
+    const b = card(clean.w, clean.tasks)
     const cleanBand = b.container.querySelector('.wf-band')!
     expect(cleanBand.className).not.toContain('has-failure')
     expect(cleanBand.getAttribute('aria-label')).toContain(
@@ -928,7 +795,7 @@ describe('a stage too wide to draw', () => {
     // Every fan step carries a task id and the task read returned nothing for
     // any of them -- the partial-read case this whole screen is built around.
     const { w } = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
-    const { container } = card(w, new Map(), true)
+    const { container } = card(w, new Map())
     const band = container.querySelector('.wf-band')!
     const label = band.getAttribute('aria-label')!
 
@@ -946,7 +813,7 @@ describe('a stage too wide to draw', () => {
 
   it('is a button with aria-expanded, and names what it controls once open', () => {
     const { w, tasks } = wideStage(13)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const band = () => container.querySelector<HTMLButtonElement>('.wf-band')!
 
     expect(band().tagName).toBe('BUTTON')
@@ -974,7 +841,7 @@ describe('a stage too wide to draw', () => {
   it('keeps a stage open across a remount of the card', () => {
     const { w, tasks } = wideStage(13)
     const { container, rerender } = render(
-      <CardHarness workflow={w} taskById={tasks} expanded cardKey={0} />,
+      <CardHarness workflow={w} taskById={tasks} cardKey={0} />,
     )
     fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-band')!)
     expect(container.querySelectorAll('.node')).toHaveLength(15)
@@ -985,14 +852,14 @@ describe('a stage too wide to draw', () => {
     // card's own key here remounts exactly the part that remounts in
     // production. A `WorkflowCard` that had quietly taken the expansion into a
     // `useState` of its own would close the stage here and nowhere else.
-    rerender(<CardHarness workflow={w} taskById={tasks} expanded cardKey={1} />)
+    rerender(<CardHarness workflow={w} taskById={tasks} cardKey={1} />)
     expect(container.querySelector('.wf-band')!.getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelectorAll('.node')).toHaveLength(15)
   })
 
   it('leaves a stage that fits the FULL tier alone, and keeps every field on it', () => {
     const fits = fanOnly(STAGE_FITS)
-    const a = card(fits.w, fits.tasks, true)
+    const a = card(fits.w, fits.tasks)
     expect(a.container.querySelector('.wf-band')).toBeNull()
     expect(a.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 1)
     // Nothing was traded for it: `STAGE_FITS` is by definition what the full
@@ -1011,7 +878,7 @@ describe('a stage too wide to draw', () => {
     // `nodeWidthAt` and `stageFitsAt` say it is rather than what a fixture
     // remembers.
     const over = wideStage(STAGE_FITS + 1)
-    const b = card(over.w, over.tasks, true)
+    const b = card(over.w, over.tasks)
     expect(autoTier(over.w.steps)).toBe('details')
     expect(b.container.querySelector('.wf-band')).toBeNull()
     expect(b.container.querySelectorAll('.node')).toHaveLength(STAGE_FITS + 3)
@@ -1194,7 +1061,7 @@ describe('semantic zoom', () => {
     for (const [n, tier, make] of cases) {
       const { w, tasks } = make(n)
       expect(autoTier(w.steps), `${n} steps should land at ${tier}`).toBe(tier)
-      const { container, unmount } = card(w, tasks, true)
+      const { container, unmount } = card(w, tasks)
       const expectedW = nodeWidthAt(tier, w.steps)
       const slots = [...container.querySelectorAll<HTMLElement>('.node-slot')]
       expect(slots).toHaveLength(w.steps.length)
@@ -1239,7 +1106,7 @@ describe('semantic zoom', () => {
 
     // Six: drawn, at `details`.
     expect(autoTier(six.w.steps)).toBe('details')
-    const a = card(six.w, six.tasks, true)
+    const a = card(six.w, six.tasks)
     expect(a.container.querySelector('.wf-band')).toBeNull()
     expect(a.container.querySelectorAll('.node')).toHaveLength(8)
 
@@ -1249,7 +1116,7 @@ describe('semantic zoom', () => {
     // thirteen and forty do below -- and opening it draws every card at that
     // tier's real width rather than folding them into extra rows.
     expect(autoTier(seven.w.steps)).toBe('figures')
-    const b = card(seven.w, seven.tasks, true)
+    const b = card(seven.w, seven.tasks)
     expect(b.container.querySelector('.wf-band')).toBeTruthy()
     expect(b.container.querySelectorAll('.node')).toHaveLength(2)
     b.unmount()
@@ -1259,7 +1126,7 @@ describe('semantic zoom', () => {
     // wrapping, which this canvas may not do.
     for (const tier of ['figures', 'details', 'names'] as const) {
       const { w, tasks } = wideStage(13)
-      const c = card(w, tasks, true, tier)
+      const c = card(w, tasks, tier)
       expect(c.container.querySelector('.wf-band'), tier).toBeTruthy()
       expect(c.container.querySelectorAll('.node'), tier).toHaveLength(2)
       c.unmount()
@@ -1269,7 +1136,7 @@ describe('semantic zoom', () => {
     // band at every tier too -- the claim stage collapsing exists for.
     const forty = wideStage(40)
     expect(autoTier(forty.w.steps)).toBe('figures')
-    const d = card(forty.w, forty.tasks, true)
+    const d = card(forty.w, forty.tasks)
     expect(d.container.querySelector('.wf-band')).toBeTruthy()
     expect(d.container.querySelectorAll('.node')).toHaveLength(2)
   })
@@ -1279,13 +1146,13 @@ describe('semantic zoom', () => {
     // an ABSENCE -- the case that must not become a blank or a zero.
     const { w, tasks } = wideStage(5)
 
-    const full = card(fanOnly(STAGE_FITS).w, fanOnly(STAGE_FITS).tasks, true)
+    const full = card(fanOnly(STAGE_FITS).w, fanOnly(STAGE_FITS).tasks)
     // Silent at the full tier. A mark saying "nothing is hidden" on every canvas
     // that fits is the noise §8.4 took off this screen twice.
     expect(full.container.querySelector('.wf-zoom .wf-zoom-note')).toBeNull()
     full.unmount()
 
-    const details = card(w, tasks, true, 'details')
+    const details = card(w, tasks, 'details')
     const dNode = nodeNamed(details.container, 'scan-0')
     // THE DURATION IS STILL THERE AND STILL SAYS THE ABSENCE IN WORDS.
     expect(dNode.querySelector('.node-dur')!.textContent).toBe('not started')
@@ -1302,7 +1169,7 @@ describe('semantic zoom', () => {
     )
     details.unmount()
 
-    const names = card(w, tasks, true, 'names')
+    const names = card(w, tasks, 'names')
     const nNode = nodeNamed(names.container, 'scan-0')
     expect(nNode.querySelector('.node-dur')).toBeNull()
     expect(nNode.querySelector('.node-meta')).toBeNull()
@@ -1320,13 +1187,13 @@ describe('semantic zoom', () => {
   it('never hides a failed or cancelled step, at the smallest tier either', () => {
     const states: (TaskState | null)[] = ['FAILED', 'SUCCEEDED', 'SUCCEEDED', 'CANCELLED', null]
     const { w, tasks } = wideStage(5, states)
-    const { container } = card(w, tasks, true, 'names')
+    const { container } = card(w, tasks, 'names')
 
     const failed = nodeNamed(container, 'scan-0')
     // THREE CHANNELS, NONE OF THEM COLOUR ALONE, at the tier that draws least:
     // the card's own accent class, the mark in its tone, and the word.
     expect(failed.className).toContain('bad')
-    expect(failed.querySelector('.ctl-dot.is-bad')).toBeTruthy()
+    expect(failed.querySelector('[data-mark="failed"][data-hue="bad"]')).toBeTruthy()
     expect(failed.querySelector('.node-state')!.textContent).toBe('failed')
 
     const cancelled = nodeNamed(container, 'scan-3')
@@ -1350,7 +1217,7 @@ describe('semantic zoom', () => {
     // the tiers drop fields and nothing on this canvas is ever transformed.
     for (const tier of ['figures', 'details', 'names'] as const) {
       const { w, tasks } = wideStage(5)
-      const { container, unmount } = card(w, tasks, true, tier)
+      const { container, unmount } = card(w, tasks, tier)
       const drawn = [...container.querySelectorAll<HTMLElement>('.wf-canvas, .node-slot, .node, .node *')]
       expect(drawn.length).toBeGreaterThan(10)
       for (const el of drawn) {
@@ -1364,7 +1231,7 @@ describe('semantic zoom', () => {
 
   it('offers the zoom as four real buttons, and putting a field back works', () => {
     const { w, tasks } = wideStage(6)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const seg = container.querySelector('.wf-zoom-seg')!
     const buttons = () => [...seg.querySelectorAll('button')]
 
@@ -1407,7 +1274,7 @@ describe('semantic zoom', () => {
     const states = Array(13).fill('SUCCEEDED') as (TaskState | null)[]
     states[6] = 'FAILED'
     const { w, tasks } = wideStage(13, states)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
 
     // COLLAPSED, THE CANVAS FITS, so there is nothing to orient in and no map.
     // A minimap of a canvas you can see all of is chrome for its own sake.
@@ -1443,84 +1310,20 @@ describe('semantic zoom', () => {
 })
 
 // ---------------------------------------------------------------------------
-// 4. Spend
-// ---------------------------------------------------------------------------
-
-function spending(costs: (number | null)[]): { w: Workflow; tasks: Map<string, Task> } {
-  const steps = costs.map((_, i) => step(`s${i}`, i === 0 ? [] : ['s0'], { task_id: `t${i}` }))
-  const tasks = new Map<string, Task>()
-  costs.forEach((c, i) => {
-    tasks.set(
-      `t${i}`,
-      task(`t${i}`, 'SUCCEEDED', {
-        started_at: iso(-60_000),
-        completed_at: iso(-30_000),
-        result_summary: c === null ? {} : { runner: { usage: { total_cost_usd: c } } },
-      }),
-    )
-  })
-  return { w: workflow('wf_spend', steps), tasks }
-}
-
-describe('what a workflow has cost', () => {
-  it('says "not reported" when nothing reported one, and prints no zero', () => {
-    const { w, tasks } = spending([null, null])
-    const { container } = card(w, tasks)
-    const cell = container.querySelector('.wf-spend')!
-    expect(cell.textContent).toBe('not reported')
-    expect(cell.textContent, 'an unreported cost rendered a figure').not.toMatch(/\d/)
-    expect(cell.className).toContain('absent')
-    expect(cell.getAttribute('title')).toContain('not $0.00')
-  })
-
-  it('prints a REPORTED zero as a number, because that one was measured', () => {
-    const { w, tasks } = spending([0, 0])
-    const { container } = card(w, tasks)
-    const cell = container.querySelector('.wf-spend')!
-    expect(cell.textContent).toContain('$0.0000')
-    expect(cell.className).not.toContain('absent')
-  })
-
-  it('never shows a partial total without its coverage', () => {
-    const { w, tasks } = spending([0.0642, null, null])
-    const { container } = card(w, tasks)
-    const cell = container.querySelector('.wf-spend')!
-    expect(cell.textContent).toContain('$0.0642')
-    expect(cell.querySelector('.wf-spend-cov')!.textContent).toBe('1/3')
-    expect(cell.getAttribute('title')).toContain('floor rather than the total')
-  })
-})
-
-// ---------------------------------------------------------------------------
 // 5. The stylesheet, resolved -- not grepped
 // ---------------------------------------------------------------------------
 
 describe('the shipped stylesheet', () => {
   pinTheClock()
 
-  it('draws an absent figure differently from a measured one', () => {
-    // The em-dash rule as a RENDERED property. If the two treatments resolve
-    // to the same computed style, the row says "not reported" in exactly the
-    // voice it says "$0.0642" -- and the distinction this product is built on
-    // survives only in the words.
-    const style = withStyles()
-    const absent = card(spending([null, null]).w, spending([null, null]).tasks)
-    const absentCell = absent.container.querySelector('.wf-spend')!
-    const measured = card(spending([0, 0]).w, spending([0, 0]).tasks)
-    const measuredCell = measured.container.querySelector('.wf-spend')!
-
-    expect(getComputedStyle(absentCell).fontStyle).toBe('italic')
-    expect(getComputedStyle(measuredCell).fontStyle).toBe('normal')
-    expect(getComputedStyle(absentCell).color).not.toBe(getComputedStyle(measuredCell).color)
-    style.remove()
-  })
-
-  it('does the same for a step with no duration', () => {
+  // The spend half of this rule moved to workflow.v2.test.tsx with the list
+  // row that now draws spend (2026-10-01).
+  it('draws a step with no duration differently from a measured one', () => {
     const style = withStyles()
     const { w, tasks } = timings()
     // `details`, where the duration line is drawn for every kind (see `how
     // long a step has taken`).
-    const { container } = card(w, tasks, true, 'details')
+    const { container } = card(w, tasks, 'details')
     const none = nodeNamed(container, 'publish').querySelector('.node-dur')!
     const ran = nodeNamed(container, 'done').querySelector('.node-dur')!
     expect(getComputedStyle(none).fontStyle).toBe('italic')
@@ -1528,27 +1331,6 @@ describe('the shipped stylesheet', () => {
     style.remove()
   })
 
-  it('leaves the collapsed row un-uppercased inside a heading that uppercases', () => {
-    // B17's neighbourhood. The bar is still an <h2> so the workflow keeps its
-    // place in the document outline; the button inside it turns the heading's
-    // uppercase back off, and the `.id` rule keeps the identifier lowercase
-    // whichever way that goes.
-    const style = withStyles()
-    const { container } = card(chain())
-    const h2 = container.querySelector('h2')!
-    const bar = container.querySelector('.wf-bar')!
-    // NOT asserted: that the h2 itself uppercases. It did when this was
-    // written, and the type-scale work then removed the small caps from every
-    // panel title deliberately -- "a panel title is --t-lead in --text, not
-    // small caps". Pinning the uppercase here would pin a treatment that was
-    // taken out on purpose, and would go red the moment it was taken out
-    // again. What must hold either way is that the bar and the identifier are
-    // not uppercased, whatever the heading above them does.
-    expect(getComputedStyle(h2).textTransform).not.toBe('uppercase')
-    expect(getComputedStyle(bar).textTransform).toBe('none')
-    expect(getComputedStyle(container.querySelector('.id')!).textTransform).toBe('none')
-    style.remove()
-  })
 })
 
 // ---------------------------------------------------------------------------
@@ -1613,408 +1395,52 @@ function ended(
   )
 }
 
-describe('the QA pass: the collapsed row', () => {
+/** The census the open card states whole, as its `progress` fact (`CensusFact`). */
+function censusOf(root: ParentNode): string {
+  const fact = [...root.querySelectorAll('.wf-census .ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'progress')
+  expect(fact, 'the open card does not state the census').toBeTruthy()
+  return (fact!.textContent ?? '').slice('progress'.length)
+}
+
+describe('the QA pass: the census', () => {
   pinTheClock()
 
+  // RE-POINTED with the rebrand (2026-10-01): the board's row and its meter
+  // are gone, and the census sentence is the open card's `progress` fact.
   it('WF-1: accounts for every way a step ends, not only success and failure', () => {
     // The measured row: `9/30 done · 4 failed` over a workflow where the other
     // seventeen had been cancelled or dead-lettered -- seventeen steps the line
     // whose job is to account for thirty simply did not mention.
     const w = ended('wf_ended', 30, { SUCCEEDED: 9, FAILED: 4, CANCELLED: 15, DEAD_LETTERED: 2 })
-    const { container } = card(w)
-    const text = container.querySelector('.wf-progress-text')!.textContent!
+    const text = censusOf(card(w).container)
     expect(text).toContain('9/30 done')
     expect(text).toContain('4 failed')
     expect(text, 'the cancelled steps are missing from the census').toContain('15 cancelled')
     expect(text, 'the dead-lettered steps are missing from the census').toContain('2 dead_lettered')
-    // The accessible name accounts for all thirty as well.
-    const why = container.querySelector('.wf-meter')!.getAttribute('aria-label')!
-    expect(why).toContain('15 cancelled')
-    expect(why).toContain('2 dead_lettered')
     // And a count that is zero is not printed as a clause.
-    const clean = card(ended('wf_clean', 3, { SUCCEEDED: 3 }))
-    expect(clean.container.querySelector('.wf-progress-text')!.textContent).toBe('3/3 done')
-  })
-
-  it('WF-15: says a cancel was requested only while the workflow has not ended', () => {
-    const flags = (w: Workflow) => card(w).container.querySelector('.wf-flags')!.textContent
-    // Finished cancelled a day ago; the flag is never cleared, and the tag rode
-    // on the row as if something were still pending.
-    expect(
-      flags(ended('wf_over', 3, { CANCELLED: 3 }, { cancel_requested: true, rollup: {
-        state: 'CANCELLED', complete: true, reason: 'cancelled', counts: { CANCELLED: 3 },
-        unreadable_steps: [], unstarted_steps: [], steps_read: 3,
-      } })),
-      'a finished workflow still reads "cancel requested"',
-    ).toBe('')
-    // Still running: the request is real and still in flight.
-    expect(flags(workflow('wf_live', chain().steps, { cancel_requested: true }))).toBe('cancel requested')
-    // A rollup that could not read every step has not shown it is over, so the
-    // request stays said.
-    expect(
-      flags(workflow('wf_unread', chain().steps, { cancel_requested: true, rollup: {
-        state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
-        unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
-      } })),
-    ).toBe('cancel requested')
-  })
-
-  it('WF-16: folds whole runner chips into the count rather than letting the column cut one', () => {
-    const steps = [
-      ...Array.from({ length: 20 }, (_, i) => step(`cc-${i}`, [], { runner_profile: 'claude-code' })),
-      ...Array.from({ length: 6 }, (_, i) => step(`br-${i}`, [], { runner_profile: 'browser' })),
-      ...Array.from({ length: 4 }, (_, i) => step(`mk-${i}`, [], { runner_profile: 'mock' })),
-    ]
-    const chips = (room: number) => {
-      // THE COLUMN'S WIDTH, stubbed, because jsdom has no layout: everything
-      // else keeps answering 0, exactly as it does for every other test here.
-      const spy = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockImplementation(function (this: Element) {
-        return this.classList.contains('wf-mix') ? room : 0
-      })
-      const { container, unmount } = card(workflow('wf_mix', steps))
-      const mix = container.querySelector('.wf-mix')!
-      const named = [...mix.querySelectorAll('.wf-chip:not(.more)')].map((c) => c.firstChild?.textContent)
-      const more = mix.querySelector('.wf-chip.more')?.textContent ?? null
-      const title = mix.getAttribute('title')
-      unmount()
-      spy.mockRestore()
-      return { named, more, title }
-    }
-    // 160px: `claude-code ×20` and `+2` fit; a second whole chip does not. The
-    // old row drew two chips and `+1` regardless, and the column cut the
-    // second mid-word.
-    const narrow = chips(160)
-    expect(narrow.named, 'a chip the column cannot hold was drawn anyway').toEqual(['claude-code'])
-    expect(narrow.more).toBe('+2')
-    // Room for two: two named and the third counted, which is the row's promise.
-    expect(chips(400)).toMatchObject({ named: ['claude-code', 'browser'], more: '+1' })
-    // Every profile stays reachable whatever was folded.
-    expect(narrow.title).toBe('Runner profiles: claude-code ×20, browser ×6, mock ×4')
+    expect(censusOf(card(ended('wf_clean', 3, { SUCCEEDED: 3 })).container)).toBe('3/3 done')
   })
 
   /**
-   * THE CENSUS SENTENCE STAYS IN ITS COLUMN (#222, the 2026-09-26 QA).
-   *
-   * At 1440 on dev, release 350c244, a finished row's "10/30 done · 1 failed ·
-   * 19 cancelled" painted over the stage shape beside it. `.wf-progress-text`
-   * was `flex: 0 0 auto` -- it could not shrink -- and nothing clipped it, so
-   * the flex item was as wide as its sentence and ran out of the `[progress]`
-   * track. A grid does not widen a fixed track for an item that overflows it;
-   * the item paints over the next track. The text's own ellipsis never fired,
-   * because a box as wide as its content has nothing to cut.
-   *
-   * Contained now at every width the sentence is drawn (it drops at 560px and
-   * below): the text is what gives way (shrinkable, `min-width: 0`), it ends
-   * in an ellipsis on one line (§6.8: a row's cells do not wrap), the progress
-   * cell clips at its own track's edge, and the whole sentence is in the
-   * text's `title` -- cut on screen, whole on hover (§7.3's rule for a cut
-   * value).
-   *
-   * WHAT IT COSTS, which this cannot see (jsdom has no layout). Measured in
-   * Chrome against this sheet, 1440 viewport, when `[progress]`'s floor was
-   * 24ch: 196.5px, and the 54px meter and its 8px gap left the sentence
-   * 134.5px, so every census with a tail was cut. The floor is 33ch now in
-   * a row at least 620px wide, and 12ch in a narrower one (owner decisions
-   * 2026-09-26, the next describe): at 1440 the sentence gets 208.2px, the
-   * running forms up to "12/30 done · 18 not started" (195px) are whole, and
-   * "3/12 done · 1 failed · 8 not started" and the sentence above (260px)
-   * are still cut, as is every census in a row under 620px (36px). That is
-   * what these rules are still for, and why the open card states the census
-   * whole.
-   *
-   * ONE CASE PER DECLARATION, so a CI run shows each one failing on its own:
-   * the first run that went red on this stopped at `flex-shrink`, and what came
-   * after it was never seen failing.
-   */
-  describe('the census sentence stays inside its column at every width it is drawn', () => {
-    // Every band of `.wf-bar`'s template that draws the sentence: the wide
-    // template and its 1100/900 edges, and the tablet one.
-    const WIDTHS = [1440, 1100, 901, 900, 700, 561]
-
-    function row(): { text: Element; cell: Element } {
-      const long = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container
-      const text = long.querySelector('.wf-progress-text')!
-      expect(text.textContent).toBe('10/30 done · 1 failed · 19 cancelled')
-      return { text, cell: long.querySelector('.wf-progress')! }
-    }
-    const won = (el: Element, prop: string | readonly string[], width: number): string | null => {
-      const r = cascade(STYLES, el, prop, { width })
-      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
-      return r.winner?.value ?? null
-    }
-    /** Runs `check` at every width and counts, so a loop over nothing cannot pass. */
-    const everyWidth = (check: (width: number) => void): void => {
-      let asked = 0
-      for (const width of WIDTHS) {
-        check(width)
-        asked += 1
-      }
-      expect(asked).toBe(WIDTHS.length)
-    }
-
-    // MUTATION: `flex: 0 0 auto` back on `.wf-progress-text`.
-    it('lets the sentence give way', () => {
-      const { text } = row()
-      /** `flex-shrink`, out of whichever of `flex` / `flex-shrink` won. */
-      const shrink = (width: number): number => {
-        const w = cascade(STYLES, text, ['flex', 'flex-shrink'], { width }).winner
-        if (w === null) return 1
-        if (w.property === 'flex-shrink') return Number(w.value)
-        if (w.value === 'none') return 0
-        const parts = w.value.split(/\s+/)
-        return parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) ? Number(parts[1]) : 1
-      }
-      everyWidth((width) => {
-        expect(won(text, 'display', width), `the sentence is not drawn at ${width}`).not.toBe('none')
-        expect(shrink(width), `${width}: the sentence cannot give way, so it paints past its column`).toBeGreaterThan(0)
-      })
-    })
-
-    // MUTATION: drop `min-width: 0` from `.wf-progress-text`.
-    it('lets the sentence shrink below its own width', () => {
-      const { text } = row()
-      everyWidth((width) => {
-        expect(won(text, 'min-width', width), `${width}: the sentence cannot shrink below its own width`).toBe('0')
-      })
-    })
-
-    // MUTATION: drop `overflow: hidden` or `text-overflow: ellipsis` from
-    // `.wf-progress-text`.
-    it('ends a cut sentence in an ellipsis', () => {
-      const { text } = row()
-      everyWidth((width) => {
-        expect(won(text, ['overflow', 'overflow-x'], width), `${width}: the sentence is not clipped`).toBe('hidden')
-        expect(won(text, 'text-overflow', width), `${width}: a cut sentence does not say it was cut`).toBe('ellipsis')
-      })
-    })
-
-    // MUTATION: drop `white-space: nowrap` from `.wf-progress-text`.
-    it('keeps the sentence on one line', () => {
-      const { text } = row()
-      everyWidth((width) => {
-        expect(won(text, 'white-space', width), `${width}: the sentence wraps and the row loses its height`).toBe('nowrap')
-      })
-    })
-
-    // The cell is bounded by its track and clips at its edge, so nothing in
-    // it -- the sentence or the 54px meter -- can reach the shape beside it.
-    // MUTATION: drop `overflow: hidden` or `min-width: 0` from `.wf-progress`.
-    it('clips the progress cell at its own track', () => {
-      const { cell } = row()
-      everyWidth((width) => {
-        expect(won(cell, 'min-width', width), `${width}: the progress cell is as wide as what it holds`).toBe('0')
-        expect(won(cell, ['overflow', 'overflow-x'], width), `${width}: the progress cell paints past its track`).toBe('hidden')
-      })
-    })
-
-    // AND THE ROW CLIPS AT ITS OWN BORDER, at every template's width
-    // including the phone's (#223), AS A LAST RESORT (owner decision
-    // 2026-09-26). The floor giving way to 12ch under 620px keeps a running
-    // row's caret inside down to 445px (the next describe); what still
-    // overflows -- a narrower row, or a long state word just past the 620px
-    // switch (styles.css, the `[progress]` note) -- is clipped rather than
-    // painted outside the box, towards the inspector. MUTATION: drop
-    // `overflow: hidden` from `.wf-bar`.
-    it('clips the row at its own border at every width', () => {
-      const bar = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container.querySelector('.wf-bar')!
-      let asked = 0
-      for (const width of [...WIDTHS, 390]) {
-        expect(won(bar, ['overflow', 'overflow-x'], width), `${width}: the row's grid paints past its border`).toBe('hidden')
-        asked += 1
-      }
-      expect(asked).toBe(WIDTHS.length + 1)
-    })
-  })
-
-  // MUTATION: drop the `title` from any of `Progress`'s three text spans.
-  it('keeps the whole census sentence in the title of the text that is cut', () => {
-    const long = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 })).container
-    const running = card(chain()).container
-    const unread = card(
-      workflow('wf_unread', chain().steps, {
-        rollup: {
-          state: 'UNKNOWN', complete: false, reason: 'step_read_budget_exhausted', counts: {},
-          unreadable_steps: ['build'], unstarted_steps: [], steps_read: 2,
-        },
-      }),
-    ).container
-    // All three branches of `Progress` -- a finished row's composition, a
-    // running row's meter, an unread census's hatch -- draw the text, and each
-    // is cut the same way.
-    for (const root of [long, running, unread]) {
-      const t = root.querySelector('.wf-progress-text')!
-      expect(t.textContent, 'the row drew no census sentence').not.toBe('')
-      expect(t.getAttribute('title'), `"${t.textContent}" is not whole in its title`).toBe(t.textContent)
-    }
-  })
-
-  /**
-   * THE CENSUS READS WHOLE WITHOUT A POINTER (owner decisions 2026-09-26, on
-   * #223): in the row at 1440 for the running forms, and in the open card for
-   * every form at every width.
-   *
-   * THE ROW. `[progress]`'s floor was 24ch, 196.5px of the row's 13px sans at
-   * 1440 (measured in Chrome against this sheet). The 54px meter and its 8px
-   * gap left the sentence 134.5px, and the running form "1/5 done · 1 not
-   * started" -- 24 characters of the 12px mono, 173px measured, so 7.2px a
-   * character -- showed as "1/5 done · 1 not st…": the count of what has not
-   * started, gone. The floor is 33ch now in a row at least 620px wide,
-   * 270.2px, which leaves 208.2px: "12/30 done · 18 not started" (27
-   * characters, 195px measured) is whole. The room comes out of `[name]`,
-   * `[shape]` and `[mix]`, 29.0, 20.1 and 24.6px against 24ch at every row
-   * from 800 to 1150px. In a narrower row -- the work column with the
-   * inspector open -- the floor is 12ch, so the row's grid does not run past
-   * its right edge. jsdom has no fonts, so the per-character widths and the
-   * two `max-content` tracks are Chrome measurements, written down; what is
-   * held is that the floor the sheet declares, at the row width it is asked
-   * at, leaves the running form its room, and leaves a running row's caret
-   * inside a 480px row.
-   *
-   * THE OPEN CARD. A longer census is still cut at 1440 -- "10/30 done · 1
-   * failed · 19 cancelled" is 260px -- and at 560px and below the row draws no
-   * sentence at all. A `title` is whole on hover only, and a phone has no
-   * hover. So the open card states the census as a fact, whole, at every
-   * width: §7.3's rule for a cut value is cut on screen and whole somewhere a
-   * reader can get to without a pointer.
+   * THE CENSUS READS WHOLE WITHOUT A POINTER (owner decision 2026-09-26, on
+   * #223). A `title` is whole on hover only, and a phone has no hover, so the
+   * open card states the census as a fact, whole, at every width: §7.3's rule
+   * for a cut value is whole somewhere a reader can get to without a pointer.
    */
   describe('the census reads whole without a pointer', () => {
     const WIDE: CascadeEnv = { width: 1440 }
     const PHONE: CascadeEnv = { width: 390 }
-    /** A 1440 viewport with the work column at `row` px -- the whole column (1150), or narrowed by the inspector. */
-    const at = (row: number): CascadeEnv => ({ width: 1440, container: row })
-    /** One `ch` of the row's 13px sans, from 24ch = 196.5px measured at 1440. */
-    const SANS_13_CH = 196.5 / 24
-    /** One character of the census's 12px mono, from 24 characters = 173px measured. */
-    const MONO_12_CHAR = 173 / 24
-    /** The row's two `max-content` tracks for a running row, measured in Chrome: "running" and "23h ago", 12px mono. */
-    const WORD_PX = 50.58
-    const AGE_PX = 50.58
-    const RUNNING = '12/30 done · 18 not started'
     const LONG = '10/30 done · 1 failed · 19 cancelled'
-
-    /** Thirty steps: twelve done, none failed, eighteen not started. */
-    function running(): Workflow {
-      return workflow('wf_running', Array.from({ length: 30 }, (_, i) => step(`r-${i}`, [])), {
-        rollup: {
-          state: 'RUNNING',
-          complete: true,
-          reason: 'steps_hold_capacity',
-          counts: { SUCCEEDED: 12, unstarted: 18 },
-          unreadable_steps: [],
-          unstarted_steps: [],
-          steps_read: 30,
-        },
-      })
-    }
     const won = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
       const r = cascade(STYLES, el, prop, env)
       expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
       return r.winner?.value ?? null
     }
-    const px = (v: string | null): number =>
-      Number(/^([\d.]+)px$/.exec(resolveVars(v ?? '', tokenTables(STYLES).dark).trim())?.[1] ?? Number.NaN)
-
-    /** The wide template's tracks, `[name] track` pairs in order, as the cascade resolves them at `env`. */
-    function tracks(bar: Element, env: CascadeEnv): [string, string][] {
-      const template = (won(bar, 'grid-template-columns', env) ?? '').replace(/\s+/g, ' ').trim()
-      const parts = splitTop(template, ' ')
-      const out: [string, string][] = []
-      parts.forEach((p, i) => {
-        if (/^\[[\w-]+\]$/.test(p)) out.push([p.slice(1, -1), parts[i + 1] ?? ''])
-      })
-      expect(out.map(([n]) => n), `not the wide template: ${template}`).toContain('progress')
-      return out
-    }
-
-    /**
-     * `[progress]`'s floor in ch, at `env`: a literal, or a custom property
-     * resolved on the row itself (so a `@container` rule that sets it is
-     * seen), falling back to the `var()`'s own fallback.
-     */
-    function floorCh(bar: Element, env: CascadeEnv): number {
-      const track = tracks(bar, env).find(([n]) => n === 'progress')![1]
-      const lo = splitTop(/^minmax\((.*)\)$/.exec(track)?.[1] ?? '')[0] ?? ''
-      const v = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(lo)
-      const value = v === null ? lo : (won(bar, v[1]!, env) ?? v[2] ?? '')
-      const ch = /^([\d.]+)ch$/.exec(value.trim())
-      expect(ch, `[progress] has no floor in ch at ${env.container ?? 'no'} px: ${track}`).not.toBeNull()
-      return Number(ch![1])
-    }
-
-    /**
-     * How far from the row's left border edge its last track -- the caret --
-     * ends, at the smallest the grid can make it: every `minmax(0, …)` track
-     * at 0, `[progress]` at its floor, the fixed tracks as declared, the two
-     * `max-content` tracks at their measured widths, the gaps, the left padding
-     * and both borders. At most the row's width means the caret is inside it.
-     */
-    function narrowest(bar: Element, env: CascadeEnv): number {
-      const list = tracks(bar, env)
-      let sum = 0
-      for (const [name, track] of list) {
-        if (name === 'progress') sum += floorCh(bar, env) * SANS_13_CH
-        else if (/^[\d.]+px$/.test(track)) sum += parseFloat(track)
-        else if (/^minmax\(\s*0\s*,/.test(track)) sum += 0
-        else if (track === 'max-content' && name === 'word') sum += WORD_PX
-        else if (track === 'max-content' && name === 'age') sum += AGE_PX
-        else sum += Number.NaN
-      }
-      const gap = px(won(bar, ['column-gap', 'gap'], env))
-      const padLeft = px(splitTop(resolveVars(won(bar, 'padding', env) ?? '', tokenTables(STYLES).dark), ' ').slice(-1)[0] ?? '')
-      const border = px(/^([\d.]+px)/.exec(won(bar, 'border', env) ?? '')?.[1] ?? '')
-      const total = sum + gap * (list.length - 1) + padLeft + 2 * border
-      expect(Number.isFinite(total), `a track, the gap, the padding or the border is not a length: ${total}`).toBe(true)
-      return total
-    }
-
-    // THE TWO-DIGIT RUNNING FORM IS WHOLE AT 1440 (owner decision 2026-09-26,
-    // on #223): "12/30 done · 18 not started" is 27 characters, 195px measured.
-    // The floor is 33ch in a row at least 620px wide -- the 1440 work column
-    // is 1150 -- which is 270.2px, less the meter and its gap: 208.2px.
-    // MUTATION: the wide floor back to 29ch (175.4px) or anything under 32ch;
-    // the meter wider, or its gap larger, without the floor following.
-    it('gives [progress] a floor at 1440 that holds the two-digit running form whole', () => {
-      const bar = card(running()).container.querySelector('.wf-bar')!
-      expect(bar.querySelector('.wf-progress-text')!.textContent, 'the fixture is not the running form').toBe(RUNNING)
-      const meter = px(won(bar.querySelector('.wf-meter')!, 'width', WIDE))
-      const gap = px(won(bar.querySelector('.wf-progress')!, ['gap', 'column-gap'], WIDE))
-      expect(Number.isFinite(meter) && Number.isFinite(gap), `the meter (${meter}) or its gap (${gap}) is not a length`).toBe(true)
-      const room = floorCh(bar, at(1150)) * SANS_13_CH - meter - gap
-      const needs = RUNNING.length * MONO_12_CHAR
-      expect(
-        room,
-        `at 1440 "${RUNNING}" gets ${room.toFixed(1)}px of the ${needs.toFixed(1)}px it needs, so it is cut`,
-      ).toBeGreaterThanOrEqual(needs)
-    })
-
-    // THE FLOOR GIVES WAY IN A NARROW ROW (owner decision 2026-09-26, on
-    // #223). With the inspector open beside it the work column is a few
-    // hundred px at 1440, and a 33ch floor there ran the row's grid past its
-    // right edge. So the floor is 33ch only where the row is at least 620px
-    // wide, and 12ch below that. Held at a 480px row, as with the inspector
-    // open: the floor is 12ch and a running row's caret ends inside the row.
-    // At 619 it is still 12ch; at 620 it is 33ch, and the caret is inside
-    // there too. Measured in Chrome for this sheet, a running row's caret
-    // stays inside down to 445px.
-    // MUTATION: a fixed floor again (any ch, at every row width); the switch
-    // moved from 620px; the narrow floor raised so a 480px row overflows.
-    it('lets the floor give way to 12ch in a row under 620px, so the caret stays inside at 480', () => {
-      const bar = card(running()).container.querySelector('.wf-bar')!
-      expect(floorCh(bar, at(480)), 'the floor at a 480px row').toBe(12)
-      expect(floorCh(bar, at(619)), 'the floor at a 619px row').toBe(12)
-      expect(floorCh(bar, at(620)), 'the floor at a 620px row').toBe(33)
-      for (const row of [480, 620]) {
-        const end = narrowest(bar, at(row))
-        expect(end, `at a ${row}px row the caret ends ${end.toFixed(1)}px from the left edge, outside the row`).toBeLessThanOrEqual(row)
-      }
-    })
 
     // MUTATION: take the census out of the open card; hide it at a width; or
-    // cut it the way the row does (one line, an ellipsis).
+    // cut it (one line, an ellipsis).
     it('states the whole census in the open card, at 1440 and at 390', () => {
-      const { container } = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 }), new Map(), true)
-      const rowText = container.querySelector('.wf-bar .wf-progress-text')!
-      expect(rowText.textContent).toBe(LONG)
+      const { container } = card(ended('wf_long', 30, { SUCCEEDED: 10, FAILED: 1, CANCELLED: 19 }), new Map())
       const body = container.querySelector('.wf-body')
       expect(body, 'the card did not open').not.toBeNull()
       const fact = [...body!.querySelectorAll('.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'progress')
@@ -2034,9 +1460,6 @@ describe('the QA pass: the collapsed row', () => {
         }
       }
       expect(asked).toBe(boxes.length * 2)
-      // At 390 the row draws no sentence at all, so the open card is the one
-      // place the census reads on a phone.
-      expect(won(rowText, 'display', PHONE)).toBe('none')
     })
   })
 })
@@ -2085,7 +1508,7 @@ describe('the QA pass: the canvas', () => {
     states[3] = 'CANCELLED'
     states[9] = 'CANCELLED'
     const { w, tasks } = wideStage(13, states)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const band = container.querySelector('.wf-band')!
     // The cancellation is still counted, first, in its own tone ...
     expect(bandCounts(band)[0]).toBe('2 cancelled')
@@ -2103,7 +1526,7 @@ describe('the QA pass: the canvas', () => {
     // SVG paints in document order. One group of halo-then-stroke per edge put
     // a later edge's halo over an earlier edge's arrowhead wherever two
     // converged -- the five arrows into `report` erased by their siblings.
-    const { container } = card(fanOut(), new Map(), true)
+    const { container } = card(fanOut(), new Map())
     const paint = [...container.querySelectorAll('svg.wf-edges .wf-edge-halo, svg.wf-edges .wf-edge')]
     const isHalo = paint.map((p) => p.classList.contains('wf-edge-halo'))
     expect(isHalo.filter(Boolean)).toHaveLength(10)
@@ -2118,7 +1541,7 @@ describe('the QA pass: the canvas', () => {
 
   it('WF-20: prints a run once at the Figures tier, and keeps a wait beside the state', () => {
     const { w, tasks } = timings()
-    const { container } = card(w, tasks, true, 'figures')
+    const { container } = card(w, tasks, 'figures')
     const ran = (name: string) =>
       [...nodeNamed(container, name).querySelectorAll('.node-num')]
         .find((n) => n.querySelector('dt')?.textContent === 'ran')
@@ -2151,7 +1574,7 @@ describe('the QA pass: the table', () => {
       ['t_spent', task('t_spent', 'FAILED', { attempt_count: 3, max_attempts: 3, started_at: iso(-90_000), completed_at: iso(-30_000) })],
       ['t_fine', task('t_fine', 'RUNNING', { attempt_count: 1, max_attempts: 3, started_at: iso(-90_000) })],
     ])
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     fireEvent.click(within(container.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
     const attempts = (id: string) =>
       container.querySelector(`.wf-table tr[data-step="${id}"] td[data-col="attempts"] .wf-cell`)!
@@ -2226,7 +1649,7 @@ describe('the owner’s decisions: the open card', () => {
         ['t_a', task('t_a', 'RUNNING', { started_at: iso(-60_000), dispatch: dispatched(strategy) })],
         ['t_b', task('t_b', 'QUEUED', { dispatch: dispatched(strategy) })],
       ])
-      const { container, unmount } = card(w, tasks, true)
+      const { container, unmount } = card(w, tasks)
       const li = [...container.querySelectorAll('.wf-dispatch li.ctl-fact')].find(
         (el) => el.querySelector('b')?.textContent === 'opens',
       )
@@ -2245,7 +1668,7 @@ describe('the owner’s decisions: the open card', () => {
   it('WF-14: says what the zoom leaves out as a view choice, in faint type, with no data mark', () => {
     // Under a chosen tier ...
     const { w, tasks } = wideStage(5)
-    const { container } = card(w, tasks, true, 'details')
+    const { container } = card(w, tasks, 'details')
     const note = container.querySelector<HTMLElement>('.wf-zoom .wf-zoom-note')
     expect(note, 'the zoom notice is not a .wf-zoom-note').toBeTruthy()
     expect(note!.textContent).toBe('figures not drawn')
@@ -2261,7 +1684,7 @@ describe('the owner’s decisions: the open card', () => {
     expect(note!.getAttribute('title')).toBe(note!.getAttribute('aria-label'))
     // ... and under Auto, which picks `details` for a six-wide stage on its own.
     const six = wideStage(6)
-    const auto = card(six.w, six.tasks, true)
+    const auto = card(six.w, six.tasks)
     expect(auto.container.querySelector('.wf-zoom .wf-zoom-note')?.textContent).toBe('figures not drawn')
 
     // FAINT, AND NOTHING ELSE: --text-faint in both themes, no border, no dash.
@@ -2287,7 +1710,7 @@ describe('the owner’s decisions: the open card', () => {
     const file = 'aaaaaaaaaaaaaaaaaaaa bbbb.md'
     const merge = step('merge', ['plan', 'check-3'], { input_from: { plan: file } })
     const w = workflow('wf_deps', [step('plan', []), step('check-3', []), merge])
-    const { container } = card(w, new Map(), true)
+    const { container } = card(w, new Map())
     const line = nodeNamed(container, 'merge').querySelector<HTMLElement>('.node-dep')!
     const items = [...line.querySelectorAll('.node-dep-item')].map((el) => el.textContent)
     // ONE LIST FOR THE MARKUP AND THE HEIGHT: what is drawn is what was measured.
@@ -2361,7 +1784,7 @@ describe('the owner’s decisions: the open card', () => {
     ])
     const w = workflow('wf_src', [step('work', [], { task_id: 't_work' }), step('idle', [])])
     // Outside the sample (the harness's `usage: null`), at the Figures tier.
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const node = nodeNamed(container, 'work')
     const row = (label: string) => {
       const r = [...node.querySelectorAll<HTMLElement>('.node-num')].find((el) => el.querySelector('dt')?.textContent === label)
@@ -2429,7 +1852,7 @@ describe('the owner’s decisions: the open card', () => {
       // KEEP CENTRING: a five-wide fan at `details` is ~850px and its start
       // node sits in the middle of it -- past the right edge of the column
       // when the wrapper opens at scrollLeft 0.
-      const fan = card(fanOut(), new Map(), true)
+      const fan = card(fanOut(), new Map())
       const a = seen(fan.container, 'plan')
       expect(a.left, 'the canvas opened on an empty lane, with the start node off screen').toBeGreaterThanOrEqual(a.from)
       expect(a.right).toBeLessThanOrEqual(a.to)
@@ -2439,7 +1862,7 @@ describe('the owner’s decisions: the open card', () => {
       // column too; opened, the canvas is 3,671px and the node moves to its
       // middle.
       const { w, tasks } = wideStage(13)
-      const wide = card(w, tasks, true)
+      const wide = card(w, tasks)
       const b = seen(wide.container, 'plan')
       expect(b.left).toBeGreaterThanOrEqual(b.from)
       expect(b.right).toBeLessThanOrEqual(b.to)
@@ -2461,9 +1884,7 @@ describe('the owner’s decisions: the open card', () => {
         <WorkflowCard
           workflow={w}
           taskById={tasks}
-          expanded
           usage={{ kind: 'ready', usage: null }}
-          onToggle={noop}
           openStages={stages}
           onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
           picked={picked}
@@ -2629,209 +2050,8 @@ describe('the owner’s decisions: edges that skip a level (WF-4)', () => {
 // Two rulings the owner delegated and settled on the epics after the decision
 // PRs merged. Each case was committed RED against main before the change.
 
-/** A thirty-step workflow that ended, in the measured mix: every way a step ends. */
-const ENDED_MIX = { SUCCEEDED: 9, FAILED: 4, CANCELLED: 15, DEAD_LETTERED: 2 }
-
-/** The outcome segments a row's meter draws, as [outcome class, width %]. */
-function segmentsOf(meter: Element): [string, number][] {
-  return [...meter.querySelectorAll<HTMLElement>(':scope > .wf-seg')].map((s) => [
-    [...s.classList].filter((c) => c !== 'wf-seg').join(' '),
-    Number.parseFloat(s.style.width),
-  ])
-}
-
-describe('the settlements: what a finished row draws, and what a healthy one does not', () => {
+describe('the settlements: what a healthy step does not draw', () => {
   pinTheClock()
-
-  /**
-   * WF-1's SECOND QUESTION, settled on #83 (2026-09-25). #148 made the census
-   * text count every way a step ends; whether a TERMINAL row should still draw
-   * a progress meter was left open. It should not: `9/30 done` drawn as a 30%
-   * bar says work is still in progress on a workflow that is over. A terminal
-   * row draws its OUTCOME COMPOSITION in the same 8px `.ctl-track` (§6.4's one
-   * proportion primitive): succeeded, failed, cancelled and dead-lettered
-   * segments, each its share of the steps.
-   *
-   * MUTATION: draw the progress fill on every trustworthy row again. A
-   * finished row carries `.wf-meter-fill` and no segments.
-   */
-  it('WF-1: a finished row draws what its steps ended as, not how far it got', () => {
-    const { container } = card(ended('wf_ended', 30, ENDED_MIX))
-    const meter = container.querySelector('.wf-meter')!
-    expect(meter.classList.contains('ctl-track'), 'the composition left the shared 8px track').toBe(true)
-    expect(
-      meter.querySelector('.wf-meter-fill'),
-      '"9/30 done" is still drawn as a 30% bar on a workflow that has ended',
-    ).toBeNull()
-    const segs = segmentsOf(meter)
-    expect(segs.map(([k]) => k), 'the segments are not the four outcomes, in the settled order').toEqual([
-      'succeeded',
-      'failed',
-      'cancelled',
-      'dead-lettered',
-    ])
-    const expected = [9, 4, 15, 2].map((n) => (n / 30) * 100)
-    segs.forEach(([k, w], i) => expect(w, `${k} is not its share of the thirty steps`).toBeCloseTo(expected[i]!, 3))
-    expect(segs.reduce((a, [, w]) => a + w, 0), 'the composition does not account for every step').toBeCloseTo(100, 3)
-    // The accessible name reads the composition, every outcome by its word.
-    const why = meter.getAttribute('aria-label')!
-    for (const clause of ['9 succeeded', '4 failed', '15 cancelled', '2 dead_lettered']) expect(why).toContain(clause)
-    // The census text beside it is #148's, unchanged.
-    expect(container.querySelector('.wf-progress-text')!.textContent).toContain('9/30 done')
-  })
-
-  it('WF-1: an outcome no step ended in draws no segment, and one that all did fills the track', () => {
-    const { container } = card(ended('wf_clean', 3, { SUCCEEDED: 3 }))
-    expect(segmentsOf(container.querySelector('.wf-meter')!)).toEqual([['succeeded', 100]])
-  })
-
-  /** MUTATION: draw the composition on every row. A running row loses its progress fill. */
-  it('WF-1: a row that has not ended keeps its progress meter', () => {
-    const { container } = card(chain())
-    const meter = container.querySelector('.wf-meter')!
-    expect(meter.querySelector('.wf-meter-fill'), 'a running row lost its progress meter').not.toBeNull()
-    expect(meter.querySelector('.wf-seg'), 'a running row draws an outcome composition').toBeNull()
-  })
-
-  /**
-   * IN TS-4's VOCABULARY, which the settlement names: solid, the 2px rule on
-   * failed, the flat 'ended' bars for cancelled. Asked as the Timeline's own
-   * drawing -- whatever the cascade gives the ledger's outcome track,
-   * `.ol-meter > .ol-seg.<outcome>`, it must give the row's segment -- so the
-   * two cannot drift apart. (It asked `.stackcol > i.<outcome>` until the
-   * row-window Timeline's rules were deleted, #185 decision 7.)
-   *
-   * DEAD-LETTERED TAKES THE FAILED FORM. TS-4's stack has no fourth form for
-   * it: Activity counts a dead-lettered task as failed, and `stateTone` calls
-   * both `bad`. Each segment draws its own 2px cut at its left edge, so a
-   * dead-lettered segment is still a segment of its own.
-   *
-   * SUCCEEDED IS SOLID AND GREY, NOT `--ok`. TS-4's chart keeps its hues, but
-   * this is the row's meter, which §6.4 (the owner, 2026-09-24) and CH-17 keep
-   * free of healthy hue: a finished run is not a verdict.
-   *
-   * MUTATION: give a segment a fill of its own, drop the 2px rule, or paint
-   * succeeded `--ok`.
-   */
-  it('WF-1: draws each segment in the Timeline’s outcome forms (TS-4)', () => {
-    const { container } = card(ended('wf_ended', 30, ENDED_MIX))
-    const seg = (k: string) => {
-      const el = container.querySelector(`.wf-meter > .wf-seg.${k}`)
-      expect(el, `the row draws no ${k} segment`).not.toBeNull()
-      return el!
-    }
-    const stack = document.createElement('div')
-    stack.innerHTML = '<span class="ctl-track ol-meter"><i class="ol-seg failed"></i><i class="ol-seg cancelled"></i></span>'
-    document.body.appendChild(stack)
-    const ts4 = (k: string) => stack.querySelector(`.ol-meter > .ol-seg.${k}`)!
-    const FILL = ['background', 'background-color', 'background-image']
-    const EDGE = ['box-shadow']
-    const HUES = ['--ok', '--info', '--warn', '--bad', '--paused']
-    try {
-      for (const theme of THEMES) {
-        const drawn = (el: Element, props: readonly string[]) =>
-          cascade(SHEETS[theme], el, props, { width: 1440, theme }).winner?.value ?? null
-        for (const k of ['failed', 'dead-lettered']) {
-          expect(drawn(seg(k), FILL), `${theme}: ${k} is not TS-4's failed fill`).toBe(drawn(ts4('failed'), FILL))
-          const edge = drawn(seg(k), EDGE)
-          expect(edge, `${theme}: ${k} draws no 2px rule`).not.toBeNull()
-          expect(edge, `${theme}: ${k} is not TS-4's failed rule`).toBe(drawn(ts4('failed'), EDGE))
-        }
-        expect(drawn(seg('cancelled'), FILL), `${theme}: cancelled is not the flat ended bars`).toBe(
-          drawn(ts4('cancelled'), FILL),
-        )
-        expect(drawn(seg('succeeded'), FILL), `${theme}: succeeded is not solid`).not.toMatch(/gradient/)
-        const ink = paintOf(seg('succeeded'), FILL, theme)
-        expect(sameColour(ink, tokenColour('--text-dim', theme)), `${theme}: succeeded is not the meter's grey`).toBe(true)
-        for (const h of HUES) {
-          expect(sameColour(ink, tokenColour(h, theme)), `${theme}: a succeeded segment is painted ${h}`).toBe(false)
-        }
-      }
-    } finally {
-      stack.remove()
-    }
-  })
-
-  /**
-   * ONE FAILED STEP IN A LONG WORKFLOW STILL PAINTS `--bad` (review of #183).
-   * The failed and dead-lettered segments carry TS-4's 2px cut, drawn INSIDE
-   * the segment (`box-shadow: inset 2px 0 0 var(--surface)`). The 54px meter
-   * has a 3px axis, so its content is 51px under border-box, and one step of
-   * thirty is 1.7px: narrower than its own cut, which painted all of it
-   * `--surface`. The row drew a grey bar ending in a notch while its dot said
-   * FAILED -- and at 560px and below the state word and the census text are
-   * hidden, so on a phone nothing else on the row said so. Any workflow over
-   * 25 steps with a single failed or dead-lettered step drew it that way.
-   *
-   * ASKED AS THE PAINTED WIDTH, through the cascade: the track's content box
-   * (its width, less the axis, under whatever `box-sizing` the sheet gives
-   * it), the segment's share of it or its floor, less the cut. Every length is
-   * read from the shipped sheet, so a wider cut, a narrower meter or a thicker
-   * axis fails here rather than hiding a failure again. The other segments
-   * must be able to give up the width the floor takes, or the track's
-   * `overflow: hidden` would clip the last outcome instead.
-   *
-   * MUTATION: drop the floor on the failed and dead-lettered segments. One of
-   * thirty is 1.7px under a 2px cut.
-   */
-  it('WF-1: one failed or dead-lettered step of thirty still paints --bad, past its own cut', () => {
-    /** A declared length in px. Nothing declared is the initial 0; anything else unreadable fails by name. */
-    const lengthOf = (v: string | null, what: string): number => {
-      if (v === null || v.trim() === '0') return 0
-      const m = /^(-?[\d.]+)px$/.exec(v.trim())
-      expect(m, `${what} is ${v}, not a px length this can read`).not.toBeNull()
-      return Number(m![1])
-    }
-    /** Whether the cascade leaves a flex item able to shrink (the initial `flex-shrink` is 1). */
-    const shrinks = (el: Element, env: { width: number; theme: Theme }): boolean => {
-      const w = cascade(SHEETS[env.theme], el, ['flex-shrink', 'flex'], env).winner
-      if (w === null) return true
-      const v = w.value.trim()
-      if (w.property === 'flex-shrink') return Number(v) > 0
-      if (v === 'none') return false
-      const parts = v.split(/\s+/)
-      return !(parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) && Number(parts[1]) === 0)
-    }
-    for (const [label, counts, cls] of [
-      ['one failed of thirty', { SUCCEEDED: 29, FAILED: 1 }, 'failed'],
-      ['one dead-lettered of thirty', { SUCCEEDED: 29, DEAD_LETTERED: 1 }, 'dead-lettered'],
-      ['one failed and one dead-lettered of thirty', { SUCCEEDED: 28, FAILED: 1, DEAD_LETTERED: 1 }, 'failed'],
-    ] as const) {
-      const { container, unmount } = card(ended(`wf_${cls}`, 30, counts))
-      const meter = container.querySelector('.wf-meter')!
-      const seg = meter.querySelector<HTMLElement>(`:scope > .wf-seg.${cls}`)
-      expect(seg, `${label}: the row draws no ${cls} segment`).not.toBeNull()
-      const others = [...meter.querySelectorAll<HTMLElement>(':scope > .wf-seg')].filter((s) => s !== seg)
-      for (const theme of THEMES) {
-        for (const width of [1440, 390]) {
-          const at = `${label}, ${theme}, ${width}px`
-          const read = (el: Element, props: readonly string[]) =>
-            cascade(SHEETS[theme], el, props, { width, theme }).winner?.value ?? null
-          const trackW = lengthOf(read(meter, ['width']), `${at}: the meter's width`)
-          const axis = lengthOf(
-            read(meter, ['border-left-width', 'border-left', 'border-inline-start-width', 'border-width', 'border']),
-            `${at}: the axis`,
-          )
-          const content = read(meter, ['box-sizing']) === 'border-box' ? trackW - axis : trackW
-          expect(content, `${at}: the track measured nothing; this check would be vacuous`).toBeGreaterThan(20)
-          const share = (Number.parseFloat(seg!.style.width) / 100) * content
-          const floor = lengthOf(read(seg!, ['min-width', 'min-inline-size']), `${at}: the segment's floor`)
-          const shadow = read(seg!, ['box-shadow']) ?? ''
-          const cut = /inset\s+(-?[\d.]+)px/.exec(shadow)
-          expect(cut, `${at}: the ${cls} segment draws no inset cut (${shadow}); TS-4's rule moved`).not.toBeNull()
-          const painted = Math.max(share, floor) - Number(cut![1])
-          expect(
-            painted,
-            `${at}: the ${cls} segment is ${Math.max(share, floor).toFixed(2)}px and its ${cut![1]}px cut paints all of it --surface`,
-          ).toBeGreaterThan(0)
-          for (const o of others) {
-            expect(shrinks(o, { width, theme }), `${at}: a segment cannot give up the width the floor takes`).toBe(true)
-          }
-        }
-      }
-      unmount()
-    }
-  })
 
   /**
    * CH-17's RULING, ON WORKFLOWS (settled on #87, 2026-09-25). #182 found two
@@ -2840,10 +2060,16 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
    * `--ok`. A healthy state is a fact, not a verdict, so both go neutral, like
    * the chip and the dot: the word takes the row's `--text-dim`, and the rule
    * the node's own `--text-faint`. The dot beside each still says succeeded.
+   * The row's word went with the board's row (rebrand, 2026-10-01); the node
+   * rule is what is left to hold. THE NEUTRAL IS NOW THE BRAND'S: the rebrand
+   * tints a step in the vocabulary of its state (`.node.t-live` teal,
+   * `.t-park` violet, `.t-bad` red, `.t-neu` grey), so a succeeded step's edge
+   * is the grey `--s-neu` and not `--text-faint`. The ruling is unchanged: a
+   * healthy step draws no hue of any state.
    *
-   * MUTATION: put either green back.
+   * MUTATION: put the green back on the node rule.
    */
-  it('CH-17: a healthy workflow’s state word and node rule carry no state hue', () => {
+  it('CH-17: a healthy step’s node rule carries no state hue', () => {
     const tasks = new Map<string, Task>([
       ['t_a', task('t_a', 'SUCCEEDED', { started_at: iso(-120_000), completed_at: iso(-60_000) })],
     ])
@@ -2860,22 +2086,20 @@ describe('the settlements: what a finished row draws, and what a healthy one doe
         steps_read: 1,
       },
     })
-    const { container } = card(w, tasks, true)
-    const word = container.querySelector('.wf-state.ok')
-    expect(word, 'a succeeded workflow no longer carries .wf-state.ok; this check is vacuous').not.toBeNull()
+    const { container } = card(w, tasks)
     const node = container.querySelector('.node.ok')
     expect(node, 'a succeeded step no longer carries .node.ok; this check is vacuous').not.toBeNull()
-    const HUES = ['--ok', '--ok-ink', '--info', '--info-ink', '--warn', '--warn-ink', '--bad', '--bad-ink', '--paused']
+    const HUES = [
+      '--ok', '--ok-ink', '--info', '--info-ink', '--warn', '--warn-ink', '--bad', '--bad-ink', '--paused',
+      '--s-live', '--s-park', '--s-bad', '--s-warn',
+    ]
     for (const theme of THEMES) {
-      const ink = paintOf(word!, ['color'], theme)
-      expect(sameColour(ink, tokenColour('--text-dim', theme)), `${theme}: the row's healthy word is not --text-dim`).toBe(true)
       const rule = paintOf(node!, ['border-left-color', 'border-left', 'border-color', 'border'], theme)
       expect(
-        sameColour(rule, tokenColour('--text-faint', theme)),
-        `${theme}: the node's healthy rule is not --text-faint`,
+        sameColour(rule, tokenColour('--s-neu', theme)),
+        `${theme}: the node's healthy rule is not the brand neutral --s-neu`,
       ).toBe(true)
       for (const h of HUES) {
-        expect(sameColour(ink, tokenColour(h, theme)), `${theme}: the healthy word is painted ${h}`).toBe(false)
         expect(sameColour(rule, tokenColour(h, theme)), `${theme}: the healthy node rule is painted ${h}`).toBe(false)
       }
     }
@@ -2928,7 +2152,7 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
 
   it('prints the error’s first line on a failed node, whole in its title and on focus, and measures it', () => {
     const { w, tasks } = broken()
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const node = nodeNamed(container, 'join')
     const note = node.querySelector<HTMLElement>('.node-note')
     expect(note, 'a failed node shows no cause').toBeTruthy()
@@ -2970,7 +2194,7 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
 
   it('names the cause on a band holding failures, and in its accessible name', () => {
     const { w, tasks } = broken()
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     const band = container.querySelector<HTMLElement>('.wf-band')
     expect(band, 'the thirteen-wide stage is not a band; this case is vacuous').toBeTruthy()
     const cause = band!.querySelector<HTMLElement>('.wf-band-cause')
@@ -2981,24 +2205,21 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     expect(cause!.getAttribute('title')).toContain('scan-4: exit 1: the agent crashed')
     expect(band!.getAttribute('aria-label')).toContain('input collision: scan-0.md is staged by two parents')
     // A clean band has no cause line.
-    const clean = card(wideStage(13, Array(13).fill('SUCCEEDED')).w, wideStage(13, Array(13).fill('SUCCEEDED')).tasks, true)
+    const clean = card(wideStage(13, Array(13).fill('SUCCEEDED')).w, wideStage(13, Array(13).fill('SUCCEEDED')).tasks)
     expect(clean.container.querySelector('.wf-band')).toBeTruthy()
     expect(clean.container.querySelector('.wf-band-cause')).toBeNull()
   })
 
-  it('groups the row’s failures by a normalised cause', () => {
+  it('groups the workflow’s failures by a normalised cause, in the census', () => {
     const { w, tasks } = broken()
-    const { container } = card(w, tasks, false)
-    const text = container.querySelector<HTMLElement>('.wf-progress-text')!.textContent
-    expect(text).toBe('9/15 done · 5 failed: input collision · 1 failed: exit 1')
+    expect(censusOf(card(w, tasks).container)).toBe('9/15 done · 5 failed: input collision · 1 failed: exit 1')
     // Without the task read there is no cause to group, and the count stands alone.
-    const bare = card(w, null, false)
-    expect(bare.container.querySelector<HTMLElement>('.wf-progress-text')!.textContent).toBe('9/15 done · 6 failed')
+    expect(censusOf(card(w, null).container)).toBe('9/15 done · 6 failed')
   })
 })
 
 // ---------------------------------------------------------------------------
-// #330: the row's name, its pull request, and the graph's details panel
+// #330: the workflow's name in the inspector, and the graph's details panel
 // ---------------------------------------------------------------------------
 
 /** A two-step chain whose step tasks carry the spec's label as `metadata.unit`. */
@@ -3015,49 +2236,8 @@ function labelled(label: string | null): { w: Workflow; tasks: Map<string, Task>
   return { w, tasks }
 }
 
-/** A result summary whose git outcome names a pull request. */
-function withPr(url: string, number = 412): Record<string, unknown> {
-  return { git: { pull_request: { number, url, state: 'open', created: true } } }
-}
-
-const dispatchAs = (strategy: TaskDispatch['strategy'], role: TaskDispatch['role']): TaskDispatch => ({
-  strategy,
-  carrier: 'checkpoints',
-  role,
-  integrates: [],
-})
-
-describe('#330: the row leads with the label', () => {
+describe('#330: the label names the workflow', () => {
   pinTheClock()
-
-  it('leads with the spec label and puts the wf_ id on a second line', () => {
-    const { w, tasks } = labelled('workflows-board')
-    const { container } = card(w, tasks)
-    const bar = container.querySelector<HTMLElement>('.wf-bar')!
-    const name = bar.querySelector<HTMLElement>('.wf-name')
-    expect(name, 'the row has no name cell').toBeTruthy()
-    const lines = [...name!.children] as HTMLElement[]
-    expect(lines.map((l) => l.textContent)).toEqual(['workflows-board', 'wf_5e5ad3b6f7da4299a839'])
-    // The label leads; the id is still the `.id`, whole in its title.
-    expect(lines[0]!.className).toContain('wf-label')
-    expect(lines[1]!.className).toBe('id')
-    expect(lines[1]!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
-    expect(bar.querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
-  })
-
-  it('falls back to the id alone when there is no label, or no task was read', () => {
-    for (const [what, tasks] of [
-      ['no unit in the metadata', labelled(null).tasks],
-      ['a blank unit', labelled('   ').tasks],
-      ['no task read', null],
-    ] as const) {
-      const { container, unmount } = card(labelled(null).w, tasks)
-      const name = container.querySelector<HTMLElement>('.wf-bar .wf-name')!
-      expect(name.querySelector('.wf-label'), what).toBeNull()
-      expect(name.textContent, what).toBe('wf_5e5ad3b6f7da4299a839')
-      unmount()
-    }
-  })
 
   it('names the workflow by its label in the inspector head too', () => {
     const { w, tasks } = labelled('workflows-board')
@@ -3065,9 +2245,7 @@ describe('#330: the row leads with the label', () => {
       <WorkflowCard
         workflow={w}
         taskById={tasks}
-        expanded
         usage={{ kind: 'ready', usage: null }}
-        onToggle={noop}
         openStages={{}}
         onToggleStage={noop}
         loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
@@ -3084,9 +2262,7 @@ describe('#330: the row leads with the label', () => {
       <WorkflowCard
         workflow={w}
         taskById={labelled(null).tasks}
-        expanded
         usage={{ kind: 'ready', usage: null }}
-        onToggle={noop}
         openStages={{}}
         onToggleStage={noop}
         loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
@@ -3100,66 +2276,6 @@ describe('#330: the row leads with the label', () => {
   })
 })
 
-describe('#330: the row links the pull request the run opened', () => {
-  pinTheClock()
-
-  const run = (over: Partial<Task>, other: Partial<Task> = {}) => {
-    const w = workflow('wf_pr', [step('a', [], { task_id: 't_a' }), step('b', ['a'], { task_id: 't_b' })])
-    const tasks = new Map<string, Task>([
-      ['t_a', task('t_a', 'SUCCEEDED', other)],
-      ['t_b', task('t_b', 'SUCCEEDED', over)],
-    ])
-    return card(w, tasks)
-  }
-
-  it('shows PR #N on the row, linked, for the integrator’s pull request', () => {
-    const { container } = run({
-      dispatch: dispatchAs('integrate', 'integrator'),
-      result_summary: withPr('https://github.com/o/r/pull/412'),
-    })
-    const pr = container.querySelector<HTMLAnchorElement>('.wf-h a.wf-pr')
-    expect(pr, 'the row does not link the pull request').toBeTruthy()
-    expect(pr!.textContent).toBe('PR #412')
-    expect(pr!.getAttribute('href')).toBe('https://github.com/o/r/pull/412')
-    expect(pr!.getAttribute('rel')).toContain('noreferrer')
-    // NOT INSIDE THE BUTTON: an anchor in a button is invalid and would toggle the card.
-    expect(pr!.closest('button')).toBeNull()
-    // The number alone: the recorded state is a creation-time word.
-    expect(pr!.textContent).not.toMatch(/open|merged/)
-  })
-
-  it('does the same for a direct-pr step', () => {
-    const { container } = run({
-      dispatch: dispatchAs('direct-pr', null),
-      result_summary: withPr('http://forge.example/pr/7', 7),
-    })
-    expect(container.querySelector('.wf-h a.wf-pr')!.textContent).toBe('PR #7')
-  })
-
-  it('prints the number without a link when the URL is not http(s)', () => {
-    const { container } = run({
-      dispatch: dispatchAs('direct-pr', null),
-      result_summary: withPr('javascript:alert(1)', 9),
-    })
-    expect(container.querySelector('.wf-h a')).toBeNull()
-    const pr = container.querySelector<HTMLElement>('.wf-h .wf-pr')
-    expect(pr, 'a PR with a non-http URL lost its number too').toBeTruthy()
-    expect(pr!.textContent).toBe('PR #9')
-  })
-
-  it('names no PR from a contributor, a collect run, or a result with none', () => {
-    for (const [what, over] of [
-      ['a contributor', { dispatch: dispatchAs('integrate', 'contributor'), result_summary: withPr('https://x/pull/1') }],
-      ['a collect step', { dispatch: dispatchAs('collect', null), result_summary: withPr('https://x/pull/1') }],
-      ['no pull request', { dispatch: dispatchAs('direct-pr', null), result_summary: { git: {} } }],
-    ] as const) {
-      const { container, unmount } = run(over as Partial<Task>)
-      expect(container.querySelector('.wf-pr'), what).toBeNull()
-      unmount()
-    }
-  })
-})
-
 describe('#330: the graph’s details panel opens on the right', () => {
   pinTheClock()
 
@@ -3169,9 +2285,7 @@ describe('#330: the graph’s details panel opens on the right', () => {
       <WorkflowCard
         workflow={w}
         taskById={tasks}
-        expanded
         usage={{ kind: 'ready', usage: null }}
-        onToggle={noop}
         openStages={{}}
         onToggleStage={noop}
         loadAttempts={async () => ({ status: 'empty', fetchedAt: T0 })}
@@ -3307,7 +2421,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(nodeHeightAt('names')).toBe(Math.ceil(6 + 34 + 2 + 14 * 1.5 + 12 * 1.45 + 4))
     expect(nodeHeightAt('names')).toBeLessThan(Math.ceil(10 + 42 + 2 + 14 * 1.5 + 12 * 1.45 + 4))
     const { w, tasks } = fan(18)
-    const { container } = card(w, tasks, true, 'names')
+    const { container } = card(w, tasks, 'names')
     // EIGHTEEN SHARDS DO NOT FIT ONE ROW EVEN AT NAMES (a level never wraps,
     // owner decision 2026-09-30), so the stage is a band, closed, until it is
     // opened -- exactly like `wideStage`'s bands elsewhere in this file. This
@@ -3333,7 +2447,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(l.tier).toBe('details')
     // Beside the open details panel too: a chain is one card wide.
     fitsOneScreen(w, CANVAS_COLUMN - PANEL_COLUMN)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     expect(container.querySelectorAll('.node')).toHaveLength(3)
     for (const id of ['design', 'implement', 'review']) {
       const n = nodeNamed(container, id)
@@ -3390,7 +2504,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     )
     noOverlap(l)
 
-    const { container } = card(w, tasks, true, 'names')
+    const { container } = card(w, tasks, 'names')
     expect(openEveryBand(container)).toBe(1)
     const wrap = container.querySelector<HTMLElement>('.wf-canvas-wrap')!
     const r = cascade(STYLES, wrap, ['overflow-x', 'overflow'], { width: 1440 })
@@ -3420,7 +2534,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     }
     expect(autoTier(w.steps)).toBe('figures')
 
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     expect(openEveryBand(container)).toBe(1)
     expect(container.querySelectorAll('.node')).toHaveLength(20)
     for (const n of container.querySelectorAll('.node')) {
@@ -3448,7 +2562,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
       3,
     )
     const { w, tasks } = fan(3, false)
-    const { container } = card(w, tasks, true)
+    const { container } = card(w, tasks)
     expect(container.querySelector('.wf-band')).toBeNull()
     fireEvent.click(nodeNamed(container, 'shard-01'))
     expect(container.querySelector('.wf-split.has-panel .wf-panel')).toBeTruthy()

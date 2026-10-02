@@ -355,7 +355,11 @@ describe('the send panel', () => {
   it('TS-5 / TS-16: a plan with a step that would fail cannot be sent, and says which step, beside the button', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     const go = await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
-    // The fixture's first runner requires nothing, so the plan starts sendable.
+    // #118: no runner is preselected, so the untouched plan cannot be sent.
+    expect(go.hasAttribute('disabled')).toBe(true)
+    expect(sendHeading(container)).toBe('Not ready to send')
+    // A runner that requires nothing: now it can.
+    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="mock"]')!)
     expect(go.hasAttribute('disabled')).toBe(false)
     expect(sendHeading(container)).toBe('Ready to send')
 
@@ -507,14 +511,14 @@ describe('TS-20: a stage says "then", and "waits for" is said once, on each step
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
     const addStage = container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!
-    expect(visible(addStage).trim(), 'the add-a-stage button repeats "waits for everything above"').toBe('add a stage')
+    expect(visible(addStage).trim(), 'the add-a-stage button repeats "waits for everything above"').toBe('+ Add a stage')
     fireEvent.click(addStage)
     const second = () => container.querySelectorAll<HTMLElement>('.wfb-stage')[1]!
     const head = () => second().querySelector('.wfb-stage-h')!
     expect(visible(head()).trim()).toBe('then')
-    // The alongside cue stays.
-    const alongside = second().querySelector<HTMLButtonElement>('.wfb-steps > button.wfb-add')!
-    expect(visible(alongside)).toContain('runs alongside')
+    // The alongside cue is the tile's own label (#118).
+    const alongside = second().querySelector<HTMLButtonElement>('.wfb-steps > button.sbf-addstep')!
+    expect(visible(alongside).trim()).toBe('+ Add a step to this stage')
     fireEvent.click(alongside)
     expect(head().querySelector('.wfb-stage-say')?.textContent).toBe('2 steps run together')
     expect(visible(head())).not.toContain('everything above')

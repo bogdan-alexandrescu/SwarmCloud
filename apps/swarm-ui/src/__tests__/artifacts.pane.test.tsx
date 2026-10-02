@@ -343,15 +343,15 @@ afterEach(() => {
 // The tabs and the address
 // ---------------------------------------------------------------------------
 
-describe('the drawer has three panes: Details, Attempts, Artifacts', () => {
-  it('names them so, and #work/task/<id>/artifacts opens the third', async () => {
+describe('the drawer has four panes: Details, Attempts, Artifacts, Checkpoints', () => {
+  it('names them so, and #work/task/<id>/artifacts opens the third of four', async () => {
     await openPane(finishedRoutes())
     const tabs = await waitFor(() => {
       const list = drawer().querySelector('[role="tablist"][aria-label="Agent panes"]')
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     }, WAIT)
-    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts'])
+    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(tabs[2]!.getAttribute('aria-selected')).toBe('true')
     for (const title of ['Inputs', 'Outputs', 'Logs']) await sectionReady(title, /./)
   })

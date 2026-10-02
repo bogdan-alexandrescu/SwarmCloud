@@ -1,29 +1,26 @@
-import { useState } from 'react'
-import { loadCapacity } from './api'
+import { loadCapacity, type ResourceClasses } from './api'
+import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
-import { HelpCard, HelpLinks } from './HelpCard'
+import { HelpLinks } from './HelpCard'
+import { POOLS_POLL_MS } from './capacityPoll'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
-import { blockerVerdict, classUnits, headroomFigure, useResourceClasses, verdictCopy, verdictNeedsAPerson } from './Blockers'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
   POOL_LIMIT_UNSET,
   blockerCeiling,
   ceilingCopy,
-  headroomFor,
   needsAPerson,
   overCeiling,
+  poolGroup,
   poolKind,
   poolLabel,
-  poolLabelAmong,
   poolScope,
   setBy,
   type Capacity,
-  type Headroom,
   type Pool,
-  type PoolKind,
 } from './types'
 
 /**
@@ -40,39 +37,22 @@ import {
  * and is not pretended to be.
  *
  * ---------------------------------------------------------------------------
- * B4.4: WHERE THE THREE PARAGRAPHS WENT.
+ * THE PER-PROFILE "COULD START / HELD BACK BY" PANEL IS GONE (owner's
+ * decision, 2026-10-01, with the rebrand). It answered "how many more of each
+ * runner profile could start" from the CALLING tenant's pools; the Profiles
+ * screen's matrix (`ProfileMatrix`) answers the same question per profile and
+ * pool, so this screen is the ceilings alone.
  *
- * This screen carried ~85 words of explanation above and below its figures.
- * All three claims survive; none of them is a sentence any more.
- *
- *   THE CONJUNCTION -- "a task must clear EVERY pool at once; capacity is the
- *   MINIMUM across them, never a sum" -- is now the COLUMN NAME:
- *   `Could start (min across pools)`. §8.4(3). This is strictly stronger than
- *   the paragraph was. The paragraph sat above a table and had to be carried
- *   back down to the column it was about; a reader who scrolled past it read
- *   the figures with no qualifier at all. The parenthetical cannot be
- *   separated from the number it qualifies, and cannot be applied to the wrong
- *   column.
- *
- *   THE SCOPE -- "these are YOUR tenant's pools, not the platform's" -- is the
- *   `.ctl-card-note` on the Headroom panel, and a `Scope` column on every row
- *   of every family, which is where two figures of different scope could
- *   otherwise be compared (Trap E). The families used to carry one note each,
- *   read off their FIRST row, so an admin's Tenants family said "this tenant"
- *   above four tenants' pools (CP-2, #85).
- *
- *   THE EM-DASH RULE -- "an em dash is not a zero: it means the number was not
- *   measured" -- is `.ctl-mark`, in the row that has one. `is-unread` when a
- *   required pool could not be read, and an `uncapped` fact chip when nothing
- *   caps the profile at all. Those two were one sentence and are two different
- *   situations; the marks tell them apart where the sentence could not.
+ *   THE SCOPE -- "these are YOUR tenant's pools, not the platform's" -- is a
+ *   `Scope` column on every row of every family, which is where two figures of
+ *   different scope could otherwise be compared (Trap E). The families used to
+ *   carry one note each, read off their FIRST row, so an admin's Tenants
+ *   family said "this tenant" above four tenants' pools (CP-2, #85).
  *
  * The arguments are at `#help/pools-all-at-once`, `#help/tenant-scope` and
  * `#help/absent-vs-zero`, which is where they were already written down.
  */
 export function CapacityScreen() {
-  const [asTable, setAsTable] = useState(true)
-
   return (
     <Screen
       // "Pools", not "Capacity". The tab that leads here says Pools, the
@@ -83,6 +63,9 @@ export function CapacityScreen() {
       // OBJECTS, not the question they answer) decides which side gives way.
       title="Pools"
       load={loadCapacity}
+      // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
+      // pauses the timer while the tab is hidden.
+      pollMs={POOLS_POLL_MS}
       summary={(d) => {
         const paused = d.pools.filter(isPaused).length
         const over = d.pools.filter(overCeiling).length
@@ -108,36 +91,12 @@ export function CapacityScreen() {
     >
       {(d) => (
         <>
-          <Headroom capacity={d} />
-
-          {/* §6.11: THE ONLY CHROME A DATA SCREEN GETS ABOVE ITS CONTENT. The
-              toggle was a pair of bare buttons under a paragraph; it is now
-              the segmented control, right-aligned, with no words around it.
-              It is promoted above every family rather than sitting between
-              two of them, because it governs all of them. */}
-          <div className="ctl-toolbar">
-            <span className="ctl-eyebrow cap-eyebrow">Pools by family</span>
-            <div className="ctl-seg is-end">
-              <button type="button" aria-pressed={asTable} onClick={() => setAsTable(true)}>
-                Table
-              </button>
-              <button type="button" aria-pressed={!asTable} onClick={() => setAsTable(false)}>
-                Cards
-              </button>
-            </div>
-          </div>
-
-          <div className="cap-families">
-            {POOL_FAMILY_ORDER.map((kind) => {
-              const pools = d.pools
-                .filter((p) => poolKind(p.name) === kind)
-                .sort((a, b) => a.name.localeCompare(b.name))
-              if (pools.length === 0) return null
-              return (
-                <Family key={kind} kind={kind} pools={pools} asTable={asTable} viewer={viewerOf(d)} />
-              )
-            })}
-          </div>
+          {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
+              one table per family, with a "Needs action" group ahead of them
+              holding every pool a person has to act on (`needsAction`). A
+              pool appears once: the top group takes it out of its family.
+              The Cards view was the alternative set aside and is gone. */}
+          <CeilingTables pools={d.pools} viewer={viewerOf(d)} />
 
           <HelpLinks topics={CAPACITY_TOPICS} />
         </>
@@ -146,20 +105,6 @@ export function CapacityScreen() {
   )
 }
 
-/**
- * Per-runner-profile headroom: how many more agents of each kind could start
- * right now, and which pool is the one stopping more.
- *
- * The number is the minimum across the profile's pools divided by its weight,
- * because a task must clear all of them at once and each is incremented by
- * `units` rather than by one. THAT FACT IS THE COLUMN NAME, not a footnote.
- *
- * The pool list comes from pool_names_for for the CALLING tenant -- including
- * for an admin -- so an admin reading these as the platform's capacity is the
- * single most plausible misreading here. A platform-wide figure does not exist
- * today and is not faked by substituting another tenant's pools. The card's
- * note says whose figures these are, on every render.
- */
 /**
  * The tenant this read is scoped to: whose pool a row's `this tenant` means.
  *
@@ -196,258 +141,55 @@ function scopeWord(name: string, viewer: string | undefined): string {
   return `tenant ${owner}`
 }
 
-function Headroom({ capacity }: { capacity: Capacity }) {
-  // One task's weight per class, from `/v1/resource-classes` (#66), so a pool
-  // too small for one task is not drawn as a full one. Null until it answers.
-  // Above the early return: a hook is called on every render or on none.
-  const classes = useResourceClasses()
-  const profiles = Object.entries(capacity.runner_profiles)
-  if (profiles.length === 0) return null
-
-  const tenant = viewerOf(capacity)
-
-  const rows = profiles
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([name, profile]) => ({ name, profile, h: headroomFor(profile) }))
-
-  const unmeasured = rows.filter((r) => r.h.agents === null).length
-
-  return (
-    /* §B6.1: one box, and it is the table's. Headroom was the only panel on
-       this screen inside a card -- the six family tables below it are bare
-       `.ctl-table`s with their heading on the page -- so the same kind of
-       content was drawn two ways on one screen. */
-    <section className="section cap-headroom">
-      <div className="ctl-toolbar">
-        {/* NOT `tenant-scope` ON THE HEADING (B7.4). That topic was here to say
-            these figures are the CALLING tenant's and not the platform's -- and
-            the card already declares that on its own right-hand note, in words,
-            on every render, which is the note the comment below this one is
-            about. The topic is in the footer index.
-
-            THE `?` THAT IS HERE IS THE SCREEN'S ONE IN-CONTENT GLYPH, and it
-            MOVED HERE FROM THE `Could start` HEADER CELL (CP-11, visual QA
-            2026-09-25). `(min across pools)` says WHAT the arithmetic is; it
-            does not say that the reservation is all-or-nothing in a single
-            transaction, which is invariant 2 and the reason the answer is a
-            minimum rather than a sum. That is a platform rule a column name
-            cannot carry, so it keeps its glyph -- but in the header cell it
-            sat inside the `<thead>` that §B6.3 hides below 900px, so on a
-            phone it was clipped away while staying in the tab order, focusable
-            and invisible. The panel head is not hidden at any width.
-            `honesty.capacity.test.tsx` pins it outside the table. */}
-        <h2 className="ctl-card-title">
-          Headroom
-          <HelpCard topic="pools-all-at-once" />
-        </h2>
-        {/* TRAP D, AS AN ATTRIBUTE OF THE CARD. Every figure in this card is
-            this tenant's; the note is what stops an admin reading them as the
-            platform's. It is one line, mono and muted -- chrome, not copy. */}
-        <span className="ctl-card-note is-end">
-          {tenant ? `tenant ${tenant}` : 'your tenant'}
-        </span>
-      </div>
-
-      <div className="ctl-table is-scroll">
-        <table role="table">
-            <thead role="rowgroup">
-              <tr role="row">
-                <th role="columnheader" scope="col">Runner profile</th>
-                {/* THE CONJUNCTION LIVES HERE NOW. A task must clear every
-                    pool in its list at the same moment, so the figure is the
-                    minimum across them and never a sum -- and saying that in
-                    the column name attaches it to the number it governs. The
-                    stacked key below repeats the name IN FULL for the same
-                    reason: a phone hides this header, and a bare `Could start`
-                    there read the figure with no qualifier at all (CP-11). */}
-                <th role="columnheader" scope="col" className="is-num">
-                  {COULD_START}
-                </th>
-                {/* `(units)`, as every other column on this screen that counts
-                    them says it; the cells keep the app-wide `2u` (CP-24). */}
-                <th role="columnheader" scope="col" className="is-num">{WEIGHT}</th>
-                {/* Plural on purpose. A task must clear EVERY pool at once, so
-                    more than one can refuse at the same moment -- and while this
-                    column named a single one, an operator would raise it and
-                    nothing would move. */}
-                <th role="columnheader" scope="col">Held back by</th>
-                <th role="columnheader" scope="col">Backend</th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {rows.map(({ name, profile, h }) => {
-                const figure = headroomFigure(h)
-                // A PROFILE THE PLATFORM REFUSES HAS NO HEADROOM TO OFFER,
-                // whatever its pools say (CP-3). `/v1/capacity` did not send
-                // `available` until visual QA 2026-09-25 found `codex` -- off
-                // since its provider refused the tenant's credential -- drawn
-                // here with 10 that could start. The pools are still true; the
-                // figure is not an offer, so it is not drawn as one. Absent
-                // means available: an older API does not say, and the submit
-                // gate refuses a disabled profile regardless.
-                const off = profile.available === false
-                const reason = profile.disabled_reason || 'refused by the platform'
-                return (
-                  <tr
-                    role="row"
-                    key={name}
-                    className={
-                      off
-                        ? undefined
-                        : h.agents === 0
-                          ? 'over'
-                          : h.agents === null
-                            ? 'unmeasured'
-                            : undefined
-                    }
-                  >
-                    <th role="rowheader" scope="row">{name}</th>
-                    {/* THE CELL IS THE FIGURE AND NOTHING ELSE, so an absent
-                        one is an em dash with no digit anywhere in it. WHICH
-                        KIND of absence it is is drawn in `Held back by`, where
-                        there is room for a mark; the sentence is the cell's
-                        accessible name, which a `title=` was not. */}
-                    <td
-                      role="cell"
-                      data-label={COULD_START}
-                      className="is-num"
-                      aria-label={off ? `Disabled: ${reason}` : figure.title}
-                    >
-                      {off ? (
-                        <span className="ctl-chip is-bad">
-                          <i aria-hidden="true" />
-                          disabled
-                        </span>
-                      ) : figure.text === '—' ? (
-                        <span className="ctl-em">—</span>
-                      ) : (
-                        figure.text
-                      )}
-                    </td>
-                    <td role="cell" data-label={WEIGHT} className="is-num">{profile.units}u</td>
-                    <td role="cell" data-label="Held back by">
-                      {/* The reason is what holds a disabled profile back, and
-                          the only part of it a reader can act on -- so it is
-                          text on the row, not a tooltip. */}
-                      {off ? <span>{reason}</span> : <HeldBackBy h={h} units={classUnits(classes, profile.resource_class)} />}
-                    </td>
-                    <td role="cell" data-label="Backend">{profile.backend}</td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          {/* §8.4(4): PROVENANCE, ONCE, FOR THE WHOLE PANEL. How many of these
-              figures are measurements is a property of the read, not of each
-              row, so it is said here rather than repeated per cell. It is a
-              `<caption>` rather than a `.ctl-card-foot` now (§B6.1): the card
-              it was the foot of is gone, and a caption is the slot the one
-              box that is left already has for exactly this. */}
-          <caption>
-            {rows.length - unmeasured} of {rows.length} measured
-            {unmeasured > 0 && ` · ${unmeasured} not counted`}
-          </caption>
-        </table>
-      </div>
-    </section>
-  )
+/**
+ * True when a pool belongs in "Needs action" (owner decision 2026-10-01):
+ * `poolGroup` (types.ts) files it there by `blockerGroup`, the rule the
+ * Agents list's Waiting split uses -- paused, set to zero by a person, no
+ * limit set, over its ceiling (drift), or below one task of its class. A `resource:` pool is weighed
+ * against its class's `units` from the catalogue; no other pool has one class.
+ *
+ * It was "Needs a look", decided by this screen's own classification, which
+ * also took in a pool that was merely full or lowered by AIMD: two screens,
+ * two rules, and a busy pool filed beside one no wait will reopen. Those keep
+ * their marks in their family's table.
+ */
+export function needsAction(pool: Pool, classes: ResourceClasses | null): boolean {
+  const units = poolKind(pool.name) === 'resource' ? classUnits(classes, pool.name.slice('resource:'.length)) : null
+  return poolGroup(pool, units) === 'needs_action'
 }
 
 /**
- * EVERY pool refusing this profile, not the tightest one.
- *
- * The bug this replaces: `headroomFor` kept a running minimum and overwrote
- * `binding` on each new one, so with `resource:large` and `provider:anthropic`
- * both at their ceilings the cell named one of them. An operator raised it,
- * nothing changed, and the pool still refusing never appeared anywhere.
- *
- * A pause and a full pool are drawn differently because the remedies are
- * opposite -- resume it, versus wait or raise it -- and a paused pool can read
- * 0 of 8 units in use while admitting nothing at all, which is the case that
- * looks healthiest and is not.
- *
- * THE TWO ABSENCES ARE TWO MARKS. `not read` (dashed, warning-toned) is a
- * failure that is ours; `uncapped` is a measured fact about the platform and
- * is drawn as a fact, in `--info`, never as a verdict. One sentence used to
- * carry both and could not tell them apart.
+ * The Ceilings tab: "Needs action" first, then one table per family, each
+ * holding only the pools the top group did not take.
  */
-function HeldBackBy({ h, units }: { h: Headroom; units: number | null }) {
-  const marks = (
-    <>
-      {!h.complete && (
-        <span
-          className="ctl-mark is-unread"
-          title={`${h.unread.length} of this profile's pools could not be read.`}
-        >
-          not read
-        </span>
-      )}
-      {h.missing.length > 0 && (
-        <span className="ctl-chip is-info" title="No pool of this name is configured, so nothing caps it.">
-          <i aria-hidden="true" />
-          uncapped
-        </span>
-      )}
-    </>
-  )
-
-  if (h.blockers.length === 0) {
-    return (
-      <span className="cap-marks">
-        {/* A WORD, NOT THE DASH (CP-1). The read was complete and no pool is
-            refusing: that is a measured fact, and the em dash is this screen's
-            one mark for a figure nobody measured. It sat on every healthy row
-            directly above `5 of 5 measured`, contradicting the caption. */}
-        {h.complete && h.missing.length === 0 && 'none'}
-        {marks}
-      </span>
-    )
-  }
-  // Named against each other, so two refusing pools never share a chip's name
-  // (CP-15): `resource:browser` and `runner:browser` both printed `browser`.
-  const among = h.blockers.map((b) => b.pool)
-  const label = (pool: string) => poolLabelAmong(pool, among)
+function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
+  const classes = useResourceClasses()
+  const byName = (a: Pool, b: Pool) => a.name.localeCompare(b.name)
+  const act = pools.filter((p) => needsAction(p, classes)).sort(byName)
+  const rest = pools.filter((p) => !needsAction(p, classes))
   return (
-    <span className="cap-marks">
-      {h.blockers.map((b) => {
-        // A pool at ZERO refuses with the full pool's reason, and `0/0` in
-        // the full pool's red reads as "all of nothing is in use" -- the
-        // chip form of the live "busy platform-wide. (0/0)". The ceiling,
-        // not the reason, tells them apart; see `blockerCeiling`. So does a
-        // pool whose limit is below one task's weight (#66): `0/1` in red
-        // for a browser task no wait will admit is the same misreading.
-        const ceiling = blockerVerdict(b, units)
-        return (
-          <span
-            key={b.pool}
-            className={`ctl-chip ${verdictNeedsAPerson(ceiling) ? 'is-paused' : 'is-bad'}`}
-            title={`${b.pool} — ${b.reason}, ${verdictCopy(b, units) ?? `${b.active} of ${b.limit} units in use`}`}
-          >
-            <i aria-hidden="true" />
-            {label(b.pool)}
-            {ceiling === 'paused'
-              ? ' paused'
-              : ceiling === 'full'
-                ? ` ${b.active}/${b.limit}`
-                : ceiling === 'below-units' || ceiling === 'below-units-quota'
-                  ? ` limit ${b.limit} < ${units}u`
-                  : ' limit 0'}
-          </span>
-        )
+    <div className="cap-families">
+      {act.length > 0 && (
+        <Family title={`Needs action · ${act.length}`} className="cap-needs" pools={act} viewer={viewer} />
+      )}
+      {POOL_FAMILY_ORDER.map((kind) => {
+        const family = rest.filter((p) => poolKind(p.name) === kind).sort(byName)
+        if (family.length === 0) return null
+        return <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} />
       })}
-      {marks}
-    </span>
+    </div>
   )
 }
 
 function Family({
-  kind,
+  title,
+  className,
   pools,
-  asTable,
   viewer,
 }: {
-  kind: PoolKind
+  title: string
+  className?: string
   pools: Pool[]
-  asTable: boolean
   /** The tenant this read is scoped to, for the rows' `this tenant`. */
   viewer: string | undefined
 }) {
@@ -458,26 +200,19 @@ function Family({
   // every tenant's pool for an admin, and Providers holds the shared pool
   // beside per-tenant slices. The note is removed, as the owner decided.
   return (
-    <section className="ctl-card">
+    <section className={className === undefined ? 'ctl-card' : `ctl-card ${className}`}>
       <div className="ctl-card-head">
-        <h2 className="ctl-card-title">{FAMILY_TITLE[kind]}</h2>
+        <h2 className="ctl-card-title">{title}</h2>
       </div>
-      {asTable ? (
-        <div className="ctl-card-body is-flush">
-          <PoolTable pools={pools} viewer={viewer} />
-        </div>
-      ) : (
-        <div className="ctl-card-body">
-          <div className="cap-pool-grid">
-            {pools.map((p) => (
-              <PoolCard key={p.name} pool={p} scope={scopeWord(p.name, viewer)} />
-            ))}
-          </div>
-        </div>
-      )}
+      <div className="ctl-card-body is-flush">
+        <PoolTable pools={pools} viewer={viewer} />
+      </div>
     </section>
   )
 }
+
+const LEASED = 'Leased (units)'
+const CEILING = 'Ceiling (units)'
 
 function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
   return (
@@ -491,21 +226,18 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
                 this screen a row's numbers may be compared with. */}
             <th role="columnheader" scope="col">Scope</th>
             {/* "units", never "agents". Trap A: admission increments by the
-                resource class's units (1, 2 or 4), so active: 8 may be two
-                large agents or eight standard ones. §8.4(3) again: the caveat
-                is in the column name, where it cannot be scrolled away from
-                the figures it governs. B7.4 deleted the `?` that repeated it --
-                the parenthetical IS the caveat, and it is already in the one
-                place a reader cannot scroll past it. */}
-            <th role="columnheader" scope="col" className="is-num">In use (units)</th>
-            {/* THE CEILING IS UNITS TOO, and it says so (CP-24). This column
-                was bare while Pool limits wrote `Ceiling (units)` and a bare
-                `In use` -- the same two figures, each screen labelling the
-                other half. Both now say it on both. */}
-            <th role="columnheader" scope="col" className="is-num">Ceiling (units)</th>
-            <th role="columnheader" scope="col" className="is-num">Headroom</th>
+                resource class's units (1, 2 or 4), so 8 leased may be two
+                large agents or eight standard ones. The caveat is in the
+                column name, where it cannot be scrolled away from the
+                figures it governs. "Leased" because concurrency counts from
+                LEASED (invariant 3), not from RUNNING. */}
+            <th role="columnheader" scope="col" className="is-num">{LEASED}</th>
+            {/* THE CEILING IS UNITS TOO, and it says so (CP-24). */}
+            <th role="columnheader" scope="col" className="is-num">{CEILING}</th>
+            <th role="columnheader" scope="col">Use</th>
+            <th role="columnheader" scope="col">State</th>
             <th role="columnheader" scope="col">Set by</th>
-            <th role="columnheader" scope="col">Status</th>
+            <th role="columnheader" scope="col" aria-label="Links" />
           </tr>
         </thead>
         <tbody role="rowgroup">
@@ -521,6 +253,15 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
 function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
   const marks = classifyPool(pool)
   const by = setBy(pool)
+  const limit = pool.effective_limit
+  // UNROUNDED for the track: 1 unit of 300 is 0.3%, and rounding it to 0
+  // would hand the track a measured zero for a pool that holds something. A
+  // ceiling of 0 leaves no room at all, so the track is full in the
+  // classification's tone (#159 review of CP-14), never the not-measured hatch.
+  // No limit set (#374): the ceiling was never read, so the track is the
+  // not-measured hatch (null) and the cell says so, never `no room` or 0%.
+  const pct = limit === null ? null : limit > 0 ? Math.min(100, (pool.active / limit) * 100) : 100
+  const shown = limit === null ? 'no limit set' : limit > 0 ? `${Math.round((pool.active / limit) * 100)}%` : 'no room'
 
   return (
     <tr role="row" className={marks.row}>
@@ -529,30 +270,53 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="Scope">{scope}</td>
-      <td role="cell" data-label="In use (units)" className="is-num">{pool.active}</td>
-      <td role="cell" data-label="Ceiling (units)" className="is-num">
-        {pool.effective_limit === null || pool.hard_limit === null ? (
+      <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
+      <td role="cell" data-label={CEILING} className="is-num">
+        {limit === null || pool.hard_limit === null ? (
           // No limit set (#374): unknown, so no number -- not even a 0.
-          <i className="ctl-em" title={by.detail}>not set</i>
+          <i className="ctl-em" title={by.detail}>no limit set</i>
         ) : (
-          <>
-            {pool.effective_limit}
-            {pool.effective_limit < pool.hard_limit && (
-              <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-                /{pool.hard_limit}
-              </span>
-            )}
-          </>
+          limit
+        )}
+        {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
+          <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+            /{pool.hard_limit}
+          </span>
         )}
       </td>
-      <td role="cell" data-label="Headroom" className="is-num">
-        {pool.available === null ? <i className="ctl-em">—</i> : pool.available}
+      <td role="cell" data-label="Use">
+        <span className="cap-use">
+          <UtilTrack
+            pct={pct}
+            tone={marks.track}
+            meter={
+              limit === null
+                ? { label: `${poolLabel(pool.name)}: ${pool.active} units leased, no limit set`, now: pool.active, max: 0 }
+                : {
+                    label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units leased`,
+                    now: pool.active,
+                    max: limit,
+                  }
+            }
+          />
+          <span className="cap-use-pct">{shown}</span>
+        </span>
       </td>
-      <td role="cell" data-label="Set by" title={by.detail}>{by.term}</td>
-      <td role="cell" data-label="Status">
+      <td role="cell" data-label="State">
         <span className="cap-marks">
           <PoolMarks marks={marks} />
         </span>
+      </td>
+      {/* SET BY ONLY WHEN IT IS NOT "configured" (#125): the configured limit
+          is what applies to almost every row, and a column repeating it hid
+          the two rows where AIMD or quota had lowered it. */}
+      <td role="cell" data-label="Set by" title={by.detail}>
+        {by.term === 'configured' ? '' : by.term}
+      </td>
+      <td role="cell" data-label="Links" className="cap-links">
+        <a className="ctl-link" href="#capacity/holders">holders</a>
+        {' · '}
+        <a className="ctl-link" href="#admin/limits">limit</a>
       </td>
     </tr>
   )
@@ -674,92 +438,6 @@ function PoolMarks({ marks }: { marks: PoolClass }) {
     </>
   )
 }
-
-/**
- * One pool as a card: the proportion IS the card, so the figure gets the
- * figure tier (§6.3) rather than sitting at body size under a 30px number
- * that says the same thing.
- */
-function PoolCard({ pool, scope }: { pool: Pool; scope: string }) {
-  const limit = pool.effective_limit
-  const ratio = limit !== null && limit > 0 ? Math.min(1, pool.active / limit) : 0
-  const marks = classifyPool(pool)
-
-  return (
-    <div className="cap-pool">
-      <span className="cap-pool-name" title={pool.name}>
-        {poolLabel(pool.name)}
-      </span>
-
-      <b className="ctl-figure cap-pool-figure">
-        {pool.active}
-        {/* `/ 0` FOR A CEILING OF ZERO, not "no ceiling" (CP-14). A pool at 0
-            has a ceiling, and it is zero -- the `limit 0` mark below says so,
-            and a unit reading "no ceiling" beside it contradicted the mark. */}
-        {/* No limit set (#374): the ceiling is unknown, so no `/ 0`. */}
-        <span className="ctl-figure-unit">{limit === null ? '/ no limit set' : `/ ${limit}`}</span>
-      </b>
-
-      {/* THE ONE TRACK (§6.4), and it is the shared one (./primitives.tsx):
-          this card drew its own until the tracks were collapsed. A measured
-          nought draws the origin tick, which is what makes it different from
-          a widget that failed to paint.
-
-          NEVER THE NOT-MEASURED HATCH ON THIS CARD (#159 review of CP-14).
-          Every pool here carries an `effective_limit` the read returned, so
-          there is no unread ceiling for the hatch to stand for. It used to
-          pass `null` for a ceiling of 0, and the shared track drew that as
-          `is-unknown` beside `/ 0` and a `limit 0` mark, which say the
-          ceiling WAS read, and ignored the tone that mark carries. A ceiling
-          of 0 leaves no room at all, so the track is drawn full, in the
-          classification's tone: paused when a person set it, bad when quota
-          zeroed it -- the same answer as the chip beside it.
-
-          HELD AT 100, as it always was: an over-ceiling pool is said by the
-          `over ceiling` chip beside the track and by the bad fill, not by an
-          overflow segment. And UNROUNDED, which it was not: 1 unit of 300 is
-          0.3%, and rounding it to 0 would have handed the track a measured
-          zero for a pool that has something in it. */}
-      {/* THE TONE IS THE CLASSIFICATION'S (CP-14), so the track says what
-          the chip and the table's row say: a full pool is warn here too, not
-          bad, and there is no 80% band of this card's own. */}
-      {/* THE ONE CEILING THAT WAS NEVER READ (#374): a pool with no limit
-          set draws the not-measured hatch, which is exactly what it is. The
-          `no limit set` chip beside it carries the tone. */}
-      <UtilTrack
-        pct={limit === null ? null : limit > 0 ? ratio * 100 : 100}
-        tone={marks.track}
-        meter={
-          limit === null
-            ? { label: `${poolLabel(pool.name)}: ${pool.active} units in use, no limit set`, now: pool.active, max: 0 }
-            : {
-                /* "units", not "agents": admission counts weighted units, so 8 may
-                   be two large agents or eight standard ones. */
-                label: `${poolLabel(pool.name)}: ${pool.active} of ${limit} units in use`,
-                now: pool.active,
-                max: limit,
-              }
-        }
-      />
-
-      {/* The scope first, then the same marks the table draws -- `ok`
-          included, which this card used to leave out (CP-2, CP-14). */}
-      <span className="cap-marks">
-        <span className="cap-pool-scope">{scope}</span>
-        <PoolMarks marks={marks} />
-      </span>
-    </div>
-  )
-}
-
-/**
- * The Headroom table's two column names, written once because each is said
- * twice: in the header a desktop shows, and as the `data-label` a phone shows
- * in its place (§B6.3). Two literals is how the stacked key came to read a
- * bare `Could start` under a header that said `(min across pools)` (CP-11).
- */
-const COULD_START = 'Could start (min across pools)'
-const WEIGHT = 'Weight (units)'
 
 /**
  * The legend this screen used to end on, as links.

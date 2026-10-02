@@ -1,4 +1,4 @@
-import { useEffect, useRef, type Ref } from 'react'
+import { useEffect, useRef, useState, type Ref } from 'react'
 import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
 import { Absent } from './primitives'
 import { PageHead } from './Shell'
@@ -33,8 +33,25 @@ import { PageHead } from './Shell'
  * specifically.
  */
 export function HelpScreen({ topic }: { topic: string }) {
-  const wanted = topicFor(topic)
+  // H1 (admin-help.html, the owner's pick 2026-10-01): ONE PAGE PER GROUP, at
+  // `/help/<group>`, with a topic at `/help/<group>#<topic>`. `topic` is the
+  // route's tail: a group id, a topic id (whose group is then the page), or
+  // empty for `/help`, which keeps every group on one page. The topic prose
+  // is unchanged; rewriting it as You see / It means / What to do is not
+  // part of this change.
+  const groupId = HELP_GROUPS.some((g) => g.id === topic) ? topic : null
+  const wanted = groupId === null ? topicFor(topic) : null
+  const page = groupId ?? (wanted === null ? null : wanted.group)
   const target = useRef<HTMLDivElement | null>(null)
+  // SEARCH ACROSS ALL TOPICS, whatever group is open: titles, cards and the
+  // long form, case-insensitively. Nothing is fetched.
+  const [query, setQuery] = useState('')
+  const q = query.trim().toLowerCase()
+  const matches = (id: TopicId) => {
+    if (q === '') return true
+    const t = HELP[id]
+    return [t.title, t.short, ...t.long].some((x) => x.toLowerCase().includes(q))
+  }
 
   // Deep links are the point of the anchors, so one has to actually land.
   //
@@ -102,7 +119,12 @@ export function HelpScreen({ topic }: { topic: string }) {
           topic, which is a complete and correct answer -- so it is §6.9's
           fixed shape: the `real zero` mark, the heading, one sentence, a way
           back to the top of Help, and the one large break before the page. */}
-      {topic !== '' && wanted === null && (
+      <label className="help-search">
+        <span className="ctl-em">Search all topics</span>
+        <input type="search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="ceiling, parked, checkpoint…" />
+      </label>
+
+      {topic !== '' && groupId === null && wanted === null && (
         <div style={{ marginBottom: 'var(--ctl-s5)' }}>
           <Absent
             kind="zero"
@@ -115,8 +137,12 @@ export function HelpScreen({ topic }: { topic: string }) {
         </div>
       )}
 
+      {q !== '' && !TOPIC_IDS.some(matches) && <p className="ctl-em">No topic mentions {query.trim()}.</p>}
+
       {HELP_GROUPS.map((g) => {
-        const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id)
+        // A search reaches every group; otherwise a group page draws its own.
+        if (q === '' && page !== null && g.id !== page) return null
+        const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id && matches(id))
         if (ids.length === 0) return null
         return (
           // `help-group`: the hook for the heading that sticks while its group

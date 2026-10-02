@@ -270,17 +270,23 @@ function Viewer({ files, getFile }: { files: DiffFile[]; getFile?: DiffViewProps
     if (e.defaultPrevented || e.altKey || e.ctrlKey || e.metaKey) return
     const t = e.target as HTMLElement
     if (t.isContentEditable || t.closest('input, textarea, select, [contenteditable="true"]')) return
+    // Each handled key is consumed (`preventDefault`), so the shell's global
+    // `n` (Spine.tsx: N opens Submit) does not also navigate away from the diff.
     switch (e.key) {
       case 'n':
+        e.preventDefault()
         jump('file', 1)
         break
       case 'p':
+        e.preventDefault()
         jump('file', -1)
         break
       case 'j':
+        e.preventDefault()
         jump('hunk', 1)
         break
       case 'k':
+        e.preventDefault()
         jump('hunk', -1)
         break
       case '/':

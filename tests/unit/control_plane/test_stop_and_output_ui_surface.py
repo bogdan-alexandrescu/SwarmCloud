@@ -89,10 +89,33 @@ def test_only_the_stop_control_calls_the_cancel_route() -> None:
     # `write()` takes the value `route()` builds, never a bare string (CH-18,
     # swarm-ui fetch.ts), so the target is `route('/v1/tasks/{id}/cancel', …)`;
     # a bare template literal is still accepted in case one comes back.
+    #
+    # THE WORKFLOW'S CANCEL ROUTE IS A SECOND ROUTE, NOT A SECOND CALLER OF THIS
+    # ONE (Workflows V2, rebrand 2026-10-01): `POST /v1/workflows/{id}/cancel`
+    # has its own client function and its own confirmation (`CancelWorkflow`).
+    # The property is per route -- each cancel route has exactly one client
+    # function, called from exactly one confirming place -- so each is counted
+    # on its own, and a THIRD /cancel write still fails the total.
     writes = re.findall(r"write\(\s*(?:route\(\s*)?['\"`][^'\"`]*?/cancel['\"`]", code("api.ts"))
-    assert len(writes) == 1, (
-        f"{len(writes)} write() calls in api.ts target a /cancel path; the "
+    task_writes = [w for w in writes if "/v1/tasks/" in w]
+    workflow_writes = [w for w in writes if "/v1/workflows/" in w]
+    assert len(task_writes) == 1, (
+        f"{len(task_writes)} write() calls in api.ts target the task /cancel path; the "
         "cancel route should have exactly one client function."
+    )
+    assert len(workflow_writes) == 1, (
+        f"{len(workflow_writes)} write() calls in api.ts target the workflow /cancel path; "
+        "it should have exactly one client function."
+    )
+    assert len(writes) == 2, f"a /cancel route this test does not name is written to: {writes}"
+    wf_callers = [
+        path.name
+        for path in sorted(UI.glob("*.tsx"))
+        if "cancelWorkflow" in code(path.name) and path.name != "api.ts"
+    ]
+    assert wf_callers == ["Workflows.tsx"], (
+        f"cancelWorkflow is used from {wf_callers}; it must be used only from "
+        "Workflows.tsx, which owns the confirmation."
     )
     callers = [
         path.name

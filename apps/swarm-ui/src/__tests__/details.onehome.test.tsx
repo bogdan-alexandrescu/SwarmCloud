@@ -15,7 +15,7 @@
 //         only "changed nothing".
 //
 // MUTATIONS, one per block: put the `Code` h2 back in GitOutcome; draw the
-// per-attempt checkpoint table again; print `run` in the Headline; drop the
+// per-attempt checkpoint table again, or the checkpoint panel; print `run` in the Headline; drop the
 // cache sub-line; drop the listing from the Checkpoints tile; render the event
 // list on Details; drop the handed-on block from the Code section.
 
@@ -156,8 +156,13 @@ describe('#102 (a): Output and Code are one section, under one heading', () => {
   })
 })
 
-describe('#102 (b): checkpoints are listed once, in the Checkpoints section', () => {
-  it('draws no checkpoint table on the attempt card, and keeps the section table', async () => {
+describe('#102 (b): checkpoints are listed once, in the Checkpoints tab', () => {
+  // AGENTS V1 (agents.html, decided 2026-10-01): the checkpoint panel left
+  // Details for the agent's Checkpoints tab (`CheckpointsPane` draws
+  // `RunFiles`). Details keeps the attempt card's one-line count and the
+  // Checkpoints tile, and draws no checkpoint panel or table of its own.
+  // MUTATION: put `<RunFiles ... listing={listing} />` back in `Run`.
+  it('draws no checkpoint table on the attempt card, and no Checkpoints panel on Details', async () => {
     const el = await mount(
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001', 'ckpt-00002'] })] }),
       Promise.resolve(ok(page(['ckpt-00001', 'ckpt-00002']))),
@@ -166,13 +171,15 @@ describe('#102 (b): checkpoints are listed once, in the Checkpoints section', ()
     expect(card.querySelector('table'), 'the attempt card still lists its checkpoints').toBeNull()
     // Condensed, not lost: the card still says how many it wrote.
     expect(card.querySelector('.att-ckpt-line')?.textContent).toMatch(/2 written/)
-    let section: HTMLElement | undefined
-    await waitFor(() => {
-      section = [...el.querySelectorAll<HTMLElement>('section')].find(
-        (s) => s.querySelector('h2')?.textContent === 'Checkpoints',
-      )
-      expect(section?.querySelectorAll('tbody tr')).toHaveLength(2)
-    })
+    // The listing HAS landed -- the tile reads it -- so an absent panel is
+    // not a panel still loading.
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written · 2 in bucket'))
+    const panel = [...el.querySelectorAll<HTMLElement>('section')].find(
+      (s) => s.querySelector('h2')?.textContent === 'Checkpoints',
+    )
+    expect(panel, 'Details still draws the checkpoint panel the Checkpoints tab owns').toBeUndefined()
+    // Nor the listing's prefix, which only the panel draws.
+    expect(el.querySelector('.ckpt-prefix'), 'the checkpoint prefix is drawn on Details').toBeNull()
   })
 })
 

@@ -1515,37 +1515,3 @@ export function workflowPullRequest(
   }
   return found
 }
-
-/**
- * A CHAIN, for the board's `chains only` toggle: more than one step. A
- * one-step workflow is the wrapper direct dispatch creates around a single
- * task, and a board of them buries the multi-step runs the board is for.
- */
-export function isChain(workflow: Workflow): boolean {
-  return workflow.steps.length > 1
-}
-
-/** The `localStorage` key the toggle is remembered under, per viewer. */
-export const CHAINS_ONLY_KEY = 'swarm.workflows.chainsOnly'
-
-/**
- * The remembered toggle, OFF unless it was turned on. Every access is inside
- * try/catch: storage throws in a private window and in previews, and the board
- * then opens on the default.
- */
-export function rememberedChainsOnly(): boolean {
-  try {
-    return globalThis.localStorage?.getItem(CHAINS_ONLY_KEY) === '1'
-  } catch {
-    return false
-  }
-}
-
-export function rememberChainsOnly(on: boolean): void {
-  try {
-    if (on) globalThis.localStorage?.setItem(CHAINS_ONLY_KEY, '1')
-    else globalThis.localStorage?.removeItem(CHAINS_ONLY_KEY)
-  } catch {
-    // Nothing to do: the toggle still holds for this visit.
-  }
-}

@@ -391,3 +391,30 @@ describe('Tenants links each Enforced figure to its pool on Pool limits (#134)',
     }
   })
 })
+
+describe('Tenants draws status and credentials in the brand marks (admin-help.html, 2026-10-01)', () => {
+  it('draws a disabled tenant with the parked mark and an enabled one as the plain word', async () => {
+    const c = await roster()
+    const smoke = row(c, 'smoke').querySelector('td[data-label="Status"]')!
+    const mark = smoke.querySelector('[data-mark]')
+    // Held on purpose, not failed: the violet pause bars, never the red diamond.
+    expect(mark?.getAttribute('data-mark')).toBe('parked')
+    expect(mark?.getAttribute('data-hue')).toBe('park')
+    expect(visible(smoke)).toBe('disabled')
+    const eng = row(c, 'eng').querySelector('td[data-label="Status"]')!
+    expect(visible(eng)).toBe('enabled')
+    expect(eng.querySelector('svg'), 'the normal case carries a glyph').toBeNull()
+  })
+
+  it('warns, in amber, on a tenant with no key of its own, and lists the keys of one that has them', async () => {
+    const c = await roster()
+    const none = row(c, 'smoke').querySelector('td[data-label="Credentials"]')!
+    expect(none.querySelector('[data-mark="warn"]')).not.toBeNull()
+    expect(visible(none)).toBe('none registered')
+    // A warning, never a failure: a lent account can still run its work.
+    expect(none.querySelector('[data-hue="bad"]')).toBeNull()
+    const keys = row(c, 'eng').querySelector('td[data-label="Credentials"]')!
+    expect(keys.querySelector('[data-mark="warn"]')).toBeNull()
+    expect(keys.querySelectorAll('.tags > .tag')).toHaveLength(2)
+  })
+})

@@ -1,6 +1,6 @@
 // ONE READ OF THE RESOURCE-CLASS CATALOGUE, HOWEVER MANY SCREENS WANT IT (#227).
 //
-// THE DEFECT. Profile headroom, Profiles and Submit each mounted
+// THE DEFECT. Pools, Profiles and Submit each mounted
 // `useResourceClasses()` and each fired its own GET /v1/resource-classes, so
 // three screens on one tab were three reads of a table that changes only with
 // a deploy. The hook now goes through one shared, cached read: the first mount
@@ -29,8 +29,6 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { CapacityScreen } = await import('../Capacity')
-const { ProfilesScreen } = await import('../Profiles')
 const { ProfileFacts } = await import('../Submit')
 
 const CLASSES: ResourceClasses = {
@@ -75,12 +73,21 @@ const CAPACITY: Capacity = {
   generated_at: '2026-09-29T10:00:00Z',
 }
 
-function threeScreens() {
+/**
+ * Two of the screens that read the catalogue, mounted together. Pools and the
+ * Profile headroom cards were two of the three this test first mounted; both
+ * stopped reading it when they were removed (2026-10-01), so the claim is now
+ * asked of two Submit boxes -- two mounts of the hook on one tab.
+ */
+function twoMounts() {
   return render(
     <>
-      <CapacityScreen />
-      <ProfilesScreen />
-      <ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />
+      <div className="a">
+        <ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />
+      </div>
+      <div className="b">
+        <ProfileFacts name="browser" profile={BROWSER} pools={CAPACITY.pools} />
+      </div>
     </>,
   )
 }
@@ -88,15 +95,15 @@ function threeScreens() {
 const NEVER = /can never (be )?admit/i
 
 describe('the resource-class catalogue is read once for every screen that wants it', () => {
-  it('Profile headroom, Profiles and Submit mount with one GET /v1/resource-classes between them', async () => {
+  it('two screens mounted together share one GET /v1/resource-classes', async () => {
     api.loadCapacity.mockResolvedValue(ok(CAPACITY))
     api.loadResourceClasses.mockResolvedValue(ok({ resource_classes: CLASSES }))
-    const { container } = threeScreens()
-    // Every one of the three got the answer: Submit's room sentence and the
-    // headroom list both say "never", which only the units can decide.
-    await waitFor(() => expect(container.querySelector('.sbf-room')!.textContent).toMatch(NEVER), { timeout: 3000 })
-    await waitFor(() => expect(container.querySelector('.blocker-group.needs-action'), 'the headroom list never got the units').not.toBeNull(), { timeout: 3000 })
-    expect(api.loadResourceClasses, 'each screen fired its own read of the same table').toHaveBeenCalledTimes(1)
+    const { container } = twoMounts()
+    // Both got the answer: each room sentence says "never", which only the
+    // units can decide.
+    await waitFor(() => expect(container.querySelector('.a .sbf-room')!.textContent).toMatch(NEVER), { timeout: 3000 })
+    await waitFor(() => expect(container.querySelector('.b .sbf-room')!.textContent).toMatch(NEVER), { timeout: 3000 })
+    expect(api.loadResourceClasses, 'each mount fired its own read of the same table').toHaveBeenCalledTimes(1)
   })
 
   it('a screen mounted later is handed the answer already read', async () => {

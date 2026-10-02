@@ -992,11 +992,11 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
       }
 
       // ---- 2. text against that border ----------------------------------
-      // A TRANSPARENT BORDER IS NOT A DIVIDER. This sheet reserves several --
-      // `.ctl-nav-link` keeps a 2px transparent left border so that selecting
-      // it moves no text, and `.ov-link` keeps a 1px transparent bottom one so
-      // that hovering does not. Nothing is drawn, so nothing can be abutted,
-      // and counting them reported two rules as defects for doing the right
+      // A TRANSPARENT BORDER IS NOT A DIVIDER. This sheet reserves some --
+      // `.ov-link` keeps a 1px transparent bottom border so that hovering
+      // moves no text (the old rail's section links kept a 2px left one for
+      // the same reason). Nothing is drawn, so nothing can be abutted, and
+      // counting them reported two rules as defects for doing the right
       // thing.
       if (c === null || c.a <= 0.05) continue
       const r = insetToText(el, Side, unresolved, centred)

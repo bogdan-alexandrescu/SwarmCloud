@@ -9,12 +9,17 @@
 // edit field with the text "null".
 //
 // MUTATION: drop the `unset` branch in Capacity's `classifyPool`, or the
-// `unset` operand in AdminSettings' `arithmetic`. The chip, the card's figure
+// editor's empty-field handling in AdminSettings. The chip, the ceiling cell
 // or the editor's field then falls back to `ok`, `0` or "null", and the case
-// below that reads it fails by name.
+// below that reads it fails by name. (The per-profile card that drew `no limit
+// set` as a profile's ceiling was removed, owner decision 2026-10-01.)
+//
+// The pool card and the Headroom column this file once also read were removed
+// with the Capacity redesign; the table row's Ceiling and Use cells carry the
+// same facts now.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { Capacity, Pool, RunnerProfile } from '../types'
@@ -88,54 +93,31 @@ describe('Capacity draws a pool with no limit set as that, not as ok or limit 0'
     expect(row.className).toContain('is-paused')
   })
 
-  it('prints no number for the ceiling or the headroom', async () => {
+  it('prints no number for the ceiling, and a not-measured track', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<CapacityScreen />)
     const row = await capacityRow('tenant:eng')
     const ceiling = row.querySelector('td[data-label="Ceiling (units)"]')!.textContent ?? ''
-    expect(ceiling).toBe('not set')
-    expect(row.querySelector('td[data-label="Headroom"]')!.textContent).toBe('—')
-  })
-
-  it('says `no limit set` on the card too, with the not-measured track', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<CapacityScreen />)
-    await capacityRow('tenant:eng')
-    fireEvent.click(screen.getByRole('button', { name: 'Cards' }))
-    const card = [...document.querySelectorAll('.cap-pool')].find(
-      (c) => c.querySelector('.cap-pool-name')?.getAttribute('title') === 'tenant:eng',
-    ) as HTMLElement
-    expect(card).toBeDefined()
-    expect(card.querySelector('.cap-pool-figure')!.textContent).toContain('no limit set')
-    expect(card.querySelector('.cap-pool-figure')!.textContent).not.toContain('/ 0')
-    expect(card.querySelector('.ctl-util-track.is-unknown')).not.toBeNull()
-    expect(within(card).getByText('no limit set', { selector: '.ctl-chip' })).toBeDefined()
+    expect(ceiling).toBe('no limit set')
+    expect(ceiling).not.toMatch(/\d/)
+    expect(row.querySelector('.cap-use-pct')!.textContent).toBe('no limit set')
+    expect(row.querySelector('.ctl-util-track.is-unknown')).not.toBeNull()
   })
 })
 
 describe('Pool limits draws a pool with no limit set as that, not as 0 agents', () => {
-  it('says the profile has no limit set rather than computing a ceiling', async () => {
-    api.loadCapacity.mockResolvedValue(ok(capacity()))
-    render(<AdminSettingsScreen />)
-    const title = await screen.findByText('claude-code', { selector: '.ctl-card-title' }, WAIT)
-    const card = title.closest('.ctl-card') as HTMLElement
-    expect(card.querySelector('.ctl-figure')!.textContent).toContain('no limit set')
-    expect(card.querySelector('.ctl-figure')!.textContent).not.toMatch(/\d/)
-    const operand = card.querySelector('li[title="tenant:eng"]') as HTMLElement
-    expect(operand.className).toContain('is-binding')
-    expect(operand.querySelector('.adm-value')!.textContent).toBe('no limit set')
-    expect(card.querySelector('.ctl-card-foot')!.textContent).toContain('no limit set')
-  })
-
   it('opens the editor on an empty field, not "null", and will not save an empty field as 0', async () => {
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<AdminSettingsScreen />)
-    await screen.findByText('claude-code', { selector: '.ctl-card-title' }, WAIT)
-    const row = document.getElementById('limit-tenant:eng') as HTMLElement
+    const row = await waitFor(() => {
+      const el = document.getElementById('limit-tenant:eng')
+      expect(el).not.toBeNull()
+      return el as HTMLElement
+    }, WAIT)
     expect(row.querySelector('.adm-ceiling')!.textContent).toBe('no limit set')
-    fireEvent.click(within(row).getByRole('button', { name: 'Edit ceiling for tenant:eng' }))
-    const field = screen.getByLabelText('Hard limit for tenant:eng', { exact: false }) as HTMLInputElement
+    fireEvent.click(row.querySelector('button[aria-label^="Edit ceiling for tenant:eng"]') as HTMLElement)
+    const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement
     expect(field.value).toBe('')
-    expect((within(row).getByRole('button', { name: /save/i }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
   })
 })

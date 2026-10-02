@@ -8,7 +8,7 @@
          a machine running the light theme, which is the one place this app has
          no control over its own contrast. -->
     <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
-    <meta name="theme-color" content="#0b0d10" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#06101e" media="(prefers-color-scheme: dark)" />
     <title>SwarmCloud</title>
 
     <!-- THE FAVICON: the SwarmCloud mark, inline, 16px-first.
@@ -21,8 +21,8 @@
          (hex outline, six spokes, seven discs) was rasterised at 14, 16, 18,
          20, 24 and 28 px and looked at: below about 22px the 1px strokes land
          on the same pixels as the discs and it turns into grey noise. The
-         compact variant -- six discs on a 7.6 ring around a 3.5 core, no
-         strokes at all -- is legible at 14px. These are the same numbers
+         compact variant -- six 3.3 discs around a 4.9 core, no strokes at
+         all -- is legible at 14px. These are the same numbers
          `COMPACT` declares in src/Brand.tsx, and
          src/__tests__/brand.test.tsx renders the component and fails if this
          copy and that one ever disagree.
@@ -32,23 +32,14 @@
          ink on a dark one. A browser that does not render SVG favicons shows
          no icon, which is what it showed before this line existed.
 
-         Decoded, it is:
-           <svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'>
-             <style>circle{fill:#0b0d10}
-               @media(prefers-color-scheme:dark){circle{fill:#e8ecf1}}</style>
-             <circle cx='12'    cy='4.4'  r='2.4'/>
-             <circle cx='18.58' cy='8.2'  r='2.4'/>
-             <circle cx='18.58' cy='15.8' r='2.4'/>
-             <circle cx='12'    cy='19.6' r='2.4'/>
-             <circle cx='5.42'  cy='15.8' r='2.4'/>
-             <circle cx='5.42'  cy='8.2'  r='2.4'/>
-             <circle cx='12'    cy='12'   r='3.5'/>
-           </svg>
+         Decoded: the seven-dot compact Hive (src/Brand.tsx HEX_COMPACT and
+         COMPACT) on a 32-unit grid, #0369a1 on a light tab bar and #7cc8f8 on a
+         dark one -- the Open sky accent.
     -->
     <link
       rel="icon"
       type="image/svg+xml"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Cstyle%3Ecircle%7Bfill:%230b0d10%7D@media(prefers-color-scheme:dark)%7Bcircle%7Bfill:%23e8ecf1%7D%7D%3C/style%3E%3Ccircle cx='12' cy='4.4' r='2.4'/%3E%3Ccircle cx='18.58' cy='8.2' r='2.4'/%3E%3Ccircle cx='18.58' cy='15.8' r='2.4'/%3E%3Ccircle cx='12' cy='19.6' r='2.4'/%3E%3Ccircle cx='5.42' cy='15.8' r='2.4'/%3E%3Ccircle cx='5.42' cy='8.2' r='2.4'/%3E%3Ccircle cx='12' cy='12' r='3.5'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cstyle%3Ecircle%7Bfill:%230369a1%7D@media(prefers-color-scheme:dark)%7Bcircle%7Bfill:%237cc8f8%7D%7D%3C/style%3E%3Ccircle cx='16' cy='5.2' r='3.3'/%3E%3Ccircle cx='25.35' cy='10.6' r='3.3'/%3E%3Ccircle cx='25.35' cy='21.4' r='3.3'/%3E%3Ccircle cx='16' cy='26.8' r='3.3'/%3E%3Ccircle cx='6.65' cy='21.4' r='3.3'/%3E%3Ccircle cx='6.65' cy='10.6' r='3.3'/%3E%3Ccircle cx='16' cy='16' r='4.9'/%3E%3C/svg%3E"
     />
   </head>
   <body>

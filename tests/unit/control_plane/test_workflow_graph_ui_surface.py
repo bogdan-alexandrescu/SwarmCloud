@@ -316,10 +316,14 @@ def test_the_heading_prints_the_derived_state_and_nothing_else():
     on the server the fleet is running, which is the whole point.
     """
     source = _src("Workflows.tsx")
-    head = _body(source, "WorkflowCard")
+    # The sky-spine rebrand moved the state word out of WorkflowCard into the
+    # one mark every heading and list row shares (`WorkflowStateMark`); the
+    # card and the head carry that mark and no state text of their own.
+    mark = _body(source, "WorkflowStateMark")
+    head = _body(source, "WorkflowCard") + _body(source, "WorkflowHead") + mark
 
-    assert "workflowHeaderState(workflow)" in head
-    assert "{header.word}" in head
+    assert "workflowHeaderState(workflow)" in mark
+    assert "{h.word}" in mark
 
     # Neither ambiguous field is rendered by the card. `workflow.state` means
     # "derived" or "stored" depending on which server answered, and a heading
@@ -368,7 +372,7 @@ def test_the_step_count_is_printed_plainly():
         "denies is the per-step census, not the length of the steps array."
     )
     css = _src("styles.css")
-    for sel in (".wf-progress.untrusted", ".rollup.untrusted"):
+    for sel in (".rollup.untrusted",):
         body = _rule(css, sel)
         if body is None:
             continue

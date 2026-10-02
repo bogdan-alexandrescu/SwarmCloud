@@ -25,7 +25,7 @@
 // half, a seventh copy of the track could keep every state below and still be
 // the next place one is lost.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun, HoldersBoard, SpendRollup } from '../api'
@@ -492,7 +492,7 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
 // Capacity and Holders
 // ---------------------------------------------------------------------------
 
-describe('Capacity draws each pool card through the shared track', () => {
+describe('Capacity draws each pool row through the shared track', () => {
   it('a ceiling of 0 fills in its mark’s tone, a zero is ticked, a reading fills, and the track is a meter', async () => {
     api.loadCapacity.mockResolvedValue(
       ok<Capacity>({
@@ -509,15 +509,16 @@ describe('Capacity draws each pool card through the shared track', () => {
       }),
     )
     render(<CapacityScreen />)
-    fireEvent.click(await screen.findByRole('button', { name: 'Cards' }, WAIT))
-    await waitFor(() => expect(document.querySelectorAll('.cap-pool').length).toBe(5), WAIT)
+    // The Cards view was set aside on 2026-10-01 (capacity.html); the track
+    // it drew is now the Ceilings table's Use column, one per row.
+    await waitFor(() => expect(document.querySelectorAll('.cap-families tbody tr').length).toBe(5), WAIT)
 
     const card = (name: string) => {
-      const c = [...document.querySelectorAll('.cap-pool')].find(
-        (p) => p.querySelector('.cap-pool-name')?.getAttribute('title') === name,
+      const c = [...document.querySelectorAll('.cap-families tbody th[title]')].find(
+        (p) => p.getAttribute('title') === name,
       )
-      expect(c, `no card for ${name}`).toBeTruthy()
-      return track(c!)
+      expect(c, `no row for ${name}`).toBeTruthy()
+      return track(c!.closest('tr')!)
     }
 
     // #159 RE-POINT (CP-14, #85). This asserted `backend:a`, at a ceiling of 0,
@@ -551,7 +552,7 @@ describe('Capacity draws each pool card through the shared track', () => {
     for (const name of ['backend:a', 'backend:b', 'backend:c', 'backend:d', 'backend:e']) {
       const t = card(name)
       expect(t.getAttribute('role'), `${name}'s track is not a meter`).toBe('meter')
-      expect(t.getAttribute('aria-label')).toMatch(/units in use$/)
+      expect(t.getAttribute('aria-label')).toMatch(/units leased$/)
     }
   })
 })

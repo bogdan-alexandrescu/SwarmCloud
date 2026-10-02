@@ -135,20 +135,20 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
     const panes = [...drawer!.querySelectorAll('[role="tab"]')].map((b) => b.textContent?.trim())
-    // #184: `Details` (was `Detail`) and a third pane, `Artifacts`.
-    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts'])
+    // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
+    // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
+    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
       drawer!.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
     ).toBe('Attempts')
 
-    // And it is NOT in the rail: a section tab pointing at it would make it a
-    // destination again. (test_nav_headings_agree.py holds the other half of
-    // this -- every SectionBody case must have a tab, and vice versa.)
-    const railTabs = [...document.querySelectorAll('.ctl-rail [role="tab"]')].map((b) =>
-      (b.firstChild?.textContent ?? '').trim(),
+    // And it is NOT in the spine or the panel: a nav entry pointing at it would
+    // make it a destination again. (test_nav_headings_agree.py holds the other
+    // half of this -- every SectionBody case must have a tab, and vice versa.)
+    const nav = [...document.querySelectorAll('.sk-spine button, .sk-panel button')].map((b) =>
+      (b.textContent ?? '').trim(),
     )
-    expect(railTabs).not.toContain('Attempts')
-    window.location.hash = ''
+    expect(nav).not.toContain('Attempts')
   })
 })
 
@@ -166,98 +166,26 @@ describe('B2: provenance is context, not a destination', () => {
 // §B3 -- layout: regions, with widths
 // ===========================================================================
 
-describe('B3: the rail', () => {
-  it('is a 200px grid column, and the page keeps its gutter tokens', () => {
+describe('B3: the work area, now beside the Sky spine', () => {
+  it('is one grid column with the agent as a second, and keeps its gutter tokens', () => {
+    // The rail column went with the rebrand (2026-10-01): the spine and the
+    // panel are the shell's (Spine.tsx), outside `.app`. Their order, pages,
+    // collapse and lock are asserted in rebrand.test.tsx.
     const style = withStyles()
     const { container } = render(<div className="app" />)
     const app = getComputedStyle(container.querySelector('.app')!)
-
     expect(app.display).toBe('grid')
-    expect(app.gridTemplateColumns).toContain('var(--rail-w)')
-    expect(token('--rail-w')).toBe('200px')
-
-    // Still the content column the product header lines its wordmark up with.
-    expect(app.maxWidth).toBe('var(--app-max)')
+    expect(app.gridTemplateColumns).not.toContain('var(--rail-w)')
     expect(app.padding).toContain('var(--app-pad)')
     style.remove()
-  })
-
-  it('renders the three sections under Overview AND every section tab, at all times', () => {
-    render(<App />)
-    const rail = document.querySelector('.ctl-rail')
-    expect(rail, 'no rail').not.toBeNull()
-
-    // Four rail entries, in one fixed order, so a position means one thing.
-    const sections = [...rail!.querySelectorAll('.ctl-rail-group > .ctl-nav-link')].map(
-      (b) => b.textContent?.trim(),
-    )
-    // THREE SECTIONS AND A LANDING SCREEN, not six sections. `Runtimes` became
-    // a pane of Capacity and `History` dissolved -- Timeline into Work,
-    // Platform counts into Admin. The measurement behind it is ux-plan.md
-    // §1.4: fifteen screens grouped by which subsystem owned the data, so four
-    // of a reader's five questions were spread over ten destinations.
-    //
-    // WHAT THIS ASSERTION IS FOR IS THE ORDER AND THE COUNT, not the collapse.
-    // The rail's whole value is that a position means one thing, so a section
-    // appearing, disappearing or moving has to be a decision someone took
-    // rather than a diff nobody read.
-    //
-    // `Work` and `Capacity`, not `Agents` and `Pools`. Both of those named the
-    // section after its own first tab, and because both sections have more
-    // than one tab the rail drew the name twice -- `Agents > Agents`,
-    // `Pools > Pools` -- and so did the breadcrumb. The assertion below on
-    // `Holders` is the other half: the tab could drop the word `Capacity` only
-    // once the section carried it.
-    expect(sections).toEqual(['Overview', 'Work', 'Capacity', 'Admin'])
-
-    // NO SECTION MAY BE NAMED AFTER ONE OF ITS OWN TABS. The regression this
-    // file exists to catch, stated as the rule rather than as one spelling of
-    // it, so a future section cannot reintroduce it under a different name.
-    const railGroups = [...rail!.querySelectorAll('.ctl-rail-group')]
-    for (const g of railGroups) {
-      const name = g.querySelector('.ctl-nav-link')?.textContent?.trim()
-      const own = [...g.querySelectorAll('[role="tab"]')].map((b) =>
-        (b.firstChild?.textContent ?? '').trim(),
-      )
-      expect(own, `section "${name}" is named after one of its own tabs`).not.toContain(name)
-    }
-
-    // THE PROPERTY THAT MATTERS: the second level does not appear on demand.
-    // Capacity's six tabs are in the DOM while Overview is the open section,
-    // so the rail's geometry is a constant rather than something you re-read.
-    // The first text node, not `textContent`: an admin-gated tab appends the
-    // word "admin" as a marker span, and folding that into the label would
-    // make this assert on the marker rather than on the name.
-    const tabs = [...rail!.querySelectorAll('[role="tab"]')].map((b) =>
-      (b.firstChild?.textContent ?? '').trim(),
-    )
-    // THE THREE PANES THE COLLAPSE MOVED, each named here rather than left to
-    // the count below: a screen that loses its tab is still reachable by hash
-    // and still passes every routing test, so the only thing that notices is
-    // an assertion that says the tab exists.
-    expect(tabs, 'Runtimes lost its tab when its section dissolved').toContain('Runtimes')
-    expect(tabs, 'Timeline lost its tab when History dissolved').toContain('Timeline')
-    expect(tabs, 'Platform counts lost its tab when History dissolved').toContain('Platform counts')
-    // "Profile headroom", not "Runner profiles". The rename is what pays for
-    // Runtimes and this pane sharing a section: two adjacent tabs with
-    // near-synonymous labels is how a reader takes a per-tenant figure for a
-    // platform one, and the old pair was exactly that. Asserting the NEW name
-    // here is also what stops a revert being silent -- `Runner profiles` would
-    // otherwise route, render and read fine.
-    expect(tabs).toContain('Profile headroom')
-    expect(tabs).not.toContain('Runner profiles')
-    expect(tabs).toContain('Holders')
-    expect(tabs).toContain('Tenants')
-    // Work(5) + Capacity(6) + Admin(3). Overview has one pane and draws no
-    // second level -- one tab under one section is a duplicate of the section.
-    expect(tabs.length).toBe(14)
   })
 
   it('keeps the utility corner the heading test reads', () => {
     render(<App />)
     const util = document.querySelector('.ctl-nav-util')
     expect(util, 'tests/unit/control_plane/test_nav_headings_agree.py finds the utility button by this class').not.toBeNull()
-    expect(util!.querySelector('button')?.textContent?.trim()).toBe('API reads')
+    const labels = [...util!.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    expect(labels).toEqual(['Help', 'API reads'])
   })
 })
 
@@ -293,7 +221,8 @@ describe('B3: the inspector is a column, not an overlay, where two panes fit', (
 
     const text = media.map((m) => [...m.cssRules].map((r) => r.cssText).join('\n')).join('\n')
     expect(text).toContain('has-inspector')
-    expect(text).toContain('var(--inspector-w)')
+    // Agents V1 (2026-10-01): the list is the snapped column, the agent the rest.
+    expect(text).toContain('var(--list-w, 380px)')
     // Below it, the drawer stays the fixed overlay it already draws, which is
     // the right answer where two panes genuinely do not fit.
     expect(text).toContain('position: sticky')
@@ -515,15 +444,6 @@ describe('D2: compact data inside generous chrome', () => {
     expect(getComputedStyle(container.querySelector('.ctl-empty')!).padding).toBe(
       'var(--ctl-pad-chrome)',
     )
-    style.remove()
-  })
-
-  it('gives a control in the frame a target taller than a data row', () => {
-    const style = withStyles()
-    const { container } = render(<button className="ctl-nav-link" />)
-    expect(
-      Number.parseInt(getComputedStyle(container.querySelector('button')!).minHeight, 10),
-    ).toBeGreaterThanOrEqual(30)
     style.remove()
   })
 })
@@ -1348,21 +1268,21 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 
     /**
      * A HEAD WITH TWO ROWS, IN EVERY PLACE A HELD RULE NAMES A HEAD CELL
-     * (#223's review). Four of them:
+     * (#223's review). Three of them:
      *  - Tenants', as drawn: the name's head spans both rows, so the first
      *    cell of the second row is `Max active`;
      *  - one that opens with a group spanning the name column, so the head's
      *    first cell spans two columns and is the head of no one column;
-     *  - Pools' family table and Profile headroom's table (CP-18), which below
-     *    900px restate the held ceiling on their head's first cell because
-     *    CP-18's own percentage widths out-rank it -- the restatement is a held
-     *    rule too, and it must name the same one corner.
+     *  - Pools' family table (CP-18), which below 900px restates the held
+     *    ceiling on its head's first cell because CP-18's own percentage widths
+     *    out-rank it -- the restatement is a held rule too, and it must name
+     *    the same one corner.
      * At 390 each is scrolling with its name column held: only a corner that is
      * the first row's first cell AND one column wide is held, carries the held
      * width, and paints. Every other head cell is not sticky, takes no held
      * width, and paints nothing. At 1440 nothing is held and nothing paints.
      *
-     * MUTATION: widen the held rule's head branch, the corner's rule, or either
+     * MUTATION: widen the held rule's head branch, the corner's rule, or the
      * CP-18 restatement back to every head row (`thead > tr > th:first-child`),
      * or drop `:not([colspan])` from any of them.
      */
@@ -1378,17 +1298,12 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
         '<div class="cap-families"><div class="ctl-table is-scroll"><table><thead>' +
         '<tr><th scope="col" rowspan="2">Family</th><th scope="colgroup" colspan="2" class="is-num">Units</th></tr>' +
         '<tr><th scope="col" class="is-num">In use</th><th scope="col" class="is-num">Ceiling</th></tr>' +
-        '</thead><tbody><tr><th scope="row">global</th><td class="is-num">3</td><td class="is-num">8</td></tr></tbody></table></div></div>' +
-        '<section class="section panel"><dl class="kv"><dt>weight</dt><dd>1</dd></dl><div class="table-wrap is-scroll">' +
-        '<table class="pools"><thead>' +
-        '<tr><th scope="col" rowspan="2">Headroom</th><th scope="colgroup" colspan="2" class="n">Units</th></tr>' +
-        '<tr><th scope="col" class="n">Free</th><th scope="col" class="n">Held</th></tr>' +
-        '</thead><tbody><tr><th scope="row">global</th><td class="n">5</td><td class="n">3</td></tr></tbody></table></div></section>'
+        '</thead><tbody><tr><th scope="row">global</th><td class="is-num">3</td><td class="is-num">8</td></tr></tbody></table></div></div>'
       document.body.appendChild(host)
       try {
-        expect(host.querySelectorAll('thead').length).toBe(4)
-        expect(host.querySelectorAll('thead > tr:nth-child(2)').length, 'a fixture head lost its second row').toBe(4)
-        const CORNERS = ['Tenant', 'Family', 'Headroom']
+        expect(host.querySelectorAll('thead').length).toBe(3)
+        expect(host.querySelectorAll('thead > tr:nth-child(2)').length, 'a fixture head lost its second row').toBe(3)
+        const CORNERS = ['Tenant', 'Family']
         const HELD = /min\(45vw,\s*20ch\)/
         let asked = 0
         let held = 0
@@ -1422,8 +1337,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
             }
           }
         }
-        expect(asked).toBe(THEMES.length * WIDTHS.length * 17)
-        // Three real corners, at 390 only, in each theme; the spanning group is not one.
+        expect(asked).toBe(THEMES.length * WIDTHS.length * 13)
+        // Two real corners, at 390 only, in each theme; the spanning group is not one.
         expect(held).toBe(THEMES.length * CORNERS.length)
       } finally {
         host.remove()
@@ -2011,22 +1926,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(basis?.value, 'the message has to wrap under the field, not widen the cell').toMatch(/(^|\s)100%$/)
   })
 
-  it('AH-19: Pool limits\' operand figures align right in a fixed tabular track', () => {
-    // MUTATION: drop the operand grid, or lower it to (0,3,0) so the
-    // primitive's flex row wins by order.
-    const f = fragment(
-      '<ul class="ctl-facts is-rows adm-operands"><li class="ctl-fact"><b>anthropic · u-bogdan</b>25</li></ul>',
-    )
-    const li = pick(f, 'li')
-    expect(won(li, 'display', WIDE)).toBe('grid')
-    const template = won(li, 'grid-template-columns', WIDE) ?? ''
-    const last = splitTop(template, ' ').at(-1)
-    expect(ch(last), `the figure track is ${last}; it must be a fixed width in characters`).toBeGreaterThanOrEqual(6)
-    expect(won(li, 'justify-items', WIDE)).toBe('end')
-    expect(won(li, 'font-variant-numeric', WIDE)).toBe('tabular-nums')
-    expect(won(pick(f, 'b'), 'justify-self', WIDE), 'the key stays left').toBe('start')
-  })
-
   it('AH-18: a Help topic is a row of its region, and the deep-linked one takes the selection treatment', () => {
     // §13.3: a region is `.section`, and what repeats inside it draws nothing.
     // Every topic was a bordered, filled, rounded panel written inline.
@@ -2117,11 +2016,9 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
    * scrolls, and it only covers what passes under it if it paints the ground
    * behind it.
    *
-   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the product
-   * header, the breadcrumb head and the page head scroll with the page, the
-   * rail is sticky only in a column of its own at 900px and up, and below
-   * 900px it is static. If one of them starts to stick over the column (#139
-   * keeps a sticky phone strip open), this fails and asks for its height.
+   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the
+   * breadcrumb head and the page head scroll with the page. If one of them
+   * starts to stick over the column, this fails and asks for its height.
    *
    * MUTATION: drop `position: sticky` from the group heading, or its ground.
    * A later topic lands with its group heading gone. MUTATION:
@@ -2205,10 +2102,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       }
 
       // Nothing ELSE sticks over the column, so there is no second head to clear.
-      const heads = fragment('<header class="brand"></header><div class="ctl-head"></div><div class="head"></div>')
-      const over = [...heads.children]
-      if (env.width < 900) over.push(pick(fragment('<nav class="ctl-rail"></nav>'), '.ctl-rail'))
-      for (const el of over) {
+      // (The product header and the rail's phone strip were on this list until
+      // the Sky spine replaced both, rebrand 2026-10-01.)
+      const heads = fragment('<div class="ctl-head"></div><div class="head"></div>')
+      for (const el of [...heads.children]) {
         const pos = cascade(STYLES, el, ['position'], env).winner?.value ?? 'static'
         expect(
           /sticky|fixed/.test(pos),
@@ -2309,17 +2206,34 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('CH-6: API reads and Help mark the current page the way a section does', () => {
-    // MUTATION: `color: var(--info)` back on `.ctl-nav-util button.is-on`, or
-    // drop the rule's surface step or its rule.
+    // RE-POINTED BY THE REBRAND (2026-10-01): the utility corner is the Sky
+    // spine's foot (App.tsx `ctl-nav-util sk-foot`), and its buttons are spine
+    // items. A current Help or API reads is marked exactly as a current
+    // section is -- the same fill, ink and leading bar -- at every width.
+    // MUTATION: any rule on `.ctl-nav-util button` that restyles them (the
+    // rail's underline, left rule and padding outranked `.sk-ri` until the
+    // rail's rules were deleted), or an accent on the utility's on-state.
     const f = fragment(
-      '<nav class="ctl-rail"><div class="ctl-nav-util"><button class="is-on" aria-current="page">API reads</button></div></nav>',
+      '<nav class="sk-spine"><button class="sk-ri is-on" aria-current="page">Work</button>' +
+        '<div class="ctl-nav-util sk-foot"><button class="sk-ri is-on" aria-current="page">API reads</button></div></nav>',
     )
-    const b = pick(f, 'button')
-    expect(won(b, 'color', WIDE)).toBe('var(--text)')
-    expect(won(b, ['background', 'background-color'], WIDE)).toBe('var(--surface-2)')
-    expect(won(b, ['border-left-color', 'border-left', 'border-color', 'border'], WIDE)).toBe('var(--text)')
-    // Below 900px the strip is horizontal and the rule is the bottom edge.
-    expect(won(b, ['border-bottom-color', 'border-bottom', 'border-color', 'border'], PHONE)).toBe('var(--text)')
+    const buttons = [...f.querySelectorAll('button')]
+    expect(buttons).toHaveLength(2)
+    const [section, util] = buttons as unknown as [Element, Element]
+    for (const env of [WIDE, PHONE]) {
+      for (const prop of ['color', 'background', 'background-color', 'padding', 'border', 'border-left', 'text-decoration', 'text-decoration-line']) {
+        expect(won(util, prop, env), `${prop} at ${env.width}`).toBe(won(section, prop, env))
+      }
+      expect(won(util, 'content', env, 'before'), `the current utility draws no bar at ${env.width}`).toBe(
+        won(section, 'content', env, 'before'),
+      )
+      expect(won(util, ['background', 'background-color'], env, 'before')).toBe(
+        won(section, ['background', 'background-color'], env, 'before'),
+      )
+    }
+    // And the bar is really there, so the equalities above are not two nulls.
+    expect(won(section, 'content', WIDE, 'before')).not.toBeNull()
+    expect(won(section, ['background', 'background-color'], WIDE)).not.toBeNull()
   })
 
   it('CH-7: the `?` glyph is as tall as it is wide, not stretched by the button floor', () => {
@@ -2335,30 +2249,24 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('CH-8: every control reaches 44px at 390, by height or by hit area, with the type unchanged', () => {
     const f = fragment(
       '<div class="app">' +
-        '<nav class="ctl-rail"><button class="ctl-nav-link">Work</button>' +
-        '<div class="ctl-rail-tabs"><button role="tab">Agents</button></div>' +
-        '<div class="ctl-nav-util"><button>?</button></div></nav>' +
         '<div class="ctl-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="sbf-go">Send</button>' +
-        '<div class="wfb-step"><button class="sbf-offer">url</button></div>' +
         '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
         '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
         '</div>',
     )
     // MUTATION: move any of these phone rules above the base rule it has to
     // beat -- which is how `.ctl-seg > button` shipped -- or delete it.
+    // (The rail's three item kinds were on this list until the Sky spine
+    // replaced the rail, rebrand 2026-10-01.)
     for (const sel of [
-      '.ctl-nav-link',
-      '.ctl-rail-tabs button',
-      '.ctl-nav-util button',
       '.ctl-seg > button',
       '.limit-edit input',
       '.limit-edit button',
       '.ol-table-toggle',
       '.sbf-go',
-      '.wfb-step .sbf-offer',
     ]) {
       expect(px(won(pick(f, sel), 'min-height', PHONE)), `${sel} at 390`).toBeGreaterThanOrEqual(44)
     }
@@ -2428,18 +2336,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, '.scope'), ['margin-left', 'margin'], PHONE)).toBe('0')
     // MUTATION: drop `overflow-wrap: anywhere` from the identity cells.
     expect(won(pick(f, 'td.mono'), 'overflow-wrap', PHONE)).toBe('anywhere')
-  })
-
-  it('CH-14: the rail\'s items scroll into view clear of the fade', () => {
-    // MUTATION: drop `scroll-margin-inline-end` from any of the three.
-    const f = fragment(
-      '<nav class="ctl-rail"><button class="ctl-nav-link is-on">Work</button>' +
-        '<div class="ctl-rail-tabs"><button role="tab" aria-selected="true">Agents</button></div>' +
-        '<div class="ctl-nav-util"><button class="is-on">?</button></div></nav>',
-    )
-    for (const sel of ['.ctl-nav-link', '.ctl-rail-tabs button', '.ctl-nav-util button']) {
-      expect(won(pick(f, sel), 'scroll-margin-inline-end', PHONE), sel).toBe('var(--rail-fade)')
-    }
   })
 
   it('CH-15: the breadcrumb holds one line and the read age holds one width', () => {
@@ -2512,15 +2408,6 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     }
   })
 
-  it('TS-7: an offer inside a workflow step is a step off the step card', () => {
-    // MUTATION: drop the `--surface` fill from `.wfb-step .sbf-offer`.
-    const f = fragment('<div class="app"><div class="wfb-step"><button class="sbf-offer">url</button></div></div>')
-    const card = won(pick(f, '.wfb-step'), ['background', 'background-color'], WIDE)
-    const offer = won(pick(f, '.sbf-offer'), ['background', 'background-color'], WIDE)
-    expect(card).not.toBeNull()
-    expect(offer, 'the offer is painted in its own card\'s fill, at zero contrast').not.toBe(card)
-  })
-
   it('TS-13: the submit form selects without the accent and spends none on emphasis', () => {
     // MUTATION: the blue border/tint back on `.is-on`, the count back to
     // `--info`, or the consequence rule back to `--info`.
@@ -2568,17 +2455,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // deleted with it -- the ledger draws only work that ended. TS-22's rule
     // is held here for the pairs that remain: the Workflows row's segments and
     // the ledger's keys share one declaration each.
-    // MUTATION: give a key its own fill again.
-    const f = fragment(
-      '<span class="wf-meter"><i class="wf-seg failed"></i><i class="wf-seg cancelled"></i></span>' +
-        '<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>',
-    )
-    const cancelled = won(pick(f, '.wf-seg.cancelled'), ['background', 'background-image'], WIDE)
-    expect(cancelled).toMatch(/gradient/)
-    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toBe(cancelled)
-    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toBe(
-      won(pick(f, '.wf-seg.failed'), ['background', 'background-color'], WIDE),
-    )
+    // The Workflows row's segments (`.wf-meter > .wf-seg`) were deleted with the
+    // row that drew them (2026-10-01: no source rendered `.wf-meter` any more),
+    // so the ledger's keys are held to the fills they drew from them.
+    // MUTATION: drop a key's fill.
+    const f = fragment('<p class="ol-legend"><i class="ol-k is-bad"></i><i class="ol-k is-ended"></i></p>')
+    expect(won(pick(f, '.ol-k.is-ended'), ['background', 'background-image'], WIDE)).toMatch(/gradient/)
+    expect(won(pick(f, '.ol-k.is-bad'), ['background', 'background-color'], WIDE)).toContain('var(--')
   })
 
   it('TS-24: the dependency disclosure has a marker, a hover and a focus ring', () => {
@@ -2594,26 +2477,17 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(shut!, 'outline', { ...WIDE, states: ['focus-visible'] }) ?? '', 'no focus ring').toContain('var(--info)')
   })
 
-  it('CP-18: the family tables and the profile tables each share one set of columns', () => {
+  it('CP-18: the family tables share one set of columns', () => {
     // `table-layout: fixed` takes the widths from the head row, which is the
     // same in every table of a screen, so the columns line up down the page.
-    // MUTATION: drop `table-layout: fixed`, or the head widths, from either.
+    // MUTATION: drop `table-layout: fixed`, or the head widths.
     const pools = fragment(
       '<div class="cap-families"><div class="ctl-card"><div class="ctl-card-body"><div class="ctl-table is-stacked"><table>' +
         '<thead><tr><th>Pool</th><th class="is-num">In use (units)</th></tr></thead></table></div></div></div></div>',
     )
-    const profiles = fragment(
-      '<section class="section panel"><dl class="kv"></dl><div class="table-wrap is-stacked"><table class="pools">' +
-        '<thead><tr><th>Pool it must clear</th><th>Scope</th><th class="n">Units free</th></tr></thead></table></div></section>',
-    )
-    for (const [label, host, num] of [
-      ['Pools', pools, 'th.is-num'],
-      ['Profile headroom', profiles, 'th.n'],
-    ] as const) {
-      expect(won(pick(host, 'table'), 'table-layout', WIDE), label).toBe('fixed')
-      expect(won(pick(host, 'th'), 'width', WIDE), `${label}: the name column`).toMatch(/%$/)
-      expect(won(pick(host, num), 'width', WIDE), `${label}: a figure column`).toMatch(/%$/)
-    }
+    expect(won(pick(pools, 'table'), 'table-layout', WIDE), 'Pools').toBe('fixed')
+    expect(won(pick(pools, 'th'), 'width', WIDE), 'Pools: the name column').toMatch(/%$/)
+    expect(won(pick(pools, 'th.is-num'), 'width', WIDE), 'Pools: a figure column').toMatch(/%$/)
   })
 
   it('CP-19: the fields in an open account take the panel\'s width', () => {
@@ -2668,13 +2542,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(won(pick(f, 'div'), 'width', WIDE)).toBe('max-content')
   })
 
-  it('WF-16: the flags column is reserved on every row, and a mix chip is whole or absent', () => {
-    // MUTATION: `[flags] minmax(0, auto)` back.
-    const f = fragment('<button class="wf-bar"></button><span class="wf-mix"><span class="wf-chip">mock</span></span>')
-    const flags = trackAfter(won(pick(f, '.wf-bar'), 'grid-template-columns', WIDE), 'flags')
-    expect(flags, 'a content-sized flags track takes width from the name on the rows that have a flag').not.toMatch(
-      /auto|content/,
-    )
+  it('WF-16: a mix chip is whole or absent', () => {
+    // The flags-column half of WF-16 went with `.wf-bar`, the board row whose
+    // grid it held: no source renders that row any more (2026-10-01).
+    const f = fragment('<span class="wf-mix"><span class="wf-chip">mock</span></span>')
     // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
     // mid-word; or drop the one-chip height that hides the second line.
     const mix = pick(f, '.wf-mix')

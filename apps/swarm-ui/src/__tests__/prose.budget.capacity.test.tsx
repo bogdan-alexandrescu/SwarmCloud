@@ -45,6 +45,9 @@
 //   Accounts      (#379)  251       256   +4: the open row's "Holding now (N)"
 //                                         and "History" tabs, the only words
 //                                         the holder panel shows until clicked
+//   Holders       (#432)   --       110   +15: the Held for column (capacity.html
+//                                         §C, decided 2026-10-01), one duration
+//                                         of up to two tokens per lease row
 //
 // A ceiling that has to be RAISED is not a failure either -- a screen that
 // gains a genuinely new column gains words. It is a decision, and the point of
@@ -324,7 +327,7 @@ function topology(over: Partial<RuntimeTopology> = {}): RuntimeTopology {
 const BUDGET = {
   Pools: 215,
   Runtimes: 255,
-  Holders: 95,
+  Holders: 110,
   Accounts: 256,
 } as const
 
@@ -346,7 +349,8 @@ describe('the capacity group stays inside its prose budget', () => {
   it('Pools', async () => {
     api.loadCapacity.mockResolvedValue(ok(CAPACITY))
     render(<CapacityScreen />)
-    await screen.findAllByText(/claude-code/, undefined, WAIT)
+    // The ceiling tables, not the per-profile panel (removed 2026-10-01).
+    await waitFor(() => expect(document.querySelectorAll('.cap-families tbody tr').length).toBe(6), WAIT)
     report('Pools')
   })
 

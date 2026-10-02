@@ -64,7 +64,8 @@ function sources(dir: string): string[] {
  * Only `href` attributes and `location.hash` assignments, not every `#` in the
  * file: the stylesheet and the comments are full of `#agents/task/<id>` as
  * PROSE, describing what an address used to be, and prose about an old name is
- * not a link to it.
+ * not a link to it. A hash starts with a letter: `href="#..."` in a comment
+ * is the prose placeholder for "any old address", not a link to check.
  */
 function links(): { file: string; hash: string }[] {
   const found: { file: string; hash: string }[] = []
@@ -75,7 +76,7 @@ function links(): { file: string; hash: string }[] {
     // written -- and `checks.ts` holds more of them than the rest of the app
     // put together. Matching only the attribute form found 14 links and
     // reported them all sound while the eighteen that mattered went unread.
-    for (const m of text.matchAll(/href\s*[=:]\s*(?:"|'|`|\{"|\{'|\{`)#([A-Za-z0-9/_.-]+)/g)) {
+    for (const m of text.matchAll(/href\s*[=:]\s*(?:"|'|`|\{"|\{'|\{`)#([A-Za-z][A-Za-z0-9/_.-]*)/g)) {
       found.push({ file: file.slice(SRC.length + 1), hash: m[1]! })
     }
     for (const m of text.matchAll(/location\.hash\s*=\s*(?:'|"|`)#?([A-Za-z0-9/_.-]+)/g)) {
@@ -254,6 +255,6 @@ describe('the links the frame draws itself', () => {
     await act(async () => {
       close!.click()
     })
-    expect(window.location.hash, 'the drawer closed to a different list').toBe('#work/running/recent/failed')
+    expect(window.location.pathname + window.location.search, 'the drawer closed to a different list').toBe('/agents/recent?state=failed')
   })
 })

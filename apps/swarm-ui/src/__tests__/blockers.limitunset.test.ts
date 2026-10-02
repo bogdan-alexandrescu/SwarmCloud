@@ -9,10 +9,12 @@
 // has to set one. A null limit read as "not 0" would otherwise fall through to
 // `full` -- "busy, wait" -- which is the one remedy that cannot work.
 
+import { createElement } from 'react'
+import { render } from '@testing-library/react'
 import { describe, expect, it } from 'vitest'
 
-import { blockerCeiling, ceilingCopy, needsAPerson, POOL_LIMIT_UNSET, type ProfileBlocker } from '../types'
-import { blockerVerdict, ceilingFigure, ceilingMark, ceilingTitle, verdictGroup } from '../Blockers'
+import { blockerCeiling, blockerGroup, ceilingCopy, needsAPerson, POOL_LIMIT_UNSET, type ProfileBlocker } from '../types'
+import { blockerVerdict, CeilingTag, ceilingFigure } from '../Blockers'
 
 const unset: ProfileBlocker = {
   pool: 'tenant:eng',
@@ -31,7 +33,7 @@ describe('blocker ceiling for a pool with no limit set', () => {
 
   it('needs a person, and files under needs_action whatever group it arrived in', () => {
     expect(needsAPerson('limit-unset')).toBe(true)
-    expect(verdictGroup({ ...unset, group: 'no_room' }, undefined, null)).toBe('needs_action')
+    expect(blockerGroup({ ...unset, group: 'no_room' }, undefined)).toBe('needs_action')
   })
 
   it('says no limit is set and that somebody has to set one, never "limit 0" or busy', () => {
@@ -41,8 +43,12 @@ describe('blocker ceiling for a pool with no limit set', () => {
     expect(copy).toContain('somebody has to set its limit')
     expect(copy).not.toMatch(/limit 0|busy|paused by operator/)
     expect(ceilingFigure(unset)).toBe('no limit set · 0 units held')
-    expect(ceilingMark('limit-unset').word).toBe('no limit set')
-    expect(ceilingTitle('limit-unset')).toContain('Nobody set it to zero')
+    // The tag the submit box and the blocker list draw (the status marks
+    // `ceilingMark` / `ceilingTitle` fed went with the Profiles cards).
+    const { container } = render(createElement(CeilingTag, { blocker: unset }))
+    const tag = container.querySelector('.tag')!
+    expect(tag.textContent).toBe('no limit set')
+    expect(tag.getAttribute('title')).toContain('Nobody set it to zero')
   })
 
   it('leaves a pool set to zero on purpose as set-to-zero', () => {
@@ -62,7 +68,7 @@ describe('blocker ceiling for a pool below one task', () => {
   it('is below-units, needs a person and says the task can never be admitted', () => {
     expect(blockerCeiling(small, 2)).toBe('below-units')
     expect(needsAPerson(blockerCeiling(small, 2))).toBe(true)
-    expect(verdictGroup(small, undefined, 2)).toBe('needs_action')
+    expect(blockerGroup(small, undefined, 2)).toBe('needs_action')
     const copy = ceilingCopy(small, small.pool, 2)
     expect(copy).toContain('can never be admitted at this limit')
     expect(copy).toContain('somebody has to raise the limit to at least 2')
@@ -71,5 +77,6 @@ describe('blocker ceiling for a pool below one task', () => {
   it('is full at a limit one task fits under, and when the units are unknown', () => {
     expect(blockerCeiling({ ...small, limit: 2 }, 2)).toBe('full')
     expect(blockerCeiling(small, null)).toBe('full')
+    expect(blockerGroup({ ...small, limit: 2 }, undefined, 2)).toBe('no_room')
   })
 })
