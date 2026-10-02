@@ -97,8 +97,10 @@ FROM ${NGINX_IMAGE}
 # Upgrading the one named package, rather than `apk upgrade` of everything,
 # keeps the runtime otherwise identical to the pinned digest. nginx-unprivileged
 # runs as uid 101; the USER line hands it back after the root-only apk step.
+# Release 36970395891 (2026-10-02) refused the image again, this time over
+# pcre2 10.48-r0 (CVE-2026-103111, HIGH, fixed in 10.49-r0); same reason, same fix.
 USER root
-RUN apk upgrade --no-cache libexpat
+RUN apk upgrade --no-cache libexpat pcre2
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf
