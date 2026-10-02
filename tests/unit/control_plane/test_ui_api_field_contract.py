@@ -279,9 +279,13 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
 UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
     "Task": {
         "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",
+        "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
+        "inside it the address bar is the link",
     },
     "Workflow": {
         "steps": "declared as WorkflowStep[], whose own fields are checked separately",
+        "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
+        "inside it the address bar is the link",
     },
     "Capacity": {
         "runner_profiles": "declared as Record<string, RunnerProfile>, checked as RunnerProfile",

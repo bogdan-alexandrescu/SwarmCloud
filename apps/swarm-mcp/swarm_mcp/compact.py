@@ -46,7 +46,7 @@ from datetime import datetime, timezone
 from typing import Any, Callable
 
 from .client import TERMINAL, SwarmClient, SwarmError
-from .follow import event_type
+from .follow import console_link, event_type
 from .progress import (
     _PENDING,
     PENDING_POLL_CAP_SECONDS,
@@ -284,6 +284,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
     }
     if full.get("answer_unavailable_because"):
         out["answer_unavailable_because"] = clip(full["answer_unavailable_because"], 200)
+    if full.get("console"):
+        # The API's link, so the row's answer can say where the whole of it is.
+        out["console"] = full["console"]
     return out
 
 
@@ -362,6 +365,9 @@ def watch_progress(
             "terminal": bool(task.get("terminal")),
             "read": task["read"],
         }
+        link = console_link(task) if task["read"] == "ok" else None
+        if link is not None:
+            row["console"] = link
         abandoned = None
         if step_id is not None and task["read"] == "ok" and task.get("step_id") != step_id:
             abandoned = (
@@ -398,6 +404,13 @@ def watch_progress(
             progress.append(f"[{label}] stopped following: {clip(abandoned, 160)}")
         else:
             line, key = progress_line(client, task, stamp)
+            if link is not None and (first_call or task.get("terminal")):
+                # WHERE TO WATCH IT, on the row's FIRST line and its LAST: the
+                # link the API served, as served (owner decision 2026-10-01).
+                # Not on every line between -- each written line is re-read on
+                # every later turn of the row -- and not part of `key`, so a
+                # link never makes an unchanged line news.
+                line = f"{line} · console: {link}"
             if key != keys.get(task_id) or first_call:
                 progress.append(line)
             keys[task_id] = key

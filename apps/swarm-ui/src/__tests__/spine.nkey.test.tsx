@@ -81,3 +81,60 @@ describe('the N key', () => {
     expect(go).not.toHaveBeenCalled()
   })
 })
+
+/**
+ * N IS NOT A PAGE COMMAND WHILE SOMETHING SITS OVER THE PAGE. A modal (any
+ * `[role=dialog]` or `aria-modal`) or Pool limits' side editor (`aside.adm-side`)
+ * owns the keyboard while it is open: an N pressed there -- on its Save
+ * button, say -- navigating to /submit throws away what was being edited.
+ *
+ * MUTATION: drop the open-overlay guard from SkyShell's key handler and each
+ * case here goes red.
+ */
+describe('the N key while a dialog or the side editor is open', () => {
+  it('is ignored while a [role=dialog] is open, focus on its button', () => {
+    const go = shell(
+      <div role="dialog" aria-label="Agent t-1">
+        <button type="button">Close</button>
+      </div>,
+    )
+    fireEvent.keyDown(document.querySelector('[role="dialog"] button')!, { key: 'n' })
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(go).not.toHaveBeenCalled()
+  })
+
+  it('is ignored while an aria-modal element is open', () => {
+    const go = shell(
+      <div aria-modal="true" aria-label="confirm">
+        <button type="button">OK</button>
+      </div>,
+    )
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(go).not.toHaveBeenCalled()
+  })
+
+  it('is ignored while the Pool limits side editor is open', () => {
+    const go = shell(
+      <aside className="adm-side" aria-label="tenant:eng">
+        <button type="button">Save</button>
+      </aside>,
+    )
+    fireEvent.keyDown(document.querySelector('aside.adm-side button')!, { key: 'n' })
+    expect(go).not.toHaveBeenCalled()
+  })
+
+  it('opens /submit again once the dialog is gone', () => {
+    const go = vi.fn()
+    const view = (open: boolean) => (
+      <SkyShell section="overview" tab="now" title="Overview" go={go} foot={null}>
+        {open && <div role="dialog" aria-label="Agent t-1" />}
+      </SkyShell>
+    )
+    const { rerender } = render(view(true))
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(go).not.toHaveBeenCalled()
+    rerender(view(false))
+    fireEvent.keyDown(document.body, { key: 'n' })
+    expect(go).toHaveBeenCalledWith('submit')
+  })
+})

@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useRef, useState, type ReactNode } from 'react'
+import { createContext, Fragment, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Chip, DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
 import {
   ARTIFACT_PAGE_LIMIT,
@@ -85,7 +85,27 @@ import { AGE_TICK_MS, useNow } from './useNow'
  * thing, drawn with the error it came back with, and a route this API does not
  * serve yet is a sixth -- `not served`, never "none".
  */
-export function ArtifactsScreen({ taskId }: { taskId: string }) {
+/**
+ * WHICH OUTPUT IS OPEN, WHEN THE ADDRESS SAYS (owner decision 2026-10-01): the
+ * drawer's route names the artifact -- `/agents/<tab>/<id>/artifacts/<name>`
+ * -- and the pane opens it from there and writes it there on open and close.
+ * Null where no route is wired (a test rendering the pane alone), and the
+ * file list keeps its own state. Only the artifact is in the address, never
+ * which file of a patch is open: that stays the diff viewer's.
+ */
+const RoutedArtifact = createContext<{ name: string | null; open: (name: string | null) => void } | null>(null)
+
+export function ArtifactsScreen({
+  taskId,
+  open,
+  onOpen,
+}: {
+  taskId: string
+  /** The output the address names, or null for none. */
+  open?: string | null
+  /** Write an opened (or closed: null) output into the address. */
+  onOpen?: (name: string | null) => void
+}) {
   // The previous poll's answers, so a read whose object cannot change any
   // more -- a complete listing, a settled answer, a final transcript -- is not
   // asked for again on every tick. Keyed on the task: a drawer that stays
@@ -98,7 +118,10 @@ export function ArtifactsScreen({ taskId }: { taskId: string }) {
     return next
   }, [taskId])
 
+  const routed = useMemo(() => (onOpen === undefined ? null : { name: open ?? null, open: onOpen }), [open, onOpen])
+
   return (
+    <RoutedArtifact.Provider value={routed}>
     <Screen
       // KEYED ON THE TASK for the reason AgentDetailScreen's is: `Screen`
       // re-runs its load on its own nonce only, so a changed task id would
@@ -115,6 +138,7 @@ export function ArtifactsScreen({ taskId }: { taskId: string }) {
     >
       {(v, reading) => <Body v={v} reading={reading} />}
     </Screen>
+    </RoutedArtifact.Provider>
   )
 }
 
@@ -875,7 +899,10 @@ interface ListingCut {
  */
 function Files({ v }: { v: ArtifactsView }) {
   const { task, listing } = v
-  const [open, setOpen] = useState<string | null>(null)
+  const routed = useContext(RoutedArtifact)
+  const [local, setLocal] = useState<string | null>(null)
+  const open = routed !== null ? routed.name : local
+  const setOpen = routed !== null ? routed.open : setLocal
   const terminal = TERMINAL_STATES.has(task.state)
   const summary = task.result_summary as ResultSummary | null
   // `redaction_skipped`: files that left the pod neither rewritten nor scanned
@@ -1021,7 +1048,7 @@ function Files({ v }: { v: ArtifactsView }) {
                   entry={e}
                   unlisted={unlisted.has(e.name)}
                   open={e.name === open}
-                  onOpen={() => setOpen((cur) => (cur === e.name ? null : e.name))}
+                  onOpen={() => setOpen(open === e.name ? null : e.name)}
                 />
               ))}
             </tbody>

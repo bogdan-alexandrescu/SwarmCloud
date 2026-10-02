@@ -21,11 +21,11 @@ If you have no `swarm_workflow`, no `swarm_workflow_spec` or no
 connected in this session. Call nothing else: for READ SPEC answer with `path`,
 `spec` and `spec_digest` null and `error` `the sc plugin's SwarmCloud MCP server
 is not connected in this session, so the spec file was not read`; for SUBMIT
-answer with `workflow_id` null, `steps` empty, `repository`
+answer with `workflow_id` null, `console` null, `steps` empty, `repository`
 null, `repository_notes` empty, `spec_digest` null and `error` `the sc
 plugin's SwarmCloud MCP server is not connected in this session, so nothing was
 submitted`; for STATUS answer with `state` null, `state_note` saying the same,
-and `steps` empty.
+`console` null, and `steps` empty.
 
 ## READ SPEC
 
@@ -59,8 +59,12 @@ the branch is not pushed.
 Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 
 * `workflow_id` — the reply's `workflow_id`
+* `console` — the reply's `console`, copied character for character; null
+  when the reply has none. It is the workflow's console link as SwarmCloud's
+  API served it: never build one, never guess one
 * `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`
-  and `depends_on`, copied character for character
+  and `depends_on`, copied character for character, and its `console` (null
+  when that entry has none)
 * `repository` — the reply's `repository.url` (null when it is null)
 * `repository_notes` — the reply's `repository.notes` (empty list when it is
   absent). Uncommitted changes not visible to the remote agent, the branch's
@@ -72,7 +76,7 @@ Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 
 If `swarm_workflow` returns an error, nothing was submitted. Do not change the
 spec and do not call it again: call `StructuredOutput` with `workflow_id`
-null, `steps` empty, `repository` null, `repository_notes` empty,
+null, `console` null, `steps` empty, `repository` null, `repository_notes` empty,
 `spec_digest` null and `error` set to the error text, verbatim.
 
 ## STATUS
@@ -85,7 +89,9 @@ then call `StructuredOutput` with:
   written once at submission and not a state
 * `state_note` — the reply's `state_unavailable_because` or
   `state_incomplete_because`, whichever is present, else null
+* `console` — the reply's `console`, copied character for character; null
+  when the reply has none. Never build one
 * `steps` — for each entry of the reply's `steps`: its `step_id` and `state`
 
 If `swarm_workflow_status` returns an error, answer `state` null, `state_note`
-the error text, and `steps` empty.
+the error text, `console` null, and `steps` empty.

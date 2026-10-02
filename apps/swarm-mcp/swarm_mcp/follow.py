@@ -130,6 +130,44 @@ def follow_command(task_ids: list[str]) -> str:
     return terminal_command(f"swarm tail {' '.join(followable)}")
 
 
+def console_link(document: Any) -> str | None:
+    """The console link the API served on a task, workflow or step, or None.
+
+    THE API IS THE ONE SOURCE (owner decision 2026-10-01). swarm-api puts
+    `links.console` on every task, workflow and workflow step it serves --
+    `swarm_api.codec` builds it from the deployment's configured console
+    origin -- and every answer here prints that string as served. Nothing in
+    this package spells the console's host or its paths: a host restated in
+    the bridge, the CLI and the plugin is three places to drift, and the first
+    one wrong is a link that opens another deployment's console or nothing.
+
+    None for a null link (a deployment with no console, or a step with no task
+    yet), for an API too old to send `links`, and for anything that is not a
+    non-empty string. A caller OMITS the field then; it never invents one.
+    """
+    if not isinstance(document, dict):
+        return None
+    links = document.get("links")
+    if not isinstance(links, dict):
+        return None
+    link = links.get("console")
+    if isinstance(link, str) and link.strip():
+        return link.strip()
+    return None
+
+
+def with_console(answer: dict[str, Any], document: Any) -> dict[str, Any]:
+    """`answer`, with `console` set from `document`'s served link -- or left out.
+
+    Left out, not set to null: an absent key is "this deployment served no
+    link", and a null one would invite a caller to fill it in.
+    """
+    link = console_link(document)
+    if link is not None:
+        answer["console"] = link
+    return answer
+
+
 def new_cursor(streams: tuple[str, ...] = STREAMS) -> dict[str, Any]:
     """The cursor for a task nothing has been read from yet.
 
@@ -353,7 +391,7 @@ def _follow_one(
     logs, cur = _logs(client, task_id, cur, terminal=terminal, budget=budget, streams=streams)
 
     return (
-        {
+        with_console({
             "task_id": task_id,
             "read": "ok",
             "state": state,
@@ -375,7 +413,7 @@ def _follow_one(
             "git": git_brief(task) if terminal else None,
             "events": events,
             "logs": logs,
-        },
+        }, task),
         cur,
     )
 
@@ -1279,6 +1317,15 @@ def render(
         for event in task["events"].get("new") or []
     ]
     events.sort(key=lambda item: item[0])
+    # WHERE TO WATCH IT, once per task and first: the console link the API
+    # served (`console_link`), printed as served and never rebuilt. A task the
+    # API served no link for prints no line at all.
+    for task in report["tasks"]:
+        link = task.get("console")
+        seen = said.setdefault(task["task_id"], set())
+        if link and "console" not in seen:
+            seen.add("console")
+            lines.append(f"[{labels[task['task_id']]}] console: {link}")
     for _, label, event in events:
         lines.append(f"[{label}] {clock(event.get('at'))} · {event['type']}")
     for task in report["tasks"]:

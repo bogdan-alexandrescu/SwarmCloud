@@ -94,6 +94,47 @@ left as they were checked at `b0fff1b`; this list is what changed after.
   row in `RunFiles.tsx:222`. The constraints behind that shape are recorded
   under §6 S3 below ("S3 decision — owner, 2026-09-24").
 
+**Every "Still open" item above, re-checked 2026-10-02 against main**
+
+Added on 2026-10-02 in the same form as the list above: the rows checked at
+`b0fff1b` stay as they were. Each item of the "Still open" list is here, in
+its order.
+
+- **The workflow timeline and table views** (§2.3; §4 #2): shipped. The board
+  offers graph, timeline and table (`apps/swarm-ui/src/stepviews.ts:68`), rendered at
+  `apps/swarm-ui/src/Workflows.tsx:1726` and `apps/swarm-ui/src/Workflows.tsx:1745`.
+- **The duration bar** (§4 #3): partly shipped. `apps/swarm-ui/src/charts/AttemptPhases.tsx:6`
+  draws queue, cold start and run on one axis per attempt, with a `dispatched`
+  tick, mounted at `apps/swarm-ui/src/AgentDetail.tsx:1482`. It has three segments, not the
+  five-state queued → leased → dispatched → starting → running bar.
+- **Peak RSS over time** (§4 #4): shipped, a step line
+  (`apps/swarm-ui/src/charts/PeakMemory.tsx:222`), mounted at `apps/swarm-ui/src/AgentDetail.tsx:1963`.
+- **The checkpoint strip** (§4 #6): shipped (`apps/swarm-ui/src/charts/CheckpointStrip.tsx:85`),
+  on the attempt at `apps/swarm-ui/src/AgentDetail.tsx:2564`.
+- **The diffstat** (§4 #7): shipped as diverging bars
+  (`apps/swarm-ui/src/charts/Diffstat.tsx:65`), mounted at `apps/swarm-ui/src/AgentDetail.tsx:2973`.
+- **`input_from` edges** (§4 #1, #9): partly shipped. Edges are still laid out
+  from dependencies, because every data edge is also a `depends_on`
+  (`apps/swarm-ui/src/dag.ts:897`). Each drawn edge is now marked data or ordering
+  (`apps/swarm-ui/src/dag.ts:1175`).
+- **Scrubbers** (§2.3): shipped, the inspector's two
+  (`apps/swarm-ui/src/WorkflowViews.tsx:728`).
+- **Events paging** (§6 S1): the route is paged (above), and the UI half is
+  still open. The client reads one page, oldest first. No screen sends
+  `order=desc` or follows the page token (`apps/swarm-ui/src/api.ts:163`).
+- **Cross-task attempts** (§6 S4): the route shipped (above), and the UI half
+  is still open. No screen calls `GET /v1/attempts`; attempts are read per
+  task (`apps/swarm-ui/src/api.ts:1628`).
+- **Checkpoint content** (§6 S3): shipped in #29 (above).
+- **§1.1(b), the duplicate `@keyframes pulse`**: fixed. No `@keyframes pulse`
+  is left. The two are `ctl-placeholder-pulse` (.5 → .85,
+  `apps/swarm-ui/src/styles.css:992`) and `ctl-live-pulse` (`apps/swarm-ui/src/styles.css:3966`).
+- **§1.1(c), the duplicate `.filters`**: fixed. No `.filters` rule is left
+  (`apps/swarm-ui/src/styles.css:2804` says why).
+
+The "Fencing fields" row's last sentence still holds: no screen reads
+`current_generation` itself. The type now sits at `apps/swarm-ui/src/types.ts:606`.
+
 **The six questions in §8: five answered, Q2 half answered**
 
 - **Q4, the chart library: visx.** The owner decided it on 2026-09-22 (the

@@ -405,7 +405,7 @@ describe('#278: a step that changed nothing but handed on a diff says so', () =>
     expect(section, 'no Code section').toBeTruthy()
     expect(section.textContent).toContain('changed nothing in the repository')
     await waitFor(() => expect(section.textContent).toContain('+3 −1 in 2 files, handed to fix as change.diff'))
-    await waitFor(() => expect(section.querySelector('.art-viewer .art-diff')).not.toBeNull())
+    await waitFor(() => expect(section.querySelector('.art-viewer .diff')).not.toBeNull())
     const pr = section.querySelector<HTMLAnchorElement>('a[href="https://github.com/o/r/pull/42"]')
     expect(pr, 'no link to the integrator’s pull request').not.toBeNull()
     expect(pr!.textContent).toContain('#42')

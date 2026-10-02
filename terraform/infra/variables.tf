@@ -378,6 +378,22 @@ variable "frontend_hostname" {
   default     = ""
 }
 
+variable "pr_console_links" {
+  description = <<-EOT
+    Whether a worker appends the workflow's and the agent's console links to
+    the body of a pull request it opens (rendered as SWARM_PR_CONSOLE_LINKS
+    onto the scheduler, which passes it to every worker through
+    scheduler.dispatch.worker_env). Needs a console: with no frontend there is
+    no link to append, whatever this says.
+
+    OFF BY DEFAULT: off until the owner has seen it on a real PR. A PR body is
+    read by people outside this platform, and a link they cannot open (the
+    console is behind IAP) is noise in someone else's repository.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "frontend_iap_audiences" {
   description = <<-EOT
     Audiences swarm-api accepts on an IAP assertion, one per backend service:

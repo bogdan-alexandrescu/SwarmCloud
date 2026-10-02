@@ -1,4 +1,5 @@
-// THE DIFF VIEWER, AS RENDERED (#310 step 1b-1d).
+// THE DIFF VIEWER, AS RENDERED (#310 step 1b-1d; a file list and one file
+// since the owner decision of 2026-10-01).
 //
 // Every claim the viewer makes is asserted on the DOM it produces: which rows
 // exist, what their gutters say, what a control's accessible name is, where
@@ -6,7 +7,7 @@
 // from the viewer's own fallback viewport, and "scrolled to" is read off the
 // scroller's `scrollTop`, which jsdom stores as written.
 
-import { act, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DiffView } from '../../diff/DiffView'
@@ -38,6 +39,16 @@ function fileRow(path: string): HTMLElement | undefined {
   return rows('file').find((r) => r.getAttribute('data-path') === path)
 }
 
+/** Open a file from the list, by its path. */
+function openFile(path: string): void {
+  const nav = screen.getByRole('navigation', { name: 'Files in this diff' })
+  const row = Array.from(nav.querySelectorAll<HTMLElement>('button.diff-file')).find(
+    (b) => b.getAttribute('data-path') === path,
+  )
+  if (!row) throw new Error(`no list row for ${path}`)
+  fireEvent.click(row)
+}
+
 function linesOf(path: string): HTMLElement[] {
   return rows().filter((r) => r.getAttribute('data-path') === path && r.getAttribute('data-diff-row') !== 'file')
 }
@@ -62,54 +73,45 @@ describe('the file list', () => {
   it('lists every file with its added and removed counts', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
     const nav = screen.getByRole('navigation', { name: 'Files in this diff' })
-    const links = within(nav).getAllByRole('button')
+    const links = Array.from(nav.querySelectorAll<HTMLElement>('button.diff-file'))
     expect(links).toHaveLength(10)
-    const src = links.find((b) => b.textContent?.includes('src.txt'))!
+    const src = links.find((b) => b.getAttribute('data-path') === 'src.txt')!
     expect(src.textContent).toContain('+2')
     expect(src.textContent).toContain('−2')
-    const del = links.find((b) => b.textContent?.includes('deleted.txt'))!
+    const del = links.find((b) => b.getAttribute('data-path') === 'deleted.txt')!
     expect(del.textContent).toContain('+0')
     expect(del.textContent).toContain('−2')
   })
 
-  it('scrolls to a file when it is clicked, and renders it', () => {
+  it('draws only the open file, and a click on a row opens another', () => {
     render(<DiffView patch={bigPatch(5, 2000)} />)
+    expect(fileRow('big0.txt')).toBeDefined()
     expect(fileRow('big3.txt')).toBeUndefined()
-    fireEvent.click(screen.getByRole('button', { name: /^big3\.txt/ }))
+    openFile('big3.txt')
     expect(fileRow('big3.txt')).toBeDefined()
     expect(fileRow('big0.txt')).toBeUndefined()
-    expect(scroller().scrollTop).toBeGreaterThan(0)
-  })
-})
-
-describe('collapse and expand', () => {
-  it('collapses one file and leaves the others open', () => {
-    render(<DiffView patch={REAL_GIT_DIFF} />)
-    const toggle = screen.getByRole('button', { name: 'Collapse src.txt' })
-    expect(toggle.getAttribute('aria-expanded')).toBe('true')
-    expect(linesOf('src.txt').length).toBeGreaterThan(0)
-    fireEvent.click(toggle)
-    expect(linesOf('src.txt')).toEqual([])
-    expect(linesOf('crlf.txt').length).toBeGreaterThan(0)
-    const again = screen.getByRole('button', { name: 'Expand src.txt' })
-    expect(again.getAttribute('aria-expanded')).toBe('false')
-    fireEvent.click(again)
-    expect(linesOf('src.txt').length).toBeGreaterThan(0)
+    expect(rows().every((r) => r.getAttribute('data-path') === 'big3.txt')).toBe(true)
   })
 
-  it('collapses every file at once, and expands them again', () => {
+  it('letters each row with its change kind', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }))
-    expect(rows('file')).toHaveLength(10)
-    expect(rows().filter((r) => r.getAttribute('data-diff-row') !== 'file')).toEqual([])
-    fireEvent.click(screen.getByRole('button', { name: 'Expand all' }))
-    expect(rows('line').length).toBeGreaterThan(0)
+    const letter = (path: string): string =>
+      Array.from(document.querySelectorAll('button.diff-file'))
+        .find((b) => b.getAttribute('data-path') === path)
+        ?.querySelector('.diff-kind')?.textContent ?? ''
+    expect(letter('added file.txt')).toBe('A')
+    expect(letter('deleted.txt')).toBe('D')
+    expect(letter('new name.txt')).toBe('R')
+    expect(letter('copied.txt')).toBe('C')
+    expect(letter('src.txt')).toBe('M')
+    expect(letter('run.sh')).toBe('M')
   })
 })
 
 describe('the unified view', () => {
   it('draws hunk headers and both line-number gutters', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
+    openFile('src.txt')
     const hunks = rows('hunk').filter((r) => r.getAttribute('data-path') === 'src.txt')
     expect(hunks.map((h) => h.textContent)).toEqual(['@@ -1,5 +1,5 @@', '@@ -15,6 +15,6 @@ line14'])
     const lines = linesOf('src.txt').filter((r) => r.getAttribute('data-diff-row') === 'line')
@@ -124,7 +126,9 @@ describe('the unified view', () => {
 
   it('marks a missing final newline and a content carriage return visibly', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
+    openFile('nonl.txt')
     expect(linesOf('nonl.txt').filter((r) => r.querySelector('.diff-nonl'))).toHaveLength(2)
+    openFile('crlf.txt')
     const cr = linesOf('crlf.txt').filter((r) => r.querySelector('.diff-cr'))
     expect(cr).toHaveLength(3)
   })
@@ -133,6 +137,7 @@ describe('the unified view', () => {
 describe('the split view', () => {
   it('pairs removed and added lines side by side, and remembers the choice', () => {
     const { unmount } = render(<DiffView patch={REAL_GIT_DIFF} />)
+    openFile('src.txt')
     const split = screen.getByRole('button', { name: 'Split' })
     expect(split.getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(split)
@@ -162,19 +167,18 @@ describe('the split view', () => {
       },
     })
     render(<DiffView patch={REAL_GIT_DIFF} />)
+    openFile('src.txt')
     fireEvent.click(screen.getByRole('button', { name: 'Split' }))
     expect(rows('pair').length).toBeGreaterThan(0)
   })
 
-  it('is always unified below 700px, whatever was remembered', () => {
+  it('is always unified below 700px, whatever was remembered, and offers no split', () => {
     store.set(VIEW_KEY, 'split')
     vi.stubGlobal('innerWidth', 600)
     render(<DiffView patch={REAL_GIT_DIFF} />)
     expect(rows('pair')).toEqual([])
     expect(rows('line').length).toBeGreaterThan(0)
-    const split = screen.getByRole('button', { name: 'Split' }) as HTMLButtonElement
-    expect(split.disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'Unified' }).getAttribute('aria-pressed')).toBe('true')
+    expect(screen.queryByRole('button', { name: 'Split' })).toBeNull()
   })
 
   it('returns to split when the window grows past 700px', () => {
@@ -193,6 +197,7 @@ describe('the split view', () => {
 describe('context between hunks', () => {
   it('says context is not available, and invents no line, without getFile', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
+    openFile('src.txt')
     const gaps = rows('gap').filter((r) => r.getAttribute('data-path') === 'src.txt')
     expect(gaps).toHaveLength(1)
     expect(gaps[0]!.textContent).toContain('context not available')
@@ -207,6 +212,7 @@ describe('context between hunks', () => {
     body[17] = 'LINE EIGHTEEN'
     const getFile = vi.fn(async () => body.join('\n') + '\n')
     render(<DiffView patch={REAL_GIT_DIFF} getFile={getFile} />)
+    openFile('src.txt')
     const button = screen.getByRole('button', { name: 'Expand 9 hidden lines in src.txt' })
     await act(async () => {
       fireEvent.click(button)
@@ -223,6 +229,7 @@ describe('context between hunks', () => {
   it('refuses a file that does not match the patch rather than showing its lines', async () => {
     const getFile = vi.fn(async () => Array.from({ length: 20 }, (_, i) => `other${i}`).join('\n'))
     render(<DiffView patch={REAL_GIT_DIFF} getFile={getFile} />)
+    openFile('src.txt')
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Expand 9 hidden lines in src.txt' }))
     })
@@ -236,6 +243,7 @@ describe('context between hunks', () => {
       throw new Error('404')
     })
     render(<DiffView patch={REAL_GIT_DIFF} getFile={getFile} />)
+    openFile('src.txt')
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Expand 9 hidden lines in src.txt' }))
     })
@@ -248,9 +256,14 @@ describe('context between hunks', () => {
 describe('badges', () => {
   it('names binary, renamed, copied, mode-change, added and deleted files', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
-    const badges = (path: string): string[] =>
-      Array.from(fileRow(path)!.querySelectorAll('.diff-badge')).map((b) => b.textContent ?? '')
+    const badges = (path: string): string[] => {
+      openFile(path)
+      return Array.from(fileRow(path)!.querySelectorAll('.diff-badge')).map((b) => b.textContent ?? '')
+    }
     expect(badges('blob.bin')).toEqual(['binary'])
+    const binaryBody = linesOf('blob.bin')
+    expect(binaryBody).toHaveLength(1)
+    expect(binaryBody[0]!.textContent).toBe('binary file not shown')
     expect(badges('new name.txt')).toEqual(['renamed 87%'])
     expect(fileRow('new name.txt')!.textContent).toContain('old name.txt')
     expect(badges('copied.txt')).toEqual(['copied 90%'])
@@ -258,87 +271,52 @@ describe('badges', () => {
     expect(badges('deleted.txt')).toEqual(['deleted'])
     expect(badges('added file.txt')).toEqual(['added'])
     expect(badges('src.txt')).toEqual([])
-    const binaryBody = linesOf('blob.bin')
-    expect(binaryBody).toHaveLength(1)
-    expect(binaryBody[0]!.textContent).toBe('binary file not shown')
-  })
-})
-
-describe('find', () => {
-  it('counts matches across files, steps through them, and wraps', () => {
-    render(<DiffView patch={REAL_GIT_DIFF} />)
-    const box = screen.getByRole('searchbox', { name: 'Find in diff' })
-    fireEvent.change(box, { target: { value: 'five' } })
-    const count = screen.getByTestId('diff-count')
-    expect(count.textContent).toBe('1 of 2')
-    expect(scroller().querySelectorAll('mark')).toHaveLength(2)
-    expect(scroller().querySelectorAll('mark.is-current')).toHaveLength(1)
-    fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
-    expect(count.textContent).toBe('2 of 2')
-    fireEvent.click(screen.getByRole('button', { name: 'Next match' }))
-    expect(count.textContent).toBe('1 of 2')
-    fireEvent.click(screen.getByRole('button', { name: 'Previous match' }))
-    expect(count.textContent).toBe('2 of 2')
-    fireEvent.keyDown(box, { key: 'Enter' })
-    expect(count.textContent).toBe('1 of 2')
-    fireEvent.keyDown(box, { key: 'Enter', shiftKey: true })
-    expect(count.textContent).toBe('2 of 2')
-  })
-
-  it('says so when nothing matches', () => {
-    render(<DiffView patch={REAL_GIT_DIFF} />)
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in diff' }), { target: { value: 'zzz-nowhere' } })
-    expect(screen.getByTestId('diff-count').textContent).toBe('no matches')
-  })
-
-  it('expands a collapsed file that holds a match, and only that one', () => {
-    render(<DiffView patch={REAL_GIT_DIFF} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Collapse all' }))
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in diff' }), { target: { value: 'EIGHTEEN' } })
-    expect(screen.getByRole('button', { name: 'Collapse src.txt' }).getAttribute('aria-expanded')).toBe('true')
-    expect(screen.getByRole('button', { name: 'Expand crlf.txt' })).toBeDefined()
-    expect(scroller().querySelector('mark.is-current')?.textContent).toBe('EIGHTEEN')
-  })
-
-  it('scrolls a match far down a big patch into view', () => {
-    render(<DiffView patch={bigPatch(3, 4000)} />)
-    fireEvent.change(screen.getByRole('searchbox', { name: 'Find in diff' }), { target: { value: 'new 2:1999' } })
-    expect(screen.getByTestId('diff-count').textContent).toBe('1 of 1')
-    expect(scroller().querySelector('mark.is-current')?.textContent).toBe('new 2:1999')
   })
 })
 
 describe('the keyboard', () => {
-  it('moves by file with n and p, and by hunk with j and k', () => {
+  it('moves by file with n and p, and by hunk with j and k, consuming each key', () => {
     render(<DiffView patch={bigPatch(4, 400)} />)
     const s = scroller()
+    const open = (): string | null => s.getAttribute('data-open-file')
+    expect(open()).toBe('big0.txt')
+    // `fireEvent` returns false when the handler called preventDefault.
+    expect(fireEvent.keyDown(s, { key: 'n' })).toBe(false)
+    expect(open()).toBe('big1.txt')
     fireEvent.keyDown(s, { key: 'n' })
-    const f1 = s.scrollTop
-    expect(f1).toBeGreaterThan(0)
-    expect(fileRow('big1.txt')).toBeDefined()
-    fireEvent.keyDown(s, { key: 'n' })
-    expect(s.scrollTop).toBeGreaterThan(f1)
-    fireEvent.keyDown(s, { key: 'p' })
-    expect(s.scrollTop).toBe(f1)
-    fireEvent.keyDown(s, { key: 'j' })
-    const h = s.scrollTop
-    expect(h).toBeGreaterThan(f1)
-    fireEvent.keyDown(s, { key: 'k' })
-    expect(s.scrollTop).toBeLessThan(h)
+    expect(open()).toBe('big2.txt')
+    expect(fireEvent.keyDown(s, { key: 'p' })).toBe(false)
+    expect(open()).toBe('big1.txt')
+    expect(s.scrollTop).toBe(0)
   })
 
-  it('focuses find with /', () => {
+  it('moves between the open file\'s hunks with j and k', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
-    fireEvent.keyDown(scroller(), { key: '/' })
-    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Find in diff' }))
+    openFile('src.txt')
+    const s = scroller()
+    expect(fireEvent.keyDown(s, { key: 'j' })).toBe(false)
+    const h1 = s.scrollTop
+    expect(h1).toBeGreaterThan(0)
+    fireEvent.keyDown(s, { key: 'j' })
+    const h2 = s.scrollTop
+    expect(h2).toBeGreaterThan(h1)
+    expect(fireEvent.keyDown(s, { key: 'k' })).toBe(false)
+    expect(s.scrollTop).toBe(h1)
+  })
+
+  it('focuses the path filter with /', () => {
+    render(<DiffView patch={REAL_GIT_DIFF} />)
+    expect(fireEvent.keyDown(scroller(), { key: '/' })).toBe(false)
+    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Filter files by path' }))
   })
 
   it('ignores its keys while an input has focus', () => {
     render(<DiffView patch={bigPatch(4, 400)} />)
-    const box = screen.getByRole('searchbox', { name: 'Find in diff' })
+    const box = screen.getByRole('searchbox', { name: 'Filter files by path' })
     box.focus()
     fireEvent.keyDown(box, { key: 'n' })
     fireEvent.keyDown(box, { key: 'j' })
+    expect(scroller().getAttribute('data-open-file')).toBe('big0.txt')
     expect(scroller().scrollTop).toBe(0)
   })
 
@@ -346,7 +324,7 @@ describe('the keyboard', () => {
     render(<DiffView patch={bigPatch(4, 400)} />)
     fireEvent.keyDown(scroller(), { key: 'n', ctrlKey: true })
     fireEvent.keyDown(scroller(), { key: 'n', metaKey: true })
-    expect(scroller().scrollTop).toBe(0)
+    expect(scroller().getAttribute('data-open-file')).toBe('big0.txt')
   })
 
   it('gives every control an accessible name and a keyboard route', () => {
@@ -363,7 +341,7 @@ describe('the keyboard', () => {
 
 describe('big diffs', () => {
   it('renders a 50,000-line patch as a window of rows, not 50,000 of them', () => {
-    const patch = bigPatch(5, 10_000)
+    const patch = bigPatch(1, 52_000)
     expect(patch.split('\n').length).toBeGreaterThan(50_000)
     render(<DiffView patch={patch} />)
     const n = rows().length

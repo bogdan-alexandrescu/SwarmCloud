@@ -76,11 +76,16 @@ import urllib.request
 from typing import Any, Callable, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
-from .errors import UpstreamUnavailable, ValidationFailed
+from .errors import Forbidden, UpstreamUnavailable, ValidationFailed
 
 log = logging.getLogger(__name__)
 
 _UA = "swarmcloud-swarm-api"
+
+#: The broker's 403 code for "the caller's tenant did not start this sign-in"
+#: (`SIGN_IN_OWNER_MISMATCH` in quota_broker/main.py). The only broker 403 that
+#: is the human caller's refusal rather than this service's identity.
+SIGN_IN_OWNER_MISMATCH = "sign_in_owner_mismatch"
 _TIMEOUT = 15.0
 
 #: Cloud Run's metadata server. `?audience=` is what makes the returned JWT
@@ -213,7 +218,9 @@ class AccountPool(Protocol):
         self, *, owner_tenant: str, label: str, provider: str, lend_to: list[str]
     ) -> dict[str, Any]: ...
 
-    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]: ...
+    def finish_sign_in(
+        self, *, state: str, code: str, expected_owner: str
+    ) -> dict[str, Any]: ...
 
     def refresh(self, account_id: str) -> dict[str, Any]: ...
 
@@ -504,12 +511,21 @@ class BrokerClient:
             },
         )
 
-    def finish_sign_in(self, *, state: str, code: str) -> dict[str, Any]:
-        """Redeem the code the callback page displayed, and register the account."""
+    def finish_sign_in(
+        self, *, state: str, code: str, expected_owner: str
+    ) -> dict[str, Any]:
+        """Redeem the code the callback page displayed, and register the account.
+
+        `expected_owner` is the tenant this service checked the HUMAN caller
+        to be. The broker compares it with the tenant that started the sign-in
+        and refuses a mismatch before redeeming anything; this service calls as
+        a platform caller, so without it the broker would have nothing to
+        compare -- and it refuses a platform call that omits it.
+        """
         return self._call(
             "POST",
             "/v1/accounts/exchange",
-            payload={"state": state, "code": code},
+            payload={"state": state, "code": code, "expected_owner": expected_owner},
         )
     def refresh(self, account_id: str) -> dict[str, Any]:
         return self._call(
@@ -616,13 +632,23 @@ class BrokerClient:
         broker_said = isinstance(data, dict) and "code" in data
         message = str(data.get("message") or "") if isinstance(data, dict) else ""
 
+        if (
+            status == 403
+            and isinstance(data, dict)
+            and data.get("code") == SIGN_IN_OWNER_MISMATCH
+        ):
+            # THE ONE EXCEPTION, and it is matched by its exact code: the
+            # broker's exchange refusing because the human caller's tenant is
+            # not the one that started the sign-in. That IS the caller's 403.
+            raise Forbidden(message or "this sign-in was started by a different tenant")
         if status in (401, 403):
-            # NEVER the human caller's 403, whatever shape the body has.
+            # NEVER the human caller's 403, whatever shape the body has --
+            # except the sign-in owner check above, which has its own code.
             #
             # swarm-api authenticates to the broker as a PLATFORM caller, and
             # the broker's `_authorize` returns immediately for a platform
-            # caller -- so there is no tenant-level refusal it can send this
-            # service. Every 401/403 reachable from here is about THIS
+            # caller -- so there is no other tenant-level refusal it can send
+            # this service. Every other 401/403 reachable from here is about THIS
             # SERVICE's own identity: not listed in PLATFORM_SERVICE_ACCOUNTS,
             # token verification failed, missing bearer token, or Cloud Run's
             # IAM check refusing the invocation before the app is reached.
