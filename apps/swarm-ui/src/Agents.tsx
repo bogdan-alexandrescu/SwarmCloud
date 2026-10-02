@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom'
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { DispatchChip } from './Dispatch'
@@ -821,7 +821,16 @@ function GroupedRows({
               {/* B17: the same workflow id the Workflows screen prints, and
                   the same reason it is not uppercased here either. "No
                   workflow" is a sentence, not an id, so it is not wrapped. */}
-              {wf === '' ? 'No workflow' : <Id>{wf}</Id>}
+              {/* ONE CLICK TO THE WORKFLOW (#94): the id is a link to its
+                  page. `N here` below stays the honest count until a
+                  per-workflow read exists. */}
+              {wf === '' ? (
+                'No workflow'
+              ) : (
+                <a className="ctl-link" href={workflowHref(wf)}>
+                  <Id>{wf}</Id>
+                </a>
+              )}
               {/* THE ROLLUP PILL WAS THE LAST FILLED PILL ON THIS SCREEN.
                   `.roll` was a 999px pill with an 18%-tint background and the
                   word in `--*-ink`, uppercase, tracked, 600 -- the exact
@@ -946,6 +955,9 @@ export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>)
   }
 }
 
+/** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
+export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
+
 function TaskRow({
   task,
   now,
@@ -974,6 +986,8 @@ function TaskRow({
     return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
   }
   const el = elapsed(task, now)
+  // `ran` is the phase with a start AND an end, so an em dash never carries it.
+  const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const start = startedOf(task, now)
   const account = accountText(task.account)
   const tries = attemptsUsed(task)
@@ -1029,7 +1043,12 @@ function TaskRow({
           already right (`#work/workflows`) puts ten facts on one 37px line;
           three facts get one line here for the same reason. */}
       <span className="agent">
-        <b>{task.runner_profile}</b>
+        {/* THE STEP IS THE NAME WHERE THE STEP COLUMN IS GONE (#94, #109). At
+            390px the Step column drops and five live rows read `claude-code
+            <hex>` five times; there `.agent-step` takes the profile's place.
+            Wide, the Step column says it and this copy is not drawn. */}
+        <b className={task.step_id ? 'agent-profile' : undefined}>{task.runner_profile}</b>
+        {task.step_id && <b className="agent-step">{task.step_id}</b>}
         {task.model && <span className="model">{task.model}</span>}
         <span className="id" title={task.id}>
           {shortTaskId(task.id)}
@@ -1083,7 +1102,16 @@ function TaskRow({
         </span>
       </span>
 
-      <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+      {/* A CANCELLED RUN'S FIGURE SAYS WHAT IT SPANS (#163). It is last start
+          to cancel, and a task cancelled while PARKED after an earlier start
+          has nothing on its document that says it sat parked in between --
+          `elapsed()` cannot subtract time the task does not record. The
+          qualifier rides with the figure, as `units` does in the class cell,
+          and is the cell's `title` too, so a truncated cell still says it. */}
+      <span className={`when${el.ticking ? ' ticking' : ''}`} title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}>
+        {el.text}
+        {cancelSpan && <span className="when-note"> {CANCEL_SPAN}</span>}
+      </span>
 
       {/* THE ACCOUNT THIS AGENT RUNS ON (#379), from its own events. The
           words for "none" are the API's answer: no model call, not assigned
@@ -1196,6 +1224,10 @@ function CompactRow({
 }) {
   const [card, setCard] = useState<CardAt | null>(null)
   const el = elapsed(task, now)
+  // The same qualifier as the full row's (#163). Line one of the compact row
+  // has room for the figure only, so here it is the cell's `title`: the figure
+  // is not presented as run time without saying what it spans.
+  const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const tries = attemptsUsed(task)
   const name = task.step_id ?? shortTaskId(task.id)
   const owner = task.submitted_by?.split('@')[0] ?? null
@@ -1253,7 +1285,12 @@ function CompactRow({
         )}
         {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
-      <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+      <span
+        className={`when${el.ticking ? ' ticking' : ''}`}
+        title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}
+      >
+        {el.text}
+      </span>
       <span className="cr-sub">
         <span className="cr-profile">{profile}</span>
         {' · '}

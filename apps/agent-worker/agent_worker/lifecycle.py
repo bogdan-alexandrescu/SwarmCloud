@@ -190,6 +190,8 @@ from .gitops import (
     GitError,
     MergeOutcome,
     commit_dirty,
+    commit_tree_onto,
+    fetch_branch_tip,
     fold_agent_commits,
     hide_from_git,
     merge_branches,
@@ -295,6 +297,28 @@ STALE_READING_RETRY_SECONDS = 300
 #: scheduler admits it on its next drain like any other READY task.
 EXPECTED_OUTPUT_RETRY_DELAY_SECONDS = 0
 
+#: The cause a `carrier: branches` attempt fails with, before its agent runs,
+#: when the tenant's forge token cannot push to the step's repository or the
+#: tenant has no git credential at all (D13; owner decision 2026-10-02). A
+#: worker vocabulary in the error text and `result_summary.carrier_check`,
+#: not a frozen EndCause: the task's end cause is CANNOT_START. NOT RETRIED:
+#: the next attempt reads the same secret and asks the same forge.
+FORGE_READ_ONLY = "forge_read_only"
+#: The retryable sibling: the forge could not be asked (a network failure, a
+#: 429, a 5xx), which the next attempt may not meet.
+FORGE_UNREACHABLE = "forge_unreachable"
+#: How long a task failed for an unreachable forge waits before it is eligible
+#: again. A forge outage clears with time, unlike a missing output, so a short
+#: delay keeps the retry from meeting the same outage at once. Bounded by
+#: `max_attempts`, like every retry.
+FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: The answers `forge.probe_repository` turns into a `can_push=False` access
+#: whose reason starts "the forge answered <status>", and which say the forge
+#: could not answer now rather than that the token cannot push. Matched on
+#: that reason because the probe returns no status; the wording is pinned by
+#: tests/unit/worker/test_carrier_branches.py through the real probe.
+_FORGE_TRANSIENT_ANSWER = re.compile(r"^the forge answered (?:429|5\d\d)\b")
+
 #: How many different accounts one attempt will try before it gives up and
 #: parks. Three, not one: a freshly onboarded account whose secret has no
 #: version yet, and a borrowed account this worker was never granted access
@@ -322,6 +346,10 @@ REPO_DIR_NAME = workspace_mod.REPO_DIR_NAME
 WORKER_STATE_DIR = ".swarm"
 CLONE_BASE_FILE = "clone-base"
 PATCH_NAME = "swarm-work.patch"
+
+#: The checkpoint label, and the cause on the attempt's document, of an attempt
+#: that left because Firestore stayed unreachable while its agent ran (#70).
+CONTROL_PLANE_OUTAGE = "control_plane_outage"
 
 #: What `builds_on` may be (#264): a task id as `swarm_common.models.new_id`
 #: mints them, and nothing that could make the derived branch name a path
@@ -441,6 +469,21 @@ class _Upload:
     unredacted: dict[str, Any] | None = None
 
 
+def _skip_cause(reason: str) -> str:
+    """`_Upload.skipped`, as the cause the missing-output check reads (#165).
+
+    Over the byte cap is the cap. An upload the store refused, or a file that
+    could not be read, is an upload error, the one a retry may not meet. A
+    link or a non-regular file is refused, and the agent of the next attempt
+    is handed the same instructions.
+    """
+    if reason == standalone_mod.OVER_CAP:
+        return expected_mod.CAUSE_CAP
+    if reason in (standalone_mod.UPLOAD_FAILED, standalone_mod.UNREADABLE):
+        return expected_mod.CAUSE_UPLOAD_ERROR
+    return expected_mod.CAUSE_REFUSED
+
+
 @dataclass
 class Outcome:
     exit_code: int
@@ -536,8 +579,11 @@ class Worker:
         # upload for the file cap or the name bound (#228), by its WHOLE name.
         # The summary counts them and does not list them, so a declared output
         # among them is named here as written and not uploaded rather than as
-        # never written (`_written_not_uploaded`).
+        # never written (`_missing_causes`).
         self._artifacts_not_uploaded: tuple[str, ...] = ()
+        # The same names, each with its cause (#165): the file cap is `cap`,
+        # the name bound `refused`.
+        self._not_uploaded_causes: dict[str, str] = {}
         # A CLI agent's task with no repository has what its agent CREATED in
         # the working folder uploaded, under `workdir/` (#184, owner decision
         # of 2026-09-26; `agent_worker.standalone_outputs`). `_standalone` is
@@ -581,6 +627,29 @@ class Worker:
         # Set on the tenant-mismatch exit, the one path that must write NOTHING
         # -- not even spend onto what may be another tenant's attempt.
         self._writes_forbidden = False
+        # The publish `_finalise` defers until the missing-output check has
+        # passed (#165): what `_harvest_git(defer=True)` left for
+        # `_publish_checked`. None when there is nothing to publish.
+        self._deferred_publish: dict[str, Any] | None = None
+        # Every name the last upload skipped, with its cause (#165), uncut.
+        self._skip_causes: dict[str, str] = {}
+        # Until when (monotonic) the lease this worker last extended is live
+        # (#70): the last heartbeat that landed, plus the extension it gave.
+        # A mid-run Firestore call that fails before then is logged and the
+        # loop goes on; one that fails after it is an outage, and the worker
+        # leaves through `_exit_control_plane_outage`. None until a beat lands.
+        self._lease_live_until: float | None = None
+        # Set on every fenced exit (`_exit_fenced`, `_exit_fenced_mid_run`,
+        # `_stand_down`). The task's event stream is then a newer generation's,
+        # so `_give_back` returns the account and writes no `account_released`
+        # into it (#380).
+        self._fenced_exit = False
+        # Set by `_exit_control_plane_outage` (#70): Firestore is what could not
+        # be reached, so no event is attempted on the way out.
+        self._control_plane_down = False
+        # `carrier: branches` (D13): the branch and head the last push of this
+        # step's work landed, `{"name", "head"}`, or None before any.
+        self._carrier_pushed: dict[str, str] | None = None
         # What `record_cpu_usage` last wrote onto the attempt (contract request
         # #15), so the periodic readings and each runner's end write once per
         # change rather than once per heartbeat.
@@ -863,7 +932,7 @@ class Worker:
         """Park on CHILDREN_INCOMPLETE when this parent's children still run.
 
         §3.3: every outstanding request is answered first (F3), in at most
-        twice `child_submit_retry_seconds` (`ChildPath.drain`); then, for an
+        one `child_submit_retry_seconds` (`ChildPath.drain`); then, for an
         agent that exited 0 --
         having asked to `await`, or not (step 8: a parent never succeeds over
         running children) -- a live child means checkpoint, upload, park,
@@ -871,12 +940,36 @@ class Worker:
         the await is ignored (F15). An agent that failed fails its attempt in
         the ordinary way; its children are kept (F4). None means "finalise".
 
+        WITHOUT A CHILD PATH this attempt can neither submit nor list, but
+        an earlier attempt of this task may have made children: the spool,
+        restored from the checkpoint, records the ids it was answered with.
+        Then the implicit await is NOT skipped -- whether they still run is
+        unknown, and a parent must never succeed over running children
+        (step 8) -- so it parks conservatively, as for a listing that failed;
+        the scheduler's await sweep reads the children itself and promotes
+        it once they are done. Bounded like every await: past
+        `max_child_await_resumes` the park counts as an attempt.
+
         Fences propagate as `FencedWriteRefused`, which `run` stands down on.
         """
         ws = self.ws
         assert ws is not None
         if not self.children.offered:
-            return None
+            if result.exit_code != 0 or result.timed_out or result.killed:
+                return None
+            known = self.children.known_children(ws.work)
+            if not known:
+                return None
+            self.children.clear_await(ws.work)
+            self.log.warning(
+                "no child path this attempt, and the spool records children; "
+                "parking until the scheduler finds them done",
+                known_children=len(known),
+                child_path=self.children.unavailable,
+            )
+            return self._park_awaiting(
+                requested=False, live=None, child_path=self.children.unavailable
+            )
         try:
             with self._heartbeat_meanwhile("child requests"):
                 self.children.drain(ws.work)
@@ -899,16 +992,24 @@ class Worker:
             live_children=len(live) if live is not None else None,
             asked=requested,
         )
+        return self._park_awaiting(requested=requested, live=live)
+
+    def _park_awaiting(
+        self, *, requested: bool, live: list[str] | None, child_path: str | None = None
+    ) -> Outcome:
+        """Checkpoint, upload, park on CHILDREN_INCOMPLETE, release, exit (§3.3 step 3)."""
         self._checkpoint("child-await")
         self._upload_outputs()
         self._export_metrics()
+        detail: dict[str, Any] = {
+            "park_phase": "child_await",
+            "asked": requested,
+            "live_children": sorted(live) if live is not None else None,
+        }
+        if child_path is not None:
+            detail["child_path"] = child_path
         self.control.park_awaiting_children(
-            max_resumes=self.cfg.max_child_await_resumes,
-            detail={
-                "park_phase": "child_await",
-                "asked": requested,
-                "live_children": sorted(live) if live is not None else None,
-            },
+            max_resumes=self.cfg.max_child_await_resumes, detail=detail
         )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
@@ -1017,9 +1118,14 @@ class Worker:
         # STEP 2a, inside STEP 2: the child-task attempt key is registered
         # while the task is STARTING, before the agent exists (child tasks,
         # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
+        # ONE STARTING event: the walk to STARTING writes none, and the
+        # registration's note (no child path, and why) is its detail.
         if self.cfg.child_nonce:
-            self.control.advance_to_starting()
-            self.children.register(lambda detail: self.control.emit(EventType.STARTING, detail))
+            moved = self.control.advance_to_starting()
+            notes: list[dict[str, Any]] = []
+            self.children.register(notes.append)
+            if moved or notes:
+                self.control.emit(EventType.STARTING, notes[-1] if notes else None)
         self.control.advance_to_running()
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
@@ -1123,6 +1229,20 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+
+        # ---- STEP 5a: carrier: branches needs a token that can push (D13) --
+        # Asked HERE, by the worker, and not by swarm-api at submission: the
+        # answer needs the tenant's git secret, and exactly one identity may
+        # read each secret -- this tenant's worker GSA (owner decision
+        # 2026-10-02; terraform/modules/secret_manager). Before the agent
+        # runs, so a token that could never push costs no agent time and no
+        # provider quota. Only for `branches`: the phase is not entered at all
+        # otherwise, so `checkpoints` reads no extra secret and asks no forge.
+        if self._dispatch_carrier() == "branches":
+            self.phases.enter("carrier_scope")
+            refused = self._carrier_scope_refusal()
+            if refused is not None:
+                return refused
 
         # ---- STEP 5b: stage the artifacts this step declared -------------
         # Order relative to the clone is not load-bearing: the two write to
@@ -1358,6 +1478,10 @@ class Worker:
         self._start_sampler(child)
 
         now = time.monotonic()
+        if self._lease_live_until is None:
+            # The startup's beats landed (a failed one would have ended the
+            # startup), so the lease is good for one extension from about now.
+            self._lease_live_until = now + self.control.heartbeat_extension_seconds
         next_heartbeat = now + cfg.heartbeat_interval_seconds
         next_checkpoint = now + cfg.checkpoint_interval_seconds
         next_poll = now + cfg.control_poll_seconds
@@ -1383,8 +1507,13 @@ class Worker:
                 return self._handle_interruption(child)
 
             if now >= next_heartbeat:
-                self._heartbeat()
                 next_heartbeat = now + cfg.heartbeat_interval_seconds
+                try:
+                    self._heartbeat()
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("heartbeat", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(child, outage)
 
             if now >= next_checkpoint:
                 try:
@@ -1405,7 +1534,14 @@ class Worker:
 
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
-                diverted = self._apply_control_signals(child)
+                try:
+                    signals = self.control.poll(cfg.provider)
+                except Exception as exc:
+                    outage = self._control_plane_call_failed("control poll", exc)
+                    if outage is not None:
+                        return self._exit_control_plane_outage(child, outage)
+                    continue
+                diverted = self._apply_control_signals(child, signals)
                 if diverted is not None:
                     return diverted
                 try:
@@ -1436,9 +1572,110 @@ class Worker:
         )
         return result
 
-    def _apply_control_signals(self, child: ChildProcess) -> Outcome | None:
+    def _control_plane_call_failed(self, what: str, exc: Exception) -> Exception | None:
+        """A mid-run Firestore call failed after its budget: log it; the outage, or None (#70).
+
+        ONE FAILED CALL IS NOT FATAL WHILE THE LEASE IS LIVE. The call already
+        retried for its budget (`control.MID_RUN_BUDGETS`), and the lease this
+        worker last extended still holds the task, so the loop goes on and the
+        next beat or poll asks again. Returned is the error that makes it an
+        OUTAGE: the call failed at or after the moment that lease runs out
+        (`_lease_live_until`), so Firestore has been unreachable for longer than
+        the lease survives without a beat.
+
+        Only an error that says the control plane could not be reached
+        (`_control_plane_unreachable`) is handled here. A fence or a tenant
+        mismatch is raised, as is anything else, which is a defect and goes
+        to the crash handler as before.
+        """
+        if isinstance(exc, (FencedError, TenantMismatchError)):
+            raise exc
+        if not _control_plane_unreachable(exc):
+            raise exc
+        now = time.monotonic()
+        live_until = self._lease_live_until
+        outage = live_until is not None and now >= live_until
+        self.log.warning(
+            f"a {what} could not reach the control plane"
+            + (
+                "; the lease this worker last extended has run out, so this is an outage"
+                if outage
+                else "; the lease is still live, so the loop carries on"
+            ),
+            call=what,
+            error_type=type(exc).__name__,
+            error=_one_line(exc),
+            lease_live_seconds=(round(live_until - now, 1) if live_until is not None else None),
+        )
+        return exc if outage else None
+
+    def _exit_control_plane_outage(self, child: ChildProcess, exc: Exception) -> Outcome:
+        """Firestore stayed unreachable past the lease: checkpoint, stop, exit 69 (#70).
+
+        Owner decision, 2026-09-28. Until now a Firestore call that failed
+        while the agent ran raised into the crash handler, which FAILED the
+        task for good -- a terminal state, written (when it could be written
+        at all) for an outage the next attempt would not have met, without
+        `max_attempts` being consulted. This leaves the way an unavailable
+        dependency before the runner does (`_exit_unavailable_before_runner`):
+
+          1. CHECKPOINT, label `control_plane_outage`. The archive goes to the
+             bucket, which is not the service that is down; its pointer write
+             is Firestore's and is attempted under its budget, and a failure
+             there is logged, not raised (`_checkpoint`).
+          2. STOP THE RUNNER, so no agent works on a task this worker can no
+             longer prove it owns.
+          3. WRITE THIS ATTEMPT'S OWN DOCUMENT: exit 69 and the cause, best
+             effort under its budget.
+          4. EXIT 69, which the reconciler reads as "requeue": the lease falls
+             silent, it fences and releases it, and requeues the task or fails
+             it once its attempts are spent.
+
+        NOT WRITTEN: the task, the lease and the event stream. Firestore is
+        what cannot be reached, and a requeue made from here would be a fenced
+        transition, the retry cap and a lease release against it -- the
+        reconciler's job, as on the startup exit.
+        """
         cfg = self.cfg
-        signals: ControlSignals = self.control.poll(cfg.provider)
+        self.log.error(
+            "the control plane stayed unreachable past the lease; checkpointing, "
+            "stopping the runner and exiting 69 for a requeue",
+            error_type=type(exc).__name__,
+            error=_one_line(exc),
+            exit_code=ExitCode.UNAVAILABLE,
+            then=(
+                "the reconciler reads this execution's exit code and requeues the "
+                "task, or fails it when its attempts are spent"
+            ),
+        )
+        self._checkpoint(CONTROL_PLANE_OUTAGE)
+        child.terminate(cfg.termination_grace_seconds, reason="control plane outage")
+        child.finish()
+        self._child_ended()
+        self._control_plane_down = True
+        try:
+            self.control.record_attempt_end(
+                exit_code=ExitCode.UNAVAILABLE,
+                error=self._scrub(
+                    f"{CONTROL_PLANE_OUTAGE}: the control plane was unreachable past "
+                    f"the lease while the agent ran ({type(exc).__name__}: "
+                    f"{_one_line(exc, 300)}); the attempt checkpointed and exited "
+                    "for a requeue"
+                ),
+            )
+        except Exception as write_exc:
+            self.log.warning(
+                "could not record the outage on this attempt's own document",
+                error=f"{type(write_exc).__name__}: {write_exc}",
+            )
+        return Outcome(exit_code=ExitCode.UNAVAILABLE, detail={"cause": CONTROL_PLANE_OUTAGE})
+
+    def _apply_control_signals(
+        self, child: ChildProcess, signals: ControlSignals | None = None
+    ) -> Outcome | None:
+        cfg = self.cfg
+        if signals is None:
+            signals = self.control.poll(cfg.provider)
 
         if signals.is_fenced(cfg.generation):
             return self._exit_fenced_mid_run(
@@ -1554,6 +1791,7 @@ class Worker:
         release any more.
         """
         cfg = self.cfg
+        self._fenced_exit = True
         self.log.error(
             "generation fenced mid-run; stopping the runner",
             observed_generation=observed_generation,
@@ -1610,6 +1848,7 @@ class Worker:
             LEASE_RELEASED each follow the write they record, which this
             attempt made while it still owned the task.
         """
+        self._fenced_exit = True
         self.log.error(
             "FENCED on the way out: this attempt has been superseded; exiting "
             "without writing the task, the lease or an event",
@@ -1688,18 +1927,29 @@ class Worker:
             and result.exit_code == 0
             and _read_json(ws.result_path) is not None
         )
-        # Read BEFORE the harvest and the upload, like the absence check in
-        # `_publish_withheld`: a refused title withholds the publish too.
+        # Read BEFORE the harvest and the upload: the reap in the harvest is
+        # what makes the agent's files stop changing, and the title file is
+        # the agent's.
         title_refused = self._refused_title_reason() if ran_clean else None
-        withheld = self._publish_withheld(ran_clean, title_refused=title_refused)
-        # The ONLY call that may pass publish=True. The agent exited on its own
-        # here; the other five call sites are parks and crashes. It is False
-        # only for an attempt that is going to run again (`_publish_withheld`).
-        summary = self._upload_outputs(publish=withheld is None, withheld=withheld or "")
+        # The ONLY call that may lead to a publish. The agent exited on its own
+        # here; the other five call sites are parks and crashes. The harvest
+        # runs and the publish WAITS (#165, owner decision 2026-09-28): it is
+        # made below, only once the upload manifest has passed the check.
+        summary = self._upload_outputs(defer_publish=True)
+        # Before the check, which counts what is carried as present (#166).
+        self._carry_parked_uploads(summary)
         # Here, where the runner ended on its own, and not on the park, cancel
         # and crash paths: a parked attempt resumes later and may still write
         # the file.
         missing = self._report_missing_outputs(summary, fails_the_attempt=ran_clean)
+        self._publish_checked(
+            summary,
+            self._publish_withheld(ran_clean, missing=missing, title_refused=title_refused),
+        )
+        if self._carrier_pushed is not None:
+            # `carrier: branches` (D13): where this step's work is kept for
+            # the next step, by name and head, as the last push left it.
+            summary["branch"] = self._scrub(dict(self._carrier_pushed))
         summary["exit_code"] = result.exit_code
         summary["duration_seconds"] = round(result.duration_seconds, 3)
         if self._verdict is not None:
@@ -1769,6 +2019,98 @@ class Worker:
         )
         return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
+    def _carry_parked_uploads(self, summary: dict[str, Any]) -> None:
+        """List what earlier PARKED attempts uploaded and this one did not (#166).
+
+        Owner decision, 2026-09-28. A park uploads what the agent wrote so far
+        and the next attempt resumes the work; but a retry starts with an empty
+        artifacts folder (only `work/` is checkpointed), so a file written
+        before the park and not again was absent from the finishing attempt's
+        manifest, and its expected-output check and its dependants' staging
+        both failed with the object sitting in the bucket.
+
+        BY REFERENCE: `{name, bytes, uri, carried_from}`, the parked attempt's
+        own object. Nothing is downloaded into the workspace or uploaded again.
+        A name this attempt uploaded itself wins, and among parked attempts the
+        later park wins. The parks are read off their PARKED events
+        (`ControlPlane.parked_uploads`).
+
+        AN ENTRY IS DATA, CHECKED BEFORE IT IS LISTED: its `uri` must name the
+        object `artifacts/<name>` of the very attempt that parked, under this
+        tenant's prefix for THIS task -- the shape the dependant's staging
+        requires anyway (`inputs.artifact_key`) -- with a whole number of
+        bytes, and the object must still exist. Anything else is dropped and
+        logged. Never raises: a carry that cannot be read leaves the manifest
+        as this attempt uploaded it, and the check then says what is missing.
+        """
+        cfg = self.cfg
+        try:
+            parks = self.control.parked_uploads()
+        except Exception as exc:
+            self.log.warning(
+                "could not read the earlier parked attempts' uploads; only this "
+                "attempt's own are listed",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        artifacts = summary.get("artifacts")
+        if not isinstance(artifacts, list):
+            return
+        own = {entry.get("name") for entry in artifacts if isinstance(entry, dict)}
+        prefix = f"tenants/{cfg.tenant_id}/tasks/{cfg.task_id}/attempts/"
+        carried: dict[str, dict[str, Any]] = {}
+        dropped = 0
+        for attempt_id, entries in parks:
+            for entry in entries:
+                name = entry.get("name") if isinstance(entry, dict) else None
+                if not isinstance(name, str) or not name or name in own:
+                    continue
+                uri = entry.get("uri")
+                size = entry.get("bytes")
+                key = f"{prefix}{attempt_id}/artifacts/{name}"
+                if (
+                    not isinstance(uri, str)
+                    or not uri.endswith(key)
+                    or isinstance(size, bool)
+                    or not isinstance(size, int)
+                    or size < 0
+                ):
+                    dropped += 1
+                    continue
+                carried[name] = {
+                    "name": name, "bytes": size, "uri": uri, "carried_from": attempt_id,
+                }
+        present: list[dict[str, Any]] = []
+        for name, entry in carried.items():
+            try:
+                exists = self.store.exists(f"{prefix}{entry['carried_from']}/artifacts/{name}")
+            except Exception as exc:
+                self.log.warning(
+                    "could not confirm a parked attempt's upload still exists; not carried",
+                    artifact=standalone_mod.shown(self._scrub(name)),
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                continue
+            if exists:
+                present.append(entry)
+            else:
+                dropped += 1
+        if dropped:
+            self.log.warning(
+                "earlier parked attempts' uploads not carried: not an artifact of "
+                "the attempt that parked, or no longer in the bucket",
+                count=dropped,
+            )
+        if not present:
+            return
+        artifacts.extend(self._scrub(present))
+        artifacts.sort(key=lambda entry: entry["name"].split("/"))
+        self.log.info(
+            "listed uploads of earlier parked attempts by reference",
+            count=len(present),
+            attempts=sorted({entry["carried_from"] for entry in present}),
+        )
+
     def _add_runner_block(self, summary: dict[str, Any]) -> dict[str, Any] | None:
         """Put the runner's own report into `summary["runner"]`; the result file, or None.
 
@@ -1809,6 +2151,7 @@ class Worker:
     # ------------------------------------------------------------------
     def _exit_fenced(self, exc: FencedError) -> int:
         """Emit the event and leave. No workspace, no agent, no lease change."""
+        self._fenced_exit = True
         self.log.error(
             "FENCED: this attempt has been superseded; exiting without running the agent",
             expected_generation=exc.expected,
@@ -2308,9 +2651,16 @@ class Worker:
         # this worker's own prefix, never read as a name, exactly as the
         # integrator's contributor branches are.
         builds_on = self._dispatch_builds_on()
+        continued = continuation_mod.clone_ref(task.get("metadata"), self.cfg.git_branch_prefix)
+        # `carrier: branches` (D13): a step whose parent kept its work on a
+        # branch starts from that branch, instead of from the default branch
+        # with the parent's patch to apply. Asked only when nothing above
+        # chose a branch, so `continues` and `builds_on` keep their meaning.
+        carried = "" if continued or builds_on else self._carrier_parent(task)
         ref = (
-            continuation_mod.clone_ref(task.get("metadata"), self.cfg.git_branch_prefix)
+            continued
             or (f"{self.cfg.git_branch_prefix}{builds_on}" if builds_on else None)
+            or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
             or (self.cfg.repository_ref or task.get("repository_ref"))
         )
         # A worker whose memory the agent may read clones WITHOUT the token, so
@@ -2361,9 +2711,72 @@ class Worker:
         }
         if builds_on:
             info["builds_on"] = builds_on
+        if carried:
+            info["carried_from"] = carried
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _carrier_parent(self, task: dict[str, Any]) -> str:
+        """The parent task whose pushed branch this step starts from (D13), or "".
+
+        `carrier: branches` only, and never for an integrator: an integrator
+        has several parents and merges their branches in step order at its
+        publish (`merge_branches`, over `integrates`). Any other step with ONE
+        direct parent (`task.depends_on`) starts from that parent's branch,
+        when the parent's own result records it (`result_summary.branch`,
+        written by the parent's finish) under the name this worker derives
+        from the parent's task id with its own prefix -- never a name read as
+        data, exactly as `builds_on` and the integrator's branches are derived.
+
+        A step with several parents and no integrator role starts from the
+        default branch, and says so: which parent's branch it should start
+        from is not something this worker can decide. A parent that recorded
+        no branch (it changed nothing, or its push failed) is said too.
+        """
+        if self._dispatch_carrier() != "branches" or self._dispatch_role() == "integrator":
+            return ""
+        parents = [
+            parent.strip()
+            for parent in (task.get("depends_on") or [])
+            if isinstance(parent, str) and _TASK_ID_RE.match(parent.strip())
+        ]
+        if len(parents) != 1:
+            if len(parents) > 1:
+                self.log.info(
+                    "carrier: this step has several parents and is not an integrator; "
+                    "it starts from the default branch",
+                    parents=parents,
+                )
+            return ""
+        parent = parents[0]
+        upstream = inputs_mod.fetch_upstream_task(
+            self.db,
+            upstream_task_id=parent,
+            tenant_id=self.cfg.tenant_id,
+            call_options=self.control.call_options(),
+        )
+        summary = upstream.get("result_summary")
+        branch = summary.get("branch") if isinstance(summary, dict) else None
+        expected = f"{self.cfg.git_branch_prefix}{parent}"
+        if not isinstance(branch, dict) or branch.get("name") != expected:
+            self.log.info(
+                "carrier: the parent recorded no branch of its own; this step starts "
+                "from the default branch",
+                parent=parent,
+            )
+            return ""
+        declared = (task.get("metadata") or {}).get("input_from")
+        if isinstance(declared, dict) and declared.get(parent) == "swarm-work.patch":
+            # Harmless but redundant: the clone already holds the parent's
+            # work, so the patch is the same change a second time, and
+            # applying it is the agent's choice, not the worker's.
+            self.log.info(
+                "carrier: this step starts from its parent's branch, so the "
+                "parent's swarm-work.patch it also declared is redundant",
+                parent=parent,
+            )
+        return parent
 
     def _stage_declared_inputs(self, task: dict[str, Any]) -> list[inputs_mod.StagedInput]:
         """Honour `metadata.input_from`: {upstream_task_id: artifact_filename}.
@@ -2994,85 +3407,98 @@ class Worker:
         missing = expected_mod.missing_outputs(self._expected_outputs, produced)
         if not missing:
             return []
-        skipped = self._written_not_uploaded(summary)
+        causes = self._missing_causes(summary)
         summary[expected_mod.MISSING_SUMMARY_KEY] = self._scrub(list(missing))
+        summary[expected_mod.MISSING_CAUSES_SUMMARY_KEY] = self._scrub(
+            [
+                {"name": name, "cause": cause}
+                for name, cause in expected_mod.causes_of(missing, causes).items()
+            ]
+        )
+        if fails_the_attempt:
+            consequence = (
+                "The attempt fails for it, and is retried while the task has "
+                "attempts left."
+                if expected_mod.retryable(missing, causes)
+                else "The attempt fails for it, and is not retried: another "
+                "attempt would meet the same cause."
+            )
+        else:
+            consequence = (
+                "The runner did not finish cleanly, so the attempt ends on its own cause."
+            )
         self.log.warning(
-            expected_mod.missing_line(
-                missing,
-                skipped=skipped,
-                consequence=(
-                    "The attempt fails for it, and is retried while the task has "
-                    "attempts left."
-                    if fails_the_attempt
-                    else "The runner did not finish cleanly, so the attempt ends "
-                    "on its own cause."
-                ),
-            ),
+            expected_mod.missing_line(missing, causes=causes, consequence=consequence),
             missing=list(missing),
+            causes=self._scrub(expected_mod.causes_of(missing, causes)),
         )
         return list(missing)
 
-    def _written_not_uploaded(self, summary: dict[str, Any]) -> list[str]:
-        """Names written to the artifacts folder and not uploaded, for the missing-output lines.
+    def _missing_causes(self, summary: dict[str, Any]) -> dict[str, str]:
+        """Each name the last upload did not upload, with WHY (#165).
 
-        `artifacts_skipped` (the byte cap, an upload error, a name that is not
-        UTF-8), and the files the last upload left out for the 500-file cap or
-        the name bound (#228), which the summary counts but does not list. A
-        declared output among them is "written but not uploaded", whose remedy
-        is the cap, not the agent's prompt (`expected_mod.missing_cause`).
+        The skipped files' causes (`_skip_causes`: the byte cap, an upload
+        error, a name or a file refused), the files the 500-file cap or the
+        name bound left out (#228), and `swarm-work.patch` when the harvest did
+        not write it: an empty diff, a patch over its cap, no clone base
+        (`expected_mod.patch_cause`). A name in none of them was not written,
+        which a retry can change; so can an upload error, and nothing else
+        here (`expected_mod.retryable`).
         """
-        return [*(summary.get("artifacts_skipped") or []), *self._artifacts_not_uploaded]
+        causes = {**self._not_uploaded_causes, **self._skip_causes}
+        if PATCH_NAME in self._expected_outputs and PATCH_NAME not in causes:
+            patch = expected_mod.patch_cause(summary.get("git"))
+            if patch is not None:
+                causes[PATCH_NAME] = patch
+        return causes
 
-    def _publish_withheld(self, ran_clean: bool, *, title_refused: str | None = None) -> str | None:
-        """Why this attempt must not publish, or None when it may (#149).
+    def _publish_withheld(
+        self,
+        ran_clean: bool,
+        *,
+        missing: Sequence[str] = (),
+        title_refused: str | None = None,
+    ) -> str | None:
+        """Why this attempt must not publish, or None when it may (#149, #165).
 
-        Withheld only from an attempt that is going to RUN AGAIN: its runner
-        finished cleanly, an expected output is not in the artifacts directory,
-        and the task has attempts left. Like a park, its work is not finished,
-        and the retry publishes it. Published now, the retry would push again
-        from the final checkpoint, which `_checkpoint("final")` takes BEFORE
-        `_publish_git` auto-commits the agent's uncommitted changes. So when
-        this attempt auto-committed, the retry's commit does not descend from
-        the pushed one, and `push_branch`, which never forces, is refused as a
-        non-fast-forward. The last attempt publishes like any other failed
-        attempt.
+        Decided AFTER the upload, from the manifest the missing-output check
+        read (`missing`), and before anything is pushed (`_publish_checked`).
 
-        Decided BEFORE the upload, from the directory, because publishing is
-        part of the harvest that runs first. `swarm-work.patch` is left out: the
-        harvest writes it. A file that is here and then not uploaded (the cap,
-        an upload error) is found missing only afterwards, so that attempt has
-        published and is still retried. The count comes from the task this
-        worker fetched when it started; the transaction that fails the attempt
-        reads it again and decides (`control.fail_retryably`).
+        A MISSING EXPECTED OUTPUT WITHHOLDS THE PUBLISH ON EVERY ATTEMPT, the
+        last one included (#165, owner decision 2026-09-28): the attempt is
+        failed, retryably or not, and an attempt that is failed or retried has
+        published nothing. Before, the publish ran first, from a directory
+        listing, so a file present and then not uploaded (the cap, an upload
+        error) published a branch and a pull request for an attempt the check
+        then failed, and the last attempt published whatever it had.
+
+        A refused pull-request title withholds only from an attempt that will
+        run again, as before: the last one pushes its branch and opens no pull
+        request (`_publish_git`). The count comes from the task this worker
+        fetched when it started; the transaction that fails the attempt reads
+        it again and decides (`control.fail_retryably`).
+
+        Only an attempt whose runner finished cleanly is gated here: one that
+        failed, timed out or was stopped ends on its own cause, unchanged.
         """
-        if not ran_clean or not self._expected_outputs:
+        if not ran_clean:
             return None
-        ws = self.ws
-        assert ws is not None
-        owed = expected_mod.without_platform_names(self._expected_outputs, (PATCH_NAME,))
-        # The same walk as the upload's (#227): `rglob` recursed per folder,
-        # and a deep enough tree raised RecursionError out of `_finalise`
-        # before anything was uploaded.
-        present = list(self._walk_artifacts(ws.artifacts)[0])
-        absent = expected_mod.missing_outputs(owed, present)
-        if not absent and title_refused is None:
+        if missing:
+            return (
+                "this attempt failed because expected outputs are missing ("
+                + ", ".join(missing)
+                + "); nothing is published by an attempt that is failed or retried"
+            )
+        if title_refused is None:
             return None
         task = self._task or {}
         if retries_exhausted(
             int(task.get("attempt_count", 0)), int(task.get("max_attempts", 3))
         ):
             return None
-        if not absent:
-            # `title_refused` (`_refused_title_reason`): the file is there and
-            # cannot title the pull request, which withholds like an absence.
-            return (
-                f"this attempt is retried because {title_refused}; publishing "
-                f"waits for the attempt that writes a usable one"
-            )
         return (
-            "this attempt is retried because expected outputs are missing ("
-            + ", ".join(absent)
-            + "); publishing waits for the attempt that writes them"
+            f"this attempt is retried because {title_refused}; publishing "
+            f"waits for the attempt that writes a usable one"
         )
 
     def _fail_for_missing_outputs(
@@ -3093,9 +3519,32 @@ class Worker:
 
         The retry starts with an empty artifacts directory, because only
         `work/` is checkpointed, so it must write every expected output again.
+
+        NOT RETRIED WHEN A RETRY CANNOT HELP (#165, owner decision
+        2026-09-28): a missing output whose cause is the artifact cap, a file
+        refused at read, or a `swarm-work.patch` the harvest could not write
+        (an empty diff, a patch over its cap, no clone base) ends the task
+        FAILED now, whatever attempts are left. The next attempt would write
+        the same file into the same cap, against the same repository, and
+        spend its compute and provider quota to fail the same way. Only a file
+        never written, or one whose upload raised, is retried.
         """
-        skipped = self._written_not_uploaded(summary)
-        error = self._scrub(expected_mod.missing_error(missing, skipped=skipped))
+        causes = self._missing_causes(summary)
+        error = self._scrub(expected_mod.missing_error(missing, causes=causes))
+        if not expected_mod.retryable(missing, causes):
+            self.control.finish(
+                state=TaskState.FAILED,
+                exit_code=exit_code,
+                error=error,
+                result_summary=summary,
+                end_cause=EndCause.OUTPUTS_MISSING,
+            )
+            self.log.info(
+                "the attempt failed for missing expected outputs a retry cannot produce",
+                missing_count=len(missing),
+                causes=self._scrub(expected_mod.causes_of(missing, causes)),
+            )
+            return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
         state = self.control.fail_retryably(
             exit_code=exit_code,
             error=error,
@@ -3309,6 +3758,14 @@ class Worker:
         # `input.repository` is `setdefault`, so a caller's own would shadow it.
         if self._repo_url and ws.checkout().is_dir():
             base["SWARM_REPO_DIR"] = str(ws.checkout())
+        # THE CLONE BASE, for the publish scan the agent can run first
+        # (`publish_scan.default_base`): the base the publish diffs from
+        # (`_publish_base`, `empty` for a repository cloned with no commit),
+        # else the workspace marker's, which describes the work even when the
+        # publish will not trust it. Set by the worker, never from `input`.
+        clone_base = self._publish_base or self._clone_base
+        if clone_base:
+            base[CLONE_BASE_ENV] = clone_base
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -3649,6 +4106,48 @@ class Worker:
                 account_id=account.account_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
+            return
+        self._emit_account_released(account, unusable=bool(unusable))
+
+    def _emit_account_released(self, account: Assignment, *, unusable: bool) -> None:
+        """`account_released` on the task's events, beside `account_assigned` (#380).
+
+        ONCE PER RELEASE THE BROKER ACCEPTED: `_give_back` calls it only after
+        `release` returned, so a failed release, whose hold is left to expire,
+        claims nothing. The same shape as `account_assigned` -- a `cause` on an
+        event the frozen `EventType` already has -- because the API reads every
+        `account_*` cause through one range query (`swarm_api.task_accounts`).
+        LEASE_RELEASED rather than RUNNING: it is a hold given back, and it is
+        written on the way out, after the attempt's own end.
+
+        WHAT IT CARRIES: the account id, the provider, and whether it went back
+        unusable, as a bool. `control.emit` stamps the task, the attempt, the
+        lease and the generation on the event itself. Never the secret's name
+        or payload, and never the unusable reason's text, which quotes Secret
+        Manager's error and names the secret.
+
+        Not on a fenced exit or a tenant mismatch: the stream is not this
+        attempt's to write then (`_stand_down`, `_exit_tenant_mismatch`).
+        Never raises.
+        """
+        if self._fenced_exit or self._writes_forbidden or self._control_plane_down:
+            return
+        try:
+            self.control.emit(
+                EventType.LEASE_RELEASED,
+                {
+                    "cause": "account_released",
+                    "account_id": account.account_id,
+                    "provider": self.cfg.provider,
+                    "unusable": unusable,
+                },
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account's release on the task's events",
+                account_id=account.account_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
 
     def _release_account(self) -> None:
         """Give the account back, on whatever path this attempt is leaving by.
@@ -3843,7 +4342,15 @@ class Worker:
 
     # -- periodic work -----------------------------------------------------
     def _heartbeat(self) -> None:
-        self.control.heartbeat()
+        # Read BEFORE the beat: the lease's new expiry is computed from the
+        # time the beat started, and a beat that retried for most of its
+        # budget must not be credited with that time again.
+        started = time.monotonic()
+        if self.control.heartbeat() is not False:
+            # Landed: the lease is live for one more extension from when the
+            # beat started (#70). A refused beat (False) extends nothing, and
+            # the control poll meets the fence behind it.
+            self._lease_live_until = started + self.control.heartbeat_extension_seconds
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             self.control.emit(EventType.HEARTBEAT, self._usage_reading())
@@ -4018,7 +4525,20 @@ class Worker:
                 error=f"{type(exc).__name__}: {exc}",
             )
         try:
+            # The announcement is an audit record, written to Firestore; the
+            # archive goes to the bucket. An event that cannot be written must
+            # not cost the checkpoint, and during an outage (#70) it is the
+            # checkpoint that is needed.
             self.control.emit(EventType.CHECKPOINT_STARTED, {"label": label})
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.warning(
+                "could not record the checkpoint's start; taking it anyway",
+                label=label,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+        try:
             with self._heartbeat_meanwhile(f"checkpoint ({label})"):
                 record = self.checkpoints.create(self.ws, label=label)
         except CheckpointError as exc:
@@ -4027,15 +4547,373 @@ class Worker:
         except Exception as exc:
             self.log.exception("checkpoint failed unexpectedly", exc, label=label)
             return None
+        # THE RECORD'S ERRORS STAY HERE (#70). The archive is in the bucket; the
+        # record -- the attempt's list and digest, the task's pointer, the
+        # event -- is Firestore's, under its budget. A record that could not
+        # be written leaves a checkpoint no restore trusts (#347), which is
+        # what a failed checkpoint is, and the next interval tries again. It
+        # used to raise into the crash handler, which FAILED the task. A fence
+        # met in the pointer's transaction is still raised: that is not a
+        # failed checkpoint, the attempt is over.
+        try:
+            self.control.record_checkpoint(
+                checkpoint_id=record.checkpoint_id,
+                uri=record.uri,
+                size_bytes=record.archive_bytes,
+                seq=record.seq,
+                archive_sha256=record.archive_sha256,
+            )
+        except (FencedError, TenantMismatchError):
+            raise
+        except Exception as exc:
+            self.log.error(
+                "CHECKPOINT NOT RECORDED: the archive was uploaded and its record "
+                "could not be written, so no restore will use it",
+                label=label,
+                checkpoint_id=record.checkpoint_id,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return None
         self._last_checkpoint = record
-        self.control.record_checkpoint(
-            checkpoint_id=record.checkpoint_id,
-            uri=record.uri,
-            size_bytes=record.archive_bytes,
-            seq=record.seq,
-            archive_sha256=record.archive_sha256,
-        )
+        self._push_carrier_branch(label)
         return record
+
+    # -- carrier: branches (D13) --------------------------------------------
+    def _push_carrier_branch(self, label: str) -> None:
+        """`carrier: branches`: push the step's COMMITTED work to its branch. Never raises.
+
+        Owner decision, 2026-10-01 (D13, docs/design/dispatch-and-integration.md
+        4.3). With `carrier: branches` a checkpoint also pushes what the
+        agent has committed to `<git_branch_prefix><task id>`, the branch the
+        publish pushes, so the work survives the platform and a dependant
+        starts from it. `carrier: checkpoints`, the default, returns at once:
+        nothing below runs and nothing changes.
+
+        NEVER FORCED. The work is ONE worker commit of the agent's committed
+        tree on top of the branch's current tip (`gitops.commit_tree_onto`),
+        so each push fast-forwards the last, across checkpoints and attempts.
+        It goes through the publish's own gates: the reap, a worker-owned
+        repository holding the agent's commits fetched with object checking,
+        the final-tree leak scan, the authorship check, and `push_branch`,
+        which refuses a protected branch and anything outside the prefix.
+
+        NOT WHILE THE AGENT RUNS. The tenant token is never in hand while agent
+        code can run (`_publish_git`): the agent shares this worker's uid, so
+        the credential file and the token-bearing git process would be within
+        its reach. A checkpoint taken with the runner alive -- the periodic
+        one, and the control-plane-outage one, which #70 takes BEFORE it stops
+        the runner -- pushes nothing and says so. The checkpoints taken once
+        the runner has stopped (final, park, cancellation, SIGTERM) push.
+        The owner accepted this narrowing of D13's "every checkpoint" on
+        2026-10-02: periodic checkpoints do not push.
+
+        A FAILED PUSH IS LOGGED AND NEVER ENDS THE ATTEMPT. The checkpoint is
+        the durable record either way.
+        """
+        if self._dispatch_carrier() != "branches":
+            return
+        try:
+            # The fetch of the branch's tip and the push are network calls to
+            # the forge, as long as the archive upload can be, so the lease is
+            # beaten meanwhile exactly as it is under the archive.
+            with self._heartbeat_meanwhile(f"carrier push ({label})"):
+                self._carrier_push(label)
+        except Exception as exc:
+            self.log.warning(
+                "carrier: the step's branch was not pushed at this checkpoint; the "
+                "attempt goes on",
+                label=label,
+                error=self._scrub(f"{type(exc).__name__}: {str(exc)[:500]}"),
+            )
+
+    def _carrier_push(self, label: str) -> None:
+        ws = self.ws
+        assert ws is not None
+        repo = ws.work / REPO_DIR_NAME
+        if not (repo / ".git").exists():
+            return
+        child = self._child
+        if child is not None and child.poll() is None:
+            self.log.info(
+                "carrier: not pushing while the runner is running; the tenant token "
+                "is never in hand while agent code can run",
+                label=label,
+            )
+            return
+        target = self._carrier_target()
+        if isinstance(target, str):
+            self.log.info("carrier: the step's branch was not pushed", label=label, reason=target)
+            return
+        url, token, branch, protected = target
+        survivors = self.reap_before_publish()
+        if survivors:
+            self.log.error(
+                "carrier: not pushing: agent processes survived the reap",
+                surviving_pids=list(survivors),
+            )
+            return
+        publish_repo = self._build_clean_repo(repo, floor=self._publish_base)
+        self._carrier_push_from(
+            publish_repo, url=url, token=token, branch=branch, protected=protected,
+            message=self._worker_commit_message(
+                f"swarm: checkpoint ({label}) of the committed work",
+                "Pushed by the worker at a checkpoint (carrier: branches), so the "
+                "step's committed work survives the platform and a later step can "
+                "start from it.",
+            ),
+        )
+
+    def _carrier_target(self) -> tuple[str, str, str, tuple[str, ...]] | str:
+        """`(url, token, branch, protected)` for a carrier push, or why there is none.
+
+        The publish's own gates, in its order (`_publish_git`): publishing
+        enabled, a repository URL, the token refusal asked BEFORE the token is
+        read, a forge that grants write, and the branch derived from the task
+        id. Never logs the token.
+        """
+        cfg = self.cfg
+        if not cfg.git_publish_enabled:
+            return "publishing is disabled for this worker"
+        url = self._repo_url or cfg.repository_url
+        if not url:
+            return "the repository URL is unknown"
+        if self._publish_base is None:
+            return "the clone base is unknown, so the agent's commits cannot be told apart"
+        refusal = self._git_token_refusal()
+        if refusal:
+            return f"the tenant git token is refused: {refusal}"
+        token = self._git_token()
+        if not token:
+            return "no credential"
+        try:
+            access = probe_repository(url=url, token=token)
+        except ForgeError as exc:
+            return f"could not reach the forge: {self._scrub(str(exc)[:300])}"
+        if access is None:
+            return "this repository is not on a forge this worker can publish to"
+        if not access.can_push:
+            return str(access.reason)
+        branch = continuation_mod.publish_branch(
+            (self._task or {}).get("metadata"), cfg.git_branch_prefix, cfg.task_id
+        )
+        protected = (access.default_branch,) if access.default_branch else ()
+        return url, token, branch, protected
+
+    def _carrier_scope_refusal(self) -> Callable[[], Outcome] | None:
+        """For `carrier: branches`, the failure to make before the agent runs, or None.
+
+        Owner decision, 2026-10-02: the write-scope check is the WORKER's.
+        swarm-api reads no tenant's git secret, so it cannot know whether the
+        token can push; this asks the forge with the tenant's own token, the
+        way the carrier push and the publish ask it (`probe_repository`).
+
+          * NO GIT CREDENTIAL, or a token whose `permissions.push` is not
+            True: FAILED now, NOT retried, cause `forge_read_only`. The next
+            attempt reads the same secret and asks the same forge.
+          * The forge could not be asked -- a network failure (`ForgeError`),
+            a 429 or a 5xx: the attempt fails RETRYABLY, cause
+            `forge_unreachable`.
+          * Everything else proceeds unchanged. A worker with publishing
+            disabled, a token the memory guard refuses to read, or a host that
+            is not a forge this worker publishes to pushes nothing at its
+            checkpoints, exactly as `_carrier_target` already says in its log
+            line; none of those is a statement about the token's scope.
+
+        Returned as a callable, like `_prepare`'s parks, so the terminal writes
+        happen after the startup window closes. Never logs or quotes the
+        token: the reasons are the probe's own words, and both are scrubbed.
+        """
+        cfg = self.cfg
+        if not cfg.git_publish_enabled:
+            return None
+        url = self._repo_url or cfg.repository_url
+        if not url:
+            # swarm-api refuses `branches` without a repository (422), so this
+            # is a task written by another path; the carrier logs and skips.
+            return None
+        if self._git_token_refusal():
+            return None
+        token = self._git_token()
+        if not token:
+            return functools.partial(
+                self._fail_forge_read_only, url,
+                "no git credential is registered for this tenant",
+            )
+        try:
+            access = probe_repository(url=url, token=token)
+        except ForgeError as exc:
+            return functools.partial(
+                self._fail_forge_unreachable, url, self._scrub(str(exc)[:300])
+            )
+        if access is None:
+            return None
+        if access.can_push:
+            self.log.info("carrier: the tenant token can push to the step's repository")
+            return None
+        reason = str(access.reason)
+        if _FORGE_TRANSIENT_ANSWER.match(reason):
+            return functools.partial(self._fail_forge_unreachable, url, self._scrub(reason))
+        return functools.partial(self._fail_forge_read_only, url, self._scrub(reason))
+
+    def _fail_forge_read_only(self, url: str, reason: str) -> Outcome:
+        """FAILED, not retried, before the agent ran: the token cannot push (D13)."""
+        error = self._scrub(
+            f"{FORGE_READ_ONLY}: carrier 'branches' pushes the step's work to its "
+            f"branch, and this tenant's forge credential cannot push to {url}: "
+            f"{reason}. The agent was not started. Choose carrier 'checkpoints', "
+            "or store a token with write access (scripts/create-secrets.sh "
+            "--provider git --stdin)."
+        )
+        self.log.error(
+            "carrier: the tenant token cannot push; failing before the agent runs",
+            cause=FORGE_READ_ONLY,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["carrier_check"] = {"cause": FORGE_READ_ONLY, "reason": reason}
+        self._export_metrics()
+        self.control.finish(
+            state=TaskState.FAILED,
+            exit_code=None,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _fail_forge_unreachable(self, url: str, reason: str) -> Outcome:
+        """A retryable failure before the agent ran: the forge could not be asked."""
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: carrier 'branches' needs to know whether this "
+            f"tenant's forge credential can push to {url}, and the forge could not "
+            f"be asked: {reason}. The agent was not started; the attempt is "
+            "retried while the task has attempts left."
+        )
+        self.log.warning(
+            "carrier: the forge could not be asked; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["carrier_check"] = {"cause": FORGE_UNREACHABLE, "reason": reason}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+            detail={"carrier": "branches"},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _carrier_fold_onto_tip(
+        self, publish_repo: Path, *, url: str, token: str, branch: str, message: str
+    ) -> str | None:
+        """Put HEAD's tree on the branch's current tip as one worker commit.
+
+        The tip is what an earlier push of this step left (`fetch_branch_tip`),
+        or the clone base before any. Returns the new commit, None when the tip
+        already holds this tree.
+
+        The commit is a TREE on top of the tip, not a replay. When a retry
+        cloned a newer default branch than the one the tip was built on, the
+        tree carries the default branch's intervening changes too, and the
+        branch's diff against its first parent shows them. The branch still
+        fast-forwards, and its tree is exactly the work; only that one
+        commit's diff is noisier. Rebasing it would need a force push, which
+        this carrier never does.
+        """
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        tip = fetch_branch_tip(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+        )
+        parent = tip or self._publish_base
+        if not parent or parent == EMPTY_CLONE_BASE:
+            raise GitError(
+                "the repository was empty when it was cloned and the branch does "
+                "not exist yet; there is no commit to push the work onto"
+            )
+        return commit_tree_onto(
+            repo=publish_repo,
+            parent=parent,
+            message=message,
+            author_name=cfg.git_author_name,
+            author_email=cfg.git_author_email,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+
+    def _carrier_push_from(
+        self,
+        publish_repo: Path,
+        *,
+        url: str,
+        token: str,
+        branch: str,
+        protected: tuple[str, ...],
+        message: str,
+    ) -> None:
+        """Scan, commit onto the tip, check authorship, push. Raises GitError."""
+        ws = self.ws
+        assert ws is not None
+        cfg = self.cfg
+        leak = final_tree_leak(
+            repo=publish_repo,
+            base=self._publish_base,
+            leaks=self._leaks_in_added_text,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+            overlap=self._scan_overlap(),
+        )
+        if leak is not None:
+            raise GitError(f"refusing to push: {self._scrub(leak)}")
+        made = self._carrier_fold_onto_tip(
+            publish_repo, url=url, token=token, branch=branch, message=message
+        )
+        if made is None:
+            self.log.info("carrier: the branch already holds this work", branch=branch)
+            return
+        verify_worker_authorship(
+            repo=publish_repo,
+            base=self._publish_base,
+            author_name=cfg.git_author_name,
+            author_email=cfg.git_author_email,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_harvest_timeout_seconds,
+            logger=self.log,
+        )
+        pushed = push_branch(
+            repo=publish_repo,
+            url=url,
+            branch=branch,
+            token=token,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            timeout_seconds=cfg.git_clone_timeout_seconds,
+            logger=self.log,
+            branch_prefix=cfg.git_branch_prefix,
+            protected=protected,
+        )
+        self._carrier_pushed = {"name": branch, "head": pushed or made}
+        self.log.info("carrier: pushed the step's committed work", branch=branch)
 
     @contextmanager
     def _heartbeat_meanwhile(self, what: str) -> Iterator[None]:
@@ -4139,7 +5017,12 @@ class Worker:
         end = time.monotonic() + seconds
         while time.monotonic() < end and not self._interrupted:
             time.sleep(min(self.cfg.heartbeat_interval_seconds, max(0.1, end - time.monotonic())))
-            self._heartbeat()
+            try:
+                self._heartbeat()
+            except Exception as exc:
+                # Logged, never fatal here (#70): the supervision loop's next
+                # beat decides, against the lease, whether it is an outage.
+                self._control_plane_call_failed("heartbeat", exc)
 
     # -- uploads -----------------------------------------------------------
     def _scrub(self, value: Any) -> Any:
@@ -4693,7 +5576,9 @@ class Worker:
         return data if isinstance(data, dict) else {}
 
     # -- git: harvest, and publish when the forge allows it -----------------
-    def _harvest_git(self, *, publish: bool, withheld: str = "") -> dict[str, Any] | None:
+    def _harvest_git(
+        self, *, publish: bool, withheld: str = "", defer: bool = False
+    ) -> dict[str, Any] | None:
         """Describe the agent's changes, and publish them when permitted.
 
         Returns the dict that becomes `result_summary["git"]`, or None when
@@ -4707,9 +5592,14 @@ class Worker:
         from its checkpoint and will reach the terminal path later, so pushing
         a branch and opening a pull request for work that is still in progress
         would put a half-finished change in front of a reviewer -- and do it
-        again on every quota bounce. It is False, for the same reason, on an
-        attempt `_finalise` is about to fail retryably (#149), which passes
-        `withheld` to say so; a park passes nothing and is described as one.
+        again on every quota bounce. A park passes nothing and is described as
+        one.
+
+        `defer` is `_finalise`'s (#165): everything up to the publish runs --
+        the reap, the clean repository, the patch -- and the publish is left
+        in `_deferred_publish` for `_publish_checked`, which makes it only
+        after the upload manifest has passed the missing-output check. So an
+        attempt that check fails, retryably or not, has pushed nothing.
         """
         ws = self.ws
         cfg = self.cfg
@@ -4803,7 +5693,7 @@ class Worker:
         except GitError as exc:
             self.log.warning("could not harvest the agent's git changes", error=str(exc))
             out["error"] = self._scrub(str(exc)[:500])
-            if publish:
+            if publish or defer:
                 # Fails closed, and says so where a reader of the publish looks.
                 out["published"] = False
                 out["publish_reason"] = f"nothing was published: {out['error']}"
@@ -4864,6 +5754,11 @@ class Worker:
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
 
+        if defer:
+            self._deferred_publish = {
+                "repo": repo, "work_head": work.head, "publish_repo": publish_repo,
+            }
+            return out
         out.update(
             self._publish_git(
                 repo=repo, work_head=work.head, publish=publish, withheld=withheld,
@@ -4871,6 +5766,33 @@ class Worker:
             )
         )
         return out
+
+    def _publish_checked(self, summary: dict[str, Any], withheld: str | None) -> None:
+        """The publish `_harvest_git` deferred, made now that the check has run (#165).
+
+        `withheld` is `_publish_withheld`'s answer, None when this attempt may
+        publish. Without a deferred publish -- no repository, a harvest that
+        returned early (a survivor of the reap, a git error, nothing changed)
+        -- the harvest already said why nothing was published, and this does
+        nothing. The result is scrubbed into `summary["git"]` like the rest
+        of the summary. Never raises: the epilogue cannot fail the attempt.
+        """
+        deferred, self._deferred_publish = self._deferred_publish, None
+        git = summary.get("git")
+        if deferred is None or not isinstance(git, dict):
+            return
+        try:
+            result = self._publish_git(
+                repo=deferred["repo"],
+                work_head=deferred["work_head"],
+                publish=withheld is None,
+                withheld=withheld or "",
+                publish_repo=deferred["publish_repo"],
+            )
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.exception("the publish raised; continuing without it", exc)
+            result = {"published": False, "publish_reason": "the publish failed unexpectedly"}
+        git.update(self._scrub(result))
 
     def _integration_is_pending(self) -> bool:
         """True when this step still owes a merge even having changed nothing.
@@ -4968,7 +5890,11 @@ class Worker:
         # Task would be a frozen-contract change; the request to type it is
         # recorded in docs/contract-change-requests.md.
         strategy = self._dispatch_strategy()
-        if strategy == "collect":
+        # `carrier: branches` PUSHES under every strategy (D13): the branch is
+        # where the step's work is kept for the next step, so a `collect` step
+        # pushes it too -- and opens nothing, below.
+        carrier = self._dispatch_carrier()
+        if strategy == "collect" and carrier != "branches":
             return {
                 "strategy": strategy,
                 "published": False,
@@ -5161,55 +6087,71 @@ class Worker:
                 auto_committed = True
                 work_head = new_sha
 
-            replayed = replay_agent_commits(
-                repo=publish_repo,
-                base=self._publish_base,
-                keep=new_sha,
-                task_id=cfg.task_id,
-                scrub=lambda text: str(self._scrub(text)),
-                author_name=cfg.git_author_name,
-                author_email=cfg.git_author_email,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_harvest_timeout_seconds,
-                logger=self.log,
-                # A registered secret OR a credential-shaped run in any kept
-                # commit's diff folds the history instead (#259 review; owner
-                # decision 4, 2026-09-28, for the patterns): the scrub
-                # replaces exactly the registered values, so "the scrub
-                # changed it" is "a registered value is in it", and a key the
-                # agent minted or an `.env` it committed is registered nowhere
-                # and caught only by the patterns. Asked about the text each
-                # file ADDS, `+` removed, in overlapping windows.
-                leaks=self._leaks_in_added_text,
-                overlap=self._scan_overlap(),
-            )
-            if replayed is not None:
-                kept = replayed
-                out["agent_commits_kept"] = kept
+            # `carrier: branches` (D13): the branch may already hold this step's
+            # earlier pushes (`_push_carrier_branch`), and a replay writes new
+            # shas every time, so its line would not descend from them and the
+            # push, never forced, would be refused. The final tree goes on the
+            # branch's tip as one worker commit instead.
+            if carrier == "branches":
+                self._carrier_fold_onto_tip(
+                    publish_repo, url=url, token=token, branch=branch,
+                    message=self._worker_commit_message(
+                        FOLDED_COMMIT_SUBJECT,
+                        "The step's work as it finished, committed by the worker on "
+                        "top of what its checkpoints already pushed (carrier: "
+                        "branches), so the branch only ever fast-forwards.",
+                    ),
+                )
             else:
-                replaced = fold_agent_commits(
+                replayed = replay_agent_commits(
                     repo=publish_repo,
                     base=self._publish_base,
                     keep=new_sha,
-                    message=self._worker_commit_message(
-                        FOLDED_COMMIT_SUBJECT,
-                        "Everything the agent changed in this attempt, committed or "
-                        "not, as one commit made by the worker. The worker writes "
-                        "every commit it pushes, so no author, trailer or footer "
-                        "added inside the agent's container reaches this branch.",
-                    ),
+                    task_id=cfg.task_id,
+                    scrub=lambda text: str(self._scrub(text)),
                     author_name=cfg.git_author_name,
                     author_email=cfg.git_author_email,
                     private_dir=ws.private,
                     logs_dir=ws.logs,
                     timeout_seconds=cfg.git_harvest_timeout_seconds,
                     logger=self.log,
+                    # A registered secret OR a credential-shaped run in any kept
+                    # commit's diff folds the history instead (#259 review; owner
+                    # decision 4, 2026-09-28, for the patterns): the scrub
+                    # replaces exactly the registered values, so "the scrub
+                    # changed it" is "a registered value is in it", and a key the
+                    # agent minted or an `.env` it committed is registered nowhere
+                    # and caught only by the patterns. Asked about the text each
+                    # file ADDS, `+` removed, in overlapping windows.
+                    leaks=self._leaks_in_added_text,
+                    overlap=self._scan_overlap(),
                 )
-                # The worker's own auto-commit is among what was replaced when
-                # there was one; the rest were the agent's.
-                folded = max(replaced - (1 if new_sha else 0), 0)
-                out["agent_commits_folded"] = folded
+                if replayed is not None:
+                    kept = replayed
+                    out["agent_commits_kept"] = kept
+                else:
+                    replaced = fold_agent_commits(
+                        repo=publish_repo,
+                        base=self._publish_base,
+                        keep=new_sha,
+                        message=self._worker_commit_message(
+                            FOLDED_COMMIT_SUBJECT,
+                            "Everything the agent changed in this attempt, committed or "
+                            "not, as one commit made by the worker. The worker writes "
+                            "every commit it pushes, so no author, trailer or footer "
+                            "added inside the agent's container reaches this branch.",
+                        ),
+                        author_name=cfg.git_author_name,
+                        author_email=cfg.git_author_email,
+                        private_dir=ws.private,
+                        logs_dir=ws.logs,
+                        timeout_seconds=cfg.git_harvest_timeout_seconds,
+                        logger=self.log,
+                    )
+                    # The worker's own auto-commit is among what was replaced when
+                    # there was one; the rest were the agent's.
+                    folded = max(replaced - (1 if new_sha else 0), 0)
+                    out["agent_commits_folded"] = folded
 
             # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
             # (owner decision, 2026-09-28, #259 review M4). The scan above
@@ -5331,6 +6273,17 @@ class Worker:
         # pull request, so a six-step `integrate` workflow produced six of them
         # against an API whose schema, validator and docs all say it produces
         # ONE. The branch is the deliverable here; the integrator merges it.
+        if carrier == "branches":
+            self._carrier_pushed = {"name": branch, "head": str(pushed or work_head or "")}
+        if strategy == "collect":
+            # Reached only with `carrier: branches` (D13): the branch is the
+            # carrier, and `collect` still opens nothing.
+            out["published"] = True
+            out["publish_reason"] = (
+                "carrier is 'branches': the step's branch was pushed; strategy "
+                "'collect' opens no pull request"
+            )
+            return out
         if role == "contributor":
             out["published"] = True
             out["publish_reason"] = (
@@ -5821,7 +6774,17 @@ class Worker:
         first.append(PATCH_NAME)
         return first
 
-    def _upload_outputs(self, *, publish: bool = False, withheld: str = "") -> dict[str, Any]:
+    def _upload_outputs(
+        self, *, publish: bool = False, withheld: str = "", defer_publish: bool = False
+    ) -> dict[str, Any]:
+        """Harvest, upload and describe what this attempt leaves behind.
+
+        `defer_publish` is `_finalise`'s (#165): the harvest describes the work
+        and writes the patch, and the push and the pull request wait for
+        `_publish_checked`, which runs only once the upload manifest has passed
+        the missing-output check. Every other caller parks, cancels or crashes
+        and publishes nothing, as before.
+        """
         ws = self.ws
         if ws is None:
             return {}
@@ -5845,8 +6808,12 @@ class Worker:
         # scrubs what goes up from there. A patch produced afterwards would be
         # the one file in the upload that never had a provider key taken out
         # of it.
+        self._deferred_publish = None
         try:
-            git_summary = self._harvest_git(publish=publish, withheld=withheld)
+            if defer_publish:
+                git_summary = self._harvest_git(publish=False, defer=True)
+            else:
+                git_summary = self._harvest_git(publish=publish, withheld=withheld)
         except Exception as exc:  # pragma: no cover - defensive
             self.log.exception("the git harvest raised; continuing without it", exc)
             git_summary = {"error": "the git harvest failed unexpectedly"}
@@ -5893,9 +6860,13 @@ class Worker:
                     names=past[index * batch : (index + 1) * batch],
                 )
         skipped: list[str] = []
+        # WHY each one (#165), index for index with `skipped`: the
+        # missing-output check reads it to decide whether a retry can help.
+        skip_causes: list[str] = []
         for folder in too_deep:
             # Scrubbed, then cut, like every name below (#232 review).
             skipped.append(standalone_mod.shown(self._scrub(folder)))
+            skip_causes.append(expected_mod.CAUSE_REFUSED)
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be
             # named with it, and as a lone surrogate in the summary it made
@@ -5910,6 +6881,7 @@ class Worker:
                 artifact=shown,
             )
             skipped.append(shown)
+            skip_causes.append(expected_mod.CAUSE_REFUSED)
         for entry in plan.not_uploaded:
             if entry["reason"] == manifest_mod.NAME_TOO_LONG:
                 # Listed as #225 lists a name it could not upload: cut short,
@@ -5917,6 +6889,7 @@ class Worker:
                 # SCRUBBED FIRST (#232 review): cutting a raw name let a
                 # registered secret crossing character 256 survive in part.
                 skipped.append(standalone_mod.shown(self._scrub(entry["name"])))
+                skip_causes.append(expected_mod.CAUSE_REFUSED)
         # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
         # and every name in the log -- the owner's shape for #228, through the
         # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
@@ -5925,6 +6898,14 @@ class Worker:
         # 4,096 bytes, and 100 of those would pass Cloud Logging's 256 KiB
         # entry. A name under it is logged whole (`shown` leaves it alone).
         self._artifacts_not_uploaded = tuple(entry["name"] for entry in plan.not_uploaded)
+        self._not_uploaded_causes = {
+            entry["name"]: (
+                expected_mod.CAUSE_CAP
+                if entry["reason"] == manifest_mod.OVER_CAP
+                else expected_mod.CAUSE_REFUSED
+            )
+            for entry in plan.not_uploaded
+        }
         self._log_not_uploaded(
             "files in $SWARM_ARTIFACTS_DIR were not uploaded",
             [
@@ -5955,6 +6936,7 @@ class Worker:
                 # and was scrubbed only later, with the summary, after
                 # nothing had cut it.
                 skipped.append(standalone_mod.shown(self._scrub(rel)))
+                skip_causes.append(_skip_cause(sent.skipped))
                 continue
             # Listed only for a file that LEFT (#227): one the byte cap or an
             # upload failure kept in the pod was never uploaded "as-is".
@@ -6040,7 +7022,17 @@ class Worker:
         if workdir is not None:
             summary["workdir_outputs"] = workdir["summary"]
         if skipped:
-            summary["artifacts_skipped"] = skipped[:50]
+            # Each entry names the file and WHY it was skipped (#165): the
+            # cap, an upload error, a refused file. Read through
+            # `expected_mod.skipped_entries`, which also accepts the bare
+            # names older summaries hold.
+            summary["artifacts_skipped"] = [
+                {"name": name, "cause": cause}
+                for name, cause in zip(skipped[:50], skip_causes[:50])
+            ]
+        # Every skipped name's cause, uncut, for this attempt's own check: the
+        # summary's list stops at 50, and a declared output can be the 51st.
+        self._skip_causes = dict(zip(skipped, skip_causes))
         if plan.over_cap:
             # How many files the folder held past the cap, and the cap, so a
             # reader can say "N over the 500-file cap" without restating the
@@ -6583,6 +7575,14 @@ SCAN_WINDOW_CHARS = 4 * 1024 * 1024
 #: finds, and the marker is 40 characters.
 SCAN_OVERLAP_CHARS = 64 * 1024
 
+#: The agent's environment variable holding the base the publish diffs from
+#: (`Worker._build_child_env`), so `python -m agent_worker.publish_scan` scans
+#: the same added text the worker will. Without it the CLI guessed HEAD on a
+#: `--depth 1` clone of a pinned SHA or a non-main ref, and every COMMITTED
+#: secret was outside its diff (#470's review). A description of the work,
+#: never trusted for the push: the publish keeps reading `_publish_base`.
+CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+
 
 class CredentialHit(NamedTuple):
     """What a leak predicate found in one window of a file's added text: the
@@ -6931,7 +7931,11 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #   found inputs main refuses and the branch published. #373's real blocker
 #   was the generic key=value rule in redaction tests, not PEM markers; a
 #   test builds its marker at runtime.
-# * TIER 2, outside test paths: the generic rules refuse exactly as before.
+# * TIER 2, outside test paths: the generic rules refuse as before, except
+#   for a REFERENCE (owner decisions, 2026-10-02; `_is_a_reference`): a value
+#   that is wholly one `${name}` slot, or -- not under a password name and
+#   not after an `Authorization` scheme -- one short lowercase word or a
+#   KNOWN reference shape. Vendor rules are not relaxed.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
 #   CODE only (`is_test_path`).
@@ -6940,7 +7944,27 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 # false positive there costs one masked word, not a refused publish.
 #
 # RESIDUAL RISK, accepted by the owner: a weak real password committed under a
-# test path is published. CI's trivy secret scan still runs after the push.
+# test path is published. Since 2026-10-02, outside test paths, tier 2 also
+# publishes, as a reference, a WHOLE value (`_ends_the_value`: nothing joined
+# to it by `+`, `,` or another literal, and an escaped quote does not close
+# it) that is one of:
+#   - a single lowercase word of ANY length (no cap since the owner's decision
+#     of 2026-10-02; an all-lowercase, digitless random token outside test
+#     paths therefore publishes, a residual risk the owner accepted), no `-`,
+#     `.`, `_` or digit (`anthropic`, `retained`) -- so a weak
+#     one-word secret under a `token`/`secret`/`api_key` name, or after a
+#     prose `Bearer`/`Basic` (`http_authorization`), publishes. There is no
+#     dictionary: `letmein` under `token = ` publishes. Under a name ending
+#     `password`/`passwd` it does NOT: that name is assigned the password
+#     itself, so only a slot is a reference there;
+#   - a `swarm-tenant-` secret name, or a hyphen-joined lowercase name ending
+#     `-api-key`, `-token`, `-secret` or `-git` (`hunter-horse-token` too);
+#   - a dotted path under `var.`, `local.`, `user_config.`, `data.` or
+#     `module.`.
+# Any other hyphen- or dot-joined value (`correct-horse-battery-staple`) is
+# refused, and so is every bare word after an `Authorization:` header's
+# scheme, whatever its case. A `${name}` slot holds no value, so it adds no
+# risk. CI's trivy secret scan still runs after the push.
 
 #: The `swarm_redaction` rules that match a NAME followed by a value rather
 #: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
@@ -7064,6 +8088,226 @@ def _is_explicit_placeholder(tail: str) -> bool:
     )
 
 
+#: A value that is wholly one interpolation slot holding only a NAME:
+#: `${user_config.client_secret}`, `${var.anthropic}`. Anything before or after
+#: it, or a second slot, is not. Nor is a slot carrying an operator --
+#: `${DB_PW:-<literal>}` (or `-`, `=`, `:=`, `:+`, `:?`) expands to the literal
+#: it holds -- which the owner's `^\$\{[^}]+\}$` would have let through.
+_INTERPOLATION_SLOT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_.]*\}")
+#: One lowercase word of ANY length (owner decision, 2026-10-02: the single-word
+#: length cap is removed): no `-`, `.`, `_` or digit to join it to another.
+#: RESIDUAL RISK, accepted by the owner: an all-lowercase, digitless random
+#: token (32 letters carry ~150 bits, but a weak one-word secret carries few)
+#: under a non-password name, outside test paths, publishes. Only
+#: `_REFERENCE_MAX_CHARS` bounds it. Under a password name it is still refused.
+_REFERENCE_WORD = re.compile(r"[a-z]+")
+#: The KNOWN shapes of a multi-segment reference (owner decision, 2026-10-02,
+#: #470's review), and no other: a tenant secret's name (`swarm-tenant-eng-git`),
+#: a name that says it names a credential (`anthropic-api-key`, `github-token`,
+#: `db-secret`, `tenant-git`), and an interpolation path under a root that
+#: Terraform, a plugin manifest or a module reads (`var.`, `local.`,
+#: `user_config.`, `data.`, `module.`). `correct-horse-battery-staple` and
+#: `correct.horse.battery.staple` are none of them, and are refused.
+#: RESIDUAL RISK, accepted by the owner (2026-10-02): these shapes are UNCAPPED
+#: in segments. A passphrase with a known prefix or suffix publishes outside
+#: test paths -- `correct-horse-battery-staple-token`, `swarm-tenant-<words>`,
+#: a `var.<words>` path -- up to the 64-character bound. No segment cap.
+_REFERENCE_SHAPE = re.compile(
+    r"swarm-tenant(?:-[a-z]+)+"
+    r"|[a-z]+(?:-[a-z]+)*-(?:api-key|token|secret|git)"
+    r"|(?:var|local|user_config|data|module)(?:\.[a-z_]+)+"
+)
+#: The longest value a shape may be: a name, not a passphrase.
+_REFERENCE_MAX_CHARS = 64
+#: The words an `Authorization` value opens with. Never a reference: it is
+#: the scheme, and the credential follows it (#470's review).
+_AUTH_SCHEME_WORDS = frozenset(
+    {"bearer", "basic", "token", "digest", "negotiate", "oauth", "ssws"}
+)
+
+
+def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = None) -> bool:
+    """True when a generic rule's matched `value` NAMES a credential rather
+    than holding one, so tier 2 does not refuse it (owner decisions,
+    2026-10-02).
+
+    WHY. Three of six SwarmCloud lanes were refused at publish for text that
+    held nothing: plugin.json's unchanged `"..._CLIENT_SECRET":
+    "${user_config.oauth_client_secret}"`, re-added by a trailing comma, a
+    Terraform local naming the Anthropic key with the provider id
+    `anthropic`, and a tenant secret's name `swarm-tenant-eng-git`. The
+    relaxation is narrow, for the generic rules outside test paths only:
+
+    * (i) the whole value is ONE `${...}` slot holding only a name
+      (`_INTERPOLATION_SLOT`). A slot with anything glued to it
+      (`${a}hunter2`), or with a shell default inside it (`${A:-hunter2}`),
+      is still refused: the glued part or the default may be the credential.
+    * (ii) otherwise, the value is a single lowercase word of any length
+      (`_REFERENCE_WORD`) or one of the
+      KNOWN reference shapes (`_REFERENCE_SHAPE`), holds no digit, and
+      `_looks_like_a_credential` rejects it (with no digit it always does;
+      it is asked so a change to it cannot make this rule pass a value it
+      accepts). Rule (ii) never applies:
+      - after an `Authorization` header's scheme (`http_authorization_scheme`):
+        what follows the scheme is the credential, whatever its case;
+      - to a scheme word itself (`bearer`, `Basic`, `token`): it names nothing;
+      - under a name ending `password`/`passwd` (the key/value rule's `pw`
+        group): that name is assigned the password, not a provider id or a
+        secret's name, so `password = "letmein"` is refused. No dictionary.
+
+    Only quotes, their escaping backslashes, whitespace and a trailing `;` or
+    `,` are stripped, never a bracket, so a slot's closing brace is kept.
+    """
+    candidate = value.strip("\"'`\\ \t").rstrip(";,").strip("\"'`\\")
+    if _INTERPOLATION_SLOT.fullmatch(candidate):
+        return True
+    if rule is not None and rule.name == "http_authorization_scheme":
+        return False
+    if candidate.lower() in _AUTH_SCHEME_WORDS:
+        return False
+    if (
+        rule is CREDENTIAL_KEY_VALUE
+        and match is not None
+        and match.re is rule.pattern
+        and match.group("pw")
+    ):
+        return False
+    if len(candidate) > _REFERENCE_MAX_CHARS or any(c.isdigit() for c in candidate):
+        return False
+    shaped = (
+        _REFERENCE_WORD.fullmatch(candidate) is not None
+        or _REFERENCE_SHAPE.fullmatch(candidate) is not None
+    )
+    return shaped and not _looks_like_a_credential(candidate)
+
+
+#: What may follow an unquoted reference on its line: nothing, or a closing
+#: bracket, separator or (escaped) quote that ends an enclosing string.
+_VALUE_END = re.compile(r"[ \t]*(?:$|[;,)\]}]|\\*[\"'`])")
+
+
+def _odd_backslashes(text: str) -> bool:
+    """True when `text` ends in an odd run of backslashes, i.e. a quote right
+    after it is escaped."""
+    return (len(text) - len(text.rstrip("\\"))) % 2 == 1
+
+
+def _ends_the_value(match: re.Match[str]) -> bool:
+    """True when a generic match's value is the WHOLE value, not its first word.
+
+    The generic rules' value class stops at whitespace, a comma or a quote, so
+    a password name assigned a quoted four-word passphrase matches only its
+    first word, a digitless lowercase word `_is_a_reference` would pass. The owner's rule
+    (ii) asks the whole value to be one identifier, so a reference counts only
+    when it ends the value: a quoted value must close right after it (the
+    rule's opening `"`, escaped or not, or a `'`/`` ` `` the value opens with),
+    and an unquoted one must end the line or meet a separator, a closing
+    bracket or the quote of an enclosing string.
+    """
+    prefix = match.group(1)
+    value = match.group(0)[len(prefix):]
+    rest = match.string[match.end():].split("\n", 1)[0]
+    opened = prefix.rstrip()
+    if opened.endswith('"'):
+        # The close must be escaped EXACTLY as the open was: in `"letmein\"
+        # <secret>"` the `\"` is part of the value, not its end (#470's review).
+        escapes = len(opened[:-1]) - len(opened[:-1].rstrip("\\"))
+        close = re.match(r'(\\*)"', rest)
+        # The value class swallows a backslash right before the close, so the
+        # backslashes the value ends in count with the close's own: `NAME =
+        # "x\" <rest>"` reads as the value `x\` and a bare `"`.
+        trailing = len(value) - len(value.rstrip("\\"))
+        if close is None or trailing + len(close.group(1)) != escapes:
+            return False
+        return not _value_continues(rest[close.end():], '"', escapes)
+    if value[:1] in ("'", "`"):
+        quote = value[0]
+        body = value[1:].rstrip(";,)]}")
+        if body.endswith(quote):
+            if not (len(body) > 1 and quote not in body[:-1]):
+                return False
+            if _odd_backslashes(body[:-1]):
+                return False  # the quote is escaped, so it does not close
+            return not _value_continues(rest, quote, 0)
+        if rest.startswith(quote):
+            if _odd_backslashes(body):
+                return False
+            return not _value_continues(rest[1:], quote, 0)
+        return False
+    return _VALUE_END.match(rest) is not None and not _value_continues(rest, None, 0)
+
+
+#: An opening quote, with the backslashes that escape it.
+_OPEN_QUOTE = re.compile(r"(\\*)([\"'`])")
+
+
+#: A comment start, which may follow a value only after whitespace.
+_COMMENT_START = re.compile(r"(?:#|//|--)")
+
+#: The next key or argument after a `,`: an identifier then `=` (not `==`) or `:`.
+_NEXT_KEY = re.compile(r"[A-Za-z_][\w.\-]*[ \t]*(?::|=(?!=))")
+
+
+def _comment_or_nothing(text: str) -> bool:
+    """True when `text` is empty, whitespace, or whitespace then a comment."""
+    if not text.strip():
+        return True
+    return text[:1] in " \t" and _COMMENT_START.match(text.lstrip(" \t")) is not None
+
+
+def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
+    """True unless the text `after` a value's end on its line PROVES the value
+    ended there. An allow-list (#470's review: every deny-list of joiners, `+`,
+    `,`-literal, adjacency, missed `.`, `&`, `||`, `~`, `|`, a bare token, a
+    conditional and `;`). After the close the value is whole only when what
+    follows is the end of the line, whitespace, a `;` ending the statement, a
+    closing bracket (then `,`, `;` or the line's end), a comment after
+    whitespace, or a `,` and then the next key or argument. Anything else is
+    read as more of the value, so the generic rule refuses.
+
+    `closed` is the quote the value just closed with (None when it was
+    unquoted) and `escapes` how many backslashes escaped it. A quote of
+    another kind, or one escaped less, straight after it closes an ENCLOSING
+    string (`'"secret": "anthropic"'`, `"{\\"secret\\": \\"anthropic\\"}"`),
+    and nothing after that belongs to this value.
+    """
+    straight = _OPEN_QUOTE.match(after)
+    if straight is not None and (
+        closed is None or straight.group(2) != closed or len(straight.group(1)) < escapes
+    ):
+        return False
+    rest = after.lstrip(" \t")
+    if not rest:
+        return False
+    if len(rest) != len(after) and _COMMENT_START.match(rest):
+        return False
+    while rest[:1] in (")", "]", "}") and rest:
+        rest = rest[1:]
+        if not rest:
+            return False
+        if rest[:1] in " \t":
+            return not _comment_or_nothing(rest)
+        if _OPEN_QUOTE.match(rest):
+            return False  # the bracket ends a literal inside an enclosing string
+    if rest[:1] == ";":
+        return not _comment_or_nothing(rest[1:])
+    if rest[:1] != ",":
+        return True
+    following = rest[1:]
+    if _comment_or_nothing(following):
+        return False
+    following = following.lstrip(" \t")
+    if _NEXT_KEY.match(following):
+        return False
+    literal = _OPEN_QUOTE.match(following)
+    if literal is None:
+        return True
+    end = following.find(literal.group(2), literal.end())
+    if end < 0:
+        return True
+    return not following[end + 1:].lstrip(" \t").startswith(":")
+
+
 def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     """Whether one token-starting match of `rule` is a credential, by tier."""
     if rule.name == "jwt":
@@ -7071,9 +8315,9 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     if rule.name in GENERIC_CREDENTIAL_RULES:
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
-        if not in_tests:
-            return True  # tier 2: exactly as before
         value = match.group(0)[len(match.group(1)):]
+        if not in_tests:  # tier 2
+            return not (_is_a_reference(value, rule, match) and _ends_the_value(match))
         return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
     # A vendor key: refused outside tests as before; in a test path it passes
     # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
@@ -7136,7 +8380,9 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     """
     prefix = match.group(1)
     value = match.group(0)[len(prefix):]
-    if prefix.rstrip().endswith('"') or value.startswith("'"):
+    # A backtick opens a literal too (`_ends_the_value` already reads one as a
+    # quoted value); without it `` secret = `x\` <token>` `` was never counted.
+    if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
         return True
     return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
 

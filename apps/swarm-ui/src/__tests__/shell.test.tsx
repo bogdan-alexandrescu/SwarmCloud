@@ -191,10 +191,14 @@ describe('B3: the work area, now beside the Sky spine', () => {
 
 describe('B3: the head', () => {
   it('carries a breadcrumb and the age of the newest successful read', () => {
+    // THE CRUMB IS THE TRAIL TO THE PAGE (#138): on Overview, a one-page
+    // section, the trail is empty -- the `<h1>` names the page -- and on a
+    // page inside a section it is the section, as a link.
+    window.history.replaceState(null, '', '/capacity/accounts')
     render(<App />)
     const head = document.querySelector('.ctl-head')
     expect(head, 'no head region').not.toBeNull()
-    expect(head!.querySelector('.ctl-crumb')?.textContent ?? '').toContain('Overview')
+    expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Capacity')
 
     // READING is a different sentence from "0s ago", and on the first render
     // nothing this screen asked for has landed, so it is the true one here. A
@@ -665,7 +669,7 @@ describe('B20: a measured zero and an unrendered track are different marks', () 
 
     const style = withStyles()
     const { container } = render(<PlatformCountsScreen />)
-    screen.getByRole('button', { name: 'Run the count' }).click()
+    screen.getByRole('button', { name: /^Run the count · / }).click()
     await waitFor(() => expect(container.querySelector('.sr-bar')).not.toBeNull())
 
     const rowFor = (state: string) =>
@@ -2130,12 +2134,12 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
   it('AH-25: the cost and the control on the Platform counts head line never split', () => {
     // The head is Screen's -- a title over one provenance line -- and the cost
-    // of a read is printed immediately before the control that spends it. At
-    // 390 the line wraps; the two must wrap together.
+    // of a read is printed ON the control that spends it (#138). At 390 the
+    // line wraps; the label and its price must wrap together.
     // MUTATION: drop `white-space: nowrap` from `.counts-run`.
     const f = fragment(
       '<div class="head"><h1>Platform counts</h1></div>' +
-        '<p class="sub">not counted yet · <span class="counts-run"><span class="counts-cost">12–24 count() per run</span> · <button>Run the count</button></span></p>',
+        '<p class="sub">not counted yet · <span class="counts-run"><button>Run the count · <span class="counts-cost">12–24 count()</span></button></span></p>',
     )
     for (const env of [PHONE, WIDE]) {
       expect(won(pick(f, '.counts-run'), 'white-space', env)).toBe('nowrap')
@@ -2435,7 +2439,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // gap and not a spacing step.
     // `.ol-toolbar` where `.window-bar` was: the row window's bar went with it
     // (#185, decision 7), and the ledger's toolbar is the one the page draws.
-    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
+    // `.sbf-flow` where `.wfb-stage + .wfb-stage` was: the break between two
+    // stages is the arrow drawn between them now (#118), and the adjacency
+    // rule that drew the old tick is deleted.
+    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.sbf-flow']) {
       const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
       expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
       for (const r of rules) {

@@ -269,3 +269,110 @@ run "global_pool_may_not_be_omitted" {
 
   expect_failures = [var.pools]
 }
+
+# The contention bench database (S32, OD-B17-1). Off unless an environment
+# names it, a copy of the live database's locking model when on, and carrying
+# managed-by the only way a google_firestore_database can (it has no labels).
+run "no_bench_database_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = length(google_firestore_database.bench) == 0 && length(google_firestore_document.bench_managed_by) == 0
+    error_message = "the bench database is opt-in: an environment that does not name one must get none"
+  }
+
+  assert {
+    condition     = output.bench_database_name == null
+    error_message = "no bench database means no bench database name"
+  }
+}
+
+run "bench_database_matches_the_live_locking_model" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm-bench"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].name == "swarm-bench"
+    error_message = "the bench database must carry the name the harness accepts"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].concurrency_mode == google_firestore_database.this.concurrency_mode
+    error_message = "a bench on a different concurrency mode measures a different locking model"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].type == "FIRESTORE_NATIVE" && google_firestore_database.bench[0].location_id == google_firestore_database.this.location_id
+    error_message = "the bench database must have the live database's type and location"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].delete_protection_state == "DELETE_PROTECTION_DISABLED"
+    error_message = "the bench database is disposable"
+  }
+
+  assert {
+    condition     = google_firestore_document.bench_managed_by[0].database == "swarm-bench" && strcontains(google_firestore_document.bench_managed_by[0].fields, "\"managed_by\":{\"stringValue\":\"swarm-terraform\"}")
+    error_message = "the bench database must carry managed-by=swarm-terraform (as a document: the type has no labels)"
+  }
+}
+
+run "a_bench_database_with_a_live_name_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm"
+  }
+
+  expect_failures = [var.bench_database_id]
+}
+
+run "the_owner_filter_and_the_failures_listing_have_their_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  # GET /v1/tasks?submitted_by=... (U5):
+  #   tasks where tenant_id == T and submitted_by == S order by created_at DESC
+  # tenant_id leads, so the owner filter narrows a tenant and never crosses one.
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-tenant-submitter-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[1].field_path == "submitted_by" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].field_path == "created_at" &&
+      google_firestore_index.this["tasks-tenant-submitter-created"].fields[2].order == "DESCENDING"
+    )
+    error_message = "GET /v1/tasks?submitted_by needs (tenant_id, submitted_by, created_at DESC)"
+  }
+
+  # GET /v1/admin/failures (U19):
+  #   tasks where state == FAILED order by created_at DESC, across tenants
+  assert {
+    condition = (
+      google_firestore_index.this["tasks-state-created"].collection == "tasks" &&
+      google_firestore_index.this["tasks-state-created"].query_scope == "COLLECTION" &&
+      google_firestore_index.this["tasks-state-created"].fields[0].field_path == "state" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["tasks-state-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "GET /v1/admin/failures needs (state, created_at DESC) at collection scope"
+  }
+}

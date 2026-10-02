@@ -139,7 +139,7 @@ export function deriveChecks(s: CheckInputs, now: number): Check[] {
     quotaCheck(s.providers, now),
     accountCheck(s.accounts),
     poolCheck(s.capacity),
-    failureCheck(s.tasks),
+    failureCheck(s.tasks, now),
   ]
 }
 
@@ -215,15 +215,21 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       detail:
         'The lease timeout has run out as well as the heartbeat going quiet. Capacity is held by something that is almost certainly gone.',
       href: '#capacity/holders',
+      linkLabel: 'holders',
     })
   }
   if (silent.length > 0) {
+    // THE HEADLINE NAMES THE WORKERS (#92). "2 workers silent" named nobody,
+    // and at 3am the next question is always "which". The quietest first, so
+    // the one closest to being reclaimed is the one that is never cut.
+    const quietest = [...silent].sort((a, b) => b.silent_seconds - a.silent_seconds)
     problems.push({
       severity: 'warn',
       n: silent.length,
-      headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period`,
+      headline: `${silent.length} worker${silent.length === 1 ? '' : 's'} silent past the grace period: ${namesOf(quietest.map((l) => l.task_id))}`,
       detail: `No heartbeat for ${page.thresholds.heartbeat_grace_seconds}s or more. This is already the reconciler's trigger, and its next pass is up to five minutes away.`,
       href: '#capacity/holders',
+      linkLabel: 'holders',
     })
   }
   if (overdue.length > 0) {
@@ -234,6 +240,7 @@ function leaseCheck(leases: Result<LeasePage>): Check {
       detail:
         'Capacity was reserved and the backend was never handed the work. These hold units while doing nothing.',
       href: '#capacity/holders',
+      linkLabel: 'holders',
     })
   }
 
@@ -426,7 +433,7 @@ function poolCheck(capacity: Result<Capacity>): Check {
  * not the tenant's total and does not claim to be; the exact per-state count
  * lives on Platform counts.
  */
-function failureCheck(tasks: Result<TaskPage>): Check {
+function failureCheck(tasks: Result<TaskPage>, now: number): Check {
   const label = 'Failures'
   if (tasks.status === 'loading') return { label, status: 'reading' }
   if (tasks.status === 'error') return { label, status: 'blind', ...blindness(tasks.error) }
@@ -453,7 +460,16 @@ function failureCheck(tasks: Result<TaskPage>): Check {
       {
         severity: 'bad',
         n: failed.length,
-        headline: `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent`,
+        // HOW FRESH, AND FROM WHICH WORKFLOW (#92, #90). A count with no age
+        // stays open until newer tasks push the failures off the page, so
+        // "21 failed" reads the same two minutes and two days later. And a
+        // failed workflow was only ever a share of this count; it is named
+        // here, in this item, rather than in a second item restating the same
+        // failures in another voice.
+        headline:
+          `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent` +
+          newestClause(failed, now) +
+          workflowClause(failed),
         detail:
           exhausted.length > 0
             ? `${exhausted.length} of them have used every attempt, so nothing will retry them. Newest: ${failed[0]?.last_error ?? 'no error was recorded'}`
@@ -479,6 +495,41 @@ function failureCheck(tasks: Result<TaskPage>): Check {
   }
 }
 
+/** At most three names, then how many more: a headline, not a list. */
+function namesOf(ids: string[]): string {
+  const shown = ids.slice(0, 3).join(', ')
+  return ids.length > 3 ? `${shown} +${ids.length - 3} more` : shown
+}
+
+/**
+ * ` · newest 3m ago`, from the newest failure's completion (its last update
+ * where none was recorded). Empty when no failed task carries a readable time:
+ * an age nobody recorded is not "just now".
+ */
+function newestClause(failed: Task[], now: number): string {
+  let newest: number | null = null
+  for (const t of failed) {
+    const v = new Date(t.completed_at ?? t.updated_at).getTime()
+    if (Number.isFinite(v) && (newest === null || v > newest)) newest = v
+  }
+  return newest === null ? '' : ` · newest ${timeAgo(newest, now)}`
+}
+
+/**
+ * ` · 4 in workflow wf-nightly`, for the workflows the failures belong to,
+ * most failures first, two named at most.
+ */
+function workflowClause(failed: Task[]): string {
+  const by = new Map<string, number>()
+  for (const t of failed) {
+    if (t.workflow_id) by.set(t.workflow_id, (by.get(t.workflow_id) ?? 0) + 1)
+  }
+  if (by.size === 0) return ''
+  const ranked = [...by.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+  const named = ranked.slice(0, 2).map(([id, n], i) => (i === 0 ? `${n} in workflow ${id}` : `${n} in ${id}`))
+  const rest = ranked.length - named.length
+  return ` · ${named.join(', ')}${rest > 0 ? ` +${pluralise(rest, 'workflow')}` : ''}`
+}
 
 // ---------------------------------------------------------------------------
 // Workflows: is the thing a person actually submitted still moving?

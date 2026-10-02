@@ -1,4 +1,14 @@
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 import { errorHeading, errorReassurance, pageReads, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard } from './HelpCard'
@@ -103,6 +113,63 @@ function tabHidden(): boolean {
  */
 export const RoutedPage = createContext(false)
 
+/**
+ * ONE READ AGE PER SCREEN (#98). True inside the app frame, whose head
+ * (`Head` in App.tsx) prints the age of the CURRENT screen's own reads (CH-2)
+ * and whose dock prints the tab-wide one. A `Screen` in the frame therefore
+ * does not print a third copy of it on its sub-line while the read is fresh:
+ * "newest read 4s ago" in the head and "read 4s ago" under the title were one
+ * fact said twice, and with two reads behind a screen the two could disagree.
+ *
+ * WHAT THE SUB-LINE STILL SAYS ABOUT FRESHNESS: everything that is not "this
+ * is current". A failed refresh (`not refreshed · showing 4m ago`) and a read
+ * older than `AGED_AFTER_MS` (`not refreshed · read 6m ago`) keep their age
+ * beside the rows they dim -- a panel states its freshness when it is stale,
+ * and only then. Outside the frame (a screen rendered on its own, as the unit
+ * tests do) there is no head to carry the age, and the sub-line prints it.
+ */
+export const FrameAge = createContext(false)
+
+/**
+ * A screen that prints an age of its OWN data that the frame head cannot know
+ * -- Platform counts, whose figures are as old as the count the server ran,
+ * not as old as the newest read the screen made -- claims the age, and the
+ * head prints none while it is mounted (#98). Counted, not flagged, so two
+ * claims and one release still leave it claimed.
+ */
+let pageAgeClaims = 0
+const pageAgeListeners = new Set<() => void>()
+
+function subscribePageAge(fn: () => void): () => void {
+  pageAgeListeners.add(fn)
+  return () => {
+    pageAgeListeners.delete(fn)
+  }
+}
+
+function setPageAgeClaims(n: number): void {
+  pageAgeClaims = n
+  for (const fn of pageAgeListeners) fn()
+}
+
+/** Whether a mounted screen prints its own data's age (see `useClaimPageAge`). */
+export function usePageAgeClaimed(): boolean {
+  return useSyncExternalStore(
+    subscribePageAge,
+    () => pageAgeClaims > 0,
+    () => false,
+  )
+}
+
+/** Claim the screen's age for this component while it is mounted and `on`. */
+export function useClaimPageAge(on: boolean): void {
+  useLayoutEffect(() => {
+    if (!on) return
+    setPageAgeClaims(pageAgeClaims + 1)
+    return () => setPageAgeClaims(pageAgeClaims - 1)
+  }, [on])
+}
+
 /** What the sub-line says about the cadence. */
 interface Cadence {
   /** The screen's own cadence. */
@@ -144,6 +211,7 @@ export function Screen<T>({
   summary,
   empty,
   pollMs,
+  skeleton,
   children,
 }: {
   title: string
@@ -162,6 +230,13 @@ export function Screen<T>({
   empty?: { heading: string; body: ReactNode; link?: LinkOut; say?: string }
   /** Re-read on this cadence. Omitted, the screen reads once per mount. */
   pollMs?: ScreenPoll<T>
+  /**
+   * What the first read draws while it is in flight, in place of the generic
+   * `SkeletonRows`: a screen whose layout is known before its data (the
+   * Workflows list's toolbar and table head, #113) draws that layout, so
+   * nothing moves when the data lands. Omitted, the generic rows.
+   */
+  skeleton?: ReactNode
   children: (data: T, reading: ScreenReading) => ReactNode
 }) {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
@@ -173,6 +248,8 @@ export function Screen<T>({
   const now = useNow(AGE_TICK_MS)
   /** Whether this screen is the page, rather than the inspector over it. */
   const page = useContext(RoutedPage)
+  /** Whether the frame's head carries this screen's age (#98). */
+  const frameAge = useContext(FrameAge)
 
   // ---- polling ----------------------------------------------------------
   //
@@ -366,6 +443,7 @@ export function Screen<T>({
           now={now}
           aged={aged}
           cadence={cadence}
+          frameAge={frameAge}
         />
       </PageHead>
 
@@ -373,7 +451,7 @@ export function Screen<T>({
         <StaleBanner error={state.error} fetchedAt={state.fetchedAt} now={now} />
       )}
 
-      {state.status === 'loading' && <SkeletonRows />}
+      {state.status === 'loading' && (skeleton ?? <SkeletonRows />)}
       {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`
@@ -417,8 +495,9 @@ export function Screen<T>({
  *
  * A title over one line of provenance: what was read, how old it is, and the
  * screen's read control -- with the cost of that control, when it has one,
- * printed immediately before it. No description sentence; the sentence a
- * screen is allowed lives behind its `?`.
+ * printed on it (#138). Inside the frame the age of a fresh read is the
+ * head's, not this line's (`FrameAge`, #98). No description sentence; the
+ * sentence a screen is allowed lives behind its `?`.
  *
  * `Screen` renders this on fourteen routes. Platform counts renders it too,
  * because it reads on a button rather than on mount and so cannot be a
@@ -467,6 +546,7 @@ function SubLine<T>({
   now,
   aged,
   cadence,
+  frameAge,
 }: {
   state: Result<T>
   summary?: (data: T) => ReactNode
@@ -477,6 +557,8 @@ function SubLine<T>({
   /** A successful read older than `AGED_AFTER_MS`. */
   aged: boolean
   cadence: Cadence | null
+  /** The frame's head prints the age of a fresh read (`FrameAge`, #98). */
+  frameAge: boolean
 }) {
   const paused = pausedUntil !== null && pausedUntil > Date.now()
   const retryBtn = (
@@ -486,12 +568,13 @@ function SubLine<T>({
   )
   // THE CADENCE BESIDE THE AGE, so a reader knows the age is going to move and
   // how soon. While backing off it is the wait actually in force, and says so.
-  const every =
-    cadence === null ? null : cadence.wait > cadence.base ? (
-      <> · every {formatDuration(cadence.wait)}, backing off</>
-    ) : (
-      <> · every {formatDuration(cadence.base)}</>
-    )
+  const cadenceText =
+    cadence === null
+      ? null
+      : cadence.wait > cadence.base
+        ? `every ${formatDuration(cadence.wait)}, backing off`
+        : `every ${formatDuration(cadence.base)}`
+  const every = cadenceText === null ? null : <> · {cadenceText}</>
   // `not refreshed` is the stale wording, and an aged read earns it too: it is
   // true, and it is what a reader scanning for a frozen screen looks for.
   const unrefreshed = aged ? (
@@ -499,6 +582,20 @@ function SubLine<T>({
       <strong>not refreshed</strong> ·{' '}
     </>
   ) : null
+  // THE AGE OF A FRESH READ IS THE HEAD'S (#98). Printed here only where no
+  // head carries it, or once it is no longer fresh -- the stale case below
+  // always prints its own. And whenever the DATA is older than the fetch: a
+  // cached payload's `generated_at` (`serverAt`) can be 40m old on a read
+  // that landed just now, and the head, which times the fetch, would say
+  // `just now` beside it. The data's own age is then the one that matters.
+  const served =
+    (state.status === 'ok' || state.status === 'empty') &&
+    state.serverAt !== undefined &&
+    state.fetchedAt - Date.parse(state.serverAt) > AGE_TICK_MS
+  const ownAge = aged || !frameAge || served
+  // A fresh in-frame read with no summary prints nothing before the cadence,
+  // which then leads the line without a dangling separator.
+  const everyAfter = (lead: boolean) => (lead ? every : cadenceText)
 
   switch (state.status) {
     case 'loading':
@@ -506,14 +603,26 @@ function SubLine<T>({
     case 'ok':
       return (
         <>
-          {summary?.(state.data)} · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
-          {every} {retryBtn}
+          {summary?.(state.data)}
+          {ownAge && (
+            <>
+              {' '}
+              · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
+            </>
+          )}
+          {everyAfter(ownAge || summary !== undefined)} {retryBtn}
         </>
       )
     case 'empty':
       return (
         <>
-          Nothing to show · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
+          Nothing to show
+          {ownAge && (
+            <>
+              {' '}
+              · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
+            </>
+          )}
           {every} {retryBtn}
         </>
       )

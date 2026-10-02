@@ -46,6 +46,7 @@ from swarm_api.validation import (
     DEFAULT_STRATEGY,
     DISPATCH_CARRIERS,
     DISPATCH_STRATEGIES,
+    dispatchable_strategies,
 )
 
 from .conftest import auth_header
@@ -125,12 +126,18 @@ def test_every_strategy_and_carrier_this_api_accepts_is_reachable_in_the_ui():
 
     A strategy the API accepts and the UI does not offer is a feature that
     exists, is documented, is tested, and that no caller can ever choose.
+
+    Measured against `dispatchable_strategies()`, not the accepted words:
+    `single-pr` (#295) cannot complete while the catalogue disables its merge
+    and post-verdict profiles, and a control that refuses every time is the
+    other failure this file guards against. The day both are enabled the two
+    are equal, and this demands the UI offer it.
     """
     strategies = _string_array(_src("types.ts"), "DISPATCH_STRATEGIES")
     carriers = _string_array(_src("types.ts"), "DISPATCH_CARRIERS")
-    assert sorted(strategies) == sorted(DISPATCH_STRATEGIES), (
-        "the UI does not offer every strategy this API accepts: "
-        f"missing {sorted(set(DISPATCH_STRATEGIES) - set(strategies))}"
+    assert sorted(strategies) == sorted(dispatchable_strategies()), (
+        "the UI does not offer every strategy this API can run: "
+        f"missing {sorted(set(dispatchable_strategies()) - set(strategies))}"
     )
     assert sorted(carriers) == sorted(DISPATCH_CARRIERS), (
         "the UI does not offer every carrier this API accepts: "

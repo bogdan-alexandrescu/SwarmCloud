@@ -735,8 +735,11 @@ describe('Accounts, with every help card closed', () => {
     renderAccounts([NEVER_POLLED])
     await screen.findByText('eng:never', undefined, WAIT)
     expectAllCardsClosed()
-    // The tilde rule is still stated where the figures are read...
-    expect(textOf(document.querySelector('.provenance'))).toContain('~ is projected, not measured')
+    // The tilde rule is still stated where the figures are read -- and since
+    // #127 it is stated as what is on screen: a never-polled row carries no
+    // tilde, so the foot says there is none rather than explaining one.
+    expect(document.querySelector('.acct-tilde')).toBeNull()
+    expect(textOf(document.querySelector('.provenance'))).toContain('no projected figures')
     // ...and the eleven-paragraph legend is gone from the surface.
     expect(document.querySelector('.section.legend')).toBeNull()
     expect(visibleText()).not.toContain('How to run this pool')
@@ -886,7 +889,9 @@ describe('the Accounts foot says how old the readings are (CP-26)', () => {
 
   it('prints the range after the row count, leaving out a row with no reading', async () => {
     const { foot } = await footFor([2 * 60, 14 * 60, null])
-    expect(foot()).toMatch(/^3 rows · readings 2m–14m old · ~ is projected, not measured/)
+    // Every reading here is current, so no `~` is drawn and the legend says
+    // so (#127).
+    expect(foot()).toMatch(/^3 rows · readings 2m–14m old · no projected figures/)
   })
 
   it('moves the range on its own clock, without a reload', async () => {

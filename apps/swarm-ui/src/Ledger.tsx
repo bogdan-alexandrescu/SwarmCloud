@@ -805,16 +805,28 @@ function Spark({ series }: { series: GroupRow['series'] }) {
   )
 }
 
+/** Where a Reliability row leads: the page narrowed to that row's profile, tenant or person. */
+export interface RowLink {
+  href: string
+  open: () => void
+}
+
 export function ReliabilityCard({
   data,
   group,
   platform,
   onGroup,
+  rowLink,
 }: {
   data: Outcomes
   group: GroupBy
   platform: boolean
   onGroup: (g: GroupBy) => void
+  /**
+   * The row's drill-down (#116), or null for a row nothing can filter on --
+   * the work with no submitter recorded. Absent, the rows are static.
+   */
+  rowLink?: (by: GroupBy, key: string) => RowLink | null
 }) {
   const g = data.groups
   const choices: GroupBy[] = platform ? ['runner_profile', 'tenant_id', 'submitted_by'] : ['runner_profile', 'submitted_by']
@@ -849,6 +861,11 @@ export function ReliabilityCard({
                 <th scope="col">{GROUP_HEAD[g.by]}</th>
                 <th scope="col" className="is-num">Ended</th>
                 <th scope="col">Success rate</th>
+                {/* SUCCEEDED + FAILED + CANCELLED = ENDED, on every row (#123):
+                    the three outcomes are printed side by side so the row adds
+                    up without arithmetic. Failed is FAILED + DEAD_LETTERED, the
+                    one definition the drawing and the headline use. */}
+                <th scope="col" className="is-num">Succeeded</th>
                 <th scope="col" className="is-num">Failed</th>
                 <th scope="col" className="is-num">Cancelled · after a failure</th>
                 <th scope="col">Reported cost</th>
@@ -856,12 +873,31 @@ export function ReliabilityCard({
               </tr>
             </thead>
             <tbody>
-              {g.rows.map((r) => (
+              {g.rows.map((r) => {
+                const link = r.key === '' || rowLink === undefined ? null : rowLink(g.by, r.key)
+                return (
                 <tr key={r.key} data-key={r.key}>
                   <th scope="row">
                     {/* Grouped by person, '' is the work nobody's name is on: a
-                        row the route counts, drawn as an absence, never blank. */}
-                    {r.key === '' ? <i className="ctl-em">not recorded</i> : r.key}
+                        row the route counts, drawn as an absence, never blank --
+                        and never a link, since no filter selects "nobody". */}
+                    {r.key === '' ? (
+                      <i className="ctl-em">not recorded</i>
+                    ) : link === null ? (
+                      r.key
+                    ) : (
+                      <a
+                        className="ctl-link ol-row-link"
+                        href={link.href}
+                        onClick={(e) => {
+                          if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+                          e.preventDefault()
+                          link.open()
+                        }}
+                      >
+                        {r.key}
+                      </a>
+                    )}
                     {r.declared_cost && (
                       <>
                         {' '}
@@ -875,6 +911,7 @@ export function ReliabilityCard({
                   <td>
                     <RateCell row={r} />
                   </td>
+                  <td className="is-num">{r.succeeded}</td>
                   <td className="is-num">{r.failed + r.dead_lettered}</td>
                   <td className="is-num">
                     {r.cancelled.total} · {r.cancelled.after_failure + r.cancelled.workflow_sweep}
@@ -886,7 +923,8 @@ export function ReliabilityCard({
                     <Spark series={r.series} />
                   </td>
                 </tr>
-              ))}
+                )
+              })}
             </tbody>
           </table>
         </div>

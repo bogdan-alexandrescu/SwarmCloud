@@ -64,6 +64,25 @@ class ForgeError(RuntimeError):
 GITHUB_HOSTS = frozenset({"github.com", "www.github.com"})
 
 
+def may_receive_forge_token(host: str | None) -> bool:
+    """True when the tenant's forge token may be sent to `host`.
+
+    THE one rule for where the token goes (#307), read by the clone, the push
+    and the integrator's fetch (`gitops._write_credentials`) and the forge API
+    calls below. The issue fetch (`issue.py`, #270) applies the same set,
+    `GITHUB_HOSTS`, to the same lower-cased host directly. The token is the
+    tenant's credential for github.com; a task's `repository_url` is a claim
+    made by whoever submitted the task, so a host it names is never trusted
+    with the token on that say-so. A GitHub Enterprise Server host is not in
+    the set either: the worker holds no record of a tenant's own forge host,
+    and one read from the task would be exactly the claim this refuses.
+
+    `host` must be a bare hostname (`urlparse().hostname`); callers refuse a
+    URL that carries a port before asking.
+    """
+    return bool(host) and host.lower() in GITHUB_HOSTS
+
+
 @dataclass(frozen=True)
 class RepoRef:
     host: str
@@ -194,6 +213,19 @@ def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
     ref = parse_repo(url)
     if ref is None:
         return None
+    if token and not may_receive_forge_token(ref.host):
+        # Asked BEFORE any request: the probe sends the token as a bearer
+        # header, so asking `https://<any host>/api/v3` would hand it over
+        # ahead of any push (#307).
+        return RepoAccess(
+            ref=ref,
+            default_branch="",
+            can_push=False,
+            reason=(
+                f"the tenant's git credential is sent only to github.com, "
+                f"and {ref.host} is not github.com"
+            ),
+        )
     if not token:
         return RepoAccess(
             ref=ref,
@@ -281,6 +313,13 @@ def open_pull_request(
     nothing about it broke the rule.
     """
     ref = access.ref
+    if not may_receive_forge_token(ref.host):
+        # `probe_repository` never reports can_push for such a host; this is
+        # the same rule held where the token would actually leave (#307).
+        raise ForgeError(
+            f"refusing to send the tenant's git credential to {ref.host}: "
+            "it is sent only to github.com"
+        )
     status, data = _request(
         f"{ref.api_base}/repos/{ref.owner}/{ref.name}/pulls",
         token=token,

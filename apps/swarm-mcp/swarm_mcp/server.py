@@ -30,7 +30,9 @@ start disagreeing.
 
 from __future__ import annotations
 
+import importlib.metadata
 import json
+import secrets
 import sys
 import threading
 import time
@@ -381,8 +383,12 @@ TOOLS: list[dict[str, Any]] = [
             "so far; what a waiting task waits for), the state `transitions` "
             "since `since`, `changed`, and a finished task's `outcome` -- a few "
             "hundred bytes a call. A call holds up to `wait_seconds` (max "
-            f"{compact.MAX_WAIT_SECONDS}) and returns early when a task's state, "
-            "attempt or wait reason changes. Measured 2026-10-01: rows following "
+            f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
+            "STATE changes -- waiting, parked (and why), holding capacity, or "
+            "finished; progress inside one state does not end it. With "
+            "`parents` (the task ids of the step's unfinished parents) even the "
+            "first call holds, until every parent has finished or the task "
+            "leaves its dependency wait. Measured 2026-10-01: rows following "
             "`lines` cost 5-16 KB a reply and 4.0M tokens for one row.\n"
             "\n"
             "FOR AN AGENT THAT RELAYS A REMOTE AGENT'S WORK (`sc:remote`), "
@@ -472,10 +478,11 @@ TOOLS: list[dict[str, Any]] = [
                         "`lines` and `progress` only: gather for up to this many "
                         "seconds (max 300 for `lines`, "
                         f"{compact.MAX_WAIT_SECONDS} for `progress`) before "
-                        "returning; returns early when every task has finished or "
-                        "a task starts (`progress`: or its attempt or wait reason "
-                        "changes), or the read budget is spent. A call without "
-                        "`since` always returns at once."
+                        "returning. `lines` returns early when every task has "
+                        "finished or a task starts, or the read budget is spent; "
+                        "`progress` returns early only when a task's state "
+                        "changes or every task has finished. A call without "
+                        "`since` returns at once -- unless it names `parents`."
                     ),
                 },
                 "max_lines": {
@@ -485,6 +492,19 @@ TOOLS: list[dict[str, Any]] = [
                         "`lines` only: the most lines one call returns. Past it the "
                         "window's EARLIEST lines are left out and a line says how "
                         "many; every byte stays in the task's log."
+                    ),
+                },
+                "parents": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "`progress` only, with exactly ONE task id: the task ids of "
+                        "that step's parents. While the task is SUBMITTED, QUEUED "
+                        "or PARKED on DEPENDENCY_INCOMPLETE and any parent has not "
+                        "finished, the call holds -- the first call too -- so a "
+                        "step that has not started makes one call while its "
+                        "parents run. The reply's `parents` gives each parent's "
+                        "state."
                     ),
                 },
                 "step_id": {
@@ -707,7 +727,10 @@ TOOLS: list[dict[str, Any]] = [
             "`spec`: a whole workflow spec object exactly as the terminal's "
             "workflow command reads it (`steps`, `strategy`, `carrier`, `repository_url`, "
             "`repository_ref`, `on_step_failure`, `priority`, `label`), nothing "
-            "else beside it but `infer`. With no repository named and no `infer`, "
+            "else beside it but `infer` -- or, so no model has to retype a long "
+            "spec, as `spec_path` (a JSON spec file this bridge reads itself) or "
+            "`spec_ref` (the id `swarm_workflow_spec` handed back for a file it "
+            "read). `spec_digest` checks all three. With no repository named and no `infer`, "
             "no step clones a repository. `infer: true` clones the repository and "
             "pushed branch of the checkout this bridge runs in for EVERY step, "
             "pinned at its current commit, under the same rules as swarm_dispatch."
@@ -724,10 +747,28 @@ TOOLS: list[dict[str, Any]] = [
                         "/sc:swarmcloud shows it under; it is never sent."
                     ),
                 },
+                "spec_path": {
+                    "type": "string",
+                    "description": (
+                        "In place of `spec`: the path of a JSON workflow spec file, "
+                        "relative to this checkout or absolute. The bridge reads the "
+                        "bytes itself -- checked as swarm_workflow_spec checks them -- "
+                        "so a long spec reaches the API without being retyped."
+                    ),
+                },
+                "spec_ref": {
+                    "type": "string",
+                    "description": (
+                        "In place of `spec`: the `spec_ref` swarm_workflow_spec "
+                        "returned. The bridge submits the spec it read then, held in "
+                        "this process; a ref from another session or a restarted "
+                        "bridge is refused, and nothing is sent."
+                    ),
+                },
                 "spec_digest": {
                     "type": "string",
                     "description": (
-                        "With `spec` only: the digest the caller computed of the spec "
+                        "With `spec`, `spec_path` or `spec_ref`: the digest the caller computed of the spec "
                         "it meant to send (`fnv1a32:` and eight hex digits, over the "
                         "spec as sorted-key compact JSON). When it differs from the "
                         "digest of the spec received, NOTHING is submitted: the spec "
@@ -909,7 +950,12 @@ TOOLS: list[dict[str, Any]] = [
             "back against this digest before it submits. `path` is relative to "
             "the checkout, or absolute; the reply's `path` is the file actually "
             "read. A file that is not JSON, or not a workflow spec, is refused "
-            "without its content being repeated."
+            "without its content being repeated.\n"
+            "\n"
+            "The reply also carries `spec_ref`, which swarm_workflow takes in place "
+            "of the spec, and `outline` -- the label and each step's id, "
+            "`depends_on` and `stage` -- which is all a relay needs to copy back. "
+            "Submit with `spec_ref`; never retype `spec`."
         ),
         "inputSchema": {
             "type": "object",
@@ -1716,6 +1762,58 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
     return {"path": str(target), "spec": document, "spec_digest": workflows.spec_digest(document)}
 
 
+#: Specs `swarm_workflow_spec` read, by `spec_ref`, for `swarm_workflow` to
+#: submit without a relay retyping them. In this process only: a bridge that
+#: restarted holds none, and says so. Bounded, oldest dropped first -- a
+#: session reads a handful of specs, and a ref that aged out is refused, never
+#: guessed at.
+_HELD_SPECS: dict[str, dict[str, Any]] = {}
+MAX_HELD_SPECS = 32
+
+
+def _hold_spec(spec: dict[str, Any], path: str) -> str:
+    ref = "spec_" + secrets.token_hex(8)
+    _HELD_SPECS[ref] = {"spec": spec, "path": path}
+    while len(_HELD_SPECS) > MAX_HELD_SPECS:
+        del _HELD_SPECS[next(iter(_HELD_SPECS))]
+    return ref
+
+
+def _held_spec(ref: str) -> dict[str, Any]:
+    held = _HELD_SPECS.get(ref.strip())
+    if held is None:
+        raise SwarmError(
+            f"no spec is held under `spec_ref` {ref!r}: a ref comes from swarm_workflow_spec "
+            "in this same bridge process, and a restarted bridge holds none. Read the file "
+            "again with swarm_workflow_spec, or pass `spec_path`. Nothing was sent"
+        )
+    return held["spec"]
+
+
+def _outline(spec: dict[str, Any]) -> dict[str, Any]:
+    """What a relay copies back instead of a spec: its label and its DAG."""
+    steps = []
+    for step in spec.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        stage = step.get("stage")
+        steps.append({
+            "step_id": step.get("step_id"),
+            "depends_on": list(step.get("depends_on") or []),
+            "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
+        })
+    label = spec.get("label")
+    return {"label": label if isinstance(label, str) and label.strip() else None, "steps": steps}
+
+
+def bridge_version() -> str | None:
+    """This bridge's own package version, or None when it is not installed as one."""
+    try:
+        return importlib.metadata.version("swarm-mcp")
+    except importlib.metadata.PackageNotFoundError:
+        return None
+
+
 def _refuse_unknown_arguments(name: str, args: dict[str, Any]) -> None:
     """An argument this bridge does not know is REFUSED, never dropped.
 
@@ -1860,6 +1958,17 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             "pass one, or no `step_id`"
         )
 
+    parents = args.get("parents") if name == "swarm_follow" else None
+    if parents is not None:
+        if args.get("format") != "progress":
+            raise SwarmError(
+                "`parents` is read only with `format: \"progress\"`; pass that, or no `parents`"
+            )
+        if not isinstance(parents, list) or not all(isinstance(p, str) and p.strip() for p in parents):
+            raise SwarmError("`parents` must be a list of task ids, each a non-empty string")
+        if len(args.get("task_ids") or []) != 1:
+            raise SwarmError("`parents` names the parents of ONE task; follow one task with it")
+
     if name == "swarm_follow" and args.get("format") == "progress":
         # The slim row view (`compact.watch_progress`, owner decision
         # 2026-10-01): no log, one line per task when it changed, compact
@@ -1871,6 +1980,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 since=args.get("since"),
                 wait_seconds=_int_arg(args, "wait_seconds", 0),
                 step_id=expected_step.strip() if isinstance(expected_step, str) else None,
+                parents=[p.strip() for p in parents] if parents else None,
             ),
             separators=(",", ":"),
             ensure_ascii=False,
@@ -2016,7 +2126,10 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return json.dumps(window, indent=2, default=str)
 
     if name == "swarm_workflow_spec":
-        return json.dumps(_read_spec_file(str(args["path"]), base=checkout.directory()), indent=2)
+        read = _read_spec_file(str(args["path"]), base=checkout.directory())
+        read["spec_ref"] = _hold_spec(read["spec"], read["path"])
+        read["outline"] = _outline(read["spec"])
+        return json.dumps(read, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -2048,6 +2161,20 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         return result.render()
 
     if name == "swarm_workflow":
+        # BY REFERENCE (measured 2026-10-01): a spec a relay retyped came back
+        # altered three times in one evening. `spec_path` and `spec_ref` put
+        # the bytes the bridge read in `spec`'s place, so from here on there is
+        # one spec and no model ever carried it; `spec_digest` still checks it.
+        sources = sorted(k for k in ("spec", "spec_path", "spec_ref", "steps") if args.get(k) is not None)
+        if len(sources) > 1:
+            raise SwarmError(
+                f"swarm_workflow was given {sources}; pass exactly one of `spec`, "
+                "`spec_path`, `spec_ref` or `steps`. Nothing was sent"
+            )
+        if args.get("spec_path") is not None:
+            args = {**args, "spec": _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]}
+        elif args.get("spec_ref") is not None:
+            args = {**args, "spec": _held_spec(str(args["spec_ref"]))}
         # WHERE IT GOES first (S8): a workflow under `local`, or under `hybrid`
         # with a declared local need, submits nothing.
         given_steps = (args.get("spec") or {}).get("steps") if isinstance(args.get("spec"), dict) else args.get("steps")
@@ -2090,7 +2217,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     "pass the spec it was computed over, or no `spec_digest`"
                 )
             if args.get("steps") is None:
-                raise SwarmError("swarm_workflow needs `steps`, or a whole `spec`")
+                raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path` or `spec_ref`)")
             fields = {
                 "steps": workflows.build_steps(args.get("steps")),
                 "strategy": args.get("strategy"),
@@ -2152,6 +2279,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 "workflow state and this tool will not quote the stored one"
             ),
             "target": placed,
+            # Which bridge answered: /sc:swarmcloud names it when this
+            # session's bridge refuses the follow its rows make.
+            "bridge_version": bridge_version(),
         })
         if digest is not None:
             # What was RECEIVED, so a caller that did not pass `spec_digest` can
@@ -2188,16 +2318,15 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 out["failure"] = failure
             return out
 
-        return json.dumps(
-            _with_console_links(
+        reported = _with_console_links(
+            envelope,
+            workflows.report(
                 envelope,
-                workflows.report(
-                    envelope,
-                    describe=_describe_step if name == "swarm_workflow_result" else None,
-                ),
+                describe=_describe_step if name == "swarm_workflow_result" else None,
             ),
-            indent=2,
         )
+        reported["bridge_version"] = bridge_version()
+        return json.dumps(reported, indent=2)
 
     if name == "swarm_workflow_cancel":
         return json.dumps(workflows.cancel(client, args["workflow_id"]), indent=2)

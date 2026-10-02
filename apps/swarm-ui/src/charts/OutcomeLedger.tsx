@@ -111,8 +111,16 @@ import {
   type OutcomeBucket,
   type Outcomes,
 } from '../outcomes'
+import { PHONE_PAGE_LIMIT, agentListPath, type RecentState } from '../agentlist'
+import { TASK_PAGE_LIMIT } from '../api'
+import { phoneWidth } from '../HelpCard'
 import { Mark } from '../primitives'
 import { HatchDef, VALUE_LABEL_GAP_PX, useHatchId } from './parts'
+
+/** The Agents list's Recent tab, filtered to one terminal state: where a bucket's figure drills to. */
+function drillHref(state: RecentState): string {
+  return `#work/running/${agentListPath({ tab: 'recent', state })}`
+}
 
 /**
  * The three drawings. `w` is the nominal width; `floor` the narrowest a
@@ -914,6 +922,9 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   const shown = shownOf(data, pickedBucket !== null && pickedBucket.state !== 'unread' ? pickedBucket : null)
   const settleMin = Math.round(data.coverage.seal_grace_s / 60)
   const failedThere = pickedBucket === null ? 0 : (pickedBucket.failed ?? 0) + (pickedBucket.dead_lettered ?? 0)
+  const cancelledThere = pickedBucket === null ? 0 : (pickedBucket.cancelled?.total ?? 0)
+  // The page the Agents list reads at this width, which is the window its rows come from.
+  const listWindow = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
   const units = unitWord(bucket)
   // THE SPAN'S TOTALS ARE SUMS OVER THE READ BUCKETS ONLY (TS-9): partial
   // when one was not read, and no figure at all when none was.
@@ -1066,13 +1077,26 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
                 zoom to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
               </button>
             )}
+            {/* THE FIGURES OPEN THE ROWS BEHIND THEM (#116), as far as the
+                Agents list can. It filters by state but not by completed_at
+                (no route lists tasks by end time), and it reads its own
+                newest page, not this span -- so each link names that window
+                rather than pretending to be the bucket's list. Failed is
+                FAILED + DEAD_LETTERED, the one definition the drawing uses. */}
             {failedThere > 0 && (
-              // The Agents list cannot filter by completed_at (the drill-through
-              // route is not in #185's contract), so the link says what it
-              // cannot do rather than pretending to be the day's list.
-              <a className="ctl-link ol-drill" href="#work/running/recent/failed">
+              <a className="ctl-link ol-drill" href={drillHref('failed')}>
                 {failedThere} failed that {bucket === 'hour' ? 'hour' : bucket} →{' '}
-                <span className="ol-q">not limited to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}</span>
+                <span className="ol-q">
+                  in the newest {listWindow} agents, not limited to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
+                </span>
+              </a>
+            )}
+            {cancelledThere > 0 && (
+              <a className="ctl-link ol-drill" href={drillHref('cancelled')}>
+                {cancelledThere} cancelled that {bucket === 'hour' ? 'hour' : bucket} →{' '}
+                <span className="ol-q">
+                  in the newest {listWindow} agents, not limited to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
+                </span>
               </a>
             )}
           </p>

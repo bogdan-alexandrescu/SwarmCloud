@@ -197,6 +197,25 @@ def test_a_parent_that_awaited_on_its_last_attempt_is_dead_lettered(db, make_sch
     assert db.docs[f"tasks/{PARENT}"]["state"] == "DEAD_LETTERED"
 
 
+def test_an_exhausted_awaiting_parent_is_dead_lettered_at_once_and_its_children_cascade(
+    db, make_scheduler
+):
+    """§5 F14 then F6: no resume is coming, so the parent ends on the sweep
+    that finds it, with its children still running, and they are cancelled as
+    `parent_ended` rather than run for a consumer that is gone."""
+    world(db)
+    parked_parent(db, attempt_count=3, max_attempts=3)
+    idle = child(db, "task_idle", "READY")
+    running = child(db, "task_running", "RUNNING")
+    make_scheduler(now=at_now).drain()
+    assert db.docs[f"tasks/{PARENT}"]["state"] == "DEAD_LETTERED"
+    make_scheduler(now=at_now).drain()
+    assert idle["state"] == "CANCELLED" and idle["end_cause"] == "child_cascade"
+    assert idle["metadata"]["child_cascade"]["why"] == "parent_ended"
+    assert running["cancel_requested"] is True
+    assert running["metadata"]["child_cascade"]["why"] == "parent_ended"
+
+
 def test_the_await_sweep_reads_its_own_park_reason(db, make_scheduler):
     world(db)
     scheduler = make_scheduler(now=at_now)
@@ -287,3 +306,75 @@ def test_the_cascade_window_reaches_every_child(db, make_scheduler):
     scheduler.drain()
     scheduler.drain()
     assert late["state"] == "CANCELLED"
+
+
+# --------------------------------------------------------------------------
+# Contract request 41: every scheduler writer that ends a flagged child
+# --------------------------------------------------------------------------
+
+
+def _flagged(doc: dict) -> dict:
+    """A child the cascade flagged while it held capacity: the flag and the
+    marker are on it, and it is still to be ended by whoever reaches it."""
+    doc["cancel_requested"] = True
+    doc["metadata"] = {API_CASCADE_KEY: {"why": "parent_cancelled", "parent_task_id": PARENT}}
+    return doc
+
+
+
+def test_admission_ends_a_flagged_child_child_cascade(db, make_scheduler):
+    """`_admit_one`'s cancel of a READY task with `cancel_requested`. Its parent
+    is healthy, so the cascade sweep leaves it to admission."""
+    world(db)
+    seed_task(db, task_id=PARENT, tenant_id="eng", state="RUNNING")
+    flagged = _flagged(child(db, "task_flagged", "READY"))
+    make_scheduler(now=at_now).drain()
+    assert flagged["state"] == "CANCELLED"
+    assert flagged["end_cause"] == "child_cascade"
+
+
+def test_admission_still_ends_an_ordinary_cancel_cancel_requested(db, make_scheduler):
+    world(db)
+    plain = seed_task(db, task_id="task_plain", tenant_id="eng", state="READY", cancel_requested=True)
+    make_scheduler(now=at_now).drain()
+    assert plain["state"] == "CANCELLED" and plain["end_cause"] == "cancel_requested"
+
+
+def test_a_failed_dispatch_ends_a_flagged_child_child_cascade(db):
+    """The dispatch-failure path's CANCELLED end (`return_to_ready_after_failed_dispatch`)."""
+    from scheduler.store import SchedulerStore
+
+    snapshot = Task(
+        id="task_x", tenant_id="eng", runner_profile="mock", resource_class="standard",
+        state=TaskState.READY, created_at=NOW, updated_at=NOW, input={},
+        submitted_by="alice@saga.xyz", attempt_count=0, max_attempts=3, parent_task_id=PARENT,
+    )
+    lease = Lease(
+        lease_id="lease_x", task_id="task_x", attempt_id="att_x", tenant_id="eng",
+        generation=1, units=1, pools=["global"], state=TaskState.LEASED,
+        created_at=NOW, dispatch_deadline=NOW + timedelta(seconds=300),
+        expires_at=NOW + timedelta(seconds=120),
+    )
+    stored = snapshot.to_firestore()
+    stored.update(
+        {
+            "state": TaskState.LEASED.value,
+            "attempt_count": 1,
+            "current_lease_id": lease.lease_id,
+            "current_generation": 1,
+        }
+    )
+    _flagged(stored)
+    db.collection("tasks").document("task_x").set(stored)
+    SchedulerStore(db, now=lambda: NOW).return_to_ready_after_failed_dispatch(
+        snapshot, lease, "gke_create_job_failed"
+    )
+    doc = db.docs["tasks/task_x"]
+    assert doc["state"] == "CANCELLED" and doc["end_cause"] == "child_cascade"
+
+
+def test_the_scheduler_rule_is_the_workers():
+    from agent_worker.control import cancel_end_cause as worker_rule
+
+    for metadata in ({}, None, {API_CASCADE_KEY: {"why": "parent_ended"}}, {API_CASCADE_KEY: None}):
+        assert children_mod.cancel_end_cause(metadata) is worker_rule({"metadata": metadata})

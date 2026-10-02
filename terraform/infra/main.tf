@@ -91,7 +91,12 @@ module "artifact_registry" {
   # known until apply.
   readers = { for c in local.control_plane_services : c => module.iam.service_account_members[c] }
 
-  pullers = { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" }
+  pullers = merge(
+    { for t, email in module.tenancy.worker_service_accounts : "tenant-${t}" => "serviceAccount:${email}" },
+    # The #295 accounts run the same image as the worker, and get the same
+    # no-list pull.
+    { for k, member in module.tenancy.action_members : "action-${replace(k, ":", "-")}" => member },
+  )
 
   labels = local.labels
 
@@ -127,6 +132,8 @@ module "firestore" {
 
   bootstrap_documents = var.bootstrap_firestore_documents
   pools               = local.pools
+
+  bench_database_id = var.firestore_bench_database
 
   tenant_documents = {
     for t, cfg in var.tenants : t => {
@@ -216,6 +223,13 @@ module "tenancy" {
     var.deployer_service_account == "" ? {} : { deployer = local.deployer_member },
   )
 
+  # The #295 merge, post-verdict and review accounts: the deployer alone, which
+  # deploys their Jobs. Not the scheduler or the reconciler, whose actAs on
+  # every worker account is what lets them name one on a Job they create; a
+  # Job for these profiles is Terraform's, never the dispatcher's
+  # (modules/tenancy/main.tf, action_act_as_grants).
+  action_act_as_members = var.deployer_service_account == "" ? {} : { deployer = local.deployer_member }
+
   labels = local.labels
 }
 
@@ -236,8 +250,15 @@ module "secret_manager" {
       providers     = cfg.providers
       accessor      = cfg.accessor
       admin_members = local.tenant_secret_admins[t]
+      # #295: the merge account is the only reader of -git-merge, the
+      # post-verdict account the only reader of -git-review, and the review
+      # account reads the review agent's provider key beside the worker.
+      accessor_overrides = cfg.accessor_overrides
     }
   }
+
+  # Never refreshed, and the worker account never their reader.
+  action_providers = module.tenancy.action_providers
 
   # One writer, and this is it. See the variable's own description, and
   # quota_broker.credentials, for why a second one corrupts a rotating
@@ -286,6 +307,15 @@ module "cloud_run" {
       vpc_egress  = "ALL_TRAFFIC"
       concurrency = 80
       env         = local.service_env["swarm-api"]
+      # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
+      # Secret Manager reference, only once enable_child_tasks is on
+      # (child_tasks.tf).
+      secret_env = local.child_key_secret_env
+      # The audience a worker mints its ID token for when it calls the child
+      # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
+      # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
+      # in addition to the URL; people's clients are unaffected.
+      custom_audiences = [local.push_audiences["swarm-api"]]
       # THE IAP SERVICE AGENT, EXPLICITLY.
       #
       # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
@@ -307,9 +337,13 @@ module "cloud_run" {
       #
       #   gcloud beta services identity create \
       #     --service=iap.googleapis.com --project=<project>
+      #
+      # And each tenant's WORKER, once child tasks are on: the worker-only
+      # child routes are the one thing a worker calls here (child_tasks.tf).
       invokers = merge(
         { for member in var.api_invokers : member => member },
         { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+        local.child_route_invokers,
       )
     }
     "swarm-scheduler" = {
@@ -324,6 +358,7 @@ module "cloud_run" {
       concurrency      = 1
       request_timeout  = "540s"
       env              = local.service_env["swarm-scheduler"]
+      secret_env       = local.scheduler_child_key_secret_env
       custom_audiences = [local.push_audiences["swarm-scheduler"]]
       invokers         = { tick = module.iam.tick_member }
     }

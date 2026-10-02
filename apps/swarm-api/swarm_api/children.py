@@ -271,10 +271,12 @@ class ChildService:
         submissions: Any,
         verifier: Any,
         limiter: Any = None,
+        metrics: Any = None,
         now: Callable[[], datetime] = utcnow,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._settings = settings
+        self._metrics = metrics
         self._db = db
         self._store = store
         self._submissions = submissions
@@ -540,7 +542,15 @@ class ChildService:
             )
             return SubmitAnswer(task=child, created=True)
 
-        return _apply(self._db.transaction())
+        answer = _apply(self._db.transaction())
+        if answer.created and self._metrics is not None:
+            # A child is a submitted task like any other, counted under its own
+            # tenant and profile as `POST /v1/tasks` counts one; a dedupe
+            # answer (created=False) made nothing and counts nothing.
+            self._metrics.tasks_submitted.labels(
+                tenant=answer.task.tenant_id, runner_profile=answer.task.runner_profile
+            ).inc()
+        return answer
 
     def _read_parent(self, attempt: AttemptTuple) -> Task:
         """The parent as stored, for building the child. The fence is checked
@@ -826,4 +836,3 @@ def cascade_cancel_child(
         return True
 
     return _apply(db.transaction())
-

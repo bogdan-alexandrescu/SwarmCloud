@@ -277,6 +277,15 @@ def test_format_2_covers_the_parent_fields():
     assert canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=1) == GOLDEN_BYTES
 
 
+def test_a_task_that_names_no_parent_is_signed_at_format_1():
+    """Contract request 42's rollout: a worker built before format 2 knows only
+    format 1, so every non-child task is signed at it; only a child is format 2."""
+    assert specsign.signing_format(GOLDEN_DOC) == 1
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_task_id": None}) == 1
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_task_id": "task_p"}) == 2
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_attempt_id": "att_p"}) == 2
+
+
 def test_an_unknown_format_has_no_projection():
     with pytest.raises(specsign.SpecNotCanonical):
         canonical_step_spec(GOLDEN_DOC, task_id="task_x", spec_format=3)

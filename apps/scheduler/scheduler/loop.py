@@ -260,6 +260,11 @@ class Scheduler:
         self._store = store
         self._router = router
         self._metrics = metrics or SchedulerMetrics()
+        # Admission latency and re-runs as Prometheus series (S32), from the
+        # same numbers acquire_lease logs. Only a real store has the hook; a
+        # test double without it is left alone.
+        if isinstance(store, SchedulerStore):
+            store.admission_observer = self._metrics.observe_admission
         # The account pool admission and the credential sweep ask about
         # (credentials.py). `main.build_scheduler` hands the SAME instance to
         # the Cloud Run dispatcher, so the Job's secret mount is decided on the
@@ -481,7 +486,7 @@ class Scheduler:
                 "cancellation requested before admission",
                 report,
                 why="cancel_requested",
-                end_cause=EndCause.CANCEL_REQUESTED,
+                end_cause=children_mod.cancel_end_cause(task.metadata),
             )
             return False
 
@@ -1149,7 +1154,11 @@ class Scheduler:
         )
         if task.cancel_requested:
             self._cancel(
-                task, text, report, why="cancel_requested", end_cause=EndCause.CANCEL_REQUESTED
+                task,
+                text,
+                report,
+                why="cancel_requested",
+                end_cause=children_mod.cancel_end_cause(task.metadata),
             )
             return
         outcome = self._store.dead_letter_parked(
@@ -1174,14 +1183,32 @@ class Scheduler:
         the drain that finds them terminal.
 
         A parent that has used its last attempt -- its await counted, past
-        `max_child_await_resumes` (§5 F14) -- is dead-lettered instead, as
+        `max_child_await_resumes` (§5 F14) -- is dead-lettered AS SOON AS the
+        sweep finds it, whatever its children are doing, as
         `_end_exhausted_retry` does for a SCHEDULED_RETRY park: admission does
-        not check the cap. Promotion writes READY only (invariant 1).
+        not check the cap, and no resume is coming that could read its
+        children's results. Ending it then, rather than after they finish, is
+        what lets the cascade sweep cancel them as `parent_ended` (§5 F6)
+        instead of running them for a consumer that is gone. Promotion writes
+        READY only (invariant 1).
         """
         promoted = 0
         now = self._now()
         db = self._store.db
         for task in self._parked_window(ParkReason.CHILDREN_INCOMPLETE):
+            if task.retries_exhausted():
+                text = (
+                    f"awaited its children on its last attempt ({task.attempt_count} of "
+                    f"{task.max_attempts}); retries exhausted"
+                )
+                outcome = self._store.dead_letter_parked(
+                    task, text, detail={"park_reason": ParkReason.CHILDREN_INCOMPLETE.value}
+                )
+                if outcome.applied:
+                    report.dead_lettered += 1
+                else:
+                    self._count_stale(outcome, report)
+                continue
             decision = children_mod.decide_await(
                 children_mod.children_of(db, task.tenant_id, task.id)
             )
@@ -1195,19 +1222,6 @@ class Scheduler:
                     )
                 continue
             if not decision.settled and not expired:
-                continue
-            if task.retries_exhausted():
-                text = (
-                    f"awaited its children on its last attempt ({task.attempt_count} of "
-                    f"{task.max_attempts}); retries exhausted"
-                )
-                outcome = self._store.dead_letter_parked(
-                    task, text, detail={"park_reason": ParkReason.CHILDREN_INCOMPLETE.value}
-                )
-                if outcome.applied:
-                    report.dead_lettered += 1
-                else:
-                    self._count_stale(outcome, report)
                 continue
             if self._promote(
                 task,

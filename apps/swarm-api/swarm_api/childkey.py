@@ -17,7 +17,8 @@ never be read as another:
     tenant identity that found the id could rewrite.
 
 The scheduler restates `nonce` (its image does not carry this package);
-`tests/unit/control_plane/test_child_tasks_keys.py` holds the two equal.
+`tests/unit/control_plane/test_child_tasks_scheduler.py` holds the two equal
+(`test_the_scheduler_mints_the_nonce_swarm_api_verifies`).
 
 Nothing here logs, and nothing derived here is ever served: not the nonce, the
 registration id, the attestation or the key.

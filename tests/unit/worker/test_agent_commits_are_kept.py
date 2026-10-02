@@ -416,8 +416,8 @@ def test_an_unregistered_credential_in_an_intermediate_commit_folds_the_history(
         ("+++ b/auth.py\n@@ -0,0 +1 @@\n+token = get_token()\n", False),
         ("+++ b/auth.py\n@@ -0,0 +1 @@\n+    password: str\n", False),
         ("+++ b/auth.py\n@@ -0,0 +1 @@\n+secret = self.secret_name\n", False),
-        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = \"hunter-correct-horse\"\n", True),
-        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = 'hunter-correct-horse'\n", True),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = \"hunter2-correct-horse\"\n", True),
+        ("+++ b/auth.py\n@@ -0,0 +1 @@\n+password = 'hunter2'\n", True),
         ("+++ b/.env\n@@ -0,0 +1 @@\n+DB_SECRET=a1b2c3d4e5f6g7h8\n", True),
     ],
     ids=[
@@ -1052,7 +1052,7 @@ def test_anything_in_an_env_file_under_tests_is_judged_as_outside_tests(worker_f
 
 @pytest.mark.parametrize(
     "text",
-    ['config = {"secret": "retained"}\n', 'login(password="hunter2")\n', "password = 'hunter2'\n"],
+    ['config = {"secret": "retained-9"}\n', 'login(password="hunter2")\n', "password = 'hunter2'\n"],
     ids=["json-secret", "kwarg-password", "assigned-password"],
 )
 def test_a_generic_literal_outside_tests_is_refused_as_before(worker_factory, text):
@@ -1085,13 +1085,18 @@ def test_a_generic_match_in_a_test_path_passes_unless_credential_shaped(worker_f
 @pytest.mark.parametrize(
     "text",
     [
-        'assert masked == {"secret": "retained"}\n',
+        'assert masked == {"secret": "retained-9"}\n',
         'login(password="hunter2")\n',
-        'resolve(secret="swarm-tenant-acme-git")\n',
+        'resolve(secret="swarm-tenant-acme-1")\n',
     ],
 )
 def test_the_same_generic_match_outside_tests_is_refused(worker_factory, text):
-    """The control for the test above: the path alone made the difference."""
+    """The control for the test above: the path alone made the difference.
+
+    Each value carries a digit: since 2026-10-02 a digitless lowercase name
+    (`"retained"`, `"swarm-tenant-acme-git"`) outside tests is a REFERENCE
+    and publishes (`lifecycle._is_a_reference`,
+    test_publish_scan_references.py)."""
     worker, _, _ = worker_factory()
     assert _rule_for(worker, "apps/swarm-api/swarm_api/routes.py", text) == "key_value_assignment"
 
@@ -1225,7 +1230,7 @@ def test_a_refusal_names_the_rule_and_the_line_and_never_the_value():
 def test_the_per_commit_scan_reads_a_test_files_path():
     """`_adds_a_credential` judges each file by its own path: the same line
     passes in a test file and is caught in source."""
-    line = 'assert masked == {"secret": "retained"}'
+    line = 'assert masked == {"secret": "retained-9"}'
     in_tests = f"+++ b/tests/unit/test_mask.py\n@@ -0,0 +1 @@\n+{line}\n"
     in_src = f"+++ b/src/mask.py\n@@ -0,0 +1 @@\n+{line}\n"
     assert lifecycle._adds_a_credential(in_tests) is False

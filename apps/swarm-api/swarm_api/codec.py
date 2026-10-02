@@ -242,8 +242,22 @@ def task_to_api(
     *,
     account: dict[str, Any] | None = None,
     console_url: str | None = None,
+    heartbeat: dict[str, Any] | None = None,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
+
+    `summary` is `GET /v1/tasks?view=summary` (#168): the row WITHOUT `input`,
+    `metadata` and `result_summary` and their three masking counts -- the
+    keys ABSENT, not null, so a reader cannot mistake a dropped field for an
+    empty one -- and without the masking work for them, which is skipped
+    rather than computed and discarded. Everything else, `last_error` and
+    `repository_url` included, is masked exactly as in the full row.
+
+    `heartbeat` is `swarm_api.heartbeats`' reading of the task's current
+    lease (#179): `heartbeat_at`, `heartbeat_grace_seconds` and `heartbeat`
+    (what the reading is). All three null on routes that read no lease and for
+    a task that holds none.
 
     `console_url` is the deployment's console origin (`ApiSettings.console_url`);
     `links.console` is this agent's page on it, the same in every state, and
@@ -268,12 +282,18 @@ def task_to_api(
     inputs is masked once, not on every refresh.
     """
     masking = masking_for(task)
-    masked_input, input_count = masking.input_value()
-    masked_metadata, metadata_count = masking.metadata_value()
+    masked_input: Any = None
+    masked_metadata: Any = None
+    result_summary: Any = None
+    input_count = metadata_count = result_summary_count = 0
+    if not summary:
+        masked_input, input_count = masking.input_value()
+        masked_metadata, metadata_count = masking.metadata_value()
+        result_summary, result_summary_count = masking.leaves(task.result_summary)
     last_error, last_error_count = masking.text(task.last_error)
-    result_summary, result_summary_count = masking.leaves(task.result_summary)
     repository_url, repository_url_count = masking.repository_url(task.repository_url)
-    return {
+    beat = heartbeat or {}
+    row = {
         "id": task.id,
         "tenant_id": task.tenant_id,
         "state": task.state.value,
@@ -370,11 +390,35 @@ def task_to_api(
         # (never by this serialiser, which reads nothing). Null on routes that
         # do not read it; `status` says why there is no account otherwise.
         "account": account,
+        # #179: the worker's last beat, from the task's current LEASE (the
+        # worker never writes it to the task), and the grace the reconciler
+        # acts on. Read by `swarm_api.heartbeats`, never by this serialiser.
+        # `heartbeat_at` null with `heartbeat: "read"` is a lease that has
+        # never beaten; with `"not read"` it is a failed read, not silence.
+        "heartbeat_at": beat.get("heartbeat_at"),
+        "heartbeat_grace_seconds": beat.get("heartbeat_grace_seconds"),
+        "heartbeat": beat.get("heartbeat"),
         # The console page for this agent, in every state from QUEUED to
         # terminal -- the one link every surface prints (owner decision
         # 2026-10-01). Null when no console is configured.
         "links": {"console": agent_console_url(console_url, task.id)},
     }
+    if summary:
+        for key in SUMMARY_DROPPED_KEYS:
+            del row[key]
+    return row
+
+
+#: What `view=summary` leaves out of a task row (#168): the three fields a
+#: list never shows, and the masking count beside each.
+SUMMARY_DROPPED_KEYS: tuple[str, ...] = (
+    "metadata",
+    "metadata_redaction_count",
+    "input",
+    "input_redaction_count",
+    "result_summary",
+    "result_summary_redaction_count",
+)
 
 
 # --------------------------------------------------------------------------
@@ -533,7 +577,7 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
     """
     raw_limit = data.get("hard_limit")
     cls = SlotPool if raw_limit is not None else UnsetLimitPool
-    return cls(
+    pool = cls(
         name=name,
         hard_limit=int(raw_limit) if raw_limit is not None else 0,
         adaptive_target=data.get("adaptive_target"),
@@ -542,6 +586,39 @@ def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:
         enabled=bool(data.get("enabled", True)),
         updated_at=as_datetime(data.get("updated_at")) or datetime.now(timezone.utc),
     )
+    # Who last changed the pool through an admin route (`Store.upsert_pool`
+    # writes both). Not a `SlotPool` field -- that dataclass is the frozen
+    # contract -- so it rides on the instance, outside the dataclass's fields
+    # (equality, `asdict` and the admission transaction never see it), and is
+    # read back only through `pool_attribution`.
+    setattr(
+        pool,
+        _POOL_ATTRIBUTION,
+        {
+            "admin_changed_by": data.get("admin_changed_by"),
+            "admin_changed_at": as_datetime(data.get("admin_changed_at")),
+        },
+    )
+    return pool
+
+
+_POOL_ATTRIBUTION = "_swarm_admin_attribution"
+
+
+def pool_attribution(pool: SlotPool) -> dict[str, Any]:
+    """`admin_changed_by` / `admin_changed_at` of a pool read by `pool_from_dict` (#133).
+
+    FOR THE ADMIN POOL READS ONLY, which is why it is not in `pool_to_api`:
+    `/v1/capacity` serves pools to every tenant member, and an admin's email is
+    not tenant data. Both null for a pool no admin route ever changed (the
+    store writes neither for internal writers), and for a pool this codec did
+    not decode -- never a guess, and never the pool's `updated_at`, which every
+    admission rewrites.
+    """
+    found = getattr(pool, _POOL_ATTRIBUTION, None)
+    if not isinstance(found, dict):
+        return {"admin_changed_by": None, "admin_changed_at": None}
+    return dict(found)
 
 
 def lease_to_api(lease: Lease) -> dict[str, Any]:

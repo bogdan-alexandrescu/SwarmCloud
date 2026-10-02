@@ -51,6 +51,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
+| 44 | `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED` (functionality wave 1, lane B4) | open |
+| 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 
 ---
 
@@ -8269,7 +8271,7 @@ document any tenant identity can rewrite.
 
 ## 41. `models.py`: a child cancelled because of its parent has no end cause
 
-**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `EndCause.CHILD_CASCADE` is in `apps/common/swarm_common/models.py`, written by the API's cascade, the scheduler's sweeps and the worker ending a flagged child; the outcome ledger counts it as its own cancel class, `child_cascade` (DERIVE_VERSION 5). The reconciler's repair of a flagged child whose worker died still writes CANCEL_REQUESTED: `apps/reconciler/` was outside the applying lane's territory.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `EndCause.CHILD_CASCADE` is in `apps/common/swarm_common/models.py`, written by the API's cascade, the scheduler's sweeps and the worker ending a flagged child; the outcome ledger counts it as its own cancel class, `child_cascade` (DERIVE_VERSION 5). So does every writer that ends a flagged child CANCELLED on its `cancel_requested` -- the worker (`agent_worker.control.cancel_end_cause`), the reconciler's repair (`reconciler.model.cancel_end_cause`), and the scheduler's admission, exhausted-retry and dispatch-failure cancels (`scheduler.children.cancel_end_cause`) -- each from `metadata.child_cascade` with the one rule, held equal by `tests/unit/worker/test_end_cause_reconciler.py` and `tests/unit/control_plane/test_child_tasks_scheduler.py`.
 
 ### What is true today
 
@@ -8305,7 +8307,7 @@ request 23 was accepted to end.
 
 ## 42. `specsign.py`: the signed step spec does not cover a child's parent
 
-**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `SPEC_FORMAT = 2` and `SPEC_FORMATS = (1, 2)` in `apps/common/swarm_common/specsign.py`; `canonical_step_spec` takes `spec_format`, and the worker verifies each document under the projection its own `spec_format` names.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `SPEC_FORMAT = 2` and `SPEC_FORMATS = (1, 2)` in `apps/common/swarm_common/specsign.py`; `canonical_step_spec` takes `spec_format`, and the worker verifies each document under the projection its own `spec_format` names. swarm-api signs a task that names no parent at FORMAT 1 (`specsign.signing_format`), so a worker built before format 2 keeps running every non-child task through a rollout that updates swarm-api first; only a child, which needs a worker with the child path anyway, is signed at format 2.
 
 ### What is true today
 
@@ -8365,3 +8367,94 @@ that the shell and Terraform restatements still equal it.
 
 swarm-api restates the prefix, held equal to `_GSA_PREFIX` by a parity test --
 one more copy of a name request 16 already counts two of.
+
+---
+
+## 44. `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED`
+
+**Status: open (functionality wave 1, lane B4, 2026-10-01).** Recorded as a
+request, per CLAUDE.md rule 1; nothing under `apps/common/swarm_common/` was
+edited. Numbered 40 on the assumption that 38 and 39 land first; renumber if
+another branch has taken it.
+
+### What is true today
+
+The worker records a subscription account's lifecycle on the task's events
+with a `cause` on an event type the frozen `EventType`
+(`apps/common/swarm_common/states.py:161`) already has:
+
+* `account_assigned` is `EventType.RUNNING` with `cause: "account_assigned"`
+  (`Worker` in `apps/agent-worker/agent_worker/lifecycle.py`).
+* `account_released` (#380) is `EventType.LEASE_RELEASED` with
+  `cause: "account_released"` (`Worker._emit_account_released`).
+
+The API reads both through one range query on the `cause`
+(`swarm_api.task_accounts`), so the account view is right. A reader that
+renders events by type alone is not: a timeline draws the account's release as
+a lease release, and the assignment as a second `running`.
+
+### The requested change
+
+Add `EventType.ACCOUNT_ASSIGNED = "account_assigned"` and
+`EventType.ACCOUNT_RELEASED = "account_released"`, and have the worker emit
+them, keeping the `cause` for one release so readers of either shape work.
+
+### What it would break if accepted
+
+* Every reader that enumerates `EventType` (the UI's event lists in
+  `apps/swarm-ui/src/types.ts`, the MCP renderers) gains two members; their
+  tests that enumerate the enum follow.
+* `swarm_api.task_accounts` would read both shapes for as long as events
+  written before the change are retained.
+
+### If it is declined
+
+The `cause` stays the discriminator, and the docstring on
+`_emit_account_released` says why the type is `LEASE_RELEASED`. A generic
+timeline keeps drawing the release as a lease release.
+
+### Invariants
+
+5. Fencing: unaffected. `control.emit` stamps the attempt, lease and
+   generation either way, and a fenced exit emits neither event.
+9. Tenant isolation: unaffected; the event carries the account id, the
+   provider and a bool, never a secret's name or payload.
+
+---
+
+## 45. `profiles.py`: the catalogue does not say which runner profiles report a cost
+
+**Status:** open, filed 2026-10-02 with #72. A request, not a change.
+
+### What is true today
+
+`GET /v1/attempts` `coverage` (#72) splits rows without a `cost_usd` into
+"a profile that never reports a cost" and "spent and recorded nothing". The
+frozen `RunnerProfile` (`apps/common/swarm_common/profiles.py`) does not say
+which profiles report one, so swarm-api restates it as
+`COST_REPORTING_RUNNERS` (`apps/swarm-api/swarm_api/routes/attempts.py`),
+matched against each profile's `runner_argv`, and reads `cost_declared` as
+"reports only when the input asks" because the mock is the only declared
+profile. A unit test holds the set to modules under
+`apps/agent-worker/agent_worker/runners` and pins the mock as the only
+declared profile.
+
+### The requested change
+
+```python
+    #: Whether an attempt on this profile records `cost_usd`: "always" for the
+    #: CLI runners that parse a usage block, "on_input" for a runner that
+    #: reports one only when its input carries it (the mock), "never" otherwise.
+    reports_cost: Literal["always", "on_input", "never"] = "never"
+```
+
+### What it would break if accepted
+
+Nothing that exists. swarm-api drops `COST_REPORTING_RUNNERS` and the
+`cost_declared` stand-in and reads the field; the UI's `types.ts` gains it if
+the profiles route serves it.
+
+### If it is declined
+
+The restatement stays, held by its test; a new cost-reporting runner module
+counts as "never reports" until someone adds it to the set.

@@ -14,6 +14,14 @@
 
 locals {
   # tenant/provider pairs flattened into one map keyed by the real secret id.
+  #
+  # `accessors` is the complete accessor list: the tenant's worker account,
+  # unless the tenant names this provider's readers itself -- for git-merge and
+  # git-review that is the merge or post-verdict account ALONE, and the worker
+  # account is not on it (#295, contract request 35's MAJOR 1).
+  #
+  # `refreshable` is false for an App key: it does not expire, and the broker
+  # has no business writing one (see refresh_secrets).
   secrets = {
     for pair in flatten([
       for tenant_id, cfg in var.tenant_secrets : [
@@ -21,8 +29,9 @@ locals {
           secret_id     = "swarm-tenant-${tenant_id}-${provider}"
           tenant_id     = tenant_id
           provider      = provider
-          accessor      = cfg.accessor
+          accessors     = lookup(cfg.accessor_overrides, provider, [cfg.accessor])
           admin_members = cfg.admin_members
+          refreshable   = !contains(var.action_providers, provider)
         }
       ]
     ]) : pair.secret_id => pair
@@ -36,8 +45,15 @@ locals {
   # action (scripts/create-secrets.sh --subscription) rather than a terraform
   # change, which matters because the two are done by different people at
   # different times.
+  #
+  # NEVER FOR git-merge OR git-review (#295, contract request 35's MAJOR 1). A
+  # GitHub App key is not a rotating subscription credential, and the
+  # refresher's grants -- versionAdder on the base secret, a `-refresh` twin --
+  # are a second writer of the one secret only the merge or post-verdict
+  # account may read. So neither provider gets a twin, and the refresher gets
+  # no grant on either base secret.
   refresh_secrets = local.refresher_enabled ? {
-    for k, v in local.secrets : "${k}-refresh" => v
+    for k, v in local.secrets : "${k}-refresh" => v if v.refreshable
   } : {}
 
   # The broker publishes the short-lived half into the BASE secret, so it needs
@@ -50,7 +66,7 @@ locals {
   # planned at all.
   admin_grants = {
     for k, v in merge(local.secrets, local.refresh_secrets) : k => v
-    if local.refresher_enabled || length(v.admin_members) > 0
+    if(local.refresher_enabled && v.refreshable) || length(v.admin_members) > 0
   }
 }
 
@@ -105,14 +121,19 @@ resource "google_secret_manager_secret" "this" {
   }
 }
 
-# Exactly one identity may read each secret: the owning tenant's worker SA.
+# The owning tenant's identities, and nobody else, may read each secret: its
+# worker account, or -- for a provider the tenant names readers for -- exactly
+# those (#295: the merge account alone on -git-merge, the post-verdict account
+# alone on -git-review, the worker and the review account on the review
+# agent's provider key). Authoritative, so a grant made out of band is removed
+# on the next apply.
 resource "google_secret_manager_secret_iam_binding" "accessor" {
   for_each = local.secrets
 
   project   = var.project_id
   secret_id = google_secret_manager_secret.this[each.key].secret_id
   role      = "roles/secretmanager.secretAccessor"
-  members   = [each.value.accessor]
+  members   = each.value.accessors
 }
 
 # Humans and CI may ADD a version. They deliberately cannot read one back:
@@ -128,7 +149,7 @@ resource "google_secret_manager_secret_iam_binding" "version_adder" {
   role = "roles/secretmanager.secretVersionAdder"
   members = distinct(concat(
     each.value.admin_members,
-    local.refresher_enabled ? [var.refresher_member] : [],
+    local.refresher_enabled && each.value.refreshable ? [var.refresher_member] : [],
   ))
 }
 

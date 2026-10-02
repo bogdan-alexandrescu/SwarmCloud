@@ -1,9 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useContext, useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { MarkGlyph } from './marks'
-import { PageHead, timeAgo } from './Shell'
+import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
@@ -38,9 +38,24 @@ import { AGE_TICK_MS, useNow } from './useNow'
  * their own four running tasks as the platform total is a truth bug, not a
  * layout preference.
  */
+/**
+ * THE LAST GOOD RUN, KEPT FOR THE SESSION (#135). A run is billed, so leaving
+ * the screen and coming back used to throw away an answer already paid for
+ * and draw the not-run cards over it. It lives in the module -- this tab's
+ * lifetime, never storage -- and the screen opens on it, with its age in the
+ * head as it had when it landed. A failed run is this visit's news and is not
+ * kept: coming back shows the counts the session last actually read.
+ */
+let lastRun: { run: Result<Stats>; runs: number } | null = null
+
+/** Forgets the session's record, for a test that starts a new session. */
+export function forgetLastRun(): void {
+  lastRun = null
+}
+
 export function PlatformCountsScreen() {
-  const [run, setRun] = useState<Result<Stats> | null>(null)
-  const [runs, setRuns] = useState(0)
+  const [run, setRun] = useState<Result<Stats> | null>(() => lastRun?.run ?? null)
+  const [runs, setRuns] = useState(() => lastRun?.runs ?? 0)
   const [busy, setBusy] = useState(false)
   /**
    * WHO IS ASKING, FROM THE SESSION READ -- the same `/v1/tenants/me` the
@@ -57,6 +72,12 @@ export function PlatformCountsScreen() {
   // (CH-1): an age that was read once and never re-drawn is the one number on
   // the line whose whole job is to grow.
   const now = useNow(AGE_TICK_MS)
+  // ONE AGE ON THIS SCREEN, AND IT IS THE COUNT'S (#98). The frame head's age
+  // is the newest read this screen made -- the session read, seconds old --
+  // while the figures below are as old as the run that counted them, which
+  // can be an hour. The run's age is the one that describes the data, so this
+  // screen claims the age and the head prints none.
+  useClaimPageAge(useContext(FrameAge))
 
   useEffect(() => {
     let live = true
@@ -76,7 +97,12 @@ export function PlatformCountsScreen() {
       // Counted only on a read that actually produced counts. Incrementing on
       // every settled promise would let a failure inflate a number the toolbar
       // then presents as work that was billed.
-      if (r.status === 'ok' || r.status === 'stale') setRuns((n) => n + 1)
+      if (r.status === 'ok' || r.status === 'stale') {
+        setRuns((n) => {
+          lastRun = { run: r, runs: n + 1 }
+          return n + 1
+        })
+      }
     })
   }
 
@@ -112,20 +138,29 @@ export function PlatformCountsScreen() {
   return (
     <>
       {/* THE ONE PAGE HEAD (AH-25): a title over one line. No `?` on it
-          (B7.4): `24 count() per run` IS the cost of pressing the button, as a
-          figure with its unit, immediately before the button. */}
+          (B7.4): `24 count()` on the button IS the cost of pressing it, as a
+          figure with its unit. */}
       <PageHead title="Platform counts">
         {provenance}
         {' · '}
-        {/* ONE SPAN, `white-space: nowrap`: at 390 the line wraps, and the
-            price must not end one line with its control starting the next. */}
+        {/* THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
+            24 count()` is one control whose name says what pressing it
+            spends, so the price cannot wrap away from the press or be read
+            as a fact about the last run. While a run is in flight the button
+            says so instead; the cost of that press is already being paid. */}
         <span className="counts-run">
-          <span className="counts-cost">{queries} count() per run</span>
-          {' · '}
           {/* `.sub button`, the same read-now control as Screen's `refresh`,
               not the boxed `.retry`: pressing it is the same act. */}
           <button type="button" onClick={go} disabled={busy}>
-            {busy ? 'Counting…' : run === null ? 'Run the count' : 'Run it again'}
+            {busy ? (
+              'Counting…'
+            ) : (
+              <>
+                {run === null ? 'Run the count' : 'Run it again'}
+                {' · '}
+                <span className="counts-cost">{queries} count()</span>
+              </>
+            )}
           </button>
         </span>
       </PageHead>

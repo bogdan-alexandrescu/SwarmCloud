@@ -1,6 +1,6 @@
 ---
 name: step
-description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state or progress changes (never the remote log) until its task finishes, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
+description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes and making a single call while the step's parents run, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -24,15 +24,36 @@ and `last_error` `the sc plugin's SwarmCloud MCP server is not connected in
 this session, so this row cannot read its task; the task itself is
 unaffected`.
 
+## The one format
+
+Every `swarm_follow` call this row makes passes `format: "progress"` — ONLY
+that format, on every call. If a call returns an error about the format (a
+format error, such as `unknown format`), or about an argument this row passes
+(`parents`, `step_id`), the bridge this session runs is older than this row:
+stop at once and go to section 3 with `state: "UNKNOWN"`, `last_error` set to
+that error, verbatim, and null or empty for everything else. Never retry in
+another format and never drop the argument: a row that quietly follows
+something else is the defect this rule exists to stop.
+
 ## 1. Say where it is
 
-Call `swarm_follow` with `task_ids: [<task_id>]`, `step_id: "<step_id>"` and
-`format: "progress"`, and nothing else — both ids copied from your prompt,
-character for character. It returns at once. Write ONE short line: the
-reply's `progress` line, as given — for example `READY · waiting 3m · waits:
-dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m ago · 210k tok
-· $0.31`. A step waiting on its parents can wait a long time. That is normal
-and costs nothing: a waiting task holds no capacity.
+Your prompt's `parent_task_ids` line lists the task ids of this step's parents
+that have not finished, or says `none`.
+
+* **`none`:** call `swarm_follow` with `task_ids: [<task_id>]`, `step_id:
+  "<step_id>"`, `format: "progress"` and `wait_seconds: 1800`, and nothing
+  else. A first call returns at once.
+* **any ids:** call `swarm_follow` with `task_ids: [<task_id>]`, `step_id:
+  "<step_id>"`, `format: "progress"`, `wait_seconds: 1800` and `parents:
+  [<each id from parent_task_ids>]`. This ONE call holds while the parents
+  run — up to thirty minutes — and returns when they have finished or your
+  task stops waiting on them. A step that has not started does not poll.
+
+Every id is copied from your prompt, character for character. Write ONE short
+line: the reply's `progress` line, as given — for example `PARKED · waiting
+12m · waits: dependency`, or `RUNNING · 4m10s · attempt 1/3 · checkpoint 1m
+ago · 210k tok · $0.31`. A step waiting on its parents can wait a long time.
+That is normal and costs nothing: a waiting task holds no capacity.
 
 When the deployment has a console, this first line ends with `· console:
 <link>` -- the link SwarmCloud's API served for this step's task, the page
@@ -43,13 +64,15 @@ not carry: a line without one means this deployment served none.
 ## 2. Follow it until it stops
 
 Call `swarm_follow` again with `task_ids: [<task_id>]`, `step_id:
-"<step_id>"`, `format: "progress"`, `since`: the `since` string the previous
-call returned, copied unchanged, and `wait_seconds`:
-
-* `wait_seconds: 600` while the task has not started (its last state was
-  `SUBMITTED`, `QUEUED`, `READY` or `PARKED`). This is ONE long call per turn:
-  the bridge holds it until the task starts or the ten minutes pass;
-* `wait_seconds: 120` once it has started.
+"<step_id>"`, `format: "progress"`, `wait_seconds: 1800`, and `since`: the
+`since` string the previous call returned, copied unchanged. Every call uses
+the same `wait_seconds: 1800`, whatever the task's state: the bridge holds the
+call until the task's STATE changes — waiting, parked, running, finished — or
+it finishes, or thirty minutes pass. Progress inside one state does not end a
+call, so a long-running step is a few calls, not dozens.
+If the previous reply carried `parents` and any parent in it is not yet
+`SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED` — its parents outran one
+thirty-minute hold — pass the same `parents` again, beside `since`.
 
 After each reply: if `changed` is `true`, write ONE short line — the
 reply's `progress` line, and any `transitions` before it on the same line.
@@ -67,8 +90,8 @@ instead of section 3, well inside the budget rather than at its edge. Your own
 follow-call cap is 56 calls (owner decision, #230 comment, 2026-09-26),
 leaving 4 of the row's 60 turns for its first call and its report, not 20 --
 a real remote task can take hours, and this row must not report `running`
-long before a chance to finish. At 600 s a call while waiting and 120 s while
-running, 56 calls cover up to ~9 h of waiting or ~1.9 h of running.
+long before a chance to finish. At up to 1800 s a call, 56 calls cover more
+than a day.
 
 The bridge stops a row that can never finish: a task it cannot read (a 404 or
 403 at once, other failures after three calls in a row), or a task that is not
@@ -78,13 +101,13 @@ and null or empty for everything else. Answer the same way if
 `tasks[0].step_id` is present and is not your `step_id`, with `last_error`
 `task <task_id> is step <its step_id>, not <your step_id>`.
 
-If a call itself returns an error, make the same call again with the same
-`since`. When the error says the `since` token fails its checksum, the token was
-changed on the way: copy `since` again from the previous reply, character
-for character, and make the call with that. After five errors in a row — or three replies in a row whose
-`tasks[0].read` is `failed` — stop and answer with `state: "UNKNOWN"`,
-`last_error` set to the last error (or `tasks[0].read_error`), and null or
-empty for everything else.
+If a call itself returns any other error, make the same call again with the
+same `since`. When the error says the `since` token fails its checksum, the
+token was changed on the way: copy `since` again from the previous reply,
+character for character, and make the call with that. After five errors in a
+row — or three replies in a row whose `tasks[0].read` is `failed` — stop and
+answer with `state: "UNKNOWN"`, `last_error` set to the last error (or
+`tasks[0].read_error`), and null or empty for everything else.
 
 ## 2a. Still running at the turn cap -- say so, do not go silent
 

@@ -59,6 +59,22 @@ NONCE_PURPOSE = "swarm-child-nonce/v1"
 #: reason and held by the same test.
 CHILD_CASCADE_METADATA_KEY = "child_cascade"
 
+
+def cancel_end_cause(metadata: Any) -> EndCause:
+    """Why a cancelled task ended: CHILD_CASCADE when its parent's cancel, end
+    or await deadline flagged it (contract request 41), else CANCEL_REQUESTED.
+
+    The rule `agent_worker.control.cancel_end_cause` applies, over the task's
+    `metadata` alone so a raw document and a `Task` both answer it. Every
+    scheduler writer that ends a task CANCELLED because of `cancel_requested`
+    asks this, so a flagged child ends `child_cascade` whichever of them
+    reaches it first: the dispatch-failure cancel, admission's cancel and the
+    exhausted-retry cancel.
+    """
+    if isinstance(metadata, dict) and metadata.get(CHILD_CASCADE_METADATA_KEY):
+        return EndCause.CHILD_CASCADE
+    return EndCause.CANCEL_REQUESTED
+
 #: The cascade's reasons (§3.4), event detail under `EndCause.CHILD_CASCADE`.
 PARENT_CANCELLED = "parent_cancelled"
 PARENT_ENDED = "parent_ended"

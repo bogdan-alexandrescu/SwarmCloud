@@ -317,6 +317,56 @@ def test_a_signed_request_creates_a_child_the_platform_shapes(child_client, db):
     assert [e["detail"]["via"] for e in events] == ["worker"]
 
 
+def test_a_child_is_signed_at_format_2_over_its_parent_fields(db, worker_tokens, group_map, objects):
+    """Contract request 42: the child's parent is inside its signed bytes; a
+    task that names no parent stays at format 1 for workers built before it."""
+    from .spec_signer import LocalSpecSigner
+
+    signer = LocalSpecSigner()
+    ctx = build_context(
+        settings=api_settings(child_key=KEY), db=db,
+        verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=ApiMetrics(),
+        objects=objects, signer=signer,
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    ready_parent(client, db, attempt)
+    made = submit(client, attempt)
+    assert made.status_code == 201, made.text
+    child_id = made.json()["task"]["id"]
+    doc = db.docs[f"tasks/{child_id}"]
+    assert doc["spec_format"] == 2 and doc["parent_task_id"] == PARENT
+    assert signer.verifies(doc, child_id)
+    assert not signer.verifies({**doc, "parent_task_id": "task_elsewhere"}, child_id)
+
+
+def test_a_created_child_is_counted_as_a_submitted_task_and_a_dedupe_is_not(
+    db, worker_tokens, group_map, objects
+):
+    metrics = ApiMetrics()
+    ctx = build_context(
+        settings=api_settings(child_key=KEY), db=db,
+        verifier=StaticTokenVerifier(worker_tokens), groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(), waker=NullWaker(), metrics=metrics, objects=objects,
+    )
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    ready_parent(client, db, attempt)
+
+    def counted() -> float:
+        return metrics.registry.get_sample_value(
+            "swarm_api_tasks_submitted_total", {"tenant": "eng", "runner_profile": "mock"}
+        ) or 0.0
+
+    assert submit(client, attempt).status_code == 201
+    assert counted() == 1.0
+    assert submit(client, attempt).status_code == 200
+    assert counted() == 1.0, "the dedupe answer made nothing"
+
+
 def test_the_same_request_id_answers_with_the_child_it_already_made(child_client, db):
     """§5 F1: a resubmission after a crash creates no duplicate."""
     seed_tenant(db, "eng")
@@ -575,3 +625,38 @@ def test_an_oversized_request_is_refused_before_it_is_read(child_client, db):
     )
     assert response.status_code == 422, response.text
     assert _children(db) == {}
+
+
+def test_a_worker_token_is_pinned_to_the_child_audience_when_one_is_configured():
+    """SWARM_API_AUDIENCE: a worker mints its ID token for the custom audience
+    terraform gives swarm-api, and the child routes check `aud` against exactly
+    that -- never the unpinned check an unset API_AUDIENCE would leave."""
+    from types import SimpleNamespace
+
+    from swarm_api.auth import GoogleTokenVerifier
+    from swarm_api.routes.children import _worker_verifier
+
+    base = GoogleTokenVerifier("https://swarm-api-123.us-central1.run.app")
+    ctx = SimpleNamespace(
+        authenticator=SimpleNamespace(_verifier=base),
+        settings=SimpleNamespace(child_audience="https://swarm-api.dev.swarm.internal"),
+    )
+    pinned = _worker_verifier(ctx)
+    assert isinstance(pinned, GoogleTokenVerifier) and pinned is not base
+    assert pinned._audience == "https://swarm-api.dev.swarm.internal"
+    assert _worker_verifier(ctx) is pinned, "built once per audience"
+    # Unconfigured, or a test's static verifier: the app's own.
+    ctx.settings.child_audience = ""
+    assert _worker_verifier(ctx) is base
+    static = StaticTokenVerifier({})
+    ctx.authenticator._verifier = static
+    ctx.settings.child_audience = "https://swarm-api.dev.swarm.internal"
+    assert _worker_verifier(ctx) is static
+
+
+def test_swarm_api_reads_the_child_audience(monkeypatch):
+    from swarm_api.settings import ApiSettings
+
+    monkeypatch.setenv("PROJECT_ID", "test-project")
+    monkeypatch.setenv("SWARM_API_AUDIENCE", "https://swarm-api.dev.swarm.internal")
+    assert ApiSettings.from_env().child_audience == "https://swarm-api.dev.swarm.internal"

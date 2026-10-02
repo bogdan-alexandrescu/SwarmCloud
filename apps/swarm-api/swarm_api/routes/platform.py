@@ -1,9 +1,12 @@
 """Platform read models.
 
-/v1/stats, /v1/capacity, /v1/providers, /v1/resource-classes, /v1/runtimes.
+/v1/stats, /v1/capacity, /v1/providers, /v1/resource-classes, /v1/runtimes,
+/v1/version.
 """
 
 from __future__ import annotations
+
+import os
 
 from fastapi import APIRouter, Depends
 
@@ -11,6 +14,7 @@ from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_bac
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
+from ..served_limits import configured_limits
 
 router = APIRouter(prefix="/v1", tags=["platform"])
 
@@ -21,6 +25,42 @@ def stats(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     return ctx.submissions.stats(auth)
+
+
+@router.get("/version")
+def version(
+    # Declared, not used: it gates the route so /v1 keeps no unauthenticated
+    # hole, as on /v1/resource-classes. Nothing here is tenant-specific.
+    auth: AuthContext = Depends(current_auth),  # noqa: ARG001
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Which build is serving, and the limits it was configured with (U25).
+
+    `git_sha` and `build_time` are the `GIT_SHA` / `BUILD_TIME` build args
+    `scripts/build-images.sh` passes, which images/swarm-api/Dockerfile sets as
+    ENV. `revision` and `service` are Cloud Run's own `K_REVISION` and
+    `K_SERVICE`. Each is NULL when its variable is unset or empty -- a laptop
+    build, a test, a run outside Cloud Run -- never "unknown" and never a
+    guess, because a placeholder string reads as an answer.
+
+    `limits` is `served_limits.configured_limits`, the object `/v1/stats`
+    serves, so the two cannot disagree. It is CONFIGURATION: no remaining or
+    headroom figure is served here or anywhere, because the limiter is a token
+    bucket per principal per instance and a remaining count from the instance
+    that answered is wrong for the next request (see `served_limits`).
+    """
+    return {
+        "git_sha": _env("GIT_SHA"),
+        "build_time": _env("BUILD_TIME"),
+        "revision": _env("K_REVISION"),
+        "service": _env("K_SERVICE"),
+        "limits": configured_limits(ctx.settings),
+    }
+
+
+def _env(name: str) -> str | None:
+    value = os.environ.get(name, "").strip()
+    return value or None
 
 
 @router.get("/capacity")

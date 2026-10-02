@@ -2,19 +2,19 @@ import { useEffect, useId, useRef, useState, useSyncExternalStore } from 'react'
 import { loadCapacity, loadMe, setPoolLimit } from './api'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { Screen } from './Shell'
+import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
   poolKind,
   poolLabel,
-  poolLabelAmong,
   setBy,
   type Capacity,
   type Me,
   type Pool,
   type PoolKind,
 } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * Pool limits: the concurrency ceilings, editable.
@@ -325,25 +325,41 @@ function effectiveAt(p: Pool, hard: number): number {
 }
 
 /**
+ * One sentence of the impact: words, and the pools it names. A named pool is
+ * drawn as a link to its row (#133), so an operand the preview says binds is
+ * one click from the editor that changes it.
+ */
+type Sentence = readonly (string | { pool: string })[]
+
+/** The pools in `names`, joined `a and b`, each as an operand. */
+function operands(names: readonly string[]): Sentence {
+  return names.flatMap((pool, i) => (i === 0 ? [{ pool }] : [' and ', { pool }]))
+}
+
+/**
  * WHAT THE CHANGE DOES, IN SENTENCES, FROM DATA THIS SCREEN ALREADY HAS: the
  * pool's own figures and every runner profile's ceiling before and after
  * (`arithmetic`, the minimum across a profile's pools). Nothing here is a
  * forecast of queue length -- the response carries no per-pool waiting count,
  * so the impact names ceilings and units in use, and nothing else.
+ *
+ * A MOVED CEILING SAYS WHICH POOL IT BINDS ON AFTER THE CHANGE (#133): the
+ * edited pool, or another that the change took below it. The pools are raw
+ * names, the spelling `pool-limit.sh` takes and the row prints under its label.
  */
-function impactOf(pool: Pool, next: number, capacity: Capacity): string[] {
+function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
   const after = effectiveAt(pool, next)
-  const said: string[] = []
+  const said: Sentence[] = []
 
   if (after === pool.effective_limit) {
-    said.push(`The ceiling admission applies stays ${after}: ${setBy(pool).term} holds it there.`)
+    said.push([`The ceiling admission applies stays ${after}: ${setBy(pool).term} holds it there.`])
   }
 
   const byName = new Map(capacity.pools.map((p) => [p.name, p]))
   const changed = new Map(byName)
   changed.set(pool.name, { ...pool, effective_limit: after })
-  const moved: string[] = []
-  const held: string[] = []
+  const moved: Sentence[] = []
+  const held: Sentence[] = []
   const profiles = Object.entries(capacity.runner_profiles)
     .filter(([, prof]) => prof.pools.includes(pool.name))
     .sort(([a], [b]) => a.localeCompare(b))
@@ -351,32 +367,65 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): string[] {
     const before = arithmetic(prof.pools, prof.units, byName).ceiling
     const now = arithmetic(prof.pools, prof.units, changed)
     if (before !== now.ceiling) {
-      moved.push(`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`)
+      const binds: Sentence = now.binding.length === 0 ? [] : [`, ${now.unset ? 'no limit set on' : 'binds on'} `, ...operands(now.binding)]
+      moved.push([`${name} ${before ?? '—'} → ${now.ceiling ?? '—'}`, ...binds])
     } else {
-      const others = now.binding.filter((b) => b !== pool.name).map((b) => poolLabelAmong(b, prof.pools))
-      held.push(others.length === 0 ? name : `${name} (${others.join(' and ')} bind${others.length === 1 ? 's' : ''})`)
+      const others = now.binding.filter((b) => b !== pool.name)
+      held.push(
+        others.length === 0 ? [name] : [`${name} (`, ...operands(others), ` bind${others.length === 1 ? 's' : ''})`],
+      )
     }
   }
-  if (profiles.length === 0) said.push('No runner profile takes this pool.')
-  if (moved.length > 0) said.push(`Max agents: ${moved.join(', ')}.`)
-  if (held.length > 0) said.push(`Unchanged: ${held.join(', ')}.`)
+  const list = (items: Sentence[]): Sentence => items.flatMap((it, i) => (i === 0 ? it : ['; ', ...it]))
+  if (profiles.length === 0) said.push(['No runner profile takes this pool.'])
+  if (moved.length > 0) said.push(['Max agents: ', ...list(moved), '.'])
+  if (held.length > 0) said.push(['Unchanged: ', ...list(held), '.'])
 
   if (after === 0) {
-    said.push(
+    said.push([
       pool.active > 0
         ? `Nothing new is admitted to it. The ${pool.active} units in use are not stopped.`
         : 'Nothing new is admitted to it.',
-    )
+    ])
   } else if (after < pool.active) {
-    said.push(
+    said.push([
       `Nothing running is stopped: the ${pool.active} units in use finish, and new work waits until fewer than ${after} are in use.`,
-    )
+    ])
   } else if (pool.effective_limit !== null && after < pool.effective_limit) {
-    said.push(`The ${pool.active} units in use fit under it; nothing is stopped.`)
+    said.push([`The ${pool.active} units in use fit under it; nothing is stopped.`])
   } else if (pool.effective_limit === null || after > pool.effective_limit) {
-    said.push(`${after - pool.active} units free on this pool after the change.`)
+    said.push([`${after - pool.active} units free on this pool after the change.`])
   }
   return said
+}
+
+/**
+ * THE ADDRESS OF A POOL'S ROW, the one the Tenants roster's Enforced links
+ * write (#134), so following it moves the `is-target` mark to that row.
+ */
+function rowHref(pool: string): string {
+  return `#admin/limits?pool=${pool}`
+}
+
+function Impact({ said }: { said: readonly Sentence[] }) {
+  return (
+    <p className="adm-impact">
+      {said.map((sentence, i) => (
+        <span key={i}>
+          {i > 0 && ' '}
+          {sentence.map((part, j) =>
+            typeof part === 'string' ? (
+              part
+            ) : (
+              <a key={j} className="ctl-link mono" href={rowHref(part.pool)} title={poolLabel(part.pool)}>
+                {part.pool}
+              </a>
+            ),
+          )}
+        </span>
+      ))}
+    </p>
+  )
 }
 
 /** `20 → 14 · −30%`. No percentage off a zero. */
@@ -389,13 +438,40 @@ function deltaWords(from: number | null, to: number): string {
 
 /**
  * WHY "not recorded". Who changed a ceiling and when needs `admin_changed_by`
- * and `admin_changed_at` on the pool, which the API does not serve. The pool's
+ * and `admin_changed_at` on the pool, which the store writes on every admin
+ * write (`Store.upsert_pool`) and `/v1/capacity` does not serve yet. The pool's
  * `updated_at` is NOT that: admission rewrites the pool document on every
  * lease, so it moves with traffic, and printing it as "last changed" would
  * name a time nobody changed anything.
  */
 const NOT_RECORDED_WHY =
-  'Not recorded: the API does not serve admin_changed_by or admin_changed_at yet, so who changed this ceiling, and when, is not known here.'
+  'Not recorded: the API does not serve admin_changed_by or admin_changed_at for this pool, so who changed this ceiling, and when, is not known here.'
+
+/**
+ * The last admin write to a pool, when the response carries it (#133).
+ *
+ * READ DEFENSIVELY, OFF THE POOL AS SERVED. `Pool` in types.ts mirrors what
+ * `/v1/capacity` serves today, which is neither field; the moment the API
+ * serves them they are printed, and until then a pool without both reads
+ * "not recorded". Both or nothing: a name with no time, or a time with no
+ * name, is half a record and is not drawn as a whole one.
+ */
+function changeOf(pool: Pool): { by: string; at: string } | null {
+  const served = pool as Pool & { admin_changed_by?: unknown; admin_changed_at?: unknown }
+  const by = served.admin_changed_by
+  const at = served.admin_changed_at
+  if (typeof by !== 'string' || by === '' || typeof at !== 'string' || Number.isNaN(Date.parse(at))) return null
+  return { by, at }
+}
+
+/** `ops@… · 3h ago`, with the instant on the `time` element. */
+function Changed({ change, now, as: Tag }: { change: { by: string; at: string }; now: number; as: 'dd' | 'p' }) {
+  return (
+    <Tag className="adm-changed">
+      {change.by} · <time dateTime={change.at} title={change.at}>{timeAgo(change.at, now)}</time>
+    </Tag>
+  )
+}
 
 function PoolEditor({
   capacity,
@@ -667,6 +743,19 @@ function PoolRow({
         ) : (
           <span className="adm-ceiling">{pool.effective_limit}</span>
         )}
+        {/* OVER ITS CEILING, AND NEUTRAL (#133). A ceiling lowered below what
+            is in use is a legal state Help explains
+            (`ceiling-change-evicts-nothing`): the work in flight finishes and
+            nothing new is admitted. So the mark is neutral, not the fault or the
+            warning colour -- it is an operator's own change read back. */}
+        {pool.effective_limit !== null && pool.active > pool.effective_limit && (
+          <span
+            className="adm-over"
+            title={`${pool.active - pool.effective_limit} units over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
+          >
+            over ceiling
+          </span>
+        )}
       </td>
       {showSetBy && (
         <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
@@ -739,6 +828,8 @@ function SideEditor({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [typed, setTyped] = useState('')
+  const now = useNow(AGE_TICK_MS)
+  const change = changeOf(pool)
   const messageId = useId()
   const titleId = useId()
 
@@ -817,9 +908,13 @@ function SideEditor({
           </>
         )}
         <dt>Last changed</dt>
-        <dd className="adm-not-recorded" title={NOT_RECORDED_WHY}>
-          not recorded
-        </dd>
+        {change === null ? (
+          <dd className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+            not recorded
+          </dd>
+        ) : (
+          <Changed change={change} now={now} as="dd" />
+        )}
       </dl>
 
       <div className="adm-side-field">
@@ -854,7 +949,7 @@ function SideEditor({
       {impact.length > 0 && (
         <>
           <span className="adm-side-k">Impact</span>
-          <p className="adm-impact">{impact.join(' ')}</p>
+          <Impact said={impact} />
         </>
       )}
       {/* WHAT A WRITE HERE DOES NOT DO, beside the control it qualifies. */}
@@ -906,10 +1001,17 @@ function SideEditor({
         )}
       </div>
 
+      {/* THE NEWEST WRITE IS ALL THE API CAN SERVE: the pool document holds
+          the last admin change and no earlier one, so History is that entry
+          and says nothing about the ones before it. */}
       <span className="adm-side-k">History</span>
-      <p className="adm-not-recorded" title={NOT_RECORDED_WHY}>
-        not recorded
-      </p>
+      {change === null ? (
+        <p className="adm-not-recorded" title={NOT_RECORDED_WHY}>
+          not recorded
+        </p>
+      ) : (
+        <Changed change={change} now={now} as="p" />
+      )}
     </aside>
   )
 }

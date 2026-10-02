@@ -73,6 +73,9 @@ ROUTER_MODULES = (
     # content. Swept WITH a tz (QUERY_FOR below), so the sweep reads a real
     # 200 rather than the 422 a missing tz earns.
     "outcomes",
+    # GET /v1/leases (#179): the caller's own tenant's heartbeats, ids and
+    # timestamps only.
+    "leases",
 )
 
 #: A query string for a route that refuses to answer without one. Stripped
@@ -174,7 +177,7 @@ def test_the_sweep_actually_reaches_the_routes(leaky):
     assert len(routes) >= 15, f"only {len(routes)} GET routes were collected: {routes}"
     for expected in ("/v1/capacity", "/v1/tasks", "/v1/tasks/task_theirs",
                      "/v1/admin/leases", "/v1/tenants/me", "/v1/stats",
-                     "/v1/attempts"):
+                     "/v1/attempts", "/v1/leases"):
         assert expected in routes, f"{expected} is not in the sweep"
 
 

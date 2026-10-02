@@ -137,6 +137,16 @@ WORKDIR /home/swarm
 RUN PROJECT_ID=build-time-import-check \
     python -c "from swarm_api.main import create_app; create_app(); print('swarm-api ok')"
 
+# Which build this is, served by GET /v1/version (U25). scripts/build-images.sh
+# passes both; a build that does not (a laptop `docker build`) leaves them
+# empty, and the route serves an empty value as null rather than a guess.
+# Declared LAST, after every expensive layer: a new SHA per build would
+# otherwise invalidate the cache of everything below the ARG.
+ARG GIT_SHA=""
+ARG BUILD_TIME=""
+ENV GIT_SHA=${GIT_SHA} \
+    BUILD_TIME=${BUILD_TIME}
+
 EXPOSE 8080
 # These three expose create_app() and deliberately no module-level `app`, so
 # uvicorn is given --factory. sh -c is needed because Cloud Run supplies the

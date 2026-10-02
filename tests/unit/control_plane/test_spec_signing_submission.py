@@ -88,7 +88,10 @@ def test_a_submitted_task_is_signed_over_its_stored_form(signed_client, db, sign
     assert len(tasks) == 1
     (task_id, doc), = tasks.items()
     assert doc["spec_key_version"] == KEY_VERSION
-    assert doc["spec_format"] == 2  # contract request 42: the parent fields are signed
+    # Contract request 42: a task that names no parent is signed at format 1,
+    # so a worker built before format 2 keeps running it; only a child is
+    # signed at format 2 (tests/unit/control_plane/test_child_tasks_api.py).
+    assert doc["spec_format"] == 1
     assert isinstance(doc["spec_signature"], str) and doc["spec_signature"]
     assert signer.verifies(doc, task_id), "the stored document does not verify"
     assert len(signer.signed) == 1

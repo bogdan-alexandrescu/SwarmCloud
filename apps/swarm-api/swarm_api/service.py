@@ -55,6 +55,7 @@ from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
+from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
@@ -63,7 +64,9 @@ from .validation import (
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
     DispatchOptions,
+    SinglePrPlan,
     StepSpec,
+    refuse_worker_action_outside_single_pr,
     reject_non_finite,
     reject_reserved_metadata,
     resolve_dispatch_options,
@@ -234,6 +237,10 @@ class SubmissionService:
             assert ctx is not None
             submitted_by = ctx.email
         profile = validate_runner_profile(spec.runner_profile)
+        # A worker action (merge, post-verdict) only inside a `single-pr`
+        # workflow (#295). A workflow's steps were already checked by
+        # `validate_step_routing`; this is what refuses one as a plain task.
+        refuse_worker_action_outside_single_pr(profile, dispatch.strategy, step_id=step_id)
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
         # NaN and +/-Infinity, before the declaration, so the refusal names the
         # path rather than a bound a NaN compares false against (#294).
@@ -399,6 +406,12 @@ class SubmissionService:
                     input_layout=resolve_input_layout(
                         spec.metadata, s.metadata, step_id=s.step_id
                     ),
+                    # By name only, to tell a worker action from an agent
+                    # step, and the step's declared part in a `single-pr`
+                    # chain (#295); `validate_step_routing` checks both.
+                    runner_profile=s.runner_profile,
+                    pr_role=s.pr_role,
+                    merges=dict(s.merges) if s.merges is not None else None,
                 )
                 for s in spec.steps
             ]
@@ -422,8 +435,16 @@ class SubmissionService:
                 # dangling dependencies this would otherwise have to reason about.
                 integrator_step_id = resolve_integrator_step(step_specs)
             # A verdict gate and a `builds_on` (#264), once the integrator is
-            # known: under `integrate` only the integrator may be gated.
-            validate_step_routing(
+            # known: under `integrate` only the integrator may be gated. Under
+            # `single-pr` this is also where the chain's shape is refused or
+            # planned (#295), and where a worker-action profile under any other
+            # strategy is refused -- AFTER each step's profile is known to be
+            # one the platform runs, so a disabled merge-chain profile is
+            # refused as disabled, with the reason, before anything about where
+            # it was placed (test_merge_chain_profiles_are_refused_on_submission).
+            for step in spec.steps:
+                validate_runner_profile(step.runner_profile)
+            single_pr = validate_step_routing(
                 step_specs,
                 strategy=dispatch.strategy,
                 integrator_step_id=integrator_step_id,
@@ -481,6 +502,7 @@ class SubmissionService:
                 order=order,
                 step_task_id=step_task_id,
                 not_integrated=not_integrated,
+                single_pr=single_pr,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -585,6 +607,7 @@ class SubmissionService:
         order: Sequence[str],
         step_task_id: dict[str, str],
         not_integrated: frozenset[str] = frozenset(),
+        single_pr: SinglePrPlan | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -599,7 +622,31 @@ class SubmissionService:
         have one yet. `resolve_integrator_step` guarantees the integrator is the
         graph's only sink, so that prefix is in fact every other step -- less
         `not_integrated`, the review a gated integrator reads (#264).
+
+        Under `single-pr` (#295) every step gets its `pr_role`, and the task ids
+        its role needs: a reader or amender the author's (`pr_author`), the
+        post-verdict step the review's (`verdict_source`), the merge step every
+        chain step's (`merges`). Every one names an ANCESTOR of the step --
+        `resolve_single_pr` has checked the author precedes everything, the
+        review precedes post-verdict, and the merge is the only sink -- so
+        topological order has already minted each id. All of it is inside the
+        dispatch block, which the spec signature covers.
         """
+        if single_pr is not None:
+            role = single_pr.roles[step_id]
+            return dispatch.with_pr_role(
+                role,
+                pr_author=(
+                    step_task_id[single_pr.author] if role in ("reader", "amender") else None
+                ),
+                verdict_source=(
+                    step_task_id[single_pr.review] if step_id == single_pr.post_verdict else None
+                ),
+                merges=(
+                    {key: step_task_id[sid] for key, sid in single_pr.merges_steps().items()}
+                    if step_id == single_pr.merge else None
+                ),
+            )
         if integrator_step_id is None:
             return dispatch
         if step_id != integrator_step_id:
@@ -624,12 +671,15 @@ class SubmissionService:
             "tenant_id": tenant_id,
             "tasks_by_state": self._store.count_tasks_by_state(tenant_id),
             "dispatch_paused": bool(control.get("dispatch_paused")),
-            "limits": {
-                "max_batch_size": self._settings.core.max_batch_size,
-                "max_input_bytes": self._settings.core.max_input_bytes,
-                "max_workflow_steps": self._settings.core.max_workflow_steps,
-                "requests_per_second_per_instance": self._settings.core.requests_per_second,
-            },
+            # U26: whether that False is a resumed switch or a missing
+            # document (`Store.get_control`); `unknown` / `missing` for the
+            # second, which the scheduler treats as dispatching.
+            "dispatch_state": control.get("dispatch_state"),
+            "control_document": control.get("control_document"),
+            # Configured, never remaining: see `swarm_api.served_limits` for
+            # why no headroom figure is served. /v1/version calls the same
+            # helper.
+            "limits": configured_limits(self._settings),
             "generated_at": self._now(),
         }
         if ctx.is_admin:

@@ -2,9 +2,9 @@ import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
 import { HelpCard } from './HelpCard'
 import { Mark, UtilRow } from './primitives'
-import { HOLDERS_POLL_MS } from './capacityPoll'
+import { HOLDERS_POLL_MS, useLinkedPool } from './capacityPoll'
 import { Screen } from './Shell'
-import { formatDuration, poolLabel, type LeasePage, type LeaseRow } from './types'
+import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -195,7 +195,7 @@ export function HoldersScreen() {
               <Drift board={board} coverage={coverage} />
               <ClassMix rows={board.page.leases} coverage={coverage} />
             </div>
-            <HolderTable rows={board.page.leases} coverage={coverage} />
+            <HolderTable rows={board.page.leases} coverage={coverage} page={board.page} />
           </>
         )
       }}
@@ -488,15 +488,31 @@ function ClassMix({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverag
   )
 }
 
-function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverage }) {
+function HolderTable({
+  rows,
+  coverage,
+  page,
+}: {
+  rows: LeaseRow[]
+  coverage: LeaseCoverage
+  page: Pick<LeasePage, 'thresholds'>
+}) {
   // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
   // this read loaded. The filter narrows what is drawn; the note beside the
   // heading still says what the loaded rows are out of, so a filtered list is
   // never read as the platform's whole.
   const [tenant, setTenant] = useState<string | null>(null)
+  // AND BY POOL, WHEN A LINK NAMED ONE (#125): a Pools row's name links here
+  // as `?pool=<name>`, and the table draws the leases whose `pools` list names
+  // it. `All pools` drops it; the address is moved too, so a reload does not
+  // bring it back, and `cleared` holds the choice until the router has.
+  const linked = useLinkedPool()
+  const [cleared, setCleared] = useState<string | null>(null)
+  const pool = linked !== null && linked !== cleared ? linked : null
   const now = useNow(AGE_TICK_MS)
-  const tenants = [...new Set(rows.map((l) => l.tenant_id))].sort()
-  const shown = tenant === null ? rows : rows.filter((l) => l.tenant_id === tenant)
+  const inPool = pool === null ? rows : rows.filter((l) => Array.isArray(l.pools) && l.pools.includes(pool))
+  const tenants = [...new Set(inPool.map((l) => l.tenant_id))].sort()
+  const shown = tenant === null ? inPool : inPool.filter((l) => l.tenant_id === tenant)
   const sorted = [...shown].sort((a, b) => b.units - a.units)
   return (
     /* §B6.1: the screen's one full-width table is the one box on it. It was
@@ -510,6 +526,25 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
             a cut list look cut: the same list at 200 of 200 and at 200 of 214
             would otherwise be the same picture. */}
         <h2 className="ctl-card-title">Every holder</h2>
+        {pool !== null && (
+          <span className="hold-pool">
+            pool{' '}
+            <span className="mono" title={pool}>
+              {pool}
+            </span>{' '}
+            · {inPool.length} of {rows.length}{' '}
+            <button
+              type="button"
+              className="hold-pool-clear"
+              onClick={() => {
+                setCleared(pool)
+                if (typeof window !== 'undefined') window.location.hash = '#capacity/holders'
+              }}
+            >
+              All pools
+            </button>
+          </span>
+        )}
         {/* Only where there is a choice: one tenant's rows filter to nothing new. */}
         {tenants.length > 1 && (
           <div className="ctl-seg hold-tenants" role="group" aria-label="Tenant">
@@ -546,6 +581,9 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                 <th role="columnheader" scope="col">Dispatch</th>
                 <th role="columnheader" scope="col" className="is-num">Gen</th>
                 <th role="columnheader" scope="col" className="is-num">Held for</th>
+                {/* LIVENESS (#92). Overview's silent-workers item links here,
+                    and this table could not say which worker was silent. */}
+                <th role="columnheader" scope="col">Heartbeat</th>
               </tr>
             </thead>
             <tbody role="rowgroup">
@@ -574,6 +612,9 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                   <td role="cell" data-label="Held for" className="is-num">
                     <HeldFor createdAt={l.created_at} now={now} />
                   </td>
+                  <td role="cell" data-label="Heartbeat">
+                    <Heartbeat lease={l} page={page} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -592,4 +633,36 @@ function HeldFor({ createdAt, now }: { createdAt: string | null | undefined; now
   const at = createdAt ? Date.parse(createdAt) : NaN
   if (!Number.isFinite(at)) return <span title="The lease carries no readable creation time">—</span>
   return <time dateTime={createdAt ?? undefined} title={createdAt ?? undefined}>{formatDuration(now - at)}</time>
+}
+
+/**
+ * How long this lease's worker has been quiet, with the verdict the reconciler
+ * acts on (#92). `silent_seconds` is the server's, at `evaluated_at`, and the
+ * verdict is `leaseLiveliness` over the page's own thresholds -- the function
+ * Overview's silent-workers item counts with -- so a lease is "silent" here
+ * exactly when it is one of that item's. A lease never beaten says so: its
+ * age then counts from the lease's creation, not from a heartbeat.
+ */
+function Heartbeat({
+  lease,
+  page,
+}: {
+  lease: LeaseRow
+  page: Pick<LeasePage, 'thresholds'>
+}) {
+  const age = formatDuration(lease.silent_seconds * 1000)
+  const since = lease.heartbeat_ever ? age : `never beat, ${age}`
+  // A page that arrived without its thresholds cannot be judged, and a local
+  // grace would colour at a threshold the reconciler does not act on: the age
+  // alone, with no verdict.
+  if (page.thresholds === undefined) return <span title="No heartbeat thresholds arrived with this page">{since}</span>
+  const { kind, copy } = leaseLiveliness(lease, page.thresholds)
+  const tone = kind === 'presumed-dead' ? 'is-bad' : kind === 'silent' ? 'is-warn' : 'is-ok'
+  const word = kind === 'presumed-dead' ? 'presumed dead' : kind === 'silent' ? 'silent' : 'beating'
+  return (
+    <span className={`ctl-chip ${tone}`} title={copy}>
+      <i aria-hidden="true" />
+      {word} · {since}
+    </span>
+  )
 }

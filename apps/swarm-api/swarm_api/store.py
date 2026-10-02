@@ -297,6 +297,31 @@ class LeaseScan:
     active_beyond_window: int
 
 
+def _skipped_entries(value: Any) -> list[dict[str, Any]]:
+    """A stored `artifacts_skipped`, as `{name, cause}` entries.
+
+    The worker writes `{name, cause}` entries (#165) and the API serves them
+    in that shape (owner decision, 2026-10-02): one list, each name carrying
+    its own cause, rather than names with a side table a reader has to join.
+    A summary from before causes holds bare names, and Firestore keeps it;
+    those are served with `cause: None` -- unknown, not "no cause". Anything
+    else in the list is dropped rather than stringified into a fake name.
+    """
+    if not isinstance(value, list):
+        return []
+    out: list[dict[str, Any]] = []
+    for entry in value:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            cause = entry.get("cause")
+            out.append({"name": name, "cause": cause if isinstance(cause, str) and cause else None})
+        elif isinstance(entry, str):
+            out.append({"name": entry, "cause": None})
+    return out
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """What one task's `result_summary` says it wrote, unresolved.
@@ -323,7 +348,9 @@ class ArtifactManifest:
     """
 
     artifacts: list[dict[str, Any]]
-    skipped: list[str]
+    #: `{name, cause}` per skipped file (#165): `cap`, `upload_error`,
+    #: `refused`, or None for a name from a summary written before causes.
+    skipped: list[dict[str, Any]]
     artifact_bytes: Any
     complete: bool
     over_cap: int | None = None
@@ -814,15 +841,37 @@ class Store:
     ) -> Page:
         """One page of this tenant's tasks, newest first.
 
-        `submitted_by` is required, as on `get_task`. When it names a
-        submitter, rows that are not theirs are dropped from the page AFTER the
-        cursor is taken from the unfiltered page, so paging stays correct (a
-        page may be short) and no composite index is needed for a filter only
-        continuation-scoped callers use.
+        `submitted_by` is required, as on `get_task`: `None` reads every
+        submitter's tasks; an email narrows the page to that submitter's. It is
+        a continuation-scoped caller's forced filter (`deps.submission_scope`)
+        or the route's `submitted_by` owner filter (U5), and it is ALWAYS
+        applied inside `tenant_id`, never instead of it.
+
+        TWO WAYS, decided by what else filters the page:
+
+          * the owner is the ONLY filter besides the tenant -> it is applied IN
+            THE QUERY (`where submitted_by ==`, index
+            tasks-tenant-submitter-created), so every page is full and the
+            cursor is the last row the caller sees;
+          * combined with `state`, `workflow_id`, `runner_profile` or
+            `parent_task_id` -> no index
+            covers that combination, so rows that are not the submitter's are
+            dropped AFTER the cursor is taken from the unfiltered page. Paging
+            stays correct, but a page may be short (even empty with a
+            `next_page_token`), which is today's behaviour for that case.
         """
+        owner_in_query = (
+            submitted_by is not None
+            and state is None
+            and workflow_id is None
+            and runner_profile is None
+            and parent_task_id is None
+        )
         query = self._db.collection(TASKS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
+        if owner_in_query:
+            query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
         if state is not None:
             query = query.where(filter=FieldFilter("state", "==", state.value))
         if workflow_id is not None:
@@ -845,8 +894,34 @@ class Store:
         if len(rows) > limit:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
-        if submitted_by is not None:
+        if submitted_by is not None and not owner_in_query:
             rows = [t for t in rows if t.submitted_by == submitted_by]
+        return Page(items=rows, next_page_token=next_token)
+
+    def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
+        """One page of FAILED tasks across EVERY tenant, newest first (U19).
+
+        For `GET /v1/admin/failures` only, which is full-admin gated: this is
+        the one task read with no tenant filter, because the question it
+        answers -- what is failing on the platform -- has no tenant. Every
+        tenant-scoped index leads with tenant_id, so it runs on its own
+        collection-scope index, tasks-state-created (state ASC, created_at
+        DESC). Paged exactly as `list_tasks` is, by `created_at`.
+        """
+        query = self._db.collection(TASKS).where(
+            filter=FieldFilter("state", "==", TaskState.FAILED.value)
+        )
+        before = decode_cursor(page_token)
+        if before is not None:
+            query = query.where(filter=FieldFilter("created_at", "<", before))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit + 1)
+        rows = [task_from_dict(snap.to_dict()) for snap in query.stream()]
+        rows.sort(key=lambda t: (t.created_at, t.id), reverse=True)
+        next_token = None
+        if len(rows) > limit:
+            rows = rows[:limit]
+            next_token = encode_cursor(rows[-1].created_at)
         return Page(items=rows, next_page_token=next_token)
 
     def request_cancel(
@@ -1059,9 +1134,7 @@ class Store:
         entries = summary.get("artifacts")
         if not isinstance(entries, list):
             entries = []
-        skipped = summary.get("artifacts_skipped")
-        if not isinstance(skipped, list):
-            skipped = []
+        skipped = _skipped_entries(summary.get("artifacts_skipped"))
         # `result_summary` is written once, by `finish()`, at terminal state.
         # Until then "no artifacts yet" and "produced none" are the same empty
         # list, and only this flag tells them apart.
@@ -1073,7 +1146,7 @@ class Store:
             over_cap = 0
         return ArtifactManifest(
             artifacts=[dict(e) for e in entries if isinstance(e, dict)],
-            skipped=[str(name) for name in skipped],
+            skipped=skipped,
             artifact_bytes=summary.get("artifact_bytes"),
             complete=complete,
             over_cap=over_cap if complete else None,
@@ -1448,6 +1521,20 @@ class Store:
         live.sort(key=lambda lease: (lease.created_at, lease.lease_id), reverse=True)
         return live
 
+    def live_leases_of(self, tenant_id: str) -> list[Lease]:
+        """One tenant's unreleased leases, newest first, for a tenant-scoped route.
+
+        `_live_leases(None)` is every tenant, which is right for the admin
+        route and wrong for anything a member reaches. This read has no such
+        value: a missing tenant raises rather than widening to the fleet, so a
+        route that lost its `tenant_scope` fails instead of serving another
+        tenant's leases (invariant 9). Same query as the admin read's live set,
+        so no new index.
+        """
+        if not tenant_id:
+            raise ValueError("live_leases_of needs a tenant id; it never reads every tenant")
+        return self._live_leases(tenant_id)
+
     def scan_leases(
         self,
         tenant_id: str | None = None,
@@ -1610,12 +1697,32 @@ class Store:
         return touched
 
     def get_control(self) -> dict[str, Any]:
+        """The dispatch switch, and whether the document behind it exists (U26).
+
+        `dispatch_paused` stays False for a MISSING document, because that is
+        what the scheduler does with one: `scheduler/store.py`
+        `dispatch_paused()` returns False when the snapshot does not exist, so
+        no document means the drain loop dispatches. Reporting it True, or
+        null, would describe a platform that does not exist.
+
+        But False alone cannot tell "an operator resumed dispatch" from "nobody
+        ever wrote the switch", and the console is specified to draw the second
+        as `UNKNOWN - no control document` (docs/web-ui/08-operator-gaps.md).
+        So two more fields say which it is:
+
+          control_document  `present` | `missing`
+          dispatch_state    `running` | `paused` | `unknown` -- `unknown`
+                            exactly when the document is missing.
+        """
         snap = self._db.collection(CONTROL).document(CONTROL_DOC).get()
         if not snap.exists:
             return {"dispatch_paused": False, "updated_at": None, "updated_by": None,
-                    "reason": None}
+                    "reason": None, "dispatch_state": "unknown",
+                    "control_document": "missing"}
         data = dict(snap.to_dict())
         data.setdefault("dispatch_paused", False)
+        data["dispatch_state"] = "paused" if data["dispatch_paused"] else "running"
+        data["control_document"] = "present"
         return data
 
     def set_dispatch_paused(self, paused: bool, *, by: str, reason: str | None = None) -> dict:

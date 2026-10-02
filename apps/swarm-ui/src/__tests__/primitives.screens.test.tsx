@@ -335,11 +335,12 @@ describe('Overview draws the four tile states, through the shared tile', () => {
     await screen.findByText('never', undefined, WAIT)
     await waitFor(() => expect(tile('Running').classList.contains('is-unread')).toBe(true), WAIT)
 
-    // Two facts, and neither is a figure a panel below draws again.
+    // Three facts, and none is a figure a panel below draws again: Waiting
+    // (#91) is the /v1/stats backlog, the panels count the task page.
     const labels = [...document.querySelectorAll('.ctl-metrics .ctl-metric-label')].map((l) =>
       (l.childNodes[0]?.textContent ?? '').trim(),
     )
-    expect(labels).toEqual(['Running', 'Units held'])
+    expect(labels).toEqual(['Running', 'Waiting', 'Units held'])
 
     // UNREAD: the read failed. A mark, no digit.
     const running = tile('Running')

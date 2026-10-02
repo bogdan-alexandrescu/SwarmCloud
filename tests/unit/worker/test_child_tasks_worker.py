@@ -36,6 +36,8 @@ spool = os.environ.get("SWARM_CHILDREN")
 seen = {"spool": spool, "env": dict(os.environ)}
 if spool:
     root = pathlib.Path(spool)
+    guide = root / "README.md"
+    seen["guide"] = guide.read_text() if guide.exists() else None
     result = root / "results" / "children.json"
     seen["children_json"] = json.loads(result.read_text()) if result.exists() else None
     staged = root / "results"
@@ -219,6 +221,19 @@ def test_an_unprotected_worker_spends_the_nonce_on_a_tombstone(db, worker_factor
     assert routes.registration.get("refused") == "worker_unprotected"
     assert "public_key" not in routes.registration
     assert records()[0]["spool"] is None
+    # The note rides on the ONE STARTING event, not on a second one.
+    starting = [e for e in db.events("task_1") if e["type"] == EventType.STARTING.value]
+    assert len(starting) == 1, starting
+    assert starting[0]["detail"]["child_path"] == "child_key_tombstone"
+    assert starting[0]["detail"]["reason"] == "worker_unprotected"
+
+
+def test_a_registered_key_writes_one_starting_event(db, worker_factory, routes, agent):
+    seed_attempt(db)
+    worker, _, _ = _worker(worker_factory, routes)
+    assert worker.run() == ExitCode.OK
+    starting = [e for e in db.events("task_1") if e["type"] == EventType.STARTING.value]
+    assert len(starting) == 1, starting
 
 
 def test_without_a_nonce_there_is_no_child_path(db, worker_factory, routes, agent):
@@ -369,6 +384,44 @@ def test_the_resumed_attempt_stages_its_childrens_results_before_the_agent(
     assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
 
 
+def test_a_resume_without_a_child_path_parks_rather_than_succeed_over_its_children(
+    db, worker_factory, routes, agent
+):
+    """§3.3 step 8 when the path is unavailable: the restored spool records
+    children this attempt cannot list, so it parks conservatively; the
+    scheduler's sweep reads them and promotes it once they are done."""
+    task = _await_park(db, worker_factory, routes, agent)
+    checkpoint = task["latest_checkpoint"]
+    write_plan, _ = agent
+    write_plan()
+    metadata = dict(task["metadata"])
+    seed_attempt(db, attempt_id="att_2", lease_id="lease_2", generation=2, attempt_count=1,
+                 latest_checkpoint=checkpoint)
+    db.doc("tasks/task_1")["metadata"] = metadata
+    second, _, _ = _worker(
+        worker_factory, routes, attempt_id="att_2", lease_id="lease_2", generation=2,
+        memory=MemoryProtection(FAILED, "prctl refused in this test"),
+    )
+    assert second.run() == ExitCode.PARKED
+    resumed = db.doc("tasks/task_1")
+    assert resumed["state"] == TaskState.PARKED.value
+    assert resumed["park_reason"] == ParkReason.CHILDREN_INCOMPLETE.value
+    parked = [e for e in db.events("task_1") if e["type"] == EventType.PARKED.value]
+    assert parked[-1]["detail"]["child_path"] == "worker_unprotected"
+    assert parked[-1]["detail"]["live_children"] is None
+
+
+def test_without_a_child_path_or_recorded_children_the_attempt_finishes(
+    db, worker_factory, routes, agent
+):
+    seed_attempt(db)
+    worker, _, _ = _worker(
+        worker_factory, routes, memory=MemoryProtection(FAILED, "prctl refused in this test")
+    )
+    assert worker.run() == ExitCode.OK
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+
+
 # --------------------------------------------------------------------------
 # §3.4: a cascaded child ends CHILD_CASCADE
 # --------------------------------------------------------------------------
@@ -423,3 +476,145 @@ def test_a_park_answers_every_request_even_when_the_api_is_down(
     assert written["one.json"]["refused"]["retryable"] is True
     # No child was ever made, so nothing is live: the await is ignored.
     assert rc == ExitCode.OK
+
+
+# --------------------------------------------------------------------------
+# The time bound: one child_submit_retry_seconds per tick and per drain
+# --------------------------------------------------------------------------
+
+
+class _Log:
+    def info(self, *a: Any, **k: Any) -> None: ...
+    def warning(self, *a: Any, **k: Any) -> None: ...
+
+
+class _AlwaysUnavailable:
+    """An API that answers every call 503 and costs one second of the fake clock."""
+
+    def __init__(self, clock: list[float]) -> None:
+        self.clock = clock
+        self.calls = 0
+
+    def call(self, method, path, *, body=None, headers=None):
+        self.calls += 1
+        self.clock[0] += 1.0
+        raise children_mod.ChildApiError(503, "upstream_unavailable", "", retryable=True)
+
+
+def _bare_path(tmp_path, api, clock: list[float], *, retry: int = 10, per_tick: int = 4):
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        child_submit_retry_seconds=retry, max_child_requests_per_tick=per_tick,
+        max_child_request_bytes=262144, tenant_id=TENANT, attempt_id="att_1",
+        lease_id="lease_1", generation=1, task_id="task_1", swarm_api_url=None,
+        swarm_api_audience=None, child_nonce=NONCE,
+    )
+
+    def sleep(seconds: float) -> None:
+        clock[0] += seconds
+
+    path = children_mod.ChildPath(
+        cfg, logger=_Log(), memory=None, api=api, sleep=sleep, clock=lambda: clock[0],
+        wall=lambda: 1_790_000_000.0 + clock[0],
+    )
+    path._key = children_mod.AttemptKey()
+    path.unavailable = None
+    work = tmp_path / "work"
+    path.prepare(work)
+    return path, work
+
+
+def _spool(work, n: int) -> None:
+    for i in range(n):
+        (children_mod.ChildPath.spool(work) / "requests" / f"r{i}.json").write_text(
+            json.dumps(_request(f"r{i}"))
+        )
+
+
+def test_a_drain_spends_one_retry_bound_in_total_not_one_per_request(tmp_path):
+    clock = [0.0]
+    api = _AlwaysUnavailable(clock)
+    path, work = _bare_path(tmp_path, api, clock, retry=10)
+    _spool(work, 6)
+    answered = path.drain(work)
+    assert answered == 6, "every request is answered before a park"
+    assert clock[0] <= 10 + 1.0, f"the drain took {clock[0]} s of a 10 s bound"
+    responses = children_mod.ChildPath.spool(work) / "responses"
+    for i in range(6):
+        refusal = json.loads((responses / f"r{i}.json").read_text())["refused"]
+        assert refusal["code"] == "api_unavailable" and refusal["retryable"] is True
+    assert not list((children_mod.ChildPath.spool(work) / "requests").glob("*.json"))
+
+
+def test_a_tick_spends_one_retry_bound_in_total(tmp_path):
+    clock = [0.0]
+    api = _AlwaysUnavailable(clock)
+    path, work = _bare_path(tmp_path, api, clock, retry=10, per_tick=4)
+    _spool(work, 4)
+    path.tick(work)
+    assert clock[0] <= 10 + 1.0, f"the tick took {clock[0]} s of a 10 s bound"
+
+
+def test_tick_limit_none_means_every_request_and_the_default_is_the_per_tick_cap(tmp_path):
+    class Created:
+        def __init__(self) -> None:
+            self.n = 0
+
+        def call(self, method, path, *, body=None, headers=None):
+            self.n += 1
+            return 201, {"task": {"id": f"task_c{self.n}"}, "created": True}
+
+    clock = [0.0]
+    path, work = _bare_path(tmp_path, Created(), clock, per_tick=2)
+    _spool(work, 5)
+    assert path.tick(work) == 2
+    assert path.tick(work, limit=None) == 3
+
+
+# --------------------------------------------------------------------------
+# What the agent is told: the guide in the spool, one line in the prompt
+# --------------------------------------------------------------------------
+
+
+def test_the_docs_copy_of_the_agent_guide_is_the_one_the_worker_writes():
+    from pathlib import Path
+
+    doc = (Path(__file__).resolve().parents[3] / "docs" / "child-tasks-for-agents.md").read_text()
+    assert doc.endswith(children_mod.AGENT_GUIDE), (
+        "docs/child-tasks-for-agents.md must end with agent_worker.children.AGENT_GUIDE, verbatim"
+    )
+
+
+def test_the_guide_states_the_formats_the_worker_reads_and_writes():
+    guide = children_mod.AGENT_GUIDE
+    for field in sorted(children_mod.CHILD_FIELDS):
+        assert f"`{field}`" in guide, f"the guide does not name the request field {field}"
+    for path in ("requests/<request_id>.json", "responses/<request_id>.json", "`await`",
+                 "results/children.json", "results/<task_id>/"):
+        assert path in guide
+    assert children_mod.Refusal("x", "y", retryable=True).as_dict()["refused"].keys() == {
+        "code", "message", "retryable"
+    }
+
+
+def test_the_spool_carries_the_guide_and_the_agent_sees_it(db, worker_factory, routes, agent):
+    write_plan, records = agent
+    seed_attempt(db)
+    worker, _, _ = _worker(worker_factory, routes)
+    assert worker.run() == ExitCode.OK
+    (seen,) = records()
+    assert seen["guide"] == children_mod.AGENT_GUIDE
+
+
+def test_a_cli_runner_names_the_guide_only_when_the_agent_has_a_spool(tmp_path, monkeypatch):
+    from test_issue_input import _prompt
+
+    monkeypatch.delenv("SWARM_CHILDREN", raising=False)
+    without, _, _ = _prompt(tmp_path, monkeypatch, {"prompt": "do it"}, issue_text=None)
+    assert "SWARM_CHILDREN" not in without and children_mod.GUIDE_NAME not in without
+
+    spool = str(tmp_path / "work" / ".swarm-children")
+    monkeypatch.setenv("SWARM_CHILDREN", spool)
+    with_path, _, _ = _prompt(tmp_path, monkeypatch, {"prompt": "do it"}, issue_text=None)
+    assert with_path.startswith(f"do it\n\n{children_mod.prompt_line(spool)}\n\n")

@@ -11,6 +11,9 @@ written in the browser. That section specifies the shape:
      -> {"attempts": [...], "next_page_token": str | null,
          "coverage": {"attempts": int, "with_spend": int}}
 
+and #72 splits the rows without a cost into what they mean
+(test_attempts_spend_coverage.py); the two counters here keep their meaning.
+
 COVERAGE IS THE POINT. A sum over attempts whose cost was never reported is
 not a cost; it is a lower bound that looks like one. `coverage` counts, over
 the rows on THIS page, how many there are and how many carry a measured
@@ -117,7 +120,7 @@ def test_another_tenants_attempts_never_appear(client, db):
 
     alice = _page(client, "alice")
     assert [a["attempt_id"] for a in alice["attempts"]] == ["att_eng"]
-    assert alice["coverage"] == {"attempts": 1, "with_spend": 1}
+    assert (alice["coverage"]["attempts"], alice["coverage"]["with_spend"]) == (1, 1)
 
     bob = _page(client, "bob")
     assert [a["attempt_id"] for a in bob["attempts"]] == ["att_res"]
@@ -144,7 +147,8 @@ def test_coverage_counts_measured_cost_and_zero_is_a_measurement(client, db):
 
     body = _page(client)
 
-    assert body["coverage"] == {"attempts": 4, "with_spend": 2}, (
+    coverage = body["coverage"]
+    assert (coverage["attempts"], coverage["with_spend"]) == (4, 2), (
         "with_spend counts attempts whose cost_usd was REPORTED: $0.00 is a "
         "measurement, an absent cost is not, and tokens without a cost do not "
         "make a cost figure measured"
@@ -158,7 +162,16 @@ def test_an_empty_answer_says_zero_of_zero(client, db):
     seed_tenant(db, "eng")
     body = _page(client)
     assert body["attempts"] == []
-    assert body["coverage"] == {"attempts": 0, "with_spend": 0}
+    assert body["coverage"] == {
+        "scope": "page",
+        "attempts": 0,
+        "finished": 0,
+        "with_spend": 0,
+        "in_flight_unreported": 0,
+        "not_reported_by_profile": 0,
+        "not_recorded": 0,
+        "profile_unknown": 0,
+    }
     assert body["next_page_token"] is None
 
 

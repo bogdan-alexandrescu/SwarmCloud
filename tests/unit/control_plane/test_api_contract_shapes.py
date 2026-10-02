@@ -242,11 +242,14 @@ CODECS: tuple[Codec, ...] = (
         # `account` (#379) is derived from the task's own account events by
         # `swarm_api.task_accounts`, never stored. `links` is the console
         # page, built from `ApiSettings.console_url` (owner decision
-        # 2026-10-01: the API is the one source of a console link).
+        # 2026-10-01: the API is the one source of a console link). The three
+        # heartbeat fields (#179) are the task's current LEASE, read by
+        # `swarm_api.heartbeats`, never stored on the task.
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
+            "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",
         ),
     ),
     Codec(

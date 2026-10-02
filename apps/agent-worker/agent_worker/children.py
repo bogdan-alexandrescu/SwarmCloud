@@ -76,6 +76,99 @@ PROOF_HEADER = "X-Swarm-Attempt-Proof"
 TIMESTAMP_HEADER = "X-Swarm-Attempt-Timestamp"
 #: The tombstone's refusal (§5 F12).
 WORKER_UNPROTECTED = "worker_unprotected"
+#: The guide the agent reads, written into the spool as README.md by `prepare`
+#: and named by the one prompt line the CLI runners add (`prompt_line`). The
+#: prompt is the one instruction channel every CLI runner shares, so it says
+#: only where the guide is; the guide says everything else. docs/child-tasks-
+#: for-agents.md carries the same text for people, and
+#: tests/unit/worker/test_child_tasks_worker.py holds the two equal.
+GUIDE_NAME = "README.md"
+AGENT_GUIDE = """\
+# Child tasks: how this agent submits helpers
+
+This task may submit CHILD TASKS: other agents that run in their own
+containers, on this task's tenant, while you work. `$SWARM_CHILDREN` is this
+directory. There is no network call to make and no credential to use: you
+write files here, and the platform's worker beside you submits them.
+
+## Submit a child
+
+Write ONE JSON object per child to `requests/<request_id>.json`, atomically:
+write `requests/<request_id>.tmp`, then rename it to `.json`. `<request_id>`
+is yours to choose, `[a-z0-9-]{1,64}`, and is the child's idempotency key:
+writing the same id again never makes a second child.
+
+    {
+      "request_id": "split-tests-2",
+      "runner_profile": "claude-code",
+      "input": {"prompt": "Write unit tests for src/parser.py"},
+      "resource_class": "standard",
+      "timeout_seconds": 1800,
+      "repository_ref": "main"
+    }
+
+`runner_profile` is required and names a profile, never an image or a
+command. `input` is the child's input, `{"prompt": ...}` for the CLI agents.
+`resource_class`, `provider`, `model`, `timeout_seconds` and `repository_ref`
+are optional; nothing else is accepted. A child works on this task's
+repository, runs no longer than this task, and is at most 256 KiB as a file.
+
+## Read the answer
+
+Within about ten seconds the worker writes `responses/<request_id>.json` and
+removes the request:
+
+    {"task_id": "task_...", "request_id": "split-tests-2"}
+
+or a refusal:
+
+    {"refused": {"code": "child_fan_out_exceeded", "message": "...", "retryable": false}}
+
+`retryable: true` (`api_unavailable`) means write the same request again with
+the same `request_id`. Anything else will be refused again as written. Limits:
+16 children per task across all its attempts; a child cannot submit children
+of its own; about four requests are answered per ten seconds.
+
+## Wait for the children
+
+There is no way to watch a running child. To wait, first write everything you
+will need to continue into your working files (your process ends; the
+platform checkpoints the work directory and restores it), then create the
+empty file `await` here and EXIT 0. The task gives its slot back and sleeps
+until every child has ended. Then you are started again with the same input,
+and `results/children.json` exists -- that is how you know you are resuming:
+
+    {"listing": "complete",
+     "children": [{"task_id": "task_...", "request_id": "split-tests-2",
+                   "state": "SUCCEEDED", "end_cause": null,
+                   "parent_attempt_id": "att_...", "outputs": "staged",
+                   "files": ["task_.../notes.md"]}]}
+
+Each SUCCEEDED child's artifacts are under `results/<task_id>/`; `files` lists
+them relative to `results/`. `outputs` is `staged`, `none`, or `unavailable`
+with a `reason` (an expired or over-cap artifact: still information, not a
+failure). A child that failed or was cancelled is listed with its `state` and
+`end_cause`; deciding what to do about it is yours. `listing: unavailable`
+means the platform could not list them this time.
+
+If you exit 0 while children are still running, you are made to wait anyway:
+a task never succeeds over running children. If you exit non-zero, this
+attempt fails as usual and the children keep running for the next attempt.
+"""
+
+
+def prompt_line(spool: str) -> str:
+    """The one line a CLI runner adds to the prompt when the agent has a spool."""
+    return (
+        f"You can submit child tasks (helper agents) and wait for their results "
+        f"through files in {spool}; read {spool}/{GUIDE_NAME} first. Nothing there "
+        "is required."
+    )
+
+
+#: `ChildPath.tick`'s default `limit`: `max_child_requests_per_tick`. A
+#: sentinel, because None is the drain's "every request in the spool".
+PER_TICK: Any = object()
 
 _TIMEOUT = 10
 _UA = "swarm-agent-worker/children"
@@ -306,9 +399,18 @@ class ChildPath:
         except Exception:  # a note must never stop the attempt
             pass
 
-    def _with_retry(self, fn: Callable[[], Any]) -> Any:
-        """Retry a retryable failure within `child_submit_retry_seconds`, never longer."""
-        deadline = self._clock() + max(0, int(self.cfg.child_submit_retry_seconds))
+    def _retry_deadline(self) -> float:
+        return self._clock() + max(0, int(self.cfg.child_submit_retry_seconds))
+
+    def _with_retry(self, fn: Callable[[], Any], *, deadline: float | None = None) -> Any:
+        """Retry a retryable failure within `child_submit_retry_seconds`, never longer.
+
+        `deadline` is the caller's remaining budget (a tick's, or a drain's):
+        retries never outlast it either, so the bound a tick or a drain
+        promises holds across every request it answers, not per request.
+        """
+        own = self._retry_deadline()
+        deadline = own if deadline is None else min(deadline, own)
         delay = 1.0
         while True:
             try:
@@ -336,6 +438,13 @@ class ChildPath:
         root = self.spool(work)
         for name in ("requests", "responses", "results"):
             (root / name).mkdir(parents=True, exist_ok=True)
+        # Rewritten every attempt: the platform's text, never one a restored
+        # checkpoint carried (a link the agent made is replaced, not followed).
+        guide = root / GUIDE_NAME
+        tmp = root / f".{GUIDE_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(AGENT_GUIDE, encoding="utf-8")
+        os.replace(tmp, guide)
         return {CHILDREN_ENV: str(root)}
 
     def known_children(self, work: Path) -> list[str]:
@@ -364,16 +473,29 @@ class ChildPath:
         requests = self.spool(work) / "requests"
         return self.offered and requests.is_dir() and any(requests.glob("*.json"))
 
-    def tick(self, work: Path, *, limit: int | None = None) -> int:
+    def tick(
+        self,
+        work: Path,
+        *,
+        limit: int | None | object = PER_TICK,
+        deadline: float | None = None,
+    ) -> int:
         """Answer up to `limit` outstanding requests. Returns how many were answered.
 
-        Bounded in time as well as count: once `child_submit_retry_seconds`
-        have passed in this call, the rest wait for the next one, so one tick
-        is never the long in-worker wait invariant 4 forbids. Raises
+        `limit` is `max_child_requests_per_tick` by default (`PER_TICK`), a
+        number, or None for every request in the spool (the drain before a
+        park).
+
+        Bounded in time as well as count: one `child_submit_retry_seconds` in
+        total for this call, retries included -- the remaining budget is what
+        each request's retries get -- so one tick is never the long in-worker
+        wait invariant 4 forbids. A caller with its own budget passes it as
+        `deadline` and the tick keeps to the earlier of the two. Raises
         `ChildSubmitFenced` when the route says this attempt is superseded:
         the lifecycle ends the way a fenced worker does mid-run.
         """
-        deadline = self._clock() + max(0, int(self.cfg.child_submit_retry_seconds))
+        own = self._retry_deadline()
+        deadline = own if deadline is None else min(deadline, own)
         if not self.offered:
             return 0
         root = self.spool(work)
@@ -381,12 +503,12 @@ class ChildPath:
         responses = root / "responses"
         if not requests.is_dir():
             return 0
-        cap = self.cfg.max_child_requests_per_tick if limit is None else limit
+        cap = self.cfg.max_child_requests_per_tick if limit is PER_TICK else limit
         answered = 0
         for path in sorted(requests.glob("*.json")):
-            if cap is not None and answered >= cap:
+            if isinstance(cap, int) and answered >= cap:
                 break
-            if answered and self._clock() >= deadline:
+            if self._clock() >= deadline:
                 break
             request_id = path.stem
             if not REQUEST_ID.fullmatch(request_id) or path.is_symlink() or not path.is_file():
@@ -396,7 +518,7 @@ class ChildPath:
                 # Answered before a crash took the removal (§5 F1).
                 path.unlink(missing_ok=True)
                 continue
-            answer = self._answer(path, request_id)
+            answer = self._answer(path, request_id, deadline=deadline)
             _write_atomic(response, answer)
             path.unlink(missing_ok=True)
             answered += 1
@@ -405,20 +527,22 @@ class ChildPath:
     def drain(self, work: Path) -> int:
         """Answer EVERY outstanding request before a park (§5 F3), in bounded time.
 
-        Ticks until the spool is empty or twice `child_submit_retry_seconds`
-        have passed; whatever is left then is answered with the retryable
-        `api_unavailable` refusal, without a call, so a park never carries a
-        request it did not answer and the wait stays bounded (invariant 4).
+        Ticks until the spool is empty or ONE `child_submit_retry_seconds` has
+        passed in total, retries included (the drain's remaining budget is
+        what each tick, and each request's retries, get); whatever is left
+        then is answered with the retryable `api_unavailable` refusal, without
+        a call, so a park never carries a request it did not answer and the
+        wait stays bounded (invariant 4).
         """
         if not self.offered:
             return 0
-        deadline = self._clock() + 2 * max(0, int(self.cfg.child_submit_retry_seconds))
+        deadline = self._retry_deadline()
         answered = 0
         while self._clock() < deadline:
-            done = self.tick(work, limit=None)
+            done = self.tick(work, limit=None, deadline=deadline)
             answered += done
-            if not done:
-                return answered
+            if not done or not self.has_requests(work):
+                break
         root = self.spool(work)
         for path in sorted((root / "requests").glob("*.json")):
             request_id = path.stem
@@ -439,7 +563,9 @@ class ChildPath:
             path.unlink(missing_ok=True)
         return answered
 
-    def _answer(self, path: Path, request_id: str) -> dict[str, Any]:
+    def _answer(
+        self, path: Path, request_id: str, *, deadline: float | None = None
+    ) -> dict[str, Any]:
         refusal = self._local_refusal(path, request_id)
         if isinstance(refusal, Refusal):
             self.log.warning("child request refused by the worker", request_id=request_id,
@@ -464,7 +590,7 @@ class ChildPath:
             return self._api.call("POST", route, body=body, headers=headers)
 
         try:
-            _, payload = self._with_retry(_submit)
+            _, payload = self._with_retry(_submit, deadline=deadline)
         except ChildSubmitFenced:
             raise
         except ChildApiError as exc:

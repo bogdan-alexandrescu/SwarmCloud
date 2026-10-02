@@ -376,6 +376,12 @@ class ApiSettings:
     #: The previous version, accepted beside the current one during a rotation
     #: (§5 F13). Empty outside one.
     child_key_previous: str = field(default="", repr=False)
+    #: The audience a WORKER mints its ID token for when it calls the child
+    #: routes (SWARM_API_AUDIENCE): the constant custom audience terraform
+    #: gives this service, the same value the scheduler hands each worker. The
+    #: child routes pin `aud` to it (routes/children.py). Empty in local
+    #: development, where the app's own verifier is used.
+    child_audience: str = ""
     #: Children one task may have across all its attempts (§7): sixteen plus
     #: the parent fit inside a new tenant's `default_tenant_max_active` of 20,
     #: so a fresh tenant can run one full fan-out without an admin.
@@ -458,6 +464,7 @@ class ApiSettings:
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             child_key_previous=os.environ.get("SWARM_CHILD_KEY_PREVIOUS", "").strip(),
+            child_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
             max_children_per_task=_int("MAX_CHILDREN_PER_TASK", 16),
             child_proof_skew_seconds=_int("CHILD_PROOF_SKEW_SECONDS", 120),
         )

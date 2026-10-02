@@ -257,7 +257,7 @@ tenant.
 > The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
 > MCP tools for a session that is not running a workflow script:
 > `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
-> one request (`apps/swarm-mcp/swarm_mcp/server.py:1330`), and `swarm_collect`
+> one request (`apps/swarm-mcp/swarm_mcp/server.py:1337`), and `swarm_collect`
 > gathers the results.
 
 ```js
@@ -349,7 +349,7 @@ runs the mechanism.
 > `sc account add --label <label> [--lend-to <tenant>]`,
 > `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
 > asks for the label typed back. `sc accounts` is the read-only list. `add`
-> (`apps/swarm-mcp/swarm_mcp/sc.py:846`) runs four steps:
+> (`apps/swarm-mcp/swarm_mcp/sc.py:847`) runs four steps:
 >
 > 1. It calls `POST /v1/accounts/authorize`
 >    (`apps/swarm-api/swarm_api/routes/accounts.py:258`), which returns the
@@ -403,10 +403,10 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3461`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3922`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:3568`,
+> (`apps/agent-worker/agent_worker/lifecycle.py:4029`,
 > `apps/agent-worker/agent_worker/accountlease.py:445`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
@@ -775,7 +775,7 @@ v1 built these and they are correct. They are not rewritten:
 >
 > * **Item 5: there is no sidecar** in either backend's pod. The worker process
 >   itself leases the account (§2.6.3) and runs the checkpoint timer
->   (`apps/agent-worker/agent_worker/lifecycle.py:1277`). The reason is §2.6.3's:
+>   (`apps/agent-worker/agent_worker/lifecycle.py:1486`). The reason is §2.6.3's:
 >   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
 >   How events are published is §2.7's question.
 > * **Item 12 is not configuration.** The catalogue is the frozen

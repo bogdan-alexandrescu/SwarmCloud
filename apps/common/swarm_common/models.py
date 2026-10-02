@@ -191,10 +191,11 @@ class EndCause(str, Enum):
         WORKFLOW_SWEEP, CANCEL_REQUESTED;
       * the API's cancel: CANCEL_REQUESTED, and CHILD_CASCADE for the
         children of the task it cancelled;
-      * CHILD_CASCADE is also written by the scheduler's child-cascade and
-        await sweeps, and by the worker ending a child that either of them
-        flagged (request 41 names the reconciler's repair as a writer too; it
-        still writes CANCEL_REQUESTED for a flagged child whose worker died).
+      * CHILD_CASCADE (request 41) is written by the API's cancel cascade and
+        the scheduler's sweep, and by the worker or reconciler ending a child
+        flagged by either -- every writer above that ends a task CANCELLED on
+        its `cancel_requested` writes CHILD_CASCADE instead of
+        CANCEL_REQUESTED when the task's `metadata.child_cascade` is set.
 
     SUCCEEDED carries None: nothing about a success needs a cause. So does a
     task that ended before this field existed, and one a writer ended for a

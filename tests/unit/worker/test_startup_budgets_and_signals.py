@@ -451,9 +451,8 @@ def test_the_startup_budget_applies_inside_the_window_and_nowhere_else():
     """`ControlPlane.startup_budget()` is the one switch, for every call it makes.
 
     The lifecycle holds the window open from the generation check until the
-    runner child exists. Outside it, the same calls keep the library's
-    defaults: the mid-run control poll, for one, and how long a running agent
-    tolerates a Firestore outage is a separate decision.
+    runner child exists. Outside it, the same calls carry the mid-run budgets
+    (`control.MID_RUN_BUDGETS`, #70) instead.
     """
     db = RecordingFirestore()
     seed_attempt(db)
@@ -483,11 +482,22 @@ def test_the_startup_budget_applies_inside_the_window_and_nowhere_else():
         control.record_attempt_start(backend="cloud_run_job", execution_name=None)
     assert db.calls == [("set", "attempts/att_1", budget)], db.calls
 
+    # Outside the window each call carries its own mid-run budget (#70), never
+    # the startup one: the read budget of `MID_RUN_BUDGETS["poll"]`, the
+    # attempt write's of `MID_RUN_BUDGETS["attempt"]`.
+    from agent_worker.control import MID_RUN_BUDGETS
+
     db.calls.clear()
     control.poll(None)
     control.validate_generation()
     control.record_attempt_end(exit_code=0, error=None)
-    assert db.calls and all(kwargs == {} for _, _, kwargs in db.calls), db.calls
+    assert db.calls, db.calls
+    for op, path, kwargs in db.calls:
+        assert kwargs != budget, f"{op} {path} carried the startup budget outside the window"
+        call = "attempt" if path.startswith("attempts/") and op == "set" else "poll"
+        deadline, timeout = MID_RUN_BUDGETS[call]
+        assert kwargs["timeout"] == timeout, (op, path, kwargs)
+        assert kwargs["retry"].timeout == deadline, (op, path, kwargs)
 
 
 def test_the_entrypoint_gives_the_control_plane_thirty_seconds_of_ten_second_tries(

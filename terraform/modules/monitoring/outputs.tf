@@ -5,7 +5,7 @@ output "dashboard_id" {
 output "log_metric_names" {
   value = sort(concat(
     [for m in google_logging_metric.events : m.name],
-    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name],
+    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name, google_logging_metric.spec_upstream_invalid.name],
   ))
 }
 
@@ -17,6 +17,7 @@ output "log_metric_filters" {
       (google_logging_metric.peak_rss.name)               = google_logging_metric.peak_rss.filter
       (google_logging_metric.oom_near_miss.name)          = google_logging_metric.oom_near_miss.filter
       (google_logging_metric.spec_signature_invalid.name) = google_logging_metric.spec_signature_invalid.filter
+      (google_logging_metric.spec_upstream_invalid.name)  = google_logging_metric.spec_upstream_invalid.filter
     },
   )
 }

@@ -39,6 +39,27 @@ SPEC_FORMATS = (1, 2)
 #: The fields format 2 adds to format 1's projection.
 _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
 
+
+def signing_format(doc: Mapping[str, Any]) -> int:
+    """The format a signer signs `doc` at: 1 when it names no parent, else SPEC_FORMAT.
+
+    Format 2's projection of a task whose parent fields are both None differs
+    from format 1's only by carrying two nulls, so signing such a task at
+    format 1 covers exactly as much -- and keeps it verifiable by a worker
+    built before format 2, which knows only format 1 and would refuse every
+    task (SPEC_SIGNATURE_INVALID) during a rollout that updated swarm-api
+    first. Only a child is signed at format 2; a child needs a worker that
+    has the child path anyway. A rewrite of a format-1 document that adds a
+    parent STILL VERIFIES: the parent fields are then outside the signed
+    bytes, so the signature vouches for no parent at all, and the readers
+    that act on one (the cascade, the await) are platform components that
+    do not consult the signature (deferred to #476).
+    """
+    if all(doc.get(key) is None for key in _FORMAT_2_FIELDS):
+        return 1
+    return SPEC_FORMAT
+
+
 #: Domain separation. The bytes of a step spec cannot be read as another message.
 SPEC_PURPOSE = "swarm.step-spec"
 

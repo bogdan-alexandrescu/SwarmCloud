@@ -429,48 +429,54 @@ def test_a_cancel_requested_before_the_attempt_ends_is_not_undone_by_a_retry(
     assert db.doc("leases/lease_1")["released_at"] is not None
 
 
-def test_an_attempt_that_will_be_retried_publishes_nothing(db, worker_factory, monkeypatch):
-    """Like a park: the work is not finished, and the next attempt publishes it.
-    Published now, the retry would push again from the final checkpoint, taken
-    before this attempt's auto-commit, and when there was one the push would be
-    refused as a non-fast-forward."""
-    _seed(db, ["scan-01.md"], artifact_name="notes.md")
-    worker, _config, _exporter = worker_factory()
-    seen: list[dict[str, Any]] = []
+def _publishes(worker) -> list[bool]:
+    """Stand in for a repository and record each publish's `publish` flag.
 
-    def harvest(**kwargs: Any) -> None:
-        seen.append(kwargs)
-        return None
-
-    monkeypatch.setattr(worker, "_harvest_git", harvest)
-
-    worker.run()
-    assert [call["publish"] for call in seen] == [False], seen
-    assert "expected output" in seen[0].get("withheld", ""), seen
-
-
-@pytest.mark.parametrize(
-    "attempt_count, written",
-    [(1, "scan-01.md"), (3, "notes.md")],
-    ids=["every-expected-output-written", "missing-on-the-last-attempt"],
-)
-def test_an_attempt_that_will_not_run_again_publishes(
-    db, worker_factory, monkeypatch, attempt_count, written
-):
-    """The control for the test above: publishing is withheld only from an
-    attempt that is going to run again. A clean attempt publishes, and so does
-    the last one, like any other failed attempt."""
-    _seed(db, ["scan-01.md"], artifact_name=written)
-    db.doc("tasks/task_1")["attempt_count"] = attempt_count
-    worker, _config, _exporter = worker_factory()
+    The mock runner has no repository, so the harvest is replaced by one that
+    leaves a deferred publish behind, as a real one does (`_harvest_git`), and
+    `_publish_git` records what it was asked to do.
+    """
     seen: list[bool] = []
 
-    def harvest(*, publish: bool, **_kwargs: Any) -> None:
-        seen.append(publish)
-        return None
+    def harvest(**_kwargs: Any) -> dict[str, Any]:
+        worker._deferred_publish = {"repo": None, "work_head": None, "publish_repo": None}
+        return {"base": "a" * 40}
 
-    monkeypatch.setattr(worker, "_harvest_git", harvest)
+    def publish_git(*, publish: bool, withheld: str = "", **_kwargs: Any) -> dict[str, Any]:
+        seen.append(publish)
+        return {"published": publish, "publish_reason": withheld}
+
+    worker._harvest_git = harvest  # type: ignore[method-assign]
+    worker._publish_git = publish_git  # type: ignore[method-assign]
+    return seen
+
+
+@pytest.mark.parametrize("attempt_count", [1, 3], ids=["retried", "last-attempt"])
+def test_an_attempt_missing_an_expected_output_publishes_nothing(
+    db, worker_factory, attempt_count
+):
+    """Like a park: the work is not finished. And since #165 (owner decision,
+    2026-09-28) the last attempt too: the publish waits for the upload
+    manifest to pass the check, so an attempt that is then failed or retried
+    has pushed nothing and opened no pull request."""
+    _seed(db, ["scan-01.md"], artifact_name="notes.md")
+    db.doc("tasks/task_1")["attempt_count"] = attempt_count
+    worker, _config, _exporter = worker_factory()
+    seen = _publishes(worker)
+
     worker.run()
+    assert seen == [False], seen
+    reason = db.doc("tasks/task_1")["result_summary"]["git"]["publish_reason"]
+    assert "expected outputs are missing" in reason
+
+
+def test_an_attempt_with_every_expected_output_publishes(db, worker_factory):
+    """The control for the test above: a clean attempt publishes."""
+    _seed(db, ["scan-01.md"], artifact_name="scan-01.md")
+    worker, _config, _exporter = worker_factory()
+    seen = _publishes(worker)
+
+    assert worker.run() == ExitCode.OK
     assert seen == [True], seen
 
 
@@ -535,8 +541,9 @@ def test_a_file_written_but_not_uploaded_is_named_as_such(db, worker_factory, lo
 
     assert worker.run() == ExitCode.FAILED
     task = db.doc("tasks/task_1")
-    # Missing for the dependant, so failed retryably like a file never written.
-    assert task["state"] == TaskState.READY.value
+    # Missing for the dependant, and the cap a retry would meet again, so the
+    # task fails without one (#165).
+    assert task["state"] == TaskState.FAILED.value
     assert task["result_summary"].get(MISSING_KEY) == ["notes.md"]
     lines = _warnings_naming(log_stream, "notes.md")
     missing_lines = [r for r in lines if "not uploaded" in r["message"]]
@@ -547,7 +554,7 @@ def test_a_file_written_but_not_uploaded_is_named_as_such(db, worker_factory, lo
 def test_written_not_uploaded_lists_a_declared_name_dropped_over_the_byte_cap(
     db, worker_factory
 ):
-    """`_written_not_uploaded` (~2128-2137) had no test that called it
+    """`_missing_causes` (once `_written_not_uploaded`) had no test that called it
     directly: every test above reaches it only through the message it feeds
     `missing_error`/`missing_line`. `notes.md` is declared, genuinely written
     by the runner, and genuinely not uploaded -- dropped by the byte cap, not
@@ -558,8 +565,10 @@ def test_written_not_uploaded_lists_a_declared_name_dropped_over_the_byte_cap(
 
     assert worker.run() == ExitCode.FAILED
     summary = db.doc("tasks/task_1")["result_summary"]
-    assert summary.get("artifacts_skipped") == ["notes.md"], summary.get("artifacts_skipped")
-    assert worker._written_not_uploaded(summary) == ["notes.md"]
+    assert summary.get("artifacts_skipped") == [{"name": "notes.md", "cause": "cap"}], summary.get(
+        "artifacts_skipped"
+    )
+    assert worker._missing_causes(summary) == {"notes.md": "cap"}
 
 
 # ---------------------------------------------------------------------------

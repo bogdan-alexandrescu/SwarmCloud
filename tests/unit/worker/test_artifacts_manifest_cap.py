@@ -41,6 +41,7 @@ from typing import Any
 
 import pytest
 
+from agent_worker.expected_outputs import skipped_names
 from agent_worker import workspace as workspace_mod
 from agent_worker.errors import ExitCode
 from agent_worker.objectstore import LocalObjectStore
@@ -184,7 +185,9 @@ def test_600_files_upload_500_count_100_and_name_every_one_in_the_log(
     assert summary[CAP_KEY] == CAP
     # Not in `artifacts_skipped`: every reader of that list calls a name in
     # it dropped at the SIZE cap, and these were dropped at the FILE cap.
-    assert not dropped & set(summary.get("artifacts_skipped") or []), summary.get("artifacts_skipped")
+    assert not dropped & set(skipped_names(summary.get("artifacts_skipped"))), summary.get(
+        "artifacts_skipped"
+    )
     # Nothing past the cap reached the bucket either.
     for name in ("f497.txt", "f596.txt"):
         assert not store.exists(f"tenants/{TENANT}/tasks/task_1/attempts/att_1/artifacts/{name}"), name
@@ -281,7 +284,7 @@ def test_a_declared_name_longer_than_the_manifest_bound_is_still_uploaded(
     assert long_name in _folder_names(db)
     summary = _summary(db)
     assert "expected_outputs_missing" not in summary, summary.get("expected_outputs_missing")
-    assert long_name not in (summary.get("artifacts_skipped") or [])
+    assert long_name not in skipped_names(summary.get("artifacts_skipped"))
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +419,7 @@ def test_a_name_longer_than_the_manifest_bound_is_not_uploaded_and_is_named(
     assert long_name not in _names(db)
     shown = long_name[:MAX_NAME_BYTES] + "..."
     assert f"{shown}: not uploaded: {NAME_TOO_LONG}" in _logged_files(log_stream), _logged_files(log_stream)
-    skipped = _summary(db).get("artifacts_skipped") or []
+    skipped = skipped_names(_summary(db).get("artifacts_skipped"))
     assert [name for name in skipped if name.startswith("a" * 200)], skipped
     assert all(len(name) <= MAX_NAME_BYTES + 3 for name in skipped), [len(n) for n in skipped]
 
@@ -472,7 +475,7 @@ def test_a_secret_crossing_the_name_cut_leaves_no_fragment(db, store, tmp_path):
 
     summary = worker._upload_outputs()
 
-    skipped = summary.get("artifacts_skipped") or []
+    skipped = skipped_names(summary.get("artifacts_skipped"))
     assert skipped, "the long name must have been dropped for this test to mean anything"
     assert not any(leaked_fragment in name for name in skipped), skipped
     assert leaked_fragment not in log.getvalue(), log.getvalue()
@@ -547,7 +550,7 @@ def test_a_secret_crossing_the_unstorable_shown_cut_leaves_no_fragment(db, store
 
     summary = worker._upload_outputs()
 
-    skipped = summary.get("artifacts_skipped") or []
+    skipped = skipped_names(summary.get("artifacts_skipped"))
     assert skipped, "the not-UTF-8 name must have been dropped for this test to mean anything"
     assert not any(leaked_fragment in name for name in skipped), skipped
     assert leaked_fragment not in log.getvalue(), log.getvalue()

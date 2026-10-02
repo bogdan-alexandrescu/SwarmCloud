@@ -36,7 +36,8 @@ from ..deps import (
     submission_scope,
     tenant_scope,
 )
-from ..errors import ValidationFailed
+from ..errors import Forbidden, ValidationFailed
+from ..heartbeats import heartbeats_for_page
 from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
@@ -109,6 +110,44 @@ def create_task_batch(
     }
 
 
+#: `GET /v1/tasks?view=` (#168). `full`, or no `view` at all, is the row every
+#: other route serves; `summary` drops what a list never shows.
+TASK_VIEWS: tuple[str, ...] = ("full", "summary")
+
+#: `submitted_by=me` is the caller's own verified email (U5).
+OWNER_ME = "me"
+
+
+def _owner_filter(requested: str | None, auth: AuthContext, forced: str | None) -> str | None:
+    """The submitter `GET /v1/tasks` narrows to, or None for every submitter (U5).
+
+    `forced` is `deps.submission_scope`: the caller's own email for a
+    continuation-scoped account, which always reads only its own tasks and is
+    refused (403) for naming anyone else. Otherwise `me` is the caller's
+    verified email, and any other value must BE the caller's email unless the
+    caller `is_admin`. An admin naming another member still reads only the
+    tenant `tenant_scope` checked: the owner filter narrows a tenant, it
+    never replaces one (`Store.list_tasks` applies both).
+    """
+    if requested is None:
+        return forced
+    value = requested.strip()
+    own = auth.email
+    if value.lower() == OWNER_ME or value.lower() == own.lower():
+        return own
+    if forced is not None:
+        raise Forbidden(
+            "a continuation-scoped account lists only the tasks it submitted; "
+            "submitted_by may name only itself"
+        )
+    if not auth.is_admin:
+        raise Forbidden(
+            "submitted_by may name only yourself (or `me`); "
+            "filtering by another member needs an admin"
+        )
+    return value
+
+
 @router.get("")
 def list_tasks(
     state: str | None = Query(default=None),
@@ -116,12 +155,35 @@ def list_tasks(
     runner_profile: str | None = Query(default=None),
     # A parent's children (docs/design/child-tasks.md §6.3), in this tenant.
     parent_task_id: str | None = Query(default=None, min_length=1, max_length=128),
+    submitted_by: str | None = Query(
+        default=None,
+        description="`me`, or a submitter's email (another member's needs an admin)",
+    ),
+    view: str | None = Query(default=None, description="`full` (default) or `summary`"),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
-    submitted_by: str | None = Depends(submission_scope),
+    scope_submitter: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """One page of the caller's tenant's tasks, newest first.
+
+    `submitted_by` (U5) narrows the page to one submitter, always inside the
+    checked tenant. Alone, it is applied IN THE QUERY, so pages are full and
+    the cursor is exact. Combined with `state`, `workflow_id` or
+    `runner_profile`, no index covers the combination, so it is applied after
+    the cursor is taken and a page may be short (`Store.list_tasks`).
+
+    `view=summary` (#168) serves each row without `input`, `metadata` and
+    `result_summary` and their masking counts -- the keys absent, not null --
+    and says `"view": "summary"`; the masking for them is never run. No
+    `view`, or `view=full`, is the response this route has always served.
+
+    Each lease-holding row carries its worker's `heartbeat_at` and the
+    reconciler's `heartbeat_grace_seconds` (#179), from batched reads of the
+    page's current leases (`swarm_api.heartbeats`).
+    """
     parsed_state: TaskState | None = None
     if state is not None:
         try:
@@ -131,6 +193,13 @@ def list_tasks(
                 f"unknown state {state!r}",
                 detail={"known_states": [s.value for s in TaskState]},
             ) from None
+    if view is not None and view not in TASK_VIEWS:
+        raise ValidationFailed(
+            f"unknown view {view!r}",
+            detail={"known_views": list(TASK_VIEWS)},
+        )
+    summary = view == "summary"
+    owner = _owner_filter(submitted_by, auth, scope_submitter)
     page = ctx.store.list_tasks(
         tenant_id,
         state=parsed_state,
@@ -138,7 +207,7 @@ def list_tasks(
         runner_profile=runner_profile,
         limit=paged_limit(ctx, limit),
         page_token=page_token,
-        submitted_by=submitted_by,
+        submitted_by=owner,
         parent_task_id=parent_task_id,
     )
     # One read of the page's READY tasks' pools, de-duplicated (#362).
@@ -150,19 +219,26 @@ def list_tasks(
     # admitted. A finished task's answer is cached per process. See
     # `swarm_api.task_accounts`.
     accounts = accounts_for(ctx.db, tenant_id, page.items)
-    return {
+    # #179: the lease-holding rows' current leases, one `get_all` per 100.
+    beats = heartbeats_for_page(ctx.db, tenant_id, page.items, core=ctx.settings.core)
+    payload: dict = {
         "tasks": [
             task_to_api(
                 task,
                 waiting.get(task.id),
                 account=accounts.get(task.id),
                 console_url=ctx.settings.console_url,
+                heartbeat=beats.get(task.id),
+                summary=summary,
             )
             for task in page.items
         ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
     }
+    if summary:
+        payload["view"] = "summary"
+    return payload
 
 
 @router.get("/{task_id}")
@@ -175,12 +251,14 @@ def get_task(
     task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
     accounts = accounts_for(ctx.db, tenant_id, [task])
+    beats = heartbeats_for_page(ctx.db, tenant_id, [task], core=ctx.settings.core)
     return {
         "task": task_to_api(
             task,
             waiting.get(task.id),
             account=accounts.get(task.id),
             console_url=ctx.settings.console_url,
+            heartbeat=beats.get(task.id),
         )
     }
 
@@ -325,8 +403,10 @@ def list_artifacts(
     `complete` is the field that stops an empty list being read as an answer: it
     is false until the task reaches a terminal state and the worker writes its
     result summary, so "no artifacts yet" and "this task produced none" are
-    distinguishable. `artifacts_skipped` names the files the worker dropped at
-    the size cap, for the same reason, and `artifacts_over_cap` counts the files
+    distinguishable. `artifacts_skipped` lists the files the worker wrote and
+    did not upload, for the same reason, as `{name, cause}` entries: the cause
+    the worker recorded (`cap`, `upload_error`, `refused`; #165), or null for
+    a name from an older summary. `artifacts_over_cap` counts the files
     past the 500-file cap (#227): null until `complete`, 0 when none were.
     `complete` alone does not mean nothing was left out.
 

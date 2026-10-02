@@ -103,6 +103,9 @@ counted, and fails as `anomalous_samples`.
 | `ui` | ~1m | free | no — drives a browser at a UI you are running |
 | `dispatch` | ~2m on `mock` | cents | **submits tasks**, cancels them on exit |
 | `admission` | ~3m on `mock` | cents | **submits a 150-task backlog**, cancels on exit |
+| `contention` | ~3.5m | well under a dollar | **writes only to a dedicated bench database** (`swarm-bench`); refuses the live one |
+| `coldstart` | ~1m | under a cent | no — reads the event log of tasks that already ran |
+| `cache-ttl` | ~1m | under a cent | no — reads attempts; prints a table, not a verdict |
 
 `dispatch` and `admission` on `--profile claude-code` **spend real provider
 tokens**, because they run an actual agent. That is also the only way to
@@ -175,6 +178,127 @@ numbers of pools — a profile with no provider skips the provider pool — so
 running this on two profiles and comparing is the experiment.
 `admission.pools_visible` records the platform's pool cardinality beside it,
 read from `/v1/capacity` rather than restated from the frozen catalogue.
+
+### `contention` — the admission transaction under offered load (S32)
+
+`scripts/bench-contention.sh` plus `scripts/bench_contention.py`. Spec §8 row 6
+(`docs/BUILD_PROMPT_V2.md:740`) asks "Firestore contention at 100
+admissions/min?" and says to measure before designing the sharding.
+`bench-admission.sh` cannot answer it: it measures the deployed scheduler
+draining a backlog, one instance admits serially so the drain caps the rate it
+can offer, and it deliberately changes no pools.
+
+**What runs is production code.** The harness calls
+`SchedulerStore.acquire_lease`, which runs the frozen
+`acquire_lease_in_transaction` inside `firestore.transactional`, and releases
+through `SchedulerStore.release_lease` and the frozen release. It restates no
+admission logic. The per-admission numbers come from the record
+`acquire_lease` itself logs — `admission_runs`, `admission_reruns`,
+`admission_latency_ms`, `admission_outcome` — so the bench reads the same
+fields an operator filters production logs by.
+
+**Open loop.** Arrival *i* is due at `start + i × 60 / rate` whether or not
+earlier arrivals have finished; N admitter threads (default 8, standing in for
+N scheduler instances) take them. A closed loop slows its own offered load
+exactly when the database slows, and reports a healthy latency at a rate it
+never offered. `contention.arrival_lag` and `contention.achieved_rate_per_min`
+are recorded, and a row whose achieved rate is under 95% of the offered one is
+flagged `rate_not_offered`: that row measured the harness, not Firestore.
+
+**A dedicated bench database, nothing else** (owner decision OD-B17-1). The
+harness writes pool documents named `global`, `tenant:…` and so on, because
+those are the names the frozen `pool_names_for()` returns. Against the live
+`swarm` database that would overwrite live limits and counts, so both the
+shell and the Python refuse the environment's `FIRESTORE_DATABASE`, `swarm`,
+`(default)` and any name that is not `swarm-bench` or `swarm-bench-<suffix>`,
+before a client is built. Pool limits are set at 10⁹, so capacity never binds:
+a denial would be a short-circuit that reads as a fast admission. A run lock
+(`bench_lock/contention`) refuses a second concurrent run, whose writes would be
+counted as this run's contention. Cleanup deletes this run's tasks, leases and
+pools and nothing else.
+
+**The bench database must have the live database's concurrency mode**
+(`terraform/modules/firestore` `concurrency_mode`), or the result describes a
+different locking model. It is not created by the script but by Terraform
+(`terraform/modules/firestore/bench.tf`, dev only), which copies the live
+database's `concurrency_mode` rather than restating it, because a database made
+by hand is one nobody can safely delete later.
+
+| metric | unit | per | what it says |
+|---|---|---|---|
+| `contention.admission_latency` | ms | admission | the whole transactional call, re-runs included |
+| `contention.reruns` | count | admission | times Firestore made the body run again: **the contention signal** |
+| `contention.aborted` | count (0/1) | admission | the admission exhausted Firestore's retries: saturation |
+| `contention.release_latency` | ms | lease | the release, which also writes every pool |
+| `contention.arrival_lag` | ms | arrival | how late the harness started it; a large one voids the row |
+| `contention.achieved_rate_per_min` | per_min | rate | what was actually offered |
+
+Every sample is labelled `rate_per_min`, `admitters` and `pools`, so a
+seven-pool `claude-code` admission (the default shape, the heaviest real one)
+never shares a baseline with a five-pool one (`--provider none`). An admission
+whose record never arrived is recorded as **not measured**, never as fast. The
+table printed at the end states n, missing, p50/p95/p99 latency, total re-runs,
+the share of admissions that re-ran, aborts, lag and achieved rate per row.
+
+**It is summarised, not gated.** It feeds one design decision and is not a
+regression check, and `compare` cannot judge it. On a healthy run
+`contention.reruns` and `contention.aborted` are 0 at p95, and a baseline of 0
+makes every later ratio infinite, so the next 0 reads as "regressed". The
+achieved rate is one sample per rate, under every `min_samples`. The run fails
+only when a sample was not measured. The verdict is the table, read against
+the rule in [scaling.md §5](scaling.md#5-firestore).
+
+```bash
+scripts/bench-contention.sh                       # 100, 200, 400 per minute, 60 s each
+scripts/bench-contention.sh --rates 100,200,400,800 --admitters 16
+scripts/bench-contention.sh --database swarm-bench-b17 --provider none
+```
+
+### `coldstart` — cold start from history, before anything is changed (#363)
+
+`scripts/bench-coldstart.sh`. The owner's ruling on #363 is to measure cold
+start before shortening it. `bench-dispatch.sh` measures it by submitting
+tasks, which on `claude-code` spends provider tokens and samples a handful of
+fresh runs. This reads the event log of the newest terminal tasks instead and
+feeds it through the same `benchstat.py segments` decomposition, so it emits
+the same `dispatch.cold_start` (`dispatched → running`) and its two halves, at
+p50/p95/p99 with n, for the cold starts real work actually paid.
+
+`runner_profile` comes from the task and `backend` from its `lease_acquired`
+event's detail, which the scheduler writes. An event with no backend is
+labelled `unknown`, not guessed from the frozen profile catalogue. A task that
+was dispatched and never reached `running` is a null sample, so it fails the
+gate rather than improving the figure.
+
+### `cache-ttl` — what a 1-hour prompt-cache TTL would cost (#323)
+
+`scripts/bench-cache-ttl.sh` plus `benchstat.py cache-ttl`. **Read-only, and a
+table rather than a verdict.** A 1-hour cache write costs 2× the base input
+price, against 1.25× for the default 5 minutes. A read costs 0.1× on most
+models, 0.05× on Claude Opus 5.5 and 0.025× on Claude Fable 5.1, so the read
+multiplier is a flag. The longer TTL pays only if it turns at least
+`0.75 / (2 − r)` of the writes into reads: **39.5% at r = 0.1**.
+
+The platform records each attempt's *total* cache writes and reads, not the
+per-request split by TTL or the gaps between requests inside an attempt. So per
+runner profile the table prints what can be read:
+
+| column | meaning |
+|---|---|
+| `cost 5m` | the cache cost as billed, in base-input-token equivalents |
+| `1h no reuse` | the same writes at 2×: the floor of the downside |
+| `1h best` | 1h if every write in a 5–60-minute resume became a read |
+| `x-att share` | share of writes made by attempts that started 5–60 min after the task's previous attempt ended |
+
+`x-att share` is an **upper bound** for that one source, since not every write
+in a resumed attempt is the earlier prefix, and it **cannot see** gaps inside
+one attempt, such as a tool call that runs past five minutes. If it is under
+the break-even, cross-attempt re-use alone cannot pay for 1h. If it is over,
+the table says 1h *could* pay, and the per-TTL split
+(`usage.cache_creation.ephemeral_1h_input_tokens`) is what confirms it. An
+attempt with no cache fields is counted as `unrep`, never as free. Dollars
+appear only with `--base-usd-per-mtok`; no price is kept in the repository to
+go stale.
 
 ### `reconcile` — pass duration, and what the pass examined
 
@@ -307,6 +431,24 @@ timings, and the UI collector's capture-to-samples half through `--from-json`.
 
 ---
 
+## Results on record
+
+Each row below is a measurement or an honest statement that there is none. A
+SwarmCloud agent has no dev credentials, so these suites were **built** on
+2026-10-02 and an operator **runs** them. No number is entered here until one
+has been measured.
+
+| question | suite | status (2026-10-02) |
+|---|---|---|
+| Admission contention at 100 / 200 / 400 per minute (§8 row 6, S32) | `contention` | **not yet measured.** Needs the `swarm-bench` database, which the next dev apply creates (`terraform/modules/firestore/bench.tf`) |
+| Cold start p50/p95/p99 per profile and backend (§8 row 5, #363) | `coldstart` | **not yet measured** |
+| 5m vs 1h prompt-cache cost per profile (#323) | `cache-ttl` | **not yet measured** |
+
+When a row is measured, record it with the date, the environment, the commit
+of the harness, n per rate, and the full table the suite printed, and copy the
+contention result into [scaling.md §5](scaling.md#5-firestore), which owns the
+sharding decision.
+
 ## Known gaps, stated rather than hidden
 
 * **`benchmarks/baselines/` is empty.** Every baseline must come from a run
@@ -326,3 +468,18 @@ timings, and the UI collector's capture-to-samples half through `--from-json`.
   that actually run.** GKE dispatch was 401ing on 2026-09-22, so a run today
   produces Cloud Run numbers and nothing for GKE. That shows up as an absent
   label rather than as a fast one.
+* **`contention` writes, so it is never in the read-only default set** of
+  `scripts/bench.sh`. It, `coldstart` and `cache-ttl` are registered there
+  (`make bench SUITES=contention`), and none of the three is in the default
+  run, so adding them did not change what a default run gates on.
+* **The bench database is created by one apply, and has not been yet
+  (2026-10-02).** `terraform/modules/firestore/bench.tf` defines `swarm-bench`
+  with the live database's type, location and `concurrency_mode`, no delete
+  protection and `deletion_policy = DELETE`. It is off by default and on in
+  `dev.tfvars` only (`firestore_bench_database`), so the next dev apply
+  (`make apply ENV=dev`, or the release's infrastructure job) creates it.
+  `google_firestore_database` has no labels attribute, so it carries
+  `managed-by=swarm-terraform` as the `bench_meta/managed-by` document, which the
+  harness's cleanup never deletes. No service account is granted it: the
+  harness runs with the operator's own credentials, and the scheduler has no
+  reason to reach a database that only a bench writes.

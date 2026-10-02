@@ -69,7 +69,7 @@ describe('Platform counts before the first run (#135)', () => {
       } as Stats,
     })
     render(<PlatformCountsScreen />)
-    fireEvent.click(screen.getByRole('button', { name: 'Run the count' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Run the count · / }))
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     expect(document.querySelector('.counts-notrun')).toBeNull()
     expect(screen.queryByText('not run')).toBeNull()

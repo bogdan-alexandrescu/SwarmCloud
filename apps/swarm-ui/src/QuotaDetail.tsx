@@ -1,4 +1,5 @@
 import { loadAdminQuota } from './api'
+import { poolHref } from './capacityPoll'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { Screen, timeAgo } from './Shell'
@@ -208,11 +209,13 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           the row this links to exists on Pools, where `Set by` says which
           value binds it. No pool ceiling is drawn here: that would be a
           second read with its own freshness, and a figure beside this one
-          that could be older or newer than it without saying so. Mono,
+          that could be older or newer than it without saying so. The link
+          lands on THAT pool's row, outlined (#128), not at the top of Pools.
+          Mono,
           because it is an identifier; the full name is in `title` for the
           width at which it ellipsizes. */}
       <td role="cell" data-label={FEEDS_POOL}>
-        <a className="ctl-link mono" href="#capacity/pools" title={pool}>
+        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool}>
           {pool}
         </a>
       </td>

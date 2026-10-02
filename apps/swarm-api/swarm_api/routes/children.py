@@ -15,11 +15,38 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from starlette.concurrency import run_in_threadpool
 
+from typing import Any
+
+from ..auth import GoogleTokenVerifier
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
 from ..codec import task_to_api
 from ..deps import AppContext, get_context
 
 router = APIRouter(tags=["children"])
+
+#: One verifier per worker audience, built on first use: it holds google-auth's
+#: transport, which is worth keeping across requests.
+_WORKER_VERIFIERS: dict[str, GoogleTokenVerifier] = {}
+
+
+def _worker_verifier(ctx: AppContext) -> Any:
+    """The verifier a worker's ID token is checked with.
+
+    A worker mints its token for SWARM_API_AUDIENCE, the constant custom
+    audience terraform gives this service (`local.push_audiences`), because it
+    cannot know swarm-api's URL-shaped API_AUDIENCE, which people's clients
+    use. So when that audience is configured and the deployment verifies with
+    Google, the child routes pin `aud` to it -- never an unpinned check. Without
+    it (local development, the tests' static verifier) the app's own verifier
+    is used.
+    """
+    base = ctx.authenticator._verifier
+    audience = ctx.settings.child_audience
+    if not audience or not isinstance(base, GoogleTokenVerifier):
+        return base
+    if audience not in _WORKER_VERIFIERS:
+        _WORKER_VERIFIERS[audience] = GoogleTokenVerifier(audience, require_audience=True)
+    return _WORKER_VERIFIERS[audience]
 
 
 def child_service(ctx: AppContext = Depends(get_context)) -> ChildService:
@@ -28,8 +55,9 @@ def child_service(ctx: AppContext = Depends(get_context)) -> ChildService:
         db=ctx.db,
         store=ctx.store,
         submissions=ctx.submissions,
-        verifier=ctx.authenticator._verifier,
+        verifier=_worker_verifier(ctx),
         limiter=ctx.limiter,
+        metrics=ctx.metrics,
         now=ctx.now,
     )
 

@@ -1,4 +1,5 @@
 import {
+  Fragment,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -40,7 +41,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { RoutedPage, timeAgo } from './Shell'
+import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -807,7 +808,9 @@ export function fromAddress(full: string): Route {
     // Dropped here, the normalise effect rewrote the address to
     // `#admin/limits` before the screen's async read had drawn a row, and the
     // link opened the page at no row at all. Only `pool` is kept.
-    if (tab && section.id === ADMIN_SECTION && tab.id === LIMITS_TAB) {
+    // Pools and Holders keep it too (#125, #128): a Pools row links to
+    // Holders filtered by its pool, and Provider quota to the pool's row.
+    if (tab && keepsPool(section.id, tab.id)) {
       const pool = new URLSearchParams(query).get('pool')
       if (pool) return { sectionId: section.id, tab: tab.id, ...blank, view: poolQuery(pool) }
     }
@@ -830,6 +833,14 @@ export function fromAddress(full: string): Route {
 
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
+
+/** The panes whose address carries the `?pool=` a link named, and no other. */
+function keepsPool(sectionId: string, tab: string): boolean {
+  return (
+    (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) ||
+    (sectionId === CAPACITY && (tab === 'pools' || tab === 'holders'))
+  )
+}
 
 /** Pool limits' query for one pool: `pool=tenant%3Aeng`. */
 function poolQuery(pool: string): string {
@@ -859,9 +870,10 @@ export function canonical(r: Route): string {
   if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
     return `${WORK}/workflows?${r.view}`
   }
-  // And Pool limits' linked row, for the same reason (#134).
-  if (r.sectionId === ADMIN_SECTION && r.tab === LIMITS_TAB && r.view) {
-    return `${ADMIN_SECTION}/${LIMITS_TAB}?${r.view}`
+  // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
+  // Holders' (#125, #128).
+  if (keepsPool(r.sectionId, r.tab) && r.view) {
+    return `${r.sectionId}/${r.tab}?${r.view}`
   }
   return `${r.sectionId}/${r.tab}`
 }
@@ -1060,9 +1072,12 @@ export function App() {
             </div>
           }
         >
+          {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
+              inside it prints none of its own while its read is fresh. */}
+          <FrameAge.Provider value={true}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
-              <Head at={at} section={section} />
+              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
 
               {section === null ? (
                 at.sectionId === HELP ? (
@@ -1074,8 +1089,13 @@ export function App() {
                 )
               ) : (
                 // THE PAGE (CH-2): its `Screen`s' reads stay its own while the
-                // agent is open beside it (`RoutedPage` in Shell.tsx).
+                // agent is open beside it (`RoutedPage` in Shell.tsx). And so
+                // does its AGE (#98): with an agent open the head times the
+                // inspector (`shownBy` in fetch.ts), so the list under it
+                // keeps its own `read Ns ago` -- otherwise it would be shown
+                // nowhere but the dock's tab-wide age.
                 <RoutedPage.Provider value={true}>
+                  <FrameAge.Provider value={at.taskId === null}>
                   <SectionBody
                     sectionId={section.id}
                     tab={at.tab}
@@ -1086,6 +1106,7 @@ export function App() {
                     onView={onView}
                     go={go}
                   />
+                  </FrameAge.Provider>
                 </RoutedPage.Provider>
               )}
             </main>
@@ -1100,6 +1121,7 @@ export function App() {
               />
             )}
           </div>
+          </FrameAge.Provider>
         </SkyShell>
       </div>
 
@@ -1174,9 +1196,11 @@ function SubmitChooser({ go }: { go: (to: string) => void }) {
  *
  * Three things, and the third is the one that moved.
  *
- * 1. THE BREADCRUMB -- section, pane, and the object if one is open. It is the
- *    only place the open agent's id appears outside the inspector itself, and
- *    it is what makes "back" legible: you can see what you would go back to.
+ * 1. THE BREADCRUMB -- the trail TO the page, and the object if one is open
+ *    (`crumbsOf`, #138). It is the only place the open agent's id appears
+ *    outside the inspector itself, and it is what makes "back" legible: you
+ *    can see what you would go back to, and every segment but the object is
+ *    a link that goes there. It stops before the page the `<h1>` names.
  *
  * 2. THE READ AGE -- OF THIS SCREEN'S OWN READS (CH-2). It was the newest
  *    SUCCESSFUL payload of any route the whole tab had called, so it sat
@@ -1193,7 +1217,10 @@ function SubmitChooser({ go }: { go: (to: string) => void }) {
  *      not read            every read it made failed
  *      admin only          every read it made met the admin gate
  *
- *    Help and API reads issue no reads of their own and say so.
+ *    Help and API reads issue no reads of their own and say so. A screen
+ *    that prints its own data's age claims it (`useClaimPageAge`, #98) and
+ *    the head prints none; a `Screen` defers its fresh age to this one
+ *    (`FrameAge` in Shell.tsx). One age per screen.
  *
  *    THERE IS NO REFRESH BUTTON HERE, deliberately, although §B3 asks for one.
  *    Every screen owns its own reads -- `Screen` in Shell.tsx holds the result
@@ -1211,7 +1238,21 @@ function SubmitChooser({ go }: { go: (to: string) => void }) {
  *    in the section and is still one keystroke from any pane. The question
  *    itself is unchanged and still lives in `SECTIONS`.
  */
-function Head({ at, section }: { at: Route; section: SectionDef | null }) {
+function Head({
+  at,
+  section,
+  title,
+  closeTo,
+  go,
+}: {
+  at: Route
+  section: SectionDef | null
+  /** The page's own title -- the `<h1>` the screen draws under this head. */
+  title: string
+  /** Where closing the open agent goes: the list it was opened from. */
+  closeTo: string
+  go: (to: string) => void
+}) {
   const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
   // The age is the point, so it moves on its own rather than only when a
   // fetch happens to land -- on the SHARED clock, the one every screen's
@@ -1219,38 +1260,101 @@ function Head({ at, section }: { at: Route; section: SectionDef | null }) {
   // screen title can no longer disagree by up to a tick (CH-1).
   const now = useNow(AGE_TICK_MS)
 
+  // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
+  // claimed it, and the head prints none: one age per screen.
+  const claimed = usePageAgeClaimed()
+
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+  const home = section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
+  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
 
   return (
     <div className="ctl-head">
-      <p className="ctl-crumb">
-        <span className="ctl-crumb-at">{head}</span>
-        {tab !== null && section !== null && section.tabs.length > 1 && (
-          <>
-            <span className="ctl-crumb-sep" aria-hidden>
-              &#9656;
-            </span>
-            <span className="ctl-crumb-at">{tab.label}</span>
-          </>
-        )}
-        {at.taskId !== null && (
-          <>
-            <span className="ctl-crumb-sep" aria-hidden>
-              &#9656;
-            </span>
-            <span className="id ctl-crumb-obj">{at.taskId}</span>
-          </>
-        )}
-      </p>
+      {crumbs.length > 0 && (
+        <nav className="ctl-crumb" aria-label="Breadcrumb">
+          {crumbs.map((c, i) => (
+            <Fragment key={c.key}>
+              {i > 0 && (
+                <span className="ctl-crumb-sep" aria-hidden>
+                  &#9656;
+                </span>
+              )}
+              {c.to === null ? (
+                <span className="id ctl-crumb-obj" aria-current="page">
+                  {c.label}
+                </span>
+              ) : (
+                <a
+                  className="ctl-crumb-at"
+                  href={`#${c.to}`}
+                  onClick={(e) => {
+                    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                    e.preventDefault()
+                    go(c.to!)
+                  }}
+                >
+                  {c.label}
+                </a>
+              )}
+            </Fragment>
+          ))}
+        </nav>
+      )}
 
-      <span className="ctl-head-age">
-        <ScreenAge at={at} reads={reads} now={now} />
-      </span>
+      {!claimed && (
+        <span className="ctl-head-age">
+          <ScreenAge at={at} reads={reads} now={now} />
+        </span>
+      )}
 
       {section !== null && <SectionQuestion section={section} />}
     </div>
   )
+}
+
+/** One breadcrumb segment: a link to a place, or (`to: null`) the open object. */
+interface Crumb {
+  key: string
+  label: string
+  to: string | null
+}
+
+/**
+ * THE TRAIL TO THE PAGE, NOT THE PAGE (#138). Every segment is a way back --
+ * the section to its first page, the list to itself with the open agent
+ * closed -- and the trail stops before the page the screen's own `<h1>`
+ * names, because a crumb that repeats the title one line above it is the
+ * same word twice. So Overview, Help and API reads (one page each) draw no
+ * crumb at all; Capacity's Pools draws `Capacity`; an open agent draws
+ * `Work ▸ Agents ▸ <id>`, where `Agents` closes it, and the id -- the one
+ * thing on screen no heading names -- is the last segment and is not a link.
+ */
+export function crumbsOf({
+  at,
+  head,
+  home,
+  tab,
+  tabs,
+  title,
+  closeTo,
+}: {
+  at: Route
+  head: string
+  home: string
+  tab: TabDef | null
+  tabs: number
+  title: string
+  closeTo: string
+}): Crumb[] {
+  const out: Crumb[] = []
+  const open = at.taskId !== null
+  if (open || head !== title) out.push({ key: 'section', label: head, to: home })
+  if (tab !== null && tabs > 1 && (open || tab.label !== title)) {
+    out.push({ key: 'tab', label: tab.label, to: open ? closeTo : `${at.sectionId}/${tab.id}` })
+  }
+  if (open) out.push({ key: 'object', label: at.taskId!, to: null })
+  return out
 }
 
 /**
