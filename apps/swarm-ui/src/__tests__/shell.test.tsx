@@ -2383,18 +2383,18 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         splitTop(r.selector).some((b) => /\.ctl-util\s*$/.test(b)) &&
         declarations(r.body).some((d) => d.property === 'grid-template-columns' || d.property === 'grid-template-areas'),
     )
-    expect(templated.length, 'fewer templated `.ctl-util` rules than the drawer and Overview').toBeGreaterThanOrEqual(2)
+    // Overview's override left with its account rows (O1 draws Headroom as
+    // tiles and pool rows, styles/overview.css); the drawer's remains.
+    expect(templated.length, 'no templated `.ctl-util` rule: the drawer\'s is gone').toBeGreaterThanOrEqual(1)
     for (const r of templated) {
       const display = declarations(r.body).find((d) => d.property === 'display')?.value
       expect(display, `\`${r.selector}\` ${r.conditions.join(' ')} declares a template and no grid`).toBe('grid')
     }
     // "five-hour · 2m ago" and its kin are up to 19 characters. MUTATION: the
-    // override's last track or the primitive's basis back under 19ch.
+    // primitive's basis back under 19ch.
     const f = fragment(
-      '<div class="ov-group"><div class="ctl-card-body"><div class="ctl-util"><span class="ctl-util-name">x</span><span class="ctl-util-by">five-hour · 2m ago</span></div></div></div>',
+      '<div class="ctl-card-body"><div class="ctl-util"><span class="ctl-util-name">x</span><span class="ctl-util-by">five-hour · 2m ago</span></div></div>',
     )
-    const last = splitTop(won(pick(f, '.ctl-util'), 'grid-template-columns', WIDE) ?? '', ' ').at(-1) ?? ''
-    expect(ch(minmax(last)[0]), `Overview's last track is ${last}`).toBeGreaterThanOrEqual(19)
     const basis = splitTop(won(pick(f, '.ctl-util-by'), ['flex', 'flex-basis'], { width: 800 }) ?? '', ' ').at(-1)
     expect(ch(basis), `the primitive's provenance basis is ${basis}`).toBeGreaterThanOrEqual(19)
   })

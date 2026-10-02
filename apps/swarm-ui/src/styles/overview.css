@@ -1,0 +1,186 @@
+/* ---------------------------------------------------------------------------
+   OVERVIEW, O1 "LEAD AND LEDGER" (docs/web-ui/mockups/overview.html, the
+   owner's pick 2026-10-01; PICKS.md). Imported by Overview.tsx.
+
+   The frame's geometry, in this product's tokens: the card and inset-tile
+   radii are `--radius` and `--ctl-radius-sm`, never typed, so when the
+   canonical scale lands (components.html A: 12 / 8) this screen follows it
+   without an edit; the spacing gate on main still holds today's 10 / 6.
+   6px bars, 32px table rows, 12px type
+   floor, sentence case and no letter-spacing (PICKS.md "Rules that override
+   the mock-ups"). The state marks are marks.tsx's `.sk-st`, so RUNNING is the
+   brand's teal haloed disc here as on Agents -- never the accent blue, which
+   brand §3 keeps off every state.
+
+   Components named `ov-*` are local to this screen on purpose: lane U0 is
+   building the canonical set (components.html A) in parallel, and a later
+   pass swaps these for it. Each is styled to A so the swap moves nothing.
+   --------------------------------------------------------------------------- */
+
+.ov-page { display: flex; flex-direction: column; gap: 16px; padding-bottom: 28px; }
+
+/* ---- page head: title, tenant chip, provenance on one line ---------------- */
+.ov-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ov-head h1 { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); }
+.ov-chip { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px; border-radius: var(--ctl-radius-pill); background: var(--sk-hv); color: var(--text-dim); white-space: nowrap; }
+.ov-age { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ov-age .ctl-dot { margin-right: 4px; }
+.ov-refresh { font: inherit; color: var(--sk-ac); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+.ov-num { font-variant-numeric: tabular-nums; }
+.ov-reading { color: var(--text-faint); }
+
+/* ---- Needs a look: a row of check cards ----------------------------------- */
+.ov-lead { display: flex; flex-direction: column; gap: 8px; }
+.ov-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ov-lh h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
+.ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.ov-atts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
+.ov-att:hover { border-color: var(--sk-acl); }
+/* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (#96): the table row's edge
+   rule, full height in --bad and a short one in --warn, so a red card stands
+   apart from an amber one in greyscale too. */
+.ov-att.is-bad, .ov-att.is-warn { background-repeat: no-repeat; background-position: left center; }
+.ov-att.is-bad { background-image: linear-gradient(var(--bad), var(--bad)); background-size: 3px 100%; }
+.ov-att.is-warn { background-image: linear-gradient(var(--warn), var(--warn)); background-size: 3px 46%; }
+.ov-att:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ov-att > .sk-st { margin-top: 3px; }
+.ov-att-t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.ov-att-t b { font-weight: 600; }
+.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
+
+/* ---- the lifecycle band: three figures, each broken down by state --------- */
+.ov-life { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
+/* The rules between the three are drawn inside the one band, not as three
+   touching boxes: a 1px stroke in the control-border token on each cell after
+   the first. */
+.ov-lc { position: relative; padding: 12px 16px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ov-lc + .ov-lc::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 1px; background: var(--line); }
+.ov-lc-h { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; font-weight: 600; }
+.ov-lc-h small { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); text-align: right; }
+.ov-lc-n { font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
+.ov-lc-ps { display: flex; flex-wrap: wrap; gap: 4px 14px; }
+.ov-lc-p { display: inline-flex; gap: 6px; align-items: center; }
+.ov-lc-p b { font-variant-numeric: tabular-nums; font-weight: 600; }
+.ov-lc-p .sk-st-w { color: var(--text-dim); }
+.ov-lc-foot { font-size: var(--t-micro); color: var(--text-faint); }
+
+/* ---- the card grids: Running beside Cost, Waiting beside Headroom --------- */
+.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+@media (min-width: 1100px) {
+  /* O1's 1.7 : 1. The table and the grouped list take the width; Cost and
+     Headroom are a figure and three short stacks. */
+  .ov-g21 { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
+}
+
+/* A card per components.html A: the card radius, 12px/14px padding. */
+.ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
+.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 10px; }
+.ov-card .ctl-card-title { flex: none; }
+.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ov-card .ov-link { margin-left: auto; color: var(--sk-ac); font-size: var(--t-micro); white-space: nowrap; text-decoration: none; }
+
+/* ---- tables: 32px rows, sentence-case heads, flat in a card --------------- */
+.ov-tbl { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.ov-tbl th { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); text-align: left; padding: 6px 12px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.ov-tbl td { height: 32px; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
+.ov-tbl tr:last-child td { border-bottom: 0; }
+.ov-tbl .is-num { text-align: right; white-space: nowrap; }
+.ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
+.ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ov-name { color: var(--text); text-decoration: none; font-weight: 500; }
+.ov-name:hover { text-decoration: underline; }
+.ov-wf { color: var(--text-dim); }
+.ov-silent { color: var(--warn); font-size: var(--t-micro); margin-left: 6px; }
+.ov-open { color: var(--sk-ac); font-size: var(--t-micro); text-decoration: none; }
+.ov-dash { color: var(--text-faint); cursor: help; }
+.ov-more { font-size: var(--t-micro); color: var(--text-dim); }
+
+/* The phone's compact Running list (O1 390 frame). Hidden on a wide screen,
+   where the table says the same rows with more columns. */
+.ov-prun { display: none; list-style: none; margin: 0; padding: 0; }
+.ov-prun li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; min-height: 32px; }
+.ov-prun .sk-st-w { display: none; }
+.ov-prun-n { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--text); text-decoration: none; }
+.ov-prun em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+/* ---- Cost so far ---------------------------------------------------------- */
+.ov-big { display: flex; align-items: baseline; gap: 8px; font: 650 var(--t-figure)/var(--lh-figure) var(--font); font-variant-numeric: tabular-nums; }
+.ov-big small { font: 400 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.ov-figure.is-absent { font-size: var(--t-body); }
+.ov-kv { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; margin: 8px 0 0; }
+.ov-kv-row { display: contents; }
+.ov-kv dt { color: var(--text-dim); }
+.ov-kv dd { margin: 0; font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
+.ov-foot { margin: 8px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.ov-foot .ov-warn { color: var(--warn); }
+.ov-foot .ov-bad { color: var(--bad); }
+
+/* ---- Waiting, and why: one row per reason --------------------------------- */
+.ov-wlist { display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ov-wr { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--line); }
+.ov-wr:last-child { border-bottom: 0; }
+.ov-wt { display: flex; flex-direction: column; min-width: 0; }
+.ov-wt b { font-weight: 600; overflow-wrap: anywhere; }
+.ov-wt small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+.ov-wn { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+
+/* ---- Headroom: profile tiles, pool rows, the account line, one column ---- */
+.ov-sub2 { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); margin: 2px 0 0; }
+.ov-hps { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+.ov-hp { display: flex; flex-direction: column; min-width: 0; padding: 6px 8px; border-radius: var(--ctl-radius-sm); background: var(--sk-hv); }
+.ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
+.ov-hp b.is-zero { color: var(--s-warn); }
+.ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ov-pls { display: flex; flex-direction: column; gap: 5px; }
+.ov-pl { display: grid; grid-template-columns: minmax(0, 118px) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.ov-pl .ctl-util-track { height: 6px; }
+.ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+.ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
+.ov-acc .sk-st-w { font-size: var(--t-micro); }
+.ov-acc .ov-link { margin-left: auto; color: var(--sk-ac); text-decoration: none; }
+
+/* ---- absences ------------------------------------------------------------ */
+/* In a card the card draws the box, so the primitive gives up its own; the
+   mark is the greyscale-safe signal. Its heading cannot be louder than the
+   card title it sits under. */
+.ctl-empty.ov-empty { border: 0; background: none; padding: 0; display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
+.ctl-empty.ov-empty > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+/* The page-level one (an expired session) keeps its box: no card is around it. */
+.ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
+.ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
+.ov-page-empty > .retry { margin-top: 0; }
+.ov-ghost { margin: 2px 0; }
+.ov-info { color: var(--info); }
+.ov-warn { color: var(--warn); }
+.ov-bad { color: var(--bad); }
+
+/* ---- phone (O1 390 frame) ------------------------------------------------- */
+@media (max-width: 560px) {
+  /* ONE "Overview". The phone header already names the page in the spine's
+     colour, so the h1 steps aside -- visually, never from the outline: a
+     screen reader still lands on it. */
+  .ov-head h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ov-age { margin-left: 0; }
+  .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+  /* Three across, the figure only: the per-state breakdown is the desktop's. */
+  .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
+  .ov-lc { border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); padding: 7px 8px; gap: 0; }
+  .ov-lc + .ov-lc::before { display: none; }
+  .ov-lc-h small, .ov-lc-ps, .ov-lc-foot { display: none; }
+  .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
+  .ov-rows { display: none; }
+  .ov-prun { display: block; }
+  .ov-refresh, .ov-link, .ov-open { position: relative; }
+  .ov-refresh::after, .ov-link::after, .ov-open::after {
+    content: '';
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: max(100%, 44px);
+    height: max(100%, 44px);
+    transform: translate(-50%, -50%);
+  }
+}

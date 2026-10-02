@@ -110,14 +110,15 @@ describe('#96: a failed run is a row form, not only a mark', () => {
     expect(hue('SUCCEEDED')).not.toBe('bad')
   })
 
-  it("gives Overview's attention rows the same two edges", () => {
-    // The issue's other option, the one taken: `.ov-problem` gets the rule
-    // rather than a bigger mark. MUTATION: drop either edge.
+  it("gives Overview's check cards the same two edges", () => {
+    // The issue's other option, the one taken: the attention row gets the
+    // rule rather than a bigger mark -- and O1's check cards (`.ov-att`) keep
+    // it. MUTATION: drop either edge.
     const f = fragment(
-      '<ul class="ov-problems">' +
-        '<li class="ov-problem" data-k="bad"><i class="ctl-dot is-bad"></i><b>dispatch failing</b><a class="ctl-link ov-link">open</a></li>' +
-        '<li class="ov-problem" data-k="warn"><i class="ctl-dot is-warn"></i><b>a pool is paused</b><a class="ctl-link ov-link">open</a></li>' +
-        '</ul>',
+      '<div class="ov-atts">' +
+        '<a class="ov-att is-bad" data-k="bad"><span class="sk-st is-bad"></span><span class="ov-att-t"><b>dispatch failing</b></span></a>' +
+        '<a class="ov-att is-warn" data-k="warn"><span class="sk-st is-warn"></span><span class="ov-att-t"><b>a pool is paused</b></span></a>' +
+        '</div>',
     )
     const bad = pick(f, '[data-k="bad"]')
     const warn = pick(f, '[data-k="warn"]')
@@ -126,7 +127,7 @@ describe('#96: a failed run is a row form, not only a mark', () => {
     expect(painted(warn, 'background-image', WIDE)).toMatch(/var\(--warn\)/)
     expect(painted(warn, 'background-size', WIDE)).toBe('3px 46%')
     // The rule has room: the mark does not sit on it.
-    expect(painted(bad, ['padding-left', 'padding'], WIDE)).toBe('var(--ctl-s3)')
+    expect(painted(bad, ['padding-left', 'padding'], WIDE)).toMatch(/12px/)
   })
 })
 
@@ -251,16 +252,17 @@ describe('#98: one read age per screen', () => {
     expect(document.querySelector('.ctl-head-age'), 'two ages on Platform counts').toBeNull()
   })
 
-  it("labels Overview's lead fraction as the checks it counts", async () => {
-    // MUTATION: `{ran}/{n} ran` back, an unlabelled fraction under `reads 8/8`.
+  it("labels Overview's lead count as the checks it counts", async () => {
+    // MUTATION: an unlabelled `{n}/{m}` fraction back beside `8/8 reads`.
     window.history.replaceState(null, '', '/')
     render(<App />)
     const line = await waitFor(() => {
-      const el = document.querySelector('.ov-lead-cover.ov-checks > span')
+      const el = document.querySelector('#ov-needs .ov-lh .ov-cnt')
       expect(el).not.toBeNull()
       return el!
     })
-    expect(line.textContent).toMatch(/^checks \d+\/\d+$/)
+    expect(line.textContent).toMatch(/^(\d+ checks? of \d+ · derived on this read|\d+ of \d+ checks still reading)/)
+    expect(line.textContent).not.toMatch(/^\d+\/\d+/)
   })
 })
 

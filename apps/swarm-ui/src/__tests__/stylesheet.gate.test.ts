@@ -221,7 +221,13 @@ describe('the cascade resolver, against fixtures', () => {
 // ---------------------------------------------------------------------------
 
 describe('the shipped stylesheets', () => {
-  const sheets: ReadonlyArray<readonly [string, () => string]> = [['styles.css', () => STYLES]]
+  // styles.css and every screen's own sheet (src/styles/<screen>.css), each
+  // held to the same parse, duplicate, :root and @keyframes gates.
+  const screenSheets = import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })
+  const sheets: ReadonlyArray<readonly [string, () => string]> = [
+    ['styles.css', () => STYLES],
+    ...Object.entries(screenSheets).map(([path, sheet]) => [path.replace('../', ''), () => sheet] as const),
+  ]
 
   for (const [label, read] of sheets) {
     describe(label, () => {
@@ -247,10 +253,12 @@ describe('the shipped stylesheets', () => {
 
   it('actually read the sheet it passed', () => {
     // The precondition, so none of the above can pass against a sheet that
-    // failed to load: an empty string has no duplicates either. `.ov-figure` is
-    // the Overview block's own rule, so this also says the fold landed.
+    // failed to load: an empty string has no duplicates either. `.ov-life` is
+    // the Overview sheet's own rule, so this also says the screen sheets were
+    // read (O1 moved Overview out of styles.css into styles/overview.css).
     expect(STYLES.length).toBeGreaterThan(100_000)
-    expect(STYLES).toContain('.ov-figure {')
+    expect(sheets.map(([label]) => label)).toContain('styles/overview.css')
+    expect(sheets.find(([label]) => label === 'styles/overview.css')![1]()).toContain('.ov-life {')
   })
 
   it('is the only sheet: no screen injects a <style> of its own', () => {
@@ -276,7 +284,6 @@ describe('the shipped stylesheets', () => {
 
 describe('the Overview decisions, as the cascade resolves them', () => {
   const WIDE = { width: 1440 } as const
-  const PHONE = { width: 390 } as const
 
   /** A detached fragment; `Element.matches` needs no document around it. */
   function frag(html: string): HTMLElement {
@@ -406,28 +413,6 @@ describe('the Overview decisions, as the cascade resolves them', () => {
     expect(won(second!, 'content', WIDE, 'before') ?? '', 'no separator is drawn').toMatch(/·/)
     expect(won(second!, 'position', WIDE, 'before')).toBe('absolute')
     expect(won(first!, 'content', WIDE, 'before'), 'the first clause draws a separator').toBeNull()
-  })
-
-  /**
-   * OV-7. ON A PHONE, A NOTE KEEPS ITS OWN LINE. The phone rule hides
-   * `.ctl-util-by`, and with it the only place a headroom row said "sign in
-   * again", "pool is skipping it", paused, draining or which pool binds. A
-   * row that carries one of those marks it, and the phone rule gives it a
-   * line of its own under the row; a plain window-and-age stays hidden.
-   *
-   * MUTATION: drop the phone rule, or unscope it so every `by` shows.
-   */
-  it('OV-7: shows a marked note on its own line on a phone, and nothing else', () => {
-    const f = frag(
-      '<div class="ov-group"><div class="ctl-card-body">' +
-        '<div class="ctl-util"><span class="ctl-util-figure">1</span><span class="ctl-util-by is-note">sign in again</span></div>' +
-        '<div class="ctl-util"><span class="ctl-util-figure">1</span><span class="ctl-util-by">five-hour · just now</span></div>' +
-        '</div></div>',
-    )
-    const [note, plain] = [...f.querySelectorAll('.ctl-util-by')]
-    expect(won(note!, 'display', PHONE), 'the note is hidden on a phone').not.toBe('none')
-    expect(won(note!, ['flex', 'flex-basis'], PHONE) ?? '', 'the note does not take a line of its own').toMatch(/100%/)
-    expect(won(plain!, 'display', PHONE), 'plain provenance came back on a phone').toBe('none')
   })
 
   /**

@@ -146,10 +146,20 @@ function merge(parts: Report[]): Report {
  * exists does not change with the theme, because the light block in
  * `styles.css` redefines colour tokens and nothing else.
  */
+/**
+ * Every sheet the app loads: styles.css, then each screen's own sheet under
+ * src/styles/ (imported by its screen). Resolved together, so a token a screen
+ * sheet uses is resolved like any other and its rules are measured.
+ */
+const ALL_SHEETS = [
+  STYLES,
+  ...Object.values(import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })),
+].join('\n')
+
 async function sweep(): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
-    dark: resolveSheet(STYLES, 'dark'),
-    light: resolveSheet(STYLES, 'light'),
+    dark: resolveSheet(ALL_SHEETS, 'dark'),
+    light: resolveSheet(ALL_SHEETS, 'light'),
   }
   const tables = { dark: tokenTables(STYLES).dark, light: tokenTables(STYLES).light }
 

@@ -40,6 +40,7 @@
 // copy from disk -- and a scan whose input silently becomes empty is a scan
 // that passes hardest when it is most broken.
 import STYLES from '../styles.css?raw'
+import OVERVIEW_CSS from '../styles/overview.css?raw'
 import AGENT_DETAIL from '../AgentDetail.tsx?raw'
 import HELP_CARD from '../HelpCard.tsx?raw'
 import HELP_SECTION from '../HelpSection.tsx?raw'
@@ -94,8 +95,18 @@ const FLOOR_PX = 12
  * AgentDetail. Overview's sheet is part of `styles.css` since U8; the file
  * stays in the list so an inline size written there is still caught.
  */
+/** styles.css and every screen's own sheet under src/styles/, for the casing scans. */
+const ALL_SHEETS: ReadonlyArray<readonly [string, string]> = [
+  ['src/styles.css', STYLES],
+  ...Object.entries(
+    import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
+  ).map(([path, sheet]) => [path.replace('../', 'src/'), sheet] as const),
+]
+
 const SOURCES: ReadonlyArray<readonly [string, string]> = [
   ['src/styles.css', STYLES],
+  // A screen's own sheet (src/styles/<screen>.css) is a sheet like this one.
+  ['src/styles/overview.css', OVERVIEW_CSS],
   ['src/Overview.tsx', OVERVIEW],
   ['src/HelpCard.tsx', HELP_CARD],
   ['src/HelpSection.tsx', HELP_SECTION],
@@ -231,10 +242,12 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
    * the three legal values are still reaching real elements.
    */
   it('writes no text-transform: uppercase anywhere in the sheet', () => {
-    const clean = stripComments(STYLES, false)
     const shouting: string[] = []
-    for (const m of clean.matchAll(/text-transform\s*:\s*uppercase/g)) {
-      shouting.push(`src/styles.css:${clean.slice(0, m.index).split('\n').length}`)
+    for (const [path, sheet] of ALL_SHEETS) {
+      const clean = stripComments(sheet, false)
+      for (const m of clean.matchAll(/text-transform\s*:\s*uppercase/g)) {
+        shouting.push(`${path}:${clean.slice(0, m.index).split('\n').length}`)
+      }
     }
     expect(
       shouting,
@@ -255,10 +268,12 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
    * spellings of "cancel an ancestor's") stay legal.
    */
   it('leaves no positive letter-spacing behind, which is the capitals' + "'" + ' tell', () => {
-    const clean = stripComments(STYLES, false)
-    const loose = [...clean.matchAll(/letter-spacing\s*:\s*(0?\.\d+em|[1-9][\d.]*(?:em|px))/g)].map(
-      (m) => `src/styles.css:${clean.slice(0, m.index).split('\n').length}  ${m[0]}`,
-    )
+    const loose = ALL_SHEETS.flatMap(([path, sheet]) => {
+      const clean = stripComments(sheet, false)
+      return [...clean.matchAll(/letter-spacing\s*:\s*(0?\.\d+em|[1-9][\d.]*(?:em|px))/g)].map(
+        (m) => `${path}:${clean.slice(0, m.index).split('\n').length}  ${m[0]}`,
+      )
+    })
     expect(loose, `tracking without capitals to open up:\n${loose.join('\n')}`).toEqual([])
   })
 
@@ -416,7 +431,7 @@ describe('B4.1: the tokens are actually in the cascade', () => {
    */
   function withStyles(): HTMLStyleElement {
     const el = document.createElement('style')
-    el.textContent = STYLES
+    el.textContent = `${STYLES}\n${OVERVIEW_CSS}`
     document.head.appendChild(el)
     return el
   }
@@ -491,17 +506,18 @@ describe('B4.1: the tokens are actually in the cascade', () => {
    * headings at --t-lead/600; the lead stays distinct from the card titles by
    * its position, its track and its unboxed region.
    *
-   * MUTATION: put `.ov-lead-title` back on --t-title.
+   * O1's "Needs a look" is that heading (`.ov-lh h2`, styles/overview.css).
+   *
+   * MUTATION: put the lead heading on --t-title.
    */
   it('sets the attention lead title a step below the page title', () => {
     const style = withStyles()
     const section = document.createElement('section')
-    section.className = 'section ov-lead'
-    section.innerHTML =
-      '<div class="ov-lead-head"><div class="ov-lead-say"><h2 class="ov-lead-title">3 things need attention</h2></div></div>'
+    section.className = 'ov-lead'
+    section.innerHTML = '<div class="ov-lh"><h2>Needs a look</h2><span class="ov-cnt">3 checks of 8</span></div>'
     document.body.appendChild(section)
 
-    const seen = getComputedStyle(section.querySelector('.ov-lead-title')!)
+    const seen = getComputedStyle(section.querySelector('.ov-lh h2')!)
     expect(seen.fontSize).toBe('var(--t-lead)')
     expect(seen.lineHeight).toBe('var(--lh-lead)')
     expect(seen.fontWeight).toBe('600')
