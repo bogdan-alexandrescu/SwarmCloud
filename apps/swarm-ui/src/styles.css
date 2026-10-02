@@ -1297,6 +1297,9 @@ body {
   }
   .app.has-inspector .row .wf { display: none; }
   .app.has-inspector .row .when { white-space: normal; }
+  /* The Step column goes here too, so the step takes the profile's place (#94). */
+  .app.has-inspector .row .agent .agent-step { display: inline; }
+  .app.has-inspector .row .agent .agent-profile { display: none; }
 }
 /* THE DISPATCH FLAG MOVES TO ITS OWN LINE RATHER THAN BEING CLIPPED, which is
    the same call the 390px block makes and for the same reason:
@@ -2906,6 +2909,10 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto;
 }
 .row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
+/* THE STEP IN THE NAME CELL (#94, #109). Drawn only where the Step column is
+   not: at ≤560 (below) and beside an open inspector under 1200px. Wide, the
+   column says it and a second copy here would be the same fact twice. */
+.row .agent .agent-step { display: none; }
 /* `flex: 0 1 auto`, NOT `flex: none`, AND AN ELLIPSIS UNDER IT — the second
    half of F3. With `flex: none` the id refused to shrink, so it pushed past
    `.row .agent`'s own `overflow: hidden` and was cut by the CONTAINER, which
@@ -3018,6 +3025,12 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      matching against the one in their terminal; the model is on the detail. */
   .row .agent .model { display: none; }
   .row .owner, .row .try, .row .class, .row .wf, .row .started, .row .acct { display: none; }
+  /* THE STEP TAKES THE PROFILE'S PLACE (#109). With the Step column gone, a
+     workflow's rows all read `claude-code <hex>`; the step is what tells them
+     apart, and the profile is one tap away on the agent. A standalone row
+     has no step and keeps its profile. */
+  .row .agent .agent-step { display: inline; }
+  .row .agent .agent-profile { display: none; }
   /* THE DISPATCH FLAG IS NOT TRUNCATED, IT IS MOVED. `integrate/contributor`
      is 21 characters and it is the row's most consequential fact -- this step
      is going to write to a repository. Ellipsing it to `integrate/contrib…`
@@ -12446,3 +12459,24 @@ table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 }
 
 /* (Agents rules go above this line.) */
+
+/* PHONE ROWS AND TABLES KEEP WHAT TELLS ROWS APART (#109).
+   The workflow list scrolls sideways at 390, so its done, failed and age
+   columns are off the right edge; `.wfl-phone` carries them under the name
+   there (`phoneSummary`), and is not drawn wide, where the cells say it. */
+.wfl-phone { display: none; }
+@media (max-width: 560px) {
+  .wfl-phone { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+  /* THE STEP TABLE KEEPS WHAT COMPARES ROWS. Runner and inputs are the two
+     columns a reader does not sort by; both are on the step's inspector one
+     tap away. The step column is held by the `.is-scroll` rule (≤899). */
+  .wf-table [data-col="runner"],
+  .wf-table [data-col="inputs"] { display: none; }
+}
+/* THE RIGHT-EDGE FADE, while columns are off that edge (`useMoreRight`). A
+   mask rather than a background-attachment scroll shadow, which broke the
+   contrast probe and was reverted. */
+.wf-table.is-scroll.has-more {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+}

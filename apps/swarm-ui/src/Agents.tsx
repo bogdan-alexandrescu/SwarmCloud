@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom'
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { DispatchChip } from './Dispatch'
@@ -821,7 +821,16 @@ function GroupedRows({
               {/* B17: the same workflow id the Workflows screen prints, and
                   the same reason it is not uppercased here either. "No
                   workflow" is a sentence, not an id, so it is not wrapped. */}
-              {wf === '' ? 'No workflow' : <Id>{wf}</Id>}
+              {/* ONE CLICK TO THE WORKFLOW (#94): the id is a link to its
+                  page. `N here` below stays the honest count until a
+                  per-workflow read exists. */}
+              {wf === '' ? (
+                'No workflow'
+              ) : (
+                <a className="ctl-link" href={workflowHref(wf)}>
+                  <Id>{wf}</Id>
+                </a>
+              )}
               {/* THE ROLLUP PILL WAS THE LAST FILLED PILL ON THIS SCREEN.
                   `.roll` was a 999px pill with an 18%-tint background and the
                   word in `--*-ink`, uppercase, tracked, 600 -- the exact
@@ -1034,7 +1043,12 @@ function TaskRow({
           already right (`#work/workflows`) puts ten facts on one 37px line;
           three facts get one line here for the same reason. */}
       <span className="agent">
-        <b>{task.runner_profile}</b>
+        {/* THE STEP IS THE NAME WHERE THE STEP COLUMN IS GONE (#94, #109). At
+            390px the Step column drops and five live rows read `claude-code
+            <hex>` five times; there `.agent-step` takes the profile's place.
+            Wide, the Step column says it and this copy is not drawn. */}
+        <b className={task.step_id ? 'agent-profile' : undefined}>{task.runner_profile}</b>
+        {task.step_id && <b className="agent-step">{task.step_id}</b>}
         {task.model && <span className="model">{task.model}</span>}
         <span className="id" title={task.id}>
           {shortTaskId(task.id)}

@@ -2622,7 +2622,16 @@ export function resultUsageOf(task: Task): ResultUsage | null {
  * when "this attempt" finished, and in a total no inspector could account for.
  */
 export function finishedResultOf(task: Task): ResultUsage | null {
-  return TERMINAL_STATES.has(task.state) ? resultUsageOf(task) : null
+  return resultIsNewest(task) ? resultUsageOf(task) : null
+}
+
+/**
+ * Whether `result_summary` can be the newest attempt's: only once the task has
+ * finished. The rule `finishedResultOf` borrows by, named so the inspector's
+ * Tokens tile (`tokenKinds`) applies the same one rather than restating it.
+ */
+export function resultIsNewest(task: Task): boolean {
+  return TERMINAL_STATES.has(task.state)
 }
 
 /** Where a step's cost figure came from. */

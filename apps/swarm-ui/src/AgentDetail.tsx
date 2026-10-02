@@ -1,5 +1,5 @@
 import { MarkGlyph, STATE_MARK } from './marks'
-import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -17,6 +17,8 @@ import { CheckpointStrip } from './charts/CheckpointStrip'
 import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
+import { agentName, workflowHref } from './agentlist'
+import { resultIsNewest } from './dag'
 import { DispatchFacts } from './Dispatch'
 import { attemptEnd, instant, spanText, type AttemptEnd } from './duration'
 import { eventKind, isTerminalEvent } from './events'
@@ -101,7 +103,26 @@ import {
  *     file tree.
  */
 export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose: () => void }) {
-  const load = useCallback(() => loadAgentRun(taskId), [taskId])
+  // THE HEADING IS THE AGENT'S NAME ONCE THE TASK IS READ (#94): its step in
+  // a workflow, its id when it stands alone. Before the read only the id is
+  // known, so the heading starts there. The name is set from inside the load
+  // because `Screen` hands its data to children only, and `title` is a string;
+  // the whole id stays on the facts strip, with a copy control.
+  const [name, setName] = useState(taskId)
+  // Another agent opened in the same drawer is headed by its own id until its
+  // read lands, never by the last agent's step.
+  useEffect(() => setName(taskId), [taskId])
+  // A read still in flight for the previous agent must not head this one.
+  const shown = useRef(taskId)
+  shown.current = taskId
+  const load = useCallback(
+    () =>
+      loadAgentRun(taskId).then((r) => {
+        if (shown.current === taskId && (r.status === 'ok' || r.status === 'stale')) setName(agentName(r.data.task))
+        return r
+      }),
+    [taskId],
+  )
   // `Screen` owns its own retry nonce and does not expose it to children, so
   // the stop control needs one of its own: bumping this re-keys `Screen`,
   // which remounts it and re-runs the load. It is in the key rather than in a
@@ -132,7 +153,7 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         // from inside this file; Shell.tsx belongs to another track and the
         // dependency list is theirs to widen.
         key={`${taskId}:${reloads}`}
-        title={taskId}
+        title={name}
         load={load}
         // THE DRAWER RE-READS (AG-2). It read once, so a ticking clock over it
         // could only slide `live 36s ago` into `silent` against events that
@@ -618,6 +639,52 @@ export function attemptLabel(ordinal: number, generation: number): string {
   return `Attempt ${ordinal} · gen ${generation}`
 }
 
+// `agentName` and `workflowHref` live in `agentlist.ts` so the Agents list
+// and Overview name an agent and link its workflow by the same rule.
+export { agentName, workflowHref }
+
+/** How long a copy's outcome stays beside the button that asked for it. */
+const COPY_SAID_MS = 4000
+
+/**
+ * THE WHOLE TASK ID, AND ITS COPY (#94). Under a step-name heading the id is
+ * what a person pastes into `sc` or a search, so it is printed whole and a
+ * button copies it. SAID, NOT SILENT: `navigator.clipboard` is undefined
+ * outside a secure context and a write can be refused, and the status says
+ * which happened, then clears.
+ */
+function IdCopy({ value }: { value: string }) {
+  const [said, setSaid] = useState('')
+  useEffect(() => {
+    if (said === '') return
+    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
+    return () => clearTimeout(t)
+  }, [said])
+  const refused = 'copy refused; select the id instead'
+  const copy = () => {
+    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clipboard === undefined) {
+      setSaid(refused)
+      return
+    }
+    clipboard.writeText(value).then(
+      () => setSaid('task id copied'),
+      () => setSaid(refused),
+    )
+  }
+  return (
+    <>
+      <span className="mono ad-id-text">{value}</span>
+      <button type="button" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
+        copy
+      </button>
+      <span className="ad-id-said" role="status">
+        {said}
+      </span>
+    </>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Head
 // ---------------------------------------------------------------------------
@@ -760,13 +827,23 @@ function Headline({
           <b>tenant</b>
           <span className="mono">{task.tenant_id}</span>
         </li>
+        {/* THE WORKFLOW IS ONE CLICK AWAY (#94). The id is a link to that
+            workflow's page; the step is the drawer's heading, so it is not
+            said again here. */}
         {task.workflow_id !== null && (
           <li className="ctl-fact">
             <b>wf</b>
-            <span className="mono">
+            <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
               {task.workflow_id}
-              {task.step_id !== null && ` · ${task.step_id}`}
-            </span>
+            </a>
+          </li>
+        )}
+        {/* THE WHOLE ID, ONLY WHERE THE HEADING IS NOT ALREADY IT (#94, #102:
+            one fact, one home). A standalone task is headed by its id. */}
+        {task.step_id !== null && (
+          <li className="ctl-fact ad-id">
+            <b>id</b>
+            <IdCopy value={task.id} />
           </li>
         )}
       </ul>
@@ -838,29 +915,11 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
   const peak = measured.length === 0 ? null : Math.max(...measured.map((a) => a.peak_rss_bytes ?? 0))
   const spent = attempts.filter((a) => a.cost_usd !== null)
   const cost = spent.length === 0 ? null : spent.reduce((t, a) => t + (a.cost_usd ?? 0), 0)
-  // EACH HALF IS SUMMED SEPARATELY. `record_spend` writes only the keys the
-  // runner actually reported, so an attempt can carry input tokens and no
-  // output. Selecting on "either field is set" and then summing
-  // `(input ?? 0) + (output ?? 0)` counted that missing half as a zero and
-  // captioned the tile "in + out" -- the absent-measurement-as-zero rule
-  // broken one level above the tiles that keep it. A half no attempt reported
-  // is now left out of the total, and the caption says which halves are in it.
-  const withIn = attempts.filter((a) => a.input_tokens !== null)
-  const withOut = attempts.filter((a) => a.output_tokens !== null)
-  const tokIn = withIn.length === 0 ? null : withIn.reduce((t, a) => t + (a.input_tokens ?? 0), 0)
-  const tokOut = withOut.length === 0 ? null : withOut.reduce((t, a) => t + (a.output_tokens ?? 0), 0)
-  // THE CACHE, WHICH `in + out` LEAVES OUT (#103). A cached prompt is most of
-  // what a long agent run reads, and a tile that summed input and output
-  // alone under-read it by an order of magnitude without saying so. Its own
-  // line, both halves summed across the attempts that reported either;
-  // absent when none did -- never `+ 0 cache` for a figure nobody wrote.
-  const withCache = attempts.filter(
-    (a) => a.cache_read_input_tokens !== null || a.cache_creation_input_tokens !== null,
-  )
-  const cache =
-    withCache.length === 0
-      ? null
-      : withCache.reduce((t, a) => t + (a.cache_read_input_tokens ?? 0) + (a.cache_creation_input_tokens ?? 0), 0)
+  // EVERY KIND, EACH SUMMED SEPARATELY (#322). See `tokenKinds`.
+  const kinds = tokenKinds(task, attempts)
+  const kindTotal = tokenTotal(kinds)
+  // The attempt `modelUsage` stood in for is reported, whatever its document says.
+  const withTokens = attempts.filter((a) => reportedTokens(a) || a.attempt_id === kinds.fromSummary).length
   const ckpts = attempts.reduce((t, a) => t + a.checkpoints.length, 0)
   const nearMiss = attempts.some((a) => a.oom_near_miss)
   // WHAT IS STILL IN THE BUCKET, once the listing has been read (#103). The
@@ -927,26 +986,28 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
           explain="oom-near-miss"
         />
       )}
-      {tokIn === null && tokOut === null && open !== null && reports ? (
-        // Pending only for a runner that reports at all. `mock`, `generic`
-        // and `browser` never write tokens, so for them "not reported" is the
-        // truth while they run as much as after.
+      {!reports ? (
+        // NO MODEL CALL IS A FACT, NOT A GAP (owner decision, 2026-09-29).
+        // `mock`, `generic` and `browser` call no model, so there are no
+        // tokens to report; `not reported` read like a regression on them.
+        <Metric label="Tokens" value="no model call" explain="tokens-reported" />
+      ) : kindTotal === null && open !== null ? (
         <Metric label="Tokens" value="written at exit" tone="reading" explain="tokens-reported" />
-      ) : tokIn === null && tokOut === null ? (
+      ) : kindTotal === null ? (
+        // A model profile with no usage at all: a real finding, kept as one.
         <Metric label="Tokens" value="not reported" tone="absent" explain="tokens-reported" />
       ) : (
+        // THE HEADLINE IS ALL FOUR KINDS, THE CAPTION EACH ONE (#322, owner
+        // decision 2026-09-29: tokens only, no dollars). Summing input and
+        // output alone showed 10,007 for a run that used 1,406,912.
         <Metric
           label="Tokens"
-          value={((tokIn ?? 0) + (tokOut ?? 0)).toLocaleString()}
-          unit={
-            tokIn !== null && tokOut !== null
-              ? 'in + out'
-              : tokIn !== null
-                ? 'input only'
-                : 'output only'
-          }
-          sub={tokenRollupNote(attempts.length, withIn.length, withOut.length)}
-          foot={cache === null ? undefined : `+ ${compactCount(cache)} cache`}
+          value={tokenCount(kindTotal)}
+          sub={tokenKindsNote(kinds)}
+          // COVERAGE ONLY WHEN IT IS NOT WHOLE: an ended attempt that wrote
+          // no usage is a hole in this total, and the foot says how big.
+          foot={withTokens === attempts.length ? undefined : `${withTokens} of ${attempts.length} attempts reported`}
+          explain="tokens-reported"
         />
       )}
       {cost === null && open !== null && reports ? (
@@ -1037,16 +1098,143 @@ function ceilingNote(run: AgentRun): string | null {
 }
 
 /**
- * Which halves of the token total were reported, and by how many attempts.
+ * THE FOUR KINDS OF TOKEN A RUN USED, each summed on its own (#322).
  *
- * THE COVERAGE IS THE FACT AND IT IS TWO FRACTIONS. The sentence this replaces
- * ended "A half no attempt reported is left out of this total rather than
- * counted as zero" -- a rule of the platform, true of every run, which is
- * exactly the material `#help/tokens-reported` holds. What varies per run, and
- * therefore stays on the glass, is `in 2/3 · out 0/3`.
+ * `null` IS "NO ATTEMPT REPORTED THIS KIND", never zero: `record_spend` writes
+ * only the keys the runner reported, and a kind nobody wrote is left out of
+ * the total and the caption rather than counted as 0.
+ *
+ * `modelUsage` OUTRANKS THE ATTEMPT DOCUMENT FOR THE ATTEMPT IT DESCRIBES. The
+ * attempt's four fields are lifted from the CLI's top-level `usage` block,
+ * which #323 found can cover only the LAST result event
+ * (task_9be4128488d342208947 hid 128,570 subagent cache-write tokens).
+ * `modelUsage`, per model, is the whole run. It is on `result_summary`, which
+ * describes ONE attempt: the one that wrote it. That is the newest attempt
+ * only once the task has finished (`resultIsNewest`, the board's borrowing
+ * rule) AND the newest attempt has an end recorded -- `finish()` writes both.
+ * A task on its second attempt still carries the FIRST attempt's summary
+ * (`fail_retryably` writes it and sends the task back to READY), and so does
+ * a finished task whose last attempt ended without writing one. Borrowing it
+ * there would count the first attempt twice, so the documents are read
+ * instead, and the tile says `written at exit` while the task runs.
+ *
+ * 5m AND 1h CACHE WRITES are split only when both durations were used and the
+ * two parts add up to the write total. The parts come from `usage.cache_
+ * creation`, the same last-event block, so a split that does not add up
+ * covers part of the run and is not drawn; nor is one for a run whose earlier
+ * attempts wrote cache with no split recorded.
  */
-function tokenRollupNote(total: number, withIn: number, withOut: number): string {
-  return `in ${withIn}/${total} · out ${withOut}/${total}`
+export interface TokenKinds {
+  input: number | null
+  output: number | null
+  cacheRead: number | null
+  cacheWrite: number | null
+  write5m: number | null
+  write1h: number | null
+  /** The attempt whose counts came from `modelUsage`, or null when none did. */
+  fromSummary: string | null
+}
+
+function count(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : null
+}
+
+function addCount(acc: number | null, v: number | null): number | null {
+  return v === null ? acc : (acc ?? 0) + v
+}
+
+function record(v: unknown): Record<string, unknown> | null {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+/** Whether an attempt document carries any of the four counts. */
+function reportedTokens(a: AttemptRow): boolean {
+  return [a.input_tokens, a.output_tokens, a.cache_read_input_tokens, a.cache_creation_input_tokens].some(
+    (v) => count(v) !== null,
+  )
+}
+
+/** The CLI's own JSON on a summary: `runner.output.structured_output`, or null. */
+function structuredOutput(task: Task): Record<string, unknown> | null {
+  const runner = record((task.result_summary as ResultSummary | null)?.runner)
+  return record(record(runner?.output)?.structured_output)
+}
+
+export function tokenKinds(task: Task, attempts: readonly AttemptRow[]): TokenKinds {
+  const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  const out = structuredOutput(task)
+  const models = record(out?.modelUsage)
+  const perModel = models === null ? [] : Object.values(models).map(record).filter((m) => m !== null)
+  const newest = ordered.at(-1)
+  const summed =
+    perModel.length > 0 && resultIsNewest(task) && (newest === undefined || newest.completed_at !== null)
+  const latest = summed ? newest : undefined
+
+  let input: number | null = null
+  let output: number | null = null
+  let cacheRead: number | null = null
+  let cacheWrite: number | null = null
+  let earlierWrites = false
+  for (const a of ordered) {
+    if (a === latest) continue
+    input = addCount(input, count(a.input_tokens))
+    output = addCount(output, count(a.output_tokens))
+    cacheRead = addCount(cacheRead, count(a.cache_read_input_tokens))
+    const w = count(a.cache_creation_input_tokens)
+    cacheWrite = addCount(cacheWrite, w)
+    if (w !== null && w > 0) earlierWrites = true
+  }
+  let summaryWrite: number | null = null
+  for (const m of summed ? perModel : []) {
+    input = addCount(input, count(m.inputTokens))
+    output = addCount(output, count(m.outputTokens))
+    cacheRead = addCount(cacheRead, count(m.cacheReadInputTokens))
+    summaryWrite = addCount(summaryWrite, count(m.cacheCreationInputTokens))
+  }
+  cacheWrite = addCount(cacheWrite, summaryWrite)
+
+  const creation = record(record(out?.usage)?.cache_creation)
+  const w5 = count(creation?.ephemeral_5m_input_tokens)
+  const w1 = count(creation?.ephemeral_1h_input_tokens)
+  const split =
+    summed && !earlierWrites && w5 !== null && w1 !== null && w5 > 0 && w1 > 0 && w5 + w1 === cacheWrite
+  return {
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
+    write5m: split ? w5 : null,
+    write1h: split ? w1 : null,
+    fromSummary: latest?.attempt_id ?? null,
+  }
+}
+
+/** The total over the kinds that were reported, or null when none was. */
+function tokenTotal(k: TokenKinds): number | null {
+  return [k.input, k.output, k.cacheRead, k.cacheWrite].reduce<number | null>((t, v) => addCount(t, v), null)
+}
+
+/**
+ * A count as the tile prints it: whole below 10,000 (`9,955`, `52`), in three
+ * significant figures above (`59.7k`, `1.34M`) -- the shape of the owner's
+ * decided caption, where an exact seven-digit figure would outweigh the tile.
+ */
+function tokenCount(n: number): string {
+  return n < 10_000 ? n.toLocaleString('en-US') : compactCount(n)
+}
+
+/** `in 52 · out 9,955 · cache read 1.34M · write 59.7k`, leaving out what nobody reported. */
+function tokenKindsNote(k: TokenKinds): string {
+  const parts: string[] = []
+  if (k.input !== null) parts.push(`in ${tokenCount(k.input)}`)
+  if (k.output !== null) parts.push(`out ${tokenCount(k.output)}`)
+  if (k.cacheRead !== null) parts.push(`cache read ${tokenCount(k.cacheRead)}`)
+  if (k.write5m !== null && k.write1h !== null) {
+    parts.push(`write 5m ${tokenCount(k.write5m)}`, `write 1h ${tokenCount(k.write1h)}`)
+  } else if (k.cacheWrite !== null) {
+    parts.push(`write ${tokenCount(k.cacheWrite)}`)
+  }
+  return parts.join(' · ')
 }
 
 /**

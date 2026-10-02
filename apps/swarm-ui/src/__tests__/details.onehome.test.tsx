@@ -224,7 +224,7 @@ describe('#102 (c): one duration, said once', () => {
 // ---------------------------------------------------------------------------
 
 describe('#103: the Tokens tile says what it leaves out', () => {
-  it('adds the cache as its own line, summed across attempts', async () => {
+  it('counts the cache, summed across attempts', async () => {
     const el = await mount(
       run({
         task: task({ state: 'SUCCEEDED', attempt_count: 2, started_at: at(1), completed_at: at(20) }),
@@ -235,8 +235,10 @@ describe('#103: the Tokens tile says what it leaves out', () => {
       }),
     )
     const t = tile(el, 'Tokens')
-    expect(t.querySelector('.ctl-metric-value')?.textContent).toMatch(/^300/)
-    expect(t.textContent).toContain('+ 1.01M cache')
+    // #322 replaced the `+ N cache` line: the headline is all four kinds,
+    // and the caption says each one.
+    expect(t.querySelector('.ctl-metric-value')?.textContent).toBe('1.01M')
+    expect(t.textContent).toContain('cache read 1M · write 10k')
   })
 
   it('draws no cache line when no attempt reported one: absent stays absent, never 0', async () => {

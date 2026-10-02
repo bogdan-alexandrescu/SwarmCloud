@@ -1692,12 +1692,16 @@ function startKey(t: Task): number {
   return Number.isFinite(v) ? v : Number.MAX_SAFE_INTEGER
 }
 
-function RunningRow({ task }: { task: Task }) {
+export function RunningRow({ task }: { task: Task }) {
   return (
     <tr>
       <th scope="row">
+        {/* NAMED BY ITS STEP (#94): four running steps of one workflow read
+            `scan-01`, `scan-04`, `scan-05`, `scan-06`, not four `claude-code`.
+            A standalone task has no step and is named by its profile, as
+            before; the whole id stays on the sub-line either way. */}
         <a className="ctl-link ov-link" href={`#work/task/${encodeURIComponent(task.id)}`}>
-          {task.runner_profile}
+          {task.step_id ?? task.runner_profile}
         </a>
         <span className="ctl-sub">{task.id}</span>
       </th>

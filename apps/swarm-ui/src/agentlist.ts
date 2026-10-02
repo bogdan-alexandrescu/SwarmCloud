@@ -1,4 +1,4 @@
-import type { TaskState } from './types'
+import type { Task, TaskState } from './types'
 
 /**
  * THE AGENT LIST'S ADDRESS: which tab, and on Recent which state (OV-10).
@@ -106,4 +106,20 @@ export function backLabel(listAddress: string): string {
   const m = /running\/(live|waiting|recent)(?:\/|$)/.exec(listAddress)
   const tab = m?.[1]
   return tab === undefined ? 'Agents' : tab.charAt(0).toUpperCase() + tab.slice(1)
+}
+
+/**
+ * WHAT AN AGENT IS CALLED (#94): its step, when a workflow named it, else its
+ * whole task id. Four running steps of one workflow are `scan-01`, `scan-04`,
+ * `scan-05` and `scan-06`, not four `claude-code task_…`. The Agents list's
+ * compact row names a lone task by the id PREFIX, because a row is narrow; a
+ * heading has the width for the whole id, and is what a person copies.
+ */
+export function agentName(task: Task): string {
+  return task.step_id ?? task.id
+}
+
+/** The address of one workflow's page: App routes it to `/workflows/<id>`. */
+export function workflowHref(workflowId: string): string {
+  return `#work/workflows?wf=${encodeURIComponent(workflowId)}`
 }
