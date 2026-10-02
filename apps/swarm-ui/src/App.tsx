@@ -32,9 +32,9 @@ import {
 import { isOverlay, trapTab } from './focus'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
+import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, readPref, writePref, type SpineSection } from './Spine'
-import { HelpScreen } from './HelpSection'
+import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -1045,7 +1045,7 @@ export function App() {
           tab={at.tab}
           title={title}
           go={go}
-          helpGroup={at.sectionId === HELP ? (helpGroupOf(at.tab) ?? (at.tab === '' ? null : at.tab)) : null}
+          helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
           onApiFilter={setApiFailuresOnly}
           foot={

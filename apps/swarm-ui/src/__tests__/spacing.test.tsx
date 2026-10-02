@@ -347,5 +347,9 @@ describe('spacing', () => {
 
     expect(lines(r.dark)).toEqual([])
     expect(lines(r.light)).toEqual([])
-  }, 240000)
+    // 360 s, not 240: the sweep measured 200-211 s alone and in a full run on
+    // the SwarmCloud container (2026-10-02, after O1 and H1 added cards to
+    // Overview and Help), and one loaded full run went past 240 s. A timeout
+    // is not what this test asserts; the findings are.
+  }, 360000)
 })

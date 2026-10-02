@@ -104,9 +104,8 @@ const ALL_SHEETS: ReadonlyArray<readonly [string, string]> = [
 ]
 
 const SOURCES: ReadonlyArray<readonly [string, string]> = [
-  ['src/styles.css', STYLES],
-  // A screen's own sheet (src/styles/<screen>.css) is a sheet like this one.
-  ['src/styles/overview.css', OVERVIEW_CSS],
+  // styles.css and every screen's own sheet (src/styles/<screen>.css).
+  ...ALL_SHEETS,
   ['src/Overview.tsx', OVERVIEW],
   ['src/HelpCard.tsx', HELP_CARD],
   ['src/HelpSection.tsx', HELP_SECTION],

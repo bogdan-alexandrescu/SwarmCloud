@@ -17,7 +17,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { cleanup, render } from '@testing-library/react'
 
-import { HELP, HELP_PLACES, TOPIC_IDS, type HelpPlace } from '../help'
+import { HELP, HELP_GROUPS, HELP_PLACES, TOPIC_IDS, type HelpPlace } from '../help'
 import { HelpLinks } from '../HelpCard'
 import { HelpScreen } from '../HelpSection'
 import { addressToPath } from '../paths'
@@ -26,24 +26,38 @@ afterEach(cleanup)
 
 const words = (s: string) => s.trim().split(/\s+/).length
 
+/** Every group page Help draws (H1: one page per group), mounted together. */
+function renderEveryGroup(): void {
+  render(
+    <>
+      {HELP_GROUPS.map((g) => (
+        <HelpScreen key={g.id} topic={g.id} />
+      ))}
+    </>,
+  )
+}
+
 describe('every Help topic ends in what to do (#131)', () => {
-  it('carries an action, and the action is the last thing before the anchor', () => {
-    render(<HelpScreen topic="" />)
+  it('carries an action, and the action is the card’s last row', () => {
+    renderEveryGroup()
     for (const id of TOPIC_IDS) {
       const t = HELP[id]
       expect(t.act.say.trim().length, `${id} has no action`).toBeGreaterThan(0)
-      const block = document.getElementById(t.anchor)!
-      const kids = [...block.children]
-      const act = block.querySelector('.help-topic-act')
+      const block = document.getElementById(t.anchor)
+      expect(block, `${id} is on no group page`).not.toBeNull()
+      // H1: the rows are You see / It means / What to do, and the anchor is
+      // in the card's head beside its name.
+      const rows = [...block!.querySelectorAll(':scope > dl.help-rows > div')]
+      const act = block!.querySelector('.help-topic-act')
       expect(act, `${id} draws no action`).not.toBeNull()
-      expect(kids.indexOf(act!), `${id}'s action is not last before its anchor`).toBe(kids.length - 2)
-      expect(kids[kids.length - 1]!.classList.contains('help-topic-anchor')).toBe(true)
+      expect(rows.indexOf(act!), `${id}'s action is not its last row`).toBe(rows.length - 1)
+      expect(block!.querySelector(':scope > .help-topic-head > .help-topic-anchor'), `${id} has no anchor in its head`).not.toBeNull()
       expect(act!.textContent).toContain(t.act.say)
     }
   })
 
   it('links the screen that answers it, by a route the router knows', () => {
-    render(<HelpScreen topic="" />)
+    renderEveryGroup()
     const places = Object.keys(HELP_PLACES) as HelpPlace[]
     for (const place of places) {
       // `/overview` is the router's fallback for an address it cannot read.
