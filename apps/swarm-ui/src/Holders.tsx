@@ -4,7 +4,7 @@ import { HelpCard } from './HelpCard'
 import { Mark, UtilRow } from './primitives'
 import { HOLDERS_POLL_MS } from './capacityPoll'
 import { Screen } from './Shell'
-import { formatDuration, poolLabel, type LeasePage, type LeaseRow } from './types'
+import { formatDuration, leaseLiveliness, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
@@ -195,7 +195,7 @@ export function HoldersScreen() {
               <Drift board={board} coverage={coverage} />
               <ClassMix rows={board.page.leases} coverage={coverage} />
             </div>
-            <HolderTable rows={board.page.leases} coverage={coverage} />
+            <HolderTable rows={board.page.leases} coverage={coverage} thresholds={board.page.thresholds} />
           </>
         )
       }}
@@ -488,7 +488,15 @@ function ClassMix({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverag
   )
 }
 
-function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverage }) {
+function HolderTable({
+  rows,
+  coverage,
+  thresholds,
+}: {
+  rows: LeaseRow[]
+  coverage: LeaseCoverage
+  thresholds: LeasePage['thresholds'] | undefined
+}) {
   // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
   // this read loaded. The filter narrows what is drawn; the note beside the
   // heading still says what the loaded rows are out of, so a filtered list is
@@ -546,6 +554,9 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                 <th role="columnheader" scope="col">Dispatch</th>
                 <th role="columnheader" scope="col" className="is-num">Gen</th>
                 <th role="columnheader" scope="col" className="is-num">Held for</th>
+                {/* LIVENESS (#92). Overview's silent-workers item links here,
+                    and this table could not say which worker was silent. */}
+                <th role="columnheader" scope="col">Heartbeat</th>
               </tr>
             </thead>
             <tbody role="rowgroup">
@@ -574,6 +585,9 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                   <td role="cell" data-label="Held for" className="is-num">
                     <HeldFor createdAt={l.created_at} now={now} />
                   </td>
+                  <td role="cell" data-label="Heartbeat">
+                    <Heartbeat lease={l} thresholds={thresholds} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -592,4 +606,36 @@ function HeldFor({ createdAt, now }: { createdAt: string | null | undefined; now
   const at = createdAt ? Date.parse(createdAt) : NaN
   if (!Number.isFinite(at)) return <span title="The lease carries no readable creation time">—</span>
   return <time dateTime={createdAt ?? undefined} title={createdAt ?? undefined}>{formatDuration(now - at)}</time>
+}
+
+/**
+ * How long this lease's worker has been quiet, with the verdict the reconciler
+ * acts on (#92). `silent_seconds` is the server's, at `evaluated_at`, and the
+ * verdict is `leaseLiveliness` over the page's own thresholds -- the function
+ * Overview's silent-workers item counts with -- so a lease is "silent" here
+ * exactly when it is one of that item's. A lease never beaten says so: its
+ * age then counts from the lease's creation, not from a heartbeat.
+ */
+function Heartbeat({
+  lease,
+  thresholds,
+}: {
+  lease: LeaseRow
+  thresholds: LeasePage['thresholds'] | undefined
+}) {
+  const age = formatDuration(lease.silent_seconds * 1000)
+  const since = lease.heartbeat_ever ? age : `never beat, ${age}`
+  // A page that arrived without its thresholds cannot be judged, and a local
+  // grace would colour at a threshold the reconciler does not act on: the age
+  // alone, with no verdict.
+  if (thresholds === undefined) return <span title="No heartbeat thresholds arrived with this page">{since}</span>
+  const { kind, copy } = leaseLiveliness(lease, thresholds)
+  const tone = kind === 'presumed-dead' ? 'is-bad' : kind === 'silent' ? 'is-warn' : 'is-ok'
+  const word = kind === 'presumed-dead' ? 'presumed dead' : kind === 'silent' ? 'silent' : 'beating'
+  return (
+    <span className={`ctl-chip ${tone}`} title={copy}>
+      <i aria-hidden="true" />
+      {word} · {since}
+    </span>
+  )
 }

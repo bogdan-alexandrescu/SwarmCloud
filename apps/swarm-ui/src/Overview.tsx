@@ -21,7 +21,10 @@ import { Absent, Mark, Metric, UtilRow, type TrackTone } from './primitives'
 import { timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
+  WAITING_STATES,
   bindingWindow,
+  formatDuration,
+  leaseLiveliness,
   elapsed,
   headroomFor,
   isProjected,
@@ -34,6 +37,7 @@ import {
   type AccountReading,
   type AccountsPage,
   type Capacity,
+  type LeasePage,
   type Pool,
   type Stats,
   type Task,
@@ -381,7 +385,7 @@ export function OverviewScreen() {
         <div className="ov-grid">
           <section className="ctl-card ov-running" id="ov-running">
             <CardHead title="Running" href="#work/running" cta="agents" />
-            <RunningBody tasks={tasks} stats={stats} />
+            <RunningBody tasks={tasks} stats={stats} leases={leases} />
           </section>
 
           <section className="ctl-card ov-spend">
@@ -989,6 +993,16 @@ function MetricStrip({
       : Object.entries(st.tasks_by_state)
           .filter(([s]) => CONCURRENCY_STATES.has(s as TaskState))
           .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
+  // THE BACKLOG, FROM THE SAME COUNT READ (#91). Overview showed 5 running
+  // while 21 waited behind a full pool, and nothing on this screen could tell
+  // that apart from nothing queued. Counted by /v1/stats rather than off the
+  // task page, so it is the tenant's whole backlog, not the page's share.
+  const waiting =
+    st === null
+      ? null
+      : Object.entries(st.tasks_by_state)
+          .filter(([s]) => WAITING_STATES.has(s as TaskState))
+          .reduce((n, [, v]) => n + (typeof v === 'number' ? v : 0), 0)
 
   return (
     <div className="ctl-metrics">
@@ -1010,6 +1024,22 @@ function MetricStrip({
         // is neither healthy nor unhealthy, and green here was the only place
         // on the screen that said it was.
         say="Agents in LEASED, DISPATCHED, STARTING or RUNNING — the four states that reserve capacity. Counted by /v1/stats, one aggregation query per state."
+      />
+
+      {/* THE UNIT SAYS WHAT WAITING COSTS (#91, CONTRACT invariant 1). A
+          figure beside "Running" reads as more demand unless it says, on the
+          surface, that it is none: QUEUED, READY and PARKED hold no lease and
+          no pool slot. NO FOOT: it is the Running tile's read, whose foot
+          beside it already prints that count's age, and the screen's prose
+          budget is spent on the unit instead. */}
+      <Tile
+        href="#work/running/waiting"
+        label="Waiting"
+        value={waiting}
+        unit="agents, no capacity"
+        reading={stats.status === 'loading'}
+        unread={stats.status === 'error' ? errorHeading(stats.error) : null}
+        say="Agents in QUEUED, READY or PARKED. Waiting holds no lease and no pool slot, so it creates no infrastructure demand and costs nothing. Counted by /v1/stats, one aggregation query per state."
       />
 
       <Tile
@@ -1534,7 +1564,30 @@ function ProfileRow({
 // 2. Running now
 // ---------------------------------------------------------------------------
 
-const RUNNING_ROWS = 4
+/**
+ * EIGHT ROWS, THEN THE REST IN PLACE (#93). Four cut a handful of agents --
+ * "5 of 170 newest · showing 4" -- on the one card whose rows are the answer.
+ * Past eight the rest open under the table, the attention list's disclosure,
+ * so nothing running is ever dropped from the landing page; the card sets its
+ * grid row's height, which is why the cap is not "all".
+ */
+const RUNNING_ROWS = 8
+
+/**
+ * The seconds each task's worker has been silent, for leases past the grace
+ * (#92). `leaseLiveliness` with the page's own thresholds, the same verdict
+ * the silent-workers item and Holders draw, so a row is marked exactly when
+ * the item counts it.
+ */
+function silentByTask(leases: Result<LeasePage>): Map<string, number> {
+  const out = new Map<string, number>()
+  const page = dataOf(leases)
+  if (page === null) return out
+  for (const l of page.leases) {
+    if (leaseLiveliness(l, page.thresholds).kind !== 'alive') out.set(l.task_id, l.silent_seconds)
+  }
+  return out
+}
 
 /**
  * What is running, longest-running first.
@@ -1551,9 +1604,11 @@ const RUNNING_ROWS = 4
 function RunningBody({
   tasks,
   stats,
+  leases,
 }: {
   tasks: Result<TaskPage>
   stats: Result<Stats>
+  leases: Result<LeasePage>
 }) {
   if (tasks.status === 'loading') {
     return (
@@ -1589,11 +1644,14 @@ function RunningBody({
   }
 
   const page = tasks.data
+  const silent = silentByTask(leases)
   const running = page.tasks
     .filter((t) => CONCURRENCY_STATES.has(t.state))
     // Oldest start first: the longest-running agent is the one worth seeing,
-    // and it is the one a fixed-height card would otherwise cut off.
-    .sort((a, b) => startKey(a) - startKey(b))
+    // and it is the one a fixed-height card would otherwise cut off. A SILENT
+    // one goes ahead of all of them (#92): a STARTING task whose worker went
+    // quiet is the newest-started, and would be the first the cap cut.
+    .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
 
   const st = dataOf(stats)
   const counted =
@@ -1662,11 +1720,25 @@ function RunningBody({
           </thead>
           <tbody>
             {shown.map((t) => (
-              <RunningRow key={t.id} task={t} />
+              <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} />
             ))}
           </tbody>
         </table>
       </div>
+      {running.length > shown.length && (
+        <details className="ov-more ov-running-more">
+          <summary>{running.length - shown.length} more</summary>
+          <div className="ctl-table ov-rows">
+            <table>
+              <tbody>
+                {running.slice(RUNNING_ROWS).map((t) => (
+                  <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} />
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
       {/* THE GAP BETWEEN THE TWO SOURCES IS THE INFORMATION, so both figures
           stay on the surface as digits. `/v1/stats` counting more than the
           page holds is not a discrepancy to hide: it is agents older than the
@@ -1680,7 +1752,6 @@ function RunningBody({
           {counted !== null && counted !== running.length && countedAge !== null && (
             <span>counted {countedAge}</span>
           )}
-          {running.length > shown.length && <span>showing {shown.length}</span>}
         </FootRun>
       </p>
     </>
@@ -1692,7 +1763,7 @@ function startKey(t: Task): number {
   return Number.isFinite(v) ? v : Number.MAX_SAFE_INTEGER
 }
 
-function RunningRow({ task }: { task: Task }) {
+function RunningRow({ task, silentFor }: { task: Task; silentFor?: number | undefined }) {
   return (
     <tr>
       <th scope="row">
@@ -1700,6 +1771,23 @@ function RunningRow({ task }: { task: Task }) {
           {task.runner_profile}
         </a>
         <span className="ctl-sub">{task.id}</span>
+        {/* THE WORKFLOW IT IS A STEP OF (#90). The card listed agents with no
+            workflow attached, so a 30-step run read as thirty strangers. */}
+        {task.workflow_id && (
+          <a
+            className="ctl-link ov-wf"
+            href={`#work/workflows?wf=${encodeURIComponent(task.workflow_id)}`}
+            title={task.step_id ? `step ${task.step_id} of ${task.workflow_id}` : task.workflow_id}
+          >
+            {task.workflow_id}
+            {task.step_id ? ` · ${task.step_id}` : ''}
+          </a>
+        )}
+        {/* SILENT, ON THE ROW ITSELF (#92), from the lease's own heartbeat
+            age. The word carries it; the warn ink repeats it. */}
+        {silentFor !== undefined && (
+          <span className="ov-silent">silent {formatDuration(silentFor * 1000).split(' ')[0]}</span>
+        )}
       </th>
       <td>
         {/* The word is mandatory; the dot is the shape that repeats it.
@@ -2267,6 +2355,42 @@ function absenceSentence(
 
 const ACCOUNT_ROWS = 3
 
+/**
+ * WHICH ACCOUNTS GET A ROW (#89), worst first.
+ *
+ * Least-room-first and cut to three meant that with four accounts the one
+ * the headline's figure came from -- the one with the MOST room, which is the
+ * one `choose()` in quota_broker/accounts.py hands new agents to -- was always
+ * the one cut, and so was any account serving agents. Both are PINNED now:
+ * the headline's account and every account with `assigned > 0` always get a
+ * row, and the remaining slots fill worst-first. When the pinned outnumber the
+ * slots they are all shown; the card grows rather than hide live work.
+ *
+ * EXPORTED so the selection can be asserted without a screen.
+ */
+export function accountRowsShown(
+  accounts: AccountsPage['accounts'],
+  headlineId: string | null,
+  slots: number = ACCOUNT_ROWS,
+): { a: AccountsPage['accounts'][number]; w: ReturnType<typeof bindingWindow> }[] {
+  const ranked = accounts
+    .map((a) => ({ a, w: bindingWindow(a) }))
+    // Worst first, and "needs a person" IS the worst. Sorting on room alone
+    // sank the one account that had stopped working, because a REAUTH_REQUIRED
+    // account's windows have usually reset and it therefore looks the emptiest.
+    .sort((x, y) => rank(x.a, x.w) - rank(y.a, y.w))
+  const pinned = new Set(
+    ranked.filter(({ a }) => a.account_id === headlineId || a.assigned > 0).map(({ a }) => a.account_id),
+  )
+  let free = Math.max(0, slots - pinned.size)
+  return ranked.filter(({ a }) => {
+    if (pinned.has(a.account_id)) return true
+    if (free === 0) return false
+    free -= 1
+    return true
+  })
+}
+
 function AccountsBody({ state }: { state: Result<AccountsPage> }) {
   if (state.status === 'loading') {
     return (
@@ -2304,13 +2428,7 @@ function AccountsBody({ state }: { state: Result<AccountsPage> }) {
   const pool = accountHeadroom(state)
   const total = state.data.accounts.length
   const tenantId = state.data.tenant_id
-  const accounts = [...state.data.accounts]
-    .map((a) => ({ a, w: bindingWindow(a) }))
-    // Worst first, and "needs a person" IS the worst. Sorting on room alone
-    // sank the one account that had stopped working, because a REAUTH_REQUIRED
-    // account's windows have usually reset and it therefore looks the emptiest.
-    .sort((x, y) => rank(x.a, x.w) - rank(y.a, y.w))
-    .slice(0, ACCOUNT_ROWS)
+  const accounts = accountRowsShown(state.data.accounts, pool.best?.id ?? null)
 
   // THE TRACK IS THE FIGURE, THE MARK IS THE COVERAGE (OV-2). The track used
   // to be usable/total accounts under a figure that said something else, so

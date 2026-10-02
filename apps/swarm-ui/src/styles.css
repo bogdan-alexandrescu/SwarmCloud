@@ -10943,6 +10943,27 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .ov-more > .ov-problems { margin-top: var(--ctl-s2); }
 
+/* #93: the Running rows past the cap, disclosed under the table rather than
+   dropped. The table inside is the card's own, so it keeps `.ov-rows`. */
+.ov-running-more { margin: 0; padding: var(--ctl-s2) var(--ctl-s3); }
+.ov-running-more > .ov-rows { margin-top: var(--ctl-s2); }
+
+/* #90: the workflow a running agent is a step of, under its id. Meta step,
+   mono like the id it sits under. */
+.ov-wf {
+  display: block;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text-dim);
+}
+
+/* #92: a row whose worker is past the heartbeat grace. The word carries it;
+   the warn ink repeats it for a reader who scans by colour. */
+.ov-silent {
+  display: block;
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--warn);
+}
+
 /* ---- tones in the provenance strip -------------------------------------- */
 
 /* An admin gate is information, not breakage, so the figure that reports only
