@@ -472,10 +472,12 @@ test('a runner that never reports spend stays absent while it runs', () => {
   // tile there would promise a figure that is never coming.
   const mock: Task = { ...RUNNING_TASK, runner_profile: 'mock' }
   const t = tiles(surface(run({ task: mock, attempts: [RUNNING_ATTEMPT] })))
-  for (const label of ['Tokens', 'Token cost']) {
-    assert.equal(t.get(label)?.value, 'not reported', `${label} promises a figure a mock run never writes`)
-    assert.equal(t.get(label)?.absent, true)
-  }
+  // Tokens: no model is called, so there is no figure to promise (owner
+  // decision 2026-09-29, #322); it reads `no model call`, never a pending
+  // `written at exit` and never a number. Token cost stays absent.
+  assert.equal(t.get('Tokens')?.value, 'no model call', 'Tokens promises a figure a mock run never writes')
+  assert.equal(t.get('Token cost')?.value, 'not reported', 'Token cost promises a figure a mock run never writes')
+  assert.equal(t.get('Token cost')?.absent, true)
 })
 
 // ---------------------------------------------------------------------------
