@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
 import { artifactRawUrl, loadArtifactContent } from './api'
 import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { segments } from './logLines'
+import { LogText } from './logMarks'
 import {
   artifactKind,
   bytesLabel,
@@ -284,6 +286,23 @@ function Body({
           aria-label={`Binary, ${size}. This artifact is not text, so there is no window to render. Its location is below; read it with your own credentials.`}
         >
           binary · {size}
+        </p>
+        {/* NO PREVIEW, AND SAID AS THAT (viewers.html A): nothing here reads
+            bytes that are not text or an image. The download is the raw
+            route's, which serves them as stored -- not redacted, because no
+            rule can scan them, and the response says so. */}
+        <p className="art-binary-say">
+          No preview. This file is not text and not an image, so nothing here reads it.{' '}
+          {rawUrl !== null ? (
+            <>
+              <a className="copy" href={rawUrl} download>
+                Download
+              </a>{' '}
+              saves it as stored. It is <b>not redacted</b>: no rule can scan these bytes.
+            </>
+          ) : (
+            <>Download the whole archive to get it; it is not redacted.</>
+          )}
         </p>
         <span className="art-binary-meta">
           <span className="mono uri">{data.uri}</span>
@@ -575,12 +594,14 @@ function Rendered({
   if (kind !== null) {
     switch (kind) {
       case 'markdown':
-        return <Markdown source={content} />
+        return <MarkdownViews source={content} />
       case 'json':
         return <JsonText source={content} whole={whole} />
       case 'ndjson':
       case 'log':
-        return <pre className="logwin-body">{content}</pre>
+        // NUMBERED LINES, the server's mask in its own ink (logMarks.tsx),
+        // still one `<pre>` so a copy is the window.
+        return <LogText name={name} content={content} />
       case 'text':
       case 'image':
       case 'binary':
@@ -589,7 +610,7 @@ function Rendered({
   }
   switch (artifactKind(name)) {
     case 'markdown':
-      return <Markdown source={content} />
+      return <MarkdownViews source={content} />
     case 'transcript':
       return <Transcript source={content} />
     // `diff` is drawn by `PatchArtifact` before `Rendered` is reached
@@ -871,7 +892,108 @@ function JsonText({ source, whole }: { source: string; whole: boolean }) {
       </>
     )
   }
-  return <pre className="art-text">{pretty}</pre>
+  return <JsonViews value={JSON.parse(source) as unknown} pretty={pretty} />
+}
+
+/**
+ * A WHOLE JSON FILE AS A TREE, OR RAW (viewers.html A): the tree opens two
+ * levels and folds the rest, an array says how many items it holds, and a
+ * masked value is the server's `********` in its own ink. Raw is the
+ * pretty-printed text. Only a whole file that parses gets here.
+ */
+function JsonViews({ value, pretty }: { value: unknown; pretty: string }) {
+  const [mode, setMode] = useState<'tree' | 'raw'>('tree')
+  return (
+    <>
+      <div className="ctl-seg art-view-seg" role="group" aria-label="JSON view">
+        <button type="button" aria-pressed={mode === 'tree'} onClick={() => setMode('tree')}>
+          Tree
+        </button>
+        <button type="button" aria-pressed={mode === 'raw'} onClick={() => setMode('raw')}>
+          Raw
+        </button>
+      </div>
+      {mode === 'raw' ? (
+        <pre className="art-text">{pretty}</pre>
+      ) : (
+        <ul className="art-json" role="tree" aria-label="JSON tree">
+          <JsonNode name={null} value={value} depth={0} />
+        </ul>
+      )}
+    </>
+  )
+}
+
+function JsonLeaf({ value }: { value: unknown }) {
+  if (typeof value === 'string') {
+    return (
+      <span className="art-json-str">
+        &quot;
+        {segments(value, '').map((s, i) =>
+          s.kind === 'mask' ? (
+            <span key={i} className="ag-mask" title="masked by the server at read time">
+              {s.text}
+            </span>
+          ) : (
+            <Fragment key={i}>{s.text}</Fragment>
+          ),
+        )}
+        &quot;
+      </span>
+    )
+  }
+  return <span className="art-json-lit">{value === null ? 'null' : String(value)}</span>
+}
+
+function JsonNode({ name, value, depth }: { name: string | null; value: unknown; depth: number }) {
+  const key = name === null ? null : <span className="art-json-key">&quot;{name}&quot;: </span>
+  if (value !== null && typeof value === 'object') {
+    const entries: [string, unknown][] = Array.isArray(value)
+      ? value.map((v, i) => [String(i), v] as [string, unknown])
+      : Object.entries(value as Record<string, unknown>)
+    const says = Array.isArray(value)
+      ? `[ ${entries.length} item${entries.length === 1 ? '' : 's'} ]`
+      : `{ ${entries.length} key${entries.length === 1 ? '' : 's'} }`
+    return (
+      <li role="treeitem" aria-expanded={undefined}>
+        <details open={depth < 2}>
+          <summary>
+            {key}
+            <span className="art-json-count">{says}</span>
+          </summary>
+          <ul role="group">
+            {entries.map(([k, v]) => (
+              <JsonNode key={k} name={Array.isArray(value) ? null : k} value={v} depth={depth + 1} />
+            ))}
+          </ul>
+        </details>
+      </li>
+    )
+  }
+  return (
+    <li role="treeitem">
+      {key}
+      <JsonLeaf value={value} />
+    </li>
+  )
+}
+
+/** Markdown rendered as React elements, or its source (viewers.html A): never HTML built from agent bytes. */
+function MarkdownViews({ source }: { source: string }) {
+  const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
+  return (
+    <>
+      <div className="ctl-seg art-view-seg" role="group" aria-label="Markdown view">
+        <button type="button" aria-pressed={mode === 'rendered'} onClick={() => setMode('rendered')}>
+          Rendered
+        </button>
+        <button type="button" aria-pressed={mode === 'source'} onClick={() => setMode('source')}>
+          Source
+        </button>
+      </div>
+      {mode === 'rendered' ? <Markdown source={source} /> : <pre className="art-text">{source}</pre>}
+    </>
+  )
 }
 
 // ---------------------------------------------------------------------------

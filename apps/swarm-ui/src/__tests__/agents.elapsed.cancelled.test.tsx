@@ -45,7 +45,8 @@ async function whenCell(t: Task, open = false): Promise<HTMLElement> {
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={open ? t.id : null} />)
-  const sel = open ? '.row.is-compact .when' : '.row.clickable:not(.is-compact) .when'
+  // ONE ROW AT EVERY WIDTH (agents.html V1, #503): the compact row, open or not.
+  const sel = '.row.is-compact .when'
   await waitFor(() => expect(container.querySelector(sel)).not.toBeNull())
   return container.querySelector<HTMLElement>(sel)!
 }
@@ -57,15 +58,17 @@ describe('the Agents list elapsed figure on a cancelled task', () => {
 
   it('labels a CANCELLED task with a start as last start to cancel', async () => {
     const cell = await whenCell(finished('CANCELLED'))
-    expect(cell.textContent).toBe(`12m 0s ${LABEL}`)
-    // A truncated cell still carries it.
+    // Line one has room for the figure; the qualifier is on line two, in
+    // words, and on the figure's title, so neither half is hover-only.
+    expect(cell.textContent).toBe('12m 0s')
     expect(cell.getAttribute('title')).toBe(`12m 0s ${LABEL}`)
+    expect(cell.closest('.row')!.querySelector('.cr-sub .when-note')?.textContent).toBe(LABEL)
   })
 
   it('leaves a SUCCEEDED task’s elapsed figure unlabelled', async () => {
     const cell = await whenCell(finished('SUCCEEDED'))
     expect(cell.textContent).toBe('12m 0s')
-    expect(cell.textContent).not.toContain('last start to cancel')
+    expect(cell.closest('.row')!.textContent).not.toContain('last start to cancel')
     expect(cell.getAttribute('title')).toBeNull()
   })
 
