@@ -1036,11 +1036,13 @@ def test_a_long_workflow_label_is_cut_so_the_stage_and_step_survive(tmp_path):
 
 def test_the_step_result_shape_is_unchanged(tmp_path):
     """Callers of the workflow read these seven fields per step; the slim
-    follow format must not change them."""
+    follow format must not change them. `console` (owner decision 2026-10-01)
+    is added after them: the step's console link, as the API served it."""
     got = _run(tmp_path, _SPEC, _ANSWERS)
     steps = [c for c in got["calls"] if c["agentType"] == "sc:step"]
     assert steps and all(
-        c["schema"] == ["state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error"]
+        c["schema"] == ["state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error",
+                        "console"]
         for c in steps
     ), steps[0]["schema"]
     scan = got["result"]["steps"][0]

@@ -1505,3 +1505,111 @@ describe('Markdown keeps a numbered list’s own numbers (#222 e)', () => {
     expect(lists[1]!.getAttribute('start')).toBe('7')
   })
 })
+
+// ---------------------------------------------------------------------------
+// The address names the open output, and only the output (owner decision
+// 2026-10-01): `/agents/<tab>/<id>/artifacts/<name>`, never the file of a
+// patch that is open. MUTATION: drop the `artifacts/<name>` branch from
+// `fromAddress` or `canonical`, or keep `open` in Files' own state -- the
+// address stays `/artifacts` and the first case goes red; write the diff
+// viewer's open file anywhere in the address and the `n`/click checks do.
+// ---------------------------------------------------------------------------
+
+const PATCH = [
+  'diff --git a/src/one.ts b/src/one.ts',
+  '--- a/src/one.ts',
+  '+++ b/src/one.ts',
+  '@@ -1 +1 @@',
+  '-a',
+  '+b',
+  'diff --git a/docs/two.md b/docs/two.md',
+  '--- a/docs/two.md',
+  '+++ b/docs/two.md',
+  '@@ -1 +1,2 @@',
+  ' a',
+  '+c',
+  '',
+].join('\n')
+
+function patchRoutes(): Record<string, Route> {
+  const diff = { name: 'change.diff', bytes: PATCH.length, uri: uri(REF, 'change.diff'), attempt_id: 'att_fe27', kind: 'text', content_type: 'text/plain', role: null }
+  return finishedRoutes({
+    [`/v1/tasks/${REF}/artifacts`]: listing({ artifacts: [...listing().artifacts, diff] }),
+    [`/v1/tasks/${REF}/artifacts/content`]: (q: URLSearchParams) => ({
+      task_id: REF,
+      tenant_id: 'eng',
+      attempt_id: 'att_fe27',
+      artifact: { name: q.get('name'), bytes: PATCH.length, uri: uri(REF, 'change.diff') },
+      status: 'ok',
+      detail: null,
+      key: null,
+      uri: uri(REF, 'change.diff'),
+      content: PATCH,
+      total_bytes: PATCH.length,
+      offset: 0,
+      returned_bytes: PATCH.length,
+      next_offset: null,
+      truncated: false,
+      redacted: false,
+      redaction_count: 0,
+      redaction: { applied_at_read_time: true, rules: 12 },
+    }),
+  })
+}
+
+describe('the address names the open output and never the open file of a patch', () => {
+  afterEach(() => {
+    window.history.replaceState(null, '', '/')
+  })
+
+  it('opening change.diff gives exactly /agents/<tab>/<id>/artifacts/change.diff; n and a click leave it alone', async () => {
+    await openPane(patchRoutes())
+    const out = await sectionReady('Outputs', /change\.diff/)
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`), WAIT)
+    fireEvent.click(row(out, 'change.diff').querySelector('button.art-open')!)
+    const scroller = await waitFor(() => {
+      const s = drawer().querySelector<HTMLElement>('section.diff .diff-scroll')
+      expect(s, 'change.diff did not open in the diff viewer').not.toBeNull()
+      return s!
+    }, WAIT)
+    const named = `/agents/live/${REF}/artifacts/change.diff`
+    expect(window.location.pathname).toBe(named)
+    expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
+    fireEvent.keyDown(scroller, { key: 'n' })
+    expect(scroller.getAttribute('data-open-file')).toBe('docs/two.md')
+    fireEvent.click(drawer().querySelector<HTMLElement>('button.diff-file[data-path="src/one.ts"]')!)
+    expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
+    expect(window.location.pathname).toBe(named)
+    expect(window.location.search).toBe('')
+    expect(window.location.hash).toBe('')
+    // Back to the list takes the name out of the address again.
+    fireEvent.click(drawer().querySelector<HTMLElement>('.diff-bar .diff-back')!)
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`), WAIT)
+    expect(drawer().querySelector('section.diff')).toBeNull()
+  })
+
+  it('opens the output the address names, at the first file of the patch', async () => {
+    await openPane(patchRoutes(), `#work/task/${REF}/artifacts/change.diff`)
+    const scroller = await waitFor(() => {
+      const s = drawer().querySelector<HTMLElement>('section.diff .diff-scroll')
+      expect(s, 'the named output was not opened').not.toBeNull()
+      return s!
+    }, WAIT)
+    expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
+    expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts/change.diff`)
+  })
+
+  it('round-trips a name, slashes and all, as one segment', async () => {
+    const { fromHash, canonical } = await import('../App')
+    window.location.hash = '#work/task/tsk_x/artifacts/out%2Fchange.diff'
+    const r = fromHash()
+    expect(r.taskId).toBe('tsk_x')
+    expect(r.taskPane).toBe('artifacts')
+    expect(r.artifact).toBe('out/change.diff')
+    expect(canonical(r)).toBe('work/task/tsk_x/artifacts/out%2Fchange.diff')
+    // The bare pane names no output, and writes none.
+    window.location.hash = '#work/task/tsk_x/artifacts'
+    expect(fromHash().artifact ?? null).toBeNull()
+    expect(canonical(fromHash())).toBe('work/task/tsk_x/artifacts')
+  })
+})

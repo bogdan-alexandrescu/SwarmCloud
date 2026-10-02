@@ -83,7 +83,8 @@ with the section that carries the detail:
   set of paths than `.github/workflows/` alone (§5.1, §6, §7 T6). **Round 3
   resolved whether moving that permission to job level is a precondition:
   the owner decided it is not** — recorded as an accepted residual, R4 (§7,
-  §11 open question (b)).
+  §11 open question (b)). **Status, 2026-10-01: closed for every workflow
+  once #457 is merged and the bootstrap root is applied** — see R4.
 * **M5.** A required check with no `app_id` is refused, never satisfied by a
   legacy commit status (§5.2, §6).
 * Minors, round 1–2: worker-action profiles skip checkpoint restore (§1.3);
@@ -1544,6 +1545,40 @@ review**, or **the merge credential**.
   Moving `id-token: write` to job level, behind the environment gate, still
   closes it and is recommended as its own change (§11 Q8), just not a gate on
   this one.
+
+  **Status, 2026-10-01: closed for all workflows once #457 is merged and the
+  bootstrap root is applied.** #455 moved `release.yml`'s grant to job level,
+  onto the six jobs that authenticate to Google. Its review found the same
+  exposure in three more places: `application.yml`, `terraform.yml` and
+  `security.yml` granted `id-token: write` at workflow level and run on every
+  push to `main`, and the deployer's binding (`attribute.repo_ref/<repo>@<ref>`)
+  accepted a token from **any** workflow on `main` — so `application.yml`'s
+  `python` and `integration` jobs, which run `pytest` over the merged tree,
+  could still become the deployer. #457 closes it with two independent
+  controls (owner decision, 2026-10-02, both):
+
+  * **job-level grants** — every workflow that authenticates as the deployer
+    declares `id-token: write` only on the jobs that run
+    `google-github-actions/auth`, never at workflow level, and never through a
+    string `permissions:` such as `write-all`
+    (`tests/unit/scripts/test_workflow_id_token_scope.py`,
+    `tests/unit/scripts/test_release_id_token_scope.py`);
+  * **a trust pin** — the deployer's workload identity binding names
+    `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@refs/heads/main`
+    for exactly the five files that authenticate as it (`release.yml`,
+    `application.yml`, `terraform.yml`, `security.yml`,
+    `iam-refusal-probe.yml`; `terraform/bootstrap/wif.tf`
+    `deployer_workflows`), so a workflow added later is refused whatever it
+    grants itself.
+
+  The first holds from the merge. The second is IAM in the bootstrap root,
+  which only the owner applies; until that apply, a workflow file that is not
+  on the list and grants itself `id-token` (for example `ci-fix.yml`, which
+  does at workflow level) can still present a token the deployer accepts.
+  What remains by design: a job that legitimately authenticates — release
+  `verify` does not, but `build` in `application.yml` runs `build-images.sh`
+  from the merged checkout — still runs merged code as the deployer, which is
+  what `touches_protected_paths` (T6) is for.
 * **R5.** T12: today, any identity with write access — including `-git` — can
   still use the ordinary PR-merge route on `main`, even though `main-protection`
   (M1) has closed the direct-push bypass. M2's restrict-updates ruleset, with

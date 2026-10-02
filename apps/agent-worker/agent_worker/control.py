@@ -765,6 +765,33 @@ class ControlPlane:
             return None
         return self._assert_tenant(snap.to_dict() or {}, kind="attempt", document_id=attempt_id)
 
+    def fetch_parent_states(self, parent_ids: Sequence[str]) -> dict[str, TaskState | None]:
+        """Each parent task's state, by id: contract request 34, decision 7.
+
+        `parent_ids` is the VERIFIED task's `depends_on` -- a signed field --
+        and nothing else; the caller never passes an id it read from an
+        unsigned one. One bounded point read per distinct id (`depends_on` is
+        capped at the workflow step limit), in the order given.
+
+        None for a parent with no document, or whose `state` is not a state
+        the contract names: neither is SUCCEEDED, and neither is evidence the
+        dependency is met. Refused, with `TenantMismatchError`, when a parent
+        document is another tenant's -- a parent swarm-api would never have
+        signed, and reading its state would be a cross-tenant read.
+        """
+        states: dict[str, TaskState | None] = {}
+        for parent_id in dict.fromkeys(parent_ids):
+            snap = self._db.collection("tasks").document(parent_id).get(**self.call_options())
+            if not snap.exists:
+                states[parent_id] = None
+                continue
+            doc = self._assert_tenant(snap.to_dict() or {}, kind="task", document_id=parent_id)
+            try:
+                states[parent_id] = TaskState(doc.get("state"))
+            except ValueError:
+                states[parent_id] = None
+        return states
+
     def fetch_lease(self) -> dict[str, Any] | None:
         snap = self._lease_ref().get(**self.call_options("poll"))
         if not snap.exists:

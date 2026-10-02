@@ -209,6 +209,15 @@ is a measurement, not an argument, and §8.3b is taking it.
 
 ### 2.3 Storage: ephemeral per agent, checkpointed to GCS
 
+> **Amended 2026-10-02: what runs.** On Cloud Run Jobs the scratch volume is a
+> memory-backed tmpfs carved out of the container's memory limit
+> (`apps/scheduler/scheduler/dispatch.py:153`), so `disk_gib` is a slice of
+> `memory_gib`, not extra capacity (§2.1 says why). On GKE it is an `emptyDir`
+> sized to the resource class (`apps/scheduler/scheduler/dispatch.py:1572`).
+> The per-tenant shared cache in the last paragraph is still not built: no
+> volume, quota or cleanup policy for it exists in `terraform/` or in either
+> dispatcher.
+
 Each agent gets its own scratch volume sized by resource class. Mandatory
 periodic checkpointing to the tenant's GCS prefix continues unchanged from v1.
 
@@ -223,6 +232,33 @@ quota, cleanup policy, and an answer for cross-agent interference *within* a
 tenant.
 
 ### 2.4 Dispatch: an explicit `swarm` skill, not interception
+
+> **Amended 2026-10-02 (S7, owner decision): a remote step is an `agent()`
+> call.** The form this section rejected "for now" is the one that was built,
+> and it is S7's form:
+>
+> ```js
+> phase('Review')
+> const results = await parallel(DIMENSIONS.map(d => () =>
+>   agent(d.prompt, { agentType: 'sc:remote', label: d.key, schema: FINDINGS })))
+> ```
+>
+> `sc:remote` is the sc plugin's agent (`plugin/agents/remote.md`; usage at
+> `plugin/README.md:622`). It dispatches its prompt as one `claude-code` task on
+> the session's repository and pushed branch, follows it, and returns the remote
+> agent's answer, or, given a `schema`, the JSON object parsed from the end of
+> that answer. A schema-mode call can throw when the task does not succeed, so
+> give the schema a nullable `state`/`error` or catch it; the plugin README says
+> how. Remote steps still mix freely with local `agent()` steps, and each one is
+> an ordinary row in `/workflows`. It stays visibly remote: the step names
+> `sc:remote`. The plugin-API behaviour this section called unverified is what
+> that agent runs on today.
+>
+> The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
+> MCP tools for a session that is not running a workflow script:
+> `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
+> one request (`apps/swarm-mcp/swarm_mcp/server.py:1330`), and `swarm_collect`
+> gathers the results.
 
 ```js
 phase('Review')
@@ -256,6 +292,23 @@ interactivity stays local. Placement is never a surprise, and "why did that run
 locally?" is never a debugging question.
 
 ### 2.6 Accounts: claudeswitch is the mechanism, the broker is the policy
+
+> **Amended 2026-10-02: claudeswitch is a reference, not a component.** No pod
+> and no service runs claudeswitch. It is not in the agent image, and nothing
+> under `apps/` calls it. What the platform took from it is measured knowledge,
+> not code: the token endpoint that actually answers a refresh
+> (`apps/quota-broker/quota_broker/oauth.py:54`, "verified against
+> claudeswitch") and the onboarding constraints recorded in its ground-truth
+> notes (`apps/quota-broker/quota_broker/oauth.py:337`). The mechanism column of
+> the table below is split between two services. The broker signs accounts in
+> (§2.6.1) and refreshes them as the single writer (§7.3). The worker reads an
+> account's access token by secret name and gives it to the agent in one
+> environment variable (§2.6.3). The code gives two reasons. The worker's
+> credential path must be the same on a Cloud Run Job execution and on a GKE
+> pod, so it lives in the worker and not in a pod spec. And a token handed over
+> in the environment leaves no credential file for claudeswitch's `use` to
+> install. The rule against claudeswitch's daemon in a pod still stands; it now
+> holds because nothing in a pod runs claudeswitch at all.
 
 **Do not rebuild this.** `claudeswitch` already solves the per-machine half of
 this problem, in production, with five accounts and an audit trail of real
@@ -291,6 +344,33 @@ runs the mechanism.
 
 #### 2.6.1 Onboarding — one account, one command
 
+> **Amended 2026-10-02 (S10): `account add` is the CLI driving the API's OAuth
+> flow, not claudeswitch plus a vault upload.** The verbs are
+> `sc account add --label <label> [--lend-to <tenant>]`,
+> `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
+> asks for the label typed back. `sc accounts` is the read-only list. `add`
+> (`apps/swarm-mcp/swarm_mcp/sc.py:846`) runs four steps:
+>
+> 1. It calls `POST /v1/accounts/authorize`
+>    (`apps/swarm-api/swarm_api/routes/accounts.py:258`), which returns the
+>    Anthropic sign-in URL and the `state` that keys it.
+> 2. It opens the operator's browser at that URL.
+> 3. It reads the code the callback page shows, without echoing it.
+> 4. It sends that code once to `POST /v1/accounts/exchange`
+>    (`apps/swarm-api/swarm_api/routes/accounts.py:285`).
+>
+> The broker exchanges the code and writes the credential to Secret Manager
+> itself. It files the account under the tenant recorded when the sign-in
+> began, taken from the verified token and never from the request. The
+> operator's machine reads and writes no credential file, and the code and the
+> `state` are printed nowhere. The reason is recorded in `cmd_account_add`'s
+> docstring (owner decision 2026-10-01): this is the flow the console already
+> uses. That leaves one onboarding path, and the broker is the single writer
+> from the first token on. The v1 rules in the last paragraph hold unchanged.
+> This also answers §8 question 10: what the operator pastes is a one-time code,
+> not a token. `drain` sets the account `DRAINING`, so it gets no new
+> assignments; moving running agents off it is §2.6.4's question.
+
 ```
 /swarm account add --label personal     → claudeswitch login, then vault → Secret Manager
 /swarm account list                     → headroom per window, who holds it
@@ -323,14 +403,28 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3285`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3769`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:3392`,
+> (`apps/agent-worker/agent_worker/lifecycle.py:3876`,
 > `apps/agent-worker/agent_worker/accountlease.py:445`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
 > writer (§7.3); the worker never refreshes.
+
+> **Amended 2026-10-02: the assignment is a broker HOLD, not a field on the
+> lease, and there is no credential file.** The broker records each assignment
+> as a hold on the account document
+> (`apps/quota-broker/quota_broker/accounts.py:295`). A hold carries its own
+> id, which the release must name, and it expires on its own, so a SIGKILLed
+> worker costs a few stale minutes rather than a count that stays inflated for
+> good (`apps/agent-worker/agent_worker/accountlease.py:44`). It is not on the
+> LEASE because `Lease` is frozen and has no account field. Recording which
+> account an attempt ran on is contract change request 13, still open. The
+> token reaches the agent as one environment variable, `CLAUDE_CODE_OAUTH_TOKEN`
+> (`apps/agent-worker/agent_worker/accountlease.py:113`), and is never written
+> to a credentials file. So the `CLAUDE_CONFIG_DIR` and `MergeForSwap` paragraphs
+> below have nothing to act on today.
 
 ```
 admission  → broker picks the account with the most headroom
@@ -461,6 +555,28 @@ is a platform that blocks its own upgrades.
 
 ### 2.8 Dashboard: self-hosted Cloud Run service
 
+> **Amended 2026-10-02: what was built.** The dashboard is its own Cloud Run
+> service, `swarm-ui` (`terraform/infra/main.tf:371`). It differs from this
+> section in three places.
+>
+> * **It reads swarm-api only.** It never reads Firestore directly, nor the
+>   Kubernetes API. swarm-api is where the caller's token is verified and
+>   every read is scoped to the caller's tenant. A UI holding a privileged
+>   identity would move invariant 9 into new code
+>   (`terraform/modules/frontend/main.tf:21`).
+> * **It polls, with no server-sent events.** The capacity screens re-read
+>   every 30 or 60 seconds and pause while the tab is hidden
+>   (`apps/swarm-ui/src/capacityPoll.ts:13`).
+> * **The front door is an external Application Load Balancer with IAP**
+>   (`terraform/modules/frontend/main.tf:1`), not an internal one.
+>   `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` is exactly the ingress setting an
+>   external ALB in front of Cloud Run needs, so the wall described below was
+>   never there. The module is created where `enable_frontend` is set
+>   (`terraform/infra/main.tf:492`).
+>
+> The table below is the design. `docs/web-ui/README.md` records which screens
+> exist.
+
 Reads Firestore and the Kubernetes API, pushes updates over server-sent events.
 
 **This makes the internal load balancer and IAP a PREREQUISITE, not a nicety.**
@@ -523,6 +639,16 @@ the right posture while trust is new, and it is a one-line policy rather than an
 architecture.
 
 ### 2.11 Scale: 50–100 concurrent agents
+
+> **Amended 2026-10-02: the pool counters are not sharded.** Admission still
+> reads and writes whole pool documents in one transaction, the pools named by
+> `pool_names_for` (`apps/common/swarm_common/models.py:82`), so invariant 2
+> holds exactly as v1 built it. Sharding was deferred, not designed.
+> `docs/scaling.md` §5 ranks it third, behind fewer and longer admissions and
+> the per-tenant and per-provider pools that already spread the writes, and
+> calls for it only "if `global` genuinely saturates". §8 question 6, which
+> would show that, has not been measured. Sharding `global` changes the frozen
+> `pool_names_for`, so it arrives as a contract change request, not an edit.
 
 This is a design constraint with teeth, not a hope:
 
@@ -645,6 +771,20 @@ v1 built these and they are correct. They are not rewritten:
 
 ## 5. What gets built
 
+> **Amended 2026-10-02.** Two items were not built as written.
+>
+> * **Item 5: there is no sidecar** in either backend's pod. The worker process
+>   itself leases the account (§2.6.3) and runs the checkpoint timer
+>   (`apps/agent-worker/agent_worker/lifecycle.py:1364`). The reason is §2.6.3's:
+>   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
+>   How events are published is §2.7's question.
+> * **Item 12 is not configuration.** The catalogue is the frozen
+>   `apps/common/swarm_common/profiles.py`, so a new profile is a contract
+>   change request. Requests 33, 35 and 36 added `merge`, `post-verdict` and
+>   `claude-code-review` that way. Invariant 10 is the reason: a profile fixes
+>   the image, command and resources a caller can never send, so adding one is
+>   a reviewed decision, not a setting.
+
 1. **GKE Autopilot substrate, for the browser runner** — cluster, per-tenant
    namespaces, NetworkPolicies, the pod spec, RBAC. gVisor is a render option,
    not the default (§2.1).
@@ -727,6 +867,22 @@ checkpoint discards work that was already paid for.
 Each of these can invalidate a decision above. Spike them first; they are cheap
 compared to discovering the answer halfway through.
 
+> **Amended 2026-10-02 (S35, S36, owner decision): rows 3b, 4 and 5 are not
+> planned.** Each one measures something only an agent fleet on GKE needs:
+>
+> * row 3b: whether `microvm` beats gVisor;
+> * row 4: whether a real `claude-code` agent pays gVisor's 2.5×;
+> * row 5: Autopilot cold start for short agent tasks.
+>
+> The work to take them, the GKE benchmark lane, was removed when the owner
+> kept Cloud Run Jobs primary (2026-10-01, §2.1). `claude-code` runs on Cloud
+> Run Jobs, and no profile renders the gVisor template by default
+> (`kubernetes/render.py:390`). Row 5 is scoped to `claude-code` and the agent
+> fleets: the `browser` profile does run on Autopilot today
+> (`apps/common/swarm_common/profiles.py:1187`), for its `/dev/shm`, and accepts
+> its cold start, which is not what row 5 asked. If an agent profile ever moves
+> to GKE, these rows come back with it.
+
 | # | Question | Invalidates if wrong |
 |---|---|---|
 | 1 | ~~Where does the CLI read credentials on Linux?~~ **ANSWERED:** `~/.claude/.credentials.json` (relocatable via `CLAUDE_CONFIG_DIR`), 0600, plaintext JSON | §2.6.3 resolved |
@@ -759,11 +915,32 @@ v2 contradicts the frozen contract in specific places. These are **requests**, p
   more operationally demanding promise.
 * **Zero idle cost** → zero idle *workload*. A cluster fee exists for the GKE
   side (§2.1).
-* **Non-root, read-only rootfs, dropped capabilities** → root, writable rootfs,
+* ~~**Non-root, read-only rootfs, dropped capabilities** → root, writable rootfs,
   gVisor. The defence moved down a layer; it did not disappear, and it is not the
-  same defence.
+  same defence.~~ **Not requested (amended 2026-10-02):** nothing runs as root,
+  so the contract line stands. The agent image drops to `USER swarm:swarm`,
+  uid 10001 (`images/agent-runtime-base/Dockerfile:658`). The GKE pod and its
+  container keep non-root, a read-only root filesystem and every capability
+  dropped (`apps/scheduler/scheduler/dispatch.py:192`,
+  `apps/scheduler/scheduler/dispatch.py:205`). gVisor is the opt-in
+  `--runtime gvisor` render (`kubernetes/render.py:390`). The renderer refuses
+  that render for a namespace still at Pod Security `restricted`
+  (`kubernetes/render.py:826`), because restricted forbids root, so §2.2's
+  trade is not made anywhere today.
 * **One credential per tenant per provider** → a pool of accounts per tenant, one
-  held per agent at a time, swappable mid-run.
+  held per agent at a time, swappable mid-run. **Amended 2026-10-02:** the pool
+  is built, without editing the contract, and the per-tenant credential is
+  still the floor.
+  * The pool is per tenant, with explicit lending to named tenants
+    (`apps/quota-broker/quota_broker/accounts.py:4`).
+  * The worker holds one account per attempt
+    (`apps/agent-worker/agent_worker/accountlease.py:3`). When the broker cannot
+    be reached, the worker falls back to the tenant's own
+    `swarm-tenant-<tenant>-<provider>` secret, so the platform never needs this
+    amendment to run.
+  * Nothing in `swarm_common` was edited. The assignment lives in the broker's
+    holds (§2.6.3), and recording it on the attempt is request 13, still open.
+  * No mid-run swap exists in the worker today (§2.6.4).
 
 Nothing in `apps/common/swarm_common/` is edited by this document.
 

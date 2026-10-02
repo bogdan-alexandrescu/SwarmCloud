@@ -86,7 +86,10 @@ def create_task(
     result = ctx.submissions.submit_tasks(auth, [body])
     task = result.tasks[0]
     response.headers["Location"] = f"/v1/tasks/{task.id}"
-    return {"task": task_to_api(task), "scheduler_woken": result.woke_scheduler}
+    return {
+        "task": task_to_api(task, console_url=ctx.settings.console_url),
+        "scheduler_woken": result.woke_scheduler,
+    }
 
 
 @router.post("/batch", status_code=status.HTTP_201_CREATED)
@@ -97,7 +100,9 @@ def create_task_batch(
 ) -> dict:
     result = ctx.submissions.submit_tasks(auth, body.tasks)
     return {
-        "tasks": [task_to_api(task) for task in result.tasks],
+        "tasks": [
+            task_to_api(task, console_url=ctx.settings.console_url) for task in result.tasks
+        ],
         "count": len(result.tasks),
         "scheduler_woken": result.woke_scheduler,
     }
@@ -143,7 +148,12 @@ def list_tasks(
     accounts = accounts_for(ctx.db, tenant_id, page.items)
     return {
         "tasks": [
-            task_to_api(task, waiting.get(task.id), account=accounts.get(task.id))
+            task_to_api(
+                task,
+                waiting.get(task.id),
+                account=accounts.get(task.id),
+                console_url=ctx.settings.console_url,
+            )
             for task in page.items
         ],
         "next_page_token": page.next_page_token,
@@ -161,7 +171,14 @@ def get_task(
     task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
     waiting = waiting_for_page(ctx.db, [task], as_of=ctx.now())
     accounts = accounts_for(ctx.db, tenant_id, [task])
-    return {"task": task_to_api(task, waiting.get(task.id), account=accounts.get(task.id))}
+    return {
+        "task": task_to_api(
+            task,
+            waiting.get(task.id),
+            account=accounts.get(task.id),
+            console_url=ctx.settings.console_url,
+        )
+    }
 
 
 @router.post("/{task_id}/cancel")
@@ -179,7 +196,9 @@ def cancel_task(
     )
     accounts = accounts_for(ctx.db, tenant_id, [task])
     return {
-        "task": task_to_api(task, account=accounts.get(task.id)),
+        "task": task_to_api(
+            task, account=accounts.get(task.id), console_url=ctx.settings.console_url
+        ),
         # A task holding capacity stays in its state until the worker or the
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.

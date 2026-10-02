@@ -754,7 +754,12 @@ function SideEditor({
   const valid = value.trim() !== '' && Number.isInteger(parsed) && parsed >= 0 && parsed <= 100_000
   const invalid = dirty && !valid
   const next = dirty && valid ? parsed : null
-  const drastic = next !== null && isDrasticCut(pool.hard_limit, next)
+  // MEASURED FROM THE CEILING ADMISSION APPLIES -- the "Ceiling" this editor
+  // shows -- not the hard limit. With AIMD or quota holding a hard limit of 20
+  // at 8, 20 -> 10 changes nothing admission does and 8 -> 3 is the cut that
+  // stops work; comparing against 20 asked for the first and judged the
+  // second against the wrong base.
+  const drastic = next !== null && isDrasticCut(pool.effective_limit, next)
   const confirmed = !drastic || typed === pool.name
   const editable = isEditable(pool) && admin !== false
 

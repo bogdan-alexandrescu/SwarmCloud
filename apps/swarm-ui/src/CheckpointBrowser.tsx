@@ -656,6 +656,8 @@ function Listing({
           artifact={{ name: selected.path, bytes: selected.size, uri: data.archive.uri }}
           load={loadSelected}
           onClose={() => setSelected(null)}
+          // Opened from the checkpoint's file list, not the Artifacts list.
+          backLabel="‹ Files"
         />
       )}
     </>

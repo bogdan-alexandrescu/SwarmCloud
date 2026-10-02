@@ -70,6 +70,7 @@ from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TaskState
 
 from . import render
 from .client import SwarmClient, SwarmError, outputs_of
+from .follow import with_console
 from .invocation import help_command, terminal_command
 from .patches import explain_absence, masked_counts, patch_uri
 from .render import Finding, Snapshot, Style
@@ -1009,12 +1010,14 @@ def debug_report(
     if task is None:
         report["task"] = _section(error=failure)
     else:
-        report["task"] = _section({
+        # `console`: the API's link to this task, as served; no key when the
+        # API served none (`follow.console_link`).
+        report["task"] = _section(with_console({
             "state": task.get("state"),
             "runner_profile": task.get("runner_profile"),
             "last_error": _shown(task.get("last_error"), task.get("last_error_redaction_count")),
             "end_cause": task.get("end_cause"),
-        })
+        }, task))
 
     attempts, failure = _attempt(lambda: client.attempts(task_id))
     if attempts is None:
@@ -1093,6 +1096,8 @@ def _debug_lines(report: dict[str, Any]) -> list[str]:
         lines.append(f"  last error  {t['last_error'] if t['last_error'] is not None else '(none)'}")
         if t.get("end_cause"):
             lines.append(f"  end cause   {t['end_cause']}")
+        if t.get("console"):
+            lines.append(f"  console: {t['console']}")
     masked = report["masked"]
     lines.append(
         "  masked      "
