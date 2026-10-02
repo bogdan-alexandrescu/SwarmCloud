@@ -285,6 +285,22 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
         "dispatch": "declared as the optional TaskDispatch, whose own fields are checked separately",
         "links": "the console link, for surfaces OUTSIDE the console (MCP, sc, plugin, PR bodies); "
         "inside it the address bar is the link",
+        # Served ahead of the client (#179, lane B10); types.ts is apps/swarm-ui
+        # work, held for the UI lane after PR #432. Remove these three when
+        # types.ts declares them.
+        "heartbeat_at": "the current lease's last beat (#179); declared by the UI lane after PR #432",
+        "heartbeat_grace_seconds": "the reconciler's grace (#179); declared by the UI lane after PR #432",
+        "heartbeat": "what the heartbeat reading is (#179); declared by the UI lane after PR #432",
+    },
+    # U26, served ahead of the client the same way; remove when types.ts
+    # declares them.
+    "Stats": {
+        "dispatch_state": "running/paused/unknown (U26); declared by the UI lane after PR #432",
+        "control_document": "present/missing (U26); declared by the UI lane after PR #432",
+    },
+    "DispatchControl": {
+        "dispatch_state": "running/paused/unknown (U26); declared by the UI lane after PR #432",
+        "control_document": "present/missing (U26); declared by the UI lane after PR #432",
     },
     "Workflow": {
         "steps": "declared as WorkflowStep[], whose own fields are checked separately",

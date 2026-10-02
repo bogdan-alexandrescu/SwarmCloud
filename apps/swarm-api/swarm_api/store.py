@@ -839,15 +839,35 @@ class Store:
     ) -> Page:
         """One page of this tenant's tasks, newest first.
 
-        `submitted_by` is required, as on `get_task`. When it names a
-        submitter, rows that are not theirs are dropped from the page AFTER the
-        cursor is taken from the unfiltered page, so paging stays correct (a
-        page may be short) and no composite index is needed for a filter only
-        continuation-scoped callers use.
+        `submitted_by` is required, as on `get_task`: `None` reads every
+        submitter's tasks; an email narrows the page to that submitter's. It is
+        a continuation-scoped caller's forced filter (`deps.submission_scope`)
+        or the route's `submitted_by` owner filter (U5), and it is ALWAYS
+        applied inside `tenant_id`, never instead of it.
+
+        TWO WAYS, decided by what else filters the page:
+
+          * the owner is the ONLY filter besides the tenant -> it is applied IN
+            THE QUERY (`where submitted_by ==`, index
+            tasks-tenant-submitter-created), so every page is full and the
+            cursor is the last row the caller sees;
+          * combined with `state`, `workflow_id` or `runner_profile` -> no index
+            covers that combination, so rows that are not the submitter's are
+            dropped AFTER the cursor is taken from the unfiltered page. Paging
+            stays correct, but a page may be short (even empty with a
+            `next_page_token`), which is today's behaviour for that case.
         """
+        owner_in_query = (
+            submitted_by is not None
+            and state is None
+            and workflow_id is None
+            and runner_profile is None
+        )
         query = self._db.collection(TASKS).where(
             filter=FieldFilter("tenant_id", "==", tenant_id)
         )
+        if owner_in_query:
+            query = query.where(filter=FieldFilter("submitted_by", "==", submitted_by))
         if state is not None:
             query = query.where(filter=FieldFilter("state", "==", state.value))
         if workflow_id is not None:
@@ -866,8 +886,34 @@ class Store:
         if len(rows) > limit:
             rows = rows[:limit]
             next_token = encode_cursor(rows[-1].created_at)
-        if submitted_by is not None:
+        if submitted_by is not None and not owner_in_query:
             rows = [t for t in rows if t.submitted_by == submitted_by]
+        return Page(items=rows, next_page_token=next_token)
+
+    def list_failures(self, *, limit: int = 50, page_token: str | None = None) -> Page:
+        """One page of FAILED tasks across EVERY tenant, newest first (U19).
+
+        For `GET /v1/admin/failures` only, which is full-admin gated: this is
+        the one task read with no tenant filter, because the question it
+        answers -- what is failing on the platform -- has no tenant. Every
+        tenant-scoped index leads with tenant_id, so it runs on its own
+        collection-scope index, tasks-state-created (state ASC, created_at
+        DESC). Paged exactly as `list_tasks` is, by `created_at`.
+        """
+        query = self._db.collection(TASKS).where(
+            filter=FieldFilter("state", "==", TaskState.FAILED.value)
+        )
+        before = decode_cursor(page_token)
+        if before is not None:
+            query = query.where(filter=FieldFilter("created_at", "<", before))
+        query = query.order_by("created_at", direction=firestore.Query.DESCENDING)
+        query = query.limit(limit + 1)
+        rows = [task_from_dict(snap.to_dict()) for snap in query.stream()]
+        rows.sort(key=lambda t: (t.created_at, t.id), reverse=True)
+        next_token = None
+        if len(rows) > limit:
+            rows = rows[:limit]
+            next_token = encode_cursor(rows[-1].created_at)
         return Page(items=rows, next_page_token=next_token)
 
     def request_cancel(
@@ -1643,12 +1689,32 @@ class Store:
         return touched
 
     def get_control(self) -> dict[str, Any]:
+        """The dispatch switch, and whether the document behind it exists (U26).
+
+        `dispatch_paused` stays False for a MISSING document, because that is
+        what the scheduler does with one: `scheduler/store.py`
+        `dispatch_paused()` returns False when the snapshot does not exist, so
+        no document means the drain loop dispatches. Reporting it True, or
+        null, would describe a platform that does not exist.
+
+        But False alone cannot tell "an operator resumed dispatch" from "nobody
+        ever wrote the switch", and the console is specified to draw the second
+        as `UNKNOWN - no control document` (docs/web-ui/08-operator-gaps.md).
+        So two more fields say which it is:
+
+          control_document  `present` | `missing`
+          dispatch_state    `running` | `paused` | `unknown` -- `unknown`
+                            exactly when the document is missing.
+        """
         snap = self._db.collection(CONTROL).document(CONTROL_DOC).get()
         if not snap.exists:
             return {"dispatch_paused": False, "updated_at": None, "updated_by": None,
-                    "reason": None}
+                    "reason": None, "dispatch_state": "unknown",
+                    "control_document": "missing"}
         data = dict(snap.to_dict())
         data.setdefault("dispatch_paused", False)
+        data["dispatch_state"] = "paused" if data["dispatch_paused"] else "running"
+        data["control_document"] = "present"
         return data
 
     def set_dispatch_paused(self, paused: bool, *, by: str, reason: str | None = None) -> dict:

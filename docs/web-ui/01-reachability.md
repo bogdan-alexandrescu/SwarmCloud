@@ -473,12 +473,24 @@ exists to test against. It is the first thing to verify the day P2 lands, and th
 `credentials`/`redirect` handling on the fetch wrapper is where the verification belongs.*
 
 **Rate-limit arithmetic the UI has to live inside.** The token bucket is **20 rps per
-principal per instance**, hard-coded: `config.py:74` declares `requests_per_second = 20`
+principal per instance**, hard-coded: `config.py:81` declares `requests_per_second = 20`
 and `from_env()` never reads it, so no environment variable changes it. Burst is
-`max(40, 20*2) = 40` (`settings.py:127`). With `max_instances` for swarm-api the effective
-ceiling is fuzzy — requests land on whichever instance the LB picks — so treat 20 rps as
-the budget and count every open tab against it. Page sizes default to 50 and cap at 200
-(`deps.py:194-199`).
+`RATE_LIMIT_BURST`, default `max(40, 20*2) = 40` (`settings.py:424`). Both are served,
+as configured, in `limits` on `GET /v1/stats` and `GET /v1/version`
+(`served_limits.configured_limits`, one helper for both). With `max_instances` for
+swarm-api the effective ceiling is fuzzy — requests land on whichever instance the LB
+picks — so treat 20 rps as the budget and count every open tab against it. Page sizes
+default to 50 and cap at 200 (`deps.py:333-338`).
+
+**NO ROUTE SERVES A REMAINING BUDGET, AND NONE WILL** (owner decision, 2026-10-01). The
+limiter (`ratelimit.py`) is an in-process token bucket per principal **per instance**,
+built once per process (`deps.build_context`). With N instances the effective ceiling is
+about N × the configured rate, and the next request goes to whichever instance the load
+balancer picks, so a "remaining" or "headroom" figure read from the instance that
+answered is wrong for the very next request — it would be a number drawn as a
+measurement that measures nothing the caller can use. The UI shows the configured rate
+and burst, labelled *per instance*, and learns it is over budget the only honest way:
+a `rate_limited` response.
 
 **PHONE LAYOUT.** Error surfaces are inline, in the panel that failed, never a toast: a
 toast at the bottom of a 390pt screen sits under the thumb and gets dismissed by accident,
@@ -575,9 +587,22 @@ phone: **Dispatch** (running / PAUSED, amber), **My tasks** (a count per non-zer
 is entitled to see, one row each: name, `active`, `effective_limit`, `hard_limit`,
 `adaptive_target`, `quota_derived_limit`, and a paused chip when `enabled === false`.
 
-**WHERE EVERY VALUE COMES FROM.** `GET /v1/stats` (`platform.py:13-18` →
-`service.py:271-288`) gives `tasks_by_state`, `dispatch_paused`, `limits{max_batch_size,
-max_input_bytes, max_workflow_steps, requests_per_second_per_instance}` and `generated_at`.
+**WHERE EVERY VALUE COMES FROM.** `GET /v1/stats` (`platform.py` → `service.py`
+`stats`) gives `tasks_by_state`, `dispatch_paused`, `dispatch_state` (`running` /
+`paused` / `unknown`), `control_document` (`present` / `missing`; `unknown` is exactly the
+missing-document case, which the scheduler treats as dispatching), `limits{max_batch_size,
+max_input_bytes, max_workflow_steps, requests_per_second_per_instance,
+rate_limit_burst_per_instance}` and `generated_at`. `GET /v1/version` gives which build is
+serving — `git_sha`, `build_time` (the image's build args), `revision` and `service`
+(Cloud Run's `K_REVISION` / `K_SERVICE`), each null when unset, never a placeholder — and
+the same `limits` object, from the same helper, so the two cannot drift.
+
+**NO RATE-LIMIT HEADROOM, ON THIS PANEL OR ANY OTHER** (owner decision, 2026-10-01).
+`limits` is configuration. The limiter is a token bucket per principal per instance, so
+with N instances the real ceiling is about N × `requests_per_second_per_instance`, and a
+remaining-budget figure read from whichever instance answered is wrong for the next
+request. Neither route serves a remaining or headroom field; the panel shows the
+configured figures labelled *per instance* and nothing that claims to be a live budget.
 `GET /v1/capacity` (`platform.py:21-26` → `service.py:290-331`) gives `pools[]` through
 `codec.pool_to_api` and `runner_profiles{}` with each profile's resource class, backend,
 provider, units and pool names. `GET /readyz` (`health.py:42-52`) gives the Firestore

@@ -55,6 +55,7 @@ from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
+from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
 from .store import Store
@@ -663,12 +664,15 @@ class SubmissionService:
             "tenant_id": tenant_id,
             "tasks_by_state": self._store.count_tasks_by_state(tenant_id),
             "dispatch_paused": bool(control.get("dispatch_paused")),
-            "limits": {
-                "max_batch_size": self._settings.core.max_batch_size,
-                "max_input_bytes": self._settings.core.max_input_bytes,
-                "max_workflow_steps": self._settings.core.max_workflow_steps,
-                "requests_per_second_per_instance": self._settings.core.requests_per_second,
-            },
+            # U26: whether that False is a resumed switch or a missing
+            # document (`Store.get_control`); `unknown` / `missing` for the
+            # second, which the scheduler treats as dispatching.
+            "dispatch_state": control.get("dispatch_state"),
+            "control_document": control.get("control_document"),
+            # Configured, never remaining: see `swarm_api.served_limits` for
+            # why no headroom figure is served. /v1/version calls the same
+            # helper.
+            "limits": configured_limits(self._settings),
             "generated_at": self._now(),
         }
         if ctx.is_admin:
