@@ -43,6 +43,7 @@ import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
+import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -1135,12 +1136,14 @@ function here(): string {
   return window.location.pathname + window.location.search + window.location.hash
 }
 
-/** The spine section a route belongs to. Submit belongs to none of them. */
+/** The spine section a route belongs to. Submit lights Work, as its two
+ *  forms do (submit.html M2: every frame lights Work). */
 function spineOf(sectionId: string): SpineSection {
   switch (sectionId) {
     case 'overview':
       return 'overview'
     case WORK:
+    case SUBMIT:
       return 'work'
     case CAPACITY:
       return 'capacity'
@@ -1153,42 +1156,6 @@ function spineOf(sectionId: string): SpineSection {
     default:
       return null
   }
-}
-
-/**
- * THE SUBMIT CHOOSER (/submit; submit.html, the owner's pick). Two large
- * choices, opened by the spine's Submit button and by N. Recent submissions
- * are NOT listed: no route serves "what did I submit", so the empty state
- * says so rather than inventing a list from the task feed.
- */
-function SubmitChooser({ go }: { go: (to: string) => void }) {
-  return (
-    <section className="sk-chooser" aria-labelledby="submit-h">
-      <h1 id="submit-h">Submit</h1>
-      <div className="sk-choices">
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new`)}>
-          <b>A task</b>
-          <span>
-            One agent, one runner profile, one prompt. It is created READY or PARKED and holds no capacity until it
-            is leased.
-          </span>
-          <em>/submit/task</em>
-        </button>
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new-workflow`)}>
-          <b>A workflow</b>
-          <span>Stages of steps, top to bottom, each step an agent; a step starts when the steps it names have finished.</span>
-          <em>/submit/workflow</em>
-        </button>
-      </div>
-      <div className="sk-recent-empty">
-        <b>Recent submissions</b>
-        <p>
-          Not listed. No route serves what you submitted, so this page does not guess it from the task feed; the
-          Agents list&rsquo;s Waiting and Recent tabs show every task in your tenant.
-        </p>
-      </div>
-    </section>
-  )
 }
 
 /**
@@ -1265,8 +1232,12 @@ function Head({
   const claimed = usePageAgeClaimed()
 
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
-  const home = section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
+  // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
+  // of its own, not API reads (#503), and the two forms lead back to it.
+  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')
+  const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+  const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
 
   return (
@@ -1364,8 +1335,9 @@ export function crumbsOf({
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help and API reads draw from nothing they fetch, so there is no age.
-  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+  // Help, API reads and the Submit chooser draw from nothing they fetch, so
+  // there is no age -- and no "reading…" that never resolves (#503).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
