@@ -26,10 +26,8 @@
 // track axis) as longhands, with the reason beside them.
 
 import STYLES from '../styles.css?raw'
-<<<<<<< HEAD
 import CAPACITY_CSS from '../styles/capacity.css?raw'
 import AGENTS_CSS from '../styles/agents.css?raw'
->>>>>>> origin/main
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
