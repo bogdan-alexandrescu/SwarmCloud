@@ -158,12 +158,15 @@
 .ov-bad { color: var(--bad); }
 
 /* ---- phone (O1 390 frame) ------------------------------------------------- */
-@media (max-width: 560px) {
-  /* ONE "Overview". The phone header already names the page in the spine's
-     colour, so the h1 steps aside -- visually, never from the outline: a
-     screen reader still lands on it. */
+/* ONE "Overview". Wherever the phone header is drawn (the spine's 759px
+   breakpoint) it already names the page in the spine's colour, so the h1 steps
+   aside -- visually, never from the outline: a screen reader still lands on
+   it. */
+@media (max-width: 759px) {
   .ov-head h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .ov-age { margin-left: 0; }
+}
+@media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
