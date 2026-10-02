@@ -24,7 +24,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
 | 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
-| 14 | `models.py`: a sub-agent has nowhere to name its parent | open |
+| 14 | `models.py`: a sub-agent has nowhere to name its parent | ACCEPTED 2026-10-02 (owner decision OD-B15-1, with the cancel and capacity rules of its amendment), not applied |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | ACCEPTED 2026-09-25 (owner, on #184), applied in PR #210 |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
@@ -47,6 +47,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
+| 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | open |
+| 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | open |
+| 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | open |
+| 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | open |
 
 ---
 
@@ -1410,7 +1414,10 @@ rule.
 
 ## 14. `models.py`: a sub-agent has nowhere to name its parent
 
-**Status:** open, filed 2026-09-24. A request, not a change. Raised as S1 / B31
+**Status:** ACCEPTED 2026-10-02 (owner decision OD-B15-1), not applied, WITH the rules in its amendment.
+
+Filed 2026-09-24 as a request. The cancellation and capacity rules it asked to
+be decided with the field are in the amendment at the end of this entry. Raised as S1 / B31
 in [`docs/web-ui/ui-audit-and-build-prompt.md`](web-ui/ui-audit-and-build-prompt.md):
 "Write the request; do not build a fake hierarchy from `depends_on`."
 
@@ -1495,6 +1502,103 @@ visible.
 says so. There is no honest partial: a hierarchy inferred from `depends_on` is
 refused by S1, and one read from a `metadata` convention would be a tree any
 caller can draw.
+
+### Amendment, 2026-10-02: accepted with the cancellation and capacity rules (B15)
+
+The owner's decisions of 2026-10-02 settle what this entry left open. The full
+design, with every flow, failure case, route and limit, is
+[`docs/design/child-tasks.md`](design/child-tasks.md); this amendment records
+what the request now consists of, so the entry stays the contract of record
+for the field. **Nothing under `apps/common/swarm_common/` is changed by this
+amendment.** The phase-2 pull request that applies it must add its own
+acceptance line here, because `scripts/lib/check-frozen-contract.sh` credits
+only a line the same pull request adds.
+
+**Citations corrected.** The entry above cites `models.py:172-205` for the
+workflow fields; they are `apps/common/swarm_common/models.py:280-282` today
+(`Task` starts at `apps/common/swarm_common/models.py:255`). The "base env" it
+names is `_build_child_env` (`apps/agent-worker/agent_worker/lifecycle.py:3173`),
+with the three ids at `apps/agent-worker/agent_worker/lifecycle.py:3187-3189`.
+`TaskCreate.metadata` is still `apps/swarm-api/swarm_api/schemas.py:33`.
+
+**OD-B15-1 -- the field is accepted as requested**, both fields optional,
+default `None`, and set only by swarm-api from the submitting attempt. Nothing
+about the two fields changes. What the acceptance adds is the rules below,
+which CR 14 itself said must be decided with the field.
+
+**OD-B15-2 -- the submission path.** The agent never holds a credential. It
+writes a request into a spool in its workspace; its worker validates it and
+calls `POST /v1/tasks/{parent_task_id}/children`, which accepts only the
+tenant's worker service account (derived from the tenant id, never read from
+`tenants/<id>`) AND an attempt proof: a signature made with an Ed25519 key the
+worker generated in its non-dumpable heap and registered with swarm-api BEFORE
+the agent was spawned. An agent can mint its tenant's token from the metadata
+server ([security.md](security.md#cloud-metadata-abuse)), and it can read the
+whole container environment at `/proc/1/environ`, because `tini` is PID 1 and
+is not non-dumpable (`apps/agent-worker/agent_worker/hardening.py:42-45`). So
+nothing that authorises a submission travels through the environment, a
+mounted file or `work/` and stays valid while the agent runs. The scheduler
+passes only a one-use registration nonce, which the worker spends between the
+fence and `STARTING -> RUNNING`; registration is first-wins per generation, is
+refused once the task is `RUNNING`, and is attested by swarm-api with its own
+key (`swarm-child-key`, held only by `swarm-scheduler` and `swarm-api`) at a
+document id no tenant identity can compute. A worker without memory protection
+spends the nonce on a tombstone and offers no child path. The route re-reads
+the parent and its lease in one transaction and creates nothing unless the
+lease is this attempt's live one. `parent_task_id` and `parent_attempt_id`
+come from the attested registration, never from the body; `POST /v1/tasks`
+keeps refusing them. The design states the one residual (a registration that
+could not be made at startup) in
+[§3.2](design/child-tasks.md#32-what-makes-only-the-worker-true-the-attempt-key).
+
+**OD-B15-3 -- Capacity: what a parent may do while its children run.** It may
+run, and submit. It may not wait while holding its lease: the agent gets no
+channel that reports a running child's progress, and the only way to learn a
+child's result is `await`, which checkpoints, parks the parent with
+`ParkReason.CHILDREN_INCOMPLETE` (request 40), releases its lease and exits.
+The scheduler promotes it when every child is terminal and every succeeded
+child's outputs are written; the resumed worker stages them before the agent
+starts. So:
+
+* invariant 1: an awaiting parent is `PARKED` and costs nothing; children cost
+  nothing until leased;
+* invariant 2: each child acquires its own lease all-or-nothing through the
+  unchanged admission; no gang reservation for a fan-out;
+* invariant 3: children count from `LEASED` against the same pools; the slot
+  the parent gives back by awaiting is the one its children can use, so the
+  narrow-pool deadlock this entry warned of cannot form;
+* invariant 4: no in-worker wait for a child of any length.
+
+The await refunds the attempt admission counted, up to
+`max_child_await_resumes` (4), so waiting is not failing. Depth is 1; fan-out
+is capped at 16 children per task across all its attempts. An agent that exits
+0 with live children is awaited anyway: a parent never succeeds over running
+children.
+
+**OD-B15-4 -- Cancellation.** Cancelling a parent cancels its non-terminal
+children: the API's cancel cascades at once, and a scheduler sweep guarantees
+it. A parent that ends `FAILED` or `DEAD_LETTERED` with live children has them
+cancelled too. A retried or fenced parent keeps them: they belong to the task,
+and the next attempt finds them. An awaiting parent past
+`child_await_max_seconds` (one day) has its outstanding children cancelled and
+is then promoted. A child's end never cascades upward. Every cascade is
+tenant-scoped, and the API never releases capacity: a running child is flagged
+and stops through the ordinary cancel path (invariant 1). A cascaded child
+ends with `EndCause.CHILD_CASCADE` (request 41).
+
+**The workflow rollup** (request 7) does not count a child: a child has no
+`workflow_id`, even when its parent is a workflow step.
+
+**The TypeScript restatement** stands as requested: `types.ts` gains the two
+fields, and `check-contract-parity.sh` section 5 holds them, together with the
+values requests 40 and 41 add.
+
+The acceptance needed four more changes to the frozen contract. Each exists
+only because this one was accepted, and each is filed as its own request:
+[40](#40-statespy-an-agent-awaiting-its-children-has-no-park-reason-and-dependency_incomplete-would-be-promoted-at-once),
+[41](#41-modelspy-a-child-cancelled-because-of-its-parent-has-no-end-cause),
+[42](#42-specsignpy-the-signed-step-spec-does-not-cover-a-childs-parent) and
+[43](#43-identitypy-the-tenant-worker-service-accounts-name-has-no-public-home).
 
 ---
 
@@ -8121,3 +8225,143 @@ reach, which costs nothing but a misleading line in a list.
    this park was never reached, so no task leaves or enters one.
 2. All-or-nothing reservation: unaffected. `BUDGET_LIMIT` is not a pool.
 10. Callers pick a profile by name: unaffected.
+
+---
+
+## 40. `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once
+
+**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+
+### What is true today
+
+`ParkReason` (`apps/common/swarm_common/states.py:125`) has no value for "this
+task is waiting for tasks it created". The nearest, `DEPENDENCY_INCOMPLETE`
+(`apps/common/swarm_common/states.py:132`), is the scheduler's: its sweep
+promotes a task parked on it whose `depends_on` is empty immediately, with
+reason `no_dependencies` (`apps/scheduler/scheduler/loop.py:975`). An awaiting
+parent has an empty `depends_on`.
+
+### The requested change
+
+```python
+#: The task's agent asked to await the child tasks it submitted. Promoted by
+#: the scheduler when every child is terminal; see docs/design/child-tasks.md.
+CHILDREN_INCOMPLETE = "CHILDREN_INCOMPLETE"
+```
+
+### What it would break if accepted
+
+Nothing that exists: no document carries the value. Every exhaustive reading
+of `ParkReason` must learn it -- `types.ts` and parity section 5, the MCP
+progress sentences (`apps/swarm-mcp/swarm_mcp/progress.py:154`) and compact
+labels, and the console's blocker copy.
+
+### If it is declined
+
+The await parks on `DEPENDENCY_INCOMPLETE` with a reserved metadata marker, and
+the scheduler's empty-`depends_on` promotion learns to skip a marked task.
+That works, and it is the hierarchy-from-dependencies S1 forbids in reverse:
+every reader of the park reason would show an awaiting parent as "a step it
+depends on has not finished yet", which is false, and the marker is in a
+document any tenant identity can rewrite.
+
+---
+
+## 41. `models.py`: a child cancelled because of its parent has no end cause
+
+**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+
+### What is true today
+
+`EndCause` (`apps/common/swarm_common/models.py:171`) has `CANCELLED_PARENT`,
+which means an UPSTREAM workflow step was cancelled, and `CANCEL_REQUESTED`,
+which the outcome ledger reads as a cancel somebody pressed. A child cancelled
+because its parent was cancelled, failed, dead-lettered or out-waited its
+deadline is neither.
+
+### The requested change
+
+```python
+CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
+```
+
+Written by the API's cancel cascade and the scheduler's sweep, and by the
+worker or reconciler ending a child flagged by either. The specific reason
+(`parent_cancelled`, `parent_ended`, `await_expired`) is event detail, not a
+frozen vocabulary -- the same split `MERGE_REFUSED` uses for its refusals.
+
+### What it would break if accepted
+
+Nothing that exists. `EndCause`'s docstring gains the writers above; the
+ledger and `types.ts` gain one class.
+
+### If it is declined
+
+Cascaded children end `CANCEL_REQUESTED` with the reason in event detail, and
+the ledger counts a parent's failure as a person's cancel -- the confusion
+request 23 was accepted to end.
+
+---
+
+## 42. `specsign.py`: the signed step spec does not cover a child's parent
+
+**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+
+### What is true today
+
+`canonical_step_spec` (`apps/common/swarm_common/specsign.py:45`) covers the
+fields a worker must trust, at `SPEC_FORMAT = 1`
+(`apps/common/swarm_common/specsign.py:28`). Any tenant identity can rewrite a
+task document whose id it knows ([multi-tenancy.md](multi-tenancy.md)), so a
+child's `parent_task_id` could be rewritten to attach it to, or detach it
+from, a parent's cancel cascade and await, and nothing would notice.
+
+### The requested change
+
+`parent_task_id` and `parent_attempt_id` inside the canonical spec, under
+`SPEC_FORMAT = 2`. Format 1 documents keep verifying under format 1's
+projection, which the worker already chooses by `spec_format`.
+
+### What it would break if accepted
+
+The worker must accept both formats during the rollout, as it accepted
+unsigned tasks during request 34's. No task written before has the fields, so
+none changes its digest.
+
+### If it is declined
+
+The cascade and the sweeps stay tenant-scoped, so a rewrite cannot reach
+across tenants; within one tenant a rewritten parent is undetectable, and the
+tree the console draws is a claim rather than a fact.
+
+---
+
+## 43. `identity.py`: the tenant worker service account's name has no public home
+
+**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+
+### What is true today
+
+The worker service account is `swarm-agent-worker-<tenant>`, stated privately
+as `_GSA_PREFIX` (`apps/common/swarm_common/identity.py:115`) and restated by
+`scripts/register-tenant.sh:285` and `terraform/modules/tenancy/main.tf:21`.
+The children route must derive the identity it accepts from the tenant id,
+because `tenants/<id>.service_account` is a document any tenant identity can
+rewrite.
+
+### The requested change
+
+```python
+def worker_service_account_id(tenant_id: str) -> str:
+    """`swarm-agent-worker-<tenant_id>`: the account id the tenant's workers run as."""
+```
+
+### What it would break if accepted
+
+Nothing; the private constant stays. `check-contract-parity.sh` gains a check
+that the shell and Terraform restatements still equal it.
+
+### If it is declined
+
+swarm-api restates the prefix, held equal to `_GSA_PREFIX` by a parity test --
+one more copy of a name request 16 already counts two of.
