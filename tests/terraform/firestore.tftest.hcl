@@ -269,3 +269,75 @@ run "global_pool_may_not_be_omitted" {
 
   expect_failures = [var.pools]
 }
+
+# The contention bench database (S32, OD-B17-1). Off unless an environment
+# names it, a copy of the live database's locking model when on, and carrying
+# managed-by the only way a google_firestore_database can (it has no labels).
+run "no_bench_database_by_default" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition     = length(google_firestore_database.bench) == 0 && length(google_firestore_document.bench_managed_by) == 0
+    error_message = "the bench database is opt-in: an environment that does not name one must get none"
+  }
+
+  assert {
+    condition     = output.bench_database_name == null
+    error_message = "no bench database means no bench database name"
+  }
+}
+
+run "bench_database_matches_the_live_locking_model" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm-bench"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].name == "swarm-bench"
+    error_message = "the bench database must carry the name the harness accepts"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].concurrency_mode == google_firestore_database.this.concurrency_mode
+    error_message = "a bench on a different concurrency mode measures a different locking model"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].type == "FIRESTORE_NATIVE" && google_firestore_database.bench[0].location_id == google_firestore_database.this.location_id
+    error_message = "the bench database must have the live database's type and location"
+  }
+
+  assert {
+    condition     = google_firestore_database.bench[0].delete_protection_state == "DELETE_PROTECTION_DISABLED"
+    error_message = "the bench database is disposable"
+  }
+
+  assert {
+    condition     = google_firestore_document.bench_managed_by[0].database == "swarm-bench" && strcontains(google_firestore_document.bench_managed_by[0].fields, "\"managed_by\":{\"stringValue\":\"swarm-terraform\"}")
+    error_message = "the bench database must carry managed-by=swarm-terraform (as a document: the type has no labels)"
+  }
+}
+
+run "a_bench_database_with_a_live_name_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  variables {
+    bench_database_id = "swarm"
+  }
+
+  expect_failures = [var.bench_database_id]
+}

@@ -252,6 +252,11 @@ class Scheduler:
         self._store = store
         self._router = router
         self._metrics = metrics or SchedulerMetrics()
+        # Admission latency and re-runs as Prometheus series (S32), from the
+        # same numbers acquire_lease logs. Only a real store has the hook; a
+        # test double without it is left alone.
+        if isinstance(store, SchedulerStore):
+            store.admission_observer = self._metrics.observe_admission
         # The account pool admission and the credential sweep ask about
         # (credentials.py). `main.build_scheduler` hands the SAME instance to
         # the Cloud Run dispatcher, so the Job's secret mount is decided on the

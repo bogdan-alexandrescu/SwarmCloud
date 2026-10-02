@@ -128,6 +128,8 @@ module "firestore" {
   bootstrap_documents = var.bootstrap_firestore_documents
   pools               = local.pools
 
+  bench_database_id = var.firestore_bench_database
+
   tenant_documents = {
     for t, cfg in var.tenants : t => {
       kind            = cfg.kind

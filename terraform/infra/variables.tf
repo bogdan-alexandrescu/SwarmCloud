@@ -167,6 +167,14 @@ variable "bootstrap_firestore_documents" {
   default = true
 }
 
+# The admission-contention bench database (S32). Empty creates none, which is
+# the default because prod has no business holding a database that a bench
+# overwrites; dev.tfvars turns it on. See terraform/modules/firestore/bench.tf.
+variable "firestore_bench_database" {
+  type    = string
+  default = ""
+}
+
 # ---------------------------------------------------------------------------
 # Images
 # ---------------------------------------------------------------------------

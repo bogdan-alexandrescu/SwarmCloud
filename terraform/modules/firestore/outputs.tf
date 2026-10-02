@@ -28,3 +28,8 @@ output "pool_names" {
 output "tenant_document_ids" {
   value = sort(keys(local.tenant_documents))
 }
+
+output "bench_database_name" {
+  description = "The contention bench database, or null when none is enabled. Pass to scripts/bench-contention.sh --database."
+  value       = local.bench_enabled ? google_firestore_database.bench[0].name : null
+}

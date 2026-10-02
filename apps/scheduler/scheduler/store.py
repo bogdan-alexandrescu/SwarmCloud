@@ -44,16 +44,19 @@ pays.
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable, Sequence
 
+from google.api_core.exceptions import Aborted
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from google.cloud.firestore_v1.field_path import FieldPath
 
 from swarm_common.admission import (
     AdmissionConfig,
+    AdmissionDenied,
     _snapshot,
     acquire_lease_in_transaction,
     release_lease_in_transaction,
@@ -242,6 +245,11 @@ class SchedulerStore:
     def __init__(self, db: Any, *, now: Callable[[], datetime] = utcnow) -> None:
         self._db = db
         self._now = now
+        #: Called once per `acquire_lease` with (outcome, runs, latency_ms).
+        #: `Scheduler` points it at `SchedulerMetrics.observe_admission`; the
+        #: store does not import the metrics, so a bench or a test that builds
+        #: a bare store gets the log fields and nothing else.
+        self.admission_observer: Callable[[str, int, float], None] | None = None
 
     @property
     def db(self) -> Any:
@@ -1360,11 +1368,31 @@ class SchedulerStore:
         resolve to exactly one winner: if another scheduler mutated a pool this
         function read, Firestore aborts and re-runs the whole body against fresh
         reads rather than committing a stale increment.
+
+        THOSE RE-RUNS ARE THE CONTENTION SIGNAL, so they are counted (S32,
+        spec §8 row 6). Every admission logs one record with
+        `admission_outcome` (leased / denied / aborted / error),
+        `admission_runs` (times the body ran), `admission_reruns` (runs - 1)
+        and `admission_latency_ms` (the whole transactional call). A scheduler
+        fighting over `global` otherwise looks like an idle one, only slower.
+        `scripts/bench-contention.sh` reads these same fields, so the bench
+        measures what production logs rather than a parallel count.
+
+        Levels: a lease, a re-run or a non-denial failure is INFO or above; a
+        clean first-run denial is DEBUG, because a full pool denies every
+        READY task on every pass and that is not contention. The same
+        three numbers go to `admission_observer` when one is set: `Scheduler`
+        sets it to `SchedulerMetrics.observe_admission`, which feeds
+        `swarm_scheduler_admission_seconds{outcome}` and
+        `swarm_scheduler_admission_reruns_total{outcome}`.
         """
         transaction = self._db.transaction()
+        runs = 0
 
         @firestore.transactional
         def _acquire(txn: Any) -> Lease:
+            nonlocal runs
+            runs += 1
             return acquire_lease_in_transaction(
                 txn,
                 db=self._db,
@@ -1374,7 +1402,60 @@ class SchedulerStore:
                 config=config,
             )
 
-        return _acquire(transaction)
+        started = time.monotonic()
+        outcome = "error"
+        lease_id: str | None = None
+        try:
+            lease = _acquire(transaction)
+            outcome = "leased"
+            lease_id = lease.lease_id
+            return lease
+        except AdmissionDenied:
+            outcome = "denied"
+            raise
+        except Aborted:
+            # `firestore.transactional` retries an Aborted only from commit. An
+            # ABORTED returned by a transactional READ (a contended pool doc)
+            # propagates raw, and that is contention at its worst, not an error.
+            outcome = "aborted"
+            raise
+        except ValueError as exc:
+            # `firestore.transactional` wraps the last Aborted in a ValueError
+            # once `max_attempts` runs have all been aborted: saturation.
+            if isinstance(exc.__cause__, Aborted):
+                outcome = "aborted"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - started) * 1000.0
+            if self.admission_observer is not None:
+                try:
+                    self.admission_observer(outcome, runs, latency_ms)
+                except Exception:  # noqa: BLE001 -- a metric never decides admission
+                    log.exception("admission observer failed")
+            if outcome == "aborted":
+                level = logging.WARNING
+            elif outcome == "denied" and runs <= 1:
+                level = logging.DEBUG
+            else:
+                level = logging.INFO
+            log.log(
+                level,
+                "admission %s task=%s runs=%d latency_ms=%.1f",
+                outcome,
+                task.id,
+                runs,
+                latency_ms,
+                extra={
+                    "admission_outcome": outcome,
+                    "admission_runs": runs,
+                    "admission_reruns": max(0, runs - 1),
+                    "admission_latency_ms": latency_ms,
+                    "task_id": task.id,
+                    "tenant_id": task.tenant_id,
+                    "lease_id": lease_id,
+                    "backend": backend,
+                },
+            )
 
     def release_lease(self, lease_id: str, *, reason: str) -> bool:
         transaction = self._db.transaction()
