@@ -95,10 +95,27 @@ resource "google_storage_bucket" "artifacts" {
     }
   }
 
+  # Artifacts and logs expire on a clock; checkpoints do not.
+  #
+  # Keyed on customTime, never on `age`. The worker stamps customTime on every
+  # object it uploads EXCEPT a checkpoint's (agent_worker.objectstore
+  # `is_checkpoint_key`), and GCS never matches days_since_custom_time against
+  # an object with no customTime. The `age` rule this replaced could not see a
+  # task, so it deleted a PARKED task's only checkpoint on the same day as a
+  # finished task's leftovers -- 14 days in dev, while a provider quota window
+  # can outlast that. A checkpoint is now removed only by reference, by
+  # apps/reconciler/reconciler/checkpoints.py (`classify`), which keeps every
+  # checkpoint of a non-terminal task and the one a FAILED task may resume
+  # from, and floors the orphans it cannot attribute.
+  #
+  # An object written by anything other than the worker carries no customTime
+  # either, and is therefore kept until something deletes it by name: the
+  # tenant prefix marker scripts/register-tenant.sh writes (which the old rule
+  # deleted after 14 days in dev), and anything an operator copies in by hand.
   lifecycle_rule {
     condition {
-      age        = var.artifact_retention_days
-      with_state = "LIVE"
+      days_since_custom_time = var.artifact_retention_days
+      with_state             = "LIVE"
     }
     action {
       type = "Delete"
