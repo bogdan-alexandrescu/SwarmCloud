@@ -456,9 +456,14 @@ def test_add_provider_writes_the_union_and_nothing_else(tmp_path, who: list[str]
         "--project", PROJECT,
         "--member", f"serviceAccount:{WORKER}",
         "--role", "roles/secretmanager.secretAccessor", "--quiet",
+    ], [
+        "secrets", "add-iam-policy-binding", "swarm-tenant-eng-git",
+        "--project", PROJECT,
+        "--member", f"serviceAccount:swarm-api@{PROJECT}.iam.gserviceaccount.com",
+        "--role", "roles/secretmanager.secretAccessor", "--quiet",
     ]], (
-        "adding a provider must make exactly one grant -- the worker may read that one "
-        f"secret -- and create nothing:\n{fakes.gcloud_changes()}\n{out}"
+        "adding git must make exactly two grants, both on that one secret -- the worker "
+        "and swarm-api (issue preview) may read it -- and create nothing:\n{fakes.gcloud_changes()}\n{out}"
     )
 
 
@@ -478,7 +483,8 @@ def test_add_provider_grants_the_secret_before_it_lists_the_provider(tmp_path) -
         else None
         for call in fakes.calls()
     ]
-    assert [o for o in order if o] == ["grant", "list"], order
+    # two grants (worker, then swarm-api), both before the provider is listed
+    assert [o for o in order if o] == ["grant", "grant", "list"], order
 
 
 def test_a_provider_already_listed_is_not_written_again(tmp_path) -> None:
