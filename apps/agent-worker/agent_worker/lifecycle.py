@@ -3617,6 +3617,14 @@ class Worker:
         # `input.repository` is `setdefault`, so a caller's own would shadow it.
         if self._repo_url and ws.checkout().is_dir():
             base["SWARM_REPO_DIR"] = str(ws.checkout())
+        # THE CLONE BASE, for the publish scan the agent can run first
+        # (`publish_scan.default_base`): the base the publish diffs from
+        # (`_publish_base`, `empty` for a repository cloned with no commit),
+        # else the workspace marker's, which describes the work even when the
+        # publish will not trust it. Set by the worker, never from `input`.
+        clone_base = self._publish_base or self._clone_base
+        if clone_base:
+            base[CLONE_BASE_ENV] = clone_base
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -7422,6 +7430,14 @@ SCAN_WINDOW_CHARS = 4 * 1024 * 1024
 #: finds, and the marker is 40 characters.
 SCAN_OVERLAP_CHARS = 64 * 1024
 
+#: The agent's environment variable holding the base the publish diffs from
+#: (`Worker._build_child_env`), so `python -m agent_worker.publish_scan` scans
+#: the same added text the worker will. Without it the CLI guessed HEAD on a
+#: `--depth 1` clone of a pinned SHA or a non-main ref, and every COMMITTED
+#: secret was outside its diff (#470's review). A description of the work,
+#: never trusted for the push: the publish keeps reading `_publish_base`.
+CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+
 
 class CredentialHit(NamedTuple):
     """What a leak predicate found in one window of a file's added text: the
@@ -7770,7 +7786,11 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #   found inputs main refuses and the branch published. #373's real blocker
 #   was the generic key=value rule in redaction tests, not PEM markers; a
 #   test builds its marker at runtime.
-# * TIER 2, outside test paths: the generic rules refuse exactly as before.
+# * TIER 2, outside test paths: the generic rules refuse as before, except
+#   for a REFERENCE (owner decisions, 2026-10-02; `_is_a_reference`): a value
+#   that is wholly one `${name}` slot, or -- not under a password name and
+#   not after an `Authorization` scheme -- one short lowercase word or a
+#   KNOWN reference shape. Vendor rules are not relaxed.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
 #   CODE only (`is_test_path`).
@@ -7779,7 +7799,27 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 # false positive there costs one masked word, not a refused publish.
 #
 # RESIDUAL RISK, accepted by the owner: a weak real password committed under a
-# test path is published. CI's trivy secret scan still runs after the push.
+# test path is published. Since 2026-10-02, outside test paths, tier 2 also
+# publishes, as a reference, a WHOLE value (`_ends_the_value`: nothing joined
+# to it by `+`, `,` or another literal, and an escaped quote does not close
+# it) that is one of:
+#   - a single lowercase word of ANY length (no cap since the owner's decision
+#     of 2026-10-02; an all-lowercase, digitless random token outside test
+#     paths therefore publishes, a residual risk the owner accepted), no `-`,
+#     `.`, `_` or digit (`anthropic`, `retained`) -- so a weak
+#     one-word secret under a `token`/`secret`/`api_key` name, or after a
+#     prose `Bearer`/`Basic` (`http_authorization`), publishes. There is no
+#     dictionary: `letmein` under `token = ` publishes. Under a name ending
+#     `password`/`passwd` it does NOT: that name is assigned the password
+#     itself, so only a slot is a reference there;
+#   - a `swarm-tenant-` secret name, or a hyphen-joined lowercase name ending
+#     `-api-key`, `-token`, `-secret` or `-git` (`hunter-horse-token` too);
+#   - a dotted path under `var.`, `local.`, `user_config.`, `data.` or
+#     `module.`.
+# Any other hyphen- or dot-joined value (`correct-horse-battery-staple`) is
+# refused, and so is every bare word after an `Authorization:` header's
+# scheme, whatever its case. A `${name}` slot holds no value, so it adds no
+# risk. CI's trivy secret scan still runs after the push.
 
 #: The `swarm_redaction` rules that match a NAME followed by a value rather
 #: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
@@ -7903,6 +7943,226 @@ def _is_explicit_placeholder(tail: str) -> bool:
     )
 
 
+#: A value that is wholly one interpolation slot holding only a NAME:
+#: `${user_config.client_secret}`, `${var.anthropic}`. Anything before or after
+#: it, or a second slot, is not. Nor is a slot carrying an operator --
+#: `${DB_PW:-<literal>}` (or `-`, `=`, `:=`, `:+`, `:?`) expands to the literal
+#: it holds -- which the owner's `^\$\{[^}]+\}$` would have let through.
+_INTERPOLATION_SLOT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_.]*\}")
+#: One lowercase word of ANY length (owner decision, 2026-10-02: the single-word
+#: length cap is removed): no `-`, `.`, `_` or digit to join it to another.
+#: RESIDUAL RISK, accepted by the owner: an all-lowercase, digitless random
+#: token (32 letters carry ~150 bits, but a weak one-word secret carries few)
+#: under a non-password name, outside test paths, publishes. Only
+#: `_REFERENCE_MAX_CHARS` bounds it. Under a password name it is still refused.
+_REFERENCE_WORD = re.compile(r"[a-z]+")
+#: The KNOWN shapes of a multi-segment reference (owner decision, 2026-10-02,
+#: #470's review), and no other: a tenant secret's name (`swarm-tenant-eng-git`),
+#: a name that says it names a credential (`anthropic-api-key`, `github-token`,
+#: `db-secret`, `tenant-git`), and an interpolation path under a root that
+#: Terraform, a plugin manifest or a module reads (`var.`, `local.`,
+#: `user_config.`, `data.`, `module.`). `correct-horse-battery-staple` and
+#: `correct.horse.battery.staple` are none of them, and are refused.
+#: RESIDUAL RISK, accepted by the owner (2026-10-02): these shapes are UNCAPPED
+#: in segments. A passphrase with a known prefix or suffix publishes outside
+#: test paths -- `correct-horse-battery-staple-token`, `swarm-tenant-<words>`,
+#: a `var.<words>` path -- up to the 64-character bound. No segment cap.
+_REFERENCE_SHAPE = re.compile(
+    r"swarm-tenant(?:-[a-z]+)+"
+    r"|[a-z]+(?:-[a-z]+)*-(?:api-key|token|secret|git)"
+    r"|(?:var|local|user_config|data|module)(?:\.[a-z_]+)+"
+)
+#: The longest value a shape may be: a name, not a passphrase.
+_REFERENCE_MAX_CHARS = 64
+#: The words an `Authorization` value opens with. Never a reference: it is
+#: the scheme, and the credential follows it (#470's review).
+_AUTH_SCHEME_WORDS = frozenset(
+    {"bearer", "basic", "token", "digest", "negotiate", "oauth", "ssws"}
+)
+
+
+def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = None) -> bool:
+    """True when a generic rule's matched `value` NAMES a credential rather
+    than holding one, so tier 2 does not refuse it (owner decisions,
+    2026-10-02).
+
+    WHY. Three of six SwarmCloud lanes were refused at publish for text that
+    held nothing: plugin.json's unchanged `"..._CLIENT_SECRET":
+    "${user_config.oauth_client_secret}"`, re-added by a trailing comma, a
+    Terraform local naming the Anthropic key with the provider id
+    `anthropic`, and a tenant secret's name `swarm-tenant-eng-git`. The
+    relaxation is narrow, for the generic rules outside test paths only:
+
+    * (i) the whole value is ONE `${...}` slot holding only a name
+      (`_INTERPOLATION_SLOT`). A slot with anything glued to it
+      (`${a}hunter2`), or with a shell default inside it (`${A:-hunter2}`),
+      is still refused: the glued part or the default may be the credential.
+    * (ii) otherwise, the value is a single lowercase word of any length
+      (`_REFERENCE_WORD`) or one of the
+      KNOWN reference shapes (`_REFERENCE_SHAPE`), holds no digit, and
+      `_looks_like_a_credential` rejects it (with no digit it always does;
+      it is asked so a change to it cannot make this rule pass a value it
+      accepts). Rule (ii) never applies:
+      - after an `Authorization` header's scheme (`http_authorization_scheme`):
+        what follows the scheme is the credential, whatever its case;
+      - to a scheme word itself (`bearer`, `Basic`, `token`): it names nothing;
+      - under a name ending `password`/`passwd` (the key/value rule's `pw`
+        group): that name is assigned the password, not a provider id or a
+        secret's name, so `password = "letmein"` is refused. No dictionary.
+
+    Only quotes, their escaping backslashes, whitespace and a trailing `;` or
+    `,` are stripped, never a bracket, so a slot's closing brace is kept.
+    """
+    candidate = value.strip("\"'`\\ \t").rstrip(";,").strip("\"'`\\")
+    if _INTERPOLATION_SLOT.fullmatch(candidate):
+        return True
+    if rule is not None and rule.name == "http_authorization_scheme":
+        return False
+    if candidate.lower() in _AUTH_SCHEME_WORDS:
+        return False
+    if (
+        rule is CREDENTIAL_KEY_VALUE
+        and match is not None
+        and match.re is rule.pattern
+        and match.group("pw")
+    ):
+        return False
+    if len(candidate) > _REFERENCE_MAX_CHARS or any(c.isdigit() for c in candidate):
+        return False
+    shaped = (
+        _REFERENCE_WORD.fullmatch(candidate) is not None
+        or _REFERENCE_SHAPE.fullmatch(candidate) is not None
+    )
+    return shaped and not _looks_like_a_credential(candidate)
+
+
+#: What may follow an unquoted reference on its line: nothing, or a closing
+#: bracket, separator or (escaped) quote that ends an enclosing string.
+_VALUE_END = re.compile(r"[ \t]*(?:$|[;,)\]}]|\\*[\"'`])")
+
+
+def _odd_backslashes(text: str) -> bool:
+    """True when `text` ends in an odd run of backslashes, i.e. a quote right
+    after it is escaped."""
+    return (len(text) - len(text.rstrip("\\"))) % 2 == 1
+
+
+def _ends_the_value(match: re.Match[str]) -> bool:
+    """True when a generic match's value is the WHOLE value, not its first word.
+
+    The generic rules' value class stops at whitespace, a comma or a quote, so
+    a password name assigned a quoted four-word passphrase matches only its
+    first word, a digitless lowercase word `_is_a_reference` would pass. The owner's rule
+    (ii) asks the whole value to be one identifier, so a reference counts only
+    when it ends the value: a quoted value must close right after it (the
+    rule's opening `"`, escaped or not, or a `'`/`` ` `` the value opens with),
+    and an unquoted one must end the line or meet a separator, a closing
+    bracket or the quote of an enclosing string.
+    """
+    prefix = match.group(1)
+    value = match.group(0)[len(prefix):]
+    rest = match.string[match.end():].split("\n", 1)[0]
+    opened = prefix.rstrip()
+    if opened.endswith('"'):
+        # The close must be escaped EXACTLY as the open was: in `"letmein\"
+        # <secret>"` the `\"` is part of the value, not its end (#470's review).
+        escapes = len(opened[:-1]) - len(opened[:-1].rstrip("\\"))
+        close = re.match(r'(\\*)"', rest)
+        # The value class swallows a backslash right before the close, so the
+        # backslashes the value ends in count with the close's own: `NAME =
+        # "x\" <rest>"` reads as the value `x\` and a bare `"`.
+        trailing = len(value) - len(value.rstrip("\\"))
+        if close is None or trailing + len(close.group(1)) != escapes:
+            return False
+        return not _value_continues(rest[close.end():], '"', escapes)
+    if value[:1] in ("'", "`"):
+        quote = value[0]
+        body = value[1:].rstrip(";,)]}")
+        if body.endswith(quote):
+            if not (len(body) > 1 and quote not in body[:-1]):
+                return False
+            if _odd_backslashes(body[:-1]):
+                return False  # the quote is escaped, so it does not close
+            return not _value_continues(rest, quote, 0)
+        if rest.startswith(quote):
+            if _odd_backslashes(body):
+                return False
+            return not _value_continues(rest[1:], quote, 0)
+        return False
+    return _VALUE_END.match(rest) is not None and not _value_continues(rest, None, 0)
+
+
+#: An opening quote, with the backslashes that escape it.
+_OPEN_QUOTE = re.compile(r"(\\*)([\"'`])")
+
+
+#: A comment start, which may follow a value only after whitespace.
+_COMMENT_START = re.compile(r"(?:#|//|--)")
+
+#: The next key or argument after a `,`: an identifier then `=` (not `==`) or `:`.
+_NEXT_KEY = re.compile(r"[A-Za-z_][\w.\-]*[ \t]*(?::|=(?!=))")
+
+
+def _comment_or_nothing(text: str) -> bool:
+    """True when `text` is empty, whitespace, or whitespace then a comment."""
+    if not text.strip():
+        return True
+    return text[:1] in " \t" and _COMMENT_START.match(text.lstrip(" \t")) is not None
+
+
+def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
+    """True unless the text `after` a value's end on its line PROVES the value
+    ended there. An allow-list (#470's review: every deny-list of joiners, `+`,
+    `,`-literal, adjacency, missed `.`, `&`, `||`, `~`, `|`, a bare token, a
+    conditional and `;`). After the close the value is whole only when what
+    follows is the end of the line, whitespace, a `;` ending the statement, a
+    closing bracket (then `,`, `;` or the line's end), a comment after
+    whitespace, or a `,` and then the next key or argument. Anything else is
+    read as more of the value, so the generic rule refuses.
+
+    `closed` is the quote the value just closed with (None when it was
+    unquoted) and `escapes` how many backslashes escaped it. A quote of
+    another kind, or one escaped less, straight after it closes an ENCLOSING
+    string (`'"secret": "anthropic"'`, `"{\\"secret\\": \\"anthropic\\"}"`),
+    and nothing after that belongs to this value.
+    """
+    straight = _OPEN_QUOTE.match(after)
+    if straight is not None and (
+        closed is None or straight.group(2) != closed or len(straight.group(1)) < escapes
+    ):
+        return False
+    rest = after.lstrip(" \t")
+    if not rest:
+        return False
+    if len(rest) != len(after) and _COMMENT_START.match(rest):
+        return False
+    while rest[:1] in (")", "]", "}") and rest:
+        rest = rest[1:]
+        if not rest:
+            return False
+        if rest[:1] in " \t":
+            return not _comment_or_nothing(rest)
+        if _OPEN_QUOTE.match(rest):
+            return False  # the bracket ends a literal inside an enclosing string
+    if rest[:1] == ";":
+        return not _comment_or_nothing(rest[1:])
+    if rest[:1] != ",":
+        return True
+    following = rest[1:]
+    if _comment_or_nothing(following):
+        return False
+    following = following.lstrip(" \t")
+    if _NEXT_KEY.match(following):
+        return False
+    literal = _OPEN_QUOTE.match(following)
+    if literal is None:
+        return True
+    end = following.find(literal.group(2), literal.end())
+    if end < 0:
+        return True
+    return not following[end + 1:].lstrip(" \t").startswith(":")
+
+
 def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     """Whether one token-starting match of `rule` is a credential, by tier."""
     if rule.name == "jwt":
@@ -7910,9 +8170,9 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     if rule.name in GENERIC_CREDENTIAL_RULES:
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
-        if not in_tests:
-            return True  # tier 2: exactly as before
         value = match.group(0)[len(match.group(1)):]
+        if not in_tests:  # tier 2
+            return not (_is_a_reference(value, rule, match) and _ends_the_value(match))
         return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
     # A vendor key: refused outside tests as before; in a test path it passes
     # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
@@ -7975,7 +8235,9 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     """
     prefix = match.group(1)
     value = match.group(0)[len(prefix):]
-    if prefix.rstrip().endswith('"') or value.startswith("'"):
+    # A backtick opens a literal too (`_ends_the_value` already reads one as a
+    # quoted value); without it `` secret = `x\` <token>` `` was never counted.
+    if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
         return True
     return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
 
