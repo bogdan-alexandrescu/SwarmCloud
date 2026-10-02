@@ -206,48 +206,23 @@ async function land(tasks: Task[]): Promise<HTMLElement> {
 }
 
 function rowIds(container: HTMLElement): string[] {
-  return [...container.querySelectorAll('.rows .row.clickable .agent .id')].map((e) => e.getAttribute('title') ?? '')
+  return [...container.querySelectorAll<HTMLElement>('.rows .row.clickable')].map((e) => e.dataset.taskId ?? '')
 }
 
-describe('Work > Agents: the STARTED and ACCOUNT columns', () => {
-  it('heads both columns', async () => {
-    const c = await land([mk('task_a', 'SUCCEEDED', { started_at: iso(30) })])
-    const head = c.querySelector('.rows .row.is-head') as HTMLElement
-    expect(head.querySelector('.started')?.textContent).toContain('Started')
-    expect(head.querySelector('.acct')?.textContent).toBe('Account')
+describe('Work > Agents: the start and the account (#376, #379) under agents.html V1', () => {
+  // THE COLUMNS WENT WITH THE TABLE (#503): V1's list keeps the mark, name,
+  // elapsed, profile, owner and try, and "the detail gets the rest". The
+  // start, the submit time and the account are the inspector head's facts,
+  // pinned in the describe below; the start SORT stays the list's, as a
+  // control of the list header instead of a column head.
+  it('draws neither column in the list, which is the detail head’s to say', async () => {
+    const c = await land([mk('task_a', 'SUCCEEDED', { started_at: iso(30), account: acct({ account_id: 'acct-eng-01' }) })])
+    expect(c.querySelector('.rows .row.is-head')).toBeNull()
+    expect(c.querySelector('.rows .started, .rows .acct')).toBeNull()
+    expect(c.querySelector('.rows')!.textContent).not.toContain('acct-eng-01')
   })
 
-  it('shows a start on finished, failed and cancelled rows, and never started with the submit time', async () => {
-    const c = await land([
-      mk('task_done', 'SUCCEEDED', { started_at: iso(30), account: acct({ account_id: 'acct-eng-01' }) }),
-      mk('task_failed', 'FAILED', { started_at: iso(40), account: acct({ account_id: 'acct-eng-03' }) }),
-      mk('task_cancelled', 'CANCELLED', {
-        started_at: null,
-        created_at: iso(90),
-        account: acct({ status: 'not_assigned', account_id: null }),
-      }),
-    ])
-    const cells = new Map(
-      [...c.querySelectorAll('.rows .row.clickable')].map((r) => [
-        r.querySelector('.agent .id')?.getAttribute('title'),
-        r as HTMLElement,
-      ]),
-    )
-    const started = (id: string) => cells.get(id)!.querySelector('.started-at')!.textContent
-    expect(started('task_done')).toBe(clockTime(iso(30))!.text)
-    expect(started('task_failed')).toBe(clockTime(iso(40))!.text)
-    expect(started('task_cancelled')).toBe('never started')
-    expect(cells.get('task_cancelled')!.querySelector('.started-sub')!.textContent).toBe(
-      `sub ${clockTime(iso(90))!.text}`,
-    )
-    // Never blank: every row's cell has words in it.
-    for (const row of cells.values()) expect(row.querySelector('.started-at')!.textContent).not.toBe('')
-    expect(cells.get('task_done')!.querySelector('.acct')!.textContent).toBe('acct-eng-01')
-    expect(cells.get('task_failed')!.querySelector('.acct')!.textContent).toBe('acct-eng-03')
-    expect(cells.get('task_cancelled')!.querySelector('.acct')!.textContent).toBe('not assigned')
-  })
-
-  it('sorts by start when the head is pressed, newest then oldest, never-started last both ways', async () => {
+  it('sorts by start from the list header, newest then oldest, never-started last both ways', async () => {
     const c = await land([
       mk('task_mid', 'SUCCEEDED', { started_at: iso(20), updated_at: iso(1) }),
       mk('task_never', 'CANCELLED', { started_at: null, updated_at: iso(2) }),
@@ -256,30 +231,17 @@ describe('Work > Agents: the STARTED and ACCOUNT columns', () => {
     ])
     // The list's own order first: most recently changed.
     expect(rowIds(c)).toEqual(['task_mid', 'task_never', 'task_new', 'task_old'])
-    const button = within(c.querySelector('.rows .row.is-head') as HTMLElement).getByRole('button', { name: /Started/ })
+    const button = within(c.querySelector('.ag-list-head') as HTMLElement).getByRole('button', { name: /start/i })
+    expect(button.getAttribute('aria-pressed')).toBe('false')
     fireEvent.click(button)
     expect(rowIds(c)).toEqual(['task_new', 'task_mid', 'task_old', 'task_never'])
-    expect(c.querySelector('.row.is-head .started')?.getAttribute('aria-sort')).toBe('descending')
+    expect(button.getAttribute('aria-label')).toBe('Sorted by start, newest first')
     fireEvent.click(button)
     expect(rowIds(c)).toEqual(['task_old', 'task_mid', 'task_new', 'task_never'])
-    expect(c.querySelector('.row.is-head .started')?.getAttribute('aria-sort')).toBe('ascending')
+    expect(button.getAttribute('aria-label')).toBe('Sorted by start, oldest first')
     fireEvent.click(button)
     expect(rowIds(c)).toEqual(['task_mid', 'task_never', 'task_new', 'task_old'])
-  })
-
-  it('says no model call, not assigned yet, and not read rather than leaving the account blank', async () => {
-    const c = await land([
-      mk('task_mock', 'RUNNING', { runner_profile: 'mock', account: acct({ status: 'no_model_call', account_id: null }) }),
-      mk('task_wait', 'STARTING', { account: acct({ status: 'not_assigned_yet', account_id: null }) }),
-      mk('task_old_api', 'RUNNING', {}),
-    ])
-    const text = (id: string) =>
-      [...c.querySelectorAll('.rows .row.clickable')]
-        .find((r) => r.querySelector('.agent .id')?.getAttribute('title') === id)!
-        .querySelector('.acct')!.textContent
-    expect(text('task_mock')).toBe('no model call')
-    expect(text('task_wait')).toBe('not assigned yet')
-    expect(text('task_old_api')).toBe('not read')
+    expect(button.getAttribute('aria-pressed')).toBe('false')
   })
 })
 

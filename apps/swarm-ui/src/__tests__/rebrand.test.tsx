@@ -151,7 +151,7 @@ describe('the app performs the redirect once, without adding history', () => {
     await waitFor(() => expect(window.location.pathname).toBe('/agents/live/t-1/attempts'))
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer).not.toBeNull()
-    expect(drawer!.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim()).toBe('Attempts')
+    expect(drawer!.querySelector('[role="tab"][aria-selected="true"] .ag-tab-label')?.textContent?.trim()).toBe('Attempts')
   })
 
   it('pushes an in-app #... link as a path, so Back returns', async () => {

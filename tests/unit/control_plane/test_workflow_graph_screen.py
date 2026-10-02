@@ -446,8 +446,10 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
     assert "taskId: decodeURIComponent(id)" in router, (
         "the resolved route carries no task id, so the drawer would open on nothing"
     )
-    # And the route with a taskId is what mounts the run panel.
-    assert "AgentDetailScreen" in app
+    # And the route with a taskId is what mounts the run panel: App renders the
+    # split (moved out of App.tsx by lane U1, 2026-10-02), which mounts it.
+    assert "<AgentSplit" in app and "taskId={at.taskId}" in app
+    assert "<AgentDetailScreen" in _src("AgentSplit.tsx")
 
     # The address has a URL, and the URL reads back to the same address. Without
     # this the router could resolve the address while the address bar had no
@@ -524,7 +526,8 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
         "the Checkpoints section is mounted without the attempt records, so it "
         "cannot tell a checkpoint written and since reclaimed from a real zero"
     )
-    assert re.search(r"<CheckpointsPane\s+taskId=\{taskId\}", _src("App.tsx")), (
+    # The split (AgentSplit.tsx, moved out of App.tsx 2026-10-02) mounts it.
+    assert re.search(r"<CheckpointsPane\s+taskId=\{taskId\}", _src("AgentSplit.tsx")), (
         "the run screen does not mount the checkpoints pane for its task"
     )
 

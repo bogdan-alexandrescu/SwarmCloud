@@ -43,6 +43,7 @@ const ZERO_CLASSES: Record<FailureClassKey, number> = {
   verdict_failed: 0,
   merge_refused: 0,
   merge_failed: 0,
+  publish_refused: 0,
   other: 0,
   no_reason: 0,
 }
@@ -149,6 +150,7 @@ export function ledgerFixture(): Outcomes {
         { key: 'verdict_failed', label: 'verdict failed' },
         { key: 'merge_refused', label: 'merge refused' },
         { key: 'merge_failed', label: 'merge failed' },
+        { key: 'publish_refused', label: 'publish refused' },
         { key: 'other', label: 'other' },
         { key: 'no_reason', label: 'no reason recorded' },
       ],

@@ -26,6 +26,7 @@
 // track axis) as longhands, with the reason beside them.
 
 import STYLES from '../styles.css?raw'
+import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
@@ -43,7 +44,7 @@ import {
   writePane,
 } from '../panes'
 import type { ProbeRecord } from '../fetch'
-import { NEVER_WRITTEN, REAL_STATES, elapsed, formatDuration, timeAgo, type TaskState } from '../types'
+import { NEVER_WRITTEN, REAL_STATES, elapsed, timeAgo, type TaskState } from '../types'
 import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { task } from './runfixture'
 import { resolveVars, tokenTables } from './spaceprobe'
@@ -135,12 +136,12 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
 
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
-    const panes = [...drawer!.querySelectorAll('[role="tab"]')].map((b) => b.textContent?.trim())
+    const panes = [...drawer!.querySelectorAll('[role="tab"] .ag-tab-label')].map((b) => b.textContent?.trim())
     // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
     // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
     expect(panes).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
-      drawer!.querySelector('[role="tab"][aria-selected="true"]')?.textContent?.trim(),
+      drawer!.querySelector('[role="tab"][aria-selected="true"] .ag-tab-label')?.textContent?.trim(),
     ).toBe('Attempts')
 
     // And it is NOT in the spine or the panel: a nav entry pointing at it would
@@ -1738,55 +1739,41 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     return parts.length >= 2 && /^[\d.]+$/.test(parts[1]!) ? Number(parts[1]) : 1
   }
 
-  it('AG-11: sizes the run list\'s [age] track to the longest thing the cell prints', () => {
-    // DERIVED FROM `elapsed()`, so a new unit or a longer word moves the floor.
-    expect(EVERY_STATE, 'the state list is not all twelve; the floor is partial').toHaveLength(12)
+  // THE LIST'S SHEETS, IN THE ORDER THE APP LOADS THEM: main.tsx imports App
+  // (and with it styles/agents.css) before styles.css.
+  const LIST_SHEETS = AGENTS_CSS + '\n' + STYLES
+  const listWon = (el: Element, prop: string | readonly string[], env: CascadeEnv): string | null => {
+    const r = cascade(LIST_SHEETS, el, prop, env)
+    expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+    return r.winner?.value ?? null
+  }
+  const COMPACT =
+    '<div class="rows"><div class="row clickable is-compact"><span class="ctl-chip">RUNNING</span>' +
+    '<span class="agent cr-name"><b class="id">0961e42e</b></span><span class="when">waiting 99d 23h</span>' +
+    '<span class="cr-sub"><span class="cr-try is-over">try 4/3</span></span></div></div>'
+
+  it('AG-11 under agents.html V1: the elapsed figure is never squeezed; the name gives way, with an ellipsis', () => {
+    // THE WIDE TABLE'S [age] TRACKS WENT WITH IT (#503). The compact row puts
+    // the figure at the end of line one, so its track is the figure's own
+    // width and it never wraps or cuts; the NAME is the one `1fr` track and
+    // is the cell that ellipses. MUTATION: give `[age]` a fixed width again,
+    // or let the name track grow past 0.
     expect(waits(SPANS[0]!), 'the sweep is not twelve states, started and not').toHaveLength(24)
-    const longest = Math.max(...SPANS.flatMap((ms) => waits(ms).map((w) => w.length)))
-    const bare = Math.max(...SPANS.map((ms) => formatDuration(ms).length))
-    // The prefixed wait is what this track exists for: if no form were longer
-    // than a bare duration the floor below would be the duration's, and vacuous.
-    expect(longest, 'no prefixed wait is longer than a bare duration').toBeGreaterThan(bare)
-
-    // `ch`, because the cell is tabular: a px width cannot be compared with a
-    // character count at all, and 76px was a guess that cut "queued 1…".
-    // MUTATION: `[age] minmax(0, 76px)` back in either template.
-    const list = fragment('<div class="app"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>')
-    const open = fragment(
-      '<div class="app has-inspector"><div class="rows"><div class="row"><span class="when">x</span></div></div></div>',
-    )
-    for (const [label, row] of [
-      ['the full row', pick(list, '.row')],
-      ['the row beside the inspector', pick(open, '.row')],
-    ] as const) {
-      const age = trackAfter(won(row, 'grid-template-columns', WIDE), 'age')
-      expect(ch(minmax(age)[1]), `${label}: [age] is ${age}, under ${longest} characters`).toBeGreaterThanOrEqual(longest)
+    const f = fragment(COMPACT)
+    for (const env of [WIDE, { width: 1150 }, PHONE]) {
+      const template = listWon(pick(f, '.row'), 'grid-template-columns', env)
+      expect(trackAfter(template, 'age'), `[age] at ${env.width}`).toBe('auto')
+      expect(minmax(trackAfter(template, 'name'))[0], `[name] at ${env.width}`).toBe('0')
+      expect(listWon(pick(f, '.when'), 'white-space', env), `.when at ${env.width}`).toBe('nowrap')
+      expect(listWon(pick(f, '.cr-name b'), 'text-overflow', env), `the name at ${env.width}`).toBe('ellipsis')
     }
-
-    // THE 1101-1200 BAND holds the DURATION and wraps the state word above
-    // it, because 19ch there comes out of the name. MUTATION: drop the
-    // `white-space: normal`, or size the track under a bare duration.
-    // (`dispatched` is wider than this track; styles.css says so beside it.)
-    const band: CascadeEnv = { width: 1150 }
-    const age = trackAfter(won(pick(open, '.row'), 'grid-template-columns', band), 'age')
-    expect(ch(minmax(age)[1]), `the 1200 stage's [age] is ${age}`).toBeGreaterThanOrEqual(bare)
-    expect(won(pick(open, '.when'), 'white-space', band)).toBe('normal')
   })
 
-  it('AG-13: at 390 the age wraps in a fixed track and the name keeps the whole id', () => {
-    const bare = Math.max(...SPANS.map((ms) => formatDuration(ms).length))
-    const f = fragment(
-      '<div class="rows"><div class="row"><span class="agent"><b>browser</b><span class="id">0961e42e</span></span><span class="when">x</span></div></div>',
-    )
-    const age = trackAfter(won(pick(f, '.row'), 'grid-template-columns', PHONE), 'age')
-    // Each row is its own grid, so a content-sized track moves the name column
-    // from row to row. MUTATION: `[age] auto` back.
-    expect(age, 'an `auto` [age] hands the name\'s width to "waiting 13m 18s"').not.toMatch(/auto|content/)
-    expect(ch(minmax(age)[1])).toBeGreaterThanOrEqual(bare)
-    expect(won(pick(f, '.when'), 'white-space', PHONE)).toBe('normal')
+  it('AG-13: at 390 the name keeps the whole id', () => {
+    const f = fragment(COMPACT)
     // `shortTaskId` prints at most 8 characters (Agents.tsx `.slice(0, 8)`),
     // and the id is mono, so 8ch is the whole id. MUTATION: drop the floor.
-    expect(ch(won(pick(f, '.id'), 'min-width', PHONE))).toBeGreaterThanOrEqual(8)
+    expect(ch(listWon(pick(f, '.id'), 'min-width', PHONE))).toBeGreaterThanOrEqual(8)
   })
 
   it('AG-27: every line clamp has the box it needs, and the phone why-line has one', () => {
@@ -1816,37 +1803,26 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('AG-15: an attempt count over its ceiling is drawn as a fault, in both lists', () => {
-    // MUTATION: delete the rule, or drop either of its two class names -- the
-    // markup halves are written in parallel and either spelling must land.
+    // MUTATION: delete either rule. The Agents list's try is the compact row's
+    // `.cr-try` now (agents.css); the Workflows table keeps both spellings.
     const f = fragment(
-      '<div class="row"><span class="try spent">83/3</span><span class="try is-over">4/3</span></div>' +
+      COMPACT +
         '<div class="ctl-table wf-table"><table><tbody><tr><td class="is-over">4 of 3</td><td class="spent">5 of 3</td></tr></tbody></table></div>',
     )
-    for (const sel of ['.try.spent', '.try.is-over', 'td.is-over', 'td.spent']) {
-      expect(won(pick(f, sel), 'color', WIDE), `${sel}`).toBe('var(--bad)')
-      expect(won(pick(f, sel), ['font-weight', 'font'], WIDE), `${sel}`).toBe('600')
+    for (const sel of ['.cr-try.is-over', 'td.is-over', 'td.spent']) {
+      expect(listWon(pick(f, sel), 'color', WIDE), `${sel}`).toBe('var(--bad)')
+      expect(listWon(pick(f, sel), ['font-weight', 'font'], WIDE), `${sel}`).toBe('600')
     }
   })
 
-  it('AG-16: the run list has a head row on the same grid, in the column-head register', () => {
-    // The head is a `.row`, so it takes the template and the breakpoints from
-    // `.row` itself; only its register is asserted here. MUTATION: delete the
-    // head rules, or lower the cell rule to (0,2,0) so `.row .owner` wins.
-    for (const html of [
-      '<div class="rows"><div class="row is-head"><span class="owner">owner</span><span class="try">tries</span><span class="when">age</span></div><div class="row clickable"></div></div>',
-      // The same row found by what it is, with no class: the one `.row` in a
-      // list that is not a control.
-      '<div class="rows"><div class="row"><span class="owner">owner</span><span class="try">tries</span><span class="when">age</span></div><div class="row clickable"></div></div>',
-    ]) {
-      const f = fragment(html)
-      for (const cell of ['.owner', '.try', '.when']) {
-        const el = pick(f, `.row:first-child ${cell}`)
-        expect(won(el, ['font', 'font-size'], WIDE), `head ${cell}`).toContain('var(--t-micro)')
-        expect(won(el, 'color', WIDE), `head ${cell}`).toBe('var(--text-faint)')
-      }
-      // And it drops what a row drops, because it is one.
-      expect(won(pick(f, '.row:first-child .owner'), 'display', PHONE)).toBe('none')
-    }
+  it('AG-16 under agents.html V1: the list has no head row, and its row names three lines', () => {
+    // The head row labelled a table's columns; the compact row has none to
+    // label (agents.landing.test.tsx asserts none is drawn). What is left to
+    // hold is the template's own names. MUTATION: drop a line name.
+    const f = fragment(COMPACT)
+    const template = listWon(pick(f, '.row'), 'grid-template-columns', WIDE) ?? ''
+    for (const line of ['[state]', '[name]', '[age]']) expect(template).toContain(line)
+    expect(flatRules(STYLES).some((r) => /\.row\.is-head/.test(r.selector)), 'a head-row rule is left behind').toBe(false)
   })
 
   it('AG-17: the open agent\'s row is marked with a surface step and an ink rule', () => {
