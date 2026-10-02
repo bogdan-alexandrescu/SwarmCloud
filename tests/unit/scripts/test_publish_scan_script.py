@@ -59,6 +59,12 @@ def test_the_script_reports_a_planted_secret_in_the_current_checkout(tmp_path: P
     (tmp_path / "app.py").write_text("X = 1\n" + "pass" + f'word = "{value}"\n')
 
     env = {k: v for k, v in os.environ.items() if not k.startswith("SWARM_")}
+    # A throwaway repo has no clone base, and the scan refuses to guess one.
+    first = subprocess.run(
+        ["git", "-C", str(tmp_path), "rev-list", "--max-parents=0", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.split()[0]
+    env["SWARM_CLONE_BASE"] = first
     done = subprocess.run(
         ["bash", str(SCRIPT)], cwd=tmp_path, capture_output=True, text=True, timeout=300, env=env
     )

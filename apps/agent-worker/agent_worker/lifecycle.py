@@ -7288,7 +7288,9 @@ def _assigns_a_literal(match: re.Match[str]) -> bool:
     """
     prefix = match.group(1)
     value = match.group(0)[len(prefix):]
-    if prefix.rstrip().endswith('"') or value.startswith("'"):
+    # A backtick opens a literal too (`_ends_the_value` already reads one as a
+    # quoted value); without it `` secret = `x\` <token>` `` was never counted.
+    if prefix.rstrip().endswith('"') or value.startswith(("'", "`")):
         return True
     return _BARE_CREDENTIAL_RE.fullmatch(value.rstrip(";)}]'")) is not None
 

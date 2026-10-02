@@ -71,10 +71,17 @@ def _run(repo: Path, *args: str, clone_base: str | None = None) -> subprocess.Co
     )
 
 
+def _run_from_base(repo: Path) -> subprocess.CompletedProcess[str]:
+    """Run against the repository's first commit: a throwaway repo has no clone
+    base of its own, and the scan correctly refuses to guess one (exit 2)."""
+    first = _git(repo, "rev-list", "--max-parents=0", "HEAD").split()[0]
+    return _run(repo, "--base", first)
+
+
 def test_a_clean_diff_exits_zero(repo: Path):
     (repo / "src" / "app.py").write_text("def main():\n    return 2\n")
     (repo / "src" / "new.py").write_text("VALUE = 3\n")
-    done = _run(repo)
+    done = _run_from_base(repo)
     assert done.returncode == 0, done.stderr
     assert done.stdout == ""
 
@@ -82,7 +89,7 @@ def test_a_clean_diff_exits_zero(repo: Path):
 def test_a_planted_generic_secret_is_named_by_path_line_and_rule_and_never_by_value(repo: Path):
     value = _password()
     (repo / "src" / "app.py").write_text(f'def main():\n    {_PW} = "{value}"\n    return 1\n')
-    done = _run(repo)
+    done = _run_from_base(repo)
     assert done.returncode == 1
     assert done.stdout.splitlines() == ["src/app.py:2 key_value_assignment"]
     assert value not in done.stdout + done.stderr
@@ -97,7 +104,7 @@ def test_every_hit_is_listed_including_an_untracked_file(repo: Path):
     )
     (repo / "deploy").mkdir()
     (repo / "deploy" / "settings.json").write_text(f'{{\n  "{_PW}": "{value}"\n}}\n')
-    done = _run(repo)
+    done = _run_from_base(repo)
     assert done.returncode == 1
     assert sorted(done.stdout.splitlines()) == [
         "deploy/settings.json:2 key_value_assignment",
@@ -114,9 +121,9 @@ def test_the_tiers_are_the_workers(repo: Path):
     (repo / "tests").mkdir()
     (repo / "tests" / "test_login.py").write_text(fixture)
     (repo / "infra.tf").write_text('locals {\n  ANTHROPIC_API_' + 'KEY = "anthropic"\n}\n')
-    assert _run(repo).returncode == 0
+    assert _run_from_base(repo).returncode == 0
     (repo / "src" / "login.py").write_text(fixture)
-    done = _run(repo)
+    done = _run_from_base(repo)
     assert done.returncode == 1
     assert done.stdout.splitlines() == ["src/login.py:1 key_value_assignment"]
 
@@ -128,7 +135,7 @@ def test_a_removed_line_is_not_a_hit(repo: Path):
     _git(repo, "add", "-A")
     _git(repo, "commit", "-q", "-m", "history")
     (repo / "src" / "old.py").write_text("VALUE = 1\n")
-    assert _run(repo).returncode == 0
+    assert _run_from_base(repo).returncode == 0
 
 
 def test_base_defaults_to_the_merge_base_with_origin_main(repo: Path, tmp_path: Path):
