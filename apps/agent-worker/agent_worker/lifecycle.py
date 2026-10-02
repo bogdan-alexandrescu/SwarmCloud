@@ -290,6 +290,28 @@ STALE_READING_RETRY_SECONDS = 300
 #: scheduler admits it on its next drain like any other READY task.
 EXPECTED_OUTPUT_RETRY_DELAY_SECONDS = 0
 
+#: The cause a `carrier: branches` attempt fails with, before its agent runs,
+#: when the tenant's forge token cannot push to the step's repository or the
+#: tenant has no git credential at all (D13; owner decision 2026-10-02). A
+#: worker vocabulary in the error text and `result_summary.carrier_check`,
+#: not a frozen EndCause: the task's end cause is CANNOT_START. NOT RETRIED:
+#: the next attempt reads the same secret and asks the same forge.
+FORGE_READ_ONLY = "forge_read_only"
+#: The retryable sibling: the forge could not be asked (a network failure, a
+#: 429, a 5xx), which the next attempt may not meet.
+FORGE_UNREACHABLE = "forge_unreachable"
+#: How long a task failed for an unreachable forge waits before it is eligible
+#: again. A forge outage clears with time, unlike a missing output, so a short
+#: delay keeps the retry from meeting the same outage at once. Bounded by
+#: `max_attempts`, like every retry.
+FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: The answers `forge.probe_repository` turns into a `can_push=False` access
+#: whose reason starts "the forge answered <status>", and which say the forge
+#: could not answer now rather than that the token cannot push. Matched on
+#: that reason because the probe returns no status; the wording is pinned by
+#: tests/unit/worker/test_carrier_branches.py through the real probe.
+_FORGE_TRANSIENT_ANSWER = re.compile(r"^the forge answered (?:429|5\d\d)\b")
+
 #: How many different accounts one attempt will try before it gives up and
 #: parks. Three, not one: a freshly onboarded account whose secret has no
 #: version yet, and a borrowed account this worker was never granted access
@@ -1020,6 +1042,20 @@ class Worker:
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
+
+        # ---- STEP 5a: carrier: branches needs a token that can push (D13) --
+        # Asked HERE, by the worker, and not by swarm-api at submission: the
+        # answer needs the tenant's git secret, and exactly one identity may
+        # read each secret -- this tenant's worker GSA (owner decision
+        # 2026-10-02; terraform/modules/secret_manager). Before the agent
+        # runs, so a token that could never push costs no agent time and no
+        # provider quota. Only for `branches`: the phase is not entered at all
+        # otherwise, so `checkpoints` reads no extra secret and asks no forge.
+        if self._dispatch_carrier() == "branches":
+            self.phases.enter("carrier_scope")
+            refused = self._carrier_scope_refusal()
+            if refused is not None:
+                return refused
 
         # ---- STEP 5b: stage the artifacts this step declared -------------
         # Order relative to the clone is not load-bearing: the two write to
@@ -4437,6 +4473,116 @@ class Worker:
         )
         protected = (access.default_branch,) if access.default_branch else ()
         return url, token, branch, protected
+
+    def _carrier_scope_refusal(self) -> Callable[[], Outcome] | None:
+        """For `carrier: branches`, the failure to make before the agent runs, or None.
+
+        Owner decision, 2026-10-02: the write-scope check is the WORKER's.
+        swarm-api reads no tenant's git secret, so it cannot know whether the
+        token can push; this asks the forge with the tenant's own token, the
+        way the carrier push and the publish ask it (`probe_repository`).
+
+          * NO GIT CREDENTIAL, or a token whose `permissions.push` is not
+            True: FAILED now, NOT retried, cause `forge_read_only`. The next
+            attempt reads the same secret and asks the same forge.
+          * The forge could not be asked -- a network failure (`ForgeError`),
+            a 429 or a 5xx: the attempt fails RETRYABLY, cause
+            `forge_unreachable`.
+          * Everything else proceeds unchanged. A worker with publishing
+            disabled, a token the memory guard refuses to read, or a host that
+            is not a forge this worker publishes to pushes nothing at its
+            checkpoints, exactly as `_carrier_target` already says in its log
+            line; none of those is a statement about the token's scope.
+
+        Returned as a callable, like `_prepare`'s parks, so the terminal writes
+        happen after the startup window closes. Never logs or quotes the
+        token: the reasons are the probe's own words, and both are scrubbed.
+        """
+        cfg = self.cfg
+        if not cfg.git_publish_enabled:
+            return None
+        url = self._repo_url or cfg.repository_url
+        if not url:
+            # swarm-api refuses `branches` without a repository (422), so this
+            # is a task written by another path; the carrier logs and skips.
+            return None
+        if self._git_token_refusal():
+            return None
+        token = self._git_token()
+        if not token:
+            return functools.partial(
+                self._fail_forge_read_only, url,
+                "no git credential is registered for this tenant",
+            )
+        try:
+            access = probe_repository(url=url, token=token)
+        except ForgeError as exc:
+            return functools.partial(
+                self._fail_forge_unreachable, url, self._scrub(str(exc)[:300])
+            )
+        if access is None:
+            return None
+        if access.can_push:
+            self.log.info("carrier: the tenant token can push to the step's repository")
+            return None
+        reason = str(access.reason)
+        if _FORGE_TRANSIENT_ANSWER.match(reason):
+            return functools.partial(self._fail_forge_unreachable, url, self._scrub(reason))
+        return functools.partial(self._fail_forge_read_only, url, self._scrub(reason))
+
+    def _fail_forge_read_only(self, url: str, reason: str) -> Outcome:
+        """FAILED, not retried, before the agent ran: the token cannot push (D13)."""
+        error = self._scrub(
+            f"{FORGE_READ_ONLY}: carrier 'branches' pushes the step's work to its "
+            f"branch, and this tenant's forge credential cannot push to {url}: "
+            f"{reason}. The agent was not started. Choose carrier 'checkpoints', "
+            "or store a token with write access (scripts/create-secrets.sh "
+            "--provider git --stdin)."
+        )
+        self.log.error(
+            "carrier: the tenant token cannot push; failing before the agent runs",
+            cause=FORGE_READ_ONLY,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["carrier_check"] = {"cause": FORGE_READ_ONLY, "reason": reason}
+        self._export_metrics()
+        self.control.finish(
+            state=TaskState.FAILED,
+            exit_code=None,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
+
+    def _fail_forge_unreachable(self, url: str, reason: str) -> Outcome:
+        """A retryable failure before the agent ran: the forge could not be asked."""
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: carrier 'branches' needs to know whether this "
+            f"tenant's forge credential can push to {url}, and the forge could not "
+            f"be asked: {reason}. The agent was not started; the attempt is "
+            "retried while the task has attempts left."
+        )
+        self.log.warning(
+            "carrier: the forge could not be asked; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            reason=reason,
+        )
+        summary = self._upload_outputs()
+        summary["carrier_check"] = {"cause": FORGE_UNREACHABLE, "reason": reason}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+            detail={"carrier": "branches"},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _carrier_fold_onto_tip(
         self, publish_repo: Path, *, url: str, token: str, branch: str, message: str

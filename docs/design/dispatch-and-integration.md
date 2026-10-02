@@ -214,25 +214,41 @@ paths through it, and that is the risk this choice accepts deliberately:
   default one. An integrator merges its parents' branches in step order
   (`integrates`) at its publish, as it already did. A step with several
   parents and no integrator role starts from the default branch.
-* **The API refuses `carrier: branches`** (422 `invalid_dispatch`) without a
-  repository, and when the tenant's forge token cannot push to it
-  (`detail.forge_access: "read-only"`, `detail.reason` the forge's answer).
-  The scope is the token's REAL one (owner decision, 2026-10-02), asked the
-  way the worker's publish asks it, by calling the same functions
-  (`swarm_api.forge_scope`, `SubmissionService._require_push_scope`):
-  `agent_worker.secrets.resolve_git_token` reads the tenant's own
-  `swarm-tenant-<tenant>-git` secret (latest version, only when `git` is in
-  the tenant's `credentials`), and `agent_worker.forge.probe_repository`
-  makes one `GET /repos/{owner}/{repo}` with it and reads
-  `permissions.push`. That is read once per `branches` submission and never
-  for `checkpoints`. The token stays a local: it is not returned, stored,
-  logged or put in an error. A secret that cannot be read, or a forge that
-  cannot be reached, answers 503 (`forge_access: "unknown"`) and creates
-  nothing -- never admitted, and never refused as read-only, on a guess.
-  **Reading the secret needs `roles/secretmanager.secretAccessor` for
-  swarm-api's service account on each tenant's `-git` secret**, which today
-  only the tenant's worker holds; until it is granted, every `branches`
-  submission is a 503.
+* **The API refuses `carrier: branches` only without a repository** (422
+  `invalid_dispatch`, `detail.missing: "repository_url"`). With one it is
+  accepted (201), whatever the token can do: swarm-api reads no tenant's git
+  secret and holds no path to one.
+* **The worker refuses a token that cannot push, before the agent runs**
+  (owner decision, 2026-10-02). After the clone, a `branches` attempt reads
+  the tenant's own `swarm-tenant-<tenant>-git` secret and asks the forge with
+  it, exactly as the carrier push and the publish do
+  (`Worker._carrier_scope_refusal`, `forge.probe_repository`: one
+  `GET /repos/{owner}/{repo}`, `permissions.push`). Three answers:
+  * **no git credential, or `permissions.push` not `true`**: the task ends
+    FAILED at once, whatever attempts are left, with cause
+    `forge_read_only` -- the prefix of `last_error` and
+    `result_summary.carrier_check.cause` -- and end cause `cannot_start`. Not
+    retried: the next attempt reads the same secret and asks the same forge.
+    The agent never started, so it cost no agent time and no provider quota;
+  * **the forge could not be asked** (a network failure, a 429, a 5xx): the
+    attempt fails RETRYABLY with cause `forge_unreachable`, after a 60-second
+    delay, bounded by `max_attempts`;
+  * **a token that can push**: the attempt proceeds.
+
+  `checkpoints` asks nothing and reads no extra secret. The token is never
+  logged, stored or put in the error; the reason is the probe's own words.
+
+  **Why the worker and not the API.** A submit-time 422 would be friendlier --
+  the caller hears at once instead of from a failed task -- and B4 first built
+  it that way. It required swarm-api to read every tenant's git secret, which
+  breaks the rule that exactly one identity may read each secret, the
+  tenant's own worker service account
+  (`terraform/modules/secret_manager/main.tf`), and made swarm-api depend on
+  the worker package. A credential that grants write on a tenant's
+  repositories is the last place to add a second reader. The worker already
+  reads that secret for the clone and the publish, so the check costs no new
+  grant; the price is that a read-only token is reported a few seconds into
+  the attempt rather than at submission.
 
 ---
 

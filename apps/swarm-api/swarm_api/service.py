@@ -50,9 +50,8 @@ from swarm_common.states import ParkReason, TaskState, assert_transition
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .continuation import resolve_continuation
-from .errors import Forbidden, UpstreamUnavailable, ValidationFailed
+from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
-from .forge_scope import ForgeWriteScope
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate
@@ -63,7 +62,6 @@ from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
-    DispatchOptionError,
     DispatchOptions,
     StepSpec,
     reject_non_finite,
@@ -120,7 +118,6 @@ class SubmissionService:
         metrics: ApiMetrics,
         now=utcnow,
         signer: SpecSigner | None = None,
-        forge_scope: ForgeWriteScope | None = None,
     ) -> None:
         self._settings = settings
         self._store = store
@@ -131,10 +128,6 @@ class SubmissionService:
         #: in local development: `build_context` refuses a hardened
         #: environment without a key.
         self._signer = signer
-        #: Whether the tenant's forge token can push, asked only for
-        #: `carrier: branches` (D13, `forge_scope.py`). None refuses every
-        #: branches submission with a 503 rather than admitting it unchecked.
-        self._forge_scope = forge_scope
 
     def _sign(self, tasks: Sequence[Task]) -> None:
         """After every write to the tasks, immediately before the store call.
@@ -310,49 +303,6 @@ class SubmissionService:
             depends_on=list(depends_on),
         )
 
-    def _require_push_scope(
-        self, tenant: Tenant, carrier: str | None, repository_url: str | None
-    ) -> None:
-        """Refuse `carrier: branches` with a 422 when the tenant's token cannot push (D13).
-
-        The token's REAL scope, read from the forge the way the worker's publish
-        reads it (`forge_scope.py`), never a declared list. Asked only for
-        `branches`: `checkpoints` pushes nothing and costs no secret read.
-        `resolve_dispatch_options` has already refused `branches` with no
-        repository, so the repository is set here.
-        """
-        if carrier != "branches":
-            return
-        if not repository_url:
-            # Unreachable after resolve_dispatch_options; refused, never assumed.
-            raise DispatchOptionError(
-                "carrier 'branches' pushes to a repository, and none was given.",
-                detail={"carrier": "branches", "missing": "repository_url"},
-            )
-        if self._forge_scope is None:
-            raise UpstreamUnavailable(
-                "carrier 'branches' needs this tenant's forge credential to be able to "
-                "push, and this deployment has no way to ask the forge. Choose carrier "
-                "'checkpoints'.",
-                detail={"carrier": "branches", "forge_access": "unknown"},
-            )
-        scope = self._forge_scope.check(tenant, repository_url)
-        if scope.can_push:
-            return
-        raise DispatchOptionError(
-            "carrier 'branches' pushes the step's work to its branch, and this "
-            f"tenant's forge credential cannot push to {repository_url}: "
-            f"{scope.reason}. Every push would be refused and no branch would "
-            "exist. Choose carrier 'checkpoints', or store a token with write "
-            "access (scripts/create-secrets.sh --provider git --stdin).",
-            detail={
-                "carrier": "branches",
-                "forge_access": "read-only",
-                "reason": scope.reason,
-                "accepted_carriers": ["checkpoints"],
-            },
-        )
-
     def submit_tasks(self, ctx: AuthContext, specs: Sequence[TaskCreate]) -> SubmissionResult:
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
@@ -378,13 +328,6 @@ class SubmissionService:
                 )
                 for spec in specs
             ]
-            # After every task has passed its own validation, so a batch that
-            # would be refused anyway costs no secret read and no forge call.
-            # Nothing has been written yet: `_build_task` only builds.
-            for task in tasks:
-                self._require_push_scope(
-                    tenant, task.metadata[DISPATCH_METADATA_KEY].get("carrier"), task.repository_url
-                )
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -465,7 +408,6 @@ class SubmissionService:
                 scale="workflow",
                 repository_url=repository_url,
             )
-            self._require_push_scope(tenant, dispatch.carrier, repository_url)
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)
             if dispatch.strategy == "integrate":

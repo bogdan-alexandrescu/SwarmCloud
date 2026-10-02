@@ -1,108 +1,76 @@
-"""`carrier: branches` is refused when the tenant's forge token cannot push (D13).
+"""swarm-api admits `carrier: branches` without reading any tenant's git secret (D13).
 
-A branches carrier pushes the step's committed work to its branch at park,
-cancel, SIGTERM and finish. With a token that cannot push, every one of those
-pushes is refused at the forge and the caller who asked for durable branches
-gets none. Owner decision, 2026-10-02: the API refuses it with a 422 from the
-token's REAL write scope, asked the way the worker's publish asks it
-(`swarm_api.forge_scope`, which calls `agent_worker.secrets.resolve_git_token`
-and `agent_worker.forge.probe_repository`), not from a declared list.
+A branches carrier pushes the step's committed work to its branch, and a
+token that cannot push would make every one of those pushes fail. Owner
+decision, 2026-10-02: that check belongs to the WORKER, not the API. Answering
+it means reading the tenant's git secret, and exactly one identity -- the
+tenant's own worker GSA -- may read each secret
+(terraform/modules/secret_manager/main.tf). So the API checks only what it can
+check without a secret: a branches carrier needs a repository (422 without
+one). Whether the token can push is asked by the worker before the agent runs,
+and a read-only token fails the attempt `forge_read_only`
+(tests/unit/worker/test_carrier_branches.py).
 
-MUTATIONS: make `_require_push_scope` return at once -- the read-only tests
-fail with 201. Ask it for `checkpoints` too -- the checkpoints test fails on
-the scope's call count. Put the token into the 503's message or a log line --
-the token tests fail.
+MUTATIONS: construct a `SecretManagerServiceClient` on the submit path -- the
+"never reads a secret" tests fail on the recorded construction. Import
+`agent_worker` anywhere in swarm_api -- the dependency test fails. Drop the
+repository requirement for branches -- the 422 test fails with 201.
 """
 
 from __future__ import annotations
 
-import logging
-from types import SimpleNamespace
+import pathlib
+import re
 from typing import Any
 
 import pytest
-from fastapi.testclient import TestClient
 
-from swarm_api.auth import StaticTokenVerifier
-from swarm_api.credentials import InMemoryCredentials
-from swarm_api.deps import build_context
-from swarm_api.forge_scope import SecretManagerForgeScope, StaticForgeScope
-from swarm_api.groups import StaticGroups
-from swarm_api.main import create_app
-from swarm_api.metrics import ApiMetrics
-from swarm_api.waker import NullWaker
-
-from .conftest import api_settings, auth_header, seed_tenant
+from .conftest import auth_header, seed_tenant
 
 REPO = "https://github.com/saga-xyz/payments.git"
-#: A token-shaped value that must never reach a response or a log line.
-TOKEN = "ghp_SECRETtokenVALUEnever0in0output0001"
+API_ROOT = pathlib.Path(__file__).resolve().parents[3] / "apps" / "swarm-api"
 
 
-def _client(db, tokens, group_map, objects, scope: Any) -> TestClient:
-    ctx = build_context(
-        settings=api_settings(),
-        db=db,
-        verifier=StaticTokenVerifier(tokens),
-        groups=StaticGroups(group_map),
-        credentials=InMemoryCredentials(),
-        waker=NullWaker(),
-        metrics=ApiMetrics(),
-        objects=objects,
-        forge_scope=scope,
-    )
-    return TestClient(create_app(ctx), raise_server_exceptions=False)
+@pytest.fixture
+def secret_clients(monkeypatch) -> list[tuple[Any, ...]]:
+    """Every Secret Manager client constructed while the test runs."""
+    from google.cloud import secretmanager
+
+    built: list[tuple[Any, ...]] = []
+
+    class _Recorder:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            built.append((args, kwargs))
+
+        def __getattr__(self, name: str) -> Any:
+            raise AssertionError(f"swarm-api called Secret Manager's {name}")
+
+    monkeypatch.setattr(secretmanager, "SecretManagerServiceClient", _Recorder)
+    return built
 
 
-def _task(client: TestClient, carrier: str = "branches", repository_url: str | None = REPO):
+def _task(client, carrier: str = "branches", repository_url: str | None = REPO):
     body: dict[str, Any] = {"runner_profile": "mock", "strategy": "collect", "carrier": carrier}
     if repository_url is not None:
         body["repository_url"] = repository_url
     return client.post("/v1/tasks", headers=auth_header("alice"), json=body)
 
 
-# --------------------------------------------------------------------------
-# The service's decision, over a fixed scope
-# --------------------------------------------------------------------------
+def test_branches_with_a_repository_is_accepted_and_reads_no_secret(client, db, secret_clients):
+    # A tenant that HAS a git credential: the API still never reads it.
+    seed_tenant(db, "eng", credentials=("git",))
 
+    response = _task(client)
 
-def test_a_token_that_cannot_push_is_refused_branches_with_a_422(db, tokens, group_map, objects):
-    scope = StaticForgeScope(can_push=False, reason="the token has pull but not push")
-    response = _task(_client(db, tokens, group_map, objects, scope))
-    assert response.status_code == 422, response.text
-    body = response.json()
-    assert body["code"] == "invalid_dispatch"
-    assert body["detail"]["forge_access"] == "read-only"
-    assert body["detail"]["reason"] == "the token has pull but not push"
-    assert scope.calls == [("eng", REPO)]
-
-
-def test_a_token_that_can_push_is_accepted(db, tokens, group_map, objects):
-    scope = StaticForgeScope(can_push=True)
-    response = _task(_client(db, tokens, group_map, objects, scope))
     assert response.status_code == 201, response.text
     assert response.json()["task"]["dispatch"]["carrier"] == "branches"
-    assert scope.calls == [("eng", REPO)]
+    assert secret_clients == [], "swarm-api constructed a Secret Manager client on submit"
 
 
-def test_checkpoints_never_asks_the_forge(db, tokens, group_map, objects):
-    scope = StaticForgeScope(can_push=False)
-    response = _task(_client(db, tokens, group_map, objects, scope), carrier="checkpoints")
-    assert response.status_code == 201, response.text
-    assert scope.calls == [], "a carrier that pushes nothing read a secret"
+def test_a_branches_workflow_is_accepted_and_reads_no_secret(client, db, secret_clients):
+    seed_tenant(db, "eng", credentials=("git",))
 
-
-def test_branches_with_no_repository_is_refused_before_any_forge_call(db, tokens, group_map, objects):
-    scope = StaticForgeScope(can_push=True)
-    response = _task(_client(db, tokens, group_map, objects, scope), repository_url=None)
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["missing"] == "repository_url"
-    assert scope.calls == []
-
-
-def test_a_workflow_is_refused_the_same_way(db, tokens, group_map, objects):
-    scope = StaticForgeScope(can_push=False)
-    response = _client(db, tokens, group_map, objects, scope).post(
+    response = client.post(
         "/v1/workflows",
         headers=auth_header("alice"),
         json={
@@ -111,105 +79,31 @@ def test_a_workflow_is_refused_the_same_way(db, tokens, group_map, objects):
             "steps": [{"step_id": "a", "runner_profile": "mock"}],
         },
     )
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["forge_access"] == "read-only"
-
-
-# --------------------------------------------------------------------------
-# The deployed scope: the tenant's git secret, asked of the forge
-# --------------------------------------------------------------------------
-
-
-class _Secrets:
-    """Secret Manager's `access_secret_version`, over one payload or one failure."""
-
-    def __init__(self, payload: str | None = None, error: Exception | None = None) -> None:
-        self.payload = payload
-        self.error = error
-        self.names: list[str] = []
-
-    def access_secret_version(self, request: dict[str, str]) -> Any:
-        self.names.append(request["name"])
-        if self.error is not None:
-            raise self.error
-        return SimpleNamespace(payload=SimpleNamespace(data=str(self.payload).encode()))
-
-
-@pytest.fixture
-def forge(monkeypatch):
-    """`agent_worker.forge._request`, answering with fixed permissions."""
-    seen: dict[str, Any] = {"calls": []}
-
-    def fake_request(url: str, *, token: str, method: str = "GET", payload: Any = None):
-        seen["calls"].append((method, url, token))
-        return 200, {"default_branch": "main", "permissions": seen["permissions"]}
-
-    import agent_worker.forge as forge_mod
-
-    monkeypatch.setattr(forge_mod, "_request", fake_request)
-    return seen
-
-
-def test_the_deployed_scope_reads_the_tenants_git_secret_and_probes_push(
-    db, tokens, group_map, objects, forge, caplog
-):
-    seed_tenant(db, "eng", credentials=("git",))
-    secrets = _Secrets(payload=TOKEN)
-    forge["permissions"] = {"admin": False, "push": False, "pull": True}
-    caplog.set_level(logging.DEBUG)
-
-    response = _task(_client(db, tokens, group_map, objects, SecretManagerForgeScope("p", client=secrets)))
-
-    assert response.status_code == 422, response.text
-    assert response.json()["detail"]["reason"] == "the token has pull but not push"
-    # Exactly the tenant's own git secret, latest version; one GET on the repo.
-    assert secrets.names == ["projects/p/secrets/swarm-tenant-eng-git/versions/latest"]
-    assert forge["calls"] == [("GET", "https://api.github.com/repos/saga-xyz/payments", TOKEN)]
-    assert TOKEN not in response.text
-    assert TOKEN not in caplog.text
-
-
-def test_the_deployed_scope_admits_a_token_that_can_push(db, tokens, group_map, objects, forge, caplog):
-    seed_tenant(db, "eng", credentials=("git",))
-    forge["permissions"] = {"admin": False, "push": True, "pull": True}
-    caplog.set_level(logging.DEBUG)
-
-    response = _task(
-        _client(db, tokens, group_map, objects, SecretManagerForgeScope("p", client=_Secrets(payload=TOKEN)))
-    )
 
     assert response.status_code == 201, response.text
-    assert TOKEN not in response.text
-    assert TOKEN not in caplog.text
+    assert secret_clients == []
 
 
-def test_a_tenant_with_no_git_credential_is_refused_without_a_secret_read(
-    db, tokens, group_map, objects, forge
-):
-    seed_tenant(db, "eng", credentials=())
-    secrets = _Secrets(payload=TOKEN)
-    forge["permissions"] = {"push": True}
-
-    response = _task(_client(db, tokens, group_map, objects, SecretManagerForgeScope("p", client=secrets)))
+def test_branches_with_no_repository_is_refused_with_a_422(client, secret_clients):
+    response = _task(client, repository_url=None)
 
     assert response.status_code == 422, response.text
-    assert "no git credential" in response.json()["detail"]["reason"]
-    assert secrets.names == []
-    assert forge["calls"] == []
+    body = response.json()
+    assert body["code"] == "invalid_dispatch"
+    assert body["detail"]["missing"] == "repository_url"
+    assert secret_clients == []
 
 
-def test_an_unreadable_secret_is_a_503_that_names_no_token(db, tokens, group_map, objects, forge, caplog):
-    seed_tenant(db, "eng", credentials=("git",))
-    # An error whose text carries the token: neither the response nor the
-    # log may repeat it, so only the exception's type is ever logged.
-    secrets = _Secrets(error=PermissionError(f"denied while holding {TOKEN}"))
-    forge["permissions"] = {"push": True}
-    caplog.set_level(logging.DEBUG)
-
-    response = _task(_client(db, tokens, group_map, objects, SecretManagerForgeScope("p", client=secrets)))
-
-    assert response.status_code == 503, response.text
-    assert response.json()["detail"]["forge_access"] == "unknown"
-    assert forge["calls"] == [], "the forge was asked with no token in hand"
-    assert TOKEN not in response.text
-    assert TOKEN not in caplog.text
+def test_swarm_api_does_not_depend_on_the_worker():
+    """The API holds no path to a tenant's git secret: no agent_worker import, no dependency."""
+    pyproject = (API_ROOT / "pyproject.toml").read_text()
+    assert "swarm-agent-worker" not in pyproject
+    # Import statements only: several modules name agent_worker in prose,
+    # describing the worker's side of a shared format.
+    importing = re.compile(r"^\s*(?:from|import)\s+agent_worker\b", re.MULTILINE)
+    offenders = [
+        str(path.relative_to(API_ROOT))
+        for path in (API_ROOT / "swarm_api").rglob("*.py")
+        if importing.search(path.read_text())
+    ]
+    assert offenders == [], f"swarm_api imports the worker: {offenders}"

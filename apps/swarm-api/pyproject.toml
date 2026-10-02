@@ -7,10 +7,6 @@ dependencies = [
     "swarm-common",
     # The credential patterns (swarm_api.redaction re-exports them).
     "swarm-redaction",
-    # `agent_worker.forge.probe_repository` and `agent_worker.secrets.resolve_git_token`,
-    # which swarm_api.forge_scope calls to learn whether a tenant's token can push
-    # (D13, `carrier: branches`). Imported lazily, inside the check.
-    "swarm-agent-worker",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -36,7 +32,6 @@ dependencies = [
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
-swarm-agent-worker = { path = "../agent-worker", editable = true }
 
 [build-system]
 requires = ["hatchling"]
