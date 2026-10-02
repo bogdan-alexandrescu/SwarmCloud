@@ -674,9 +674,9 @@ function PointerFinding({ page }: { page: CheckpointsPage }) {
  * its archive -- and the decision is "files as a table (name, size, age)".
  * They were a disclosure of `name · size` spans inside the Size cell. Opened
  * from that cell, each is now a row directly under its checkpoint, with its
- * own name, size and age; the listing serves no time for an object, so that
- * age is the `not measured` mark (#172 asks the route for it) rather than the
- * checkpoint's age borrowed.
+ * own name, size and age; the age is the object's own time from the listing
+ * (#172), and the `not measured` mark when the store reported none -- never
+ * the checkpoint's age borrowed.
  *
  * `is-stacked` for the reason the attempt panel's checkpoint table is: the
  * inspector is a size container (`ctl-inspector`) never wider than 720px, so
@@ -724,7 +724,7 @@ function CheckpointTable({
                   listing={listed.includes(keyOf(c))}
                   onList={() => setListed(flip(keyOf(c)))}
                 />
-                {listed.includes(keyOf(c)) && c.objects.map((o) => <ObjectRow key={o.key} object={o} />)}
+                {listed.includes(keyOf(c)) && c.objects.map((o) => <ObjectRow key={o.key} object={o} now={now} />)}
               </Fragment>
             ))}
           </tbody>
@@ -879,13 +879,13 @@ function CheckpointRow({
 /**
  * ONE OBJECT OF A CHECKPOINT, AS A ROW OF THE SAME TABLE: name, size, age.
  *
- * The size is the listing's, so it is measured. The age is not served: the
- * checkpoint route lists an object as `{name, key, bytes}` (inspect.py
- * `_checkpoint_row`), although the bucket reports a time for every object.
- * So it is the em dash and the `not measured` mark, never the checkpoint's
- * own age standing in for it. #172 asks the route to serve the time.
+ * The size is the listing's, so it is measured. The age is the object's own
+ * GCS `updated`, which the listing serves as `object_updated_at` (#172,
+ * inspect.py `_checkpoint_row`). Where it is null the store reported no time,
+ * and where it is missing the API predates #172; either way it is the em dash
+ * and the `not measured` mark, never the checkpoint's own age standing in.
  */
-function ObjectRow({ object }: { object: CheckpointFile }) {
+function ObjectRow({ object, now }: { object: CheckpointFile; now: number | null }) {
   return (
     <tr role="row" className="rf-object">
       <th role="rowheader" scope="row">
@@ -895,11 +895,21 @@ function ObjectRow({ object }: { object: CheckpointFile }) {
         {bytesLabel(object.bytes)}
       </td>
       <td role="cell" data-label="Age">
-        <Em />{' '}
-        <Mark
-          kind="absent"
-          say="The checkpoint listing serves no time for a checkpoint's objects, so this object's age is not known here. It is not the checkpoint's age."
-        />
+        {typeof object.object_updated_at === 'string' ? (
+          timeAgo(object.object_updated_at, now ?? Date.now())
+        ) : (
+          <>
+            <Em />{' '}
+            <Mark
+              kind="absent"
+              say={
+                object.object_updated_at === null
+                  ? "The bucket reported no time for this object, so its age is not known here. It is not the checkpoint's age."
+                  : "This API serves no time for a checkpoint's objects, so this object's age is not known here. It is not the checkpoint's age."
+              }
+            />
+          </>
+        )}
       </td>
     </tr>
   )
@@ -948,14 +958,19 @@ export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): str
  * The server's `detail` is a line of its own under the value, never appended
  * after a full stop (AG-23).
  *
- * THE AGE, and where each answer comes from (the route serves no object time;
- * #172 asks for it):
+ * THE AGE, and where each answer comes from. It is the OBJECT'S OWN TIME
+ * (#172): `age_seconds`, the server's measure, or else `object_updated_at`
+ * against this panel's clock (`objectAge`).
  *
- *   final, attempt ended      the attempt's end, which is when the worker
- *                             uploads the final log (`_upload_outputs`);
- *   final, no end recorded    the em dash and `not measured`, never a bare
- *                             dash that reads as nothing to say;
- *   live, still being written the word `live` -- only while the attempt has
+ *   final, object dated       how long ago the final log object was written;
+ *   final, store gave no time the em dash and `not measured` -- never the
+ *                             attempt's end borrowed for it;
+ *   final, API serves no time the attempt's end, which is when the worker
+ *   (older than #184)         uploads the final log (`_upload_outputs`), and
+ *                             `not measured` when no end is recorded either;
+ *   live, still being written how long ago the tail object last changed,
+ *                             with `live` under it (the word alone when no
+ *                             time was served) -- only while the attempt has
  *                             no end AND the task holds a slot;
  *   live, nothing writing it  the em dash and `partial`: `source=auto` serves
  *                             the tail exactly when the final log is absent,
@@ -981,8 +996,8 @@ export function attemptLine(logs: Pick<TaskLogs, 'attempt' | 'attempt_id'>): str
  *   age_seconds      the server's own measure of how old the object is, taken
  *                    at its `read_at`. For a live tail it is the publisher's
  *                    liveness -- the tail is republished every interval even
- *                    when nothing changed -- so it reads `published Ns ago`
- *                    and moves on this panel's clock between reads.
+ *                    when nothing changed -- and it moves on this panel's
+ *                    clock between reads.
  *
  * EXPORTED for the Artifacts pane's Logs, which draws the agent's streams
  * with this same row, so the four answers read the same in both panes.
@@ -1004,7 +1019,7 @@ export function Stream({
   const ended = logs.attempt.completed_at
   const writing = ended === null && CONCURRENCY_STATES.has(task.state)
   const at = now ?? Date.now()
-  const age = servedAge(stream, fetchedAt, at)
+  const age = objectAge(stream, fetchedAt, at)
   return (
     <tr role="row">
       <th role="rowheader" scope="row">
@@ -1080,10 +1095,16 @@ export function Stream({
       <td role="cell" data-label="Age">
         {stream.source === 'live' ? (
           writing ? (
-            <>
-              live
-              {age !== null && <span className="ctl-sub">published {ageSpan(age)} ago</span>}
-            </>
+            // How long ago the tail object last changed (#172), with `live`
+            // beneath it; `live` alone only when no time was served.
+            age !== null ? (
+              <>
+                {`${ageSpan(age)} ago`}
+                <span className="ctl-sub">live</span>
+              </>
+            ) : (
+              'live'
+            )
           ) : (
             <>
               <Em />{' '}
@@ -1095,16 +1116,24 @@ export function Stream({
             </>
           )
         ) : stream.source === 'final' ? (
-          ended !== null ? (
-            timeAgo(ended, at)
-          ) : age !== null ? (
+          // THE OBJECT'S OWN TIME FIRST (#172). The attempt's end stands in
+          // only for an API that serves no `object_updated_at` at all (older
+          // than #184); a null is the store saying it had no time, and the
+          // attempt's end is not borrowed for it.
+          age !== null ? (
             `${ageSpan(age)} ago`
+          ) : stream.object_updated_at === undefined && ended !== null ? (
+            timeAgo(ended, at)
           ) : (
             <>
               <Em />{' '}
               <Mark
                 kind="absent"
-                say="This attempt's end is not recorded, and the final log is uploaded when it ends, so when this log was written is unknown here."
+                say={
+                  stream.object_updated_at === null
+                    ? "The bucket reported no time for this log object, so when it was written is unknown here. It is not the attempt's end."
+                    : "This attempt's end is not recorded, and the final log is uploaded when it ends, so when this log was written is unknown here."
+                }
               />
             </>
           )
@@ -1142,6 +1171,24 @@ export function servedAge(
   // A clock that last ticked before the read landed adds nothing, rather than
   // taking seconds off what the server measured.
   return Math.max(0, a * 1000) + Math.max(0, now - fetchedAt)
+}
+
+/**
+ * How old a stream's object is NOW, in ms: `servedAge` when the server
+ * measured it, else its `object_updated_at` against this browser's clock
+ * (#172) -- the way a checkpoint's `created_at` is aged. Null when neither
+ * was served, never a guess.
+ */
+export function objectAge(
+  served: { age_seconds?: number | null; object_updated_at?: string | null },
+  fetchedAt: number | null,
+  now: number,
+): number | null {
+  const measured = servedAge(served, fetchedAt, now)
+  if (measured !== null) return measured
+  if (typeof served.object_updated_at !== 'string') return null
+  const t = new Date(served.object_updated_at).getTime()
+  return Number.isFinite(t) ? Math.max(0, now - t) : null
 }
 
 /**

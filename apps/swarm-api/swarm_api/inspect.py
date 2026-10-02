@@ -554,7 +554,14 @@ class InspectionService:
         pointer_prefix: str | None,
         reader: ObjectReader,
     ) -> dict[str, Any]:
-        contents = [{"name": o.name, "key": o.key, "bytes": o.size} for o in objects]
+        # Each object's GCS `updated`, as the listing reported it (#172), so
+        # the inspector can age a manifest and an archive by their own times.
+        # Null when the store reported none -- never the checkpoint's
+        # `created_at` borrowed, which is the manifest's claim, not the bucket's.
+        contents = [
+            {"name": o.name, "key": o.key, "bytes": o.size, "object_updated_at": _iso(o.updated)}
+            for o in objects
+        ]
         sizes = {o.key: o.size for o in objects}
         row: dict[str, Any] = {
             "checkpoint_id": ref.checkpoint_id,

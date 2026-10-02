@@ -681,6 +681,70 @@ describe('the runner log, in Artifacts › Logs, is one table of streams', () =>
 })
 
 // ---------------------------------------------------------------------------
+// The object's own time (#172)
+// ---------------------------------------------------------------------------
+
+describe("every file's Age is its object's own time, from the API (#172)", () => {
+  it("ages a checkpoint's objects by the time the bucket reported for each", async () => {
+    const rec = record('ckpt-00002', {
+      objects: [
+        { name: 'manifest.json', key: `${PREFIX}/ckpt-00002/manifest.json`, bytes: 412, object_updated_at: iso(7) },
+        { name: 'workspace.tar.zst', key: `${PREFIX}/ckpt-00002/workspace.tar.zst`, bytes: 18_442_240, object_updated_at: null },
+      ],
+    })
+    const s = await panel('Checkpoints', { checkpoints: ok(listing({ checkpoints: [rec] })) })
+    fireEvent.click([...s.querySelectorAll('button')].find((b) => b.textContent === '2 objects')!)
+    await waitFor(() => expect(s.querySelectorAll('tbody tr.rf-object')).toHaveLength(2))
+    const [manifest, archive] = [...s.querySelectorAll<HTMLTableRowElement>('tbody tr.rf-object')]
+    // A served time is a figure, with no mark beside it.
+    const dated = cell(manifest!, 'Age')
+    expect(dated.textContent).toBe('7m ago')
+    expect(dated.querySelector('.ctl-mark')).toBeNull()
+    // A null is the store saying it had no time: the em dash and the mark,
+    // and never the checkpoint's own age (4m) borrowed.
+    const undated = cell(archive!, 'Age')
+    expect(undated.querySelector('.ctl-em')).not.toBeNull()
+    expect(undated.querySelector('.ctl-mark.is-absent')?.getAttribute('aria-label') ?? '').toMatch(/reported no time/i)
+    expect(undated.textContent).not.toMatch(/\d/)
+  })
+
+  it("says how long ago a live tail last changed, where it said only 'live'", async () => {
+    const tail = stream('stdout', { source: 'live', tail_window: null, object_updated_at: iso(1), age_seconds: 42 })
+    const open = { status: 'latest' as const, known: true, generation: 1, created_at: iso(30), completed_at: null, exit_code: null }
+    const s = await runnerLog({ logs: ok(logs([tail], { attempt: open })) }, [attempt(1)], task({ id: 'tsk_files', state: 'RUNNING' }))
+    const age = cell(rowFor(s, 'stdout'), 'Age')
+    expect(age.textContent).not.toBe('live')
+    expect(age.textContent).toMatch(/^42s ago/)
+    // Still says it is being written, on the line under the age.
+    expect(age.querySelector('.ctl-sub')?.textContent).toBe('live')
+  })
+
+  it("dates a final log by its object, not by its attempt's end", async () => {
+    const s = await runnerLog({
+      logs: ok(logs([stream('stdout', { object_updated_at: iso(20), age_seconds: 20 * 60 })])),
+    })
+    const age = cell(rowFor(s, 'stdout'), 'Age')
+    // The attempt ended 3m ago (`logs()`); the object is 20m old.
+    expect(age.textContent).toBe('20m ago')
+  })
+
+  it("dates a final log by its object's time when the server sent the time and no age", async () => {
+    const s = await runnerLog({ logs: ok(logs([stream('stdout', { object_updated_at: iso(20) })])) })
+    expect(cell(rowFor(s, 'stdout'), 'Age').textContent).toBe('20m ago')
+  })
+
+  it("never borrows the attempt's end when the store reported no time for the object", async () => {
+    const s = await runnerLog({
+      logs: ok(logs([stream('stdout', { object_updated_at: null, age_seconds: null })])),
+    })
+    const age = cell(rowFor(s, 'stdout'), 'Age')
+    expect(age.textContent).not.toMatch(/\d/)
+    expect(age.querySelector('.ctl-em')).not.toBeNull()
+    expect(age.querySelector('.ctl-mark.is-absent')?.getAttribute('aria-label') ?? '').toMatch(/reported no time/i)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // CH-13's long value, in the stream's row header (#87 follow-up, 2026-09-25)
 // ---------------------------------------------------------------------------
 
