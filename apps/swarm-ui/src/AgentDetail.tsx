@@ -354,6 +354,30 @@ export function chipTone(tone: ChipTone): string {
 export type ChipTone = Tone | 'unknown' | 'info' | 'paused'
 
 /**
+ * `ExitCode.PARKED` (agent_worker/errors.py): the worker checkpointed, parked
+ * the task and exited, and the attempt document records that end as exit 75
+ * with the park reason in `error` (#163). An attempt parked before the worker
+ * wrote that end has no exit code and no `completed_at`, and nothing on its
+ * document tells it apart from one still running.
+ */
+export const EXIT_PARKED = 75
+
+export function isParked(a: AttemptRow): boolean {
+  return a.exit_code === EXIT_PARKED
+}
+
+/**
+ * A PARKED ATTEMPT'S CHIP, for both attempt cards (here and AttemptTimeline).
+ * Parked is not a failure: without this, `exit 75` drew in the failure tone
+ * and a quota park read as a crash. `info` is the neutral bar -- a fact about
+ * the attempt, not a verdict on it -- and the reason is the token the platform
+ * wrote, verbatim, as the detail pane prints `park_reason`.
+ */
+export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } {
+  return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
+}
+
+/**
  * A MARK AND A WORD, and the mark is the ONLY shape in it.
  *
  * design-system.md §6.6 rebuilt this primitive and §11.2 names the one thing
@@ -1610,8 +1634,9 @@ function AttemptCard({
   // over. The correction
   // belongs in `attemptOutcome`; that lives in types.ts, which another track
   // owns, so it is reported rather than edited.
-  const chip: { label: string; tone: Tone | 'unknown' } =
-    end.over && out.label === 'running'
+  const chip: { label: string; tone: ChipTone } = isParked(a)
+    ? parkedOutcome(a)
+    : end.over && out.label === 'running'
       ? {
           label: end.by === 'superseded' ? 'superseded' : 'ended, no end recorded',
           tone: 'wait',
@@ -1722,7 +1747,11 @@ function AttemptCard({
             banner above already prints in full; an EARLIER attempt's error,
             or one the task's final record replaced, is the retry history and
             stays on its own card. */}
-        {a.error !== null && a.error !== run.task.last_error && <pre className="err full">{a.error}</pre>}
+        {/* A PARKED ATTEMPT'S `error` IS ITS PARK REASON (#163), already in
+            the chip, so it is not printed as a failure in the red `pre`. */}
+        {a.error !== null && a.error !== run.task.last_error && !isParked(a) && (
+          <pre className="err full">{a.error}</pre>
+        )}
 
         <AttemptResources a={a} run={run} isLatest={isLatest} />
         <AttemptSpend a={a} profile={run.task.runner_profile} />

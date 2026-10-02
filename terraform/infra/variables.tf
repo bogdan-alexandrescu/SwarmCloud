@@ -445,33 +445,6 @@ variable "groups_impersonate_user" {
   default     = ""
 }
 
-variable "forge_read_only_tenants" {
-  description = <<-EOT
-    Tenant ids whose forge credential (Secret Manager
-    swarm-tenant-<tenant>-git, stored by scripts/create-secrets.sh) can read
-    the repository but not push to it. swarm-api refuses `carrier: branches`
-    for these tenants with a 422 (D13): that carrier pushes each step's work
-    to its branch, and with a read-only token every push is refused at the
-    forge, logged by the worker and dropped, so the caller who asked for
-    durable branches would get none.
-
-    DECLARED, not probed. The worker learns the token's scope from the forge
-    itself (agent_worker.forge.probe_repository reads `permissions.push`), but
-    only the worker ever holds the token: the control plane never reads it, so it
-    cannot ask. Declare a tenant here when its token is read-only by design
-    (a fine-grained PAT with Contents: read, or an App installed read-only);
-    a tenant left off is admitted, and a read-only token there still costs
-    only logged, refused pushes. Empty, the default, refuses nothing.
-  EOT
-  type        = list(string)
-  default     = []
-
-  validation {
-    condition     = alltrue([for t in var.forge_read_only_tenants : can(regex("^[a-z0-9][a-z0-9-]*$", t))])
-    error_message = "forge_read_only_tenants takes bare tenant ids (lower-case letters, digits and hyphens), as the API names them."
-  }
-}
-
 variable "admin_users" {
   description = <<-EOT
     Individual email addresses granted admin, as an ESCAPE HATCH.

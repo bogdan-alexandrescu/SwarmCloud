@@ -907,7 +907,7 @@ export interface ResultSummary {
    * Present only when there was one. The files past the FILE cap are not here:
    * see `artifacts_over_cap`. Each entry is `{name, cause}` (#165: `cap`,
    * `upload_error`, `refused`); a summary from before causes holds bare names.
-   * The listing route answers names, with the causes beside them.
+   * The listing route serves the same `{name, cause}` entries.
    */
   artifacts_skipped?: Array<string | { name: string; cause: string }>
   checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
@@ -3917,6 +3917,12 @@ export interface ArtifactEntry extends ArtifactRef {
   role?: AgentStreamRole | null
 }
 
+/** One `artifacts_skipped` entry as the listing route serves it (#165). */
+export interface SkippedArtifact {
+  name: string
+  cause: string | null
+}
+
 /**
  * The listing. `complete` is false -- and `artifacts` empty -- until the task's
  * result summary is written at the end of its last attempt: artifacts are
@@ -3926,13 +3932,12 @@ export interface ArtifactEntry extends ArtifactRef {
 export interface ArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
-  artifacts_skipped: string[]
   /**
-   * The cause the worker recorded for each skipped name (#165): `cap`,
-   * `upload_error`, `refused`. A name from an older summary has none. Absent
-   * from an API that predates it.
+   * Each file written and not uploaded, with the cause the worker recorded
+   * (#165): `cap`, `upload_error`, `refused`, or null for a name from an
+   * older summary.
    */
-  artifacts_skipped_causes?: Record<string, string>
+  artifacts_skipped: SkippedArtifact[]
   /**
    * Files past the 500-file cap, counted and not named (#227): null until
    * `complete`, 0 when none were. `complete` means the manifest is written,

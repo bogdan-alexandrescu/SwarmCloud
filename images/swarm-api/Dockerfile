@@ -59,6 +59,10 @@ WORKDIR /src
 COPY apps/common/ /src/apps/common/
 # The credential patterns swarm_api.redaction re-exports (#259).
 COPY apps/redaction/ /src/apps/redaction/
+# The forge client and the git-secret reader `carrier: branches` asks write
+# scope with (swarm_api.forge_scope, D13): the worker's own functions, called
+# rather than restated, so the API and the publish ask the forge one way.
+COPY apps/agent-worker/ /src/apps/agent-worker/
 COPY apps/swarm-api/ /src/apps/swarm-api/
 
 # Build `swarm-common` into a local wheelhouse first and resolve it from there:
@@ -66,6 +70,7 @@ COPY apps/swarm-api/ /src/apps/swarm-api/
 # without a private registry.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
+ && uv build --wheel --out-dir /wheels /src/apps/agent-worker \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,

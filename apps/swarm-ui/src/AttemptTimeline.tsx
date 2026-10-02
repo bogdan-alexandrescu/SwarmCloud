@@ -1,5 +1,5 @@
 import { useCallback } from 'react'
-import { Chip, Em, Mark, attemptLabel, type ChipTone } from './AgentDetail'
+import { Chip, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
 import { eventKind, isTerminalEvent } from './events'
@@ -454,7 +454,7 @@ function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
   // as a crash. `info` is the neutral bar: a fact about the attempt, not a
   // verdict on it. The reason is printed verbatim, the token the platform
   // wrote, as the detail pane prints `park_reason`.
-  if (isParked(a)) return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
+  if (isParked(a)) return parkedOutcome(a)
   // `bad`, not `.tag`'s `full`. `full` was a pool word borrowed for a failure
   // colour; the chip vocabulary names the thing it means, and `is-bad` is the
   // diamond -- the one mark on the screen with corners.
@@ -469,19 +469,6 @@ function outcome(a: AttemptRow): { label: string; tone: ChipTone } {
   // label wraps to a second line is a paragraph with a border.
   if (a.completed_at === null) return { label: 'running', tone: 'live' }
   return { label: 'no exit code', tone: 'wait' }
-}
-
-/**
- * `ExitCode.PARKED` (agent_worker/errors.py): the worker checkpointed, parked
- * the task and exited, and the attempt document records that end as exit 75
- * with the park reason in `error`. An attempt parked before the worker wrote
- * that end has no exit code and no `completed_at`, and nothing on its document
- * tells it apart from one still running.
- */
-const EXIT_PARKED = 75
-
-function isParked(a: AttemptRow): boolean {
-  return a.exit_code === EXIT_PARKED
 }
 
 /**

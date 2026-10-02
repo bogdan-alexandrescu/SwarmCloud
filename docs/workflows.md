@@ -298,8 +298,8 @@ first alone was measured not to be enough.
    records WHY each file it did not upload was skipped: each
    `result_summary.artifacts_skipped` entry is `{name, cause}` (a summary
    from before #165 holds bare names, and every reader accepts both; the
-   API's artifact listing keeps answering names, with
-   `artifacts_skipped_causes` beside them), and the cause decides:
+   API's artifact listing serves the same `{name, cause}` entries, a bare
+   name as `cause: null`), and the cause decides:
    * **not retried** -- `cap` (the artifact byte or file cap), `refused` (a
      link, not a regular file, or a name no object can carry), and for
      `swarm-work.patch` `empty_diff`, `patch_omitted` (over the patch cap) or

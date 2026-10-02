@@ -19,6 +19,7 @@ from swarm_common.models import Tenant
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
+from swarm_api.forge_scope import StaticForgeScope
 from swarm_api.groups import StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
@@ -140,6 +141,10 @@ def api_context(db, tokens, group_map, objects):
         waker=NullWaker(),
         metrics=ApiMetrics(),
         objects=objects,
+        # A token that can push, so `carrier: branches` is admitted without
+        # reading a secret or calling a forge. The refusals are in
+        # test_branches_carrier_read_only.py, with their own scope.
+        forge_scope=StaticForgeScope(can_push=True),
     )
 
 

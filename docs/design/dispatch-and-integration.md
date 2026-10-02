@@ -168,7 +168,9 @@ paths through it, and that is the risk this choice accepts deliberately:
 `carrier: checkpoints`, the default, is byte-for-byte what it was. With
 `branches`:
 
-* **Each checkpoint pushes the step's committed work** to
+* **The checkpoints taken after the runner stops push the step's committed
+  work** -- park, cancel, SIGTERM and finish; never the periodic ones (see
+  "Periodic checkpoints do not push" below) -- to
   `<git_branch_prefix><task id>`, the branch the publish uses
   (`Worker._push_carrier_branch`). NEVER FORCED: the push is one worker commit
   of the agent's committed tree on top of the branch's current tip
@@ -184,17 +186,22 @@ paths through it, and that is the risk this choice accepts deliberately:
   parent's work.** If it also declares the parent's `swarm-work.patch` in
   `input_from`, that patch is the same change twice; the worker stages it
   anyway and logs that it is redundant.
-* **Not while the agent runs.** The tenant token is never in hand while agent
-  code can run: the agent shares the worker's uid, so the credential file and
-  the token-bearing git process would be within its reach. A checkpoint taken
-  with the runner alive pushes nothing and says so: the periodic one, and the
-  control-plane-outage one (#70 orders it checkpoint, THEN stop the runner).
-  The checkpoints taken after the runner stopped (final, park, cancellation,
-  SIGTERM) push, and so does the finish. **This is narrower than D13's
-  wording**, which asked for EVERY checkpoint to push: pushing mid-run would
-  need the push to run outside the agent's uid (a separate process identity
-  holding the token), which is an open owner question, not something this
-  change decided.
+* **Periodic checkpoints do not push** (owner decision, 2026-10-02,
+  accepting the narrowing of D13's "every checkpoint"). **The git token is
+  never held while agent code can run.** The agent shares the worker's uid, so
+  while it runs, the credential file and the token-bearing git process would
+  be within its reach: a token in hand mid-run is a token the agent can read,
+  and with `branches` it is a token with write scope. So a checkpoint taken
+  with the runner alive pushes nothing and logs that it did not: the periodic
+  ones, and the control-plane-outage one (#70 orders it checkpoint, THEN stop
+  the runner). The branch is pushed at the **park, cancel, SIGTERM and finish**
+  checkpoints, each taken after the runner has stopped
+  (`Worker._carrier_push` returns early while the child is alive). What this
+  costs: between those points the branch lags the work by up to the whole run,
+  and a worker lost without a SIGTERM (an OOM kill, a node loss) leaves the
+  branch at the last push -- the GCS checkpoint still holds the rest. Pushing
+  mid-run would need the push to run under a process identity the agent
+  cannot reach, which is not built.
 * **The finish pushes too**, under every strategy -- a `collect` step pushes
   its branch and opens no pull request -- with the final tree, uncommitted
   work included, as one worker commit on the branch's tip (the agent's commits
@@ -208,14 +215,24 @@ paths through it, and that is the risk this choice accepts deliberately:
   (`integrates`) at its publish, as it already did. A step with several
   parents and no integrator role starts from the default branch.
 * **The API refuses `carrier: branches`** (422 `invalid_dispatch`) without a
-  repository, and for a tenant whose forge credential is declared read-only
-  (`FORGE_READ_ONLY_TENANTS`, `ApiSettings.forge_read_only_tenants`;
-  `detail.forge_access: "read-only"`). A DECLARATION, not a probe: the
-  worker's publish learns write scope from the forge with the token
-  (`forge.probe_repository`, `permissions.push`), and the API never reads a
-  tenant's token. A tenant missing from the list is accepted, and if its token
-  turns out read-only the worker skips each push, logs why, and the step
-  still finishes.
+  repository, and when the tenant's forge token cannot push to it
+  (`detail.forge_access: "read-only"`, `detail.reason` the forge's answer).
+  The scope is the token's REAL one (owner decision, 2026-10-02), asked the
+  way the worker's publish asks it, by calling the same functions
+  (`swarm_api.forge_scope`, `SubmissionService._require_push_scope`):
+  `agent_worker.secrets.resolve_git_token` reads the tenant's own
+  `swarm-tenant-<tenant>-git` secret (latest version, only when `git` is in
+  the tenant's `credentials`), and `agent_worker.forge.probe_repository`
+  makes one `GET /repos/{owner}/{repo}` with it and reads
+  `permissions.push`. That is read once per `branches` submission and never
+  for `checkpoints`. The token stays a local: it is not returned, stored,
+  logged or put in an error. A secret that cannot be read, or a forge that
+  cannot be reached, answers 503 (`forge_access: "unknown"`) and creates
+  nothing -- never admitted, and never refused as read-only, on a guess.
+  **Reading the secret needs `roles/secretmanager.secretAccessor` for
+  swarm-api's service account on each tenant's `-git` secret**, which today
+  only the tenant's worker holds; until it is granted, every `branches`
+  submission is a 503.
 
 ---
 

@@ -1210,6 +1210,10 @@ function CompactRow({
 }) {
   const [card, setCard] = useState<CardAt | null>(null)
   const el = elapsed(task, now)
+  // The same qualifier as the full row's (#163). Line one of the compact row
+  // has room for the figure only, so here it is the cell's `title`: the figure
+  // is not presented as run time without saying what it spans.
+  const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const tries = attemptsUsed(task)
   const name = task.step_id ?? shortTaskId(task.id)
   const owner = task.submitted_by?.split('@')[0] ?? null
@@ -1267,7 +1271,12 @@ function CompactRow({
         )}
         {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
-      <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+      <span
+        className={`when${el.ticking ? ' ticking' : ''}`}
+        title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}
+      >
+        {el.text}
+      </span>
       <span className="cr-sub">
         <span className="cr-profile">{profile}</span>
         {' · '}

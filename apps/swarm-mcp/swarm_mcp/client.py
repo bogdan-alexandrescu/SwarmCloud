@@ -648,7 +648,6 @@ def outputs_of(
         out["artifacts_unavailable_because"] = listing_error
         out["artifacts_complete"] = None
         out["artifacts_skipped"] = []
-        out["artifacts_skipped_causes"] = {}
     else:
         source = listing if listing is not None else summary
         rows = source.get("artifacts") if isinstance(source, dict) else None
@@ -660,25 +659,19 @@ def outputs_of(
         complete = listing.get("complete") if listing is not None else bool(summary)
         out["artifacts_complete"] = bool(complete)
         skipped = source.get("artifacts_skipped") if isinstance(source, dict) else None
-        # The listing route answers names with the causes beside them; a
-        # task's own summary stores `{name, cause}` entries (#165), or bare
-        # names when it predates them. Either way: names, and causes by name.
-        names: list[str] = []
-        causes: dict[str, str] = {}
+        # `{name, cause}` per entry (#165), from the listing route and from a
+        # task's own summary alike. A bare name -- a summary that predates
+        # causes -- is `cause: None`: unknown, never assumed to be the cap.
+        entries: list[dict[str, Any]] = []
         for entry in skipped if isinstance(skipped, list) else []:
             if isinstance(entry, dict):
                 if not isinstance(entry.get("name"), str):
                     continue
-                names.append(entry["name"])
-                if isinstance(entry.get("cause"), str) and entry["cause"]:
-                    causes[entry["name"]] = entry["cause"]
-            else:
-                names.append(str(entry))
-        listed = source.get("artifacts_skipped_causes") if isinstance(source, dict) else None
-        if isinstance(listed, dict):
-            causes.update({str(k): str(v) for k, v in listed.items() if isinstance(v, str) and v})
-        out["artifacts_skipped"] = names
-        out["artifacts_skipped_causes"] = causes
+                cause = entry.get("cause")
+                entries.append({"name": entry["name"], "cause": cause if isinstance(cause, str) and cause else None})
+            elif isinstance(entry, str):
+                entries.append({"name": entry, "cause": None})
+        out["artifacts_skipped"] = entries
     runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
     out["runner_status"] = runner.get("status")
     out["runner_summary"] = runner.get("summary") or None

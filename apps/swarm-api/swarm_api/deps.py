@@ -28,6 +28,7 @@ from .auth import (
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
+from .forge_scope import ForgeWriteScope, SecretManagerForgeScope
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
 from .metrics import ApiMetrics
@@ -122,6 +123,11 @@ def build_context(
     # settings": Cloud KMS when SPEC_SIGNING_KEY_VERSION is set, a refusal to
     # start in a hardened environment without it. Tests inject a local key.
     signer: SpecSigner | None | object = _MISSING,
+    # Whether a tenant's forge token can push, for `carrier: branches` (D13).
+    # `_MISSING` means the deployed answer: the tenant's own git secret, asked
+    # of the forge (`forge_scope.SecretManagerForgeScope`). Tests inject a
+    # `StaticForgeScope`, so no unit test reads a secret or calls a forge.
+    forge_scope: ForgeWriteScope | object = _MISSING,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -154,6 +160,11 @@ def build_context(
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now,
         signer=spec_signer,  # type: ignore[arg-type]
+        forge_scope=(
+            SecretManagerForgeScope(settings.project_id)
+            if forge_scope is _MISSING
+            else forge_scope  # type: ignore[arg-type]
+        ),
     )
     limiter = TokenBucketLimiter(
         rate_per_second=settings.core.requests_per_second,

@@ -246,16 +246,6 @@ class ApiSettings:
     #: missing its unique id, or is also in admin_users, admin_pool_users or
     #: secret_admin_principals. See `_tenant_members`.
     tenant_service_accounts: tuple[TenantMember, ...] = ()
-    #: Tenants whose forge credential (`swarm-tenant-<tenant>-git`) is
-    #: read-only, from FORGE_READ_ONLY_TENANTS. `carrier: branches` is refused
-    #: for them with a 422 (D13): it pushes every checkpoint's work, and with a
-    #: read-only token each push is refused at the forge, logged by the worker
-    #: and dropped, so the caller who asked for durable branches would get
-    #: none and learn it only from the worker's log. A declaration rather than
-    #: a probe because the worker's own check (`forge.probe_repository`, a
-    #: `permissions.push` read) needs the token, and this service never reads
-    #: it. Empty -- the default -- refuses nothing, which is today's behaviour.
-    forge_read_only_tenants: tuple[str, ...] = ()
     #: The Workspace user this service account acts AS when reading groups.
     #:
     #: Cloud Identity's Groups API does not authorize through GCP IAM -- a
@@ -408,7 +398,6 @@ class ApiSettings:
             admin_pool_users=admin_pool_users,
             allowed_users=_csv("ALLOWED_USERS"),
             secret_admin_principals=secret_admin_principals,
-            forge_read_only_tenants=_csv("FORGE_READ_ONLY_TENANTS"),
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),

@@ -29,6 +29,7 @@ import {
   type ArtifactListing,
   type LogStreamName,
   type ResultSummary,
+  type SkippedArtifact,
   type Task,
   type TaskAnswer,
   type TaskInputCopy,
@@ -881,9 +882,25 @@ const SKIP_CAUSE: Record<string, string> = {
   refused: 'a link, not a regular file, or a name no object can carry',
 }
 
-function skippedWithCause(name: string, causes: Record<string, string>): string {
-  const cause = causes[name]
+function skippedWithCause(entry: SkippedArtifact): string {
+  const { name, cause } = entry
   return cause ? `${name} (${SKIP_CAUSE[cause] ?? cause})` : name
+}
+
+/**
+ * One served `artifacts_skipped` entry, read defensively: the route serves
+ * `{name, cause}` (#165), and a bare string -- an API from before the shape
+ * changed -- is a name with no recorded cause. Anything else is dropped
+ * rather than stringified into a fake name.
+ */
+function skippedEntry(raw: unknown): SkippedArtifact | null {
+  if (typeof raw === 'string') return { name: raw, cause: null }
+  if (raw !== null && typeof raw === 'object') {
+    const { name, cause } = raw as { name?: unknown; cause?: unknown }
+    if (typeof name !== 'string') return null
+    return { name, cause: typeof cause === 'string' && cause !== '' ? cause : null }
+  }
+  return null
 }
 
 function Files({ v }: { v: ArtifactsView }) {
@@ -898,8 +915,7 @@ function Files({ v }: { v: ArtifactsView }) {
 
   let body: ReactNode
   let entries: ArtifactEntry[] = []
-  let skipped: string[] = []
-  let skipCauses: Record<string, string> = {}
+  let skipped: SkippedArtifact[] = []
   let cut: ListingCut | null = null
   // Names of the rows that came from the manifest because the route did not
   // list them.
@@ -939,9 +955,10 @@ function Files({ v }: { v: ArtifactsView }) {
     // name rule here would be a second copy of the server's one table.
     entries = [...listed, ...rest.map((e): ArtifactEntry => ({ name: e.name, bytes: e.bytes, uri: e.uri, kind: null, role: null }))]
     cut = { listed: listed.length, total: manifest === null ? null : listed.length + rest.length }
-    skipped = Array.isArray(listing.data.artifacts_skipped) ? listing.data.artifacts_skipped : []
-    const causes = listing.data.artifacts_skipped_causes
-    skipCauses = causes !== null && typeof causes === 'object' ? causes : {}
+    const served: unknown = listing.data.artifacts_skipped
+    skipped = Array.isArray(served)
+      ? served.map(skippedEntry).filter((e): e is SkippedArtifact => e !== null)
+      : []
     body =
       entries.length === 0 ? (
         <p className="att-none">
@@ -989,7 +1006,7 @@ function Files({ v }: { v: ArtifactsView }) {
       <span key="skipped">
         <Mark
           kind="partial"
-          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.map((name) => skippedWithCause(name, skipCauses)).join(', ')}`}
+          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.map(skippedWithCause).join(', ')}`}
         />{' '}
         {skipped.length} skipped
       </span>,

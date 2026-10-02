@@ -1550,9 +1550,8 @@ def produced_lines(
             lines.append(label("fetch") + style.paint(fetch_with.replace("<name>", first), "dim"))
     # The cause the worker recorded (#165). A name with none predates causes,
     # and is not described as the cap: that assumption is what #165 removed.
-    causes = produced.get("artifacts_skipped_causes") or {}
-    for name in produced.get("artifacts_skipped") or []:
-        cause = causes.get(name)
+    for entry in produced.get("artifacts_skipped") or []:
+        name, cause = (entry.get("name"), entry.get("cause")) if isinstance(entry, dict) else (entry, None)
         why = _SKIP_CAUSE_TEXT.get(cause, cause) if cause else "cause not recorded"
         lines.append(label("skipped") + style.paint(f"{name} ({why})", "warn"))
     runner = [str(v) for v in (produced.get("runner_status"), produced.get("runner_summary")) if v]

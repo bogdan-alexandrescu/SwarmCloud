@@ -4322,7 +4322,7 @@ class Worker:
         """`carrier: branches`: push the step's COMMITTED work to its branch. Never raises.
 
         Owner decision, 2026-10-01 (D13, docs/design/dispatch-and-integration.md
-        4.3). With `carrier: branches` every checkpoint also pushes what the
+        4.3). With `carrier: branches` a checkpoint also pushes what the
         agent has committed to `<git_branch_prefix><task id>`, the branch the
         publish pushes, so the work survives the platform and a dependant
         starts from it. `carrier: checkpoints`, the default, returns at once:
@@ -4343,6 +4343,8 @@ class Worker:
         one, and the control-plane-outage one, which #70 takes BEFORE it stops
         the runner -- pushes nothing and says so. The checkpoints taken once
         the runner has stopped (final, park, cancellation, SIGTERM) push.
+        The owner accepted this narrowing of D13's "every checkpoint" on
+        2026-10-02: periodic checkpoints do not push.
 
         A FAILED PUSH IS LOGGED AND NEVER ENDS THE ATTEMPT. The checkpoint is
         the durable record either way.
