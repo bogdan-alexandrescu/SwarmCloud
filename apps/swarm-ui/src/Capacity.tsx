@@ -1,12 +1,14 @@
 import { useEffect } from 'react'
-import { loadCapacity, type ResourceClasses } from './api'
+import { loadCapacity, loadLeases, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import { isPaused } from './fetch'
+import { isPaused, type Result } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
+import { leaseCoverage } from './Holders'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
+import './styles/capacity.css'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -21,6 +23,7 @@ import {
   poolScope,
   setBy,
   type Capacity,
+  type LeasePage,
   type Pool,
 } from './types'
 
@@ -44,9 +47,11 @@ import {
  * screen's matrix (`ProfileMatrix`) answers the same question per profile and
  * pool, so this screen is the ceilings alone.
  *
- *   THE SCOPE -- "these are YOUR tenant's pools, not the platform's" -- is a
- *   `Scope` column on every row of every family, which is where two figures of
- *   different scope could otherwise be compared (Trap E). The families used to
+ *   THE SCOPE -- "these are YOUR tenant's pools, not the platform's" -- is
+ *   declared on every row of every family, under the pool's name, which is
+ *   where two figures of different scope could otherwise be compared (Trap E).
+ *   It was a column of its own until the #503 audit; the picked frame has
+ *   none, and the column wrapped the names beside it. The families used to
  *   carry one note each, read off their FIRST row, so an admin's Tenants
  *   family said "this tenant" above four tenants' pools (CP-2, #85).
  *
@@ -63,21 +68,11 @@ export function CapacityScreen() {
       // landed you on. The nav's own rule (App.tsx: sections are named after
       // OBJECTS, not the question they answer) decides which side gives way.
       title="Pools"
-      load={loadCapacity}
+      load={loadPoolsBoard}
       // Decided 2026-10-01 (#117): Pools re-reads every 30s, and `Screen`
       // pauses the timer while the tab is hidden.
       pollMs={POOLS_POLL_MS}
-      summary={(d) => {
-        const paused = d.pools.filter(isPaused).length
-        const over = d.pools.filter(overCeiling).length
-        return (
-          <>
-            {d.pools.length} pools
-            {paused > 0 && ` · ${paused} paused`}
-            {over > 0 && ` · ${over} over ceiling`}
-          </>
-        )
-      }}
+      summary={(d) => <PoolsSummary capacity={d} />}
       /* A REAL ZERO. Pools are created at provisioning time, so an environment
          with none has not been fully applied -- which is an absence the mark
          names in two words instead of two clauses.
@@ -92,17 +87,117 @@ export function CapacityScreen() {
     >
       {(d) => (
         <>
+          <CapSeg view="ceilings" />
           {/* CEILINGS, AS DECIDED ON 2026-10-01 (capacity.html, Variant 1, #125):
               one table per family, with a "Needs action" group ahead of them
               holding every pool a person has to act on (`needsAction`). A
               pool appears once: the top group takes it out of its family.
               The Cards view was the alternative set aside and is gone. */}
-          <CeilingTables pools={d.pools} viewer={viewerOf(d)} />
+          <CeilingTables pools={d.pools} viewer={viewerOf(d)} holders={d.holders} />
 
           <HelpLinks topics={CAPACITY_TOPICS} />
         </>
       )}
     </Screen>
+  )
+}
+
+/**
+ * THE IN-PAGE VIEW STRIP (capacity.html C1, frames 0 and 3): Pools is one page
+ * with two views, Ceilings and By runner profile, and the strip under the
+ * heading is how a reader on one reaches the other without the panel. Both
+ * views head the page "Pools"; the strip and the crumb name the view.
+ *
+ * Links, not a tablist: each view is its own address (`/capacity/pools`,
+ * `/capacity/profiles`), so the strip is navigation and the current one is
+ * `aria-current="page"`. A local stand-in for components.html A's segmented
+ * control, named for this section until the shared one lands.
+ */
+export function CapSeg({ view }: { view: 'ceilings' | 'profiles' }) {
+  return (
+    <nav className="cap-seg" aria-label="Pools views">
+      <a href="#capacity/pools" aria-current={view === 'ceilings' ? 'page' : undefined}>
+        Ceilings
+      </a>
+      <a href="#capacity/profiles" aria-current={view === 'profiles' ? 'page' : undefined}>
+        By runner profile
+      </a>
+    </nav>
+  )
+}
+
+/**
+ * How many unreleased leases name each pool, or why that was not counted.
+ *
+ * The frame's `4 holders` link (capacity.html C1) is a count of LEASES, which
+ * the capacity read does not carry: a pool counts units, and 4 units may be
+ * one large lease or four standard ones. So it comes from the lease read
+ * Holders makes, and it is only a count when that read can vouch for every
+ * live lease (`leaseCoverage` complete). A cut window, an admin-only refusal
+ * or a failed read is not a count of zero: the link then says `holders`, with
+ * the reason in its title.
+ */
+export type HolderCounts = { byPool: ReadonlyMap<string, number> } | { unknown: string }
+
+/** The Ceilings read: the capacity board, and the holder counts beside it. */
+export type PoolsBoard = Capacity & { holders: HolderCounts }
+
+export function holderCounts(leases: Result<LeasePage>): HolderCounts {
+  if (leases.status === 'error') return { unknown: `Holders were not counted: ${leases.error.message}` }
+  if (leases.status === 'loading') return { unknown: 'Holders were not counted: the lease read did not complete.' }
+  // An older page kept from before a failed re-read is not a count of now.
+  if (leases.status === 'stale') return { unknown: `Holders were not counted: ${leases.error.message}` }
+  if (leases.status === 'empty') return { byPool: new Map() }
+  const page = leases.data
+  if (leaseCoverage(page).kind !== 'complete') {
+    return { unknown: 'Holders were not counted: the lease read did not return every live lease.' }
+  }
+  const byPool = new Map<string, number>()
+  for (const l of page.leases) {
+    if (!Array.isArray(l.pools)) continue
+    for (const p of l.pools) byPool.set(p, (byPool.get(p) ?? 0) + 1)
+  }
+  return { byPool }
+}
+
+/**
+ * The capacity read and the lease read, together, on Pools' one cadence.
+ *
+ * The capacity read decides the page: its failure is the page's failure, and
+ * its empty is the page's empty. The lease read only ever decides the holders
+ * count -- it is admin-only, so for most readers it answers 403 and the links
+ * simply carry no count.
+ */
+export async function loadPoolsBoard(): Promise<Result<PoolsBoard>> {
+  const [capacity, leases] = await Promise.all([loadCapacity(), loadLeases()])
+  if (capacity.status !== 'ok' && capacity.status !== 'stale') return capacity
+  return { ...capacity, data: { ...capacity.data, holders: holderCounts(leases) } }
+}
+
+/**
+ * The line under the heading (capacity.html C1: "9 families · 2 full · 1
+ * lowered · tenant eng"). Every figure is a count of rows this read returned.
+ * `lowered` is a pool whose effective ceiling sits under its configured hard
+ * limit -- AIMD or a provider quota took it down -- which is the row a reader
+ * otherwise has to find by its `/30` suffix.
+ */
+function PoolsSummary({ capacity }: { capacity: Capacity }) {
+  const pools = capacity.pools
+  const families = new Set(pools.map((p) => poolKind(p.name))).size
+  const full = pools.filter((p) => !overCeiling(p) && p.effective_limit !== null && p.effective_limit > 0 && p.active >= p.effective_limit).length
+  const lowered = pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
+  const paused = pools.filter(isPaused).length
+  const over = pools.filter(overCeiling).length
+  const viewer = viewerOf(capacity)
+  return (
+    <>
+      {pools.length} pools in {families} famil{families === 1 ? 'y' : 'ies'}
+      {full > 0 && ` · ${full} full`}
+      {lowered > 0 && ` · ${lowered} lowered`}
+      {paused > 0 && ` · ${paused} paused`}
+      {over > 0 && ` · ${over} over ceiling`}
+      {viewer !== undefined && ` · tenant ${viewer}`}
+    </>
   )
 }
 
@@ -124,7 +219,7 @@ function viewerOf(capacity: Capacity): string | undefined {
 }
 
 /**
- * A pool's Scope cell, in words (CP-2, #85): `platform`, `this tenant`, or
+ * A pool's scope, in words (CP-2, #85): `platform`, `this tenant`, or
  * `tenant X` for another tenant's pool.
  *
  * PER ROW, BECAUSE A FAMILY IS NOT ONE SCOPE. An admin sees every tenant's
@@ -132,7 +227,8 @@ function viewerOf(capacity: Capacity): string | undefined {
  * holds several tenants and the Providers family holds both the shared
  * `provider:X` pool and every tenant's `provider:X:tenant:Y` slice. The note
  * each family used to carry was read off its first row and was wrong for the
- * rest. The owner's decision is this column, and the family note is gone.
+ * rest. The owner's decision is a scope on every row (under the name since
+ * #503), and the family note is gone.
  */
 function scopeWord(name: string, viewer: string | undefined): string {
   if (poolScope(name) === 'platform') return 'platform'
@@ -163,7 +259,15 @@ export function needsAction(pool: Pool, classes: ResourceClasses | null): boolea
  * The Ceilings tab: "Needs action" first, then one table per family, each
  * holding only the pools the top group did not take.
  */
-function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
+function CeilingTables({
+  pools,
+  viewer,
+  holders,
+}: {
+  pools: Pool[]
+  viewer: string | undefined
+  holders: HolderCounts
+}) {
   const classes = useResourceClasses()
   const act = pools.filter((p) => needsAction(p, classes)).sort(byUrgency)
   const rest = pools.filter((p) => !needsAction(p, classes))
@@ -180,12 +284,21 @@ function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | unde
   return (
     <div className="cap-families">
       {act.length > 0 && (
-        <Family title={`Needs action · ${act.length}`} className="cap-needs" pools={act} viewer={viewer} target={target} />
+        <Family
+          title={`Needs action · ${act.length}`}
+          className="cap-needs"
+          pools={act}
+          viewer={viewer}
+          target={target}
+          holders={holders}
+        />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
         const family = rest.filter((p) => poolKind(p.name) === kind).sort(byUrgency)
         if (family.length === 0) return null
-        return <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} target={target} />
+        return (
+          <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} target={target} holders={holders} />
+        )
       })}
     </div>
   )
@@ -222,6 +335,7 @@ function Family({
   pools,
   viewer,
   target,
+  holders,
 }: {
   title: string
   className?: string
@@ -230,6 +344,7 @@ function Family({
   viewer: string | undefined
   /** The pool a `?pool=` link named, or null. */
   target: string | null
+  holders: HolderCounts
 }) {
   // Trap E: a number may only sit beside another number of the same scope, so
   // the scope is declared rather than left to be inferred -- ON EVERY ROW
@@ -243,35 +358,67 @@ function Family({
         <h2 className="ctl-card-title">{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} target={target} />
+        <PoolTable pools={pools} viewer={viewer} target={target} holders={holders} />
       </div>
     </section>
   )
 }
 
+/*
+ * "units", never "agents" (Trap A): admission increments by the resource
+ * class's units (1, 2 or 4), so 8 leased may be two large agents or eight
+ * standard ones, and the caveat is in the column name, where it cannot be
+ * scrolled away from the figures it governs (CP-24). "Leased" because
+ * concurrency counts from LEASED (invariant 3), not from RUNNING.
+ * The frame draws the one word; CP-24 is the owner's earlier ruling that the
+ * unit is on the head, so the head keeps it -- on one line, in a column wide
+ * enough for it (#503: the head used to wrap onto two lines).
+ */
 const LEASED = 'Leased (units)'
 const CEILING = 'Ceiling (units)'
+const UNITS_TITLE = 'Weighted units, not agents: a task holds its resource class’s units in every pool it clears.'
 
-function PoolTable({ pools, viewer, target }: { pools: Pool[]; viewer: string | undefined; target: string | null }) {
+/**
+ * ONE COLGROUP FOR EVERY FAMILY TABLE (#503). The tables are fixed-layout so
+ * that each column starts at the same x in every family (CP-18); the widths
+ * are set here on purpose, in styles/capacity.css, so the Use track and its
+ * figure have room and nothing paints into the State column beside it.
+ */
+function PoolCols() {
   return (
-    <div className="ctl-table is-scroll">
+    <colgroup>
+      <col className="cap-c-pool" />
+      <col className="cap-c-num" />
+      <col className="cap-c-num" />
+      <col className="cap-c-use" />
+      <col className="cap-c-state" />
+      <col className="cap-c-by" />
+      <col className="cap-c-links" />
+    </colgroup>
+  )
+}
+
+function PoolTable({
+  pools,
+  viewer,
+  target,
+  holders,
+}: {
+  pools: Pool[]
+  viewer: string | undefined
+  target: string | null
+  holders: HolderCounts
+}) {
+  return (
+    <div className="ctl-table is-scroll cap-pools">
       <table role="table">
+        <PoolCols />
         <thead role="rowgroup">
           <tr role="row">
             <th role="columnheader" scope="col">Pool</th>
-            {/* THE SCOPE, PER ROW (CP-2). Beside the name it qualifies, and
-                ahead of the figures, because it says which other figures on
-                this screen a row's numbers may be compared with. */}
-            <th role="columnheader" scope="col">Scope</th>
-            {/* "units", never "agents". Trap A: admission increments by the
-                resource class's units (1, 2 or 4), so 8 leased may be two
-                large agents or eight standard ones. The caveat is in the
-                column name, where it cannot be scrolled away from the
-                figures it governs. "Leased" because concurrency counts from
-                LEASED (invariant 3), not from RUNNING. */}
-            <th role="columnheader" scope="col" className="is-num">{LEASED}</th>
+            <th role="columnheader" scope="col" className="is-num" title={UNITS_TITLE}>{LEASED}</th>
             {/* THE CEILING IS UNITS TOO, and it says so (CP-24). */}
-            <th role="columnheader" scope="col" className="is-num">{CEILING}</th>
+            <th role="columnheader" scope="col" className="is-num" title={UNITS_TITLE}>{CEILING}</th>
             <th role="columnheader" scope="col">Use</th>
             <th role="columnheader" scope="col">State</th>
             <th role="columnheader" scope="col">Set by</th>
@@ -280,7 +427,13 @@ function PoolTable({ pools, viewer, target }: { pools: Pool[]; viewer: string | 
         </thead>
         <tbody role="rowgroup">
           {pools.map((p) => (
-            <PoolRow key={p.name} pool={p} scope={scopeWord(p.name, viewer)} target={p.name === target} />
+            <PoolRow
+              key={p.name}
+              pool={p}
+              scope={scopeWord(p.name, viewer)}
+              target={p.name === target}
+              holders={holders}
+            />
           ))}
         </tbody>
       </table>
@@ -288,7 +441,40 @@ function PoolTable({ pools, viewer, target }: { pools: Pool[]; viewer: string | 
   )
 }
 
-function PoolRow({ pool, scope, target }: { pool: Pool; scope: string; target: boolean }) {
+/**
+ * The holders link (capacity.html C1: `4 holders · limit`). The count is the
+ * leases that name this pool, when `holderCounts` could vouch for every live
+ * lease; otherwise the word alone, and the title says why -- never a 0 for a
+ * count nobody made.
+ */
+function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts }) {
+  const href = poolHref('capacity/holders', pool)
+  if ('unknown' in holders) {
+    return (
+      <a className="ctl-link" href={href} title={holders.unknown}>
+        holders
+      </a>
+    )
+  }
+  const n = holders.byPool.get(pool) ?? 0
+  return (
+    <a className="ctl-link" href={href} title="Unreleased leases that name this pool">
+      {n} holder{n === 1 ? '' : 's'}
+    </a>
+  )
+}
+
+function PoolRow({
+  pool,
+  scope,
+  target,
+  holders,
+}: {
+  pool: Pool
+  scope: string
+  target: boolean
+  holders: HolderCounts
+}) {
   const marks = classifyPool(pool)
   const by = setBy(pool)
   const limit = pool.effective_limit
@@ -313,9 +499,14 @@ function PoolRow({ pool, scope, target }: { pool: Pool; scope: string; target: b
         <a className="ctl-link" href={poolHref('capacity/holders', pool.name)}>
           {poolLabel(pool.name)}
         </a>
-        <span className="ctl-sub">{pool.name}</span>
+        {/* THE SCOPE, PER ROW (CP-2), under the name it qualifies: it says
+            which other figures on this screen a row's numbers may be compared
+            with. It was a column of its own, which the frame does not have
+            and which wrapped the names beside it (#503). */}
+        <span className="cap-sub">
+          <span className="ctl-sub">{pool.name}</span> · <span className="cap-scope">{scope}</span>
+        </span>
       </th>
-      <td role="cell" data-label="Scope">{scope}</td>
       <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
       <td role="cell" data-label={CEILING} className="is-num">
         {limit === null || pool.hard_limit === null ? (
@@ -363,7 +554,7 @@ function PoolRow({ pool, scope, target }: { pool: Pool; scope: string; target: b
         {/* Both name the pool (#125): Holders filtered to it, and its own row
             on Pool limits (#134), where an admin edits it and anyone else
             reads it with Edit locked. */}
-        <a className="ctl-link" href={poolHref('capacity/holders', pool.name)}>holders</a>
+        <HoldersLink pool={pool.name} holders={holders} />
         {' · '}
         <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
       </td>

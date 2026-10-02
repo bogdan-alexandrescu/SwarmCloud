@@ -72,6 +72,11 @@ import type {
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),
+  // Pools' holder counts read the admin lease list; 403 here, so no counts.
+  loadLeases: vi.fn(async () => ({
+    status: 'error' as const,
+    error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
+  })),
   loadRuntimeTopology: vi.fn(),
   loadAccountsBoard: vi.fn(),
   loadHolders: vi.fn(),

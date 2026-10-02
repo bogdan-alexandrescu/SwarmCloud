@@ -2,10 +2,11 @@ import { useContext, useEffect, useState } from 'react'
 import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { MarkGlyph } from './marks'
-import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
+import { Mark } from './primitives'
+import { FrameAge, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
+import './styles/admin.css'
 
 /**
  * Platform-wide task counts. Admin only, and deliberately behind a button.
@@ -18,19 +19,16 @@ import { AGE_TICK_MS, useNow } from './useNow'
  * expensive as the platform gets older, and auto-refreshing it at 5s would be
  * a standing charge nobody chose.
  *
- * THAT USED TO BE A PARAGRAPH ABOVE THE BUTTON. It is now a figure --
- * `24 count() per run` -- which is the same fact with the arithmetic already
+ * THAT USED TO BE A PARAGRAPH ABOVE THE BUTTON. It is now a figure on the
+ * button -- `24 reads`, one count() read per state per scope -- which is the same fact with the arithmetic already
  * done for the reader and, unlike the sentence, it moves when the caller turns
  * out to be an admin. §8.4.1: a well-chosen unit is the explanation. What a
  * run returns is at #help/platform-counts.
  *
- * AND IT SITS IMMEDIATELY BEFORE THE CONTROL IT PRICES (AH-25). The head was a
- * shape of its own -- `.ctl-page-head` with the button pinned right -- and the
- * cost sat in a toolbar row under it, a row away from the press it priced,
- * although this comment said "beside the control". The head is `PageHead` now,
- * the one fourteen `Screen` routes draw, and its line reads like theirs: what
- * was read, how long ago, and the read-now control, with the cost printed
- * right before that control in one span that does not wrap apart.
+ * AND IT IS ON THE CONTROL IT PRICES (AH-25, #138). The cost once sat in a
+ * toolbar row a row away from the press it priced. The head is `.head > h1`,
+ * the shape `PageHead` draws, with the button beside the title (#503); the
+ * line under it reads like every Screen route's: what was read, how long ago.
  *
  * SCOPE IS NOT DECORATION. `tasks_by_state` is the caller's own tenant;
  * `platform_tasks_by_state` is everyone. They are separate cards with the
@@ -137,33 +135,40 @@ export function PlatformCountsScreen() {
 
   return (
     <>
-      {/* THE ONE PAGE HEAD (AH-25): a title over one line. No `?` on it
-          (B7.4): `24 count()` on the button IS the cost of pressing it, as a
-          figure with its unit. */}
-      <PageHead title="Platform counts">
-        {provenance}
-        {' · '}
-        {/* THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
-            24 count()` is one control whose name says what pressing it
-            spends, so the price cannot wrap away from the press or be read
-            as a fact about the last run. While a run is in flight the button
-            says so instead; the cost of that press is already being paid. */}
-        <span className="counts-run">
-          {/* `.sub button`, the same read-now control as Screen's `refresh`,
-              not the boxed `.retry`: pressing it is the same act. */}
-          <button type="button" onClick={go} disabled={busy}>
-            {busy ? (
-              'Counting…'
-            ) : (
-              <>
-                {run === null ? 'Run the count' : 'Run it again'}
-                {' · '}
-                <span className="counts-cost">{queries} count()</span>
-              </>
-            )}
-          </button>
-        </span>
-      </PageHead>
+      {/* THE RUN IS A BUTTON BESIDE THE TITLE (#503, admin-help.html frames
+          4-5). It was a `.sub button` inside the provenance sentence, which
+          the shell draws as an underlined text control: the one billed action
+          on the page read as a link in prose. So the head is drawn here --
+          `.head > h1`, the shape `PageHead` draws, with the button in it --
+          and the line under it is what was read and how long ago, as on every
+          Screen route (AH-25).
+
+          THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
+          24 reads` is one control whose name says what pressing it spends,
+          so the price cannot wrap away from the press or be read as a fact
+          about the last run. While a run is in flight the button says so
+          instead; the cost of that press is already being paid. No `?` on
+          the head (B7.4): the figure on the button is the cost. */}
+      <div className="head counts-head">
+        <h1>Platform counts</h1>
+        <button
+          type="button"
+          className={`counts-run-btn${run === null ? ' is-primary' : ''}`}
+          onClick={go}
+          disabled={busy}
+        >
+          {busy ? (
+            'Counting…'
+          ) : (
+            <>
+              {run === null ? 'Run the count' : 'Run it again'}
+              {' · '}
+              <span className="counts-cost">{queries} reads</span>
+            </>
+          )}
+        </button>
+      </div>
+      <p className="sub">{provenance}</p>
 
       {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
           figure slot: the page has its shape before the press, and an empty
@@ -229,22 +234,23 @@ function NotRun({ title, queries }: { title: string; queries: number | null }) {
     <section className="ctl-card counts-notrun">
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">{title}</h2>
-        <span className="ctl-card-note">{queries === null ? 'admin only' : `${queries} count()`}</span>
+        {queries === null && <span className="ctl-card-note">admin only</span>}
       </div>
       <div className="ctl-card-body">
-        {/* THE QUEUED RING, NEUTRAL: nothing failed and nothing is missing,
-            nothing has been asked yet. Not `.ctl-mark.is-unread`, which is
-            this sheet's mark for a read that failed. */}
-        <span
-          className="sk-st is-neu counts-notrun-mark"
-          data-mark="queued"
-          data-hue="neu"
-          aria-label="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
-        >
-          <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-            <MarkGlyph mark="queued" />
-          </svg>
-          <span className="sk-st-w">not run</span>
+        {/* NOT MEASURED, NOT A TASK STATE (#503). This drew the QUEUED ring,
+            which is a task-state mark: a card with no count in it read as a
+            card of queued work. Nothing has been read, so it is the neutral
+            `not measured` mark of the six kinds of nothing (primitives.tsx
+            `Mark`), hatched and greyscale-safe -- not `not read`, which is a
+            read that failed -- and the words say why there is no figure. */}
+        <Mark
+          kind="absent"
+          say="Not counted yet. Nothing has been read, so there is no figure to show; this says nothing about the platform."
+        />
+        <span className="counts-notrun-words">
+          {queries === null
+            ? 'not run yet. Only an admin’s run counts every tenant.'
+            : `not run yet. One exact count per state, ${queries} reads.`}
         </span>
       </div>
     </section>

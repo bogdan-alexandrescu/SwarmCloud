@@ -257,6 +257,17 @@ def _routes() -> list[tuple[str, str, str]]:
 
 ROUTES = _routes()
 
+# A VIEW OF ANOTHER TAB'S PAGE, headed with that tab's label (capacity.html C1,
+# owner's pick 2026-10-01; the #503 audit). By runner profile is Pools' second
+# view: the panel nests it under Pools, and the page is headed "Pools" with an
+# in-page `Ceilings | By runner profile` strip naming the view. So its heading
+# is held to the PARENT tab's label, and its own label is held to the strip --
+# read from the file that draws the strip -- so the words a reader clicked are
+# still on the page they land on. Route -> (parent route, file drawing the strip).
+NESTED_VIEWS: dict[str, tuple[str, str]] = {
+    "capacity/profiles": ("capacity/pools", "Capacity.tsx"),
+}
+
 
 @pytest.mark.parametrize("route,label,component", ROUTES, ids=[r[0] for r in ROUTES])
 def test_the_heading_matches_the_tab_that_opens_it(
@@ -265,6 +276,18 @@ def test_the_heading_matches_the_tab_that_opens_it(
     """Click a tab, land on a page headed with that tab's own words."""
     app = _read(APP_TSX)
     heading = _heading_of(component, _import_map(app), app)
+    if route in NESTED_VIEWS:
+        parent, strip_file = NESTED_VIEWS[route]
+        parent_label = next(r[1] for r in ROUTES if r[0] == parent)
+        assert heading == parent_label, (
+            f"#{route} is a view of #{parent}'s page and must be headed {parent_label!r}, not {heading!r}"
+        )
+        strip = _read(SRC / strip_file)
+        assert re.search(rf">\s*{re.escape(label)}\s*<", strip), (
+            f"#{route} is headed {parent_label!r}, so its own label {label!r} must be on the page "
+            f"as the in-page view strip in {strip_file}; it is not there"
+        )
+        return
     assert heading == label, (
         f"#{route}: the nav entry says {label!r} and {component} heads the page "
         f"{heading!r}. A reader cannot tell whether they navigated wrong, whether "

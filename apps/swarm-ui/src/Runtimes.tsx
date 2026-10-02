@@ -4,6 +4,7 @@ import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
+import './styles/capacity.css'
 import {
   humaniseUntil,
   overCeiling,
@@ -119,44 +120,50 @@ function Topology({ data }: { data: RuntimeTopology }) {
 
   return (
     <>
+      {/* THE CARDS LEAD AND SIZING IS LAST (capacity.html frame 5, the #503
+          audit): what kinds of agent exist is the question this page is
+          opened with; which backend carries them and what a class weighs
+          are the reference under it. */}
+      <div className="rt-cards">
+        <div className="ctl-toolbar">
+          {/* THIS SCREEN'S ONE ALWAYS-PRESENT `?` (B7.4).
+              It was ten: invariant 10 here, the resolved-backend rule on the
+              Backends heading, the unit on a column whose own header already
+              said `(units)`, the workspace basis on a column that already said
+              `(of memory)`, and five more. All ten are the footer index below.
+              IT OPENS WHAT THE CARDS' OWN WORDS DO NOT SAY (#126). It opened
+              `catalogue-from-route`, which the footer index already carries --
+              where this list comes from -- while the two words every card draws
+              and none explains, `Sets it apart` (arithmetic against the rest of
+              the catalogue) and the `disabled` chip, had no glyph at all. So it
+              opens that topic, and where the list comes from stays in the
+              footer.
+              It sits after the eyebrow, a label, because the eyebrow renders on
+              every path through this screen -- a rationed `?` is only learnable
+              if it is in the same place every time, and a glyph that appears only
+              when a read fails is one nobody has learned to look for. */}
+          <span className="ctl-eyebrow rt-eyebrow">
+            The catalogue
+            <HelpCard topic="what-sets-it-apart-is-arithmetic" />
+          </span>
+          <span className="ctl-card-note is-end">
+            {runtimes.length} of {runtimes.length} · whole catalogue
+          </span>
+        </div>
+
+        <div className="ctl-cards">
+          {runtimes.map((r) => (
+            <RuntimeCard key={r.name} runtime={r} all={runtimes} pools={poolsOf(data, r.name)} />
+          ))}
+        </div>
+      </div>
+
       <Backends runtimes={runtimes} pools={data.pools} poolsDetail={data.poolsDetail} />
       <Sizing
         runtimes={runtimes}
         classes={data.classes}
         classesDetail={data.classesDetail}
       />
-
-      <div className="ctl-toolbar">
-        {/* THIS SCREEN'S ONE ALWAYS-PRESENT `?` (B7.4).
-            It was ten: invariant 10 here, the resolved-backend rule on the
-            Backends heading, the unit on a column whose own header already
-            said `(units)`, the workspace basis on a column that already said
-            `(of memory)`, and five more. All ten are the footer index below.
-            IT OPENS WHAT THE CARDS' OWN WORDS DO NOT SAY (#126). It opened
-            `catalogue-from-route`, which the footer index already carries --
-            where this list comes from -- while the two words every card draws
-            and none explains, `Sets it apart` (arithmetic against the rest of
-            the catalogue) and the `disabled` chip, had no glyph at all. So it
-            opens that topic, and where the list comes from stays in the
-            footer.
-            It sits after the eyebrow, a label, because the eyebrow renders on
-            every path through this screen -- a rationed `?` is only learnable
-            if it is in the same place every time, and a glyph that appears only
-            when a read fails is one nobody has learned to look for. */}
-        <span className="ctl-eyebrow rt-eyebrow">
-          The catalogue
-          <HelpCard topic="what-sets-it-apart-is-arithmetic" />
-        </span>
-        <span className="ctl-card-note is-end">
-          {runtimes.length} of {runtimes.length} · whole catalogue
-        </span>
-      </div>
-
-      <div className="ctl-cards">
-        {runtimes.map((r) => (
-          <RuntimeCard key={r.name} runtime={r} all={runtimes} pools={poolsOf(data, r.name)} />
-        ))}
-      </div>
 
       <HelpLinks topics={RUNTIME_TOPICS} />
     </>
