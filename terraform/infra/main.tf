@@ -261,7 +261,9 @@ module "secret_manager" {
   action_providers = module.tenancy.action_providers
 
   # swarm-api reads each tenant's -git secret for the issue preview (#454,
-  # mock-up 1A), by a per-secret binding on that secret alone.
+  # mock-up 1A), by a per-secret binding on that secret alone. This reaches
+  # only a -git secret Terraform manages; a script-registered one (every
+  # tenant's today) gets the same grant from scripts/register-tenant.sh.
   forge_readers = [module.iam.service_account_members["swarm-api"]]
 
   # One writer, and this is it. See the variable's own description, and

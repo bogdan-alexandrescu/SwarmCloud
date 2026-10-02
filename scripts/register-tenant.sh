@@ -69,6 +69,8 @@
 # Add one provider to a tenant that is already registered, keeping the others:
 #   scripts/register-tenant.sh --tenant eng --add-provider git
 #   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
+# `git` (here or in --providers) also lets swarm-api read that one -git secret,
+# for the issue preview; see FORGE_READER_ID below.
 #
 # A GitHub App key (#295, docs/merge-step.md) is never the worker's to read.
 # `--add-provider git-review` binds the post-verdict account to the review App's
@@ -581,6 +583,57 @@ require_action_account() {
   die "stopping: that is a failure to LOOK, not a missing account. Nothing was changed."
 }
 
+# --- swarm-api, the second reader of -git ------------------------------------
+#
+# swarm-api's issue preview (apps/swarm-api/swarm_api/forge.py `preview`,
+# routes/issues.py, #511) reads swarm-tenant-<tenant>-git, the forge token the
+# worker clones and pushes with. The owner accepted swarm-api as that secret's
+# second reader (2026-10-02). terraform/infra grants it through `forge_readers`,
+# but only on a -git secret Terraform manages, and none is: every tenant's -git
+# is registered here. So wherever this script lets the worker read -git, it
+# lets swarm-api read that same ONE secret -- a binding on the secret, never on
+# the project, where it would read every tenant's every key.
+#
+# EXACTLY `git`. Never git-merge or git-review: those App keys have only their
+# own accessors (docs/merge-step.md §1.3, terraform/modules/service_account_ids
+# `sole_accessor`), and swarm-api is not one of them.
+FORGE_PROVIDER="git"
+FORGE_READER_ID="swarm-api"
+FORGE_READER_EMAIL=""
+
+# resolve_forge_reader  ->  sets FORGE_READER_EMAIL from
+# terraform/modules/service_account_ids, or dies with nothing changed. Called
+# before the first grant of the path that needs it.
+resolve_forge_reader() {
+  [[ -z "${FORGE_READER_EMAIL}" ]] || return 0
+  FORGE_READER_EMAIL="$(platform_account_email "${FORGE_READER_ID}")" \
+    || die "terraform/modules/service_account_ids lists no platform account ${FORGE_READER_ID} (or its
+  platform map no longer reads the way common.sh tf_platform_account_ids expects), so there is no
+  address to let the issue preview read swarm-tenant-${TENANT_ID}-${FORGE_PROVIDER} as. Nothing was changed."
+}
+
+# forge_reader_bound NAME  ->  0 when swarm-api already holds secretAccessor
+# on the secret NAME, so a re-run adds nothing. A policy that cannot be read answers
+# "not bound" (iam_policy_binds_member, common.sh): the add that follows is
+# idempotent and fails loudly, where guessing "bound" is a silent missing grant.
+forge_reader_bound() {
+  local name="$1" policy_file errfile rc=0
+  policy_file="$(mktemp "${TMPDIR:-/tmp}/swarm-git-policy.XXXXXX")"
+  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-git-policy-err.XXXXXX")"
+  if ! gcloud secrets get-iam-policy "${name}" --project "${PROJECT_ID}" \
+         --format=json >"${policy_file}" 2>"${errfile}"; then
+    local reason
+    reason="$(cat "${errfile}")"
+    rm -f "${policy_file}" "${errfile}"
+    die_if_auth_failure "${reason}"
+    return 1
+  fi
+  iam_policy_binds_member "${policy_file}" roles/secretmanager.secretAccessor \
+    "serviceAccount:${FORGE_READER_EMAIL}" || rc=1
+  rm -f "${policy_file}" "${errfile}"
+  return "${rc}"
+}
+
 # forge_tfvars read FILE TENANT          -> the tenant's `forge` entry, as JSON
 # forge_tfvars write FILE TENANT BOT_ID  -> pin forge.review_app_bot_id
 #
@@ -1009,6 +1062,18 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
     GRANT_SECRETS+=("${secret}")
     GRANT_MEMBERS+=("serviceAccount:${GSA_EMAIL}")
     GRANT_NAMES+=("${GSA_ID}")
+    # After the worker's, so a run that stops between the two leaves the
+    # worker able to read its key and only the preview without it.
+    if [[ "${provider}" == "${FORGE_PROVIDER}" ]]; then
+      resolve_forge_reader
+      if forge_reader_bound "${secret}"; then
+        ok "${secret}: ${FORGE_READER_ID} already reads it (the issue preview)"
+      else
+        GRANT_SECRETS+=("${secret}")
+        GRANT_MEMBERS+=("serviceAccount:${FORGE_READER_EMAIL}")
+        GRANT_NAMES+=("${FORGE_READER_ID}")
+      fi
+    fi
   else
     # A GITHUB APP KEY IS NEVER THE WORKER'S (#295; docs/merge-step.md §1.3,
     # §10 item 5). The accounts that read it, and what else they read, are
@@ -1889,6 +1954,11 @@ if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
         ;;
     esac
   done
+  # swarm-api's address is settled before any secret is granted, so a module
+  # it cannot be read off stops the run with no secret changed.
+  for provider in ${GRANTABLE[@]+"${GRANTABLE[@]}"}; do
+    [[ "${provider}" != "${FORGE_PROVIDER}" ]] || resolve_forge_reader
+  done
   for provider in ${GRANTABLE[@]+"${GRANTABLE[@]}"}; do
     secret="swarm-tenant-${TENANT_ID}-${provider}"
     run gcloud secrets add-iam-policy-binding "${secret}" \
@@ -1899,6 +1969,21 @@ if [[ "${#PROVIDERS[@]}" -gt 0 ]]; then
       dim "  would let ${GSA_ID} read ${secret}"
     else
       ok "${secret}: ${GSA_ID} may read it"
+    fi
+    # The issue preview's grant, on -git alone (resolve_forge_reader, above).
+    [[ "${provider}" == "${FORGE_PROVIDER}" ]] || continue
+    if forge_reader_bound "${secret}"; then
+      ok "${secret}: ${FORGE_READER_ID} already reads it (the issue preview)"
+      continue
+    fi
+    run gcloud secrets add-iam-policy-binding "${secret}" \
+      --project "${PROJECT_ID}" \
+      --member "serviceAccount:${FORGE_READER_EMAIL}" \
+      --role roles/secretmanager.secretAccessor --quiet >/dev/null
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      dim "  would let ${FORGE_READER_ID} read ${secret}"
+    else
+      ok "${secret}: ${FORGE_READER_ID} may read it (the issue preview)"
     fi
   done
 fi
