@@ -319,9 +319,11 @@ and waiting inside agents made lanes carry 300-500k tokens on every turn.
 * **One review, and only where it matters.** Credentials, tenant isolation,
   redaction and IAM get a review. It reports blockers and majors; minors go to the
   wave epic.
-* **A PR labelled `ready` is merged by GitHub's native auto-merge** once its required checks are green at head
-  (`.github/workflows/auto-merge.yml`, [docs/ci.md](docs/ci.md#a-ready-pull-request-is-merged-by-github-not-by-a-session)).
-  No session has to be running. A `[swarm] task_` title is refused: retitle it first.
+* **A PR labelled `ready` is merged by GitHub's native auto-merge** (`.github/workflows/auto-merge.yml`,
+  [docs/ci.md](docs/ci.md#a-ready-pull-request-is-merged-by-github-not-by-a-session)) once its required
+  checks are green at head, **but only once the merge App is configured**
+  ([runbook](docs/runbooks/merge-app.md)). Until then the workflow refuses with a comment and a `ready`
+  PR merges only while an operator runs the merge watcher. A `[swarm] task_` title is refused: retitle it first.
 
 ## Reporting
 
