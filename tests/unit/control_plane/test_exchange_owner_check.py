@@ -334,9 +334,14 @@ def test_another_tenant_holding_a_live_state_gets_403_and_nothing_is_filed(
     assert ok.json()["account"]["owner_tenant"] == "eng"
 
 
-def test_the_body_cannot_choose_expected_owner(api):
+def test_the_body_cannot_choose_expected_owner(api, broker, broker_app, broker_client):
     """The request model is strict: a caller cannot send the field and have
-    swarm-api forward it in place of the checked tenant."""
+    swarm-api forward it in place of the checked tenant.
+
+    The refusal is the request model's 422, so the property is that NOTHING
+    reached the broker -- asserted as an empty list, not as `all()` over the
+    forwarded bodies, which an empty list satisfies without checking anything.
+    """
     state = _api_begin(api, "alice")
 
     r = api.post(
@@ -345,6 +350,8 @@ def test_the_body_cannot_choose_expected_owner(api):
         json={"state": state, "code": "the-code", "expected_owner": "eng"},
     )
 
-    assert r.status_code in (403, 422), r.text
+    assert r.status_code == 422, r.text
     sent = [b for p, b in api.bridge.bodies if p == "/v1/accounts/exchange"]
-    assert all(b["expected_owner"] == "research" for b in sent)
+    assert sent == [], "a body naming expected_owner was forwarded to the broker"
+    _nothing_filed(broker_app, broker_client)
+    assert _pending_exists(broker, state)
