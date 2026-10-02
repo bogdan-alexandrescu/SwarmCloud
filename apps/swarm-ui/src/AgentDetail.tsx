@@ -144,16 +144,13 @@ export function AgentDetailScreen({
   const [reloads, setReloads] = useState(0)
   const reload = useCallback(() => setReloads((n) => n + 1), [])
 
-  return (
-    // The drawer and its close button are drawn here AND by App.tsx's
-    // `.ctl-drawer` wrapper, which flattens this one with two scoped CSS rules
-    // so the panel is not nested twice. Both are kept: this component stays
-    // usable on its own, and the rules become no-ops rather than breakage if
-    // the wrapper ever goes away.
-    <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
-      <button className="drawer-close" onClick={onClose} aria-label="Close">
-        ✕
-      </button>
+  // HEADED, THE SPLIT IS THE DRAWER. `AgentSplit` is itself the one
+  // `role="dialog"` and draws the one close control, and wraps this in
+  // `.ag-split-pane`, so the old `.ctl-drawer > .drawer` flattening no longer
+  // matched and this component's own fixed `.drawer` drew a second panel over
+  // it (measured live, 1440x900). Headed, it draws neither the wrapper nor its
+  // close button; standalone use keeps both.
+  const screenEl = (
       <Screen
         // KEYED ON THE TASK, AND THIS IS NOT A DETAIL. `Screen` re-runs its
         // load effect on its retry nonce only (`[nonce]`, with the exhaustive
@@ -188,6 +185,14 @@ export function AgentDetailScreen({
             moves, so every part of the drawer is as of the same read. */}
         {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} />}
       </Screen>
+  )
+  if (headed) return screenEl
+  return (
+    <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
+      <button className="drawer-close" onClick={onClose} aria-label="Close">
+        ✕
+      </button>
+      {screenEl}
     </div>
   )
 }

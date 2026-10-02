@@ -308,3 +308,20 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
   })
 })
 
+
+describe('the split is ONE drawer: AgentDetail does not draw a second one inside it', () => {
+  // Measured live at 1440x900 on /agents/live/<task>: the split (`.ctl-drawer`)
+  // held `.ag-split-pane` which held AgentDetail's own `.drawer`, rendered
+  // `position: fixed` over it, because the stylesheet flattens only a DIRECT
+  // child `.ctl-drawer > .drawer` and U1 (#517) put the pane between them.
+  it('has exactly one dialog, no nested .drawer and one close control', async () => {
+    api.loadTask.mockResolvedValue(ok(agent()))
+    api.loadAgentRun.mockResolvedValue(ok({ task: agent(), events: null, attempts: [], classes: null }))
+    render(split())
+    await screen.findByText('fix-heartbeat')
+    const root = document.querySelector<HTMLElement>('.ag-split')!
+    expect(root.querySelectorAll('[role="dialog"]').length + (root.getAttribute('role') === 'dialog' ? 1 : 0)).toBe(1)
+    expect(root.querySelectorAll('.drawer'), 'a second .drawer inside the split').toHaveLength(0)
+    expect(root.querySelectorAll('.drawer-close'), 'a second close button').toHaveLength(0)
+  })
+})
