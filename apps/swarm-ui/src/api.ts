@@ -33,9 +33,11 @@ export type { Result, ApiError } from './fetch'
  *  flag rather than restating the expression. */
 export const USE_FIXTURES = import.meta.env.DEV && !import.meta.env.VITE_LIVE
 
-export async function loadCapacity(): Promise<Result<Capacity>> {
+export async function loadCapacity(options: { frame?: boolean } = {}): Promise<Result<Capacity>> {
   if (USE_FIXTURES) return fixtureCapacity()
-  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0)
+  // `frame`: the shell's capacity meter reads this too, as the FRAME's read
+  // (CH-2), so its age never stands in for the page's own.
+  return read<Capacity>(route('/v1/capacity'), (d) => d.pools.length === 0, { frame: options.frame === true })
 }
 
 /**
@@ -1251,6 +1253,46 @@ export interface CancelResult {
   released_immediately: boolean
 }
 
+/**
+ * CANCEL ONE WORKFLOW. `POST /v1/workflows/{id}/cancel`
+ * (apps/swarm-api/swarm_api/routes/workflows.py `cancel_workflow`).
+ *
+ * The server sets `cancel_requested` on the workflow and asks every step that
+ * has a task to stop (`Store.cancel_workflow`): a step that holds no capacity
+ * goes straight to CANCELLED, a running one keeps its lease until its worker
+ * acts on the flag, and a step that has not been created yet never will be.
+ * The caller confirms first -- see `CancelWorkflow` in Workflows.tsx, the only
+ * thing that calls this -- and re-reads the board rather than trusting an echo.
+ */
+export async function cancelWorkflow(workflowId: string): Promise<Result<CancelWorkflowResult>> {
+  if (USE_FIXTURES) return fixtureCancelWorkflow(workflowId)
+  return write(route('/v1/workflows/{id}/cancel', { id: workflowId }), 'POST') as Promise<
+    Result<CancelWorkflowResult>
+  >
+}
+
+/** Only what this client reads of the cancel response (store.py `cancel_workflow`). */
+export interface CancelWorkflowResult {
+  workflow_id: string
+  /** Task ids whose cancel was recorded. */
+  tasks_cancelled: string[]
+  /** Task ids that had already ended (or were not found), so nothing was asked of them. */
+  tasks_already_terminal: string[]
+}
+
+async function fixtureCancelWorkflow(workflowId: string): Promise<Result<CancelWorkflowResult>> {
+  await new Promise((r) => setTimeout(r, 60))
+  // The same `route()` call as the live path, so the fixture lands in the same
+  // registry record a live write would (CH-18). It reports no task ids: a
+  // fixture that invented which tasks it cancelled would be fabricating data.
+  noteFixtureProbe(route('/v1/workflows/{id}/cancel', { id: workflowId }), 60, true)
+  return {
+    status: 'ok',
+    fetchedAt: Date.now(),
+    data: { workflow_id: workflowId, tasks_cancelled: [], tasks_already_terminal: [] },
+  }
+}
+
 async function fixtureArtifactContent(
   taskId: string,
   name: string,
@@ -1356,6 +1398,13 @@ export interface RuntimeTopology {
   /** null means the capacity read FAILED. An empty array means there are none. */
   pools: Pool[] | null
   poolsDetail: string | null
+  /**
+   * The pools each runtime must clear, by runner-profile name: the same
+   * `/v1/capacity` read's `runner_profiles[name].pools`, which the server
+   * builds with `pool_names_for` for the calling tenant. Absent or null when
+   * that read failed -- never rebuilt here from a naming rule.
+   */
+  profilePools?: Record<string, string[]> | null
   /** null means the class-catalogue read failed or served nothing. */
   classes: ResourceClasses | null
   classesDetail: string | null
@@ -1383,6 +1432,11 @@ export async function loadRuntimeTopology(): Promise<Result<RuntimeTopology>> {
     data: {
       runtimes: runtimes.data.runtimes,
       pools: poolsOk ? capacity.data.pools : null,
+      profilePools: poolsOk
+        ? Object.fromEntries(
+            Object.entries(capacity.data.runner_profiles ?? {}).map(([name, p]) => [name, p.pools]),
+          )
+        : null,
       poolsDetail: poolsOk
         ? null
         : capacity.status === 'error'
@@ -2771,11 +2825,14 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "generic": {"required_keys": []},
   "claude-code": {"required_keys": ["prompt"]},
   "codex": {"required_keys": ["prompt"]},
-  "browser": {"required_keys": []}
+  "browser": {"required_keys": []},
+  "merge": {"required_keys": []},
+  "post-verdict": {"required_keys": []},
+  "claude-code-review": {"required_keys": ["prompt"]}
 }
 
 /**
- * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * Whether each profile may be dispatched, as `/v1/capacity` now serves it
  * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
  * Pools, Profile headroom and Submit against a platform that does not exist --
  * which is how the disabled branch of all three shipped unexercised.
@@ -2799,7 +2856,10 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "generic": {"available": true, "disabled_reason": ""},
   "claude-code": {"available": true, "disabled_reason": ""},
   "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
-  "browser": {"available": true, "disabled_reason": ""}
+  "browser": {"available": true, "disabled_reason": ""},
+  "merge": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

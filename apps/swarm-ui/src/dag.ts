@@ -23,17 +23,16 @@ import {
   TERMINAL_STATES,
   formatDuration,
   stagedInputsOf,
-  stateTone,
   stepState,
   type StagedInputs,
   type StepState,
   type Task,
   type TaskState,
-  type Tone,
   type WorkflowStep,
   usageOf,
 } from './types'
 import type { StepUsage } from './api'
+import { STATE_MARK, type MarkHue, type MarkName } from './marks'
 
 // ---------------------------------------------------------------------------
 // Depth
@@ -2163,7 +2162,8 @@ export function layoutOf(
 // ---------------------------------------------------------------------------
 
 /** One bucket of a stage's census: how many steps are in this state, and the
- *  tone that state is drawn in on a node, so the band and the node agree. */
+ *  brand mark and hue that state is drawn in on a node, so the band and the
+ *  node agree. */
 export interface StageCount {
   /**
    * `running`, `succeeded`, `not started`, `not read`.
@@ -2177,7 +2177,35 @@ export interface StageCount {
    */
   readonly word: string
   readonly n: number
-  readonly tone: Tone | 'unknown'
+  /**
+   * The brand state mark and hue (marks.tsx; rebrand, owner decision
+   * 2026-10-01, which superseded #405's tints and `stateTone`'s five tones).
+   * `unknown` is the one look that is NOT a state: a step whose task was not
+   * read is drawn dashed amber, the warning colour, never in a state's hue.
+   */
+  readonly look: StepLook
+}
+
+/** How a step is drawn: one brand mark in one hue, or `unknown`. */
+export type StepLook =
+  | { readonly kind: 'state'; readonly mark: MarkName; readonly hue: MarkHue }
+  | { readonly kind: 'unknown' }
+
+/**
+ * THE LOOK OF ONE STEP, the single place a step's state becomes a mark and a
+ * hue. A step with no task yet is the QUEUED ring in grey -- it is in line,
+ * nothing about it is decided -- and a step whose task was not in the read is
+ * `unknown`, never a guessed state.
+ */
+export function stepLook(state: StepState): StepLook {
+  if (state.kind === 'unknown') return { kind: 'unknown' }
+  if (state.kind === 'unstarted') return { kind: 'state', ...STATE_MARK.QUEUED }
+  return { kind: 'state', ...STATE_MARK[state.state] }
+}
+
+/** The CSS hue class a look is tinted with: `t-live`, `t-park`, `t-bad`, `t-neu` or `t-unk`. */
+export function lookClass(look: StepLook): string {
+  return look.kind === 'unknown' ? 't-unk' : `t-${look.hue}`
 }
 
 export interface StageCensus {
@@ -2224,7 +2252,7 @@ export function stageCensus(
   // Insertion order is not the display order -- `rank` below is -- but a Map
   // keeps the iteration deterministic, which matters because the sort is stable
   // and two buckets of equal size must not swap between polls.
-  const buckets = new Map<string, { n: number; tone: Tone | 'unknown'; rank: number }>()
+  const buckets = new Map<string, { n: number; look: StepLook; rank: number }>()
   let failed = 0
   let cancelled = 0
   let unread = 0
@@ -2232,21 +2260,18 @@ export function stageCensus(
   for (const step of steps) {
     const state = stepState(step, taskById)
     let word: string
-    let tone: Tone | 'unknown'
+    const look = stepLook(state)
     let rank: number
     if (state.kind === 'unstarted') {
       // The node says `not started` for this, so the band says `not started`.
       word = 'not started'
-      tone = 'wait'
       rank = 3
     } else if (state.kind === 'unknown') {
       word = 'not read'
-      tone = 'unknown'
       rank = 2
       unread += 1
     } else {
       word = state.state.toLowerCase()
-      tone = stateTone(state.state)
       if (state.state === 'FAILED' || state.state === 'DEAD_LETTERED') failed += 1
       if (state.state === 'CANCELLED') cancelled += 1
       // FOUR RANKS, AND THE ORDER OF THE FIRST TWO IS A JUDGEMENT. A failure
@@ -2267,17 +2292,17 @@ export function stageCensus(
     }
     const seen = buckets.get(word)
     if (seen) seen.n += 1
-    else buckets.set(word, { n: 1, tone, rank })
+    else buckets.set(word, { n: 1, look, rank })
   }
 
   const counts: StageCount[] = [...buckets.entries()]
-    .map(([word, b]) => ({ word, n: b.n, tone: b.tone, rank: b.rank }))
+    .map(([word, b]) => ({ word, n: b.n, look: b.look, rank: b.rank }))
     // Failures, then cancellations, then the unread part of the census, then
     // everything else biggest first. The word breaks the tie so the order
     // cannot change under a poll that happens to visit the steps in a
     // different order.
     .sort((a, b) => a.rank - b.rank || b.n - a.n || a.word.localeCompare(b.word))
-    .map(({ word, n, tone }) => ({ word, n, tone }))
+    .map(({ word, n, look }) => ({ word, n, look }))
 
   const census = counts.map((c) => `${c.n} ${c.word}`).join(', ')
   // THE CLAUSE THAT MAY NOT BE DROPPED. With nothing failed and nothing unread

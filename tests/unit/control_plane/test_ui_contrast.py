@@ -165,6 +165,56 @@ def _raw_tokens(css: str) -> tuple[dict[str, str], dict[str, str]]:
     return dark, {**dark, **light}
 
 
+def _forced_theme_tokens(css: str) -> dict[str, dict[str, str]]:
+    """The custom properties each theme-toggle selector declares, merged per theme.
+
+    `light` is every `:root[data-theme='light']`, `dark` every
+    `:root[data-theme='dark']` (there is none while `:root` itself is the dark
+    palette and the light media block excludes `[data-theme='dark']`).
+    """
+    out: dict[str, dict[str, str]] = {"light": {}, "dark": {}}
+    for selector, body in _blocks(css):
+        sel = " ".join(selector.split())
+        for theme in out:
+            if sel.endswith(f":root[data-theme='{theme}']"):
+                out[theme].update(re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", body))
+    return out
+
+
+def test_the_forced_light_theme_carries_the_system_light_values():
+    """The theme toggle's three palettes agree where they state the same values.
+
+    The owner added a light / dark / system toggle (2026-10-01). System is the
+    media query; Light is `:root[data-theme='light']`; Dark is `:root`, which the
+    light media block excludes through `:not([data-theme='dark'])`. The light
+    values are therefore written twice, because CSS cannot share one list across
+    a media query and an attribute selector, and a value edited in one place only
+    is a light theme that differs by how it was reached. This asserts the two
+    copies are identical name for name and value for value, and that a forced
+    dark block, if one is ever added, is the base `:root` palette.
+    """
+    css = (Path(__file__).resolve().parents[3] / "apps/swarm-ui/src/styles.css").read_text()
+    css = re.sub(r"/\*.*?\*/", " ", css, flags=re.S)
+    dark, _ = _raw_tokens(css)
+    media_light: dict[str, str] = {}
+    for selector, body in _blocks(css):
+        if ":root:not([data-theme='dark'])" in " ".join(selector.split()):
+            media_light.update({k: v.strip() for k, v in re.findall(r"(--[\w-]+)\s*:\s*([^;]+);", body)})
+    assert media_light, "no light media block was found; this would compare nothing"
+    forced = _forced_theme_tokens(css)
+    forced_light = {k: v.strip() for k, v in forced["light"].items()}
+    assert forced_light == media_light, (
+        "the forced-light block and the system-light block disagree: "
+        f"only in the media block {sorted(set(media_light) - set(forced_light))}, "
+        f"only in the attribute block {sorted(set(forced_light) - set(media_light))}, "
+        f"different values {sorted(k for k in set(media_light) & set(forced_light) if media_light[k] != forced_light[k])}"
+    )
+    for name, value in forced["dark"].items():
+        assert dark.get(name, "").strip() == value.strip(), (
+            f"`:root[data-theme='dark']` sets {name} to {value.strip()}, which is not the base :root value"
+        )
+
+
 def _tokens(css: str) -> tuple[dict[str, str], dict[str, str]]:
     """The custom properties of each theme, as {name: literal hex}."""
     dark, light = _raw_tokens(css)
@@ -434,7 +484,7 @@ def test_the_scan_found_the_rules_it_is_meant_to_guard() -> None:
     # `--surface-2` step now. It is still a measured pair, but it no longer
     # exercises what this list is for, an accent's `-ink` on a tint of itself.
     # `.scope.platform` does, so it takes the slot; the list did not shrink.
-    for expected in (".banner.bad", ".banner.warn", ".q-chip.bad", ".scope.platform"):
+    for expected in (".banner.bad", ".banner.warn", ".scope.platform"):
         assert expected in selectors, f"{expected} is no longer being measured"
     # And the three hatched marks CH-4 moved onto a solid fill are measured
     # now, where before they were allowlisted and never read. If one of them

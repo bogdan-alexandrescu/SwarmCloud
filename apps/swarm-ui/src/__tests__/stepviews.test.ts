@@ -39,7 +39,6 @@ import {
   stateRankOf,
   stepTimes,
   stepWhy,
-  isChain,
   workflowLabel,
   workflowPullRequest,
   type SortFacts,
@@ -1090,12 +1089,5 @@ describe('#330: workflowPullRequest', () => {
     expect(one({ dispatch: d('direct-pr', null), result_summary: pr('https://x/1', '12') })).toBeNull()
     expect(one({ dispatch: d('direct-pr', null), result_summary: pr('https://x/1', 0) })).toBeNull()
     expect(one({ dispatch: d('direct-pr', null), result_summary: null })).toBeNull()
-  })
-})
-
-describe('#330: isChain', () => {
-  it('is a workflow of more than one step', () => {
-    expect(isChain(wf('wf_1', iso(0), [step('only', [])]))).toBe(false)
-    expect(isChain(wf('wf_2', iso(0), [step('a', []), step('b', ['a'])]))).toBe(true)
   })
 })

@@ -42,9 +42,16 @@ def test_the_catalogue_has_no_field_called_command() -> None:
 
 
 def test_every_profile_names_a_runner_module_the_lifecycle_can_start() -> None:
-    """The value is unchanged by the rename: `python -m agent_worker.runners.<x>`."""
+    """The value is unchanged by the rename: `python -m agent_worker.runners.<x>`.
+
+    Except a `worker_action` profile (contract requests 33 and 35), which starts
+    no runner and so has none to name -- its argv is empty, by contract.
+    """
     for name, profile in RUNNER_PROFILES.items():
         argv = profile.runner_argv
+        if profile.worker_action is not None:
+            assert argv == (), (name, argv)
+            continue
         assert isinstance(argv, tuple) and len(argv) == 3, (name, argv)
         assert argv[:2] == ("python", "-m"), (name, argv)
         module = argv[2]

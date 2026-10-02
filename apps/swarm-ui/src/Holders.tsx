@@ -1,9 +1,11 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
 import { HelpCard } from './HelpCard'
 import { Mark, UtilRow } from './primitives'
+import { HOLDERS_POLL_MS } from './capacityPoll'
 import { Screen } from './Shell'
-import { poolLabel, type LeasePage, type LeaseRow } from './types'
+import { formatDuration, poolLabel, type LeasePage, type LeaseRow } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * WHETHER THESE ROWS ARE EVERY LIVE LEASE, in the three answers there are.
@@ -137,6 +139,8 @@ export function HoldersScreen() {
     <Screen
       title="Holders"
       load={loadHolders}
+      // Decided 2026-10-01 (#117): every 30s, paused while the tab is hidden.
+      pollMs={HOLDERS_POLL_MS}
       summary={(b) => {
         const coverage = leaseCoverage(b.page)
         const rows = b.page.leases.length
@@ -485,7 +489,15 @@ function ClassMix({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverag
 }
 
 function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverage }) {
-  const sorted = [...rows].sort((a, b) => b.units - a.units)
+  // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
+  // this read loaded. The filter narrows what is drawn; the note beside the
+  // heading still says what the loaded rows are out of, so a filtered list is
+  // never read as the platform's whole.
+  const [tenant, setTenant] = useState<string | null>(null)
+  const now = useNow(AGE_TICK_MS)
+  const tenants = [...new Set(rows.map((l) => l.tenant_id))].sort()
+  const shown = tenant === null ? rows : rows.filter((l) => l.tenant_id === tenant)
+  const sorted = [...shown].sort((a, b) => b.units - a.units)
   return (
     /* §B6.1: the screen's one full-width table is the one box on it. It was
        a card wrapping a card-body wrapping a `.ctl-table`, which drew two
@@ -498,6 +510,19 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
             a cut list look cut: the same list at 200 of 200 and at 200 of 214
             would otherwise be the same picture. */}
         <h2 className="ctl-card-title">Every holder</h2>
+        {/* Only where there is a choice: one tenant's rows filter to nothing new. */}
+        {tenants.length > 1 && (
+          <div className="ctl-seg hold-tenants" role="group" aria-label="Tenant">
+            <button type="button" aria-pressed={tenant === null} onClick={() => setTenant(null)}>
+              All
+            </button>
+            {tenants.map((t) => (
+              <button key={t} type="button" aria-pressed={tenant === t} onClick={() => setTenant(t)}>
+                {t}
+              </button>
+            ))}
+          </div>
+        )}
         <span className="ctl-card-note is-end">
           {coverage.kind !== 'complete' && <>{coverageMark(rows.length, coverage, 'This list')} </>}
           {ofTotal(rows.length, coverage)} row{rows.length === 1 && coverage.kind !== 'cut' ? '' : 's'}
@@ -520,13 +545,18 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                 <th role="columnheader" scope="col" className="is-num">Units (weighted)</th>
                 <th role="columnheader" scope="col">Dispatch</th>
                 <th role="columnheader" scope="col" className="is-num">Gen</th>
+                <th role="columnheader" scope="col" className="is-num">Held for</th>
               </tr>
             </thead>
             <tbody role="rowgroup">
               {sorted.map((l) => (
                 <tr role="row" key={l.lease_id}>
                   <th role="rowheader" scope="row">
-                    {l.task_id.slice(-10)}
+                    {/* The task links to the agent, which is where a reader
+                        goes from "what holds this" to "why is it still here". */}
+                    <a className="ctl-link mono" href={`#work/task/${encodeURIComponent(l.task_id)}`} title={l.task_id}>
+                      {l.task_id.slice(-10)}
+                    </a>
                     <span className="ctl-sub">{l.lease_id.slice(-10)}</span>
                   </th>
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
@@ -541,6 +571,9 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
                     </span>
                   </td>
                   <td role="cell" data-label="Gen" className="is-num">{l.generation}</td>
+                  <td role="cell" data-label="Held for" className="is-num">
+                    <HeldFor createdAt={l.created_at} now={now} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -548,4 +581,15 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
       </div>
     </section>
   )
+}
+
+/**
+ * How long a lease has held its units, from the lease's own `created_at` on
+ * the shared age tick. An unparseable instant is an em dash -- not measured --
+ * never a 0s that would read as "just leased".
+ */
+function HeldFor({ createdAt, now }: { createdAt: string | null | undefined; now: number }) {
+  const at = createdAt ? Date.parse(createdAt) : NaN
+  if (!Number.isFinite(at)) return <span title="The lease carries no readable creation time">—</span>
+  return <time dateTime={createdAt ?? undefined} title={createdAt ?? undefined}>{formatDuration(now - at)}</time>
 }

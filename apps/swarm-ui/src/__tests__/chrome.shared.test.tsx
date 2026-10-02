@@ -13,7 +13,7 @@
 import STYLES from '../styles.css?raw'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App, SECTIONS } from '../App'
@@ -22,7 +22,7 @@ import { Dock } from '../Dock'
 import * as Workflows from '../Workflows'
 import { noteFixtureProbe, route } from '../fetch'
 import { stateTone, type Me } from '../types'
-import { cascade, declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
+import { declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
 import { build, painted, shapeOf } from './marks'
 import { noteProbe } from './probes'
 import { at, task } from './runfixture'
@@ -112,7 +112,7 @@ async function liveApp(hash: string): Promise<{ release: (res: Response) => Prom
   render(<LiveApp />)
   // The FRAME's read has landed: the tab now holds a successful read that is
   // not the screen's.
-  await screen.findByText('u-bogdan')
+  await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Bogdan'))
   return {
     release: async (res: Response) => {
       await act(async () => {
@@ -258,7 +258,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {
       succeeded!.click()
     })
-    await waitFor(() => expect(window.location.hash).toBe('#work/running/recent/succeeded'))
+    await waitFor(() => expect(window.location.pathname + window.location.search).toBe('/agents/recent?state=succeeded'))
     await act(async () => {})
     expect(listReads, 'the click read the list again; the check would prove nothing').toBe(readsBefore)
     expect(pending).toBe(0)
@@ -402,102 +402,57 @@ describe('CH-22: a cancelled task ends, in the neutral flat bar', () => {
 })
 
 // ===========================================================================
-// CH-21 -- the strip below 900px is two rows
+// CH-21 -- a position means one thing (the strip, then the Sky spine)
 // ===========================================================================
 
-/** Whether nothing on the way up to the rail is `display: none` at `env`. */
-function shownAt(el: Element, env: CascadeEnv): boolean {
-  for (let node: Element | null = el; node !== null; node = node.parentElement) {
-    if (cascade(STYLES, node, 'display', env).winner?.value === 'none') return false
-    if (node.classList.contains('ctl-rail')) return true
-  }
-  return true
-}
-
-describe('CH-21: below 900px the strip is two rows, and a position means one thing', () => {
+describe('CH-21: a position in the navigation means one thing, at every width', () => {
   const ROUTES = SECTIONS.flatMap((s) => s.tabs.map((t) => `#${s.id}/${t.id}`))
 
-  it('holds the same row-1 items, in the same order, on every section route', () => {
-    // Row 1 is the sections and the utility corner. The open section's tabs
-    // used to be inserted INLINE, so every section after it moved.
-    // MUTATION: draw the open section's tabs inside row 1 again.
+  // THE SKY SPINE REPLACED THE TWO-ROW STRIP (rebrand 2026-10-01). The
+  // property CH-21 bought is kept, on the new chrome: a position means one
+  // thing, on every route.
+  it('holds the same spine items, in the same order, on every section route', () => {
     expect(ROUTES.length, 'the sweep is not every section route').toBeGreaterThanOrEqual(15)
     let first: string[] | null = null
     for (const hash of ROUTES) {
-      window.location.hash = hash
+      window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      const main = container.querySelector('.ctl-rail-main')
-      const items = main === null
-        ? []
-        : [...main.querySelectorAll('button')].filter((b) => shownAt(b, PHONE)).map((b) => (b.textContent ?? '').trim())
+      const items = [...container.querySelectorAll('.sk-spine button')].map((b) => (b.textContent ?? '').trim())
       unmount()
-      expect(items.length, `${hash}: row 1 holds fewer than four sections and two utilities`).toBeGreaterThanOrEqual(6)
+      expect(items.length, `${hash}: the spine holds fewer than Submit, four sections and two utilities`).toBe(7)
       if (first === null) first = items
-      expect(items, `${hash}: row 1 is not the row every other route draws`).toEqual(first)
+      expect(items, `${hash}: the spine is not the one every other route draws`).toEqual(first)
     }
   })
 
-  it("draws row 2 only for a section with more than one tab, holding that section's tabs", () => {
-    window.location.hash = '#overview/now'
-    const over = render(<App />)
-    expect(over.container.querySelector('.ctl-rail-sub'), 'Overview has one pane and draws no second row').toBeNull()
-    over.unmount()
-
-    window.location.hash = '#capacity/accounts'
+  it("lists the open section's pages in the panel, and lights the open one", () => {
+    window.history.replaceState(null, '', '/capacity/accounts')
     const { container } = render(<App />)
-    const sub = container.querySelector('.ctl-rail-sub')
-    expect(sub, 'no second row for Capacity').not.toBeNull()
-    expect(sub!.getAttribute('role')).toBe('tablist')
-    const tabs = [...sub!.querySelectorAll('[role="tab"]')].map((b) => (b.firstChild?.textContent ?? '').trim())
-    const capacity = SECTIONS.find((s) => s.id === 'capacity')!
-    expect(tabs).toEqual(capacity.tabs.map((t) => t.label))
-    expect(sub!.querySelector('[aria-selected="true"]')?.firstChild?.textContent?.trim()).toBe('Accounts')
+    const on = container.querySelector('.sk-panel .sk-pk.is-on')
+    expect(on?.textContent?.trim()).toBe('Accounts')
+    expect(container.querySelector('.sk-panel .sk-kid.is-on')?.textContent).toBe('Subscription accounts')
   })
 
-  const STRIP =
-    '<nav class="ctl-rail"><div class="ctl-rail-main"><div class="ctl-rail-sections">' +
-    '<div class="ctl-rail-group is-on"><button class="ctl-nav-link is-on">Capacity</button>' +
-    '<div class="ctl-rail-tabs" role="tablist"><button role="tab" aria-selected="true">Pools</button></div></div>' +
-    '</div><div class="ctl-nav-util"><button>API reads</button></div></div>' +
-    '<div class="ctl-rail-tabs ctl-rail-sub" role="tablist"><button role="tab" aria-selected="true">Pools</button>' +
-    '<button role="tab" aria-selected="false">Runtimes</button></div></nav>'
-
-  it('shows the inline tabs above 900px and the second row below it, never both', () => {
-    // MUTATION: drop either `display` rule.
-    const f = fragment(STRIP)
-    const inline = pick(f, '.ctl-rail-group .ctl-rail-tabs')
-    const sub = pick(f, '.ctl-rail-sub')
-    expect(won(pick(f, '.ctl-rail-main'), 'display', WIDE), 'row 1 is not transparent to the desktop column').toBe(
-      'contents',
+  // THE PHONE CASE OF THE SAME PROPERTY. The two-row strip's fragment tests
+  // (inline tabs vs. second row, rule vs. fill, the second row's 44px) went
+  // with the strip. What a phone gets now is the spine's own header and a
+  // drawer holding the SAME spine and panel -- not a second navigation with
+  // its own order. MUTATION: show the spine column at 390 without the drawer
+  // open, hide the phone header, or stop the drawer showing the column.
+  it('puts the same spine and panel in a drawer at phone width, behind the phone header', () => {
+    const f = fragment(
+      '<div class="sk-app"><header class="sk-pbar"></header><div class="sk-side"></div></div>' +
+        '<div class="sk-app has-drawer"><header class="sk-pbar"></header><div class="sk-side"></div></div>',
     )
-    expect(won(sub, 'display', WIDE), 'the second row shows on the desktop rail').toBe('none')
-    expect(won(inline, 'display', PHONE), 'the inline tabs still show in row 1 on a phone').toBe('none')
-    expect(won(sub, 'display', PHONE)).not.toBe('none')
+    const [closed, open] = [...f.querySelectorAll('.sk-side')] as [Element, Element]
+    expect(won(closed, 'display', WIDE), 'the spine column is hidden on the desktop').not.toBe('none')
+    expect(won(pick(f, '.sk-pbar'), 'display', WIDE), 'the phone header shows on the desktop').toBe('none')
+    expect(won(closed, 'display', PHONE), 'the spine column takes the phone width with the drawer shut').toBe('none')
+    expect(won(pick(f, '.sk-pbar'), 'display', PHONE)).toBe('flex')
+    expect(won(open, 'display', PHONE), 'the open drawer does not show the spine column').toBe('flex')
+    expect(won(open, 'position', PHONE), 'the drawer pushes the page instead of covering it').toBe('fixed')
   })
 
-  it('marks a section with a rule and a tab with a fill, so the two levels stop looking alike', () => {
-    // §1.3's "surface step plus a 2px rule", split between the two levels.
-    // MUTATION: the section's fill back below 900px, or a rule on the tab.
-    const f = fragment(STRIP)
-    const section = pick(f, '.ctl-nav-link.is-on')
-    expect(won(section, ['background', 'background-color'], PHONE), 'the selected section keeps a fill').toBe('none')
-    expect(won(section, ['border-bottom-color', 'border-bottom', 'border-color', 'border'], PHONE)).toBe('var(--text)')
-
-    const tab = pick(f, '.ctl-rail-sub [aria-selected="true"]')
-    expect(won(tab, ['background', 'background-color'], PHONE)).toBe('var(--surface-2)')
-    expect(won(tab, 'color', PHONE)).toBe('var(--text)')
-    expect(
-      won(tab, ['border-bottom-color', 'border-bottom', 'border-color', 'border'], PHONE),
-      'the selected tab still draws a rule',
-    ).toBe('transparent')
-    expect(won(pick(f, '.ctl-rail-sub [aria-selected="false"]'), 'color', PHONE)).toBe('var(--text-faint)')
-  })
-
-  it('gives the second row the same 44px target as every tab', () => {
-    const f = fragment(STRIP)
-    const px = Number.parseFloat(won(pick(f, '.ctl-rail-sub button'), 'min-height', PHONE) ?? '')
-    expect(px).toBeGreaterThanOrEqual(44)
-  })
 })
 
 // ===========================================================================

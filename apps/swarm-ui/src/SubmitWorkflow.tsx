@@ -99,7 +99,7 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
 interface StepProblem {
   key: number
   stepId: string
-  kind: 'name' | 'input' | 'required'
+  kind: 'name' | 'runner' | 'input' | 'required'
   message: string
   missing?: string[]
 }
@@ -221,12 +221,17 @@ interface StepDraft {
 /** A name nothing else in the plan is using. The profile is the stem because
  *  it is the one word about a step a reader already knows. */
 function autoId(profile: string, taken: Set<string>): string {
-  const stem = profile.trim() === '' ? 'step' : profile.trim()
+  const stem = idStem(profile)
   for (let i = 1; i < 999; i++) {
     const candidate = `${stem}-${i}`
     if (!taken.has(candidate)) return candidate
   }
   return `${stem}-${taken.size + 1}`
+}
+
+/** The word a generated step id starts with: the runner, or `step` before one is chosen. */
+function idStem(profile: string): string {
+  return profile.trim() === '' ? 'step' : profile.trim()
 }
 
 /** What this step actually waits for, resolved. */
@@ -278,6 +283,11 @@ function planOf(
     if (id === '') { problems.push({ key: s.key, stepId: id, kind: 'name', message: 'this step has no name' }); continue }
     if (seen.has(id)) { problems.push({ key: s.key, stepId: id, kind: 'name', message: 'two steps are called this' }); continue }
     seen.add(id)
+    // NO RUNNER IS PRESELECTED (#118, submit.html decided 2026-10-01), so a
+    // step nobody has given a runner is a problem like any other: the button
+    // stays disabled and the panel names the step. It used to start on the
+    // catalogue's first profile, and one click sent a browser pod with no url.
+    if (s.profile === '') { problems.push({ key: s.key, stepId: id, kind: 'runner', message: 'no runner chosen' }); continue }
     const built = buildInput(s.input)
     if (!built.ok) {
       // Worded as this form's own finding, not as the API's: a refusal
@@ -342,18 +352,19 @@ export function SubmitWorkflowScreen() {
 
 function Form({ sources }: { sources: FormSources }) {
   const byName = new Map<string, RunnerProfile>(sources.profiles)
-  // `?? true` and not `|| true`: an older API omits `available`, and `false ||
-  // true` is true, which would offer a profile we know the API would refuse.
-  const offered = sources.profiles.filter(([, p]) => (p.available ?? true) !== false)
-  // `loadSubmitForm` returns `empty` for a zero-length catalogue, so
-  // `sources.profiles[0]` exists. The fallback is for the case where every
-  // profile in a non-empty catalogue is disabled: the form still has to name a
-  // profile in its first step rather than render a step with no runner.
-  const firstProfile = (offered[0] ?? sources.profiles[0])?.[0] ?? ''
   const [nextKey, setNextKey] = useState(2)
+  // submit.html (decided 2026-10-01): what a failed step does to the rest,
+  // and the workflow's priority -- both schemas.WorkflowCreate fields, sent
+  // only when they differ from the API's own defaults.
+  const [onFailure, setOnFailure] = useState<'fail_workflow' | 'continue'>('fail_workflow')
+  const [priority, setPriority] = useState('0')
+  const priorityN = Number(priority)
+  const priorityOk = priority.trim() !== '' && Number.isInteger(priorityN) && priorityN >= -100 && priorityN <= 100
+  // EVERY STEP STARTS WITH NO RUNNER (#118). `planOf` refuses a step whose
+  // profile is '', so an untouched form cannot be sent.
   const [steps, setSteps] = useState<StepDraft[]>(() => [{
-    key: 1, id: `${firstProfile}-1`, profile: firstProfile, stage: 0,
-    after: null, input: seedFields([], requiredInputKeys(byName.get(firstProfile))), from: {},
+    key: 1, id: autoId('', new Set()), profile: '', stage: 0,
+    after: null, input: [], from: {},
   }])
   const [dispatch, setDispatch] = useState<DispatchDraft>({
     strategy: DEFAULT_STRATEGY,
@@ -375,8 +386,8 @@ function Form({ sources }: { sources: FormSources }) {
   const addStep = (stage: number) => {
     const taken = new Set(steps.map((s) => s.id))
     setSteps([...steps, {
-      key: nextKey, id: autoId(firstProfile, taken), profile: firstProfile, stage,
-      after: null, input: seedFields([], requiredInputKeys(byName.get(firstProfile))), from: {},
+      key: nextKey, id: autoId('', taken), profile: '', stage,
+      after: null, input: [], from: {},
     }])
     setNextKey(nextKey + 1)
   }
@@ -416,6 +427,14 @@ function Form({ sources }: { sources: FormSources }) {
   // that key's field rather than to the step's name (TS-15); a name problem,
   // or input that will not build, goes to the name as before.
   const toProblem = (p: StepProblem) => {
+    // A step with no runner goes to its picker's first runner that can be chosen.
+    if (p.kind === 'runner') {
+      const radio = document.querySelector<HTMLInputElement>(`input[name="runner-profile-${p.key}"]:not(:disabled)`)
+      if (radio !== null) {
+        radio.focus()
+        return
+      }
+    }
     const first = p.missing?.[0]
     if (first !== undefined) {
       const field = steps.find((s) => s.key === p.key)?.input.find((f) => f.name.trim() === first)
@@ -435,6 +454,7 @@ function Form({ sources }: { sources: FormSources }) {
     // invariant, and a disabled attribute is only one way of keeping it.
     const { problems, body } = planOf(steps, byName)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
+    if (!priorityOk) return
     setSub({ kind: 'sending' })
     const repo = dispatch.repositoryUrl.trim()
     void postWorkflow({
@@ -444,6 +464,8 @@ function Form({ sources }: { sources: FormSources }) {
       strategy: dispatch.strategy,
       carrier: dispatch.carrier,
       ...(repo === '' ? {} : { repository_url: repo }),
+      ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
+      ...(priorityN === 0 ? {} : { priority: priorityN }),
     }).then(setSub)
   }
 
@@ -469,8 +491,20 @@ function Form({ sources }: { sources: FormSources }) {
               own disclosure -- and only the last one is the control that
               changes it. So a later stage's header reads `then`, plus how many
               steps run together when there are two or more. */}
+          {/* TOP TO BOTTOM, WITH A DRAWN ARROW BETWEEN STAGES (#118, submit.html
+              decided 2026-10-01). The connector was a stray 2x14px tick; the
+              arrow is an element between two stages, which also ends the
+              `.wfb-stage + .wfb-stage` adjacency that drew the tick. */}
           {stages.map((inStage, i) => (
-            <div className="wfb-stage" key={i}>
+            <Fragment key={i}>
+            {i > 0 && (
+              <div className="sbf-flow" aria-hidden="true">
+                <svg viewBox="0 0 22 26" focusable="false">
+                  <path d="M11 1v20M4 15l7 7 7-7" fill="none" stroke="currentColor" strokeWidth="1.6" />
+                </svg>
+              </div>
+            )}
+            <div className="wfb-stage" data-stage={i}>
               <div className="wfb-stage-h">
                 <span className="wfb-stage-n">{i === 0 ? 'first' : `then`}</span>
                 {i === 0 ? (
@@ -489,14 +523,18 @@ function Form({ sources }: { sources: FormSources }) {
                     removable={steps.length > 1}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
-                <button type="button" className="wfb-add" disabled={atCeiling} onClick={() => addStep(i)}>
-                  add a step here <span className="wfb-add-say">runs alongside</span>
+                {/* A FULL TILE AT THE END OF THE ROW (#118): its words say where
+                    the step goes, so the "runs alongside" sub-line it carried
+                    is the label itself, and nothing wraps into an empty cell. */}
+                <button type="button" className="sbf-addstep" disabled={atCeiling} onClick={() => addStep(i)}>
+                  + Add a step to this stage
                 </button>
               </div>
             </div>
+            </Fragment>
           ))}
           <button type="button" className="wfb-add is-stage" disabled={atCeiling} onClick={() => addStep(stageCount)}>
-            add a stage
+            + Add a stage
           </button>
           {atCeiling && maxSteps !== null && (
             <p className="warn-text">This tenant&apos;s limit is {maxSteps} steps.</p>
@@ -573,7 +611,31 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
-          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked} onClick={send}>
+          <fieldset className="sbf-wf-opts">
+            <legend>If a step fails</legend>
+            <label>
+              <input type="radio" name="on-step-failure" checked={onFailure === 'fail_workflow'} onChange={() => setOnFailure('fail_workflow')} />
+              Fail the workflow <span className="ctl-em">(default: steps not yet started are cancelled)</span>
+            </label>
+            <label>
+              <input type="radio" name="on-step-failure" checked={onFailure === 'continue'} onChange={() => setOnFailure('continue')} />
+              Continue <span className="ctl-em">(steps that do not depend on it still run)</span>
+            </label>
+          </fieldset>
+          <label className="sbf-wf-opts">
+            <span>Priority</span>
+            <input
+              type="number"
+              min={-100}
+              max={100}
+              step={1}
+              value={priority}
+              aria-invalid={!priorityOk}
+              onChange={(e) => setPriority(e.target.value)}
+            />
+            <span className="ctl-em">{priorityOk ? 'an integer from −100 to 100; 0 is the default' : 'must be a whole number from −100 to 100'}</span>
+          </label>
+          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
             {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
           </button>
         </div>
@@ -613,7 +675,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
     ...step, profile,
     // The id follows the profile ONLY while it is still the generated one.
     // A name somebody typed is theirs and survives a profile change.
-    id: /^[a-z0-9-]+-\d+$/.test(step.id) && step.id.startsWith(`${step.profile}-`)
+    id: /^[a-z0-9-]+-\d+$/.test(step.id) && step.id.startsWith(`${idStem(step.profile)}-`)
       ? autoId(profile, new Set(steps.filter((s) => s.key !== step.key).map((s) => s.id)))
       : step.id,
     input: seedFields(step.input, requiredInputKeys(profiles.find(([n]) => n === profile)?.[1])),
@@ -658,8 +720,13 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           sent -- claude-code requires input.prompt as a non-empty string",
           before anything had been sent -- is deleted rather than kept
           agreeing. */}
-      <InputFields profile={step.profile} fields={step.input} required={required}
-        idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
+      {/* A STATE, as on the task form: no runner, so no settings to offer. */}
+      {step.profile === '' ? (
+        <p className="sbf-none">no runner chosen</p>
+      ) : (
+        <InputFields profile={step.profile} fields={step.input} required={required}
+          idPrefix={stepFields(step.key)} onChange={(input) => onChange({ ...step, input })} />
+      )}
 
       {nameProblem !== null && <p className="warn-text" role="alert">{nameProblem}</p>}
       {!built.ok && <p className="warn-text" role="alert">{built.message}</p>}

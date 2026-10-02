@@ -413,8 +413,14 @@ def test_a_picked_step_carries_a_link_to_its_run_and_the_node_itself_navigates_n
 
 def test_the_hash_the_node_builds_is_one_the_router_resolves():
     """The seam, not the string. MUTATION: change the inspector's hash to
-    `#agents/<id>` only, or change `fromHash` to stop accepting `task`; either
+    `#agents/<id>` only, or change `fromAddress` to stop accepting `task`; either
     end alone turns a link into a click that lands on the wrong screen.
+
+    REBRAND (2026-10-01): routes are real paths (`/agents/<tab>/<id>`, paths.ts)
+    and the hash router is gone, but the in-app link still names an ADDRESS
+    (`#work/task/<id>`) which `fromAddress` resolves, and `go()` turns into the
+    path. So three seams are held: the inspector's address, the resolver that
+    accepts it, and the path table that gives it a URL and reads that URL back.
 
     RE-POINTED WITH WF-7: the hash is built by the step inspector's `open
     agent ->` link, since the node became a selection.
@@ -426,7 +432,7 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
     assert hashes, "the inspector builds no hash; this test would check nothing"
     assert hashes[0] == f"{_work_id()}/task/", f"unexpected run-link hash prefix {hashes[0]!r}"
 
-    router = _decl(app, "function fromHash(")
+    router = _decl(app, "function fromAddress(")
     # `head === WORK`, through the CONSTANT. App.tsx declares the id as a
     # literal in SECTIONS (a regex in test_nav_headings_agree.py reads that
     # array and cannot resolve a constant) and compares against the constant
@@ -442,6 +448,20 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
     )
     # And the route with a taskId is what mounts the run panel.
     assert "AgentDetailScreen" in app
+
+    # The address has a URL, and the URL reads back to the same address. Without
+    # this the router could resolve the address while the address bar had no
+    # path for it, which is a link that works in-app and dies on a reload.
+    paths = _src("paths.ts")
+    to_path = _decl(paths, "export function addressToPath(")
+    assert "seg[0] === 'work' && seg[1] === 'task'" in to_path and "`/agents/${agentTab}/" in to_path, (
+        "paths.ts gives `work/task/<id>` no `/agents/<tab>/<id>` path, so the run link has no URL"
+    )
+    from_path = _decl(paths, "export function pathToAddress(")
+    assert "`work/task/${rest.join('/')}`" in from_path, (
+        "paths.ts does not read `/agents/<tab>/<id>` back to `work/task/<id>`, so a reload "
+        "or a pasted run link lands on the wrong screen"
+    )
 
 
 def test_a_step_with_no_task_is_not_a_dead_link():
@@ -490,15 +510,22 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
     for name, files in callers.items():
         assert files, f"{name} is exported from api.ts and no screen calls it"
 
-    agent = _src("AgentDetail.tsx")
-    mount = re.search(r"<RunFiles\b([^>]*)/>", agent)
-    assert mount is not None and re.search(r"\btask=\{task\}", mount.group(1)), (
-        "the panel that calls both loaders is not mounted on the run screen, so the "
+    # REBRAND: the Checkpoints section is its own pane (`CheckpointsPane`), which
+    # draws `RunFiles`; the run screen in App.tsx mounts the pane for the task.
+    # The property is unchanged: the panel is mounted with this task, and the
+    # attempt records reach it.
+    pane = _src("CheckpointsPane.tsx")
+    mount = re.search(r"<RunFiles\b([^>]*)/>", pane)
+    assert mount is not None and re.search(r"\btask=\{read\.task\}", mount.group(1)), (
+        "the panel that calls both loaders is not mounted by the checkpoints pane, so the "
         "node link opens a run that still cannot show logs or checkpoints"
     )
-    assert re.search(r"\battempts=\{run\.attempts\}", mount.group(1)), (
+    assert re.search(r"\battempts=\{read\.attempts\}", mount.group(1)), (
         "the Checkpoints section is mounted without the attempt records, so it "
         "cannot tell a checkpoint written and since reclaimed from a real zero"
+    )
+    assert re.search(r"<CheckpointsPane\s+taskId=\{taskId\}", _src("App.tsx")), (
+        "the run screen does not mount the checkpoints pane for its task"
     )
 
 

@@ -1,5 +1,8 @@
-// THE PRODUCT FRAME: the mark, the wordmark, and the one bar that says where
-// you are and who you are.
+// THE PRODUCT FRAME'S VOCABULARY: the mark, and the environment it is pointed
+// at. Since the rebrand (2026-10-01) the frame that draws them is the Sky
+// spine (Spine.tsx): its panel pill, its phone-header pill and its red bar all
+// come from `classifyEnvironment` and `envTreatment` below. The product header
+// that used to live in this file, with its identity read, is gone.
 //
 // WHY THIS FILE EXISTS. Until now this app had no branding of any kind --
 // `grep -riE "logo|wordmark"` over src/ returned nothing, and index.html
@@ -58,9 +61,7 @@
 // exists to prevent, so it may not be produced by a copy of somebody else's
 // variable.
 
-import { useEffect, useState } from 'react'
-import { loadMe } from './api'
-import { errorHeading, type Result } from './fetch'
+import { useId } from 'react'
 import { Id } from './Shell'
 import type { Me } from './types'
 
@@ -92,71 +93,101 @@ import type { Me } from './types'
  * hardcoded hex in this component, so there is no ground it can fail on that
  * text would not fail on too.
  */
-export const MARK_COMPACT_MAX = 22
+export const MARK_COMPACT_MAX = 24
 
-/** Centre, and the six vertex angles of a pointy-top hexagon. */
-const C = 12
-const ANGLES = [-90, -30, 30, 90, 150, 210] as const
-
-function verts(radius: number): { x: number; y: number }[] {
-  return ANGLES.map((a) => ({
-    x: round2(C + radius * Math.cos((a * Math.PI) / 180)),
-    y: round2(C + radius * Math.sin((a * Math.PI) / 180)),
-  }))
-}
-
-function round2(n: number): number {
-  return Math.round(n * 100) / 100
-}
+/**
+ * THE HIVE, REFINED (rebrand, owner's pick 2026-10-01; brand.html). A 32-unit
+ * grid, a pointy-top hexagon with six vertex agents and a core.
+ *
+ *   FULL (24px and up)    a faint ring (opacity .5, 1.6 stroke), THREE spokes
+ *                         from the core (up, lower right, lower left), six
+ *                         vertex discs and the core.
+ *   COMPACT (below 24px)  the ring and the spokes go and the seven dots grow,
+ *                         because a 1px spoke at 16px is a grey smear. This is
+ *                         the favicon and the phone header's cut.
+ */
+const HEX = [
+  [16, 4],
+  [26.39, 10],
+  [26.39, 22],
+  [16, 28],
+  [5.61, 22],
+  [5.61, 10],
+] as const
+const HEX_COMPACT = [
+  [16, 5.2],
+  [25.35, 10.6],
+  [25.35, 21.4],
+  [16, 26.8],
+  [6.65, 21.4],
+  [6.65, 10.6],
+] as const
+/** The three spokes the full cut draws: to the top, lower-right and lower-left vertex. */
+const SPOKES = [HEX[0], HEX[2], HEX[4]] as const
 
 /** The small-size geometry. index.html's favicon draws these same numbers. */
-export const COMPACT = { ring: 7.6, vertex: 2.4, core: 3.5 } as const
+export const COMPACT = { vertex: 3.3, core: 4.9, centre: 16 } as const
 /** The large-size geometry. */
-const FULL = { ring: 8.6, vertex: 1.9, core: 3 } as const
+const FULL = { vertex: 2.6, core: 4.6 } as const
 
-export function SwarmMark({ size = 28, title }: { size?: number; title?: string }) {
+/**
+ * `paint` is `currentColor` by default, which is how the mark works on both
+ * grounds without a token. `sky` is the spine's cut: a white -> #7dd3fc
+ * gradient on the deep-blue spine (white 11.05:1, #7dd3fc 6.63:1 on #0b3a7a),
+ * the same in both themes because the spine is.
+ */
+export function SwarmMark({
+  size = 28,
+  title,
+  paint = 'current',
+}: {
+  size?: number
+  title?: string
+  paint?: 'current' | 'sky'
+}) {
   const compact = size < MARK_COMPACT_MAX
-  const g = compact ? COMPACT : FULL
-  const points = verts(g.ring)
+  const gid = useId().replace(/:/g, '')
+  const fill = paint === 'sky' ? `url(#hive-${gid})` : 'currentColor'
+  const dots = compact ? HEX_COMPACT : HEX
+  const r = compact ? COMPACT.vertex : FULL.vertex
 
   return (
     <svg
       className="brand-mark"
       width={size}
       height={size}
-      viewBox="0 0 24 24"
+      viewBox="0 0 32 32"
       role={title ? 'img' : 'presentation'}
       aria-label={title}
       aria-hidden={title ? undefined : true}
       focusable="false"
     >
+      {paint === 'sky' && (
+        <defs>
+          <linearGradient id={`hive-${gid}`} x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stopColor="#ffffff" />
+            <stop offset="1" stopColor="#7dd3fc" />
+          </linearGradient>
+        </defs>
+      )}
       {!compact && (
         <>
           <polygon
-            points={points.map((p) => `${p.x},${p.y}`).join(' ')}
+            points={HEX.map(([x, y]) => `${x},${y}`).join(' ')}
             fill="none"
-            stroke="currentColor"
-            strokeWidth={1.1}
-            opacity={0.3}
+            stroke={fill}
+            strokeWidth={1.6}
+            opacity={0.5}
           />
-          {points.map((p) => (
-            <line
-              key={`s${p.x}-${p.y}`}
-              x1={C}
-              y1={C}
-              x2={p.x}
-              y2={p.y}
-              stroke="currentColor"
-              strokeWidth={1}
-              opacity={0.55}
-            />
+          {SPOKES.map(([x, y]) => (
+            <line key={`s${x}-${y}`} x1={16} y1={16} x2={x} y2={y} stroke={fill} strokeWidth={1.3} opacity={0.5} />
           ))}
         </>
       )}
-      {points.map((p) => (
-        <circle key={`v${p.x}-${p.y}`} cx={p.x} cy={p.y} r={g.vertex} fill="currentColor" />
+      {dots.map(([x, y]) => (
+        <circle key={`v${x}-${y}`} cx={x} cy={y} r={r} fill={fill} />
       ))}
-      <circle cx={C} cy={C} r={g.core} fill="currentColor" />
+      <circle cx={16} cy={16} r={compact ? COMPACT.core : FULL.core} fill={fill} />
     </svg>
   )
 }
@@ -268,6 +299,9 @@ export function classifyEnvironment(
  *   nonprod     outlined, flat surface, no bar
  *   local       outlined, DASHED border, no bar
  *
+ * (The bar is the Sky spine's `.sk-prodbar` now; the product header it was
+ * drawn under is gone.)
+ *
  * `bar` is what makes "at a glance and without reading" true: it is 3px tall
  * and 100% wide, so it is visible in peripheral vision and survives being
  * scaled down to a thumbnail.
@@ -361,6 +395,12 @@ export function envTreatment(env: Environment): EnvTreatment {
  * capitals, the hatch and the left rule all stay. Drawn, it is "UNKNOWN"
  * after its `env` key: about 122px, near production's 130, which is what lets
  * the phone header hold one row.
+ *
+ * NOT RENDERED BY THE FRAME SINCE THE REBRAND: the Sky spine draws its own
+ * pill from the same `envTreatment`. The badge and its `.brand-env` rules stay
+ * while tests/unit/control_plane/test_ui_contrast.py measures
+ * `.brand-env.is-unknown > span` by name; re-pointing that gate at the spine's
+ * pill is what lets both go.
  */
 const UNKNOWN_LEAD = 'ENVIRONMENT '
 
@@ -384,227 +424,5 @@ export function EnvironmentBadge({ env }: { env: Environment }) {
           badge's title names it), and never removed from the tree. */}
       {env.kind === 'unknown' && env.host !== '' && <Id>{env.host}</Id>}
     </span>
-  )
-}
-
-// ---------------------------------------------------------------------------
-// The header
-// ---------------------------------------------------------------------------
-
-/**
- * The bar at the top of every screen: mark, wordmark, environment, tenant,
- * signed-in principal.
- *
- * IT OBEYS THE SAME HONESTY RULE AS EVERY OTHER READ. `/v1/tenants/me` can
- * fail, and a header that silently renders an empty tenant slot when it does
- * is this platform's defining bug in the one place every screen shows. So the
- * identity half has three visible states -- reading, read, could-not-read --
- * and never a blank. It does NOT use `Screen`: `Screen` owns a title, a
- * provenance line and a skeleton, and the frame is not a screen.
- *
- * `load` is injected with a default so the states can be driven directly in a
- * test, which is the same shape `Screen` uses for the same reason.
- */
-/**
- * The header's identity read, marked as the FRAME's (CH-2): it is in the dock's
- * tab-wide registry like any read, and it is not the screen's, so the head's
- * "newest read" never shows its age beside a page that is still loading.
- * Module-level, so it is one function for the life of the tab -- a default
- * written inline would be a new `load` every render, and the effect below
- * re-reads whenever `load` changes.
- */
-function loadFrameIdentity(): Promise<Result<Me>> {
-  return loadMe({ frame: true })
-}
-
-export function ProductHeader({
-  load = loadFrameIdentity,
-  declaredEnv = import.meta.env.VITE_SWARM_ENV,
-  host,
-}: {
-  load?: () => Promise<Result<Me>>
-  declaredEnv?: string | undefined
-  host?: string
-} = {}) {
-  const [me, setMe] = useState<Result<Me>>({ status: 'loading', since: Date.now() })
-
-  useEffect(() => {
-    let live = true
-    load().then((next) => {
-      if (live) setMe(next)
-    })
-    return () => {
-      live = false
-    }
-  }, [load])
-
-  // The identity read carries the API's environment too, so the badge needs no
-  // read of its own -- and the badge follows it the moment it lands. Until
-  // then, and whenever it fails, the build and the host answer as before.
-  const env = classifyEnvironment(
-    declaredEnv,
-    host ?? (typeof window === 'undefined' ? '' : window.location.hostname),
-    me.status === 'ok' || me.status === 'stale' ? servedEnvironment(me.data) : null,
-  )
-  const t = envTreatment(env)
-
-  return (
-    <header className={`brand ${t.bar ? 'has-bar' : ''}`} data-env={env.kind}>
-      {t.bar && <div className={`brand-bar ${t.className}`} aria-hidden />}
-      <div className="brand-row">
-        <a className="brand-home" href="#overview/now">
-          {/* 36, not 28: the owner asked for the logo 30% larger and
-              28 x 1.3 is 36.4. Rounded DOWN to a whole pixel because
-              the mark strokes at 1.1 and 1.5 units in a 24-unit
-              viewBox -- a fractional width puts those strokes on half
-              pixels and the hexagon renders soft, which is the one
-              thing a 6-vertex mark at this size cannot afford.
-              36 > MARK_COMPACT_MAX, so the FULL geometry still
-              applies and nothing about the drawing changes but scale. */}
-          <SwarmMark size={36} title="SwarmCloud" />
-          <span className="brand-word">
-            <b>Swarm</b>Cloud
-          </span>
-        </a>
-        <EnvironmentBadge env={env} />
-        <Identity me={me} />
-      </div>
-    </header>
-  )
-}
-
-function Identity({ me }: { me: Result<Me> }) {
-  switch (me.status) {
-    case 'loading':
-      // THE KEY, THEN "reading…" (CH-20), at every width: CH-2's word for a
-      // read in flight. "Reading who you are…" was a sentence in a 52px bar,
-      // and at 390 it was one of the things that wrapped the header onto a
-      // second line.
-      return (
-        <p className="brand-who is-pending" role="status">
-          <span className="brand-k">tenant</span>
-          reading…
-        </p>
-      )
-    case 'ok':
-    case 'stale':
-      return <IdentityFacts me={me.data} />
-    case 'empty':
-      // `/v1/tenants/me` answering with nothing is not a tenant with no name;
-      // it is a read that did not produce one.
-      //
-      // THE SENTENCE BECAME THE SLOT. It used to say, in 16 words, that the
-      // header cannot name your tenant -- in the header, beside the empty
-      // place where the tenant's name goes. The key stays, the value is an em
-      // dash in `--ctl-absent`, and the fact is now an attribute of the slot
-      // rather than a paragraph standing next to it: a paragraph can sit
-      // beside a field it does not describe, and this cannot. The long form is
-      // the accessible name.
-      return (
-        <p
-          className="brand-who is-unread"
-          role="status"
-          aria-label="The identity read returned nothing, so this header cannot say whose tenant you are looking at."
-        >
-          <span className="brand-k">tenant</span>
-          <i className="ctl-em">&mdash;</i>
-          <i className="ctl-mark is-absent">not read</i>
-        </p>
-      )
-    case 'error':
-      // THE KEY AND THE KIT'S `not read` MARK (CH-20); the error heading is
-      // the slot's accessible name and the message its title, rather than a
-      // sentence standing in the bar.
-      return (
-        <p
-          className="brand-who is-unread"
-          role="status"
-          aria-label={`${errorHeading(me.error)} — tenant and sign-in unread`}
-          title={me.error.message}
-        >
-          <span className="brand-k">tenant</span>
-          <i className="ctl-mark is-unread">not read</i>
-        </p>
-      )
-  }
-}
-
-/**
- * THE TENANT ID, AND ITS COPY (CH-20). At 560px and below the id is the one
- * thing in the header row that gives way, and the decision puts its full
- * value "in `title` and in a copy (the AH-11 precedent)". A CSS ellipsis
- * leaves the text intact, but selecting a cut id inside a 52px bar on a phone
- * is not a copy anyone can rely on, so the id is a button that copies all of
- * it.
- *
- * THE CONTROL IS THE ID, NOT A BUTTON BESIDE IT. At 390 the id keeps about
- * 60-70px beside the admin tag; a separate copy button -- at the 44px target
- * §7.2 asks for -- would take most of that, and the id would vanish to make
- * room for the control that copies it. Above 560px, where nothing is cut, it
- * is the same control and copies the same whole id.
- *
- * SAID, NOT SILENT. The outcome goes to a visually hidden status beside it:
- * "tenant id copied", or that the browser refused -- `navigator.clipboard`
- * is undefined outside a secure context, and a write can be denied -- in
- * which case the id's text is still there to select. A copy that claimed to
- * land whatever happened would be the header lying about itself.
- */
-function TenantId({ id }: { id: string }) {
-  const [said, setSaid] = useState('')
-  const copy = () => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clipboard === undefined) {
-      setSaid('copy refused by this browser; select the tenant id instead')
-      return
-    }
-    clipboard.writeText(id).then(
-      () => setSaid('tenant id copied'),
-      () => setSaid('copy refused by this browser; select the tenant id instead'),
-    )
-  }
-  return (
-    <>
-      <button type="button" className="brand-id" title={id} aria-label={`Copy tenant id ${id}`} onClick={copy}>
-        <Id>{id}</Id>
-      </button>
-      <span className="brand-id-said" role="status">
-        {said}
-      </span>
-    </>
-  )
-}
-
-function IdentityFacts({ me }: { me: Me }) {
-  return (
-    <p className="brand-who">
-      <span className="brand-k">tenant</span>
-      {/* NEVER RESTYLED. A tenant id is pasted into `swarm` commands and into
-          GCS prefixes; QuotaDetail.tsx:94-96 states the rule and this is the
-          same rule applied in the frame.
-          THE ONE THING IN THE ROW THAT GIVES WAY at 560px and below (CH-20):
-          it ellipsizes there, whole in its title AND IN A COPY -- the id is
-          its own copy control (`TenantId`). */}
-      <TenantId id={me.tenant.tenant_id} />
-      {/* Not drawn at 560px and below, and still announced. */}
-      {me.tenant.display_name !== null && (
-        <span className="brand-who-name">{me.tenant.display_name}</span>
-      )}
-      {/* ONE UNIT THAT NEVER WRAPS (CH-20), so "admin" cannot fall onto a line
-          of its own above 560px. At 560px and below the principal is not
-          drawn (it stays announced) and the admin tag is. */}
-      <span className="brand-who-me">
-        <span className="brand-who-principal">
-          <span className="brand-k">signed in</span> <Id>{me.principal.email}</Id>
-        </span>
-        {me.principal.is_admin && (
-          <span
-            className="brand-admin"
-            title="You are in an admin group, so the /v1/admin routes will answer for you."
-          >
-            admin
-          </span>
-        )}
-      </span>
-    </p>
   )
 }

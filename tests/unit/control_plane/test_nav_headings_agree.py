@@ -183,12 +183,28 @@ def _heading_of(component: str, imports: dict[str, Path], app: str) -> str:
     # and it is how thirteen of the sixteen screens set their heading. Other
     # `title=` props on this screen are tooltips, so the prop is only read
     # after a `<Screen` tag has been seen.
+    #
+    # A SCREEN MAY RENDER MORE THAN ONE `<Screen>` (2026-10-01): Workflows V2
+    # draws the list at `/workflows` and one workflow's page at
+    # `/workflows/<id>`, whose heading is that workflow's id -- `title={id}`,
+    # a value per object, not the tab's word. The tab opens the list, so a
+    # `<Screen>` titled by a local value (not a literal, not a module
+    # constant) is a detail page and is skipped. At least one `<Screen>` must
+    # still carry a heading this test can read, or it fails below.
     for tag in ("<Screen", "<PageHead"):
-        at = body.find(tag)
-        if at != -1:
-            m = re.search(r'title=(?:"([^"]*)"|(\{[^}]*\}))', body[at:])
+        starts = [m.start() for m in re.finditer(re.escape(tag) + r"\b", body)]
+        for i, at in enumerate(starts):
+            end = starts[i + 1] if i + 1 < len(starts) else len(body)
+            m = re.search(r'title=(?:"([^"]*)"|(\{[^}]*\}))', body[at:end])
             assert m is not None, f"{component} renders {tag}> with no title prop"
-            return _resolve(app, m.group(1) if m.group(1) is not None else m.group(2))
+            if m.group(1) is not None:
+                return m.group(1)
+            ident = re.fullmatch(r"\{\s*([A-Za-z_$][\w$]*)\s*\}", m.group(2))
+            if ident is not None and re.search(rf"^const {re.escape(ident.group(1))} = '", app, re.M) is None:
+                continue  # a per-object title: one item's page, not the tab's
+            return _resolve(app, m.group(2))
+        if starts:
+            raise AssertionError(f"{component} renders {tag}> only with per-object titles; no tab heading to read")
 
     m = re.search(r"<h1>(.*?)</h1>", body, re.S)
     assert m is not None, (
@@ -222,8 +238,13 @@ def _routes() -> list[tuple[str, str, str]]:
     # screen are read from the source exactly like every row above.
     ref = re.search(r"const REFERENCE = '([^']+)'", app)
     assert ref is not None, "REFERENCE is not declared in App.tsx"
-    util = app[app.index('className="ctl-nav-util"') :]
-    label = re.search(r">\s*(\{[^}]*\}|[^<>{}]+?)\s*</button>", util)
+    # The rebrand's utility corner holds TWO buttons (Help, then API reads) in
+    # `className="ctl-nav-util sk-foot"`, so the element is found by its first
+    # class and the button by the `go(REFERENCE)` it calls; a label regex run
+    # from the corner's start would read the Help button's whitespace instead.
+    corner = app[app.index('className="ctl-nav-util') :]
+    util = corner[corner.index("go(REFERENCE)") :]
+    label = re.search(r"/>\s*(\{[^}]*\}|[^<>{}]+?)\s*</button>", util)
     assert label is not None, "could not read the utility button's label"
     rows.append((ref.group(1), _resolve(app, label.group(1)), "ReferenceScreen"))
 

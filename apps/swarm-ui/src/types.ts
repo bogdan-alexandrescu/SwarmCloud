@@ -329,21 +329,73 @@ export function headroomFor(profile: RunnerProfile): Headroom {
  * ceiling: a `resource:` pool an operator set to 0 refuses with the same
  * reason as one at 4 of 4, and so arrives filed under `no_room` -- "waiting
  * is a valid answer" -- above a pool no wait will ever reopen (live,
- * 2026-09-24). A pool only a person writes, capped at zero, is drawn under
- * `needs_action`. A provider pool at zero is NOT moved: its quota state can
+ * 2026-09-24). A pool only a person writes, capped at zero, with no limit
+ * set, or capped below one task's units, is drawn under `needs_action`. A provider pool at zero is NOT moved: its quota state can
  * zero it and a cooldown ends by itself. See `blockerCeiling`.
  */
 export function blockerGroup(
-  blocker: ProfileBlocker,
+  // A served `ProfileBlocker`, a task's `blocked_by` entry, or a pool read as
+  // one (`poolGroup`): the verdict reads the reason, the pool and the limit,
+  // and the served `group` only when one was sent.
+  blocker: { reason: string; pool?: string; limit?: unknown; active?: unknown; group?: unknown },
   groups: Record<string, string[]> | undefined,
+  units: number | null = null,
 ): 'needs_action' | 'no_room' | null {
-  if (blockerCeiling(blocker) === 'set-to-zero') return 'needs_action'
-  if (blocker.group === 'needs_action' || blocker.group === 'no_room') return blocker.group
+  // OWNER DECISION 2026-10-01: a pool with no limit set (`limit-unset`) and a
+  // pool whose limit is above 0 but below the task's units (`below-units`,
+  // needs `units`) are filed under needs_action exactly as a pool set to zero
+  // is: nobody has set a usable ceiling, and no wait will reopen it. A pool an
+  // operator PAUSED is the fourth (`needsAPerson`): the server files
+  // MANUAL_PAUSE there by reason, and a pool read with no served group
+  // (`poolGroup`) has only the ceiling to go on.
+  const ceiling = blockerCeiling(blocker, units)
+  if (needsAPerson(ceiling)) return 'needs_action'
+  // DRIFT (owner decision 2026-10-01): a pool carrying more than its ceiling
+  // (a limit lowered under live work, or a slot never released) is not a wait.
+  // Admission cannot produce it, so a person has to look (`overCeiling`).
+  if (typeof blocker.active === 'number' && typeof blocker.limit === 'number' && blocker.active > blocker.limit) {
+    return 'needs_action'
+  }
+  if (blocker.group === 'needs_action') return 'needs_action'
+  if (blocker.group === 'no_room') return 'no_room'
   if (groups) {
     if (groups.needs_action?.includes(blocker.reason)) return 'needs_action'
     if (groups.no_room?.includes(blocker.reason)) return 'no_room'
   }
   return null
+}
+
+/**
+ * NEEDS ACTION, READ OFF ONE POOL (owner decision 2026-10-01): the Capacity
+ * board's top group. The pool is put to `blockerGroup` as the refusal it
+ * would give -- `MANUAL_PAUSE` when paused, `POOL_LIMIT_UNSET` when no limit
+ * is set, otherwise its ceiling -- so the board and the Agents list file a
+ * pool by one rule: paused, set to zero by a person, no limit set, over its
+ * ceiling (drift: a limit lowered under live work), or below
+ * one task of its class (`units`, the class weight for a `resource:` pool and
+ * null where no one class is known) is `needs_action`. A full pool is not:
+ * waiting is the answer there. A provider pool at zero is not either: its
+ * quota can zero it and a cooldown ends by itself (`blockerCeiling`).
+ */
+export function poolGroup(pool: Pool, units: number | null = null): 'needs_action' | 'no_room' | null {
+  const reason = pool.enabled === false ? 'MANUAL_PAUSE' : pool.effective_limit === null ? POOL_LIMIT_UNSET : ''
+  return blockerGroup({ pool: pool.name, reason, limit: pool.effective_limit, active: pool.active }, undefined, units)
+}
+
+/**
+ * NEEDS ACTION, READ OFF ONE WAITING TASK (owner decision 2026-10-01): the
+ * Agents list's Waiting split. A task needs action when any pool refusing it
+ * is one `blockerGroup` files there (weighed against the task's `units`), or
+ * when its why line already asks a person to act (`whyNeedsAction`: a park
+ * no timer ends, a credential to sign in). Everything else is `no_room`:
+ * waiting is a valid answer.
+ */
+export function taskGroup(task: Task, units: number | null = null): 'needs_action' | 'no_room' {
+  if (whyNeedsAction(task, units)) return 'needs_action'
+  for (const b of task.blocked_by ?? []) {
+    if (blockerGroup(b, undefined, units) === 'needs_action') return 'needs_action'
+  }
+  return 'no_room'
 }
 
 /**

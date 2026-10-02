@@ -567,10 +567,10 @@ describe('Recent can be searched and put failures first (#99)', () => {
   it('never writes the query to the address', async () => {
     const seen: unknown[] = []
     await landRecent({ onList: (l: unknown) => seen.push(l) })
-    const before = window.location.hash
+    const before = window.location.href
     fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), { target: { value: 'lint' } })
     expect(seen).toEqual([])
-    expect(window.location.hash).toBe(before)
+    expect(window.location.href).toBe(before)
   })
 
   it('puts FAILED rows first, then newest first, when asked', async () => {

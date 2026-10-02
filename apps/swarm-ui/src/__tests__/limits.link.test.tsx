@@ -74,7 +74,8 @@ describe('Pool limits keeps the row a link named (#134)', () => {
     await waitFor(() => expect(document.getElementById('limit-tenant:research')).not.toBeNull(), WAIT)
     await waitFor(() => expect(document.querySelectorAll('tr.is-target').length).toBe(1), WAIT)
     expect(document.querySelector('tr.is-target')!.id).toBe('limit-tenant:research')
-    expect(window.location.hash).toBe('#admin/limits?pool=tenant%3Aresearch')
+    // Real routes (rebrand 2026-10-01): the address bar carries the PATH.
+    expect(window.location.pathname + window.location.search).toBe('/admin/limits?pool=tenant%3Aresearch')
   })
 
   it('moves the mark when a second link is followed on the mounted screen', async () => {

@@ -39,6 +39,12 @@ AGENT_STREAM_FILES: dict[str, tuple[str, str, str | None] | None] = {
     "generic": ("command.stdout.log", "command.stderr.log", None),
     "mock": None,
     "browser": None,
+    # #295 (contract requests 33, 35, 36). claude-code-review runs the
+    # claude_code runner, so it writes claude-code's files; merge and
+    # post-verdict are worker actions with no runner child at all.
+    "claude-code-review": ("claude-code.stdout.log", "claude-code.stderr.log", "claude-transcript.json"),
+    "merge": None,
+    "post-verdict": None,
 }
 
 #: The agent's streams, as the log routes name them. `stdout` and `stderr` keep

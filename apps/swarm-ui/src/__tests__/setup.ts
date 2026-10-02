@@ -35,6 +35,10 @@ const forbidden = (): never => {
 beforeEach(() => {
   globalThis.fetch = forbidden as unknown as typeof fetch
   forgetProbes()
+  // REAL ROUTES (rebrand 2026-10-01): the router writes the PATH now, so a
+  // test that opened an agent would otherwise leave the next test's <App />
+  // on that agent. Every test starts at the root, as a fresh tab would.
+  window.history.replaceState(null, '', '/')
 })
 
 afterEach(() => {

@@ -65,7 +65,9 @@ def cli_agent_spec(profile: str) -> Any | None:
     The runner modules are imported inside the function so that importing this
     module -- which the lifecycle does -- does not import every runner.
     """
-    if profile == "claude-code":
+    # claude-code-review (contract request 36) runs the claude_code runner
+    # under its own Job and service account, so its child is the same CLI.
+    if profile in ("claude-code", "claude-code-review"):
         from .claude_code import SPEC as claude_spec
 
         return claude_spec

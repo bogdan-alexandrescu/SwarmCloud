@@ -201,8 +201,60 @@ async function sweep(): Promise<Record<Theme, Report>> {
   return { dark: merge(dark), light: merge(light) }
 }
 
+/**
+ * FINDINGS THE OWNER DECIDED AGAINST, BY NAME. Each entry is one decision,
+ * with its date and its reason, and matches exactly the boxes it was made
+ * about -- never a kind of finding app-wide. The header's advice still holds
+ * everywhere else: fix the CSS or argue the floor in `spaceprobe.ts`.
+ */
+interface Exemption {
+  name: string
+  why: string
+  matches: (f: Finding) => boolean
+}
+
+/** The classes on a finding's box, read back off its signature (`tag.a.b`). */
+function classesOf(f: Finding): string[] {
+  return f.where.split('.').slice(1)
+}
+
+/**
+ * THE APP FRAME: the spine and the panel touch. The picked mock-up
+ * (navigation.html, Variant 2) draws them with no gutter, the panel's own
+ * edge being the only seam, so `.sk-side` lays them out with no gap
+ * (owner decision 2026-10-01). Only that one boundary: any other pair of
+ * surfaces that touch is still a finding.
+ */
+const APP_FRAME: Exemption = {
+  name: 'app frame (spine | panel)',
+  why: 'the picked mock-up draws the spine and the panel touching',
+  matches: (f) => f.kind === 'surfaces-touch' && f.where === 'div.sk-side' && f.side === 'column',
+}
+
+/**
+ * THE NAV CHROME'S HAIRLINES: the mock-up's own border colours. The owner
+ * picked the Navigation mock-up's hairlines -- `--f-ln` (#dde5ee light,
+ * #1d3049 dark; `--sk-ln` here) on the panel edge, the tenant block, the
+ * page-kids rule, the footer rule, the admin tag and the theme switch, and
+ * `--f-acl` (`--sk-acl`) on the environment pill and copy-id -- over the 3:1
+ * divider rule, on 2026-10-01
+ * (https://claude.ai/artifact/PbJhVd2CPmY2EgBz1NTAov). Exactly those
+ * selectors, and only their divider contrast.
+ */
+const NAV_CHROME_HAIRLINE_CLASSES = ['sk-panel', 'sk-tenant', 'sk-kids', 'sk-pfoot', 'sk-adm', 'sk-theme', 'sk-pill', 'sk-cp']
+const NAV_CHROME_HAIRLINES: Exemption = {
+  name: 'nav chrome hairlines',
+  why: "the owner picked the mock-up's hairlines over the 3:1 rule on 2026-10-01",
+  matches: (f) =>
+    f.kind === 'divider-under-floor' && classesOf(f).some((c) => NAV_CHROME_HAIRLINE_CLASSES.includes(c)),
+}
+
+const EXEMPTIONS: readonly Exemption[] = [APP_FRAME, NAV_CHROME_HAIRLINES]
+
 function lines(r: Report): string[] {
-  return r.findings.map((f) => `${f.kind} ${f.where} [${f.side}] ${f.measured} < ${f.floor} — ${f.detail}`)
+  return r.findings
+    .filter((f) => !EXEMPTIONS.some((e) => e.matches(f)))
+    .map((f) => `${f.kind} ${f.where} [${f.side}] ${f.measured} < ${f.floor} — ${f.detail}`)
 }
 
 /**
@@ -258,6 +310,10 @@ describe('spacing', () => {
             `, ${one.unresolved.length} unresolved, ${one.centred.length} centred`,
           ...[...byKind].sort().map(([k, n]) => `  ${k} (${n})`),
           ...lines(one).map((l) => `    ${l}`),
+          ...one.findings.flatMap((f) => {
+            const e = EXEMPTIONS.find((x) => x.matches(f))
+            return e === undefined ? [] : [`    exempt (${e.name}: ${e.why}) ${f.kind} ${f.where} [${f.side}]`]
+          }),
           ...one.unresolved.map((u) => `    unresolved ${u.what} = ${u.value}`),
         ].join('\n'),
       )

@@ -288,6 +288,17 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   codex: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
+  // claude-code's runner under its own Job (contract request 36, #295).
+  'claude-code-review': [
+    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
+  ],
+  // The two worker actions (contract requests 33 and 35, #295) start no
+  // runner and take `input: {}`, so they are offered nothing. Listed, empty,
+  // so check-contract-parity.sh sees every catalogue profile here.
+  merge: [
+  ],
+  'post-verdict': [
+  ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
   // exception to it: the caller picks a name, the platform owns the argv.
@@ -704,18 +715,61 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
           </div>
         )
       })}
-      <div className="sbf-add">
-        {unused.map((s) => (
-          <button type="button" key={s.name} className="sbf-offer" onClick={() => add(s)}>
-            <span className="mono">{s.name}</span>
-            <span className="sbf-offer-note">{s.note}</span>
+      <AddSetting idPrefix={idPrefix} offers={unused} onAdd={add}
+        onOwn={() => onChange([...fields, field({ own: true })])} />
+    </div>
+  )
+}
+
+/**
+ * ONE "+ Add setting ▾" BUTTON, AND THE KEYS BEHIND IT (#119, submit.html
+ * decided 2026-10-01). The offers were borderless `--surface-2` tiles with a
+ * note under each key -- no verb, no glyph, the same fill as the info box
+ * above them -- and a first-time reader took them for reference cards. Now
+ * there is one control that says what it does, and opening it lists the keys
+ * this runner reads, each with the runner's own note, then a setting of your
+ * own. The same control on the task form and on every workflow step.
+ *
+ * A DISCLOSURE, NOT AN ARIA MENU. `role="menu"` promises arrow-key roving and
+ * typeahead; a list of ordinary buttons behind `aria-expanded` promises only
+ * what it does, and Tab reaches every key. Escape closes it and returns focus
+ * to the button. Drawn in flow, not floated: inside a 370px workflow step a
+ * popover would clip or cover the step below.
+ */
+function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
+  idPrefix: string
+  offers: Suggestion[]
+  onAdd: (s: Suggestion) => void
+  onOwn: () => void
+}) {
+  const [open, setOpen] = useState(false)
+  const listId = `${idPrefix}-add-setting`
+  const buttonId = `${listId}-button`
+  const close = () => {
+    setOpen(false)
+    document.getElementById(buttonId)?.focus()
+  }
+  return (
+    <div className="sbf-addset">
+      <button type="button" id={buttonId} className="sbf-addset-btn" aria-expanded={open}
+        aria-controls={listId} onClick={() => setOpen(!open)}>
+        + Add setting <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div id={listId} className="sbf-addset-list" role="group" aria-label="settings to add"
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); close() } }}>
+          {offers.map((s) => (
+            <button type="button" key={s.name} className="sbf-addset-item" onClick={() => { onAdd(s); setOpen(false) }}>
+              <span className="mono">{s.name}</span>
+              <em>{s.note}</em>
+            </button>
+          ))}
+          <button type="button" className="sbf-addset-item is-own" onClick={() => { onOwn(); setOpen(false) }}>
+            <span>a setting of your own</span>
+            <em>any key: text, number, yes / no, list</em>
           </button>
-        ))}
-        <button type="button" className="sbf-offer is-own" onClick={() => onChange([...fields, field({ own: true })])}>
-          <span>a setting of your own</span>
-          <span className="sbf-offer-note">any key, any of the four kinds</span>
-        </button>
-      </div>
+        </div>
+      )}
     </div>
   )
 }
@@ -766,6 +820,9 @@ export function repositorySlug(url: string): string {
 }
 
 function Form({ capacity }: { capacity: Capacity }) {
+  // EMPTY, AND IT STAYS EMPTY UNTIL SOMEBODY PICKS (#118/#119, submit.html
+  // decided 2026-10-01). No runner is preselected: `blocked` below holds the
+  // button while this is '', so an untouched form cannot send anything.
   const [chosen, setChosen] = useState('')
   const [fields, setFields] = useState<InputField[]>([])
   // Seeded with the API's own defaults, so a caller who touches nothing sends
@@ -806,6 +863,12 @@ function Form({ capacity }: { capacity: Capacity }) {
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
+    // The button is disabled with no runner; this holds the same rule for any
+    // other way a form can be submitted, so nothing is posted without a name.
+    if (chosen === '') {
+      setOutcome({ kind: 'refused', fields: { runner_profile: 'Not sent — no runner chosen.' }, unattributed: null })
+      return
+    }
     if (!built.ok) {
       // Labelled "not sent": a refusal phrased like the API's sends someone
       // looking at the platform for a typo that is in this form.

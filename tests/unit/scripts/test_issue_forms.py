@@ -56,6 +56,8 @@ CONFIG = TEMPLATES / "config.yml"
 LABELS = REPO / ".github" / "labels.yml"
 CONTRACT = REPO / "CONTRACT.md"
 HELP_TS = SRC / "help.ts"
+#: The router's address -> path table (real routes since the 2026-10-01 rebrand).
+PATHS_TS = SRC / "paths.ts"
 
 #: The forms CLAUDE.md's "Issues" section sends people to. Named here so that a
 #: form deleted or renamed fails loudly: the parametrised cases below iterate
@@ -79,7 +81,7 @@ LABEL_DESCRIPTION_MAX = 100
 #: How a web-UI option is spelled: `Web UI · <what the reader saw>`, then the
 #: route in parentheses when the thing has one of its own.
 UI = "Web UI · "
-ROUTE_SUFFIX = re.compile(r" \(#([\w/-]+)\)$")
+ROUTE_SUFFIX = re.compile(r" \((/[\w/-]*)\)$")
 #: Every other surface ends by saying where its code lives: `(apps/scheduler)`.
 PATH_SUFFIX = re.compile(r" \(([^()]+)\)$")
 NOT_SURE = "Not sure"
@@ -376,21 +378,34 @@ def test_every_label_the_form_applies_is_declared(path: Path) -> None:
 # "Where did you see it" follows the nav
 
 
+def _paths() -> dict[str, str]:
+    """paths.ts `FIXED`: router address -> the path the address bar shows."""
+    src = _read(PATHS_TS)
+    block = src[src.index("const FIXED") : src.index("const FIXED_BACK")]
+    out = dict(re.findall(r"^\s*'?([\w/-]+)'?: '(/[\w/-]*)',$", block, re.M))
+    m = re.search(r"\[HELP_ROUTE\]: '(/[\w/-]*)'", block)
+    assert m is not None, "paths.ts FIXED has no Help path"
+    out[_const(_read(HELP_TS), "HELP_ROUTE")] = m.group(1)
+    assert len(out) >= 16, f"paths.ts FIXED parsed to {len(out)} entries"
+    return out
+
+
 def _nav_options() -> dict[str, str]:
-    """Every route the rail and its two utility buttons reach -> the option a form must carry."""
+    """Every page the spine and panel reach -> the option a form must carry, with its PATH."""
     app = _read(APP_TSX)
+    paths = _paths()
     out: dict[str, str] = {}
     for sid, slabel, tabs in _sections(app):
         for tid, tlabel in tabs:
             # A one-tab section draws no tab strip (Rail renders one only when
             # tabs.length > 1), so its reader sees the section's name and nothing else.
             name = slabel if len(tabs) == 1 else f"{slabel} › {tlabel}"
-            out[f"{sid}/{tid}"] = f"{UI}{name} (#{sid}/{tid})"
+            out[paths[f"{sid}/{tid}"]] = f"{UI}{name} ({paths[f'{sid}/{tid}']})"
 
     # The two utility buttons beside the sections. Read from the same constants
     # the router and the button use.
     ref = _const(app, "REFERENCE")
-    out[ref] = f"{UI}{_const(app, 'REFERENCE_LABEL')} (#{ref})"
+    out[paths[ref]] = f"{UI}{_const(app, 'REFERENCE_LABEL')} ({paths[ref]})"
     help_route = _const(_read(HELP_TS), "HELP_ROUTE")
     # The Help screen's name is what the head's crumb prints for it. Anchored on
     # the crumb's own `??` fallback: the same `at.sectionId === HELP ? '...'`
@@ -398,7 +413,7 @@ def _nav_options() -> dict[str, str]:
     # reads the name as "is-on".
     m = re.search(r"\?\? \(at\.sectionId === HELP \? '([^']+)'", app)
     assert m is not None, "could not read the name the head prints for the Help screen"
-    out[help_route] = f"{UI}{m.group(1)} (#{help_route})"
+    out[paths[help_route]] = f"{UI}{m.group(1)} ({paths[help_route]})"
     return out
 
 

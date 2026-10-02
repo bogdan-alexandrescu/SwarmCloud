@@ -84,11 +84,12 @@ export function Dock() {
   // the scroller at any offset and there is no reservation left to keep in
   // step. See `App.tsx`'s frame comment and design-system §3.4.
   //
-  // THE PROPERTY SURVIVES BECAUSE TWO STICKY COLUMNS STILL NEED IT. `.ctl-rail`
-  // and the inspector size themselves against the SCROLLPORT -- the viewport
-  // minus this row -- and neither can express that in CSS without knowing this
-  // height. Dragging the dock taller shortens both, which is correct and is
-  // the whole reason it is measured rather than assumed.
+  // THE PROPERTY SURVIVES BECAUSE A STICKY COLUMN STILL NEEDS IT. The
+  // inspector sizes itself against the SCROLLPORT -- the viewport minus this
+  // row -- and cannot express that in CSS without knowing this height.
+  // Dragging the dock taller shortens it, which is correct and is the whole
+  // reason it is measured rather than assumed. (The rail was the second
+  // reader; it went with the Sky spine, rebrand 2026-10-01.)
   //
   // IT IS THE MEASURED BOX, NOT `open ? height : DOCK_COLLAPSED`. That
   // arithmetic is what the dock INTENDS to be, and it was wrong in two states

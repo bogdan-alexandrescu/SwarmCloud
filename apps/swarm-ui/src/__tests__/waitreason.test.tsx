@@ -30,15 +30,12 @@
 import { describe, expect, it } from 'vitest'
 import { render } from '@testing-library/react'
 
-import { BlockerList } from '../Blockers'
+import { CeilingTag, ceilingFigure } from '../Blockers'
 import {
-  headroomFor,
   whyAgent,
   whyNotRunning,
   type BlockedEntry,
-  type ProfileAdmission,
   type ProfileBlocker,
-  type RunnerProfile,
 } from '../types'
 import { task } from './runfixture'
 
@@ -125,67 +122,47 @@ describe('the one-line wait reason on a READY task', () => {
 })
 
 // ---------------------------------------------------------------------------
-// The same pool on the profile-headroom list (Blockers.tsx)
+// The same pool on a blocker row (Blockers.tsx `CeilingTag`, `ceilingFigure`)
 // ---------------------------------------------------------------------------
+//
+// RE-POINTED 2026-10-01. These read the Profile headroom card's grouped list,
+// which was removed with the per-profile cards. The row Submit's right-now box
+// draws is the surviving surface for a refusing pool, built from the same two
+// exports, so the claims are read off them: a pool at zero is never `full`, a
+// drained pool prints no sentinel, a provider pool at zero names nobody.
 
 function blocker(over: Partial<ProfileBlocker>): ProfileBlocker {
   return { pool: 'resource:browser', reason: 'RESOURCE_CLASS_LIMIT', limit: 4, active: 4, group: 'no_room', ...over }
 }
 
-function admission(over: Partial<ProfileAdmission>): ProfileAdmission {
-  return {
-    units: 2, headroom: 0, basis: 'measured', blockers: [], binding: [],
-    counterfactual: [], complete: true, unread: [], uncapped: [], ...over,
-  }
+/** The row as Submit draws it: the tag, then the figure. */
+function renderRow(b: ProfileBlocker): HTMLElement {
+  return render(
+    <span>
+      <CeilingTag blocker={b} />
+      {ceilingFigure(b)}
+    </span>,
+  ).container as HTMLElement
 }
 
-function profile(a: ProfileAdmission): RunnerProfile {
-  return { resource_class: 'browser', backend: 'cloudrun', provider: null, units: 2, pools: ['resource:browser'], admission: a }
+function tagOf(el: HTMLElement): string {
+  const t = el.querySelector('.tag')!
+  const tone = [...t.classList].filter((k) => k !== 'tag').join(' ')
+  return `${(t.textContent ?? '').trim()}|${tone}`
 }
 
-function renderBlockers(b: ProfileBlocker): HTMLElement {
-  const h = headroomFor(profile(admission({ blockers: [b], binding: [b.pool] })))
-  return render(<BlockerList h={h} groups={undefined} />).container as HTMLElement
-}
-
-/**
- * The words the list's marks say, under `scope`.
- *
- * #159 RE-POINT. These tests read the list's `.tag.full` / `.tag.paused`. The
- * list is back on the Profile headroom card, and CP-12 (#85) left no `.tag` in
- * that card: each refusal is drawn in the card's own marks, Pools' vocabulary
- * -- `.ctl-chip.is-paused` paused, `limit 0` in the paused tone when a person
- * set it and the bad tone when quota zeroed it, `.ctl-chip.is-warn` full. The
- * claims below did not move; only the element they are read off did.
- */
-function marksIn(el: HTMLElement, scope = ''): string[] {
-  return [...el.querySelectorAll(`${scope} .ctl-chip`)].map((c) => {
-    const tone = [...c.classList].find((k) => k.startsWith('is-')) ?? '(none)'
-    return `${(c.textContent ?? '').trim()}|${tone}`
-  })
-}
-
-describe('the profile-headroom list draws the same pool the same way', () => {
-  /**
-   * The server files every `*_LIMIT` reason under `no_room` ("waiting is a
-   * valid answer"), because the grouping is by reason and the reason cannot
-   * see the ceiling. For a pool capped at zero waiting clears nothing, so a
-   * row drawn there would sit under a heading that contradicts it.
-   */
-  it('files a pool an operator capped at zero under "somebody has to act", not as full', () => {
-    const el = renderBlockers(blocker({ limit: 0, active: 0 }))
-    const acting = el.querySelector('.blocker-group.needs-action')
-    expect(acting, 'a zero-limit pool was filed where waiting is the answer').not.toBeNull()
-    expect(acting!.textContent).toMatch(/limit 0/)
-    expect(el.querySelector('.blocker-group.no-room')).toBeNull()
-    expect(marksIn(el), 'a pool capped at zero is not full').toEqual(['limit 0|is-paused'])
+describe('a blocker row draws the same pool the same way', () => {
+  it('tags a pool an operator capped at zero `limit 0`, not full', () => {
+    const el = renderRow(blocker({ limit: 0, active: 0 }))
+    expect(tagOf(el), 'a pool capped at zero is not full').toBe('limit 0|paused')
+    expect(el.textContent).toMatch(/limit 0/)
     expect(el.textContent).not.toMatch(/busy platform-wide/)
   })
 
-  it('keeps a genuinely full pool under "eligible, no room", tagged full', () => {
-    const el = renderBlockers(blocker({}))
-    expect(marksIn(el, '.blocker-group.no-room')).toEqual(['full|is-warn'])
-    expect(el.querySelector('.blocker-group.needs-action')).toBeNull()
+  it('keeps a genuinely full pool tagged full, with its fraction', () => {
+    const el = renderRow(blocker({}))
+    expect(tagOf(el)).toBe('full|full')
+    expect(el.textContent).toMatch(/4 of 4 units in use/)
   })
 
   /**
@@ -194,27 +171,19 @@ describe('the profile-headroom list draws the same pool the same way', () => {
    * MUTATION: print `active of limit` for a paused row again.
    */
   it('prints no sentinel ceiling beside a drained pool', () => {
-    const el = renderBlockers(
-      blocker({ reason: 'MANUAL_PAUSE', limit: 1_000_000, active: 0, group: 'needs_action' }),
-    )
-    expect(marksIn(el, '.blocker-group.needs-action')).toEqual(['paused|is-paused'])
+    const el = renderRow(blocker({ reason: 'MANUAL_PAUSE', limit: 1_000_000, active: 0, group: 'needs_action' }))
+    expect(tagOf(el)).toBe('paused|paused')
     expect(el.textContent).not.toMatch(/1000000|1,000,000/)
   })
 
   /**
-   * A provider pool at zero may be its quota state rather than a person, and
-   * a cooldown ends by itself -- so the server's grouping stands, and the row
-   * says `limit 0` rather than `full` or anybody's name. MUTATION: file every
-   * zero under "somebody has to act", or tag it `full`.
+   * A provider pool at zero may be its quota state rather than a person, so
+   * the row says `limit 0` in the capped tone rather than `full` or anybody's
+   * name. MUTATION: tag it `full`, or in the operator's paused tone.
    */
-  it('leaves a provider pool at zero where the server filed it, tagged limit 0 and not full', () => {
-    const el = renderBlockers(
-      blocker({ pool: 'provider:anthropic', reason: 'PROVIDER_CONCURRENCY_LIMIT', limit: 0, active: 0 }),
-    )
-    const room = el.querySelector('.blocker-group.no-room')
-    expect(room, 'a provider pool at zero was refiled').not.toBeNull()
-    expect(room!.textContent).toMatch(/limit 0/)
-    expect(marksIn(el), 'a provider pool at zero is drawn full, or in a person’s tone').toEqual(['limit 0|is-bad'])
+  it('tags a provider pool at zero limit 0 and not full, and names no operator', () => {
+    const el = renderRow(blocker({ pool: 'provider:anthropic', reason: 'PROVIDER_CONCURRENCY_LIMIT', limit: 0, active: 0 }))
+    expect(tagOf(el), 'a provider pool at zero is drawn full, or in a person’s tone').toBe('limit 0|capped')
     expect(el.textContent).not.toMatch(/operator/i)
   })
 })

@@ -13,7 +13,7 @@
 // "none" are the API's: `no model call`, `not assigned yet`, `not read`.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 
 import type { Result } from '../fetch'
@@ -432,15 +432,13 @@ describe('a workflow’s start, derived from its steps', () => {
     expect(workflowStartText(wf(steps), partial, NOW).title).toMatch(/some were not/)
   })
 
-  function Card({ workflow, byId, expanded }: { workflow: Workflow; byId: Map<string, Task> | null; expanded: boolean }) {
+  function Card({ workflow, byId }: { workflow: Workflow; byId: Map<string, Task> | null }) {
     const [stages, setStages] = useState<Record<string, boolean>>({})
     return (
       <WorkflowCard
         workflow={workflow}
         taskById={byId}
-        expanded={expanded}
         usage={{ kind: 'ready', usage: null }}
-        onToggle={() => {}}
         openStages={stages}
         onToggleStage={(key, was) => setStages((s) => ({ ...s, [key]: !was }))}
         reload={() => {}}
@@ -448,27 +446,27 @@ describe('a workflow’s start, derived from its steps', () => {
     )
   }
 
-  it('prints the derived start and the submit time on the board row and in the open card', () => {
+  // The board's row is gone with the rebrand (2026-10-01); the open card's
+  // `.wf-times` facts are where the derived start and the submit are stated.
+  it('prints the derived start and the submit time in the open card', () => {
     const byId = new Map([
       ['task_wa', mk('task_wa', 'SUCCEEDED', { started_at: iso(50) })],
       ['task_wb', mk('task_wb', 'RUNNING', { started_at: iso(70) })],
       ['task_wc', mk('task_wc', 'READY', { started_at: null })],
     ])
-    const { container } = render(<Card workflow={wf(steps)} byId={byId} expanded />)
-    const row = container.querySelector('.wf-bar') as HTMLElement
-    expect(row.querySelector('.wf-started-at')?.textContent).toBe(clockTime(iso(70))!.text)
-    expect(row.querySelector('.wf-started-sub')?.textContent).toBe(`sub ${clockTime(iso(100))!.text}`)
+    const { container } = render(<Card workflow={wf(steps)} byId={byId} />)
     const times = container.querySelector('.wf-times') as HTMLElement
     expect(fact(times, 'started')?.textContent).toContain(clockTime(iso(70))!.text)
     expect(fact(times, 'submitted')?.textContent).toContain(clockTime(iso(100))!.text)
   })
 
-  it('prints never started on a row whose steps all ended without starting', () => {
+  it('prints never started in the open card when every step ended without starting', () => {
     const byId = new Map(
       ['task_wa', 'task_wb', 'task_wc'].map((id) => [id, mk(id, 'CANCELLED', { started_at: null })] as const),
     )
-    const { container } = render(<Card workflow={wf(steps)} byId={byId} expanded={false} />)
-    expect(container.querySelector('.wf-started-at')?.textContent).toBe('never started')
-    expect(screen.getByText(`sub ${clockTime(iso(100))!.text}`)).toBeTruthy()
+    const { container } = render(<Card workflow={wf(steps)} byId={byId} />)
+    const times = container.querySelector('.wf-times') as HTMLElement
+    expect(fact(times, 'started')?.textContent).toContain('never started')
+    expect(fact(times, 'submitted')?.textContent).toContain(clockTime(iso(100))!.text)
   })
 })

@@ -1,3 +1,4 @@
+import { MarkGlyph, STATE_MARK } from './marks'
 import { useCallback, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -24,7 +25,7 @@ import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
-import { RunFiles, useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
+import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
 import { StopRun } from './StopRun'
@@ -64,6 +65,7 @@ import {
   type Task,
   type TaskEvent,
   type TaskInputCopy,
+  type TaskState,
   type Tone,
 } from './types'
 
@@ -276,9 +278,9 @@ export function Run({
     reading === undefined || TERMINAL_STATES.has(task.state)
       ? clock
       : rowClock(clock, reading.fetchedAt, reading.pollMs ?? DRAWER_POLL_MS)
-  // ONE LISTING, TWO READERS (#103). The Checkpoints tile says how many of
-  // the checkpoints written are still in the bucket, and the Checkpoints
-  // section lists them: both from this one answer, so they cannot disagree.
+  // ONE LISTING, FOR THE TILE (#103). The Checkpoints tile says how many of
+  // the checkpoints written are still in the bucket. The Checkpoints TAB
+  // lists them (`CheckpointsPane`); Details no longer draws that panel.
   const listing = useCheckpointListing(task, run.attempts, reading?.fetchedAt ?? null)
 
   return (
@@ -310,15 +312,13 @@ export function Run({
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
       <Output run={run} readAt={reading?.fetchedAt ?? null} />
-      {/* The checkpoint READ ROUTE, which no screen had ever called. It is a
-          separate component because it is a separate read with its own
-          failure states: a failed checkpoint listing must not blank this page,
-          and it must not render as "this task has no checkpoints" either. See
-          RunFiles.tsx. The attempt records go with it: they are what can say a
-          checkpoint was written that the listing no longer finds, which is not
-          a real zero. The runner's log was drawn here too, and lives in
-          Artifacts › Logs only now (#184, owner decision of 2026-09-25). */}
-      <RunFiles task={task} attempts={run.attempts} readAt={reading?.fetchedAt ?? null} now={now} listing={listing} />
+      {/* NO CHECKPOINT PANEL HERE ANY MORE (agents.html V1, decided
+          2026-10-01). The checkpoint listing, the reclaimed-or-zero finding
+          and the browser that opens one are the agent's Checkpoints tab
+          (`CheckpointsPane`, which draws `RunFiles`); a second copy here was a
+          drawer inside a drawer. `listing` above is still read, once, for the
+          Checkpoints tile's "N written · M in bucket" (#103). The runner's log
+          lives in Artifacts › Logs only (#184, owner decision of 2026-09-25). */}
       <Input run={run} readAt={reading?.fetchedAt ?? null} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
     </div>
@@ -373,12 +373,28 @@ export type ChipTone = Tone | 'unknown' | 'info' | 'paused'
  * for one. Agents draws it forty times a screen; AttemptTimeline draws the
  * attempt outcome with it; this file draws the run's own state.
  */
-export function Chip({ tone, children }: { tone: ChipTone; children: ReactNode }) {
+export function Chip({ tone, state, children }: { tone: ChipTone; state?: TaskState; children: ReactNode }) {
+  // A TASK STATE draws the brand mark (marks.tsx, rebrand 2026-10-01): one
+  // shape and one hue per state, the half disc, the haloed disc, the pause
+  // bars, the ring and so on. Any other chip keeps the tone's mark.
+  const brand = state === undefined ? null : STATE_MARK[state]
   return (
-    <span className={`ctl-chip is-${chipTone(tone)}`}>
+    <span
+      className={`ctl-chip is-${chipTone(tone)}`}
+      data-mark={brand?.mark}
+      data-hue={brand?.hue}
+    >
       {/* Decoration only. The word beside it carries the meaning, because a
           colour-only chip fails in a greyscale incident screenshot. */}
-      <i aria-hidden />
+      {brand === null ? (
+        <i aria-hidden />
+      ) : (
+        <i aria-hidden>
+          <svg viewBox="0 0 12 12" focusable="false">
+            <MarkGlyph mark={brand.mark} />
+          </svg>
+        </i>
+      )}
       {children}
     </span>
   )
@@ -626,7 +642,7 @@ function Headline({
             state
             <HelpCard topic="capacity" />
           </b>
-          <Chip tone={stateTone(task.state)}>{task.state}</Chip>
+          <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
         </span>
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
             drawn after the chip's key (AH-24, above).
@@ -958,7 +974,7 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
                     say={
                       bucketCut
                         ? `The attempt records name ${ckpts} checkpoints written. The listing was cut before its end, so ${bucket.total_found} in the bucket is only what it reached.`
-                        : `The attempt records name ${ckpts} checkpoints written and the listing, read to its end, finds ${bucket.total_found} in the bucket. The Checkpoints section below names each one the bucket no longer holds.`
+                        : `The attempt records name ${ckpts} checkpoints written and the listing, read to its end, finds ${bucket.total_found} in the bucket. The Checkpoints tab lists what the bucket holds.`
                     }
                   />
                 </>
@@ -1477,7 +1493,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
         />
       ))}
 
-      {/* THE RESTORE POINTER HAS ONE HOME (#102): the Checkpoints section's
+      {/* THE RESTORE POINTER HAS ONE HOME (#102): the Checkpoints tab's
           `restore` fact, which reads the pointer against the listing -- what
           is actually in the bucket -- rather than against the attempt cards,
           which no longer list checkpoints one by one. */}
@@ -2538,8 +2554,8 @@ function AttemptCheckpoints({ a, run }: { a: AttemptRow; run: AgentRun }) {
                   kind={eventsRead ? 'partial' : 'unread'}
                   say={
                     eventsRead
-                      ? "A checkpoint's location is recorded on its event, and this checkpoint's event is not on this page, so its location is unknown here. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns. The Checkpoints section lists what the bucket holds."
-                      : 'The event read failed, so no checkpoint of this attempt has a location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine. The Checkpoints section lists what the bucket holds.'
+                      ? "A checkpoint's location is recorded on its event, and this checkpoint's event is not on this page, so its location is unknown here. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns. The Checkpoints tab lists what the bucket holds."
+                      : 'The event read failed, so no checkpoint of this attempt has a location attached. It is unknown rather than missing, and nothing here says whether the checkpoint itself is fine. The Checkpoints tab lists what the bucket holds.'
                   }
                 />
               </>

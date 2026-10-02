@@ -277,6 +277,12 @@ def _theme_palette(rules: list[Rule], light: bool) -> dict[str, str]:
     for at_rules, selector, decls in rules:
         if not selector.startswith(":root"):
             continue
+        if "[data-theme" in selector and "not(" not in selector:
+            # The theme toggle's forced-light copy (`:root[data-theme='light']`,
+            # outside any media query). It repeats the media block's values, which
+            # test_ui_contrast.py holds identical, so reading it here as a base
+            # `:root` would paint the DARK palette light.
+            continue
         in_light_media = "prefers-color-scheme: light" in at_rules
         if in_light_media and not light:
             continue
@@ -1618,18 +1624,24 @@ def test_the_fill_scan_reads_what_it_claims_to(sheet_scan, fill_scan):
         "the scan found no element naming `ctl-util-fill` in any .tsx: it "
         "read nothing, so the guard above proved nothing"
     )
-    meters = [s for s in fill_scan.sites if "wf-meter-fill" in s.certain]
+    # RE-POINTED 2026-10-01. The fill the 2026-09-24 decision was about, the
+    # Workflows row's `ctl-util-fill wf-meter-fill`, was removed with the
+    # board's row (owner's decision, 2026-10-01). The shared `UtilTrack`
+    # primitive is the fill every remaining proportion bar is drawn by, so it
+    # is the one the scan must find, with the parent it really has.
+    meters = [s for s in fill_scan.sites
+              if "ctl-util-fill" in s.certain and s.where.startswith("apps/swarm-ui/src/primitives.tsx")]
     found = "\n  ".join(
         f"{s.where} <{s.tag} {' '.join(sorted(s.certain))}> in "
         f"<{s.parent.tag} {' '.join(sorted(s.parent.classes))}>"
         for s in fill_scan.sites)
     assert meters, (
-        "the Workflows meter's fill (`ctl-util-fill wf-meter-fill`), the one "
-        "the 2026-09-24 decision is about, was not found. Fills found:\n  " + found
+        "the shared UtilTrack fill (`ctl-util-fill` in primitives.tsx), the "
+        "one every proportion bar is drawn by, was not found. Fills found:\n  " + found
     )
-    assert all({"ctl-track", "wf-meter"} <= s.parent.classes for s in meters), (
-        "the Workflows meter's fill was found but its parent was not read as "
-        "`.ctl-track.wf-meter`, so a rule reaching it through the parent would "
+    assert all("ctl-util-track" in s.parent.classes for s in meters), (
+        "the UtilTrack fill was found but its parent was not read as "
+        "`.ctl-util-track`, so a rule reaching it through the parent would "
         "be missed. Fills found:\n  " + found
     )
 
@@ -1689,6 +1701,8 @@ def _theme_tokens(sheets, light: bool) -> dict[str, str]:
             for at_rules, selector, decls in rules_:
                 if not selector.startswith(":root"):
                     continue
+                if "[data-theme" in selector and "not(" not in selector:
+                    continue  # the forced-light copy; see `_theme_palette`
                 in_light = "prefers-color-scheme: light" in at_rules
                 if in_light != light_pass or (at_rules and not in_light):
                     continue

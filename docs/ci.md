@@ -1217,6 +1217,13 @@ fixer does nothing before it has merged.
 
 ## A ready pull request is merged by GitHub, not by a session
 
+**Status, measured 2026-10-01: the merge App is not yet configured**, so
+`auto-merge.yml` refuses every `ready` label ("The merge App is not
+configured") and `ready` pull requests merge only while an operator runs the
+merge watcher. Everything below describes the mechanism once the owner has
+followed [the merge App runbook](runbooks/merge-app.md). Remove this note when
+`vars.MERGE_APP_ID` and `secrets.MERGE_APP_PRIVATE_KEY` exist.
+
 Owner decision, 2026-09-28 (#262): **adding the `ready` label enables GitHub's
 native auto-merge**, and GitHub performs the squash merge once the base
 branch's required checks pass at the pull request's head. It used to take a
@@ -1297,7 +1304,7 @@ holds all of that and runs the gate against a fake `gh`.
 These are repository settings. A workflow cannot apply them and no lane
 should; they are here so that applying them is copying three commands.
 
-**1. The merge App.** Create a GitHub App (Settings → Developer settings →
+**1. The merge App** (step by step: [runbook](runbooks/merge-app.md)). Create a GitHub App (Settings → Developer settings →
 GitHub Apps) with no webhook and exactly three repository permissions,
 **Contents: Read and write**, **Pull requests: Read and write** and
 **Workflows: Read and write**; install it on this repository only.
