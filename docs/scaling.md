@@ -118,7 +118,83 @@ Mitigations, in order of preference:
    writes across documents naturally as tenants are added.
 3. **If `global` genuinely saturates**, shard it (`global:0..N`, assigned by
    hash) — a change to the frozen `pool_names_for()`, so raise it as a contract
-   change rather than editing.
+   change rather than editing. "Genuinely" is defined below, and it is a
+   measurement, not an estimate.
+
+### Is `global` saturated? Measure it
+
+Spec §8 row 6 asks the question and says to measure before designing the
+sharding. Two instruments exist:
+
+* **In production, every admission logs its contention.**
+  `SchedulerStore.acquire_lease` writes one record per admission with
+  `admission_outcome` (`leased` / `denied` / `aborted` / `error`),
+  `admission_runs`, `admission_reruns` and `admission_latency_ms`. A re-run is
+  Firestore aborting the commit because a pool it read changed, and
+  `firestore.transactional` running the body again. Leases, re-runs and
+  failures log at INFO or above. A first-run denial is DEBUG, because a full
+  pool denies every READY task on every pass and that is not contention. To
+  read it:
+
+  ```
+  resource.labels.service_name="swarm-scheduler"
+  jsonPayload.logger="scheduler.store"
+  jsonPayload.admission_reruns>0
+  ```
+
+  The same numbers are Prometheus series on the scheduler's `/metrics`:
+  `swarm_scheduler_admission_seconds{outcome}` (a histogram with a bucket at
+  0.225 s, rule 2's line) and `swarm_scheduler_admission_reruns_total{outcome}`.
+* **Before production finds out, the bench.** `scripts/bench-contention.sh`
+  drives the same `acquire_lease`, and so the frozen admission, at 100, 200
+  and 400 offered admissions per minute against a dedicated `swarm-bench`
+  database, and prints p50/p95/p99 latency, re-runs and aborts with n
+  ([benchmarks.md](benchmarks.md#contention--the-admission-transaction-under-offered-load-s32)).
+
+**Saturated** means any of these, at a rate the platform must sustain:
+
+1. **any admission aborted.** Firestore exhausted its retries and
+   `firestore.transactional` raised. `Scheduler._admit_one` catches only
+   `AdmissionDenied` around `acquire_lease`, so the exception ends the whole
+   drain, not just that task. Nothing was reserved, which is the "nothing"
+   half of all-or-nothing, but every READY task behind it waits for the next
+   wake;
+2. **p95 admission latency above 225 ms.** That is `MAX_RUN_SECONDS` 45 s ÷
+   `MAX_LEASES_PER_RUN` 200: above it, a drain spends its time budget on
+   admission before it reaches its lease budget, before any dispatch work is
+   counted;
+3. **p95 latency at 400/min more than twice the 100/min row.** Latency that
+   rises with offered rate is contention. Latency flat across rates is distance
+   to Firestore, and sharding does not touch distance.
+
+The re-run columns say *why* a row crossed a line. They are not a threshold
+of their own.
+
+**Result: not yet measured (2026-10-02).** The harness and the log field
+exist. The bench database is defined in Terraform
+(`terraform/modules/firestore/bench.tf`, dev only) and is created by the next
+dev apply; until then nothing has been measured. No sharding change is drafted, because the
+rule above has not been applied to a number. When it has, record the table
+here with its date, environment and n.
+
+### If the numbers show saturation: what a sharding request must keep
+
+Any contract change request for sharding `global` must keep invariant 2 as it
+stands. **Every pool, every shard included, is reserved inside the ONE
+admission transaction, or none is.** A design that reserves shard-by-shard
+and rolls back on failure is not equivalent. The rollback is a second
+transaction, and v1 produced a permanent capacity leak from exactly that shape
+(spec §7.1, `docs/BUILD_PROMPT_V2.md:692-697`). The request must also answer
+two questions:
+
+* **How is a shard's limit set?** Splitting a limit L into N shards of L/N
+  denies a task whose shard is full while another shard has room, which caps
+  the platform below L. The request must say how much below, and why that is
+  acceptable.
+* **Which shard does a task take?** A hash of the task id keeps the read set
+  at one shard. Reading every shard to choose one restores the contention the
+  sharding exists to remove, because each of those reads conflicts with
+  another admitter's write.
 
 Reads are cheap by construction: `status.sh` uses server-side aggregation
 queries, so counting a hundred thousand tasks is one request and zero document

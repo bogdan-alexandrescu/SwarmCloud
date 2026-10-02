@@ -135,6 +135,29 @@ class SchedulerMetrics:
             "1 when an admin has paused dispatch.",
             registry=self.registry,
         )
+        #: The admission transaction under contention (S32, spec §8 row 6).
+        #: `SchedulerStore.acquire_lease` reports every admission here as well
+        #: as in its `admission_*` log fields. `outcome` is leased / denied /
+        #: aborted / error; any `aborted` is saturation by docs/scaling.md §5.
+        self.admission_seconds = Histogram(
+            "swarm_scheduler_admission_seconds",
+            "Wall time of the whole admission transaction, re-runs included, by outcome.",
+            ["outcome"],
+            registry=self.registry,
+            buckets=(0.01, 0.025, 0.05, 0.1, 0.225, 0.5, 1, 2.5, 5),
+        )
+        self.admission_reruns = Counter(
+            "swarm_scheduler_admission_reruns_total",
+            "Times Firestore made the admission transaction body run again: the "
+            "contention signal. Zero on an uncontended platform.",
+            ["outcome"],
+            registry=self.registry,
+        )
+
+    def observe_admission(self, outcome: str, runs: int, latency_ms: float) -> None:
+        self.admission_seconds.labels(outcome=outcome).observe(latency_ms / 1000.0)
+        if runs > 1:
+            self.admission_reruns.labels(outcome=outcome).inc(runs - 1)
 
     def render(self) -> tuple[bytes, str]:
         return generate_latest(self.registry), CONTENT_TYPE_LATEST

@@ -63,6 +63,11 @@ gke_master_authorized_cidrs = [
 firestore_database      = "swarm"
 artifact_retention_days = 14
 
+# The disposable database scripts/bench-contention.sh runs the real admission
+# against (S32). Dev only: it holds nothing but bench documents, and the
+# harness refuses every other name. Prod leaves it unset and gets none.
+firestore_bench_database = "swarm-bench"
+
 # --- images ----------------------------------------------------------------
 # No image is named here. Every image is deployed by digest through
 # `image_refs`, which scripts/lib/image-refs.sh writes from the promotion
