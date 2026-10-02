@@ -8791,18 +8791,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   background: var(--surface);
   padding: var(--ctl-s3);
 }
-/* The connector is a BACKGROUND, not a border: it is a mark of flow between
-   two panels, and §13.3 gives the border budget to the panel itself. */
-/* `--ctl-s5`, not 24px (TS-21): the nearest step, and a break between two
-   stages is the one large break this form has. The connector is centred in
-   whatever the gap is -- `top` is minus half of (gap + its own 14px) -- so it
-   moves with the margin: 24px put it at -19, 28px puts it at -21. */
-.wfb-stage + .wfb-stage { position: relative; margin-top: var(--ctl-s5); }
-.wfb-stage + .wfb-stage::before {
-  content: ''; position: absolute; left: 24px; top: -21px;
-  width: 2px; height: 14px; border-radius: 2px;
-  background: var(--line-soft);
-}
+/* No `.wfb-stage + .wfb-stage` rule (#118). Stages are separated by the
+   `.sbf-flow` arrow drawn between them, under the Submit rules below; the
+   2x14px tick that rule used to draw is what the arrow replaced. */
 .wfb-stage-h { display: flex; align-items: baseline; gap: var(--ctl-s2); flex-wrap: wrap; margin-bottom: var(--ctl-s2); }
 .wfb-stage-n { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text); }
 .wfb-stage-say { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
