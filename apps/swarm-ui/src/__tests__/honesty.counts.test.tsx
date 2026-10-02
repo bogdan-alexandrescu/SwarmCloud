@@ -67,7 +67,7 @@ function stats(over: Partial<Stats> = {}): Stats {
 async function run(result: Result<Stats>) {
   loadStats.mockResolvedValue(result)
   render(<PlatformCountsScreen />)
-  screen.getByRole('button', { name: 'Run the count' }).click()
+  screen.getByRole('button', { name: /^Run the count · / }).click()
   await waitFor(() => expect(loadStats).toHaveBeenCalled())
   return result
 }
@@ -371,7 +371,8 @@ describe('the states that can never be written', () => {
  *
  * It is Screen's head now, through the one `PageHead`, and its line reads like
  * every other screen's: what was read, how long ago, and the read-now control
- * -- with the cost printed immediately before the control that spends it.
+ * -- with the cost printed ON the control that spends it (#138, which moved
+ * it from immediately before the control onto it).
  */
 describe('the page head (AH-25)', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
@@ -388,37 +389,36 @@ describe('the page head (AH-25)', () => {
     expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts')
     expect(document.querySelector('.ctl-page-head'), 'a head of its own shape').toBeNull()
     expect(document.querySelector('.ctl-toolbar'), 'the cost is still a row away from the control').toBeNull()
-    await waitFor(() => expect(line().textContent).toBe(`not counted yet · ${PER_SCOPE} count() per run · Run the count`))
+    await waitFor(() => expect(line().textContent).toBe(`not counted yet · Run the count · ${PER_SCOPE} count()`))
   })
 
-  it('prints the cost immediately before the control, in one element the line cannot split', async () => {
+  it('prints the cost on the control that spends it (#138), so the two cannot split', async () => {
     render(<PlatformCountsScreen />)
-    const button = screen.getByRole('button', { name: 'Run the count' })
+    const button = screen.getByRole('button', { name: /^Run the count · / })
     const cost = document.querySelector('p.sub .counts-cost')
     expect(cost, 'the cost is not in the head line').not.toBeNull()
     expect(button.closest('p.sub'), 'the control is not in the head line').not.toBeNull()
-    expect(button.parentElement, 'the cost and the control can wrap apart').toBe(cost!.parentElement)
-    expect(button.previousElementSibling, 'something sits between the cost and the control').toBe(cost)
+    expect(cost!.closest('button'), 'the cost is beside the control, not on it').toBe(button)
     // The read-now control is `.sub button`, as Screen's `refresh` is.
     expect(button.className).not.toContain('retry')
   })
 
   it('after a run: how many, how old, the cost, and the control again', async () => {
     await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
-    await screen.findByRole('button', { name: 'Run it again' })
-    expect(line().textContent).toMatch(new RegExp(`^1 run · read .+ · ${PER_SCOPE} count\\(\\) per run · Run it again$`))
+    await screen.findByRole('button', { name: /^Run it again · / })
+    expect(line().textContent).toMatch(new RegExp(`^1 run · read .+ · Run it again · ${PER_SCOPE} count\\(\\)$`))
   })
 
   it('after a failed run: says so, and still prices the next press', async () => {
     await run({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } })
-    await screen.findByRole('button', { name: 'Run it again' })
-    expect(line().textContent).toBe(`last run failed · ${PER_SCOPE} count() per run · Run it again`)
+    await screen.findByRole('button', { name: /^Run it again · / })
+    expect(line().textContent).toBe(`last run failed · Run it again · ${PER_SCOPE} count()`)
   })
 
   it('while counting: the control says so and cannot be pressed twice', async () => {
     loadStats.mockReturnValue(new Promise<Result<Stats>>(() => {}))
     render(<PlatformCountsScreen />)
-    screen.getByRole('button', { name: 'Run the count' }).click()
+    screen.getByRole('button', { name: /^Run the count · / }).click()
     const busy = await screen.findByRole('button', { name: 'Counting…' })
     expect((busy as HTMLButtonElement).disabled).toBe(true)
     expect(busy.closest('p.sub')).not.toBeNull()
@@ -439,9 +439,9 @@ describe('the cost shown before the first run', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
 
   /**
-   * The cost, where AH-25 put it: the element in the head line immediately
-   * before the control that spends it. It was a `per run` fact in a toolbar a
-   * row below the control.
+   * The cost, where #138 put it: on the control in the head line that spends
+   * it. AH-25 had moved it there from a `per run` fact in a toolbar a row
+   * below the control, to immediately before the control.
    */
   function perRun(): string {
     const cost = document.querySelector('.head + p.sub .counts-cost')

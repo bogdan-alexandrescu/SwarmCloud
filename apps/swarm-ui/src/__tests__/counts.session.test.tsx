@@ -57,7 +57,7 @@ describe('Platform counts keeps the last run for the session (#135)', () => {
     const at = new Date(Date.now() - 5 * 60_000).toISOString()
     loadStats.mockResolvedValue(stats(at))
     const first = render(<Screen />)
-    fireEvent.click(screen.getByRole('button', { name: 'Run the count' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Run the count · / }))
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     first.unmount()
 
@@ -68,28 +68,28 @@ describe('Platform counts keeps the last run for the session (#135)', () => {
     expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0)
     // Its age, and the press that refreshes it.
     expect(document.body.textContent).toMatch(/1 run · read 5m ago/)
-    expect(screen.getByRole('button', { name: 'Run it again' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Run it again · / })).toBeTruthy()
   })
 
   it('starts at not run in a session that has not run a count', async () => {
     const Screen = await fresh()
     render(<Screen />)
     expect(document.querySelectorAll('.counts-notrun')).toHaveLength(2)
-    expect(screen.getByRole('button', { name: 'Run the count' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /^Run the count · / })).toBeTruthy()
   })
 
   it('keeps the last good run when a later one fails, and says the later one failed', async () => {
     const Screen = await fresh()
     loadStats.mockResolvedValueOnce(stats(new Date().toISOString()))
     const first = render(<Screen />)
-    fireEvent.click(screen.getByRole('button', { name: 'Run the count' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Run the count · / }))
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     loadStats.mockResolvedValueOnce({
       status: 'error',
       fetchedAt: Date.now(),
       error: { kind: 'network', message: 'offline' },
     } as unknown as Result<Stats>)
-    fireEvent.click(screen.getByRole('button', { name: 'Run it again' }))
+    fireEvent.click(screen.getByRole('button', { name: /^Run it again · / }))
     await waitFor(() => expect(document.body.textContent).toMatch(/last run failed/))
     first.unmount()
 

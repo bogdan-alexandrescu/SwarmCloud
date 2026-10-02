@@ -1373,8 +1373,48 @@ body {
    not a divider, and it moves no content. `aria-current` is the hook because
    it is also what a screen reader is told (App.tsx / Agents.tsx set it). */
 .row[aria-current]:not([aria-current='false']) {
-  background: var(--surface-2);
+  background-color: var(--surface-2);
   box-shadow: inset 2px 0 0 var(--text);
+}
+
+/* A FAILED RUN IS A ROW FORM, NOT ONLY A MARK (#96). In the light theme
+   --bad #681117 and --warn #6e4a00 on a 10px mark sit close to the #1f2328
+   ink beside them (the tonal trade-off the token block records), so a failed
+   row differed from its cancelled neighbours by one small glyph -- and not at
+   all in a greyscale screenshot. The run list now takes §6.7's row form, the
+   one `.ctl-table` rows and the dock's read cells already draw:
+
+     bad    a 3px full-height rule down the leading edge  FAILED, DEAD_LETTERED
+     warn   the same rule at half height                  a row whose reason
+                                                          needs action
+                                                          (`.why.is-warn`)
+
+   The hook is what the row already carries -- the state chip's `data-hue`
+   (marks.tsx `STATE_MARK`) and the reason's `is-warn` -- so no list has to
+   remember to set a class. The text stays in ink and the tokens stay as they
+   are: the rule is a second channel, in FORM. A background image rather than
+   a border, so it moves no content; the bad rule is declared after the warn
+   one at equal weight, so a failed row with an urgent reason is drawn as
+   failed. */
+.row:has(.why.is-warn),
+.row:has(> .ctl-chip[data-hue='bad']) {
+  background-repeat: no-repeat;
+  background-position: left center;
+}
+.row:has(.why.is-warn) {
+  background-image: linear-gradient(var(--warn), var(--warn));
+  background-size: 3px 46%;
+}
+.row:has(> .ctl-chip[data-hue='bad']) {
+  background-image: linear-gradient(var(--bad), var(--bad));
+  background-size: 3px 100%;
+}
+/* THE SELECTION RULE DOES NOT CHANGE. The open row keeps its --surface-2 step
+   and its 2px ink rule; the tone rule steps in beside it rather than under
+   it, so an open failed row still says both things. */
+.row[aria-current]:not([aria-current='false']):has(.why.is-warn),
+.row[aria-current]:not([aria-current='false']):has(> .ctl-chip[data-hue='bad']) {
+  background-position: 2px center;
 }
 
 /* THE RUN LIST'S HEAD ROW (AG-16). `1/3`, `1u` and the elapsed time had no
@@ -3572,7 +3612,10 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    it. §5.1: grouping is a surface step, separation is a hairline -- prefer the
    step. It is also hueless, which §1.3 asks of every control state that is not
    focus. */
-.row.clickable:hover { background: var(--surface-2); }
+/* `background-color`, not the shorthand: the shorthand resets
+   `background-image` too, and that image is the failed or warn row's §6.7
+   rule (#96), which hovering would otherwise erase. */
+.row.clickable:hover { background-color: var(--surface-2); }
 /* `outline-offset: -2px`, not `2px`. A positive offset draws the focus ring
    OUTSIDE the row, over the rows above and below it, now that there is no gap
    between them; inset, it traces the row it belongs to. */
@@ -10969,17 +11012,33 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    that is a sentence plus its verb keeps the verb next to the sentence, so the
    track list stops at the content and "justify-content: start" holds the row
    there rather than stretching it to the region's width. */
+/* THE ATTENTION ROWS TAKE THE TABLE ROW'S RULE (#96), so a red item stands
+   out in the light theme and in greyscale rather than by its 7-10px mark
+   alone: a full-height --bad rule, a half-height --warn one -- §6.7's two
+   forms, the same edge `.row` and `.ctl-table` rows draw. Every problem is
+   inset by the rule's room, so the marks still line up down the list. */
 .ov-problem {
   display: grid;
   grid-template-columns: 8px minmax(0, auto) max-content;
   justify-content: start;
   gap: var(--ctl-s3);
   align-items: baseline;
+  padding-left: var(--ctl-s3);
+  background-repeat: no-repeat;
+  background-position: left center;
   font-size: var(--t-body);
   line-height: var(--lh-body);
   color: var(--text-dim);
 }
 .ov-problem > b { color: var(--text); font-weight: 500; min-width: 0; }
+.ov-problem:has(> .ctl-dot.is-warn) {
+  background-image: linear-gradient(var(--warn), var(--warn));
+  background-size: 3px 46%;
+}
+.ov-problem:has(> .ctl-dot.is-bad) {
+  background-image: linear-gradient(var(--bad), var(--bad));
+  background-size: 3px 100%;
+}
 
 /* The problems that did not fit. A disclosure rather than a link out, because
    there is no board to link to. */
@@ -11945,6 +12004,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* --- the phone: a 44px header in the spine's colour, a drawer ----------- */
 .sk-pbar { display: none; }
+/* The phone's `Top` control (#139); above 760px the spine never scrolls away. */
+.sk-top { display: none; }
 .sk-scrim { position: fixed; inset: 0; background: rgba(6, 16, 30, .5); z-index: 25; }
 @media (max-width: 759px) {
   .sk-app { flex-direction: column; }
@@ -11960,6 +12021,34 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .sk-app.has-drawer .sk-panel { flex: 1; width: auto; }
   .sk-app.has-drawer .sk-collapse { display: none; }
   .sk-flyout { display: none; }
+  /* THE HEADER GIVES BACK ITS HEIGHT ON SCROLL (#139): 36px once the page is
+     under it (`scrollBand` in Spine.tsx). The menu, the mark, the page, the
+     tenant and the environment all stay; only the padding goes, so §6.15's
+     25% chrome budget is spent on the dock and not on an empty band. */
+  .sk-app.is-scrolled .sk-pbar { height: 36px; }
+  /* `Top`, at the foot of the scrollport, on a page more than a screen long.
+     Sticky inside the page rather than fixed to the viewport, so it sits
+     above the dock (a row of the frame) instead of under it. 44px tall: a
+     touch target. */
+  .sk-top {
+    display: flex;
+    align-items: center;
+    gap: var(--ctl-s1);
+    position: sticky;
+    bottom: var(--ctl-s3);
+    z-index: 14;
+    width: max-content;
+    min-height: 44px;
+    margin: var(--ctl-s3) var(--ctl-s3) var(--ctl-s3) auto;
+    padding: 0 var(--ctl-s3);
+    border: 1px solid var(--line);
+    border-radius: var(--ctl-radius-pill);
+    background: var(--surface);
+    color: var(--text);
+    font: var(--t-meta)/var(--lh-meta) var(--font);
+    cursor: pointer;
+    box-shadow: var(--sk-sh);
+  }
 }
 
 /* --- the Submit chooser (/submit) ---------------------------------------- */
