@@ -36,14 +36,24 @@
 //      only inside the scroller's window (rows.ts), so 50,000 lines is two
 //      spacers and a hundred-odd rows.
 //
+// FIND IS ACROSS THE WHOLE PATCH (find.ts). The box above the lines searches
+// every file, counts `n of N`, and next / previous switch the open file when
+// the match lives in another one; the matches in the drawn rows are marked.
+// Marking does not change the text: a mark wraps characters the patch already
+// holds, still as React text nodes.
+//
 // Keys, while focus is anywhere inside the viewer except a text field:
-// n / p next and previous file, j / k next and previous hunk, / the path
-// filter. Each one handled calls preventDefault: the Sky shell's global N
-// opens Submit otherwise (Spine.tsx).
+// n / p next and previous file, j / k next and previous hunk, / find in the
+// diff. In the find box, Enter and Shift+Enter are the next and previous
+// match and Escape clears it. Each one handled calls preventDefault: the Sky
+// shell's global N opens Submit otherwise (Spine.tsx). Escape that clears a
+// non-empty find or path filter also stops there, because the agent drawer
+// this view sits in closes on any Escape that reaches it.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react'
 
+import { findMatches, firstMatchFrom, hitSegments, hitsInFile, type FindMatch, type LineHit } from './find'
 import { parseUnifiedDiff, type DiffFile, type DiffLine } from './parse'
 import {
   barCells,
@@ -56,6 +66,7 @@ import {
   rowAt,
   rowHeight,
   rowOffsets,
+  ROW_H,
   splitFile,
   widestLine,
   type ContextState,
@@ -238,6 +249,7 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   const rootRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLInputElement>(null)
+  const findRef = useRef<HTMLInputElement>(null)
   const alive = useRef(true)
 
   const [preferred, setPreferred] = useState<ViewMode>(rememberedViewMode)
@@ -251,6 +263,11 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   // `groupByDirectory`), so opening at 0 is opening at the top of the list.
   const [selected, setSelected] = useState(0)
   const [viewed, setViewed] = useState<ReadonlySet<number>>(() => new Set([0]))
+  // Find: the query, its matches across the whole patch, which one is current,
+  // and the match still to be scrolled to once its file's rows are built.
+  const [found, setFound] = useState<{ query: string; matches: FindMatch[] }>({ query: '', matches: [] })
+  const [current, setCurrent] = useState(-1)
+  const [reveal, setReveal] = useState<FindMatch | null>(null)
 
   const narrow = width < SPLIT_MIN_WIDTH
   const mode: ViewMode = narrow ? 'unified' : preferred
@@ -350,6 +367,44 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     }
   }
 
+  const goToMatch = (matches: readonly FindMatch[], i: number): void => {
+    const m = matches[i]
+    setCurrent(m === undefined ? -1 : i)
+    if (m === undefined) return
+    if (m.file !== selected) open(m.file)
+    setReveal(m)
+  }
+
+  const search = (query: string): void => {
+    const matches = findMatches(files, everyFile, query)
+    setFound({ query, matches })
+    goToMatch(matches, firstMatchFrom(matches, everyFile, selected))
+  }
+
+  const stepMatch = (dir: 1 | -1): void => {
+    const n = found.matches.length
+    if (n === 0) return
+    goToMatch(found.matches, current === -1 ? 0 : (current + dir + n) % n)
+  }
+
+  // The current match's row, once the rows of its file exist: scrolled into
+  // the window if it is not already in it, a third of the way down.
+  useEffect(() => {
+    if (reveal === null || reveal.file !== selected) return
+    const i = rows.findIndex((r) =>
+      r.t === 'line'
+        ? r.hunk === reveal.hunk && r.line === reveal.line
+        : r.t === 'pair' && r.hunk === reveal.hunk && (r.left === reveal.line || r.right === reveal.line),
+    )
+    setReveal(null)
+    if (i === -1) return
+    const top = offsets[i]!
+    const view = scrollRef.current?.clientHeight || viewport
+    if (top < scrollTop || top + ROW_H > scrollTop + view) scrollTo(top - Math.floor(view / 3))
+  }, [reveal, selected, rows, offsets, scrollTop, viewport, scrollTo])
+
+  const hits = useMemo(() => hitsInFile(found.matches, selected), [found.matches, selected])
+
   const choose = (m: ViewMode): void => {
     setPreferred(m)
     rememberViewMode(m)
@@ -379,9 +434,10 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         jumpHunk(-1)
         break
       case '/':
-        if (!filterRef.current) return
+        if (!findRef.current) return
         e.preventDefault()
-        filterRef.current.focus()
+        findRef.current.focus()
+        findRef.current.select()
         break
       default:
         return
@@ -425,6 +481,8 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         context={context}
         canExpand={getFile !== undefined}
         onExpandGap={expandGap}
+        hits={hits}
+        current={current}
       />,
     )
   }
@@ -461,8 +519,7 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
               type="search"
               className="diff-filter"
               aria-label="Filter files by path"
-              aria-keyshortcuts="/"
-              placeholder="filter paths  /"
+              placeholder="filter paths"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
               onKeyDown={(e) => {
@@ -470,8 +527,12 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
                   e.preventDefault()
                   const first = listOrder(groups)[0]
                   if (first !== undefined) open(first)
-                } else if (e.key === 'Escape') {
+                } else if (e.key === 'Escape' && filter !== '') {
+                  // Clearing a non-empty filter consumes Escape: the agent
+                  // drawer around this view closes on any Escape that reaches
+                  // it. An empty box lets Escape through so the drawer still closes.
                   e.preventDefault()
+                  e.stopPropagation()
                   setFilter('')
                 }
               }}
@@ -496,22 +557,68 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
           </nav>
         )}
 
-        <div
-          ref={scrollRef}
-          className="diff-scroll"
-          role="region"
-          aria-label="Diff lines"
-          aria-keyshortcuts="n p j k /"
-          tabIndex={0}
-          data-total-rows={rows.length}
-          data-open-file={files[selected]!.path}
-          onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
-          style={{ ['--diff-ch' as string]: String(widest) } as CSSProperties}
-        >
-          <div className="diff-rows" data-mode={mode}>
-            <div aria-hidden="true" style={{ height: offsets[start] ?? 0 }} />
-            {drawn}
-            <div aria-hidden="true" style={{ height: total - (offsets[end] ?? total) }} />
+        <div className="diff-main">
+          <div className="diff-find" role="search" aria-label="Find">
+            <input
+              ref={findRef}
+              type="search"
+              className="diff-filter diff-find-box"
+              aria-label="Find in diff"
+              aria-keyshortcuts="/"
+              placeholder="find in diff  /"
+              value={found.query}
+              onChange={(e) => search(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  stepMatch(e.shiftKey ? -1 : 1)
+                } else if (e.key === 'Escape' && found.query !== '') {
+                  // As the path filter: clearing consumes Escape, an empty box passes it on.
+                  e.preventDefault()
+                  e.stopPropagation()
+                  search('')
+                }
+              }}
+            />
+            <span className="diff-find-count" data-testid="diff-find-count" aria-live="polite">
+              {found.query === '' ? '' : found.matches.length === 0 ? 'no matches' : `${current + 1} of ${found.matches.length}`}
+            </span>
+            <button
+              type="button"
+              className="diff-btn"
+              aria-label="Previous match"
+              disabled={found.matches.length === 0}
+              onClick={() => stepMatch(-1)}
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              className="diff-btn"
+              aria-label="Next match"
+              disabled={found.matches.length === 0}
+              onClick={() => stepMatch(1)}
+            >
+              ›
+            </button>
+          </div>
+          <div
+            ref={scrollRef}
+            className="diff-scroll"
+            role="region"
+            aria-label="Diff lines"
+            aria-keyshortcuts="n p j k /"
+            tabIndex={0}
+            data-total-rows={rows.length}
+            data-open-file={files[selected]!.path}
+            onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+            style={{ ['--diff-ch' as string]: String(widest) } as CSSProperties}
+          >
+            <div className="diff-rows" data-mode={mode}>
+              <div aria-hidden="true" style={{ height: offsets[start] ?? 0 }} />
+              {drawn}
+              <div aria-hidden="true" style={{ height: total - (offsets[end] ?? total) }} />
+            </div>
           </div>
         </div>
       </div>
@@ -647,9 +754,13 @@ interface RowProps {
   context: ReadonlyMap<number, ContextState>
   canExpand: boolean
   onExpandGap: (file: number, gap: number) => void
+  /** The open file's find matches, keyed `${hunk}:${line}`. */
+  hits: ReadonlyMap<string, LineHit[]>
+  /** The current match's index in the whole patch's matches, -1 for none. */
+  current: number
 }
 
-function RowView({ row, files, context, canExpand, onExpandGap }: RowProps) {
+function RowView({ row, files, context, canExpand, onExpandGap, hits, current }: RowProps) {
   const f = files[row.file]!
   const common = { 'data-path': f.path, style: { height: rowHeight(row) } }
 
@@ -708,7 +819,7 @@ function RowView({ row, files, context, canExpand, onExpandGap }: RowProps) {
           <span className="diff-no">{l.newNo ?? ''}</span>
           <span className="diff-sign">{sign(l)}</span>
           <span className="diff-text">
-            <LineText text={l.text} noNewline={l.noNewlineAtEnd} />
+            <LineText text={l.text} noNewline={l.noNewlineAtEnd} hits={hits.get(`${row.hunk}:${row.line}`)} current={current} />
           </span>
         </div>
       )
@@ -731,7 +842,7 @@ function RowView({ row, files, context, canExpand, onExpandGap }: RowProps) {
             <span className="diff-no">{(side === 'old' ? l.oldNo : l.newNo) ?? ''}</span>
             <span className="diff-sign">{sign(l)}</span>
             <span className="diff-text">
-              <LineText text={l.text} noNewline={l.noNewlineAtEnd} />
+              <LineText text={l.text} noNewline={l.noNewlineAtEnd} hits={hits.get(`${row.hunk}:${idx}`)} current={current} />
             </span>
           </div>
         )
@@ -785,13 +896,37 @@ function GapBody({
   )
 }
 
-/** The line's text as a React text node, with a content CR drawn as a visible `␍` rather than as nothing. */
-function LineText({ text, noNewline }: { text: string; noNewline: boolean }) {
+/**
+ * The line's text as React text nodes, with a content CR drawn as a visible
+ * `␍` rather than as nothing, and each find match wrapped in a `<mark>` -- the
+ * current one `is-current` -- around the characters already there.
+ */
+function LineText({
+  text,
+  noNewline,
+  hits,
+  current = -1,
+}: {
+  text: string
+  noNewline: boolean
+  hits?: readonly LineHit[]
+  current?: number
+}) {
   const cr = text.endsWith('\r')
   const body = cr ? text.slice(0, -1) : text
   return (
     <>
-      {body}
+      {hits === undefined
+        ? body
+        : hitSegments(body, hits).map((p, i) =>
+            p.index === null ? (
+              p.text
+            ) : (
+              <mark key={i} className={`diff-hit${p.index === current ? ' is-current' : ''}`} data-match={p.index + 1}>
+                {p.text}
+              </mark>
+            ),
+          )}
       {cr ? (
         <span className="diff-cr" role="img" aria-label="carriage return">
           ␍

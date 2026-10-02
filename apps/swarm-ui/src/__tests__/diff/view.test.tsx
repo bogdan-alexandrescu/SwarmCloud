@@ -304,10 +304,10 @@ describe('the keyboard', () => {
     expect(s.scrollTop).toBe(h1)
   })
 
-  it('focuses the path filter with /', () => {
+  it('focuses find in the diff with /', () => {
     render(<DiffView patch={REAL_GIT_DIFF} />)
     expect(fireEvent.keyDown(scroller(), { key: '/' })).toBe(false)
-    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Filter files by path' }))
+    expect(document.activeElement).toBe(screen.getByRole('searchbox', { name: 'Find in diff' }))
   })
 
   it('ignores its keys while an input has focus', () => {
