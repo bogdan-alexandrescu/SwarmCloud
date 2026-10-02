@@ -70,13 +70,14 @@ pytestmark = pytest.mark.skipif(
 
 # Every call is appended to FAKE_LOG as one JSON line before it is answered.
 # A --condition-from-file is read when the call is made and logged beside the
-# argv, because the script removes the file afterwards.
+# argv, because the script removes the file afterwards. A secret's IAM policy is
+# FAKE_SECRET_POLICIES/<secret>.json when that file exists, and empty otherwise.
 FAKE_GCLOUD = r"""#!/usr/bin/env bash
 set -euo pipefail
 cond=""; name=""; prev=""
 for arg in "$@"; do
   case "${prev}" in
-    describe|list) name="${arg}" ;;
+    describe|list|get-iam-policy) name="${arg}" ;;
     --condition-from-file) cond="$(cat "${arg}")" ;;
   esac
   prev="${arg}"
@@ -104,6 +105,12 @@ case "${args}" in
     provider="${name#swarm-tenant-"${tenant}"-}"
     jq -nc --arg n "projects/x/secrets/${name}" --arg t "${tenant}" --arg p "${provider}" \
       '{name:$n, labels:{tenant:$t, provider:$p}}' ;;
+  *"secrets get-iam-policy"*)
+    if [[ -n "${FAKE_SECRET_POLICIES:-}" && -f "${FAKE_SECRET_POLICIES}/${name}.json" ]]; then
+      cat "${FAKE_SECRET_POLICIES}/${name}.json"
+    else
+      echo '{}'
+    fi ;;
   *"secrets versions list"*)          echo "projects/x/secrets/${name}/versions/1" ;;
   *"secrets versions access"*)        cat "${FAKE_APP_SECRET}" ;;
   *)                                  : ;;

@@ -1473,6 +1473,39 @@ tenant_action_account_id() {
   printf '%s%s%s' "${prefix}" "${tenant}" "$(printf '%s' "${line}" | cut -d'|' -f2)"
 }
 
+# tf_platform_account_ids  ->  the keys of the module's `platform` map, one per
+# line: the control plane's own accounts (swarm-api, swarm-scheduler, ...).
+# Read off the module for the reason the table above is: a renamed account
+# would otherwise leave a script granting an address nothing runs as. Brace
+# depth is counted so a nested `{` inside an entry cannot end the map early.
+tf_platform_account_ids() {
+  [[ -f "${SA_IDS_MODULE}" ]] || return 0
+  awk '
+    !inside && /^[[:space:]]*platform[[:space:]]*=[[:space:]]*\{[[:space:]]*$/ { inside = 1; depth = 1; next }
+    inside {
+      if (depth == 1 && match($0, /^[[:space:]]*"[a-z0-9-]+"[[:space:]]*=[[:space:]]*\{/)) {
+        id = $0
+        sub(/^[[:space:]]*"/, "", id)
+        sub(/".*/, "", id)
+        print id
+      }
+      opens = gsub(/\{/, "{"); closes = gsub(/\}/, "}")
+      depth += opens - closes
+      if (depth <= 0) exit
+    }
+  ' "${SA_IDS_MODULE}"
+}
+
+# platform_account_email ID  ->  ID@PROJECT_ID.iam.gserviceaccount.com, only
+# when the module's `platform` map lists ID. Non-zero, and nothing printed,
+# otherwise -- so a caller refuses rather than binding an account that does not
+# exist.
+platform_account_email() {
+  local id="$1"
+  tf_platform_account_ids | grep -qxF -- "${id}" || return 1
+  printf '%s@%s.iam.gserviceaccount.com' "${id}" "${PROJECT_ID}"
+}
+
 # states_json ARRAY_ELEMENTS...  ->  ["A","B",...]
 # Used to hand one of the sets above to jq as --argjson, so a jq expression can
 # iterate the set instead of naming its members. bash 3.2 has no way to pass an

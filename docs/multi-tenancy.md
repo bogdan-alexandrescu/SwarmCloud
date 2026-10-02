@@ -264,6 +264,21 @@ Three independent mechanisms, all in `swarm_api/credentials.py` and
    function that returns payload bytes, so no future route can accidentally
    expose one.
 
+**One exception to "exactly one accessor": `swarm-tenant-<tenant>-git` has two.**
+swarm-api's issue preview (`swarm_api/forge.py` `preview`, `routes/issues.py`,
+#511) reads the tenant's forge token to show an issue before a task is filed,
+and the owner accepted swarm-api as that secret's second reader on 2026-10-02.
+Terraform grants it through `forge_readers` in `terraform/infra/main.tf`, but
+only on a `-git` secret Terraform manages, and no tenant's is: they are
+registered by `scripts/register-tenant.sh`. So the script grants it too —
+wherever it lets the worker read `-git` (`--add-provider git`, or a full
+registration listing git), it binds swarm-api's account, read off
+`terraform/modules/service_account_ids`, on that one secret, never at project
+level; a re-run that finds the binding adds nothing. It never extends to
+`-git-merge` or `-git-review`: those GitHub App keys keep only their own
+accessors (`docs/merge-step.md` §1.3), and swarm-api never needs to sign as an
+App. Without this grant the preview answers `no_access` for every tenant.
+
 The plaintext key exists only as a local variable during `put_credential`, is
 registered with the logger for redaction the moment a worker reads it, and
 reaches the agent through the child's environment only — never argv, never the
