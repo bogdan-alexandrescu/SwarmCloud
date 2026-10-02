@@ -183,6 +183,7 @@ from .gitops import (
     EMPTY_CLONE_BASE,
     GitError,
     MergeOutcome,
+    clone_at_commit,
     commit_dirty,
     commit_tree_onto,
     fetch_branch_tip,
@@ -349,6 +350,13 @@ CONTROL_PLANE_OUTAGE = "control_plane_outage"
 #: mints them, and nothing that could make the derived branch name a path
 #: (`..`, `/`) or an option (a leading `-`).
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+
+#: How `forge.open_pull_request` words the forge's own refusal of a pull
+#: request (its 422 with no open one to reuse), as opposed to a forge that
+#: could not be reached. The publish reads it to tell a refusal, which fails a
+#: pull-request step (`_published_nothing`), from an outage, which does not.
+#: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
+PULL_REQUEST_REFUSED = "the forge refused the pull request"
 
 #: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
 #: request's title and body (#214), so a platform pull request can say what it
@@ -641,6 +649,12 @@ class Worker:
         # `carrier: branches` (D13): the branch and head the last push of this
         # step's work landed, `{"name", "head"}`, or None before any.
         self._carrier_pushed: dict[str, str] | None = None
+        # The workflow base pin (`_upstream_base_pin`): what this step's clone
+        # started from and why, `result_summary.git.base_pin`. None for a root
+        # step, a non-workflow task, a step that starts from an upstream
+        # branch, and an attempt resumed from a checkpoint (its clone is not
+        # made again, so nothing is decided again).
+        self._base_pin: dict[str, Any] | None = None
         # What `record_cpu_usage` last wrote onto the attempt (contract request
         # #15), so the periodic readings and each runner's end write once per
         # change rather than once per heartbeat.
@@ -1863,6 +1877,9 @@ class Worker:
             leak = git_summary.get("final_tree_leak") if isinstance(git_summary, dict) else None
             if leak:
                 return self._fail_for_final_tree_leak(str(leak), summary, exit_code=0)
+            nothing = self._published_nothing(summary)
+            if nothing is not None:
+                return self._fail_for_published_nothing(nothing, summary, exit_code=0)
             self.control.finish(
                 state=TaskState.SUCCEEDED, exit_code=0, result_summary=summary
             )
@@ -2522,12 +2539,48 @@ class Worker:
             or (f"{self.cfg.git_branch_prefix}{carried}" if carried else None)
             or (self.cfg.repository_ref or task.get("repository_ref"))
         )
+        # THE BASE PIN (owner decision 2026-10-02, after lane B15b's lost
+        # implementation; docs/workflows.md "The base pin"). A downstream step
+        # that would clone `repository_ref` clones the commit its upstream
+        # steps cloned instead of wherever the branch has moved since, so a
+        # patch staged from them still applies. A step that starts from an
+        # upstream BRANCH already starts from the upstream's work and is not
+        # pinned. `_upstream_base_pin` reads nothing for a root step or a
+        # non-workflow task, which is therefore unchanged.
+        pinned_sha: str | None = None
+        if not (continued or builds_on or carried):
+            pinned_sha, self._base_pin = self._upstream_base_pin(task)
         # A worker whose memory the agent may read clones WITHOUT the token, so
         # the token is never in this process at all. A public repository still
         # clones; a private one fails, and the error below says why.
         refusal = self._git_token_refusal()
+        clone = None
+        if pinned_sha is not None:
+            try:
+                clone = clone_at_commit(
+                    url=url,
+                    branch=ref,
+                    commit=pinned_sha,
+                    destination=destination,
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                    logger=self.log,
+                    token=None if refusal else self._git_token(),
+                )
+            except GitError as exc:
+                # Not the end of the step: the branch tip is what every step
+                # started from before the pin existed. Said, so a patch that
+                # then fails to apply has its cause on record.
+                self.log.warning(
+                    "base pin: the upstream steps' base could not be fetched; "
+                    "cloning the branch tip instead",
+                    ref=ref, base=pinned_sha, parents=(self._base_pin or {}).get("from"),
+                    error=self._scrub(str(exc)[:500]),
+                )
+                self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         try:
-            clone = shallow_clone(
+            clone = clone or shallow_clone(
                 url=url,
                 ref=ref,
                 destination=destination,
@@ -2572,9 +2625,72 @@ class Worker:
             info["builds_on"] = builds_on
         if carried:
             info["carried_from"] = carried
+        if self._base_pin is not None:
+            info["base_pin"] = dict(self._base_pin)
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _upstream_base_pin(
+        self, task: dict[str, Any]
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """The commit this workflow step clones in place of the branch tip, and its record.
+
+        Returns `(sha, base_pin)`. `(None, None)` -- no read at all, and the
+        clone exactly as before -- for a task outside a workflow, a root step,
+        and a `single-pr` step (its `pr_role` decides what it clones). For
+        every other step the parents' own records are read through the
+        worker's one tenant-checked upstream read (`inputs.fetch_upstream_task`,
+        which fails the attempt for another tenant's task, as staging does):
+        each parent's `result_summary.git.base` is the commit ITS clone started
+        from.
+
+          * every parent that recorded a base names the same one -> that sha,
+            `{"pinned": true, "sha", "from": [parents]}`;
+          * they name different ones -> `parents_disagree`; none recorded one
+            -> `no_upstream_base`. Either way `(None, {"pinned": false,
+            "reason"})`, and the branch tip is cloned as before.
+
+        A base that is not a full sha is no record (a parent on an empty
+        repository records none).
+        """
+        if not task.get("workflow_id") or self._dispatch_block().get("pr_role") is not None:
+            return None, None
+        parents = [
+            parent.strip()
+            for parent in (task.get("depends_on") or [])
+            if isinstance(parent, str) and _TASK_ID_RE.match(parent.strip())
+        ]
+        if not parents:
+            return None, None
+        bases: dict[str, str | None] = {}
+        for parent in parents:
+            upstream = inputs_mod.fetch_upstream_task(
+                self.db,
+                upstream_task_id=parent,
+                tenant_id=self.cfg.tenant_id,
+                call_options=self.control.call_options(),
+            )
+            summary = upstream.get("result_summary")
+            git = summary.get("git") if isinstance(summary, dict) else None
+            base = git.get("base") if isinstance(git, dict) else None
+            bases[parent] = (
+                base if isinstance(base, str) and re.fullmatch(r"[0-9a-f]{40}", base) else None
+            )
+        recorded = {base for base in bases.values() if base is not None}
+        if len(recorded) == 1:
+            sha = next(iter(recorded))
+            source = [parent for parent, base in bases.items() if base == sha]
+            self.log.info("base pin: cloning the upstream steps' base", base=sha, parents=source)
+            return sha, {"pinned": True, "sha": sha, "from": source}
+        reason = "parents_disagree" if recorded else "no_upstream_base"
+        self.log.warning(
+            "base pin: not pinned, cloning the branch tip; a patch staged from "
+            "these parents may not apply to it",
+            reason=reason,
+            parents=dict(bases),
+        )
+        return None, {"pinned": False, "reason": reason}
 
     def _carrier_parent(self, task: dict[str, Any]) -> str:
         """The parent task whose pushed branch this step starts from (D13), or "".
@@ -3439,10 +3555,9 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"refused": error},
-            # To become `PUBLISH_REFUSED` with the contract change request of
-            # 2026-09-29 (docs/contract-change-requests.md); OUTPUTS_MISSING
-            # stands in until `swarm_common.EndCause` carries it.
-            end_cause=EndCause.OUTPUTS_MISSING,
+            # Contract request 29, applied 2026-10-02: the worker refused to
+            # publish, which is neither a missing output nor a runner error.
+            end_cause=EndCause.PUBLISH_REFUSED,
         )
         self.log.info("the attempt failed for a refused pull request title", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
@@ -3468,15 +3583,110 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=EXPECTED_OUTPUT_RETRY_DELAY_SECONDS,
             detail={"refused": error},
-            # OWNER DECISION, 2026-09-29: this gets its own end cause,
-            # `PUBLISH_REFUSED`, requested in docs/contract-change-requests.md
-            # (accepted by the owner, not yet applied). `EndCause` is in the
-            # frozen `swarm_common`, so RUNNER_ERROR stands in until the
-            # request lands; switch this line (and the refused title's) then.
-            end_cause=EndCause.RUNNER_ERROR,
+            # Contract request 29 (owner decision 2026-09-29, applied
+            # 2026-10-02): the worker refused to publish.
+            end_cause=EndCause.PUBLISH_REFUSED,
         )
         self.log.info("the attempt failed: its final tree adds a credential", task_state=state.value)
         return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _opens_pull_request(self) -> bool:
+        """True when this step's job is to OPEN A PULL REQUEST (GUARD 2, 2026-10-02).
+
+        A `direct-pr` task or step, the `integrate` integrator, and a
+        `single-pr` author. NOT an `integrate` contributor (its branch is its
+        deliverable), a `single-pr` reader or amender, a `collect` task or a
+        worker action: for those, changing nothing is a correct outcome -- a
+        review that edits no file is a review that did its job.
+
+        The strategy is read raw, not through `_dispatch_strategy`, which
+        reads `single-pr` as `collect` (this worker does not publish it yet):
+        an author that changed nothing is still a step that owed a pull
+        request.
+        """
+        block = self._dispatch_block()
+        raw = block.get("strategy")
+        strategy = raw.strip().lower() if isinstance(raw, str) else ""
+        if strategy == "direct-pr":
+            return True
+        if strategy == "integrate":
+            return self._dispatch_role() == "integrator"
+        if strategy == "single-pr":
+            role = block.get("pr_role")
+            return isinstance(role, str) and role.strip().lower() == "author"
+        return False
+
+    def _published_nothing(self, summary: dict[str, Any]) -> str | None:
+        """Why a pull-request step that ran clean delivered nothing, or None.
+
+        The measured failure (workflow wf_b9b337e107494c10a416, 2026-10-02):
+        the fix step's staged patch did not apply to a moved `main`, its agent
+        finished, the forge answered "No commits between main and swarm/...",
+        and the step and the workflow both read SUCCEEDED with no pull request
+        -- the implementation was lost and no state said so. Two shapes:
+
+          * the harvest found no commit and no uncommitted change beyond the
+            clone's base (`_harvest_git`'s "changed nothing"), so there was
+            nothing to push or open;
+          * the forge refused the pull request (`pull_request_refused`, set by
+            `_publish_git`), quoted verbatim, already masked.
+
+        A step whose verdict gate kept its agent from running is exempt: the
+        gate deciding there is nothing to do is the outcome it exists for.
+        "No usable title" and an unreadable default branch are not here:
+        the first is the refused-title failure, the second pushed a branch.
+        """
+        if not self._opens_pull_request():
+            return None
+        if self._verdict is not None and not self._verdict.get("agent_ran", True):
+            return None
+        git = summary.get("git")
+        if not isinstance(git, dict):
+            return None
+        refused = git.get("pull_request_refused")
+        if refused:
+            return f"published_nothing: {refused}"
+        if (
+            git.get("published") is False
+            and git.get("commit_count") == 0
+            and git.get("dirty_count") == 0
+        ):
+            base = git.get("base") or "its base"
+            return (
+                "published_nothing: the step was to open a pull request and its "
+                f"branch has no commits beyond {base}"
+            )
+        return None
+
+    def _fail_for_published_nothing(
+        self, reason: str, summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """End a pull-request step that delivered nothing FAILED, and not retried.
+
+        The non-retryable path `_fail_for_missing_outputs` takes for a
+        missing output a retry cannot produce: `finish(FAILED)` ends the task
+        for good whatever attempts are left. Deterministic -- the next attempt
+        clones the same base, runs the same prompt and meets the same forge --
+        so a retry would spend compute and provider quota to repeat it. The
+        workflow rollup then reads FAILED with this step's `last_error`, and
+        `on_step_failure` acts on it as on any failed step.
+
+        OUTPUTS_MISSING, the closest existing end cause: the step's promised
+        deliverable, its pull request, does not exist. PUBLISH_REFUSED (request
+        29) is the WORKER refusing to publish, which this is not -- here the
+        agent produced nothing, or the forge said no. Its own cause,
+        `PUBLISHED_NOTHING`, is contract request 46, not applied.
+        """
+        error = self._scrub(reason[:4000])
+        self.control.finish(
+            state=TaskState.FAILED,
+            exit_code=exit_code,
+            error=error,
+            result_summary=summary,
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.error("the step was to open a pull request and published nothing", reason=error)
+        return Outcome(exit_code=ExitCode.FAILED, state=TaskState.FAILED)
 
     def _leaks_in_added_text(self, path: str, text: str) -> CredentialHit | None:
         """The leak test both publish scans apply to the text a file ADDS.
@@ -5466,6 +5676,8 @@ class Worker:
 
         base = self._clone_base or self._read_clone_base()
         out: dict[str, Any] = {"base": base}
+        if self._base_pin is not None:
+            out["base_pin"] = dict(self._base_pin)
         if base is None and self._publish_base == EMPTY_CLONE_BASE:
             out["note"] = (
                 "the repository was empty when it was cloned, so there is no "
@@ -6226,11 +6438,18 @@ class Worker:
                 retitle_if=self._title_carries_task_id,
             )
         except ForgeError as exc:
+            message = str(self._scrub(str(exc)[:300]))
             out["published"] = True
             out["publish_reason"] = (
-                f"the branch was pushed but no pull request was opened: "
-                f"{self._scrub(str(exc)[:300])}"
+                f"the branch was pushed but no pull request was opened: {message}"
             )
+            if message.startswith(PULL_REQUEST_REFUSED):
+                # The forge answered and said no (`forge.open_pull_request`'s
+                # 422, e.g. "No commits between main and swarm/..."): a fact
+                # about this branch that a retry would meet again, so the
+                # finish fails the step for it (`_published_nothing`). An
+                # unreachable forge is not a refusal and is left as it was.
+                out["pull_request_refused"] = message
             return out
 
         updated = bool(getattr(pr, "updated", False))
