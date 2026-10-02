@@ -11918,6 +11918,12 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-band-foot { grid-column: 1 / -1; margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 .ov-pair { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); margin-top: var(--ctl-gutter); }
 @media (min-width: 1100px) { .ov-pair { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } }
+/* HEADROOM TAKES THE WHOLE PAIR BELOW THE SYSTEM BREAKPOINT. Between 1100 and
+   1279 half the pair is too narrow for five four-column utilisation rows --
+   F1 of the overflow inventory, `mock · 15 can start` drawn as `mock · 1…` --
+   so it spans and "Waiting, and why" sits above it. From 1280 the two sit side
+   by side (O1). */
+@media (min-width: 1100px) and (max-width: 1279px) { .ov-headroom { grid-column: 1 / -1; } }
 .ov-list { list-style: none; margin: 0; padding: 0; }
 .ov-list > li { border-bottom: 1px solid var(--line-soft); }
 .ov-list-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 0; color: inherit; text-decoration: none; }
