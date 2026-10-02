@@ -1442,6 +1442,20 @@ class Store:
         live.sort(key=lambda lease: (lease.created_at, lease.lease_id), reverse=True)
         return live
 
+    def live_leases_of(self, tenant_id: str) -> list[Lease]:
+        """One tenant's unreleased leases, newest first, for a tenant-scoped route.
+
+        `_live_leases(None)` is every tenant, which is right for the admin
+        route and wrong for anything a member reaches. This read has no such
+        value: a missing tenant raises rather than widening to the fleet, so a
+        route that lost its `tenant_scope` fails instead of serving another
+        tenant's leases (invariant 9). Same query as the admin read's live set,
+        so no new index.
+        """
+        if not tenant_id:
+            raise ValueError("live_leases_of needs a tenant id; it never reads every tenant")
+        return self._live_leases(tenant_id)
+
     def scan_leases(
         self,
         tenant_id: str | None = None,

@@ -283,7 +283,7 @@ def test_a_workflow_whose_step_tasks_were_not_read_serves_no_step_input(client, 
 
 ROUTER_MODULES = (
     "platform", "tasks", "attempts", "workflows", "tenants", "admin", "accounts", "health",
-    "checkpoints", "outcomes",
+    "checkpoints", "outcomes", "leases",
 )
 QUERY_FOR = {"/v1/outcomes": "?tz=UTC&span=7d"}
 

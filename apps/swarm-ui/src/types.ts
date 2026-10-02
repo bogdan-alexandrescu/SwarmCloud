@@ -1411,6 +1411,68 @@ export function leaseLiveliness(
   return { kind: 'alive', copy: 'Beating normally. Nothing will touch this.' }
 }
 
+/**
+ * One row of `GET /v1/leases` (routes/leases.py, #179): the current lease
+ * heartbeat of one of the caller's slot-holding tasks. Tenant-scoped, so a
+ * member who is not an admin reads it -- unlike `LeaseRow`, which only
+ * `/v1/admin/leases` serves.
+ *
+ * `heartbeat_at` and `silent_seconds` are NULL until the worker's first beat,
+ * never the lease's creation time: "never beat" and "beat long ago" are
+ * different facts, and a booting agent is not a silent one. Before the first
+ * beat the reconciler judges the lease by `dispatch_overdue` alone.
+ */
+export interface LeaseHeartbeat {
+  task_id: string
+  lease_id: string
+  attempt_id: string
+  generation: number
+  /** LEASED, DISPATCHED, STARTING or RUNNING -- a row exists for no other. */
+  task_state: TaskState
+  /** The LEASE's state, only ever LEASED or DISPATCHED; see `LeaseRow`. */
+  dispatch_state: 'LEASED' | 'DISPATCHED' | string
+  created_at: string
+  dispatch_deadline: string
+  expires_at: string
+  heartbeat_at: string | null
+  /** Seconds since `heartbeat_at`, at the page's `read_at`; null if never beaten. */
+  silent_seconds: number | null
+  /**
+   * The reconciler's rule, judged server-side: beaten at least once and quiet
+   * for longer than `thresholds.heartbeat_grace_seconds`.
+   */
+  silent: boolean
+  expired: boolean
+  dispatch_overdue: boolean
+}
+
+/**
+ * `GET /v1/leases`. The thresholds arrive with the data for the reason
+ * `LeasePage` says: the grace is the reconciler's, resolved server-side, and
+ * a constant here would warn at a boundary the reconciler does not act on.
+ */
+export interface LeaseHeartbeatPage {
+  tenant_id: string
+  /** The clock each row's `silent_seconds` was taken against. */
+  read_at: string
+  thresholds: { heartbeat_grace_seconds: number; lease_timeout_seconds: number }
+  heartbeats: LeaseHeartbeat[]
+}
+
+/**
+ * The page's rows whose worker has gone silent, by task id -- what a list row
+ * looks itself up in to decide whether it draws a `--warn` why line. Only
+ * `silent` decides it, so a lease that has never beaten (a booting worker) is
+ * never in the map.
+ */
+export function silentWorkersByTask(page: LeaseHeartbeatPage): Map<string, LeaseHeartbeat> {
+  const out = new Map<string, LeaseHeartbeat>()
+  for (const row of page.heartbeats) {
+    if (row.silent) out.set(row.task_id, row)
+  }
+  return out
+}
+
 /** `attempt_to_api`. The per-attempt record result_summary cannot give you. */
 export interface AttemptRow {
   attempt_id: string

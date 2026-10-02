@@ -237,6 +237,8 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
     admission = profile["admission"]
 
     leases = _get(client, "/v1/admin/leases")
+    # The tenant-scoped heartbeat read (#179), as a member who is not an admin.
+    heartbeats = _get(client, "/v1/leases", "alice")
     attempts = _get(client, "/v1/tasks/task_1/attempts", "alice")
     events = _get(client, "/v1/tasks/task_1/events", "alice")
     tasks = _get(client, "/v1/tasks?limit=200", "alice")
@@ -253,6 +255,8 @@ def _payloads(client) -> dict[str, dict[str, Any]]:
         "AttemptRow": _first(attempts["attempts"], "/v1/tasks/{id}/attempts"),
         "LeasePage": leases,
         "LeaseRow": _first(leases["leases"], "/v1/admin/leases .leases"),
+        "LeaseHeartbeatPage": heartbeats,
+        "LeaseHeartbeat": _first(heartbeats["heartbeats"], "/v1/leases .heartbeats"),
         "QuotaState": _first(_get(client, "/v1/admin/quota")["quota"], "/v1/admin/quota .quota"),
         "Tenant": _first(_get(client, "/v1/admin/tenants")["tenants"], "/v1/admin/tenants"),
         "Stats": _get(client, "/v1/stats", "alice"),
@@ -305,6 +309,9 @@ UNDECLARED_BY_DESIGN: dict[str, dict[str, str]] = {
     # `Me.environment` and `Me.environment_declared` were excused the same way
     # and are declared the same way; Brand.tsx's badge reads both.
     "TaskPage": {"tasks": "declared as Task[], checked as Task"},
+    "LeaseHeartbeatPage": {
+        "heartbeats": "declared as LeaseHeartbeat[], checked as LeaseHeartbeat",
+    },
     "ProvidersPage": {"providers": "declared as ProviderEntry[], checked as ProviderEntry"},
 }
 

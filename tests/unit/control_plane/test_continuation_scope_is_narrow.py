@@ -98,6 +98,7 @@ NAMED_REFUSED = [
     ("GET", "/v1/tenants/me"),
     ("GET", "/v1/attempts"),
     ("GET", "/v1/outcomes"),
+    ("GET", "/v1/leases"),
     ("GET", "/v1/stats"),
     ("GET", "/v1/capacity"),
     ("GET", "/v1/providers"),
