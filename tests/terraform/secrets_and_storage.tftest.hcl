@@ -186,6 +186,57 @@ run "the_artifact_bucket_is_private_versioned_and_expires_what_nobody_reads" {
   }
 }
 
+# A checkpoint is deleted by reference, never by the clock (D14, owner decision:
+# days_since_custom_time). The worker stamps customTime on every object it
+# uploads EXCEPT a checkpoint's (agent_worker.objectstore.is_checkpoint_key), and
+# GCS never matches days_since_custom_time against an object with no customTime.
+# So the only Delete rule on LIVE objects must be that one: an `age` Delete
+# would match a PARKED task's only checkpoint on the same day as a finished
+# task's leftovers, which reconciler/checkpoints.py exists to prevent.
+run "a_live_object_is_deleted_by_custom_time_never_by_age" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/storage"
+  }
+
+  variables {
+    bucket_suffix           = "saga-agents-staging"
+    artifact_retention_days = 14
+  }
+
+  assert {
+    condition = length([
+      for r in google_storage_bucket.artifacts.lifecycle_rule : r
+      if one(r.action).type == "Delete"
+      && one(r.condition).with_state == "LIVE"
+      && coalesce(one(r.condition).days_since_custom_time, 0) == 14
+    ]) == 1
+    error_message = "artifacts and logs must expire artifact_retention_days after the customTime the worker stamps on them"
+  }
+
+  assert {
+    condition = length([
+      for r in google_storage_bucket.artifacts.lifecycle_rule : r
+      if one(r.action).type == "Delete" && coalesce(one(r.condition).age, 0) > 0
+    ]) == 0
+    error_message = "an age-based Delete rule deletes a PARKED task's only checkpoint on a clock; checkpoints are removed by reconciler/checkpoints.py alone"
+  }
+
+  # Every Delete rule is one of three shapes: the customTime clock on LIVE
+  # objects, or one of the two noncurrent-version rules on ARCHIVED ones. A
+  # fourth shape (created_before, matches_prefix, a different with_state) is a
+  # new way to reach a checkpoint and has to be decided, not slipped in.
+  assert {
+    condition = alltrue([
+      for r in google_storage_bucket.artifacts.lifecycle_rule :
+      one(r.condition).with_state == "ARCHIVED" || coalesce(one(r.condition).days_since_custom_time, 0) > 0
+      if one(r.action).type == "Delete"
+    ])
+    error_message = "a Delete rule on live objects that is not keyed on customTime can match a checkpoint"
+  }
+}
+
 run "artifacts_must_outlive_the_investigation_that_needs_them" {
   command = plan
 
@@ -283,4 +334,76 @@ run "an_api_key_only_deployment_grows_no_refresh_secrets" {
     condition     = length(google_secret_manager_secret.refresh) == 0
     error_message = "refresh secrets exist only where a refresher does"
   }
+}
+
+# #454 (intake mock-up 1A, 2026-10-02): swarm-api previews an issue with the
+# caller's tenant's forge token, so it reads every tenant's `-git` secret --
+# that secret alone, in its own authoritative binding, beside the tenant's
+# worker. Not a provider key, not an App key, not a project grant.
+run "swarm_api_reads_each_tenants_git_secret_and_no_other" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    tenant_secrets = {
+      eng = {
+        providers = ["anthropic", "git", "git-merge"]
+        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor_overrides = {
+          git-merge = ["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"]
+        }
+      }
+      research = {
+        providers = ["git"]
+        accessor  = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
+      }
+    }
+    forge_readers = ["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+
+  assert {
+    condition = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git"].members == toset([
+      "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+    ])
+    error_message = "a tenant's -git secret is read by its worker and by swarm-api, and by nobody else"
+  }
+
+  assert {
+    condition     = contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-research-git"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    error_message = "the preview reads every tenant's -git secret, each by its own binding"
+  }
+
+  assert {
+    condition     = !contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    error_message = "swarm-api must never read a tenant's provider key"
+  }
+
+  assert {
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"])
+    error_message = "the merge App key keeps its sole reader; swarm-api is not added to it"
+  }
+}
+
+run "a_forge_reader_must_be_a_service_account" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    tenant_secrets = {
+      eng = {
+        providers = ["git"]
+        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      }
+    }
+    forge_readers = ["user:someone@saga.xyz"]
+  }
+
+  expect_failures = [var.forge_readers]
 }

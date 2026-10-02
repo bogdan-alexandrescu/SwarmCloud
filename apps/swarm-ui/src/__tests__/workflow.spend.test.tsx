@@ -158,7 +158,8 @@ describe('one workflow, one total (WF-5)', () => {
       return el!.textContent ?? ''
     })
     const head = await waitFor(() => {
-      const el = document.querySelector('.wfp-facts')
+      // The head's cost chip (the meta line moved to the shell's sub-line, #503).
+      const el = document.querySelector('.wfp-head .wfp-cost')
       expect(el?.textContent ?? '').toContain('$7.00')
       return el!.textContent ?? ''
     })

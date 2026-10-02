@@ -33,6 +33,7 @@ import {
 } from './types'
 import type { StepUsage } from './api'
 import { STATE_MARK, type MarkHue, type MarkName } from './marks'
+import { skippedByVerdict } from './wfreview'
 
 // ---------------------------------------------------------------------------
 // Depth
@@ -1522,26 +1523,26 @@ export function stageIsWide(stepCount: number, nodeW: number = NODE_W): boolean 
  * the same discipline NODE_H had to be rewritten to, after 244 turned out to
  * be three pixels short of what `.node` rendered.
  *
- * Against the `.wf-band` rule in styles.css:
+ * THREE ROWS SINCE THE WIDE-STAGE PICK (wide-workflows.html A, 2026-10-02),
+ * against the `.wf-band` rules in styles/workflows.css:
  *
- *   padding var(--ctl-s3) top + bottom ......... 24
- *   border 1px top + 1px bottom ................  2
- *   one line at --t-meta / --lh-meta (13 x 1.45) 18.85
- *                                              -----
- *                                               44.85
+ *   padding 8px top + bottom .................... 16
+ *   border 1px top + 1px bottom .................  2
+ *   the toggle: count, range, mix bar, slots ...  32   (a 32px row, components.html A)
+ *   gap ........................................  4
+ *   the counts, each one opens the Table .......  20
+ *   gap ........................................  4
+ *   the named chips: failed, running, parked ...  22
+ *                                               -----
+ *                                                100
  *
- * 45 is that, rounded up by the pixel the fractional line box needs. It also
- * clears the 44px touch target design-system.md §7.2 asks of a control, which
- * is not a coincidence -- `--ctl-s3` was chosen over `--ctl-s2` for exactly
- * that, and a smaller step here would put a tappable summary under the floor.
- *
- * THE COUNTS DO NOT WRAP, so this height does not depend on how many states a
- * stage happens to be in. `.wf-band-counts` is `nowrap` with `overflow:
- * hidden`, and `stageCensus` orders failures first so the count that may not
- * be lost is never the one clipped. The complete census is the band's
- * accessible name either way.
+ * NO ROW WRAPS, so this height does not depend on how many states a stage
+ * happens to be in or how many steps are named. Counts and chips are `nowrap`
+ * with `overflow: hidden`, `stageCensus` orders failures first and
+ * `stageMix` names failures first, so what may not be lost is never what is
+ * clipped. The complete census is the toggle's accessible name either way.
  */
-export const BAND_H = 45
+export const BAND_H = 100
 
 /**
  * The gap between a band and the nodes it heads, when the stage is expanded.
@@ -1675,7 +1676,23 @@ export interface DagEdge {
    * edge between two adjacent levels. See `laneRouter`.
    */
   readonly lane: EdgeLane | null
+  /**
+   * WHERE THE EDGES INTO ONE STEP MEET (wide-workflows.html A: "edges bundled
+   * one lane per target step"), or null for a step with one edge in, and for
+   * an edge on a skip-level lane, which already runs on a lane of its own.
+   * Every edge into the same step from the level above curves to this point
+   * and then runs straight down into the step, so a fan-in reads as one lane
+   * per step and two steps' lanes never merge.
+   */
+  readonly join: { readonly x: number; readonly y: number } | null
 }
+
+/**
+ * How far above a step its edges meet: a third of the level gap, so the
+ * curves from the parents have the upper two thirds to converge in and the
+ * shared lane is long enough to read as one line.
+ */
+export const JOIN_RISE = Math.round(LEVEL_GAP / 3)
 
 /**
  * Where a skip-level edge runs past the levels between its two ends.
@@ -2015,6 +2032,24 @@ export function layoutOf(
   const widest = Math.max(...levels.map((l, i) => (wide[i] && !open(i) ? bandMin : levelWidth(l.length))))
 
   const nodes: DagNode[] = []
+  const levelIndex = new Map<string, number>()
+  levels.forEach((l, i) => l.forEach((s) => levelIndex.set(s.step_id, i)))
+  /** Each step's one parent card, when `level` is 1:1 under the level above; else null. */
+  const oneToOneParents = (level: readonly WorkflowStep[], lvl: number): Map<string, DagNode> | null => {
+    if (lvl === 0 || (wide[lvl - 1] === true && !open(lvl - 1))) return null
+    const out = new Map<string, DagNode>()
+    const seen = new Set<string>()
+    for (const s of level) {
+      if (s.depends_on.length !== 1) return null
+      const p = s.depends_on[0]!
+      if (levelIndex.get(p) !== lvl - 1 || seen.has(p)) return null
+      const card = nodes.find((n) => n.step.step_id === p)
+      if (card === undefined) return null
+      seen.add(p)
+      out.set(s.step_id, card)
+    }
+    return out
+  }
   levels.forEach((level, lvl) => {
     // A collapsed stage draws no nodes at all. This is the one line that makes
     // the canvas smaller; everything else above is arithmetic about it.
@@ -2024,7 +2059,16 @@ export function layoutOf(
     // an empty band -- which reads as "this belongs to the first branch". It is
     // the same guarantee the old layout made vertically, on the other axis.
     const left = PAD + (widest - levelWidth(level.length)) / 2
-    level.forEach((step, pos) => {
+    // 1:1 CHILDREN SIT UNDER THEIR PARENTS (wide-workflows.html A). When every
+    // step of this level has exactly one dependency, all of them on the level
+    // above, no two on the same parent, and that level is drawn as cards, each
+    // child takes its parent's column -- review-k under impl-k -- so every edge
+    // between the two is a straight lane. It costs the reader the step order
+    // inside the stage, which becomes parent order; any other shape keeps it.
+    const parents = oneToOneParents(level, lvl)
+    const ordered = parents === null ? level : [...level].sort((a, b) => parents.get(a.step_id)!.pos - parents.get(b.step_id)!.pos)
+    ordered.forEach((step, pos) => {
+      const parent = parents?.get(step.step_id)
       nodes.push({
         step,
         level: lvl,
@@ -2035,7 +2079,7 @@ export function layoutOf(
         h: nodesH(level),
         // POSITION drives X: siblings side by side, one band per level, and a
         // level never wraps onto a second row (owner decision 2026-09-30).
-        x: left + pos * (nodeW + SIB_GAP),
+        x: parent !== undefined ? parent.x : left + pos * (nodeW + SIB_GAP),
         // LEVEL drives Y: the flow descends.
         y: nodesTop(lvl),
       })
@@ -2128,9 +2172,19 @@ export function layoutOf(
             from.cx,
             to.cx,
           ),
+          join: null,
         })
       }
     }
+  }
+  // ONE LANE PER TARGET STEP: the adjacent-level edges into a step that has
+  // more than one of them meet JOIN_RISE above it and share the last stretch.
+  const inbound = new Map<string, number>()
+  for (const e of edges) if (e.lane === null) inbound.set(e.to, (inbound.get(e.to) ?? 0) + 1)
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i]!
+    if (e.lane !== null || (inbound.get(e.to) ?? 0) < 2) continue
+    edges[i] = { ...e, join: { x: e.x2, y: e.y2 - JOIN_RISE } }
   }
   // A lane routed past the right edge of everything drawn widens the canvas by
   // exactly what it needs; every other lane is inside the width already.
@@ -2188,7 +2242,19 @@ export interface StageCount {
 
 /** How a step is drawn: one brand mark in one hue, or `unknown`. */
 export type StepLook =
-  | { readonly kind: 'state'; readonly mark: MarkName; readonly hue: MarkHue }
+  | {
+      readonly kind: 'state'
+      readonly mark: MarkName
+      readonly hue: MarkHue
+      /**
+       * SUCCEEDED WITHOUT ITS AGENT: the verdict gate stayed shut
+       * (`result_summary.verdict_gate.agent_ran === false`). Set only then, so
+       * a step that ran keeps exactly the look it always had. Drawn as the
+       * dashed check on a striped card, never as the solid check of a step
+       * whose agent did the work.
+       */
+      readonly skipped?: true
+    }
   | { readonly kind: 'unknown' }
 
 /**
@@ -2200,7 +2266,26 @@ export type StepLook =
 export function stepLook(state: StepState): StepLook {
   if (state.kind === 'unknown') return { kind: 'unknown' }
   if (state.kind === 'unstarted') return { kind: 'state', ...STATE_MARK.QUEUED }
+  if (state.state === 'SUCCEEDED' && skippedByVerdict(state.task)) {
+    return { kind: 'state', ...STATE_MARK.SUCCEEDED, skipped: true }
+  }
   return { kind: 'state', ...STATE_MARK[state.state] }
+}
+
+/** The word for a step whose verdict gate kept its agent from running. One spelling for every view. */
+export const SKIPPED_WORD = 'skipped by verdict'
+
+/**
+ * THE WORD A STEP IS COUNTED UNDER, in a stage's census and its Table filter:
+ * the node's own words where they survive a count in front of them (see
+ * `StageCount.word`). One function, so the band's `3 running` and the Table it
+ * opens filtered to `running` cannot disagree about which steps those are.
+ */
+export function censusWord(state: StepState): string {
+  if (state.kind === 'unstarted') return 'not started'
+  if (state.kind === 'unknown') return 'not read'
+  if (state.state === 'SUCCEEDED' && skippedByVerdict(state.task)) return SKIPPED_WORD
+  return state.state.toLowerCase()
 }
 
 /** The CSS hue class a look is tinted with: `t-live`, `t-park`, `t-bad`, `t-neu` or `t-unk`. */
@@ -2271,7 +2356,7 @@ export function stageCensus(
       rank = 2
       unread += 1
     } else {
-      word = state.state.toLowerCase()
+      word = censusWord(state)
       if (state.state === 'FAILED' || state.state === 'DEAD_LETTERED') failed += 1
       if (state.state === 'CANCELLED') cancelled += 1
       // FOUR RANKS, AND THE ORDER OF THE FIRST TWO IS A JUDGEMENT. A failure
@@ -2330,6 +2415,140 @@ export function stageCensus(
   }
 }
 
+/** One part of a stage's state mix, in the brand's order. */
+export type MixKind = 'bad' | 'live' | 'park' | 'wait' | 'done' | 'skip' | 'can' | 'unk'
+
+/** The order a mix bar and a glyph draw their parts in: what needs a look first. */
+export const MIX_ORDER: readonly MixKind[] = ['bad', 'live', 'park', 'wait', 'done', 'skip', 'can', 'unk']
+
+export interface MixPart {
+  readonly kind: MixKind
+  readonly n: number
+}
+
+export interface StageMix {
+  /** Non-empty parts only, in `MIX_ORDER`. */
+  readonly parts: readonly MixPart[]
+  /**
+   * Steps holding capacity: LEASED, DISPATCHED, STARTING or RUNNING. Invariant
+   * 1 and 3: only those four create demand, and a lease counts from LEASED.
+   */
+  readonly holding: number
+  /** Steps whose task waits and holds NOTHING: QUEUED, READY or PARKED. */
+  readonly waiting: number
+  /** Steps whose task was not in the read: the two figures above are a floor by this many. */
+  readonly unread: number
+  /** The steps a band names, failed, then holding capacity, then parked, each in stage order. */
+  readonly chips: readonly { readonly stepId: string; readonly look: StepLook }[]
+}
+
+function mixKindOf(state: StepState): MixKind {
+  if (state.kind === 'unknown') return 'unk'
+  if (state.kind === 'unstarted') return 'wait'
+  switch (state.state) {
+    case 'FAILED':
+    case 'DEAD_LETTERED':
+      return 'bad'
+    case 'LEASED':
+    case 'DISPATCHED':
+    case 'STARTING':
+    case 'RUNNING':
+      return 'live'
+    case 'PARKED':
+      return 'park'
+    case 'SUCCEEDED':
+      return skippedByVerdict(state.task) ? 'skip' : 'done'
+    case 'CANCELLED':
+      return 'can'
+    default:
+      return 'wait'
+  }
+}
+
+/**
+ * A STAGE'S MIX (wide-workflows.html A): what its band's bar is filled with,
+ * how many of its steps hold capacity and how many wait holding none, and
+ * which steps the band names. From `stepState`, the join every node reads, so
+ * the bar and the cards behind it cannot disagree.
+ */
+export function stageMix(steps: readonly WorkflowStep[], taskById: ReadonlyMap<string, Task> | null): StageMix {
+  const n = new Map<MixKind, number>()
+  let holding = 0
+  let waiting = 0
+  let unread = 0
+  const bad: StageMix['chips'][number][] = []
+  const live: StageMix['chips'][number][] = []
+  const park: StageMix['chips'][number][] = []
+  for (const s of steps) {
+    const state = stepState(s, taskById)
+    const kind = mixKindOf(state)
+    n.set(kind, (n.get(kind) ?? 0) + 1)
+    if (state.kind === 'unknown') unread += 1
+    if (state.kind !== 'state') continue
+    const look = stepLook(state)
+    if (kind === 'bad') bad.push({ stepId: s.step_id, look })
+    if (kind === 'live') {
+      holding += 1
+      live.push({ stepId: s.step_id, look })
+    }
+    if (kind === 'park') park.push({ stepId: s.step_id, look })
+    if (state.state === 'QUEUED' || state.state === 'READY' || state.state === 'PARKED') waiting += 1
+  }
+  return {
+    parts: MIX_ORDER.flatMap((kind) => ((n.get(kind) ?? 0) > 0 ? [{ kind, n: n.get(kind)! }] : [])),
+    holding,
+    waiting,
+    unread,
+    chips: [...bad, ...live, ...park],
+  }
+}
+
+/** One column of the list row's stage-shape glyph. */
+export interface GlyphColumn {
+  /** Steps in the stage. */
+  readonly n: number
+  /** Column height, px: log-scaled from 1 step to the API's 50 (6px floor + 16px). */
+  readonly h: number
+  readonly mix: readonly MixPart[]
+}
+
+/** The most steps one stage can hold: a workflow holds at most 50 (swarm_common/config.py). */
+export const GLYPH_MAX_STEPS = 50
+
+/**
+ * THE LIST ROW'S STAGE-SHAPE GLYPH (wide-workflows.html §6). Not a graph -- a
+ * thumbnail of one was rejected as "a smudge" (see `Shape`) -- but one column
+ * per stage, taller for a wider stage on a log scale, filled with that stage's
+ * mix. The text shape stays beside it; this only lets a reader see at a glance
+ * where in the run the red is.
+ */
+export function stageGlyph(steps: readonly WorkflowStep[], taskById: ReadonlyMap<string, Task> | null): GlyphColumn[] {
+  return levelsOf(steps).map((level) => ({
+    n: level.length,
+    h: Math.round((6 + (16 * Math.log(level.length + 1)) / Math.log(GLYPH_MAX_STEPS + 1)) * 10) / 10,
+    mix: stageMix(level, taskById).parts,
+  }))
+}
+
+/**
+ * WHETHER SOME STEP DEPENDS ON PART OF THE LEVEL ABOVE (wide-workflows.html
+ * §6's "partial" chip), which the text shape `2 → 6 → 4 → 1` cannot say: a
+ * step waiting on more than one but not all of the steps one level up. A 1:1
+ * stage (each step on one parent) and a full fan-in are not partial; they are
+ * the two shapes the text already reads as.
+ */
+export function partialDeps(steps: readonly WorkflowStep[]): boolean {
+  const levels = levelsOf(steps)
+  return levels.some((level, lvl) => {
+    if (lvl === 0) return false
+    const above = new Set(levels[lvl - 1]!.map((s) => s.step_id))
+    return level.some((s) => {
+      const p = s.depends_on.filter((d) => above.has(d)).length
+      return p > 1 && p < above.size
+    })
+  })
+}
+
 /**
  * The cubic the edge is drawn as.
  *
@@ -2352,6 +2571,11 @@ export function stageCensus(
  * drops below its end -- and so no part of the edge is drawn under a card.
  */
 export function edgePath(e: DagEdge): string {
+  if (e.lane === null && e.join !== null) {
+    const j = e.join
+    const k = Math.max(8, (j.y - e.y1) / 2)
+    return `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + k}, ${j.x} ${j.y - k}, ${j.x} ${j.y} L ${e.x2} ${e.y2}`
+  }
   if (e.lane === null) {
     const k = Math.max(24, (e.y2 - e.y1) / 2)
     return `M ${e.x1} ${e.y1} C ${e.x1} ${e.y1 + k}, ${e.x2} ${e.y2 - k}, ${e.x2} ${e.y2}`

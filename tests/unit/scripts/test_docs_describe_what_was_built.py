@@ -304,10 +304,10 @@ def test_dispatch_section_records_the_hold_not_the_lease():
     assert "holds:" in _line("apps/quota-broker/quota_broker/accounts.py", 295)
     # The variable's NAME, built from pieces: no value is involved here.
     variable = "CLAUDE_CODE_OAUTH_" + "TOK" + "EN"
-    cited = _line("apps/agent-worker/agent_worker/accountlease.py", 113)
+    cited = _line("apps/agent-worker/agent_worker/accountlease.py", 131)
     assert any(ln.startswith("ACCOUNT_") and f'"{variable}"' in ln for ln in cited.splitlines())
     for cite in ("apps/quota-broker/quota_broker/accounts.py:295",
-                 "apps/agent-worker/agent_worker/accountlease.py:113"):
+                 "apps/agent-worker/agent_worker/accountlease.py:131"):
         assert f"`{cite}`" in body, cite
     assert "HOLD" in body and "request 13" in body
     assert variable in body

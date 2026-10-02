@@ -158,12 +158,12 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch
     assert "no init container" in dispatch
-    assert "assign(" in _cited_line("apps/agent-worker/agent_worker/lifecycle.py", 3987)
+    assert "assign(" in _cited_line("apps/agent-worker/agent_worker/lifecycle.py", 4040)
     assert "credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/lifecycle.py", 4094
+        "apps/agent-worker/agent_worker/lifecycle.py", 4410
     )
     assert "def credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/accountlease.py", 445
+        "apps/agent-worker/agent_worker/accountlease.py", 650
     )
 
     architecture = _section(text, "## 3. Architecture")

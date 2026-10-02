@@ -16,6 +16,14 @@ exactly the same schedule as a succeeded task's leftovers. The reconciler's
 a comment saying it was for cleaning up abandoned artifacts -- a seam built at
 both ends with nothing in the middle.
 
+That rule is now `days_since_custom_time = artifact_retention_days` (D14), and
+the worker stamps customTime on every object it uploads except a checkpoint's
+(`agent_worker.objectstore.is_checkpoint_key`, held equal to
+`parse_checkpoint_key` below by tests/unit/worker/test_checkpoint_retention.py).
+GCS never matches that condition against an object with no customTime, so the
+bucket's clock takes artifacts and logs and cannot reach a checkpoint at all:
+this module is the only thing that deletes one.
+
 WHAT CAN RESUME FROM A CHECKPOINT
 ---------------------------------
 Two things, and both are visible in the control plane:
@@ -78,7 +86,9 @@ MANIFEST_NAME = "manifest.json"
 #: The path segment that separates a checkpoint from the artifacts and logs of
 #: the same attempt. Kept as a constant because the layout it belongs to is
 #: `agent_worker.checkpoint.checkpoint_prefix`'s, not this module's;
-#: `tests/unit/worker/test_checkpoint_retention.py` asserts the two still agree.
+#: `tests/unit/worker/test_checkpoint_retention.py` asserts the two still agree,
+#: and that `parse_checkpoint_key` and the worker's `is_checkpoint_key` (which
+#: decides what the bucket's clock may delete) accept exactly the same keys.
 CHECKPOINTS_SEGMENT = "checkpoints"
 
 #: Every object this platform writes lives under this root.
@@ -87,7 +97,7 @@ TENANTS_ROOT = "tenants/"
 
 @runtime_checkable
 class CheckpointStore(Protocol):
-    """The three operations retention needs.
+    """The four operations retention needs.
 
     Deliberately not the worker's `ObjectStore`: this is the only code in the
     platform that DELETES a checkpoint, and importing the worker's store into
@@ -99,6 +109,9 @@ class CheckpointStore(Protocol):
     def list_keys(self, prefix: str) -> list[str]: ...
     def download_bytes(self, key: str) -> bytes: ...
     def delete(self, key: str) -> None: ...
+    #: When the live object was written, or None if it is not there. Read only
+    #: to date an orphan that has no manifest (`_backstop_hold`).
+    def created_at(self, key: str) -> datetime | None: ...
 
 
 class GcsCheckpointStore:
@@ -130,6 +143,10 @@ class GcsCheckpointStore:
         blob = self._get_client().bucket(self.bucket).blob(key)
         if blob.exists():
             blob.delete()
+
+    def created_at(self, key: str) -> datetime | None:
+        blob = self._get_client().bucket(self.bucket).get_blob(key)
+        return None if blob is None else blob.time_created
 
 
 # ---------------------------------------------------------------------------
@@ -545,11 +562,14 @@ class CheckpointCollector:
         its manifest happened to be unreadable costs an attempt.
         """
         if ref.manifest_key not in keys:
-            # No commit marker, so this was never a finished checkpoint and no
-            # restore can select it -- but it also carries no timestamp this
-            # collector can read, and it may be an upload that is in flight
-            # right now. The bucket's own lifecycle rule is what removes these.
-            return "no manifest; not datable by this collector"
+            # No commit marker, so this was never a finished checkpoint (or its
+            # delete died after the manifest) and no restore can select it. It
+            # used to be left to the bucket's `age` rule; that rule now keys on
+            # customTime, which no checkpoint object carries (D14), so this
+            # collector is the only thing that can ever remove it. Dated by the
+            # NEWEST of its objects, so an upload in flight right now restarts
+            # the window rather than being taken half-written.
+            return self._hold_by_object_age(ref, keys, now=now)
         try:
             raw = self._objects.download_bytes(ref.manifest_key)
         except Exception as exc:
@@ -569,6 +589,36 @@ class CheckpointCollector:
         window = self._config.checkpoint_orphan_backstop_seconds
         if age < window:
             return f"unreferenced, but only {int(age)}s old; backstop is {window}s"
+        return None
+
+    def _hold_by_object_age(
+        self, ref: CheckpointRef, keys: list[str], *, now: datetime
+    ) -> str | None:
+        """`_backstop_hold` for a checkpoint with no manifest to read a date
+        from. Same rule: any failure, or any object the store cannot date,
+        holds it."""
+        newest: datetime | None = None
+        for key in keys:
+            try:
+                stamp = self._objects.created_at(key)
+            except Exception as exc:
+                self._log.warning(
+                    "keeping an unreferenced checkpoint whose objects could not be dated",
+                    prefix=ref.prefix,
+                    error=str(exc),
+                )
+                return f"no manifest, and {key} could not be dated: {exc}"
+            if stamp is None:
+                return f"no manifest, and {key} has no creation time"
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            newest = stamp if newest is None or stamp > newest else newest
+        if newest is None:
+            return "no manifest and no objects to date"
+        age = (now - newest).total_seconds()
+        window = self._config.checkpoint_orphan_backstop_seconds
+        if age < window:
+            return f"no manifest; newest object only {int(age)}s old; backstop is {window}s"
         return None
 
     def _delete(self, ref: CheckpointRef, keys: list[str]) -> int:

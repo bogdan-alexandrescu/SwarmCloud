@@ -73,6 +73,10 @@ SPEC = CliAgentSpec(
     alt_key_envs=("CLAUDE_CODE_OAUTH_TOKEN",),
     model_flag="--model",
     transcript_name="claude-transcript.json",
+    # A pool-account attempt that must change account mid-run is stopped at a
+    # turn boundary and continued under the next account with
+    # `--resume <session_id>` (S13/S14, `cliagent.AccountStreamWatcher`).
+    resume_flag="--resume",
 )
 
 
