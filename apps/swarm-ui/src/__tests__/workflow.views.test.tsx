@@ -325,10 +325,17 @@ function cardOf(id: string): HTMLElement {
 }
 
 /** The card's own view control: Graph, Timeline, Table. */
-function chooseTab(card: HTMLElement, label: string): void {
-  const bar = card.querySelector<HTMLElement>('.wf-viewbar')
-  expect(bar, 'the page has no view control').toBeTruthy()
-  fireEvent.click(within(bar!).getByText(label))
+/**
+ * Press one of the page's view tabs. They are the underline tabs under the
+ * title (`nav.wf-tabs`, #503) -- outside the card -- so `_card` only names the
+ * page the caller is on. The Table tab carries its step count after the word.
+ */
+function chooseTab(_card: HTMLElement, label: string): void {
+  const bar = document.querySelector<HTMLElement>('nav.wf-tabs')
+  expect(bar, 'the page has no view tabs').toBeTruthy()
+  const tab = [...bar!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.firstChild?.textContent === label)
+  expect(tab, `no ${label} tab`).toBeTruthy()
+  fireEvent.click(tab!)
 }
 
 function track(card: HTMLElement, stepId: string): HTMLElement {
@@ -370,12 +377,14 @@ describe('U2: the view modes', () => {
   // workflow's page, held in its address. What these cases guard -- the three
   // views exist, each draws only itself, and the table is in dependency order
   // -- is asserted on the page.
-  it('offers Timeline and Table beside the Graph, as one segmented control, and no board-wide one', async () => {
+  it('offers Table and Timeline beside the Graph, as the page tabs, and no board-wide control', async () => {
     const c = await openPage('wf_new')
-    const seg = c.querySelector('.wf-viewbar .ctl-seg')
-    expect(seg, 'the page has no view control').toBeTruthy()
+    // The page's views are its underline tabs under the title (workflows.html B, #503).
+    const seg = document.querySelector('nav.wf-tabs')
+    expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLButtonElement>('button')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Timeline', 'Table'])
+    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline'])
+    expect(c.querySelector('.wf-viewbar .ctl-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
     expect(document.querySelector('.wf-chrome .ctl-seg'), 'a board-wide mode control is still drawn').toBeNull()

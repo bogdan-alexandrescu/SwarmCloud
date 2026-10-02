@@ -353,5 +353,9 @@ describe('spacing', () => {
 
     expect(lines(r.dark)).toEqual([])
     expect(lines(r.light)).toEqual([])
-  }, 240000)
+  // 300s, not 240: the sweep took 198s on main at 29a1421 in a full run on a
+  // loaded machine and 242s once the workflow page grew its band chips, tabs
+  // and phone stage cards (wave 4 U2) -- 184s against 172s run alone. A probe
+  // that goes red because the machine was busy is re-run until it passes.
+  }, 300000)
 })

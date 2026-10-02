@@ -20,6 +20,9 @@ locals {
   # git-review that is the merge or post-verdict account ALONE, and the worker
   # account is not on it (#295, contract request 35's MAJOR 1).
   #
+  # The forge provider's secret (`-git`) also lists var.forge_readers:
+  # swarm-api, for the issue preview (#454). No other provider's does.
+  #
   # `refreshable` is false for an App key: it does not expire, and the broker
   # has no business writing one (see refresh_secrets).
   secrets = {
@@ -29,7 +32,7 @@ locals {
           secret_id     = "swarm-tenant-${tenant_id}-${provider}"
           tenant_id     = tenant_id
           provider      = provider
-          accessors     = lookup(cfg.accessor_overrides, provider, [cfg.accessor])
+          accessors     = distinct(concat(lookup(cfg.accessor_overrides, provider, [cfg.accessor]), provider == var.forge_provider ? var.forge_readers : []))
           admin_members = cfg.admin_members
           refreshable   = !contains(var.action_providers, provider)
         }
@@ -127,6 +130,13 @@ resource "google_secret_manager_secret" "this" {
 # alone on -git-review, the worker and the review account on the review
 # agent's provider key). Authoritative, so a grant made out of band is removed
 # on the next apply.
+#
+# The one platform identity on a tenant secret: swarm-api, on each tenant's
+# `-git` secret only (var.forge_readers, #454 mock-up 1A), for the issue
+# preview. In THIS binding, per secret, rather than a project-level grant or a
+# conditional one: a project grant would reach every provider key of every
+# tenant, and an authoritative binding beside an additive member on the same
+# secret and role would fight on every apply.
 resource "google_secret_manager_secret_iam_binding" "accessor" {
   for_each = local.secrets
 

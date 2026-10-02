@@ -49,7 +49,7 @@ describe('/submit is a page of its own in the frame', () => {
     expect(visible(head), 'the head fell through to the API reads label').not.toContain('API reads')
     // MUTATION: drop SUBMIT from ScreenAge's "reads nothing" branch.
     expect(visible(head.querySelector('.ctl-head-age'))).toBe('reads nothing')
-    const work = document.querySelector<HTMLElement>('.sk-spine button[data-sec="work"]')!
+    const work = document.querySelector<HTMLElement>('.sk-spine [data-sec="work"]')!
     expect(work.getAttribute('aria-current'), 'no spine section is lit on /submit').toBe('page')
   })
 

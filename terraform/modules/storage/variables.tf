@@ -23,8 +23,15 @@ variable "bucket_suffix" {
 }
 
 variable "artifact_retention_days" {
-  type    = number
-  default = 90
+  description = <<-EOT
+    Days after its customTime that a LIVE artifact or log object is deleted.
+    The worker stamps customTime at upload on everything except checkpoints,
+    so this window never applies to a checkpoint: those are removed by
+    reference (apps/reconciler/reconciler/checkpoints.py), however long a
+    PARKED task waits. See the lifecycle rule in main.tf.
+  EOT
+  type        = number
+  default     = 90
 
   validation {
     condition     = var.artifact_retention_days >= 7
