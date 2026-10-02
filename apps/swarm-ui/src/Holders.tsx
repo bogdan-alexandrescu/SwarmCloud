@@ -195,7 +195,7 @@ export function HoldersScreen() {
               <Drift board={board} coverage={coverage} />
               <ClassMix rows={board.page.leases} coverage={coverage} />
             </div>
-            <HolderTable rows={board.page.leases} coverage={coverage} thresholds={board.page.thresholds} />
+            <HolderTable rows={board.page.leases} coverage={coverage} page={board.page} />
           </>
         )
       }}
@@ -491,11 +491,11 @@ function ClassMix({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCoverag
 function HolderTable({
   rows,
   coverage,
-  thresholds,
+  page,
 }: {
   rows: LeaseRow[]
   coverage: LeaseCoverage
-  thresholds: LeasePage['thresholds'] | undefined
+  page: Pick<LeasePage, 'thresholds'>
 }) {
   // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
   // this read loaded. The filter narrows what is drawn; the note beside the
@@ -613,7 +613,7 @@ function HolderTable({
                     <HeldFor createdAt={l.created_at} now={now} />
                   </td>
                   <td role="cell" data-label="Heartbeat">
-                    <Heartbeat lease={l} thresholds={thresholds} />
+                    <Heartbeat lease={l} page={page} />
                   </td>
                 </tr>
               ))}
@@ -645,18 +645,18 @@ function HeldFor({ createdAt, now }: { createdAt: string | null | undefined; now
  */
 function Heartbeat({
   lease,
-  thresholds,
+  page,
 }: {
   lease: LeaseRow
-  thresholds: LeasePage['thresholds'] | undefined
+  page: Pick<LeasePage, 'thresholds'>
 }) {
   const age = formatDuration(lease.silent_seconds * 1000)
   const since = lease.heartbeat_ever ? age : `never beat, ${age}`
   // A page that arrived without its thresholds cannot be judged, and a local
   // grace would colour at a threshold the reconciler does not act on: the age
   // alone, with no verdict.
-  if (thresholds === undefined) return <span title="No heartbeat thresholds arrived with this page">{since}</span>
-  const { kind, copy } = leaseLiveliness(lease, thresholds)
+  if (page.thresholds === undefined) return <span title="No heartbeat thresholds arrived with this page">{since}</span>
+  const { kind, copy } = leaseLiveliness(lease, page.thresholds)
   const tone = kind === 'presumed-dead' ? 'is-bad' : kind === 'silent' ? 'is-warn' : 'is-ok'
   const word = kind === 'presumed-dead' ? 'presumed dead' : kind === 'silent' ? 'silent' : 'beating'
   return (
