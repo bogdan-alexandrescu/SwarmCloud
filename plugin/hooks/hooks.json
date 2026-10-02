@@ -1,0 +1,17 @@
+{
+  "description": "sc: at session start, name the SwarmCloud workflows still running for your tenant so the session's first action is /sc attach --all. Read-only, silent when none run or anything fails; off when the plugin's auto_attach option is off.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}

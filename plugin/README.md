@@ -731,6 +731,47 @@ frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
 spec file, submit and read — and only through the sc plugin's own server (above).
 
+### Every running workflow, shown without asking for it
+
+Owner decision, 2026-10-02: a workflow running in SwarmCloud shows in Claude
+Code as live `[SwarmCloud]` rows without anyone attaching it by id. Three
+pieces do it, and none of them submits anything.
+
+* **The list.** `swarm_workflows` (MCP) and `uv run sc workflows` (in a
+  checkout) read `GET /v1/workflows?state=...` for the caller's own tenant
+  and keep only the workflows that are not finished — every state outside
+  `SUCCEEDED`, `FAILED`, `CANCELLED` and `DEAD_LETTERED`, plus `UNKNOWN`. Each
+  comes with its `workflow_id`, its spec's `label`, its state, its current
+  (unfinished) steps with their states, its age, and the console link the API
+  served. The route filters on the state it DERIVED from the steps, never the
+  stored cache, and the bridge filters again so a deployment older than the
+  filter still lists only running ones. The 20 newest are read step by step;
+  any more are listed with `steps_unread_because`.
+* **`/sc attach --all`** runs `/sc:swarmcloud` with `{attach: "all"}`: one
+  `sc:workflow` row lists them (`LIST`), and each of the newest **10** is
+  attached exactly as `/sc attach <wf_id>` attaches one — finished steps said
+  once, one slim `sc:step` row per unfinished step, all workflows at once. The
+  cap is 10 because every unfinished step is an agent of its own in the
+  session: ten workflows of three to five steps is already 30–50 rows, and past
+  that `/workflows` is unreadable and watching costs more than the work. The
+  rest are logged and returned as `not_followed`, each with the `/sc attach`
+  that follows it. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
+  `NOT_ATTACHED` with the list's error verbatim; one workflow that cannot be
+  attached is `NOT_ATTACHED` on its own and does not stop the others.
+* **The SessionStart hook** (`hooks/hooks.json`, `hooks/session-start.sh`).
+  On a new or resumed session where the plugin is configured, it runs the
+  plugin's own bridge — the same `${SWARM_MCP_FROM:-<pin>}` the MCP server
+  runs, read out of `plugin.json` — as `sc workflows --session-start`, and when
+  workflows are running it hands the session `additionalContext` naming them
+  and telling it to run `/sc attach --all` first. A hook cannot start a
+  workflow itself; this makes the attach the session's first action. It is
+  read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
+  silent and exits 0 when none run, when the bridge or the API fails, and when
+  the plugin's **`auto_attach`** option is off (`/plugin configure
+  sc@swarmcloud`; on by default). The first session after a new plugin version
+  may get no notice while uv fetches the new bridge; `/sc attach --all` works
+  by hand at any time.
+
 ### What a row shows, and what it costs
 
 A row writes one short line when its task's state or progress changes, and

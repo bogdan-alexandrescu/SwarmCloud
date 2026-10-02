@@ -70,7 +70,11 @@ EXPECTED_TOOLS = {
     # `swarm_follow` is the probe (owner decision, 2026-10-01): after a submit
     # or an attach it makes the rows' own progress follow once, so a bridge
     # that refuses it fails the workflow instead of every row falling back.
-    "workflow": {"swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status", "swarm_follow"},
+    # `swarm_workflows` is the LIST job (owner decision, 2026-10-02):
+    # `{attach: "all"}` lists the tenant's running workflows before attaching each.
+    "workflow": {
+        "swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status", "swarm_workflows", "swarm_follow",
+    },
 }
 
 #: The globals a workflow script's body may use: the workflow runtime's own

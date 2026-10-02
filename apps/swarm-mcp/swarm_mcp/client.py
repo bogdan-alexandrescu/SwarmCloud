@@ -29,7 +29,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Sequence
 
 #: An ID token is good for an hour. Re-minting a few minutes early costs one
 #: subprocess and avoids the failure mode where a long `tail` dies at the
@@ -1257,6 +1257,33 @@ class SwarmClient:
             token if isinstance(token, str) and token else None,
             "next_page_token" in data,
         )
+
+    def workflows(
+        self,
+        *,
+        states: Sequence[str] = (),
+        limit: int | None = None,
+        page_token: str | None = None,
+    ) -> dict[str, Any]:
+        """`GET /v1/workflows`: one page of the caller's tenant's workflows, newest first.
+
+        `states` filters on the DERIVED state, after the route's rollup, so a
+        page may come back short or empty with a `next_page_token` still set.
+        The tenant is the route's (`tenant_scope`), never a parameter here.
+        """
+        params: list[tuple[str, str]] = [("state", s) for s in states]
+        if limit is not None:
+            params.append(("limit", str(limit)))
+        if page_token:
+            params.append(("page_token", page_token))
+        query = urllib.parse.urlencode(params)
+        data = self.request("GET", f"/v1/workflows?{query}")
+        if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
+            raise SwarmError(
+                "GET /v1/workflows answered without a `workflows` list; this "
+                "deployment's workflow route is not the one this client speaks to"
+            )
+        return data
 
     def artifacts(self, task_id: str) -> dict[str, Any]:
         """`GET /v1/tasks/{id}/artifacts`: the manifest, as the route serves it.

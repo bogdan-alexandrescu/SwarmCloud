@@ -56,6 +56,32 @@ def _user_config() -> dict:
     return options
 
 
+#: Options the BRIDGE never reads, each with the plugin file that does. Claude
+#: Code hands a plugin's settings to its hooks as `CLAUDE_PLUGIN_OPTION_<KEY>`
+#: (plugins-reference, "User configuration"), so such an option has a reader
+#: as long as that file names that variable -- which
+#: `test_every_hook_option_is_read_by_its_hook` holds, so the drift this file
+#: guards against (an option nobody reads) is still caught for these.
+#:
+#: `auto_attach` (owner decision, 2026-10-02): the SessionStart hook's opt-out.
+#: Read before the bridge is even started, so turning it off costs nothing.
+_HOOK_OPTIONS = {"auto_attach": _MANIFEST.parents[1] / "hooks" / "session-start.sh"}
+
+
+def _bridge_options() -> dict:
+    """The options the bridge reads: every declared one but the hooks'."""
+    return {k: v for k, v in _user_config().items() if k not in _HOOK_OPTIONS}
+
+
+def test_every_hook_option_is_read_by_its_hook():
+    for key, reader in _HOOK_OPTIONS.items():
+        assert key in _user_config(), f"{key} is no longer declared; drop it from _HOOK_OPTIONS"
+        assert f"CLAUDE_PLUGIN_OPTION_{key.upper()}" in reader.read_text(), (
+            f"{reader.name} never reads the {key} option it is listed as reading"
+        )
+        assert key not in _server_env().get(f"SWARM_PLUGIN_{key.upper()}", ""), key
+
+
 def _server_env() -> dict:
     servers = _manifest().get("mcpServers") or {}
     env = (servers.get("swarmcloud") or {}).get("env")
@@ -73,7 +99,7 @@ def test_every_option_is_a_well_formed_strict_object():
 
 
 def test_the_options_the_manifest_prompts_for_are_the_ones_the_bridge_reads():
-    assert set(_user_config()) == set(_config().PLUGIN_KEYS)
+    assert set(_bridge_options()) == set(_config().PLUGIN_KEYS)
 
 
 def test_every_option_reaches_the_bridge_under_the_name_it_reads():
@@ -82,14 +108,14 @@ def test_every_option_reaches_the_bridge_under_the_name_it_reads():
     is a failure here rather than a value that silently never arrives."""
     env = _server_env()
     config = _config()
-    for key in _user_config():
+    for key in _bridge_options():
         name = config.plugin_env(key)
         assert env.get(name) == f"${{user_config.{key}}}", (
             f"{key!r} must reach the bridge as {name}={'${user_config.' + key + '}'}; "
             f"env carries {env.get(name)!r}"
         )
     passed = {v for v in env.values() if isinstance(v, str) and "${user_config." in v}
-    assert len(passed) == len(_user_config()), f"env passes an option nobody declared: {passed}"
+    assert len(passed) == len(_bridge_options()), f"env passes an option nobody declared: {passed}"
 
 
 def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
@@ -116,7 +142,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     green; this goes red.
     """
     config = _config()
-    options = _user_config()
+    options = _bridge_options()
     assert set(options) == {
         config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
     }, "the bridge names a role for every option the manifest prompts for, and no other"

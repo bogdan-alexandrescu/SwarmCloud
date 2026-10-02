@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does — the only verb that writes. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "show my workflow's rows again", before dispatching a long batch, or to run a spec.
-argument-hint: "[status <wf_id|task_id> | attach <wf_id> | run <spec path|JSON>]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does — the only verb that writes. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, or to run a spec.
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON>]"
 arguments:
   - verb
   - target
@@ -16,6 +16,7 @@ allowed-tools:
   - Bash(uv run sc whoami:*)
   - Bash(uv run sc config:*)
   - Bash(uv run sc debug:*)
+  - Bash(uv run sc workflows:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -26,6 +27,7 @@ allowed-tools:
   - Bash(sc whoami:*)
   - Bash(sc config:*)
   - Bash(sc debug:*)
+  - Bash(sc workflows:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
 ---
@@ -44,7 +46,9 @@ one action — never a second one the developer did not ask for:
 |---|---|---|
 | no verb (empty) | today's cluster state: `uv run sc`, read by the rules below | no |
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
+| `workflows` | lists your tenant's workflows still running in SwarmCloud | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
+| `attach --all` | live rows for every running workflow of your tenant (at most 10) | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
 
@@ -72,6 +76,30 @@ its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
 other-tenant id ends with the API's error; report it verbatim.
+
+### `workflows`
+
+ONE read of the caller's tenant's workflows that are not finished — every
+one whose state is not `SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED`,
+newest first. Call `swarm_workflows` once (the sc plugin's own read tool; it
+works outside a checkout); in a checkout `uv run sc workflows` prints the
+same list. Report each workflow's id, label, state, its current steps with
+their states, its age and its console link, as served — never build a link.
+`complete: false` means the list stopped paging: say so. None running is an
+answer, not an error. Never poll; offer `/sc attach --all` when any run.
+
+### `attach --all`
+
+Runs the `/sc:swarmcloud` workflow with args `{attach: "all"}` — nothing
+else. It lists the caller's tenant's running workflows once and attaches the
+newest 10 exactly as `attach <wf_id>` attaches one: finished steps reported
+once, a live row for every unfinished step. More than 10 are listed, each with
+the `/sc attach <wf_id>` that follows it, and not followed — every row is an
+agent of its own in this session, and past 10 workflows /workflows is no
+longer readable. Report the run's `state` (`ATTACHED`, `NOTHING_RUNNING` or
+`NOT_ATTACHED` with the API's error verbatim) and its `not_followed` list.
+This is what the plugin's SessionStart hook asks a new session to run first
+when workflows are running; it submits nothing either way.
 
 ### `run <spec path|JSON>`
 
@@ -131,6 +159,7 @@ dispatch to another cluster without asking.
 | which deployment, and who am I on it? | `uv run sc whoami` |
 | which endpoint, tenant, dispatch target and plugin version? | `uv run sc config` |
 | why did this one task fail? | `uv run sc debug <id>` |
+| which of my workflows are still running? | `uv run sc workflows` |
 | what may I actually run? | `uv run swarm profiles` |
 
 `sc config` shows where the dispatching tools send work — the session

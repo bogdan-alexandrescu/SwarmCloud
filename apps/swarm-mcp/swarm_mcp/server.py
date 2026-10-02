@@ -999,6 +999,23 @@ TOOLS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "swarm_workflows",
+        "description": (
+            "The workflows of YOUR tenant that are still running in SwarmCloud: "
+            "every one whose derived state is not SUCCEEDED, FAILED, CANCELLED or "
+            "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
+            "label, its state, its current (unfinished) steps and their states, "
+            "its age and its console link. Read-only; it submits and attaches "
+            "nothing. `count` is how many are listed; `complete: false` with "
+            "`incomplete_because` means the list stopped paging and older ones "
+            "may be missing. A workflow with `steps_unread_because` was listed "
+            "but its steps were not read. To show them all as live rows, run "
+            "`/sc attach --all` (the /sc:swarmcloud workflow with "
+            "{attach: \"all\"}), which follows at most 10."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
         "name": "swarm_workflow_result",
         "description": (
             "What each step of a workflow PRODUCED: commits, insertions and "
@@ -2327,6 +2344,16 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         )
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
+
+    if name == "swarm_workflows":
+        from .sc import running_workflows
+
+        listing = running_workflows(client)
+        listing["attach_all_with"] = (
+            "/sc attach --all -- or the /sc:swarmcloud workflow with {attach: \"all\"}"
+        )
+        listing["bridge_version"] = bridge_version()
+        return json.dumps(listing, indent=2, default=str)
 
     if name == "swarm_workflow_cancel":
         return json.dumps(workflows.cancel(client, args["workflow_id"]), indent=2)
