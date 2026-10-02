@@ -535,6 +535,15 @@ export interface Task {
   workflow_id: string | null
   step_id: string | null
   depends_on: string[] | null
+  /**
+   * CHILD TASKS (D15, docs/design/child-tasks.md §6.4, contract request 14).
+   * The task whose agent submitted this one, and that parent's attempt.
+   * OPTIONAL AND NOT ON MAIN'S API YET: a document without the key is "the
+   * API cannot say", never "no parent" -- `childrenServed` (AgentChildren.tsx)
+   * tells the two apart by the key's presence, not its value.
+   */
+  parent_task_id?: string | null
+  parent_attempt_id?: string | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -1183,6 +1192,14 @@ export interface GitSummary {
   auto_committed?: boolean
   published?: boolean
   publish_reason?: string
+  /**
+   * WHERE THE CLONE'S BASE WAS PINNED (agent-detail-2.html A4). Not written by
+   * any worker on main: the shape is the mock-up's reading of the brief --
+   * `{pinned: true, sha, from}` (from: the upstream step or task the commit was
+   * taken from) or `{pinned: false, reason}`. Absent is "not recorded", which
+   * the Code card says as that and never as "not pinned".
+   */
+  base_pin?: GitBasePin | null
   pull_request?: { number: number; url: string; state: string; created: boolean }
 
   /**
@@ -1210,6 +1227,11 @@ export interface GitSummary {
     complete?: boolean
   }
 }
+
+/** `result_summary.git.base_pin`; see `GitSummary.base_pin`. */
+export type GitBasePin =
+  | { pinned: true; sha: string; from?: string | null; upstream_task_id?: string | null }
+  | { pinned: false; reason?: string | null }
 
 export interface ArtifactRef {
   name: string

@@ -172,22 +172,25 @@ describe('#94 and #109: at phone width a row is named by its step', () => {
     return r.winner?.value ?? null
   }
 
-  it('shows the step in place of the profile at 390, and only the profile at 1440 where Step is a column', async () => {
+  // THE COMPACT ROW AT EVERY WIDTH (agents.html V1, #503): the step IS the
+  // row's name, on line one, at 390 and at 1440 alike; the profile is line
+  // two. The wide table's Step column, and the swap at 390 it needed, are gone.
+  it('names a workflow row by its step at 390 and at 1440, with the profile on line two', async () => {
     const c = await land([
       listTask('task_aaaaaaaa00000000000a', 'RUNNING', { workflow_id: 'wf_one', step_id: 'scan-01' }),
       listTask('task_bbbbbbbb00000000000b', 'RUNNING', { workflow_id: 'wf_one', step_id: 'scan-04' }),
     ])
     const rows = [...c.querySelectorAll('.row.clickable')]
-    const steps = rows.map((r) => r.querySelector('.agent .agent-step')?.textContent)
+    const steps = rows.map((r) => r.querySelector('.cr-name b')?.textContent)
     expect(steps.sort()).toEqual(['scan-01', 'scan-04'])
     const row = rows[0]!
-    const step = row.querySelector('.agent .agent-step')!
-    const profile = row.querySelector('.agent .agent-profile')!
+    const name = row.querySelector('.cr-name b')!
+    const profile = row.querySelector('.cr-sub .cr-profile')!
     expect(profile.textContent).toBe('claude-code')
-    expect(display(step, PHONE)).not.toBe('none')
-    expect(display(profile, PHONE)).toBe('none')
-    expect(display(step, WIDE)).toBe('none')
-    expect(display(profile, WIDE)).not.toBe('none')
+    for (const env of [PHONE, WIDE]) {
+      expect(display(name, env)).not.toBe('none')
+      expect(display(profile, env)).not.toBe('none')
+    }
   })
 
   it('keeps the profile on a standalone row, which has no step to show', async () => {

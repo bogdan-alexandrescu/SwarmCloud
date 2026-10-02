@@ -339,6 +339,19 @@ afterEach(() => {
   window.location.hash = ''
 })
 
+/**
+ * A RUNNER WITH NO AGENT CLI OPENS THE DOCK ON ITS RUNNER LOG (viewers.html A:
+ * "opens on Transcript for claude-code and codex, and on Runner for runners
+ * with no agent CLI"). The transcript view is one click away; this takes it.
+ */
+async function openTranscriptOfNoCliRunner(): Promise<void> {
+  const dock = await sectionReady('Log', /Runner/)
+  const pressed = () => [...dock.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.getAttribute('aria-pressed') === 'true')
+  await waitFor(() => expect(pressed()?.textContent, 'a runner with no agent CLI did not open on Runner').toBe('Runner'), WAIT)
+  const t = [...dock.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'Transcript')
+  fireEvent.click(t!)
+}
+
 // ---------------------------------------------------------------------------
 // The tabs and the address
 // ---------------------------------------------------------------------------
@@ -351,9 +364,9 @@ describe('the drawer has four panes: Details, Attempts, Artifacts, Checkpoints',
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     }, WAIT)
-    expect(tabs.map((t) => t.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(tabs.map((t) => t.querySelector('.ag-tab-label')?.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(tabs[2]!.getAttribute('aria-selected')).toBe('true')
-    for (const title of ['Inputs', 'Outputs', 'Logs']) await sectionReady(title, /./)
+    for (const title of ['Inputs', 'Outputs', 'Log']) await sectionReady(title, /./)
   })
 
   it('round-trips the pane through the address, and leaves the other two as they were', async () => {
@@ -471,6 +484,9 @@ describe('Outputs: the answer first, then every file', () => {
     await waitFor(() => expect(out.querySelector('.art-viewer .art-md h4')?.textContent).toBe('Report'), WAIT)
 
     open('claude-transcript.json')
+    // A WHOLE JSON FILE OPENS AS A TREE, with Raw beside it (viewers.html A).
+    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toContain('"num_turns": 7'), WAIT)
+    fireEvent.click([...out.querySelectorAll<HTMLButtonElement>('.art-viewer [aria-label="JSON view"] button')].find((b) => b.textContent === 'Raw')!)
     await waitFor(() => expect(out.querySelector('.art-viewer pre.art-text')?.textContent).toBe('{\n  "type": "result",\n  "num_turns": 7\n}'), WAIT)
 
     open('big.json')
@@ -971,7 +987,7 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /Read/)
+    const logsSection = await sectionReady('Log', /Read/)
     expect(logsSection.textContent).toMatch(/earlier steps are not in this window/)
     const read = [...logsSection.querySelectorAll('li')].find((li) => li.querySelector('summary')?.textContent?.includes('Read'))
     expect(read, 'the Read tool call is not a step').toBeTruthy()
@@ -986,21 +1002,21 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
 
   it('labels a run that recorded only its final result, rather than drawing a short transcript', async () => {
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Logs', /recorded only its final result/)
+    const logsSection = await sectionReady('Log', /recorded only its final result/)
     expect(logsSection.textContent).toMatch(/turn-by-turn steps need stream-json/)
   })
 
   it('draws the agent’s empty stderr as a measured zero, and the runner’s own log behind its own choice', async () => {
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Logs', /transcript/)
+    const logsSection = await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
       const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => x.textContent === label)
       expect(b, `no ${label} choice`).toBeTruthy()
       fireEvent.click(b!)
     }
-    choose('stderr')
+    choose('Agent stderr')
     await waitFor(() => expect(row(logsSection, 'agent_stderr').querySelector('td[data-label="Size"] .ctl-mark.is-zero')).not.toBeNull(), WAIT)
-    choose('runner (platform)')
+    choose('Runner')
     await waitFor(() => expect(logsSection.querySelector('pre.logwin-body')?.textContent).toMatch(/child started/), WAIT)
     row(logsSection, 'stdout')
     row(logsSection, 'stderr')
@@ -1014,7 +1030,8 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
         [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr', { status: 'not_applicable', source: null, content: null, total_bytes: null }), logStream('stdout'), logStream('stderr')]),
       }),
     )
-    const logsSection = await sectionReady('Logs', /no agent CLI/)
+    await openTranscriptOfNoCliRunner()
+    const logsSection = await sectionReady('Log', /no agent CLI/)
     expect(logsSection.querySelector('.ctl-mark.is-absent'), 'not applicable is drawn as not measured').toBeNull()
   })
 })
@@ -1064,7 +1081,7 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /cut at its cap/)
+    const logsSection = await sectionReady('Log', /cut at its cap/)
     const capture = [...logsSection.querySelectorAll('li.ctl-fact')].find((li) => li.querySelector('b')?.textContent === 'capture')
     expect(capture?.querySelector('.ctl-mark.is-partial'), 'a cut capture is not marked partial').not.toBeNull()
     expect(logsSection.textContent, 'the server’s reason for an ok window is drawn nowhere').toContain(CUT_DETAIL)
@@ -1086,7 +1103,7 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /line longer than this window/)
+    const logsSection = await sectionReady('Log', /line longer than this window/)
     expect(logsSection.textContent).toContain(OVERSIZE_DETAIL)
     const s = logsSection.querySelector('li.arts-step')
     expect(s?.querySelector('.ctl-mark.is-partial'), 'an undecoded line is not marked partial').not.toBeNull()
@@ -1107,7 +1124,7 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /Read/)
+    const logsSection = await sectionReady('Log', /Read/)
     const call = [...logsSection.querySelectorAll('li.arts-step')].find((li) => li.querySelector('summary')?.textContent?.includes('Read'))
     expect(call?.textContent, 'two unknown ids were joined as a call and its result').toMatch(/no result in this window/)
     expect(logsSection.textContent, 'the unjoined result was dropped').toMatch(/its call is not in this window/)
@@ -1163,7 +1180,8 @@ describe('the pane reads what #188 serves about a cut capture, an over-long line
     expect(fact()!.textContent).toMatch(/3/)
     expect(fact()!.querySelector('.ctl-mark.is-partial')).not.toBeNull()
     fireEvent.click(row(out, 'claude-transcript.json').querySelector('button.art-open')!)
-    await waitFor(() => expect(out.querySelector('.art-viewer pre.art-text')?.textContent).toBe('{}'), WAIT)
+    // A whole JSON file opens as its tree (viewers.html A).
+    await waitFor(() => expect(out.querySelector('.art-viewer [role="tree"]')?.textContent).toBe('{ 0 keys }'), WAIT)
     expect(fact(), 'a zero count is drawn as a finding').toBeUndefined()
   })
 })
@@ -1205,7 +1223,7 @@ describe('live: every 5 s while the task runs, with each read’s age, and not a
     const transcripts = `/v1/tasks/${REF}/transcript`
     const logReads = `/v1/tasks/${REF}/logs`
     expect(api.count(transcripts)).toBe(1)
-    expect(section('Logs').textContent, 'a live read does not say how old it is').toMatch(/published 42s ago/)
+    expect(section('Log').textContent, 'a live read does not say how old it is').toMatch(/published 42s ago/)
 
     await advance(5_000)
     expect(api.count(transcripts), 'the transcript was not re-read at 5 s').toBe(2)
@@ -1264,12 +1282,12 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
         [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr', { source: 'live', content: 'warming up', total_bytes: 10, returned_bytes: 10, age_seconds: 4 }), logStream('stdout', { source: 'live' }), logStream('stderr', { source: 'live' })], false),
       }),
     )
-    const logsSection = await sectionReady('Logs', /published \d+s ago/)
+    const logsSection = await sectionReady('Log', /published \d+s ago/)
     const ages = () => [...logsSection.querySelectorAll<HTMLElement>('.ctl-sub')].filter((s) => /published \d+s ago/.test(s.textContent ?? ''))
     expect(ages().length, 'the transcript shows no age').toBeGreaterThan(0)
     for (const a of ages()) expect(shownAt(a, { width: 390 }), `${a.textContent} is hidden at 390`).toBe(true)
 
-    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'stderr')
+    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'Agent stderr')
     fireEvent.click(stderr!)
     // #172: a live stream's Age cell leads with how long ago the tail object
     // changed, with `live` on the line under it.
@@ -1296,7 +1314,7 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
   it('draws every table as the stacked record the inspector uses below 900px', async () => {
     await openPane(finishedRoutes())
     await sectionReady('Outputs', /bundle\.tar/)
-    await sectionReady('Logs', /recorded only its final result/)
+    await sectionReady('Log', /recorded only its final result/)
     const tables = [...drawer().querySelectorAll('table')]
     expect(tables.length).toBeGreaterThan(0)
     for (const t of tables) {
@@ -1349,27 +1367,18 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
 // for an absent stream; check `step.text === null` alone; drop `start` from
 // the `<ol>`; print `Scalars` again; drop the transcript's object fact.
 
-/** Whether the shipped sheet lets `el` shrink below its content width at `env`. */
-function shrinks(el: Element, env: CascadeEnv): boolean {
-  const w = cascade(STYLES, el, ['flex', 'flex-shrink'], env).winner
-  if (w === null) return true // the initial flex-shrink is 1
-  if (w.property === 'flex-shrink') return Number(w.value) > 0
-  const parts = w.value.trim().split(/\s+/)
-  if (parts[0] === 'none') return false
-  if (parts.length >= 2 && /^[\d.]+$/.test(parts[1]!)) return Number(parts[1]) > 0
-  return true
-}
-
 describe('the drawer findings of the post-deploy QA (#222)', () => {
-  it('(b) lets the Logs card note shrink and wrap at 390, and keeps it on one line at 1440', async () => {
+  it('(b) says the attempt and the masking in the log dock’s facts, which wrap rather than overflow', async () => {
+    // THE LOGS TOOLBAR'S CARD NOTE MOVED INTO THE DOCK (viewers.html A): the
+    // attempt and "masking at read time" are facts of the dock's own facts
+    // row now, a `.ctl-facts` strip, which wraps at any width.
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Logs', /masking/)
-    const note = logsSection.querySelector<HTMLElement>('.ctl-toolbar.att-sub-head > .ctl-card-note')
-    expect(note, 'no card note in the Logs toolbar').not.toBeNull()
-    expect(shrinks(note!, { width: 390 }), 'the note cannot shrink at 390, so it overflows the drawer').toBe(true)
-    expect(cascade(STYLES, note!, 'min-width', { width: 390 }).winner?.value, 'the note keeps its content width as a floor').toBe('0')
-    // The desktop rule is the kit's: a qualifier on one line.
-    expect(shrinks(note!, { width: 1440 })).toBe(false)
+    const logsSection = await sectionReady('Log', /masking/)
+    const facts = logsSection.querySelector<HTMLElement>('ul.ctl-facts.ag-logdock-facts')
+    expect(facts, 'no facts row in the log dock').not.toBeNull()
+    expect(facts!.textContent).toMatch(/attempt/)
+    expect(facts!.textContent).toMatch(/masking\s*at read time/)
+    expect(cascade(STYLES, facts!, 'flex-wrap', { width: 390 }).winner?.value).toBe('wrap')
   })
 
   it('(c) draws no facts over a transcript that has published nothing yet', async () => {
@@ -1387,7 +1396,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
         [`/v1/tasks/${REF}/logs`]: logs([logStream('agent_stderr'), logStream('stdout'), logStream('stderr')], false),
       }),
     )
-    const logsSection = await sectionReady('Logs', /nothing published yet/)
+    const logsSection = await sectionReady('Log', /nothing published yet/)
     const view = logsSection.querySelector('.arts-transcript')!
     expect(view.querySelector('.ctl-facts'), 'facts were drawn for a stream that does not exist').toBeNull()
     expect(view.textContent, 'a masking count was drawn over bytes nobody read').not.toMatch(/masked\s*0/)
@@ -1400,7 +1409,8 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
         [`/v1/tasks/${REF}/transcript`]: transcript({ stream: stream({ status: 'not_applicable', source: null, uri: null, total_bytes: null, returned_bytes: 0 }), format: null, steps: null, complete: false }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /no agent CLI/)
+    await openTranscriptOfNoCliRunner()
+    const logsSection = await sectionReady('Log', /no agent CLI/)
     expect(logsSection.querySelector('.arts-transcript .ctl-facts')).toBeNull()
   })
 
@@ -1414,7 +1424,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /plan the work/)
+    const logsSection = await sectionReady('Log', /plan the work/)
     const [empty, full] = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step.is-thinking')]
     expect(empty, 'the empty thinking step is not drawn').toBeTruthy()
     expect(empty!.querySelector('details'), 'an empty thinking text is an expandable that opens onto nothing').toBeNull()
@@ -1444,7 +1454,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
         }),
       }),
     )
-    const logsSection = await sectionReady('Logs', /rate limit/)
+    const logsSection = await sectionReady('Log', /rate limit/)
     const li = [...logsSection.querySelectorAll<HTMLElement>('li.arts-step')].find((x) => /rate limit/.test(x.textContent ?? ''))!
     const text = li.textContent ?? ''
     expect(text, 'a raw key reached the screen').not.toMatch(/rate_limit_info|resetsAt|rateLimitType/)
@@ -1460,7 +1470,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
     try {
       await openPane(finishedRoutes())
-      const logsSection = await sectionReady('Logs', /recorded only its final result/)
+      const logsSection = await sectionReady('Log', /recorded only its final result/)
       const where = uri(REF, 'claude-code.stdout.log')
       const fact = [...logsSection.querySelectorAll<HTMLElement>('.arts-transcript .ctl-fact')].find((f) => (f.textContent ?? '').includes(where))
       expect(fact, 'the transcript names no object location').toBeTruthy()
@@ -1476,12 +1486,12 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
 
   it('keeps each stream’s location and its copy on its own row in the other views', async () => {
     await openPane(finishedRoutes())
-    const logsSection = await sectionReady('Logs', /transcript/)
+    const logsSection = await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
       const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => x.textContent === label)
       fireEvent.click(b!)
     }
-    choose('runner (platform)')
+    choose('Runner')
     for (const name of ['stdout', 'stderr']) {
       const head = await waitFor(() => row(logsSection, name).querySelector('th')!, WAIT)
       expect(head.querySelector('.uri')?.textContent).toContain(`/logs/${name}.log`)
