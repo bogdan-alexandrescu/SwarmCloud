@@ -167,6 +167,7 @@ from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
     ConfigError,
+    ControlPlaneError,
     ExitCode,
     FencedError,
     FencedWriteRefused,
@@ -873,6 +874,60 @@ class Worker:
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
 
+    def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
+        """The signed parents of `task` that have not SUCCEEDED, with their state.
+
+        `task` is the document `_verify_spec` just verified, and the ids come
+        from its `depends_on`, which the signature covers
+        (`swarm_common.specsign`). None as a state means the parent has no
+        document, or a state the contract does not name.
+
+        A `depends_on` that is not a list of task ids is refused, not
+        skipped: skipping it would run a step whose dependencies nobody
+        checked. swarm-api never signs one, so this is reachable only by a
+        task the legacy window admitted unsigned.
+        """
+        parents = task.get("depends_on")
+        if parents is None:
+            return {}
+        if not isinstance(parents, list) or not all(
+            isinstance(p, str) and p for p in parents
+        ):
+            raise ControlPlaneError("depends_on is not a list of task ids")
+        if not parents:
+            return {}
+        states = self.control.fetch_parent_states(parents)
+        return {
+            parent: (state.value if state is not None else None)
+            for parent, state in states.items()
+            if state is not TaskState.SUCCEEDED
+        }
+
+    def _park_dependency_incomplete(self, waiting_on: dict[str, str | None]) -> Outcome:
+        """A parent has not SUCCEEDED: park, give the slot back, run nothing.
+
+        No checkpoint and no output upload, unlike the other parks: nothing
+        has run and nothing has been restored, so the workspace is empty, and
+        a checkpoint of it would become the task's `latest_checkpoint` over
+        the real one. Due at once: the scheduler's dependency sweep, not a
+        clock, decides when it is READY again.
+        """
+        self.log.warning(
+            "a signed parent has not succeeded; parking without running",
+            park_reason=ParkReason.DEPENDENCY_INCOMPLETE.value,
+            waiting_on=waiting_on,
+        )
+        self.control.park(
+            reason=ParkReason.DEPENDENCY_INCOMPLETE,
+            next_eligible_at=utcnow(),
+            detail={
+                "waiting_on": sorted(waiting_on),
+                "parent_states": waiting_on,
+                "park_phase": "parent_states",
+            },
+        )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
     def _prepare(self) -> dict[str, str] | Callable[[], Outcome]:
         """Steps 2 to 6, the fence re-check and the quota preflight.
 
@@ -925,6 +980,23 @@ class Worker:
         self.phases.enter("verify_spec")
         task, create_time = self.control.fetch_task_snapshot()
         self._verify_spec(task, create_time)
+
+        # ---- STEP 4a: every signed parent has SUCCEEDED -------------------
+        # Contract request 34, decision 7. A tenant agent can write a parked
+        # step's `state` to READY without touching its spec, and the scheduler
+        # will admit it: the signature still verifies. So, on the SAME verified
+        # `task` -- never a re-fetch -- each parent named by its signed
+        # `depends_on` is read through the tenant gate, and one that has not
+        # SUCCEEDED parks this task as DEPENDENCY_INCOMPLETE before a
+        # checkpoint is restored, a repository cloned, an input staged or a
+        # credential read. The scheduler's dependency sweep returns it to
+        # READY, or cancels it on a failed parent. Defence in depth: it makes
+        # the early-release rewrite forge every parent's state as well; it
+        # does not close it. Inside the `verify_spec` phase, not one of its
+        # own: it is the second half of the same check on the same document.
+        waiting_on = self._incomplete_parents(task)
+        if waiting_on:
+            return functools.partial(self._park_dependency_incomplete, waiting_on)
 
         # ---- STEP 4b: restore the latest checkpoint ---------------------
         self.phases.enter("restore_checkpoint")
