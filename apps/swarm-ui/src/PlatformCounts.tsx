@@ -38,9 +38,24 @@ import { AGE_TICK_MS, useNow } from './useNow'
  * their own four running tasks as the platform total is a truth bug, not a
  * layout preference.
  */
+/**
+ * THE LAST GOOD RUN, KEPT FOR THE SESSION (#135). A run is billed, so leaving
+ * the screen and coming back used to throw away an answer already paid for
+ * and draw the not-run cards over it. It lives in the module -- this tab's
+ * lifetime, never storage -- and the screen opens on it, with its age in the
+ * head as it had when it landed. A failed run is this visit's news and is not
+ * kept: coming back shows the counts the session last actually read.
+ */
+let lastRun: { run: Result<Stats>; runs: number } | null = null
+
+/** Forgets the session's record, for a test that starts a new session. */
+export function forgetLastRun(): void {
+  lastRun = null
+}
+
 export function PlatformCountsScreen() {
-  const [run, setRun] = useState<Result<Stats> | null>(null)
-  const [runs, setRuns] = useState(0)
+  const [run, setRun] = useState<Result<Stats> | null>(() => lastRun?.run ?? null)
+  const [runs, setRuns] = useState(() => lastRun?.runs ?? 0)
   const [busy, setBusy] = useState(false)
   /**
    * WHO IS ASKING, FROM THE SESSION READ -- the same `/v1/tenants/me` the
@@ -76,7 +91,12 @@ export function PlatformCountsScreen() {
       // Counted only on a read that actually produced counts. Incrementing on
       // every settled promise would let a failure inflate a number the toolbar
       // then presents as work that was billed.
-      if (r.status === 'ok' || r.status === 'stale') setRuns((n) => n + 1)
+      if (r.status === 'ok' || r.status === 'stale') {
+        setRuns((n) => {
+          lastRun = { run: r, runs: n + 1 }
+          return n + 1
+        })
+      }
     })
   }
 

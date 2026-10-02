@@ -11976,6 +11976,38 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .help-search { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 0 0 var(--ctl-s5); }
 .help-search input { font: var(--t-body)/var(--lh-body) var(--font); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
 
+/* --- Help #130: the topic index, the action, the copyable anchor --------- */
+/* THE INDEX IS A STICKY LIST BESIDE THE COLUMN WHERE THERE IS ROOM, AND A
+   SELECT ON A PHONE. Both are in the document; the width picks one, so no
+   script has to know the breakpoint. The list comes first in the document
+   (HelpSection.tsx) and is placed in the second column here. `top: 0` sticks
+   it to `.ctl-scroll`, the same scroller the group headings stick to. */
+.help-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(200px, 240px); gap: var(--ctl-gutter); align-items: start; }
+.help-body { grid-column: 1; grid-row: 1; min-width: 0; }
+.help-index { grid-column: 2; grid-row: 1; position: sticky; top: 0; max-height: 100vh; overflow-y: auto; padding: var(--ctl-s2) 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.help-index ul { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; }
+.help-index li { margin: 0; }
+.help-index a { display: block; padding: 2px var(--ctl-s2); border-inline-start: 2px solid transparent; color: var(--text-dim); text-decoration: none; }
+.help-index a:hover { color: var(--text); }
+.help-index a[aria-current='location'] { color: var(--text); border-inline-start-color: var(--text); }
+.help-index-group { display: block; padding: 0 var(--ctl-s2) 2px; font-weight: 600; color: var(--text); }
+.help-index-pick { display: none; }
+.help-index-pick select { font: var(--t-body)/var(--lh-body) var(--font); padding: 7px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+@media (max-width: 899px) {
+  .help-layout { display: block; }
+  .help-index { display: none; }
+  .help-index-pick { display: flex; flex-direction: column; gap: 4px; max-width: 420px; margin: 0 0 var(--ctl-s5); }
+}
+/* WHAT TO DO (#131): the topic's last line, in ink, so it reads as the
+   answer rather than one more paragraph of rationale. */
+.help-topic > .help-topic-act { margin: var(--ctl-s3) 0 0; max-width: var(--measure); font-size: var(--t-body); line-height: var(--lh-body); color: var(--text); }
+.help-topic-act > b { font-weight: 600; margin-inline-end: var(--ctl-s1); }
+/* The anchor is a link and a copy control now, at the anchor line's step. */
+.help-topic-anchor > a { color: var(--text-dim); }
+.help-topic-anchor > button { padding: 0 var(--ctl-s1); border: 1px solid var(--line-soft); border-radius: 4px; background: none; color: var(--text-dim); font: inherit; cursor: pointer; }
+.help-topic-anchor > button:hover { color: var(--text); }
+.help-topic-anchor > [role='status'] { color: var(--text-dim); }
+
 /* --- a task state's chip draws its brand mark (marks.tsx) ---------------- */
 .ctl-chip[data-mark][data-hue] > i { width: 12px; height: 12px; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; display: inline-flex; flex: none; }
 .ctl-chip[data-mark][data-hue] > i::before, .ctl-chip[data-mark][data-hue] > i::after { content: none; }
@@ -12243,6 +12275,14 @@ table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 .adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
 .adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
 .adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
+/* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
+.adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.adm-changed > time { color: var(--text-dim); }
+/* OVER ITS CEILING, NEUTRAL (#133). A ceiling lowered below what is in use is
+   a legal state (help `ceiling-change-evicts-nothing`), so this is the neutral
+   outlined tag, never `--warn` or `--bad`: the row is reporting an operator's
+   own change back to them, not a fault. */
+.adm-over { display: inline-block; margin-inline-start: var(--ctl-s2); padding: 0 var(--ctl-s1); border: 1px solid var(--line); border-radius: 4px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .adm-family tr.is-editing > th[scope="row"],
 .adm-family tr.is-editing > td { background: var(--sk-acs); }
 @media (max-width: 560px) {
