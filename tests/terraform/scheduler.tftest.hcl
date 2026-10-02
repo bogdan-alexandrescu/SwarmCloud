@@ -150,3 +150,113 @@ run "a_plaintext_push_endpoint_is_refused" {
 
   expect_failures = [var.scheduler_push_endpoint]
 }
+
+# D17. POST /v1/admin/workflows/rollup converges the STORED Workflow.state of
+# workflows nobody reads (docs/workflows.md, "Workflow state"). It had no
+# periodic caller, so a workflow nobody listed kept a stale stored state for
+# ever. One job per registered tenant, because the route takes exactly one
+# tenant_id and refuses to guess it from the caller.
+run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.workflow_rollup)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one rollup job, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.workflow_rollup["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/workflows/rollup?tenant_id=eng"
+    error_message = "the job must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.workflow_rollup["research"].http_target[0].http_method == "POST"
+    error_message = "the rollup route is a POST"
+  }
+
+  # Its own identity, never the tick: the tick reaches the scheduler and the
+  # reconciler, and the API's narrow capability (auth.ROLLUP_SWEEPER_ROUTES) is
+  # granted to this one address alone.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.workflow_rollup :
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+    ])
+    error_message = "the rollup jobs must present the dedicated rollup-sweeper identity, not the tick"
+  }
+
+  assert {
+    condition     = output.rollup_sweeper_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    error_message = "the root hands this address to swarm-api as ROLLUP_SWEEPER_USERS; it must be the account the jobs present"
+  }
+
+  assert {
+    condition     = google_service_account.rollup_sweeper.account_id == "swarm-rollup-sweeper"
+    error_message = "the account id is spelled in modules/service_account_ids so bootstrap grants the deployer on it"
+  }
+
+  # The audience defaults to the endpoint, which is what a Cloud Run ID token
+  # names and what verify.tf sets swarm-api's API_AUDIENCE to for its caller.
+  assert {
+    condition     = google_cloud_scheduler_job.workflow_rollup["eng"].http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    error_message = "the OIDC audience is the API's own URL unless one is set"
+  }
+
+  # A Cloud Scheduler job has no labels; the destroy guard reads the marker from
+  # its description, as it does for the three ticks above.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.workflow_rollup :
+      startswith(job.description, "managed-by=swarm-terraform;")
+    ])
+    error_message = "every rollup job carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = startswith(google_service_account.rollup_sweeper.description, "managed-by=swarm-terraform;")
+    error_message = "the sweeper account carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-workflow-rollup-eng") && contains(output.scheduler_job_names, "swarm-workflow-rollup-research")
+    error_message = "scheduler_job_names must list every job this module makes"
+  }
+}
+
+run "no_registered_tenant_means_no_rollup_job" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  assert {
+    condition     = length(google_cloud_scheduler_job.workflow_rollup) == 0
+    error_message = "a rollup job for a tenant nobody registered sweeps nothing"
+  }
+}
+
+run "a_rollup_job_without_an_https_api_endpoint_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng"]
+    api_endpoint      = "http://swarm-api-abcdef-uc.a.run.app"
+  }
+
+  expect_failures = [var.api_endpoint]
+}

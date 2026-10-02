@@ -75,9 +75,9 @@ def _tenant_members(
     PROJECT -- the frozen regex cannot pin the project, it has no project id,
     so the `endswith` below is that pin; the same email listed twice, under the
     same tenant or another (checked explicitly, never left to a dict or set to
-    collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS or
-    SECRET_ADMIN_PRINCIPALS, since a listing grants one tenant's rights and an
-    admin entry would add every tenant's.
+    collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS,
+    ROLLUP_SWEEPER_USERS or SECRET_ADMIN_PRINCIPALS, since a listing grants one
+    tenant's rights and an admin entry would add every tenant's.
     """
     raw = os.environ.get("TENANT_SERVICE_ACCOUNTS", "").strip()
     if not raw:
@@ -194,6 +194,18 @@ class ApiSettings:
     #: Same comparison as `admin_users`: the bare email from the verified
     #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
     admin_pool_users: tuple[str, ...] = ()
+    #: The identity the per-tenant Cloud Scheduler rollup jobs present
+    #: (terraform/modules/scheduler/jobs.tf, `workflow_rollup`): may call
+    #: `POST /v1/admin/workflows/rollup` (`auth.ROLLUP_SWEEPER_ROUTES`) and no
+    #: other route, admin or not. NOT an admin and NOT a tenant member -- see
+    #: `AuthContext.is_rollup_sweeper`. Admitted before the domain check, as a
+    #: service account must be, and only with an explicit `email_verified`.
+    #:
+    #: Same comparison as `admin_pool_users`: the bare email from the verified
+    #: token, case-insensitive. An address here may not also be on ADMIN_USERS,
+    #: ADMIN_POOL_USERS, ALLOWED_USERS or TENANT_SERVICE_ACCOUNTS: two roles on
+    #: one address make which applies depend on the order auth.py asks.
+    rollup_sweeper_users: tuple[str, ...] = ()
     #: Authorise these exact addresses, regardless of their domain.
     #:
     #: WHY THIS EXISTS, and it is not the same idea as `admin_users` above.
@@ -389,6 +401,20 @@ class ApiSettings:
         admin_users = _csv("ADMIN_USERS")
         admin_pool_users = _csv("ADMIN_POOL_USERS")
         secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")
+        allowed_users = _csv("ALLOWED_USERS")
+        rollup_sweeper_users = _csv("ROLLUP_SWEEPER_USERS")
+        sweepers = {u.lower() for u in rollup_sweeper_users}
+        for name, values in (
+            ("ADMIN_USERS", admin_users),
+            ("ADMIN_POOL_USERS", admin_pool_users),
+            ("ALLOWED_USERS", allowed_users),
+        ):
+            overlap = sorted(sweepers & {v.lower() for v in values})
+            if overlap:
+                raise ValueError(
+                    f"ROLLUP_SWEEPER_USERS and {name} both name {', '.join(overlap)}; "
+                    "the rollup sweeper may call one route and is no other kind of caller"
+                )
         return cls(
             core=core,
             tenant_service_accounts=_tenant_members(
@@ -396,6 +422,7 @@ class ApiSettings:
                 admin_lists={
                     "ADMIN_USERS": admin_users,
                     "ADMIN_POOL_USERS": admin_pool_users,
+                    "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
                     "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
                 },
             ),
@@ -408,7 +435,8 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
             admin_pool_users=admin_pool_users,
-            allowed_users=_csv("ALLOWED_USERS"),
+            rollup_sweeper_users=rollup_sweeper_users,
+            allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),

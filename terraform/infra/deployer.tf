@@ -15,7 +15,8 @@
 # service account in saga-agents-staging, including the other team's twelve.
 # These bindings are on OUR accounts only -- every platform account modules/iam
 # creates (keys are static, so a fresh project still plans), the tick account the
-# scheduler jobs mint OIDC tokens as, and swarm-verify. Tenant worker accounts get
+# scheduler jobs mint OIDC tokens as, the rollup-sweeper account the
+# workflow-rollup jobs mint theirs as, and swarm-verify. Tenant worker accounts get
 # the same grant through modules/tenancy's dispatcher_members (main.tf), so a new
 # tenant is covered the day it is created.
 #
@@ -42,6 +43,8 @@ locals {
     {
       "swarm-tick"   = module.iam.tick_service_account
       "swarm-verify" = google_service_account.verify.email
+      # The workflow-rollup jobs mint OIDC tokens as this account (D17).
+      "swarm-rollup-sweeper" = module.scheduler.rollup_sweeper_email
     },
   )
 }
