@@ -216,6 +216,13 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null)
 }
 
 const loadFrameMe = () => loadMe({ frame: true })
+
+/**
+ * WHAT SITS OVER THE PAGE AND OWNS THE KEYBOARD WHILE IT IS OPEN, for the N
+ * key. `aside.adm-side` is Pool limits' side editor (AdminSettings.tsx), which
+ * is not a dialog but holds a draft and a typed confirmation N must not drop.
+ */
+const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
 const loadFrameCapacity = () => loadCapacity({ frame: true })
 
 function dataOf<T>(r: Result<T>): T | null {
@@ -460,6 +467,10 @@ export function SkyShell({
       const el = e.target instanceof Element ? e.target : null
       if (el !== null && el.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])') !== null) return
       if (el instanceof HTMLElement && el.isContentEditable) return
+      // Nor while something sits over the page: a modal, an open drawer or
+      // pinned help card (`role=dialog`), or Pool limits' side editor. It owns
+      // the keyboard, and N there navigating away drops what was being edited.
+      if (document.querySelector(OVER_THE_PAGE) !== null) return
       e.preventDefault()
       nav('submit')
     }
@@ -485,7 +496,10 @@ export function SkyShell({
       <span className="sk-rsep" aria-hidden />
       {SPINE.map((s) => {
         const on = section === s.key
-        const locked = s.key === 'admin' && who !== null && !admin
+        // LOCKED UNTIL THE READ SAYS ADMIN. Drawn unlocked while `who` was
+        // unread, a non-admin saw Admin open and then saw the lock appear.
+        const locked = s.key === 'admin' && !admin
+        const checking = locked && who === null
         return (
           <button
             key={s.key}
@@ -493,7 +507,7 @@ export function SkyShell({
             data-sec={s.key}
             className={`sk-ri${on ? ' is-on' : ''}`}
             aria-current={on ? 'page' : undefined}
-            title={locked ? `${s.label} (admins only)` : s.label}
+            title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
             onClick={() => {
               // Collapsed, a click on a section opens the panel again.
               if (collapsed) toggle()
@@ -744,14 +758,17 @@ function PanelPages({
   }
   // Submit is work: its pages are Work's, with nothing lit.
   const sec = section ?? 'work'
-  const locked = sec === 'admin' && known && !admin
+  // The lock is drawn until the session read says admin (as on the spine);
+  // the rows are disabled, and "admins only" said, only once it says not.
+  const shut = sec === 'admin' && !admin
+  const locked = shut && known
   const title = sec === 'work' ? 'Work' : sec === 'capacity' ? 'Capacity' : 'Admin'
   const lit = section === null ? '' : rowFor(sec, tab)
   return (
     <>
       <div className="sk-pt">
         {title}
-        {locked && <Icon name="lock" className="sk-ic sk-lk" />}
+        {shut && <Icon name="lock" className="sk-ic sk-lk" />}
       </div>
       {PANEL_PAGES[sec].map((p) => {
         const on = p.key === lit
@@ -765,7 +782,7 @@ function PanelPages({
               onClick={() => nav(p.to)}
             >
               <span className="sk-pl">{p.label}</span>
-              {locked && <Icon name="lock" className="sk-ic sk-lk" />}
+              {shut && <Icon name="lock" className="sk-ic sk-lk" />}
             </button>
             {on && p.kids !== undefined && (
               <div className="sk-kids">

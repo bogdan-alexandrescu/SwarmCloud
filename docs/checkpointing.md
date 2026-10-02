@@ -226,8 +226,18 @@ Raise it only if you measure checkpointing consuming a meaningful share of an
 attempt's wall clock. Lower it for very long or very expensive runs.
 
 ```bash
-CHECKPOINT_INTERVAL_SECONDS=60   # platform default for services that read Settings
+CHECKPOINT_INTERVAL_SECONDS=120   # RunnerProfile's default; `mock` declares 30 s
 ```
+
+The worker does not choose this. The dispatcher sets `CHECKPOINT_INTERVAL_SECONDS`
+on every attempt from the task's runner profile
+(`apps/scheduler/scheduler/dispatch.py:479`), so the value lives in the frozen
+catalogue: 120 s for every profile except `mock`, which declares 30 s
+(`apps/common/swarm_common/profiles.py:1130`). The worker's own 120
+(`apps/agent-worker/agent_worker/config.py:83`) is only the fallback for a
+process started without the variable. This block said 60 until 2026-10-02, which
+nothing in the repository sets; change the interval in the catalogue (a contract
+change request), not in an environment.
 
 Archives are capped (2 GiB by default in `CheckpointManager`). A workspace that
 exceeds it indicates an agent writing build output or node_modules into `work/`;
