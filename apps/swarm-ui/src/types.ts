@@ -905,9 +905,11 @@ export interface ResultSummary {
    * (#225), or a name longer than a manifest entry may carry (#228). A name of
    * the last two kinds is spelled for reading and cut short, never an address.
    * Present only when there was one. The files past the FILE cap are not here:
-   * see `artifacts_over_cap`.
+   * see `artifacts_over_cap`. Each entry is `{name, cause}` (#165: `cap`,
+   * `upload_error`, `refused`); a summary from before causes holds bare names.
+   * The listing route answers names, with the causes beside them.
    */
-  artifacts_skipped?: string[]
+  artifacts_skipped?: Array<string | { name: string; cause: string }>
   checkpoint?: { checkpoint_id?: string; [k: string]: unknown }
   /**
    * What the agent did to the repository, and what happened to it.
@@ -2645,9 +2647,10 @@ const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNN
  * WHAT THE TASK DOCUMENT CANNOT TELL APART. For a finished task the figure is
  * last start to end. A task cancelled while PARKED, after an earlier attempt
  * started, has a start and an end and nothing that says it was parked in
- * between, so that span includes the parked time. The attempt documents do
- * not settle it either -- a park writes no attempt end -- and the task is
- * the only read the Agents list makes.
+ * between, so that span includes the parked time. The attempt documents
+ * could settle it -- since #163 a park writes the attempt's end, exit 75 with
+ * the park reason -- but the task is the only read the Agents list makes, so
+ * the list labels that figure instead (`CANCEL_SPAN` in Agents.tsx).
  */
 export function elapsed(
   task: Task,
@@ -3924,6 +3927,12 @@ export interface ArtifactListing {
   task_id: string
   artifacts: ArtifactEntry[]
   artifacts_skipped: string[]
+  /**
+   * The cause the worker recorded for each skipped name (#165): `cap`,
+   * `upload_error`, `refused`. A name from an older summary has none. Absent
+   * from an API that predates it.
+   */
+  artifacts_skipped_causes?: Record<string, string>
   /**
    * Files past the 500-file cap, counted and not named (#227): null until
    * `complete`, 0 when none were. `complete` means the manifest is written,

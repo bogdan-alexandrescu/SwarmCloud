@@ -107,6 +107,33 @@ def test_files_dropped_at_the_size_cap_are_named(client, db) -> None:
     assert body["artifacts_skipped"] == ["core.dump"]
 
 
+def test_skipped_entries_with_a_cause_are_named_and_their_cause_reported(client, db) -> None:
+    """The worker stores `artifacts_skipped` entries as `{name, cause}` (#165).
+
+    The route keeps `artifacts_skipped` a list of names, so no client changes
+    shape, and reports each cause beside it. A bare name (a summary written
+    before causes were recorded) is still named, with no cause invented for it.
+    """
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="task_a", tenant_id="eng")
+    _finish(
+        db,
+        "task_a",
+        {
+            **FINISHED_SUMMARY,
+            "artifacts_skipped": [
+                {"name": "core.dump", "cause": "cap"},
+                {"name": "notes.md", "cause": "upload_error"},
+                "old.bin",
+            ],
+        },
+    )
+
+    body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
+    assert body["artifacts_skipped"] == ["core.dump", "notes.md", "old.bin"]
+    assert body["artifacts_skipped_causes"] == {"core.dump": "cap", "notes.md": "upload_error"}
+
+
 def test_another_tenants_task_is_a_404_not_an_empty_list(client, db) -> None:
     """The tenant check has to happen before the read, not after.
 

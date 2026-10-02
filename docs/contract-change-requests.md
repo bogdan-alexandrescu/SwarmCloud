@@ -8121,3 +8121,55 @@ reach, which costs nothing but a misleading line in a list.
    this park was never reached, so no task leaves or enters one.
 2. All-or-nothing reservation: unaffected. `BUDGET_LIMIT` is not a pool.
 10. Callers pick a profile by name: unaffected.
+
+---
+
+## 40. `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED`
+
+**Status: open (functionality wave 1, lane B4, 2026-10-01).** Recorded as a
+request, per CLAUDE.md rule 1; nothing under `apps/common/swarm_common/` was
+edited. Numbered 40 on the assumption that 38 and 39 land first; renumber if
+another branch has taken it.
+
+### What is true today
+
+The worker records a subscription account's lifecycle on the task's events
+with a `cause` on an event type the frozen `EventType`
+(`apps/common/swarm_common/states.py:161`) already has:
+
+* `account_assigned` is `EventType.RUNNING` with `cause: "account_assigned"`
+  (`Worker` in `apps/agent-worker/agent_worker/lifecycle.py`).
+* `account_released` (#380) is `EventType.LEASE_RELEASED` with
+  `cause: "account_released"` (`Worker._emit_account_released`).
+
+The API reads both through one range query on the `cause`
+(`swarm_api.task_accounts`), so the account view is right. A reader that
+renders events by type alone is not: a timeline draws the account's release as
+a lease release, and the assignment as a second `running`.
+
+### The requested change
+
+Add `EventType.ACCOUNT_ASSIGNED = "account_assigned"` and
+`EventType.ACCOUNT_RELEASED = "account_released"`, and have the worker emit
+them, keeping the `cause` for one release so readers of either shape work.
+
+### What it would break if accepted
+
+* Every reader that enumerates `EventType` (the UI's event lists in
+  `apps/swarm-ui/src/types.ts`, the MCP renderers) gains two members; their
+  tests that enumerate the enum follow.
+* `swarm_api.task_accounts` would read both shapes for as long as events
+  written before the change are retained.
+
+### If it is declined
+
+The `cause` stays the discriminator, and the docstring on
+`_emit_account_released` says why the type is `LEASE_RELEASED`. A generic
+timeline keeps drawing the release as a lease release.
+
+### Invariants
+
+5. Fencing: unaffected. `control.emit` stamps the attempt, lease and
+   generation either way, and a fenced exit emits neither event.
+9. Tenant isolation: unaffected; the event carries the account id, the
+   provider and a bool, never a secret's name or payload.

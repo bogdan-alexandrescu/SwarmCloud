@@ -164,6 +164,59 @@ paths through it, and that is the risk this choice accepts deliberately:
   on a clock, and an integration step that runs a week later would find
   nothing.
 
+**`carrier: branches` IS BUILT** (D13, owner decision 2026-10-01: wire it).
+`carrier: checkpoints`, the default, is byte-for-byte what it was. With
+`branches`:
+
+* **Each checkpoint pushes the step's committed work** to
+  `<git_branch_prefix><task id>`, the branch the publish uses
+  (`Worker._push_carrier_branch`). NEVER FORCED: the push is one worker commit
+  of the agent's committed tree on top of the branch's current tip
+  (`gitops.commit_tree_onto`), so every push fast-forwards the last, across
+  checkpoints and attempts. It passes the publish's gates -- the reap, a
+  worker-owned repository, the final-tree leak scan, the authorship check,
+  `push_branch`'s prefix and protected-branch refusals. A failed push is
+  logged and never ends the attempt. The cost of never forcing: when a retry
+  cloned a default branch that has moved since the tip was built, its worker
+  commit's diff against the tip also shows the default branch's intervening
+  changes. The tree is still exactly the work; one commit's diff is noisier.
+* **A dependant that starts from its parent's branch already holds the
+  parent's work.** If it also declares the parent's `swarm-work.patch` in
+  `input_from`, that patch is the same change twice; the worker stages it
+  anyway and logs that it is redundant.
+* **Not while the agent runs.** The tenant token is never in hand while agent
+  code can run: the agent shares the worker's uid, so the credential file and
+  the token-bearing git process would be within its reach. A checkpoint taken
+  with the runner alive pushes nothing and says so: the periodic one, and the
+  control-plane-outage one (#70 orders it checkpoint, THEN stop the runner).
+  The checkpoints taken after the runner stopped (final, park, cancellation,
+  SIGTERM) push, and so does the finish. **This is narrower than D13's
+  wording**, which asked for EVERY checkpoint to push: pushing mid-run would
+  need the push to run outside the agent's uid (a separate process identity
+  holding the token), which is an open owner question, not something this
+  change decided.
+* **The finish pushes too**, under every strategy -- a `collect` step pushes
+  its branch and opens no pull request -- with the final tree, uncommitted
+  work included, as one worker commit on the branch's tip (the agent's commits
+  are not replayed one by one under this carrier: a replay writes new shas
+  each time and would not fast-forward the checkpoints' pushes). The result
+  records `result_summary.branch = {name, head}`.
+* **A dependant starts from its parent's branch.** A step with one direct
+  parent (`depends_on`) that recorded `result_summary.branch` under the name
+  the worker derives from the parent's id clones that branch instead of the
+  default one. An integrator merges its parents' branches in step order
+  (`integrates`) at its publish, as it already did. A step with several
+  parents and no integrator role starts from the default branch.
+* **The API refuses `carrier: branches`** (422 `invalid_dispatch`) without a
+  repository, and for a tenant whose forge credential is declared read-only
+  (`FORGE_READ_ONLY_TENANTS`, `ApiSettings.forge_read_only_tenants`;
+  `detail.forge_access: "read-only"`). A DECLARATION, not a probe: the
+  worker's publish learns write scope from the forge with the token
+  (`forge.probe_repository`, `permissions.push`), and the API never reads a
+  tenant's token. A tenant missing from the list is accepted, and if its token
+  turns out read-only the worker skips each push, logs why, and the step
+  still finishes.
+
 ---
 
 ## 5. What would have to be built
@@ -200,6 +253,6 @@ currently has no way to see what the names mean.
 |---|---|
 | `integrate` exists | the worker must honour `input_from`; an integrate runner profile; a conflict-resolving agent whose output reaches `main` |
 | `direct-pr` exists | write scope on the tenant token, which is a real widening |
-| `carrier: branches` | the same write scope, earlier in the run |
+| `carrier: branches` | the same write scope, earlier in the run (built, D13: pushed at each checkpoint taken after the runner stops, and at the finish; not at the periodic or outage checkpoints; see 4.3) |
 | `carrier: checkpoints` | retention driven by whether anything still needs a checkpoint, not by a clock |
 | `collect` stays default | nothing; this is today's behaviour |

@@ -946,6 +946,9 @@ export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>)
   }
 }
 
+/** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
+export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
+
 function TaskRow({
   task,
   now,
@@ -974,6 +977,8 @@ function TaskRow({
     return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
   }
   const el = elapsed(task, now)
+  // `ran` is the phase with a start AND an end, so an em dash never carries it.
+  const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const start = startedOf(task, now)
   const account = accountText(task.account)
   const tries = attemptsUsed(task)
@@ -1083,7 +1088,16 @@ function TaskRow({
         </span>
       </span>
 
-      <span className={`when${el.ticking ? ' ticking' : ''}`}>{el.text}</span>
+      {/* A CANCELLED RUN'S FIGURE SAYS WHAT IT SPANS (#163). It is last start
+          to cancel, and a task cancelled while PARKED after an earlier start
+          has nothing on its document that says it sat parked in between --
+          `elapsed()` cannot subtract time the task does not record. The
+          qualifier rides with the figure, as `units` does in the class cell,
+          and is the cell's `title` too, so a truncated cell still says it. */}
+      <span className={`when${el.ticking ? ' ticking' : ''}`} title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}>
+        {el.text}
+        {cancelSpan && <span className="when-note"> {CANCEL_SPAN}</span>}
+      </span>
 
       {/* THE ACCOUNT THIS AGENT RUNS ON (#379), from its own events. The
           words for "none" are the API's answer: no model call, not assigned

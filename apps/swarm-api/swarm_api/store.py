@@ -296,6 +296,31 @@ class LeaseScan:
     active_beyond_window: int
 
 
+def _skipped_entries(value: Any) -> tuple[list[str], dict[str, str]]:
+    """The names in a stored `artifacts_skipped`, and the cause of each that has one.
+
+    The worker writes `{name, cause}` entries (#165); a summary from before
+    that holds bare names, and Firestore keeps it. Both are read; anything
+    else in the list is dropped rather than stringified into a fake name.
+    """
+    if not isinstance(value, list):
+        return [], {}
+    names: list[str] = []
+    causes: dict[str, str] = {}
+    for entry in value:
+        if isinstance(entry, dict):
+            name = entry.get("name")
+            if not isinstance(name, str):
+                continue
+            cause = entry.get("cause")
+            if isinstance(cause, str) and cause:
+                causes[name] = cause
+        else:
+            name = str(entry)
+        names.append(name)
+    return names, causes
+
+
 @dataclass(frozen=True)
 class ArtifactManifest:
     """What one task's `result_summary` says it wrote, unresolved.
@@ -326,6 +351,12 @@ class ArtifactManifest:
     artifact_bytes: Any
     complete: bool
     over_cap: int | None = None
+    #: WHY each skipped name was skipped, by name (#165): `cap`,
+    #: `upload_error`, `refused`. The worker stores `artifacts_skipped` entries
+    #: as `{name, cause}`; `skipped` stays a list of names so no client of the
+    #: HTTP shape changes, and the causes travel beside it. A summary written
+    #: before causes were recorded holds bare names, which have no entry here.
+    skipped_causes: dict[str, str] = field(default_factory=dict)
 
     def find(self, name: str) -> dict[str, Any] | None:
         """The entry the SERVER already knows about, by exact name.
@@ -1053,9 +1084,7 @@ class Store:
         entries = summary.get("artifacts")
         if not isinstance(entries, list):
             entries = []
-        skipped = summary.get("artifacts_skipped")
-        if not isinstance(skipped, list):
-            skipped = []
+        skipped_names, skipped_causes = _skipped_entries(summary.get("artifacts_skipped"))
         # `result_summary` is written once, by `finish()`, at terminal state.
         # Until then "no artifacts yet" and "produced none" are the same empty
         # list, and only this flag tells them apart.
@@ -1067,10 +1096,11 @@ class Store:
             over_cap = 0
         return ArtifactManifest(
             artifacts=[dict(e) for e in entries if isinstance(e, dict)],
-            skipped=[str(name) for name in skipped],
+            skipped=skipped_names,
             artifact_bytes=summary.get("artifact_bytes"),
             complete=complete,
             over_cap=over_cap if complete else None,
+            skipped_causes=skipped_causes,
         )
 
     def list_artifacts(self, tenant_id: str, task_id: str, *, limit: int = 200) -> dict:
@@ -1109,6 +1139,7 @@ class Store:
         return {
             "artifacts": manifest.artifacts[:limit],
             "artifacts_skipped": manifest.skipped,
+            "artifacts_skipped_causes": manifest.skipped_causes,
             "artifacts_over_cap": manifest.over_cap,
             "artifact_bytes": manifest.artifact_bytes,
             "complete": manifest.complete,

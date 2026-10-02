@@ -303,10 +303,20 @@ class SubmissionService:
             depends_on=list(depends_on),
         )
 
+    def _forge_read_only(self, tenant_id: str) -> bool:
+        """True when the tenant's forge credential is declared read-only (D13).
+
+        The declaration, not a probe: the worker learns write scope from the
+        forge with the token (`forge.probe_repository`), and this service never
+        reads a tenant's token.
+        """
+        return tenant_id in self._settings.forge_read_only_tenants
+
     def submit_tasks(self, ctx: AuthContext, specs: Sequence[TaskCreate]) -> SubmissionResult:
         validate_batch_size(len(specs), self._settings.core.max_batch_size)
         tenant = self.tenant_for(ctx)
         now = self._now()
+        read_only = self._forge_read_only(tenant.tenant_id)
         try:
             # Inside the try so a refused dispatch is counted like every other
             # rejected submission rather than being invisible to the metric.
@@ -324,6 +334,7 @@ class SubmissionService:
                         # batch is at task scale, not workflow scale.
                         scale="task",
                         repository_url=spec.repository_url,
+                        forge_read_only=read_only,
                     ),
                 )
                 for spec in specs
@@ -407,6 +418,7 @@ class SubmissionService:
                 carrier=spec.carrier,
                 scale="workflow",
                 repository_url=repository_url,
+                forge_read_only=self._forge_read_only(tenant.tenant_id),
             )
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)

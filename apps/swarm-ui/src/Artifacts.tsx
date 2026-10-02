@@ -873,6 +873,19 @@ interface ListingCut {
  * pane counts against the manifest and not against the page limit, so a
  * deployment that clamps the page lower is caught too.
  */
+// The cause the worker recorded for a skipped file (#165), in its words. A
+// name with none predates causes and is shown bare, never as the cap.
+const SKIP_CAUSE: Record<string, string> = {
+  cap: 'over the size cap',
+  upload_error: 'the upload failed',
+  refused: 'a link, not a regular file, or a name no object can carry',
+}
+
+function skippedWithCause(name: string, causes: Record<string, string>): string {
+  const cause = causes[name]
+  return cause ? `${name} (${SKIP_CAUSE[cause] ?? cause})` : name
+}
+
 function Files({ v }: { v: ArtifactsView }) {
   const { task, listing } = v
   const [open, setOpen] = useState<string | null>(null)
@@ -886,6 +899,7 @@ function Files({ v }: { v: ArtifactsView }) {
   let body: ReactNode
   let entries: ArtifactEntry[] = []
   let skipped: string[] = []
+  let skipCauses: Record<string, string> = {}
   let cut: ListingCut | null = null
   // Names of the rows that came from the manifest because the route did not
   // list them.
@@ -926,6 +940,8 @@ function Files({ v }: { v: ArtifactsView }) {
     entries = [...listed, ...rest.map((e): ArtifactEntry => ({ name: e.name, bytes: e.bytes, uri: e.uri, kind: null, role: null }))]
     cut = { listed: listed.length, total: manifest === null ? null : listed.length + rest.length }
     skipped = Array.isArray(listing.data.artifacts_skipped) ? listing.data.artifacts_skipped : []
+    const causes = listing.data.artifacts_skipped_causes
+    skipCauses = causes !== null && typeof causes === 'object' ? causes : {}
     body =
       entries.length === 0 ? (
         <p className="att-none">
@@ -973,7 +989,7 @@ function Files({ v }: { v: ArtifactsView }) {
       <span key="skipped">
         <Mark
           kind="partial"
-          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.join(', ')}`}
+          say={`At least ${skipped.length} file${skipped.length === 1 ? ' was' : 's were'} written and not uploaded -- over the size cap, a name too long or not valid UTF-8, or an upload that failed -- so this list is incomplete: ${skipped.map((name) => skippedWithCause(name, skipCauses)).join(', ')}`}
         />{' '}
         {skipped.length} skipped
       </span>,

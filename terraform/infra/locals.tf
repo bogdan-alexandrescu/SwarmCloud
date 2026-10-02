@@ -525,6 +525,11 @@ locals {
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
+      # Tenants whose forge token is read-only, so `carrier: branches` is
+      # refused for them with a 422 (D13). Declared because swarm-api never
+      # holds the token and cannot ask the forge; see the variable.
+      FORGE_READ_ONLY_TENANTS = join(",", sort(var.forge_read_only_tenants))
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in

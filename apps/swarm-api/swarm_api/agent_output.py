@@ -192,6 +192,7 @@ class AgentOutputService:
             "task_id": task.id,
             "artifacts": rows,
             "artifacts_skipped": manifest.skipped,
+            "artifacts_skipped_causes": manifest.skipped_causes,
             # Files past the 500-file cap, counted not named (#227): without
             # it a capped run lists 500 files as if they were all of them.
             "artifacts_over_cap": manifest.over_cap,

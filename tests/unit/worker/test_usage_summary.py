@@ -111,6 +111,9 @@ def _spend_written(usage):
         def _attempt_ref(self):
             return Ref()
 
+        def call_options(self, call=None):
+            return {}
+
     ControlPlane.record_spend(Double(), usage)
     return written
 

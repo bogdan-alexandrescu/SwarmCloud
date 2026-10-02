@@ -102,7 +102,13 @@ from swarm_common.states import (
 )
 
 from .accountlease import fetch_identity_token
-from .errors import ControlPlaneError, FencedError, FencedWriteRefused, TenantMismatchError
+from .errors import (
+    ControlPlaneError,
+    ExitCode,
+    FencedError,
+    FencedWriteRefused,
+    TenantMismatchError,
+)
 from .quota import UNKNOWN_WAIT_SECONDS
 from .startup import StartupInterrupted
 
@@ -112,6 +118,73 @@ from .startup import StartupInterrupted
 #: (`Worker._recorded_checkpoint`, #347): the manifest carrying the digest sits
 #: in the bucket, which every agent of the tenant can write.
 CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
+
+#: EVERY FIRESTORE CALL A WORKER MAKES WHILE ITS AGENT RUNS, AND ITS BUDGET
+#: (#70, owner decision 2026-09-28): `(deadline, per-try timeout)` in seconds,
+#: retries included. Before this they kept the library's defaults -- up to 300 s
+#: of silent retries for a read, 60 s for each of a transaction's RPCs -- so a
+#: Firestore outage held the supervision loop for minutes and then raised into
+#: the crash handler, which failed the task for good. The loop is one thread:
+#: while one call waits, nothing else (the heartbeat included) happens.
+#:
+#:   heartbeat   90 s, UNDER the 120 s the beat extends the lease by
+#:               (`heartbeat_extension_seconds`, the platform's
+#:               `lease_timeout_seconds`). A beat that is still retrying when
+#:               the lease it is extending has expired is a beat for a lease
+#:               the reconciler may already have reclaimed. Held under the
+#:               extension whatever it is configured to (`_heartbeat_deadline`).
+#:   poll        30 s. The control poll runs every `control_poll_seconds`, and
+#:               a failed one is asked again on the next tick.
+#:   checkpoint  60 s for the pointer write and its owner check: the archive
+#:               is already in the bucket, and the next interval tries again.
+#:   event       30 s. An event is an audit record; the loop does not wait on it.
+#:   attempt     30 s for this attempt's own document (its end, its usage, its
+#:               spend), written on the way out, when the exit is waiting.
+#:
+#: What happens when a budget is spent is the lifecycle's: a failed beat or
+#: poll is logged and the loop goes on while the lease is live, and once the
+#: lease this worker last extended has run out, the worker checkpoints, stops
+#: the runner and exits 69 for a requeue (`Worker._exit_control_plane_outage`).
+#: Inside `startup_budget()` the startup budget applies instead, as before.
+MID_RUN_BUDGETS: dict[str, tuple[float, float]] = {
+    "heartbeat": (90.0, 10.0),
+    "poll": (30.0, 10.0),
+    "checkpoint": (60.0, 10.0),
+    "event": (30.0, 10.0),
+    "attempt": (30.0, 10.0),
+}
+
+
+def budget_call_options(deadline: float, timeout: float) -> dict[str, Any]:
+    """`retry` and `timeout` for one call: retried until `deadline`, each try `timeout`.
+
+    The predicate is the one the startup budget uses
+    (`__main__.firestore_startup_call_options`): DEADLINE_EXCEEDED, INTERNAL
+    and UNAVAILABLE, the errors Firestore's own default retries for a read. A
+    transaction's commit narrows it again (`_commit_retry`). Without the
+    google client library -- a unit test with no grpc -- the per-try timeout
+    alone, which an in-memory store ignores.
+    """
+    try:
+        from google.api_core import exceptions as core_exceptions  # lazy: grpc
+        from google.api_core.retry import Retry, if_exception_type
+    except ImportError:  # pragma: no cover - the image always carries it
+        return {"timeout": timeout}
+    return {
+        "retry": Retry(
+            initial=0.5,
+            maximum=10.0,
+            multiplier=2.0,
+            predicate=if_exception_type(
+                core_exceptions.DeadlineExceeded,
+                core_exceptions.InternalServerError,
+                core_exceptions.ServiceUnavailable,
+            ),
+            timeout=deadline,
+        ),
+        "timeout": min(timeout, deadline),
+    }
+
 
 # ---------------------------------------------------------------------------
 # Signals
@@ -251,10 +324,16 @@ class FirestoreTransactionRunner:
     ) -> Any:
         from google.cloud import firestore  # lazy: unit tests never import grpc
 
+        from google.cloud.firestore_v1.transaction import Transaction  # lazy: grpc
+
         transaction = self._db.transaction()
-        if call_options:
+        if call_options and isinstance(transaction, Transaction):
             # The same kind of transaction the client makes, with its begin,
-            # commit and rollback under the budget. See `_with_budget`.
+            # commit and rollback under the budget. See `_with_budget`, whose
+            # overrides make the library's own RPCs and so need the library's
+            # own class: a transaction from anything else (an in-memory
+            # store) has no RPCs to budget and runs as it was given. Every
+            # call is a mid-run one since #70, the heartbeat included.
             transaction = _with_budget(type(transaction))(self._db, budget=call_options)
 
         @firestore.transactional
@@ -524,21 +603,19 @@ class ControlPlane:
         # supplies a bounded budget (`__main__.firestore_startup_call_options`).
         # Empty means the library's defaults, which for a document read is up
         # to 300 s of silent retries, and 60 s for each of a transaction's
-        # begin, commit and rollback. Calls made while the agent runs keep the
-        # defaults: changing how long a running agent tolerates a Firestore
-        # outage is a separate decision.
+        # begin, commit and rollback. Calls made while the agent runs carry
+        # their own budgets instead (`MID_RUN_BUDGETS`, #70).
         self._startup_call: dict[str, Any] = dict(startup_call_options or {})
         # True inside `startup_budget()`. Read by `call_options`, which every
-        # call this class can make before the runner goes through. The writes
-        # made only while an agent runs or after it (`record_checkpoint`,
-        # `record_resource_usage`, `record_spend`, `update_quota_state`) do
-        # not ask, and keep the library's defaults.
+        # call this class makes goes through.
         self._budgeted = False
         # Where provider outcomes go: the quota broker, which the entrypoint
         # builds from `WorkerConfig` (`BrokerQuotaReporter.for_broker`). None
         # means this deployment has no broker; outcomes are then logged and
         # not recorded.
         self._quota_reporter: QuotaReporter | None = quota_reporter
+        # The mid-run budgets, built once (`MID_RUN_BUDGETS`).
+        self._mid_run: dict[str, dict[str, Any]] = {}
         # provider -> until when the broker already knows of a rate limit,
         # because this worker reported it or read it back in `poll`. A 429
         # report inside that window is the same event and is not sent again;
@@ -562,8 +639,8 @@ class ControlPlane:
         commit and rollback. The lifecycle opens it for the generation check,
         again from `record_attempt_start` until the runner child is built, and
         for the attempt's own record on the two exits taken from that window.
-        Nowhere else: the same calls made while an agent runs keep the
-        library's defaults.
+        Nowhere else: the same calls made while an agent runs carry the
+        mid-run budgets (`MID_RUN_BUDGETS`).
 
         ONE SWITCH, rather than a budget argument on each call. Before this,
         the budget was passed call by call, and the calls nobody passed it to
@@ -577,18 +654,44 @@ class ControlPlane:
         finally:
             self._budgeted = previous
 
-    def call_options(self) -> dict[str, Any]:
+    @property
+    def heartbeat_extension_seconds(self) -> int:
+        """How far each heartbeat moves the lease's `expires_at`."""
+        return self._heartbeat_extension
+
+    def call_options(self, call: str | None = None) -> dict[str, Any]:
         """`retry` and `timeout` for a Firestore call made now.
 
-        The startup budget inside `startup_budget()`, else empty, which means
-        the library's defaults. Public because the lifecycle's own startup
-        reads (`secrets.load_tenant`, `inputs.stage_inputs`) take the same
-        options.
+        The startup budget inside `startup_budget()`. Outside it, the mid-run
+        budget of `call` (`MID_RUN_BUDGETS`, #70), or empty -- the library's
+        defaults -- for a call that names none: the terminal transitions and
+        the lease release, made once on the way out. Public because the
+        lifecycle's own startup reads (`secrets.load_tenant`,
+        `inputs.stage_inputs`) take the same options.
         """
-        return dict(self._startup_call) if self._budgeted else {}
+        if self._budgeted:
+            return dict(self._startup_call)
+        if call is None:
+            return {}
+        if call not in self._mid_run:
+            deadline, timeout = MID_RUN_BUDGETS[call]
+            if call == "heartbeat":
+                deadline = self._heartbeat_deadline(deadline)
+            self._mid_run[call] = budget_call_options(deadline, timeout)
+        return dict(self._mid_run[call])
 
-    def _run_transaction(self, fn: Callable[[Any], Any]) -> Any:
-        options = self.call_options()
+    def _heartbeat_deadline(self, deadline: float) -> float:
+        """The heartbeat's deadline, held under the lease extension (#70).
+
+        90 s against the 120 s extension the platform configures. A shorter
+        extension -- a test, or a deployment that lowered
+        `lease_timeout_seconds` -- keeps the same proportion, so a beat never
+        retries past the expiry of the lease it is extending.
+        """
+        return min(deadline, 0.75 * self._heartbeat_extension)
+
+    def _run_transaction(self, fn: Callable[[Any], Any], *, call: str | None = None) -> Any:
+        options = self.call_options(call)
         if options:
             return self._txn.run(fn, call_options=options)
         # Called exactly as before when there is no budget, so a runner written
@@ -627,7 +730,7 @@ class ControlPlane:
         return data
 
     def fetch_task(self) -> dict[str, Any]:
-        snap = self._task_ref().get(**self.call_options())
+        snap = self._task_ref().get(**self.call_options("poll"))
         if not snap.exists:
             raise FencedError(self.generation, -1, "task document no longer exists")
         return self._assert_tenant(
@@ -655,18 +758,52 @@ class ControlPlane:
         at to the attempt document that recorded it. Refused, with
         `TenantMismatchError`, when the document is another tenant's.
         """
-        snap = self._db.collection("attempts").document(attempt_id).get(**self.call_options())
+        snap = self._db.collection("attempts").document(attempt_id).get(
+            **self.call_options("poll")
+        )
         if not snap.exists:
             return None
         return self._assert_tenant(snap.to_dict() or {}, kind="attempt", document_id=attempt_id)
 
     def fetch_lease(self) -> dict[str, Any] | None:
-        snap = self._lease_ref().get(**self.call_options())
+        snap = self._lease_ref().get(**self.call_options("poll"))
         if not snap.exists:
             return None
         return self._assert_tenant(
             snap.to_dict() or {}, kind="lease", document_id=self.lease_id
         )
+
+    def parked_uploads(self) -> list[tuple[str, list[Any]]]:
+        """What each earlier PARKED attempt of this task uploaded, oldest first (#166).
+
+        Read off the task's PARKED events: a park writes the attempt's upload
+        manifest into the event's detail (`detail.artifacts`, the summary
+        `_upload_outputs` returned). `(attempt_id, artifacts)` per event, in
+        the order the parks happened, this attempt's own excluded. Every event
+        is checked against this worker's tenant, as every read here is.
+
+        One query on the task's own `events` subcollection, by type, which the
+        single-field index Firestore keeps on `type` serves. Called once, as
+        the finishing attempt describes its result; outside the startup window,
+        so it keeps the library's defaults like the rest of that epilogue.
+        """
+        query = (
+            self._task_ref()
+            .collection("events")
+            .where("type", "==", EventType.PARKED.value)
+        )
+        found: list[tuple[Any, str, list[Any]]] = []
+        for snap in query.stream():
+            event = self._assert_tenant(snap.to_dict() or {}, kind="event", document_id=snap.id)
+            attempt_id = event.get("attempt_id")
+            detail = event.get("detail")
+            if not isinstance(attempt_id, str) or attempt_id == self.attempt_id:
+                continue
+            if not isinstance(detail, dict) or not isinstance(detail.get("artifacts"), list):
+                continue
+            found.append((_as_datetime(event.get("at")), attempt_id, detail["artifacts"]))
+        found.sort(key=lambda item: (item[0] is None, item[0] or datetime.min))
+        return [(attempt_id, artifacts) for _, attempt_id, artifacts in found]
 
     # -- fencing -----------------------------------------------------------
     def validate_generation(self) -> ControlSignals:
@@ -687,7 +824,7 @@ class ControlPlane:
         logs what it raised.
         """
         task = self.fetch_task()
-        attempt_snap = self._attempt_ref().get(**self.call_options())
+        attempt_snap = self._attempt_ref().get(**self.call_options("poll"))
         if attempt_snap.exists:
             self._assert_tenant(
                 attempt_snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
@@ -787,7 +924,7 @@ class ControlPlane:
         because `TransactionRunner` has one entry point, and no test in this
         repository runs the worker against a real Firestore transaction.
         """
-        self._run_transaction(lambda txn: self._fenced_task(txn, write=write))
+        self._run_transaction(lambda txn: self._fenced_task(txn, write=write), call="checkpoint")
 
     # -- polling -----------------------------------------------------------
     def poll(self, provider: str | None = None) -> ControlSignals:
@@ -814,7 +951,7 @@ class ControlPlane:
         reset_at: datetime | None = None
 
         if provider:
-            qsnap = self._quota_ref(provider).get(**self.call_options())
+            qsnap = self._quota_ref(provider).get(**self.call_options("poll"))
             if qsnap.exists:
                 q = qsnap.to_dict() or {}
                 try:
@@ -897,7 +1034,7 @@ class ControlPlane:
         ref, document = self._event_write(event_type, detail, at=at)
         # A retry after a DEADLINE_EXCEEDED that had landed rewrites the same
         # event id with the same bytes, so the read budget's predicate is safe.
-        ref.set(document, **self.call_options())
+        ref.set(document, **self.call_options("event"))
         self._log.info("event", event_type=event_type.value, detail=document["detail"])
 
     # -- state transitions -------------------------------------------------
@@ -1024,7 +1161,8 @@ class ControlPlane:
         # Read-modify-write rather than ArrayUnion: exactly one worker owns an
         # attempt document, so there is no contention to serialise, and this
         # keeps the Firestore sentinel types out of the worker's hot path.
-        snap = self._attempt_ref().get()
+        options = self.call_options("checkpoint")
+        snap = self._attempt_ref().get(**options)
         existing: list[str] = []
         digests: dict[str, str] = {}
         if snap.exists:
@@ -1048,7 +1186,7 @@ class ControlPlane:
         # attempt document yet, and losing the record would be worse than
         # creating it late. `tenant_id` goes in every merge so a document this
         # path creates is never one the tenant check would later refuse.
-        self._attempt_ref().set(fields, merge=True)
+        self._attempt_ref().set(fields, merge=True, **options)
 
         # FENCED LIKE A TRANSITION. `latest_checkpoint` is what the next
         # attempt restores from. A stale worker repointing it would hand the
@@ -1057,7 +1195,7 @@ class ControlPlane:
             self._fenced_task(txn, write="checkpoint pointer")
             txn.update(self._task_ref(), {"latest_checkpoint": uri, "updated_at": utcnow()})
 
-        self._run_transaction(_point)
+        self._run_transaction(_point, call="checkpoint")
         self.emit(
             EventType.CHECKPOINT_COMPLETED,
             {"checkpoint_id": checkpoint_id, "uri": uri, "size_bytes": size_bytes, "seq": seq},
@@ -1074,6 +1212,7 @@ class ControlPlane:
                 "tenant_id": self.tenant_id,
             },
             merge=True,
+            **self.call_options("attempt"),
         )
 
     def record_cpu_usage(self, fields: Mapping[str, Any]) -> None:
@@ -1114,7 +1253,7 @@ class ControlPlane:
             doc["cpu_limit_source"] = source
         doc["cpu_measured_at"] = utcnow()
         doc["tenant_id"] = self.tenant_id
-        self._attempt_ref().set(doc, merge=True)
+        self._attempt_ref().set(doc, merge=True, **self.call_options("attempt"))
 
     def record_spend(self, usage: dict[str, Any]) -> None:
         """Token counts and cost, onto the attempt, as typed fields.
@@ -1152,7 +1291,7 @@ class ControlPlane:
         if not doc:
             return
         doc["tenant_id"] = self.tenant_id
-        self._attempt_ref().set(doc, merge=True)
+        self._attempt_ref().set(doc, merge=True, **self.call_options("attempt"))
 
     def record_attempt_end(self, *, exit_code: int | None, error: str | None) -> None:
         self._attempt_ref().set(
@@ -1163,21 +1302,64 @@ class ControlPlane:
                 "tenant_id": self.tenant_id,
             },
             merge=True,
-            **self.call_options(),
+            **self.call_options("attempt"),
         )
 
     # -- heartbeat ---------------------------------------------------------
-    def heartbeat(self) -> None:
+    def heartbeat(self) -> bool:
+        """Extend THIS attempt's lease, only while it is still this attempt's (#70).
+
+        CONDITIONAL ON THE LEASE. The beat reads the lease and writes it in one
+        transaction, and writes only when the lease is not released and is at
+        this attempt's generation, for this task. It used to be a blind
+        `update` of `heartbeat_at` and `expires_at`: a beat retried across an
+        outage, or one in flight while the reconciler released the lease, landed
+        on a released lease and gave it a fresh expiry (invariant 5). A lease
+        written between the read and the write aborts the commit, and the body
+        is run again against the new read.
+
+        Returns True when the lease was extended, False when it was refused
+        (released, another generation, another task, or gone), with nothing
+        written. A refusal is not raised: the control poll meets the fence
+        that caused it and acts on it, as it always has. A lease document of
+        another tenant raises `TenantMismatchError`, as every read here does.
+
+        Its budget is `MID_RUN_BUDGETS["heartbeat"]`, under the extension it
+        grants; inside `startup_budget()`, the startup budget. The payload is
+        built once, before the transaction, so a retry writes the same values.
+        """
         now = utcnow()
-        self._lease_ref().update(
-            {
-                "heartbeat_at": now,
-                "expires_at": now + timedelta(seconds=self._heartbeat_extension),
-            },
-            # The startup heartbeats, inside `startup_budget()`. The payload is
-            # built before the call, so a retry writes the same values.
-            **self.call_options(),
-        )
+        payload = {
+            "heartbeat_at": now,
+            "expires_at": now + timedelta(seconds=self._heartbeat_extension),
+        }
+        options = self.call_options("heartbeat")
+
+        def _beat(txn: Any) -> bool:
+            snap = _snapshot(txn.get(self._lease_ref(), **options))
+            if not snap.exists:
+                return False
+            lease = self._assert_tenant(
+                snap.to_dict() or {}, kind="lease", document_id=self.lease_id
+            )
+            if (
+                lease.get("released_at") is not None
+                or int(lease.get("generation", -1)) != self.generation
+                or lease.get("task_id") != self.task_id
+            ):
+                return False
+            txn.update(self._lease_ref(), payload)
+            return True
+
+        written = bool(self._run_transaction(_beat, call="heartbeat"))
+        if not written:
+            self._log.warning(
+                "heartbeat refused: the lease is released, gone, or at another "
+                "generation; nothing was written",
+                lease_id=self.lease_id,
+                generation=self.generation,
+            )
+        return written
 
     # -- quota -------------------------------------------------------------
     def _note_rate_limit_known(
@@ -1337,6 +1519,13 @@ class ControlPlane:
         the state change. A caller that emitted it before calling here would
         leave it in the task's stream when the park is refused: a fence that
         lands during the park's uploads is met here, after the announcement.
+
+        THE ATTEMPT'S END IS WRITTEN AFTER THE TRANSITION (#163, owner decision
+        2026-09-28): exit 75 (`ExitCode.PARKED`) and the park reason as its
+        `error`, the order `finish` uses. Without it a parked attempt's own
+        document kept `completed_at: None` and read as still running, in the
+        timeline and to the checkpoint collector. A fenced park raises in the
+        transition, so it closes no document.
         """
         self.transition(
             TaskState.PARKED,
@@ -1348,6 +1537,15 @@ class ControlPlane:
             },
             events=announce,
         )
+        # Best effort: the park has landed, and a failure here must not stop
+        # the event and the lease release below, which give the slot back.
+        try:
+            self.record_attempt_end(exit_code=ExitCode.PARKED, error=reason.value)
+        except Exception as exc:
+            self._log.warning(
+                "the park landed but its attempt end was not recorded",
+                error=f"{type(exc).__name__}: {str(exc)[:300]}",
+            )
         self.emit(
             EventType.PARKED,
             {"reason": reason.value, "next_eligible_at": next_eligible_at, **(detail or {})},

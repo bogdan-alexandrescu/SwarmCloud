@@ -1503,6 +1503,14 @@ def _size(value: Any, style: Style) -> str:
     return style.dash
 
 
+#: What each recorded skip cause says (#165), in the worker's words.
+_SKIP_CAUSE_TEXT = {
+    "cap": "over the artifact size cap",
+    "upload_error": "the upload failed",
+    "refused": "refused: a link, not a regular file, or an unstorable name",
+}
+
+
 def produced_lines(
     produced: dict[str, Any],
     style: Style,
@@ -1540,8 +1548,13 @@ def produced_lines(
         if fetch_with:
             first = artifacts[0]["name"]
             lines.append(label("fetch") + style.paint(fetch_with.replace("<name>", first), "dim"))
+    # The cause the worker recorded (#165). A name with none predates causes,
+    # and is not described as the cap: that assumption is what #165 removed.
+    causes = produced.get("artifacts_skipped_causes") or {}
     for name in produced.get("artifacts_skipped") or []:
-        lines.append(label("skipped") + style.paint(f"{name} (over the artifact size cap)", "warn"))
+        cause = causes.get(name)
+        why = _SKIP_CAUSE_TEXT.get(cause, cause) if cause else "cause not recorded"
+        lines.append(label("skipped") + style.paint(f"{name} ({why})", "warn"))
     runner = [str(v) for v in (produced.get("runner_status"), produced.get("runner_summary")) if v]
     if runner:
         lines.append(label("runner") + _fit(style.sep.join(runner), max(20, style.usable - 12), style))

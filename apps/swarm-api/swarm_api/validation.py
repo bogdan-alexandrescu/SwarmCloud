@@ -934,6 +934,7 @@ def resolve_dispatch_options(
     carrier: Any,
     scale: str,
     repository_url: str | None,
+    forge_read_only: bool = False,
 ) -> DispatchOptions:
     """Validate the pair and return it, or refuse with the accepted values named.
 
@@ -943,6 +944,12 @@ def resolve_dispatch_options(
     dependencies between them -- has nothing to integrate. That is a refusal
     rather than a quiet downgrade to `collect`, because a caller who asked for
     one pull request and silently got three has been lied to.
+
+    `forge_read_only` is True when the tenant's forge credential is declared
+    read-only (`ApiSettings.forge_read_only_tenants`), and then `carrier:
+    branches` is refused (D13): every one of its pushes would be refused at
+    the forge, logged by the worker and dropped, so the durable branches the
+    caller asked for would never exist. `checkpoints` keeps working.
     """
     options = DispatchOptions(
         strategy=_accepted_value("strategy", strategy, DISPATCH_STRATEGIES,
@@ -969,6 +976,19 @@ def resolve_dispatch_options(
                 "strategy": options.strategy,
                 "carrier": options.carrier,
                 "missing": "repository_url",
+            },
+        )
+    if forge_read_only and options.carrier == "branches":
+        raise DispatchOptionError(
+            "carrier 'branches' pushes each checkpoint's work to the step's branch, "
+            "and this tenant's forge credential is configured read-only, so every "
+            "push would be refused and no branch would exist. Choose carrier "
+            "'checkpoints', or ask an operator to store a token with write access "
+            "and take the tenant off FORGE_READ_ONLY_TENANTS.",
+            detail={
+                "carrier": options.carrier,
+                "forge_access": "read-only",
+                "accepted_carriers": ["checkpoints"],
             },
         )
     return options
