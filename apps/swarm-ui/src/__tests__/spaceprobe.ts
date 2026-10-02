@@ -394,44 +394,35 @@ export const FLOORS = {
    */
   boxGutter: 4,
   /**
-   * A divider must be this far from the surface it divides.
+   * A CONTROL'S BOUNDARY must be this far from the surface it sits on.
    *
    * 3:1 is WCAG 2.1 SC 1.4.11 Non-text Contrast, which covers "visual
-   * information required to identify user interface components". A panel
-   * edge, a table header rule, the rail's boundary and an input's outline are
-   * all that. It is deliberately applied to EVERY rendered border here rather
-   * than to a hand-picked subset: deciding case by case which border is
-   * "decorative" is how a boundary that people actually navigate by gets
-   * graded down to invisible, and the previous sheet already carried a comment
-   * asserting "--line now at 3:1 against the surface" that measured 1.18:1.
+   * information required to identify user interface components". An input,
+   * a select, a secondary button, a segmented control and a checkbox are
+   * that, and `--ctl-bd` is the token they draw it with.
+   *
+   * WHICH BORDERS ARE CONTROLS IS DECIDED STRUCTURALLY (`isControl`): the
+   * element's tag or role, not a name list someone could leave a new control
+   * off.
    */
   dividerContrast: 3,
   /**
-   * A REPEATED INTERIOR SEPARATOR -- the rule between two rows of the same
-   * table, two stacked panels, two utilisation lines -- is held to 1.5:1
-   * instead.
+   * EVERY OTHER BORDER IS A HAIRLINE, held to 1.15:1: the outline of a card,
+   * a table, a panel, and the rule between two rows.
    *
-   * WHY IT IS A DIFFERENT NUMBER AND NOT AN EXEMPTION. SC 1.4.11 is about
-   * "visual information required to identify user interface components and
-   * states". The edge of a control, a panel or a region is that; the
-   * twenty-third rule down a list of rows is not -- nothing is identified by
-   * it that the rows themselves do not already identify, and drawing all of
-   * them at 3:1 turns a table of numbers into a spreadsheet grid, which is
-   * exactly the register this console is trying not to be in.
+   * WHY NOT 3:1 ANY MORE. Until 2026-10-02 every rendered border was held to
+   * 3:1, which made every card and table read as a heavy box -- #503's
+   * "Palette" finding -- against the Open sky palette the owner picked
+   * (brand.html A; components.html A, picked 2026-10-02), whose hairline is
+   * #d6e0ea / #1e3350. A card is a region, not a control: SC 1.4.11 does not
+   * reach its outline, and the title and the content identify it.
    *
-   * 1.5:1 is not invented here. It is the same floor
-   * `tests/unit/control_plane/test_state_colour_discriminability.py` holds the
-   * state triad to for greyscale separation, and it is the point at which two
-   * tones stop being the same tone. The separators shipped at 1.18-1.40:1,
-   * which fails even that -- so this is a real floor rather than a way of
-   * excusing them.
-   *
-   * WHICH BORDERS GET IT IS DECIDED STRUCTURALLY, NOT BY A NAME LIST: a border
-   * on exactly one side of an element that has a sibling of the same shape is
-   * a separator between repeats. A name list would have let the next
-   * separator-shaped thing be graded down by whoever wrote it.
+   * WHY 1.15. It is the point under which a 1px rule stops reading as a line
+   * at all on a 1x display; the picked hairlines measure 1.15-1.49 against
+   * the three surfaces they are drawn on, so this is a floor under them and
+   * not a value sitting on one. A border paler than this is drawing nothing.
    */
-  separatorContrast: 1.5,
+  hairlineContrast: 1.15,
   /**
    * A text column that is allowed to truncate must still hold this much width
    * when a SIBLING track in the same grid is protected by a px floor.
@@ -452,19 +443,24 @@ export const FLOORS = {
  * is that nothing in them is approximate -- the mark is six discs at exact
  * 60-degree spacing around a centre, with two stroke weights and no third.
  *
- * A sheet with radii at 2, 4, 6, 8, 10 and 14px is approximate. Nobody can see
- * the difference between a 6px and an 8px corner side by side, so the extra
- * value buys nothing and costs the one property the reference products have:
- * that the surfaces look measured. This is the scale; a corner not on it is a
- * finding.
+ * THE SCALE MOVED ON 2026-10-02 (components.html A, the owner's pick): 4 /
+ * 8 / 9 / 12 / 14 / 999, where it was 2 / 6 / 10 / 14 / 999. The canonical
+ * components (src/components) and the shell draw the new one; a screen keeps
+ * the old until its lane migrates it to those components, so both are on the
+ * list while that happens. A corner on neither is still a finding.
  *
- *   2px   the track, and anything the width of a track
- *   6px   --ctl-radius-sm: chips, cells, small controls
- *   10px  --radius: panels and cards
- *   14px  --ctl-radius-lg: the large containers
+ *   2px   the old track, and anything the width of a track
+ *   3px   the track's half-round end (6px high)
+ *   4px   kbd, inline code
+ *   6px   the old --ctl-radius-sm
+ *   8px   --r-ctl: buttons, inputs
+ *   9px   --r-tile: stat tiles
+ *   10px  the old --radius
+ *   12px  --r-card: cards, tables
+ *   14px  --r-dlg / --ctl-radius-lg: dialogs, the large containers
  *   999px a pill, which is a shape rather than a radius
  */
-export const RADII = [0, 2, 6, 10, 14, 999] as const
+export const RADII = [0, 2, 3, 4, 6, 8, 9, 10, 12, 14, 999] as const
 
 // ---------------------------------------------------------------------------
 // The findings
@@ -967,6 +963,7 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
     if (el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio')) continue
 
     const separator = isRepeatSeparator(el)
+    const control = isControl(el)
     if (SIDES.some((side) => borderPx(s, side) > 0)) bordered.push(el)
 
     // ---- 1. a border, and what is behind it -----------------------------
@@ -978,7 +975,9 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
       const bg = behind(el, unresolved)
       if (c !== null && bg !== null && c.a > 0.05) {
         const ratio = contrast(over(c, bg), bg)
-        const floor = separator ? FLOORS.separatorContrast : FLOORS.dividerContrast
+        // A control's own boundary is 3:1; a rule BETWEEN repeated rows is a
+        // separator even when the row is clickable (`div.clickable.row`).
+        const floor = control && !separator ? FLOORS.dividerContrast : FLOORS.hairlineContrast
         if (ratio < floor) {
           add({
             kind: 'divider-under-floor',
@@ -986,7 +985,7 @@ export function probe(root: ParentNode, restrict?: readonly Element[]): Report {
             side: Side.toLowerCase(),
             measured: ratio,
             floor,
-            detail: `${separator ? 'separator' : 'boundary'} ${rgbText(c)} on ${rgbText(bg)}`,
+            detail: `${control && !separator ? 'control boundary' : separator ? 'separator' : 'hairline'} ${rgbText(c)} on ${rgbText(bg)}`,
           })
         }
       }
@@ -1179,6 +1178,21 @@ function marginsCover(kids: Element[], a: string, b: string, sink: Unresolved[])
     const mb = len(s, `margin-${b.toLowerCase()}`, sink, signature(k))
     return ma + mb >= FLOORS.boxGutter
   })
+}
+
+/** The roles a control answers to, beside its tag. */
+const CONTROL_ROLES = new Set(['button', 'switch', 'checkbox', 'radio', 'textbox', 'combobox', 'searchbox', 'radiogroup', 'spinbutton', 'slider'])
+
+/**
+ * Is this element a CONTROL, whose border identifies it (SC 1.4.11, 3:1)?
+ * Its tag or its role, and the canonical segmented control, whose border is
+ * the control's even though the buttons are inside it.
+ */
+function isControl(el: Element): boolean {
+  if (['BUTTON', 'INPUT', 'SELECT', 'TEXTAREA', 'SUMMARY'].includes(el.tagName)) return true
+  const role = el.getAttribute('role')
+  if (role !== null && CONTROL_ROLES.has(role)) return true
+  return el.classList.contains('c-btn') || el.classList.contains('c-seg') || el.classList.contains('c-inp')
 }
 
 /**

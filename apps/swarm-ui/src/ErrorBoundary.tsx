@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from 'react'
+import { Button } from './components'
 
 /**
  * The last line of the same rule the rest of this app is built on.
@@ -32,22 +33,22 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, State> {
 
   render() {
     if (!this.state.error) return this.props.children
+    // THE TAKEOVER SHAPE (states.html C, §14): the one app-wide state left,
+    // drawn as every whole-app state is -- the cause, the line that this says
+    // nothing about the platform, and the one action.
     return (
       <div className="app">
-        <div className="state failed">
-          <h3>The interface crashed</h3>
-          <p>
-            Something in this page threw an error and it could not finish rendering.
+        <section className="app-takeover is-bad" role="alert" aria-labelledby="ui-crashed-h">
+          <h1 id="ui-crashed-h">The interface crashed</h1>
+          <p>Something in this page threw an error and it could not finish rendering.</p>
+          <p className="app-takeover-inv">
+            This is a bug in the UI, not a statement about the platform. Whatever is running is still running.
           </p>
-          <p style={{ marginTop: 8 }}>
-            This is a bug in the UI, not a statement about the platform. Whatever is
-            running is still running.
-          </p>
-          <pre>{this.state.error.message}</pre>
-          <button className="retry" onClick={() => window.location.reload()}>
+          <Button kind="primary" onClick={() => window.location.reload()}>
             Reload
-          </button>
-        </div>
+          </Button>
+          <p className="app-takeover-foot">{this.state.error.message}</p>
+        </section>
       </div>
     )
   }

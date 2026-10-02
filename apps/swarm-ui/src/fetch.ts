@@ -31,6 +31,10 @@ export type ApiErrorKind =
   | 'upstream_degraded'
   | 'server_error'
   | 'unreachable'
+  /** A 403 the client does not recognise: refused, for a reason only the
+   *  server's message gives. Not admin_required -- that draws "admin only,
+   *  nothing failed", a claim nobody made. */
+  | 'forbidden'
 
 export interface ApiError {
   kind: ApiErrorKind
@@ -74,7 +78,7 @@ export type Result<T> =
   | { status: 'error'; error: ApiError }
 
 /** The server's error envelope, errors.py:15-28. `detail` is optional. */
-interface ErrorEnvelope {
+export interface ErrorEnvelope {
   code?: unknown
   message?: unknown
   detail?: unknown
@@ -87,13 +91,20 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 /**
  * Classify a response whose status is not 2xx.
  *
+ * EXPORTED AS `classifyFailure` for the two submit paths, which call `fetch`
+ * themselves (Submit.tsx, SubmitWorkflow.tsx). They each restated a piece of
+ * this and both mapped EVERY 503 to `upstream_degraded`, so a submit during a
+ * tenant-resolution failure read as a degraded service (states.html, "Found
+ * while reading the code"). One classifier, so two screens cannot disagree
+ * about what a status means.
+ *
  * Several kinds are distinguished by the MESSAGE rather than the status,
  * because the API returns 403 for three unrelated situations that need three
  * different screens: you are not an admin, your domain is not permitted, and
  * your tenant is disabled. Matching on substrings is fragile, so an
  * unrecognised 403 stays a generic one rather than being forced into a bucket.
  */
-function classify(status: number, env: ErrorEnvelope | null, retryAfter: number | undefined): ApiError {
+export function classifyFailure(status: number, env: ErrorEnvelope | null, retryAfter: number | undefined): ApiError {
   const code = typeof env?.code === 'string' ? env.code : null
   const message =
     typeof env?.message === 'string' && env.message.trim() !== ''
@@ -117,8 +128,9 @@ function classify(status: number, env: ErrorEnvelope | null, retryAfter: number 
     if (lower.includes('is not permitted')) return { ...base, kind: 'wrong_domain' }
     if (lower.includes('is disabled')) return { ...base, kind: 'tenant_disabled' }
     // An unrecognised 403. Do NOT guess -- guessing picks a gate page that
-    // tells the user to fix something that is not wrong.
-    return { ...base, kind: 'admin_required' }
+    // tells the user to fix something that is not wrong. It stays a generic
+    // refusal, headed as one, with the server's own message under it.
+    return { ...base, kind: 'forbidden' }
   }
   if (status === 404) return { ...base, kind: 'not_found' }
   if (status === 409) return { ...base, kind: 'conflict' }
@@ -159,6 +171,7 @@ export function errorHeading(e: ApiError): string {
     case 'upstream_degraded': return 'A service the API depends on did not answer'
     case 'server_error': return 'The API failed on this request'
     case 'unreachable': return 'SwarmCloud is unreachable'
+    case 'forbidden': return 'The API refused this request'
   }
 }
 
@@ -581,6 +594,8 @@ export function forgetProbes(): void {
   pageDepth = 0
   screenSnapshot = EMPTY_SCOPE
   for (const fn of screenListeners) fn()
+  // And the last tenant switch, which is about one page of one test's app.
+  lastSwitch = null
 }
 
 // ---------------------------------------------------------------------------
@@ -644,6 +659,51 @@ export function chooseTenant(id: string | null): void {
 export function subscribeTenant(fn: () => void): () => void {
   tenantListeners.add(fn)
   return () => tenantListeners.delete(fn)
+}
+
+/** One side of a switch: the tenant id and the name the API gave it. */
+export interface TenantSide {
+  id: string
+  name: string
+}
+
+/**
+ * THE LAST SWITCH, while the page it was made on is open (intake-tenants.html
+ * 2A). The shell writes it when the person picks another tenant; a KEPT form
+ * (Submit's) reads it to say which tenant it will now submit as, and to offer
+ * the way back. `kept` says whether the page was a kept form: a switch on any
+ * other page remounts it, and there is nothing to say on it afterwards.
+ *
+ * Memory only. It describes one page's life, so it is cleared on the next
+ * page (`clearTenantSwitch`) and never stored.
+ */
+export interface TenantSwitch {
+  from: TenantSide
+  to: TenantSide
+  kept: boolean
+}
+
+let lastSwitch: TenantSwitch | null = null
+const switchListeners = new Set<() => void>()
+
+export function noteTenantSwitch(next: TenantSwitch): void {
+  lastSwitch = next
+  for (const fn of switchListeners) fn()
+}
+
+export function clearTenantSwitch(): void {
+  if (lastSwitch === null) return
+  lastSwitch = null
+  for (const fn of switchListeners) fn()
+}
+
+export function tenantSwitchSnapshot(): TenantSwitch | null {
+  return lastSwitch
+}
+
+export function subscribeTenantSwitch(fn: () => void): () => void {
+  switchListeners.add(fn)
+  return () => switchListeners.delete(fn)
 }
 
 /** `base`, plus `X-Swarm-Tenant` when a tenant was chosen. THE one place. */
@@ -794,7 +854,7 @@ export async function read<T>(
       }
     }
     const ra = Number(res.headers.get('retry-after'))
-    const err = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    const err = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
     note(res.status, err.kind, false)
     // A stored tenant the caller is no longer in: dropped, and this READ asked
     // once more under the default. Only when the drop took: storage that
@@ -832,7 +892,7 @@ export async function read<T>(
 /**
  * A mutation. Same contract as `read`, same classification, same rules.
  *
- * It shares `classify` and the content-type check deliberately: an expired
+ * It shares `classifyFailure` and the content-type check deliberately: an expired
  * IAP session arrives as a 200 carrying HTML on a PUT exactly as it does on a
  * GET, and a second copy of that check is how the two would drift apart.
  *
@@ -917,7 +977,7 @@ export async function write(
       }
     }
     const ra = Number(res.headers.get('retry-after'))
-    const error = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    const error = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
     note(res.status, error.kind, false)
     // Dropped, but a WRITE is not retried: the person chose that tenant for
     // this change, and quietly filing it under the default instead is the one

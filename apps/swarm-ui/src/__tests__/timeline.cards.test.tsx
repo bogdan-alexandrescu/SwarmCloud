@@ -370,7 +370,7 @@ describe('with IntersectionObserver', () => {
     await waitFor(() => expect(failing(box(root, id))).toBe(true))
     expect(box(root, id).textContent).toContain('upstream timed out')
     expect(loading(box(root, id)), 'a failed read still looks like it is loading').toBe(false)
-    fireEvent.click(within(box(root, id)).getByRole('button', { name: /try again/ }))
+    fireEvent.click(within(box(root, id)).getByRole('button', { name: /try again/i }))
     await waitFor(() => expect(loaded(box(root, id))).toBe(true))
     expect(cardCalls().filter((c) => same(c.sections, CARDS[id]!)).length).toBe(2)
   })

@@ -6,64 +6,28 @@
   --surface: #0c1a2e; /* was #14181d */
   --surface-2: #11233b; /* was #1b2027 */
 
-  /* TWO LINE WEIGHTS, AND THE MARK IS WHERE THEY COME FROM.
-     ------------------------------------------------------------------
-     `SwarmMark` (Brand.tsx) is not drawn with one stroke. It has three
-     weights and they mean different things: the hex RING at opacity .30 is
-     the structure the swarm is arranged on, the SPOKES at .55 are what the
-     centre actually reaches, and the seven DISCS are solid because they are
-     the things themselves. The mark also drops the two stroke weights
-     entirely below 22px, because at that size they stop separating anything
-     and turn the glyph into grey noise.
+  /* THE HAIRLINE AND THE CONTROL BORDER ARE TWO TOKENS (components.html A,
+     owner's pick 2026-10-02; brand.html palette A "Open sky").
 
-     A product whose mark says "structure is lighter than connection, and
-     both are lighter than data" should not draw every rule in its console at
-     one weight, which is what this sheet did: 100 uses of a single value --
-     90 of `var(--line)` and 10 of `var(--ctl-hairline)`, which was an alias
-     for it -- for a panel edge, an input outline, the rail's boundary and the
-     twenty-third row rule of a table alike. So there are two now, and which
-     one a rule gets is decided by what it is FOR rather than by how it looks.
+     --line        THE HAIRLINE: the outline of a card, a table, a panel, the
+                   head and the dock. The Open sky value, #1e3350 here and
+                   #d6e0ea in light. It is NOT held to 3:1: a card is a region,
+                   not a control, and at #5f7087 / #698198 (the values this
+                   token carried until 2026-10-02) every card and table on the
+                   console read as a heavy box (#503, "Palette").
+     --line-soft   A REPEATED INTERIOR SEPARATOR -- the rule between two rows
+                   of one table -- one step quieter than the outline.
+     --ctl-bd      A CONTROL BOUNDARY: an input, a select, a secondary button,
+                   a checkbox, a segmented control. WCAG 2.1 SC 1.4.11 asks 3:1
+                   of "visual information required to identify user interface
+                   components", and these are that. Declared with the other
+                   component tokens below.
 
-     THE VALUES ARE MEASURED, NOT COPIED FROM THE MARK'S OPACITIES. 30% and
-     55% of --text over --surface land at #54585d and #898d92, which is right
-     for two hairlines inside a 28px glyph and much too loud for a rule drawn
-     the width of a table. The mark supplies the SYSTEM; WCAG supplies the
-     numbers.
-
-     --line        A COMPONENT BOUNDARY: the edge of a panel, a card, an
-                   input, a button, the rail, the head, the dock. WCAG 2.1
-                   SC 1.4.11 asks 3:1 of "visual information required to
-                   identify user interface components", and these are that.
-                   Was #262d36, which measured 1.40:1 against --bg, 1.28:1
-                   against --surface and 1.18:1 against --surface-2 -- under
-                   the floor everywhere, including on the text inputs and
-                   buttons where 1.4.11 is not a matter of taste. The comment
-                   above `.section + .section` asserted "--line now at 3:1
-                   against the surface"; it had never been measured and it was
-                   wrong by a factor of two and a half.
-                   #5f7087 measures 3.85 / 3.53 / 3.24 against the three
-                   surfaces, so the worst case has margin rather than sitting
-                   on the floor.
-     --line-soft   A REPEATED INTERIOR SEPARATOR: the rule between two rows of
-                   one table, two stacked utilisation lines, two sections of
-                   one page. Nothing is identified by the twenty-third of
-                   those that the rows do not already identify, so 1.4.11 does
-                   not reach it -- and drawing all of them at 3:1 turns a
-                   table of numbers into a spreadsheet grid, which is the
-                   register this console is trying not to be in.
-                   Held instead to 1.5:1, which is the floor
-                   tests/unit/control_plane/test_state_colour_discriminability.py
-                   already uses for "these two tones are not the same tone".
-                   #37414e measures 1.88 / 1.72 / 1.58. The old single value
-                   failed even this.
-
-     `src/__tests__/spacing.test.tsx` measures both, on rendered elements,
-     against the ground each one is actually drawn on -- and decides which
-     floor applies STRUCTURALLY (a border on one side of an element that has a
-     twin beside it is a separator), so a new rule cannot be quietly graded
-     down by whoever writes it. */
-  --line: #5f7087;
-  --line-soft: #37414e;
+     `src/__tests__/spacing.test.tsx` measures both on rendered elements: a
+     control's border against 3:1, every other border against the hairline
+     floor in `spaceprobe.ts`. */
+  --line: #1e3350;
+  --line-soft: #1d3049;
 
   --text: #eef4fa; /* was #e8ecf1 */
   --text-dim: #9fb0c4; /* was #93a0b0 */
@@ -154,22 +118,9 @@
     --bg: #f3f6f9; /* Open sky (rebrand 2026-10-01); was #f6f8fa */
     --surface: #ffffff;
     --surface-2: #eef4fa; /* was #f0f3f6 */
-    /* The same two weights, measured against every ground a border is actually
-       drawn on in this theme -- which is not the same list as the three
-       surface tokens. The probe reported failures at #e5e7ea and #e3e4e6,
-       tints this sheet mixes for striped rows and raised cells, and those are
-       the worst case rather than --surface-2.
-
-       --line was #d8dee4: 1.36 against white, 1.22 against --surface-2 and
-       1.07 against the tints. The light theme failed the 3:1
-       component-boundary floor exactly as the dark one did, on the inputs and
-       buttons where SC 1.4.11 is not a matter of taste, and failed the 1.5:1
-       separator floor as well.
-
-       #698198  4.04 / 3.80 / 3.63 / 3.26 / 3.18  (white … tint)
-       #a9b7c4  2.05 / 1.92 / 1.84 / 1.65 / 1.61 */
-    --line: #698198;
-    --line-soft: #a9b7c4;
+    /* The Open sky hairlines (see the dark block for why they are not 3:1). */
+    --line: #d6e0ea;
+    --line-soft: #dde5ee;
     --text: #0d1724; /* was #1f2328 */
     --text-dim: #4f5d6e; /* was #59636e */
     /* Darkened from #818b98, which measured 3.10:1 at worst against the light
@@ -235,8 +186,8 @@
   --bg: #f3f6f9;
   --surface: #ffffff;
   --surface-2: #eef4fa;
-  --line: #698198;
-  --line-soft: #a9b7c4;
+  --line: #d6e0ea;
+  --line-soft: #dde5ee;
   --text: #0d1724;
   --text-dim: #4f5d6e;
   --text-faint: #606a77;
@@ -250,6 +201,60 @@
   --bad-ink: #a71b25;
   --info-ink: #075985;
   --paused-ink: #6629d8;
+}
+
+/* ==========================================================================
+   THE CANONICAL COMPONENT TOKENS (components.html Variant A, owner's pick
+   2026-10-02). One set for every screen; the components that read them are
+   in src/components/ and their rules in src/styles/components.css.
+   ==========================================================================
+   Radius 4 / 8 / 9 / 12 / 14 / 999, replacing the 6 / 10 / 14 scale and its
+   literals as screens migrate. Spacing 4 / 8 / 12 / 16 / 28 (--ctl-s1, s2, s3, --ctl-pad-chrome, s5).
+   Controls 28 / 32 / 36px, table rows 32px; usage bars are the one track,
+   `--track-h` (6px, half-round ends).
+   Hatching means "not measured" and nothing else. */
+:root {
+  /* 3:1 against every surface in its theme (WCAG 2.1 SC 1.4.11): #5f7087 is
+     3.77 / 3.45 / 3.13 on --bg / --surface / --surface-2 here, #7d8ea3 3.35 /
+     3.09 / 3.02 in light. The value the mock-ups drew (#dde5ee) is 1.3:1. */
+  --ctl-bd: #5f7087;
+  /* A control on a STATE-TINTED row (a paused pool's row in Pool limits) sits
+     on a darker ground than any surface, where #7d8ea3 measures 2.87:1. The
+     row's controls draw this instead of --ctl-bd, so they keep 3:1 (#768799 is
+     3.16 on that tint). Dark needs no second value. */
+  --ctl-bd-tint: #5f7087;
+  /* Text on an accent fill (the primary button): the darkest navy on the dark
+     theme's light sky accent, white on the light theme's deep one. */
+  --ctl-onac: #06101e;
+  /* The tooltip and the toast: inverted surfaces, so they read over anything. */
+  --ctl-tip: #eef4fa;
+  --ctl-tip-ink: #0b1829;
+  --r-xs: 4px;
+  --r-ctl: 8px;
+  --r-tile: 9px;
+  --r-card: 12px;
+  --r-dlg: 14px;
+  --r-pill: 999px;
+  --h-ctl: 32px;
+  --h-sm: 28px;
+  --h-lg: 36px;
+  --row: 32px;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme='dark']) {
+    --ctl-bd: #7d8ea3;
+    --ctl-bd-tint: #768799;
+    --ctl-onac: #ffffff;
+    --ctl-tip: #0d1724;
+    --ctl-tip-ink: #eef4fa;
+  }
+}
+:root[data-theme='light'] {
+  --ctl-bd: #7d8ea3;
+  --ctl-bd-tint: #768799;
+  --ctl-onac: #ffffff;
+  --ctl-tip: #0d1724;
+  --ctl-tip-ink: #eef4fa;
 }
 
 /* ==========================================================================
@@ -438,7 +443,7 @@ body {
 :where(.app button) {
   min-height: 28px;
   padding: 5px 12px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: var(--surface);
   color: var(--text-dim);
@@ -472,7 +477,9 @@ body {
    (CH-23; the reason is at sec 9b). */
 :where(a) {
   color: var(--text);
-  text-decoration-color: var(--line);
+  /* The control border, not the hairline: a resting underline is held to
+     3:1 (CH-23), and --line became the Open sky hairline on 2026-10-02. */
+  text-decoration-color: var(--ctl-bd);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
 }
@@ -490,7 +497,7 @@ body {
 :where(.app input:not([type='checkbox']):not([type='radio']), .app select, .app textarea) {
   min-height: 28px;
   padding: 5px 9px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: var(--bg);
   color: var(--text);
@@ -624,7 +631,7 @@ body {
    as padding: `100%` inherits the chain `html, body, #root { height: 100% }`
    and therefore lands inside the notch and the home indicator, where a
    viewport unit would ignore both and overflow by the inset. */
-.ctl-frame { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.ctl-frame { height: 100%; }
 /* BOTH `min-*: 0` ARE LOAD-BEARING, and each was a real defect before it was
    written. A grid item's default is `min-height: auto` / `min-width: auto`,
    which means "never shrink below your content" -- so:
@@ -646,9 +653,13 @@ body {
   overflow: auto;
   scroll-padding-bottom: var(--ctl-s3);
 }
-/* The dock is the other grid item and shrinks for the same reason -- its own
-   `min-width: 0` is in the `.ctl-dock` rule in the dock section, the one
-   place that element is declared. */
+/* THE GRID MOVED INTO THE CONTENT COLUMN (#503). The frame was the two-row
+   grid, so the dock ran the full width of the window -- under the spine and
+   the panel, where at 1440x900 it cut the spine's avatar off. `.sk-main` is
+   the grid now: the scroller is row 1 and the dock row 2 of the CONTENT
+   column, beside the spine, which is the frame's full height. The dock is the
+   other grid item and shrinks for the same reason -- its own `min-width: 0`
+   is in the `.ctl-dock` rule in the dock section. */
 
 /* ONE `.app` RULE. The frame's two halves -- the column the product header
    lines up with (max-width, gutter) and the rail/work grid (§B3, argued at
@@ -1072,31 +1083,7 @@ body {
   }
 }
 
-/* ---- nav ---- */
-/* Seven tabs do not fit in 390pt. Scrolling the BAR keeps the page from
-   scrolling: without `overflow-x: auto` here the two rightmost buttons push
-   the document to 521px wide and every screen gains a horizontal scrollbar,
-   which is what shipped and what the phone sweep caught. */
-.nav {
-  display: flex;
-  gap: 4px;
-  margin-bottom: 20px;
-  border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  scrollbar-width: none;
-}
-.nav::-webkit-scrollbar { display: none; }
-.nav button { flex: 0 0 auto; white-space: nowrap; }
-.nav button {
-  background: none; border: none; border-bottom: 2px solid transparent;
-  color: var(--text-dim); font: 500 var(--t-body)/var(--lh-body) var(--font);
-  padding: 8px 12px; margin-bottom: -1px; cursor: pointer;
-}
-.nav button:hover { color: var(--text); }
-.nav button.on { color: var(--text); border-bottom-color: var(--info); }
-
-/* ---- filters: deleted; see the note beside `.tabs` in the Agents block ---- */
+/* ---- filters: deleted (`.filters` was two rule families; see the Agents block) ---- */
 
 /* ---- task rows ---- */
 /* SIX ROWS WERE SIX FLOATING CARDS. NOW THEY ARE ONE LIST.
@@ -2073,9 +2060,6 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
      one phone block, and it is the one in the run list's own region.
      `.row .meta` went with them: no screen has rendered a `.meta` cell in a
      task row since the row was rewritten, so it was hiding nothing. */
-  /* The `font-size: 13px` that was here is now what `.nav button` already is
-     (--t-body), so the declaration restated its parent and went. */
-  .nav button { padding: 8px 10px; }
   /* 390px. `[state] [name] [progress] [shape] [actions]` and nothing else --
      ONE redefinition of the one template, which is the whole reason it is
      written with named lines (§6.8). Columns are DROPPED, never relabelled
@@ -2238,11 +2222,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   filter: saturate(.7);
 }
 
-.state.stale-note {
-  border-color: color-mix(in srgb, var(--warn) 55%, var(--line));
-  background: color-mix(in srgb, var(--warn) 7%, var(--surface));
-}
-.state.stale-note h3 { color: var(--warn); }
+/* The stale banner itself is the canonical `Banner` (Shell.tsx `StaleBanner`). */
 
 /* The "checked at" time on an empty state. Muted, because an empty state is
    calm by design -- what must be loud is UNREADABLE, not zero.
@@ -2438,44 +2418,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 /* Agents screen (Screen A)                                                  */
 /* ------------------------------------------------------------------------ */
 
-/* NO SCREEN RENDERS `.tabs` ANY MORE, and it is still here on purpose.
-   The run list was its last caller and now uses `.ctl-seg`, which is the tab
-   bar `design-system.md` §6.11 decided ("three tab bars -> `.ctl-seg` + the
-   rail"). The rules below stay because `test_workflow_step_measurements.py:635`
-   pins `.tabs button { ... flex: 0 0 auto }` verbatim, and that file is the
-   Overview lane's to rewrite -- §9.5 of the spec names it as the hardest edit
-   of this phase. Deleting these rules without that rewrite turns the gate red
-   for a screen this group does not own. Flagged in the report; not deleted
-   here. */
-
-/* §B4.3 move 4: STOP SPENDING 1068px ON FOUR-CHARACTER LABELS.
-   `.tabs button { flex: 1 }` divided the whole content width between however
-   many tabs there were, so "All" and "Mine" each took a quarter of a 1400px
-   row and the strip read as four enormous buttons rather than as a filter.
-   `flex: 0 0 auto` sizes each one to its label; `justify-content: flex-start`
-   is what keeps the leftover width with the content instead of the chrome. */
-.tabs { display: flex; gap: 4px; margin-bottom: 10px; justify-content: flex-start; flex-wrap: wrap; }
-.tabs button {
-  flex: 0 0 auto;
-  padding: 8px 12px;
-  border: 1px solid var(--line);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text-dim);
-  font-size: var(--t-body);
-  cursor: pointer;
-}
-.tabs button.on { border-color: var(--info); color: var(--text); background: var(--surface-2); }
-.tabs .badge {
-  margin-left: 6px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
-  font-variant-numeric: tabular-nums;
-}
-.tabs button.on .badge { background: color-mix(in srgb, var(--info) 22%, transparent); color: var(--info-ink); }
-
 /* `.filters` IS GONE FROM HERE AND FROM THE NAV BLOCK. It was two unrelated
    rule families 1,300 lines apart -- pill buttons up there, a label-and-select
    row here -- that merged in the cascade into one element nobody ever drew:
@@ -2628,10 +2570,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
     line-clamp: 2;
     overflow: hidden;
   }
-  /* Padding only. The 12.5px that was here is --t-body everywhere now: a tab
-     is a tab at 390pt, and half a pixel of type was never the reason four of
-     them fitted. */
-  .tabs button { padding: 8px 6px; }
 }
 
 /* ------------------------------------------------------------------------ */
@@ -2668,7 +2606,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 .ag-filter select,
 .ag-filter input[type='search'] {
   padding: 4px 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: var(--surface);
   color: var(--text);
@@ -3439,7 +3377,7 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
 button.copy,
 a.copy {
   margin-left: 8px; padding: 1px 7px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--surface-2); color: var(--text-dim);
   font: var(--t-meta)/var(--lh-meta) var(--mono); cursor: pointer;
 }
@@ -3640,7 +3578,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .limit-edit { display: inline-flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .limit-edit input {
   width: 74px; padding: 3px 7px;
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--ctl-bd); border-radius: 6px;
   background: var(--bg); color: var(--text);
   font: var(--t-body)/var(--lh-body) var(--mono); font-variant-numeric: tabular-nums;
 }
@@ -3659,7 +3597,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .sbf-field [aria-invalid='true'] { border-color: var(--warn); }
 .limit-edit > .warn-text { flex-basis: 100%; margin: 0; }
 .limit-edit button {
-  padding: 3px 10px; border: 1px solid var(--line); border-radius: 6px;
+  padding: 3px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px;
   background: var(--surface); color: var(--text-dim);
   font-size: var(--t-body); cursor: pointer;
 }
@@ -3800,14 +3738,14 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 
 .acct-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 0; }
 .acct-action button, .acct-buttons button {
-  padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px;
+  padding: 5px 12px; border: 1px solid var(--ctl-bd); border-radius: 6px;
   background: var(--surface); color: var(--text-dim);
   font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
 }
 .acct-action button:not(:disabled):hover,
 .acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
 .acct-action button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
-.acct-action button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); }
+.acct-action button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd)); }
 .acct-action button.danger:not(:disabled):hover { border-color: var(--bad); color: var(--bad); }
 
 /* Inputs and textareas are scoped to this screen rather than styled globally:
@@ -3823,14 +3761,14 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .acct-wide { width: 100%; max-width: 420px; }
 .acct-action input, #acct-label, #acct-lend {
   padding: 5px 9px;
-  border: 1px solid var(--line); border-radius: 6px;
+  border: 1px solid var(--ctl-bd); border-radius: 6px;
   background: var(--bg); color: var(--text);
   font: var(--t-body)/var(--lh-body) var(--mono);
 }
 .acct-action input:disabled { opacity: .5; cursor: not-allowed; }
 .acct-action textarea, #acct-cred {
   width: 100%; max-width: 620px; padding: 9px 11px; resize: vertical;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--bg); color: var(--text);
   font: var(--t-body)/var(--lh-body) var(--mono);
 }
@@ -3941,9 +3879,11 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
   /* THE ONE TRACK. §B4.3 move 2: seven primitives drew a proportion in this
      file, at 4px, 5px, 9px and 10px, with two radius conventions and three
      different ideas about what an unmeasured one looks like. One height, one
-     radius, one colour rule, and one axis (see `.ctl-track` below). */
-  --track-h: 8px;
-  --track-radius: 2px;
+     radius, one colour rule, and one axis (see `.ctl-track` below).
+     6px with half-round ends since components.html A (owner's pick,
+     2026-10-02): the mock-ups drew 5px, the live track was 8px. */
+  --track-h: 6px;
+  --track-radius: 3px;
   /* §B20: the width of the baseline tick. 3px because 2px disappears against
      the track's own edge at 1x and 4px starts to read as a value. */
   --track-axis: 3px;
@@ -3980,11 +3920,13 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
   /* THE HATCH. One definition, used by every "this is not a measurement"
      surface: an unknown ceiling, a stale panel, a value the platform does not
      record. Diagonal stripes read as "no data here" at a glance and survive a
-     greyscale screenshot, which a colour alone does not. */
+     greyscale screenshot, which a colour alone does not. The dark stripe is
+     the control border (components.html A's "not measured" bar), not the
+     hairline, which is too faint to read as a stripe at all. */
   --ctl-hatch: repeating-linear-gradient(
     45deg,
     var(--surface-2), var(--surface-2) 4px,
-    var(--line) 4px, var(--line) 8px
+    var(--ctl-bd) 4px, var(--ctl-bd) 5.5px
   );
   /* The same idea in the failure colour, for units held above a ceiling —
      a real measurement, but of a state that should be impossible. */
@@ -4578,9 +4520,17 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .ctl-panel-note a,
 a.ctl-metric .ctl-metric-label,
 .wf-inspect-run {
-  color: var(--text);
+  /* SKY AND SANS (#503, "Links"): the picked frames draw in-card links in
+     the accent, in the body face -- "All live →", "4 holders · limit" --
+     where these rendered as underlined, monospaced, text-coloured words. The
+     underline stays, so a link never relies on colour alone (components.html
+     A, "Links to the console") -- in the accent itself rather than the
+     frames' 45% mix, which measures under the 3:1 a resting underline is
+     held to (CH-23). */
+  color: var(--info);
+  font-family: var(--font);
   text-decoration: underline;
-  text-decoration-color: var(--line);
+  text-decoration-color: var(--info);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
   border-radius: var(--ctl-radius-sm);
@@ -4595,6 +4545,11 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   color: var(--info);
   text-decoration-color: currentColor;
 }
+/* A CARD'S LINK OUT IS NOT UNDERLINED until hovered ("All 37 waiting →"):
+   it sits alone in the card head, where the arrow and the accent already say
+   what it is. (0,2,0), so it outranks a screen's single-class link layout. */
+.ctl-card-head .ctl-link { text-decoration-color: transparent; font-family: var(--font); }
+.ctl-card-head .ctl-link:hover { text-decoration-color: currentColor; }
 /* The one place sec 1.3 allows the accent on a control state: the focus ring. */
 .ctl-link:focus-visible,
 .sub button:focus-visible,
@@ -5263,7 +5218,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   align-items: stretch;
   gap: var(--ctl-s1);
   padding: 2px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
 }
 .ctl-seg > button {
@@ -6239,6 +6194,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-table tbody tr.is-bad    { background: color-mix(in srgb, var(--bad) 8%, transparent); }
 .ctl-table tbody tr.is-warn   { background: color-mix(in srgb, var(--warn) 8%, transparent); }
 .ctl-table tbody tr.is-paused { background: color-mix(in srgb, var(--paused) 7%, transparent); }
+/* A control on that tint draws the darker control border, so it keeps 3:1
+   (see --ctl-bd-tint). Named, not a custom-property swap, so it out-ranks a
+   screen's single-class control rule. */
+.ctl-table tbody tr.is-paused button,
+.ctl-table tbody tr.is-paused input,
+.ctl-table tbody tr.is-paused select { border-color: var(--ctl-bd-tint); }
 /* An 8% wash of a colour is roughly a 1% change in tone, so in greyscale the
    three washes above are one wash and a flagged row is an unflagged row. Each
    toned row also carries a rule down the left edge of its first cell, and the
@@ -6928,7 +6889,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .dsp-repo { width: 100%; max-width: 520px; }
 .dsp-repo, .dsp select {
   background: var(--surface-2); color: var(--text);
-  border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px;
+  border: 1px solid var(--ctl-bd); border-radius: 6px; padding: 6px 8px;
 }
 .dsp-repo:focus-visible, .dsp select:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
@@ -7071,12 +7032,12 @@ table.pools tbody tr.unmeasured {
      leading is the largest it can be without making the row taller. */
   font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
   padding: 4px 8px; border-radius: var(--ctl-radius-sm);
-  border: 1px solid var(--line); background: transparent; color: var(--text-dim);
+  border: 1px solid var(--ctl-bd); background: transparent; color: var(--text-dim);
   cursor: pointer;
 }
 .stop-btn:hover {
   color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
 }
     /* Tighter padding, same type. The 10px that was here was below the 11px floor
        and it sat on a destructive control in every row -- the last thing in this
@@ -7210,11 +7171,11 @@ table.pools tbody tr.unmeasured {
      padding. Leading would only make the two buttons taller than the
      confirmation copy above them. */
   font: 500 var(--t-body)/var(--lh-flush) var(--mono); padding: 6px 10px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text-dim); cursor: pointer;
 }
 .stop-actions button.danger {
-  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--line));
+  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
 }
 .stop-actions button:disabled { opacity: .55; cursor: default; }
 .stop-note { font-size: var(--t-body); color: var(--text-dim); margin: var(--ctl-s2) 0 0; }
@@ -9138,7 +9099,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   white-space: nowrap;
   cursor: pointer;
 }
-.wf-pick[aria-pressed='true'] { background: var(--surface-2); border-color: var(--line); }
+.wf-pick[aria-pressed='true'] { background: var(--surface-2); border-color: var(--ctl-bd); }
 .wf-pick:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 /* THE TIMELINE (viz #2).
@@ -9429,7 +9390,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   min-width: 28px;
   min-height: 26px;
   padding: 0 var(--ctl-s2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: none;
   color: var(--text-dim);
@@ -9899,7 +9860,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-table-toggle,
 .ol-step {
   padding: 4px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: none;
   color: var(--text-dim);
@@ -9928,7 +9889,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-field input,
 .ol-range input {
   padding: 4px 8px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: var(--bg);
   color: var(--text);
@@ -9938,7 +9899,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-pick { position: relative; }
 .ol-pick > summary {
   padding: 4px 10px;
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   color: var(--text-dim);
   font: var(--t-body)/var(--lh-body) var(--font);
@@ -10367,7 +10328,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .diff-meta { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
 .diff-btn {
   padding: 2px var(--ctl-s2);
-  border: 1px solid var(--line);
+  border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
   color: var(--text);
@@ -10674,20 +10635,22 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 
 /* --- the frame ---------------------------------------------------------- */
-.sk-app { display: flex; min-height: 100%; position: relative; background: var(--bg); color: var(--text); font-family: var(--font); }
+.sk-app { display: flex; height: 100%; position: relative; background: var(--bg); color: var(--text); font-family: var(--font); }
 .sk-prodbar { position: fixed; left: 0; right: 0; top: 0; height: 3px; background: var(--sk-prod); z-index: 30; }
 /* No gap: the picked mock-up draws the spine and the panel touching, with the
    panel's own edge as the only seam (owner decision 2026-10-01). The spacing
    probe names this one boundary as an exemption (spacing.test.tsx). */
-.sk-side { display: flex; flex: none; position: sticky; top: 0; height: 100vh; height: 100dvh; z-index: 10; }
-.sk-main { flex: 1; min-width: 0; }
-.sk-main > .app { max-width: none; padding-top: 16px; }
+.sk-side { display: flex; flex: none; height: 100%; z-index: 10; }
+/* The content column: the page's scroller over the dock (see `.ctl-frame`). */
+.sk-main { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
+.sk-main > .ctl-scroll > .app { max-width: none; padding-top: 16px; }
 
 /* --- the spine: 84px, the same deep blue in both themes ------------------ */
 .sk-spine { width: 84px; flex: none; background: linear-gradient(180deg, var(--sk-spine-top), var(--sk-spine-foot)); color: var(--sk-spine-ink); display: flex; flex-direction: column; align-items: center; padding: 16px 0 12px; gap: 4px; overflow-y: auto; }
 .sk-hive { display: flex; padding: 2px 0 14px; color: #fff; }
 .sk-ri { width: 70px; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 7px 0; border: 0; border-radius: 10px; background: none; color: inherit; position: relative; cursor: pointer; font: 500 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; }
 .sk-ri small { font-size: inherit; }
+a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 /* Solid, not rgba(124, 200, 248, .12/.2): the contrast gate cannot see that an
    item sits on the spine, so a translucent fill was measured over the page.
    These are the same two fills composited over --sk-spine-top, where the
@@ -10706,7 +10669,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-rsep { width: 32px; height: 1px; background: rgba(255, 255, 255, .16); margin: 6px 0; }
 .sk-grow { flex: 1; }
 .sk-foot { display: contents; }
-.sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); }
+.sk-av { margin-top: 8px; width: 28px; height: 28px; border-radius: 50%; background: #0369a1; color: #fff; font: 600 var(--t-micro)/var(--lh-micro) var(--font); display: flex; align-items: center; justify-content: center; flex: none; box-shadow: 0 0 0 2px rgba(255, 255, 255, .18); position: relative; }
+/* A whole-app state's echo on the spine (states.html C): the collapsed rail still carries it. */
+.sk-av-dot { position: absolute; top: -2px; right: -2px; width: 8px; height: 8px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px #06101e; /* the spine's foot */ }
 
 /* --- the panel: 236px ---------------------------------------------------- */
 .sk-panel { width: 236px; flex: none; background: var(--surface); border-right: 1px solid var(--sk-ln); display: flex; flex-direction: column; padding: 14px 0; min-height: 0; }
@@ -10722,23 +10687,26 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-tsel { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text); background: none; border: 1px solid var(--sk-ln); border-radius: 4px; padding: 1px 2px; min-width: 0; max-width: 100%; text-overflow: ellipsis; cursor: pointer; }
 .sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
-.sk-cp { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
+.sk-cp, .sk-tretry { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
 .sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sk-pscroll { flex: 1; overflow-y: auto; min-height: 0; }
 .sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
 .sk-pk { display: flex; align-items: center; gap: 9px; padding: 7px 9px; margin: 0 10px; width: calc(100% - 20px); border: 0; border-radius: 6px; background: none; color: var(--text-dim); white-space: nowrap; position: relative; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; }
 .sk-pk .sk-pl { color: var(--text); opacity: .86; flex: 1; }
+.sk-pk > .sk-ic { width: 16px; height: 16px; }
 .sk-pk:hover { background: var(--sk-hv); }
 .sk-pk.is-on { background: var(--sk-acs); color: var(--sk-ac); }
 .sk-pk.is-on .sk-pl { color: var(--sk-ac); opacity: 1; font-weight: 600; }
 .sk-pk.is-on::before { content: ""; position: absolute; left: -10px; top: 7px; bottom: 7px; width: 3px; border-radius: 2px; background: var(--sk-ac); }
-.sk-pk.is-dis, .sk-pk:disabled { opacity: .5; cursor: not-allowed; }
+.sk-pk.is-dis, .sk-pk:disabled { opacity: .45; cursor: not-allowed; }
 .sk-lk { width: 12px; height: 12px; }
 .sk-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.sk-cnt.is-alert { color: var(--s-warn); font-weight: 600; }
+.sk-cnt.is-dash { color: var(--ctl-absent); cursor: help; }
 .sk-kids { margin: 2px 0 6px 38px; border-left: 1px solid var(--sk-ln); padding-left: 8px; display: flex; flex-direction: column; }
-.sk-kid { display: flex; justify-content: space-between; gap: 8px; padding: 5px 10px; border: 0; border-radius: 6px; background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
+.sk-kid { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; padding: 5px 10px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text-dim); white-space: nowrap; cursor: pointer; font: var(--t-micro)/var(--lh-micro) var(--font); text-align: left; }
+.sk-kid:hover { background: var(--sk-hv); color: var(--text); }
 .sk-kid.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-recent { margin: 2px 10px 6px 38px; font-size: var(--t-micro); color: var(--text-dim); }
 .sk-recent summary { cursor: pointer; padding: 4px 0; }
@@ -10760,14 +10728,76 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
 .sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
 
+/* --- the tenant switcher (intake-tenants.html 2A, picked 2026-10-02) ----- */
+.sk-tenant.is-sw { flex-direction: column; align-items: stretch; gap: 4px; padding: 0; }
+.sk-tenant.is-sw.is-open { border-color: var(--sk-ac); box-shadow: 0 0 0 3px var(--sk-acs); }
+.sk-tsw { display: flex; align-items: center; gap: 9px; padding: 8px 10px 2px; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; border-radius: var(--r-card); }
+.sk-tsw:focus-visible, .sk-ttile:focus-visible, .sk-tchip:focus-visible, .sk-to:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.sk-car { width: 13px; height: 13px; opacity: .7; }
+.sk-tcopy { display: flex; gap: 6px; align-items: center; padding: 0 10px 8px 43px; }
+.sk-tpop { position: fixed; z-index: 45; left: 94px; top: 104px; width: 300px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-card); box-shadow: var(--sk-sh); padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.sk-tpop.is-tile { left: 90px; top: 72px; }
+.sk-th { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); padding: 6px 8px 4px; }
+.sk-to { display: grid; grid-template-columns: 24px 1fr auto; gap: 2px 9px; align-items: center; padding: 8px; border: 0; border-radius: var(--r-tile); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
+.sk-to:hover { background: var(--sk-hv); }
+.sk-to.is-on { background: var(--sk-acs); }
+.sk-to .sk-tg { background: var(--sk-hv); }
+.sk-to.is-on .sk-tg { background: var(--sk-ac); color: var(--ctl-onac); }
+.sk-to b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-to small { grid-column: 2 / 4; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.sk-ck { color: var(--sk-ac); font-size: var(--t-micro); font-weight: 600; }
+.sk-tf { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); padding: 6px 8px; border-top: 1px solid var(--line); margin-top: 4px; }
+/* The collapsed spine's tile, under the Hive. */
+.sk-ttile { width: 44px; height: 44px; border-radius: 11px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; /* Solid: the mock's 16% sky composited over the spine's deep blue, so the contrast gate can measure it. */ background: #1d518e; color: #fff; font: 650 var(--t-body)/var(--lh-flush) var(--font); margin: 0 0 8px; position: relative; border: 0; cursor: pointer; padding: 0; }
+span.sk-ttile { cursor: default; }
+.sk-ttile small { font: 500 var(--t-micro)/var(--lh-flush) var(--font); color: #bcd6ee; /* the spine's ink */ max-width: 40px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-tswap { position: absolute; right: -3px; bottom: -3px; width: 14px; height: 14px; background: #0b3a7a; border-radius: 50%; padding: 1px; color: #bcd6ee; /* the spine's top and its ink */ }
+/* The phone header's chip, which opens the bottom sheet. */
+.sk-tchip { display: inline-flex; gap: 4px; align-items: center; font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 4px 8px; border-radius: var(--r-pill); border: 1px solid rgba(124, 200, 248, .45); color: #eef4fa; background: #1a4a83; cursor: pointer; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-tchip .sk-ic { width: 12px; height: 12px; }
+.sk-tpop.is-sheet { left: 0; right: 0; bottom: 0; top: auto; width: auto; border-radius: 16px 16px 0 0; padding: 8px 12px 16px; gap: 4px; z-index: 47; }
+.sk-tpop.is-sheet .sk-to { min-height: 44px; grid-template-columns: 28px 1fr auto; padding: 10px 8px; }
+.sk-tpop.is-sheet .sk-tg { width: 28px; height: 28px; font-size: var(--t-meta); line-height: var(--lh-flush); display: flex; align-items: center; justify-content: center; }
+.sk-grab { width: 36px; height: 4px; border-radius: 2px; background: var(--line); margin: 2px auto 6px; }
+.sk-scrim.is-sheet { z-index: 46; }
+
+/* --- the app-wide states (states.html C) ---------------------------------- */
+/* WHOLE APP: one panel in place of the page; the spine and panel stay. */
+.app-takeover { margin: 48px auto; max-width: 560px; padding: 24px; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); display: flex; flex-direction: column; gap: 10px; align-items: flex-start; }
+.app-takeover.is-bad { border-color: color-mix(in srgb, var(--s-bad) 40%, var(--line)); }
+.app-takeover.is-warn { border-color: color-mix(in srgb, var(--s-warn) 45%, var(--line)); }
+.app-takeover h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); }
+.app-takeover p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
+.app-takeover .app-takeover-inv { color: var(--text); }
+.app-takeover .app-takeover-foot { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* PAGE: one banner over the page (offline, a kept form's switch, the stale rule). */
+.app-banner, .sk-kept { margin: 0 0 var(--ctl-s3); }
+.sk-main > .ctl-scroll > .app-banner, .sk-main > .ctl-scroll > .sk-kept { margin: var(--ctl-s3) var(--ctl-gutter) 0; }
+/* The hidden-tab line: said on return, until the read lands. */
+.app-hidden-line { margin: 0 0 var(--ctl-s2); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--s-warn); }
+
+/* --- the page head: ONE row (#503) ---------------------------------------- */
+/* The title, a mono meta chip, and right-aligned "read · poll · refresh", as
+   the picked frames draw it. `.head` and `.sub` keep their names (and their
+   order: `.head + .sub`) inside the row. */
+.c-phead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); }
+.c-phead > .head { margin: 0; }
+.c-phead > .sub { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
+/* The provenance group never splits: "refresh" stays with its age. */
+.c-age { margin-left: auto; display: inline-flex; flex-wrap: nowrap; align-items: baseline; gap: 0; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
+.c-age > .ctl-head-age { margin: 0; }
+
 /* --- collapsed: the spine alone, a flyout per section -------------------- */
-.sk-flyout { position: fixed; left: 90px; top: 150px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
-.sk-flyout.is-capacity { top: 210px; }
-.sk-flyout.is-admin { top: 270px; }
+/* Each flyout sits beside its section, which the collapsed spine's tenant tile
+   (44px and its 8px margin) moved down by 52px. */
+.sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
+.sk-flyout.is-capacity { top: 262px; }
+.sk-flyout.is-admin { top: 322px; }
 .sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px 4px; color: var(--text-dim); }
-.sk-flyout button { padding: 6px 8px; border: 0; border-radius: 6px; background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
-.sk-flyout button:hover { background: var(--sk-hv); }
-.sk-flyout button.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
+.sk-flyout a:hover { background: var(--sk-hv); }
+.sk-flyout a.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .sk-flyout em { font-size: var(--t-micro); color: var(--text-dim); padding: 6px 8px 0; font-style: normal; }
 
 /* --- the phone: a 44px header in the spine's colour, a drawer ----------- */
@@ -10777,6 +10807,8 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-scrim { position: fixed; inset: 0; background: rgba(6, 16, 30, .5); z-index: 25; }
 @media (max-width: 759px) {
   .sk-app { flex-direction: column; }
+  /* Sticky as well as first in the column: the page scrolls in `.ctl-scroll`
+     beneath it, and nothing can take the menu out of reach (#139). */
   .sk-pbar { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 44px; background: var(--sk-spine-top); color: #eef4fa; position: sticky; top: 0; z-index: 15; }
   .sk-pbar .sk-ibtn { color: #eef4fa; }
   .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -10871,9 +10903,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .wfl-n { margin-left: 6px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+.wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
-.wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
+.wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-scroll { overflow-x: auto; }
 .wfl-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); }
 .wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
@@ -10896,7 +10928,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfl-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--line-soft) 0 3px, transparent 3px 6px); }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.wfl-clear { font: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
+.wfl-clear { font: inherit; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 .wfl-started { color: var(--text-dim); white-space: nowrap; }
 .wfl-dur { white-space: nowrap; }
@@ -10940,7 +10972,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .wfp-chip { font-size: var(--t-micro); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; }
-.wfp-btn { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 5px 12px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
+.wfp-btn { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 5px 12px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
 .wfp-btn.danger { color: var(--s-bad); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
 .wfp-btn:disabled { opacity: .6; cursor: default; }
 .wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }
@@ -10978,7 +11010,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    the step below. */
 .sbf-addset { display: flex; flex-direction: column; align-items: flex-start; gap: var(--ctl-s1); margin-top: var(--ctl-s2); }
 .sbf-addset-btn {
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
   background: var(--surface); color: var(--text);
   padding: 4px var(--ctl-s3);
   font: var(--t-meta)/var(--lh-meta) var(--font);

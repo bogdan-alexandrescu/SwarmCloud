@@ -730,8 +730,12 @@ def test_the_bars_and_tabs_are_capped():
     ledger = src("charts/OutcomeLedger.tsx")
     bar = re.search(r"bar: Math\.max\(1, Math\.min\([^)]*\b28\)\)", ledger)
     assert bar is not None, "the ledger's bar is no longer capped: it grows with the drawing"
+    # `.tabs` was dead CSS -- no component rendered it since the run list moved
+    # to `.ctl-seg` -- and was deleted with `.nav` (components.html A, the
+    # canonical tabs are `.c-tabs`). Deleted is capped; brought back, it must
+    # still size to its label.
     tab = re.search(r"\n\.tabs button \{[^}]*\}", css, re.S)
-    assert tab is not None and "flex: 0 0 auto" in tab.group(0), ".tabs button still fills the row"
+    assert tab is None or "flex: 0 0 auto" in tab.group(0), ".tabs button still fills the row"
     split = re.search(r"\n\.split-row \{[^}]*\}", css, re.S)
     assert split is not None and "minmax(0, 1fr)" not in split.group(0), (
         ".split-row's bar still takes the whole content column"

@@ -363,7 +363,8 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
     })
     const capacity = SECTIONS.find((s) => s.id === 'capacity')!
     await waitFor(() =>
-      expect(document.querySelector('.sk-panel .sk-pk.is-on')?.textContent?.trim()).toBe(capacity.tabs[0]!.label),
+      // The open group (#503: the page itself, its first child, is the lit one).
+      expect(document.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent?.trim()).toBe(capacity.tabs[0]!.label),
     )
   })
 

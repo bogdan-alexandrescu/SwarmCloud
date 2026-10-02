@@ -216,13 +216,19 @@ function shellControls(root: Element): Record<string, { all: Element[]; reachabl
   const spine = root.querySelector('.sk-spine')
   const panel = root.querySelector('.sk-panel')
   const of = (els: Element[]) => ({ all: els, reachable: els })
-  const pages = panel === null ? [] : [...panel.querySelectorAll('.sk-pscroll button')]
+  // LINKS SINCE #503 -- a section, a page and Help open in a new tab and copy
+  // as a link -- so the stops are `a` as well as `button`. A locked Admin row
+  // is a span with `aria-disabled`, shown and deliberately not a stop.
+  const pages = panel === null ? [] : [...panel.querySelectorAll('[class$="pscroll"] a, [class$="pscroll"] button, [class$="pscroll"] [aria-disabled="true"]')]
   return {
-    'spine section': of(spine === null ? [] : [...spine.querySelectorAll(':scope > button.sk-ri:not(.sk-cta)')]),
-    'Submit button': of(spine === null ? [] : [...spine.querySelectorAll(':scope > button.sk-cta')]),
-    'panel page': { all: pages, reachable: pages.filter((el) => !(el as HTMLButtonElement).disabled) },
+    'spine section': of(spine === null ? [] : [...spine.querySelectorAll(':scope > a.sk-ri:not(.sk-cta)')]),
+    'Submit button': of(spine === null ? [] : [...spine.querySelectorAll(':scope > a.sk-cta')]),
+    'panel page': {
+      all: pages,
+      reachable: pages.filter((el) => !(el as HTMLButtonElement).disabled && el.getAttribute('aria-disabled') !== 'true'),
+    },
     'footer control': of([
-      ...(spine === null ? [] : [...spine.querySelectorAll('.sk-foot button')]),
+      ...(spine === null ? [] : [...spine.querySelectorAll('.sk-foot a, .sk-foot button')]),
       ...(panel === null ? [] : [...panel.querySelectorAll('.sk-ph button, .sk-pfoot button')]),
     ]),
   }

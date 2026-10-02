@@ -17,6 +17,7 @@
 // naming the line.
 
 import STYLES from '../styles.css?raw'
+import { SHEETS } from './sheets'
 import { describe, expect, it } from 'vitest'
 
 /** Comments blanked to spaces of the same length, so line numbers still match the file. */
@@ -34,15 +35,19 @@ describe('letter-spacing', () => {
     expect(STYLES.length, 'styles.css read as almost nothing').toBeGreaterThan(10000)
   })
 
-  it('tracks no text anywhere in styles.css: every letter-spacing is 0 or normal', () => {
-    const lines = blankComments(STYLES).split('\n')
+  it('tracks no text anywhere in any shipped sheet: every letter-spacing is 0 or normal', () => {
+    expect(SHEETS.map(([name]) => name)).toContain('src/styles/components.css')
     const tracked: string[] = []
-    lines.forEach((line, i) => {
-      for (const m of line.matchAll(/letter-spacing\s*:\s*([^;}]+)/g)) {
-        const value = (m[1] ?? '').replace(/!important/, '').trim()
-        if (!ZERO.test(value)) tracked.push(`styles.css:${i + 1} letter-spacing: ${value}`)
-      }
-    })
+    for (const [name, text] of SHEETS) {
+      blankComments(text)
+        .split('\n')
+        .forEach((line, i) => {
+          for (const m of line.matchAll(/letter-spacing\s*:\s*([^;}]+)/g)) {
+            const value = (m[1] ?? '').replace(/!important/, '').trim()
+            if (!ZERO.test(value)) tracked.push(`${name}:${i + 1} letter-spacing: ${value}`)
+          }
+        })
+    }
     expect(tracked).toEqual([])
   })
 

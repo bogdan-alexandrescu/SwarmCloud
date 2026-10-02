@@ -33,6 +33,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { App } from '../App'
+import { Tabs } from '../components'
 import { HelpScreen } from '../HelpSection'
 import {
   DOCK,
@@ -183,7 +184,8 @@ describe('B3: the work area, now beside the Sky spine', () => {
     render(<App />)
     const util = document.querySelector('.ctl-nav-util')
     expect(util, 'tests/unit/control_plane/test_nav_headings_agree.py finds the utility button by this class').not.toBeNull()
-    const labels = [...util!.querySelectorAll('button')].map((b) => b.textContent?.trim())
+    // Links since #503 (they open in a new tab like every spine item).
+    const labels = [...util!.querySelectorAll('a')].map((b) => b.textContent?.trim())
     expect(labels).toEqual(['Help', 'API reads'])
   })
 })
@@ -207,7 +209,10 @@ describe('B3: the head', () => {
     // RE-POINTED BY CH-2: the head's age is the SCREEN's own newest read now,
     // and the word for a read in flight is "reading…" (the tab-wide age is
     // the dock's). It used to say "nothing has loaded in this tab".
-    const age = head!.querySelector('.ctl-head-age')?.textContent ?? ''
+    // The age sits on the screen's title row now (#503, "Page head"), or
+    // beside the crumb when no screen draws a page head: one of the two.
+    const age = document.querySelector('.ctl-head-age')?.textContent ?? ''
+    expect(document.querySelectorAll('.ctl-head-age'), 'the age is drawn twice').toHaveLength(1)
     expect(age).toContain('reading')
     expect(age).not.toMatch(/\d/)
   })
@@ -306,7 +311,10 @@ describe('B4.3: the six moves', () => {
       expect(s.height, `${sel} does not use the one track height`).toBe('var(--track-h)')
       expect(s.borderRadius, `${sel} has its own radius`).toBe('var(--track-radius)')
     }
-    expect(token('--track-h')).toBe('8px')
+    // 6px with half-round ends: components.html A, the owner's pick of
+    // 2026-10-02 ("bars 6px"). Was 8px.
+    expect(token('--track-h')).toBe('6px')
+    expect(token('--track-radius')).toBe('3px')
     style.remove()
   })
 
@@ -328,18 +336,12 @@ describe('B4.3: the six moves', () => {
   })
 
   it('move 4: a four-character tab does not take a quarter of the row', () => {
-    const style = withStyles()
-    const { container } = render(
-      <div className="tabs">
-        <button>All</button>
-      </div>,
-    )
-    const b = getComputedStyle(container.querySelector('button')!)
-    // jsdom expands `flex` when no custom property is involved, so the
-    // longhand is the honest read; the shorthand is checked as a fallback for
-    // a parser that does not.
-    expect(b.flexGrow || b.flex).toMatch(/^0/)
-    style.remove()
+    // RE-POINTED (components.html A, 2026-10-02): `.tabs` was dead CSS and is
+    // deleted; the canonical tabs are `Tabs` (`.c-tabs`), which size each tab
+    // to its label.
+    const { container } = render(<Tabs label="Views" current="all" tabs={[{ key: 'all', label: 'All', href: '/a' }]} />)
+    const a = getComputedStyle(container.querySelector('.c-tabs > a')!)
+    expect(a.flexGrow || a.flex).toMatch(/^0|^none/)
   })
 
   it('move 5: the page is not centred in a 1100px lane', () => {
@@ -550,12 +552,14 @@ describe('B18: the strip collapses to one line and expands on click', () => {
   it('is a row of the frame, 28px at rest, and resizes within 120px-70vh', () => {
     const style = withStyles()
 
-    const frame = render(<div className="ctl-frame" />)
-    const f = getComputedStyle(frame.container.querySelector('.ctl-frame')!)
+    // RE-POINTED (#503): the grid is the CONTENT COLUMN's, `.sk-main`, so the
+    // dock runs under the page and not under the spine and the panel.
+    const frame = render(<div className="ctl-frame"><div className="sk-main" /></div>)
+    expect(getComputedStyle(frame.container.querySelector('.ctl-frame')!).height).toBe('100%')
+    const f = getComputedStyle(frame.container.querySelector('.sk-main')!)
     expect(f.display).toBe('grid')
     // Row 1 takes what is left, row 2 is the dock at its own height.
     expect(f.gridTemplateRows).toBe('minmax(0, 1fr) auto')
-    expect(f.height).toBe('100%')
 
     const scroll = render(<div className="ctl-scroll" />)
     const s = getComputedStyle(scroll.container.querySelector('.ctl-scroll')!)
@@ -1962,7 +1966,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     }
   })
 
-  it('CH-5: every link is ink with a quiet underline, and the accent only on hover', () => {
+  it('CH-5, RE-POINTED (#503): the link primitive is sky and sans; a bare anchor stays ink', () => {
     // MUTATION: put `color: var(--info)` back on any of the five, or delete the
     // `:where(a)` fallback so an unclassed anchor is the browser's blue.
     const f = fragment(
@@ -1983,15 +1987,20 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       pick(f, '.wf-inspect-run'),
       pick(f, 'p:last-child a'),
     ]
+    // #503 "Links": the picked frames draw the primitive's links in the accent,
+    // in the body face, underlined in the accent (3:1 at rest, CH-23). An
+    // unclassed anchor (`:where(a)`, the last) stays ink, underlined in the
+    // control border. MUTATION: `.ctl-link` back to `var(--text)`.
     for (const link of links) {
       const name = link.textContent
-      expect(won(link, 'color', WIDE), `"${name}" at rest`).toBe('var(--text)')
+      const bare = link === links[links.length - 1]
+      expect(won(link, 'color', WIDE), `"${name}" at rest`).toBe(bare ? 'var(--text)' : 'var(--info)')
       // RE-POINTED BY CH-23: the resting underline is `--line`, the boundary
       // token, which clears §1.2's 3:1 floor on every surface in both themes;
       // `--line-soft` measured 2.05:1 (light) and 1.72:1 (dark) on `--surface`.
       // `encoding.hues.test.ts` holds every underline in the sheet to 3:1.
       // MUTATION: `--line-soft` back, or the 1px thickness floor dropped.
-      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe('var(--line)')
+      expect(won(link, 'text-decoration-color', WIDE), `"${name}" underline`).toBe(bare ? 'var(--ctl-bd)' : 'var(--info)')
       expect(won(link, 'text-decoration-thickness', WIDE), `"${name}" underline thickness`).toBe('1px')
       expect(won(link, 'color', { ...WIDE, states: ['hover'] }), `"${name}" on hover`).toBe('var(--info)')
     }
@@ -2006,7 +2015,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<span class="ctl-metric-value">4</span></a>',
     )
     const label = pick(tile, '.ctl-metric-label')
-    expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--line)')
+    expect(won(label, 'text-decoration-color', WIDE)).toBe('var(--info)')
     expect(won(label, 'text-decoration-thickness', WIDE)).toBe('1px')
   })
 

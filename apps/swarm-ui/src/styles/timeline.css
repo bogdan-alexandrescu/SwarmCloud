@@ -264,7 +264,7 @@
   text-overflow: ellipsis;
 }
 .tl-lab small {
-  font: var(--t-micro) / 1.35 var(--mono);
+  font: var(--t-micro) / var(--lh-micro) var(--mono);
   color: var(--text-dim);
   overflow: hidden;
   text-overflow: ellipsis;
@@ -325,7 +325,7 @@
   bottom: 0;
   border-left: 1px solid var(--line-soft);
   padding: 6px 0 0 5px;
-  font: var(--t-micro) var(--mono);
+  font: var(--t-micro) / var(--lh-micro) var(--mono);
   color: var(--text-dim);
   white-space: nowrap;
   pointer-events: none;

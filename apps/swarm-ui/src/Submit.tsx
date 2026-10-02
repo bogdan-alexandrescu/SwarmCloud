@@ -10,12 +10,12 @@ import {
   verdictNeedsAPerson,
 } from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
-import { apiHeaders, chosenTenant, dropRefusedTenant, isPaused, TENANT_REFUSED, type ApiError } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
-import { FailedPanel, Screen } from './Shell'
+import { FailedPanel, Screen, useSubmitAs } from './Shell'
 import {
   DEFAULT_CARRIER,
   DEFAULT_STRATEGY,
@@ -103,7 +103,8 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
   return { kind: 'failed', error: { kind, httpStatus, code: null, message } }
 }
 
-async function postTask(body: Record<string, unknown>): Promise<Outcome> {
+/** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
+export async function postTask(body: Record<string, unknown>): Promise<Outcome> {
   const tenant = chosenTenant()
   let res: Response
   try {
@@ -139,22 +140,17 @@ async function postTask(body: Record<string, unknown>): Promise<Outcome> {
   }
   if (res.status === 422) return { kind: 'refused', ...attribute(env, message) }
 
-  // Restated from classify() in fetch.ts, which is private and GET-only. Two
-  // screens disagreeing about what a 403 means would be worse than this.
-  const lower = message.toLowerCase()
-  const byStatus: Record<number, ApiError['kind']> = { 401: 'unauthenticated', 409: 'conflict', 429: 'rate_limited', 503: 'upstream_degraded' }
+  // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). This used to restate a
+  // piece of it and map every 503 to upstream_degraded, so a submit refused
+  // because the tenant could not be resolved read as a degraded service.
   const code = typeof env.code === 'string' ? env.code : null
   // A stored tenant the caller is no longer in: forgotten, as read()/write()
   // do, and NOT resubmitted under the default -- the person picked that tenant
   // for this task.
   dropRefusedTenant(res.status, code, tenant)
-  const kind: ApiError['kind'] = res.status !== 403 ? byStatus[res.status] ?? 'server_error'
-    : code === TENANT_REFUSED ? 'tenant_unresolved'
-    : lower.includes('is disabled') ? 'tenant_disabled'
-    : lower.includes('is not permitted') ? 'wrong_domain' : 'admin_required'
   const ra = Number(res.headers.get('retry-after'))
-  return { kind: 'failed', error: { kind, httpStatus: res.status, code, message,
-    detail: env.detail, retryAfterSeconds: Number.isFinite(ra) && ra > 0 ? ra : undefined } }
+  const error = classifyFailure(res.status, { code, message, detail: env.detail }, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+  return { kind: 'failed', error }
 }
 
 /**
@@ -832,6 +828,9 @@ export function repositorySlug(url: string): string {
 }
 
 function Form({ capacity }: { capacity: Capacity }) {
+  // A tenant switch made with this form open keeps it, and its button then
+  // names the tenant it will submit as (intake-tenants.html 2A).
+  const submitAs = useSubmitAs()
   // EMPTY, AND IT STAYS EMPTY UNTIL SOMEBODY PICKS (#118/#119, submit.html
   // decided 2026-10-01). No runner is preselected: `blocked` below holds the
   // button while this is '', so an untouched form cannot send anything.
@@ -1065,7 +1064,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
           <button type="submit" className="sbf-go sb-go" disabled={outcome.kind === 'sending' || blocked}>
-            {outcome.kind === 'sending' ? 'Submitting…' : 'Submit one task'}
+            {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
           </button>
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {outcome.kind === 'refused' && outcome.unattributed && (

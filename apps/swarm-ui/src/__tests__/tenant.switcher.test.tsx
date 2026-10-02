@@ -16,10 +16,11 @@
 import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, cleanup, fireEvent, render, waitFor } from '@testing-library/react'
-import { useEffect, useState } from 'react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { useEffect, useState, type ReactNode } from 'react'
+import STYLES from '../styles.css?raw'
 
-import { TENANT_HEADER, TENANT_PREF, apiHeaders, chooseTenant, chosenTenant, read, route, write } from '../fetch'
+import { TENANT_HEADER, TENANT_PREF, apiHeaders, chooseTenant, chosenTenant, read, route, write, type Result } from '../fetch'
 import { artifactRawUrl } from '../api'
 import { postWorkflow } from '../SubmitWorkflow'
 
@@ -189,18 +190,25 @@ function CountingScreen() {
   return <p data-reads={n}>screen</p>
 }
 
-async function shell() {
+/** The shell's own module instances, so a test's child shares its stores. */
+type Mods = { Shell: typeof import('../Shell') }
+
+async function shell(opts: { keep?: boolean; child?: (m: Mods) => ReactNode } = {}) {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { SkyShell } = await import('../Spine')
+  const Shell = await import('../Shell')
   render(
-    <SkyShell section="overview" tab="now" title="Overview" go={vi.fn()} foot={null}>
-      <CountingScreen />
+    <SkyShell section="overview" tab="now" title="Overview" go={vi.fn()} foot={null} keepOnSwitch={opts.keep ?? false}>
+      {opts.child === undefined ? <CountingScreen /> : opts.child({ Shell })}
     </SkyShell>,
   )
 }
 
-const switcher = () => document.querySelector<HTMLSelectElement>('.sk-tenant select')
+const switcher = () => document.querySelector<HTMLButtonElement>('.sk-tenant .sk-tsw')
+const picker = () => document.querySelector<HTMLElement>('.sk-tpop[role="dialog"]')
+const rowFor = (name: string) =>
+  [...document.querySelectorAll<HTMLButtonElement>('.sk-tpop .sk-to')].find((b) => b.querySelector('b')?.textContent === name)
 
 describe('the spine tenant block', () => {
   it('is a static label with copy-id for one tenant', async () => {
@@ -218,30 +226,188 @@ describe('the spine tenant block', () => {
     expect(switcher()).toBeNull()
   })
 
-  it('is a switcher for more than one, and switching stores, sends and re-reads', async () => {
+  it('is a switcher for more than one (2A): the block opens the list, and choosing stores, sends and re-reads', async () => {
+    // MUTATION: keep the <select>, drop the "1 of 2", or stop re-reading.
     const f = liveApi([ENG, RESEARCH])
     screenReads = 0
     await shell()
     await waitFor(() => expect(switcher()).not.toBeNull())
-    const sel = switcher()!
-    expect(Array.from(sel.options).map((o) => o.value)).toEqual(['eng', 'research'])
-    expect(sel.value).toBe('eng')
+    const btn = switcher()!
+    expect(document.querySelector('.sk-tenant select'), 'the select is back').toBeNull()
+    expect(btn.querySelector('small')?.textContent).toBe('tenant · 1 of 2')
+    expect(btn.getAttribute('aria-expanded')).toBe('false')
+    // The copy id stays with the block.
     expect(document.querySelector('.sk-tenant .sk-cp')).not.toBeNull()
+
+    fireEvent.click(btn)
+    const list = picker()!
+    expect(list.getAttribute('aria-label')).toBe('Act as')
+    expect(list.textContent).toContain('Act as · 2 tenants you are a member of')
+    expect(rowFor('eng@example.com')?.getAttribute('aria-current')).toBe('true')
+    expect(rowFor('research@example.com')?.getAttribute('aria-current')).toBeNull()
     const readsBefore = screenReads
     const callsBefore = f.mock.calls.length
 
     await act(async () => {
-      fireEvent.change(sel, { target: { value: 'research' } })
+      fireEvent.click(rowFor('research@example.com')!)
     })
 
+    expect(picker()).toBeNull()
     expect(window.localStorage.getItem(TENANT_PREF)).toBe('research')
-    await waitFor(() => expect(switcher()?.value).toBe('research'))
+    await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Research'))
     // The screen under the shell was mounted afresh, so its reads ran again.
     expect(screenReads).toBeGreaterThan(readsBefore)
     // And every read after the switch carried the new tenant.
     const after = sentTenants(f).slice(callsBefore)
     expect(after.length).toBeGreaterThan(0)
     expect(after.every((t) => t === 'research')).toBe(true)
+  })
+
+  it('acknowledges the switch in a toast that carries the way back', async () => {
+    // MUTATION: drop the toast, or its "Back to" action.
+    liveApi([ENG, RESEARCH])
+    await shell()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    fireEvent.click(switcher()!)
+    await act(async () => {
+      fireEvent.click(rowFor('research@example.com')!)
+    })
+    const toast = document.querySelector('.c-toast')
+    expect(toast?.textContent).toContain('Now acting as research@example.com')
+    const back = [...document.querySelectorAll<HTMLButtonElement>('.c-toast button')].find((b) => b.textContent === 'Back to Engineering')
+    expect(back, 'the toast has no way back').toBeDefined()
+    await act(async () => {
+      fireEvent.click(back!)
+    })
+    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
+  })
+
+  it('keeps the tenant on the collapsed spine as a tile that opens the same list', async () => {
+    // MUTATION: draw no tile when the panel is collapsed.
+    window.localStorage.setItem('swarm.shell.collapsed', '1')
+    liveApi([ENG, RESEARCH])
+    await shell()
+    expect(document.querySelector('.sk-panel'), 'the panel is not collapsed').toBeNull()
+    const tile = await waitFor(() => {
+      const t = document.querySelector<HTMLButtonElement>('.sk-spine button.sk-ttile')
+      expect(t).not.toBeNull()
+      return t!
+    })
+    expect(tile.textContent).toContain('Engineering')
+    fireEvent.click(tile)
+    expect(picker()?.className).toContain('is-tile')
+    expect(rowFor('research@example.com')).toBeDefined()
+    fireEvent.keyDown(document, { key: 'Escape' })
+    expect(picker()).toBeNull()
+  })
+
+  it('puts a chip in the phone header that opens a bottom sheet of 44px rows', async () => {
+    // MUTATION: keep the read-only `.sk-tn` for a switcher.
+    liveApi([ENG, RESEARCH])
+    await shell()
+    const chip = await waitFor(() => {
+      const c = document.querySelector<HTMLButtonElement>('.sk-pbar .sk-tchip')
+      expect(c).not.toBeNull()
+      return c!
+    })
+    expect(document.querySelector('.sk-pbar .sk-tn')).toBeNull()
+    fireEvent.click(chip)
+    const sheet = picker()!
+    expect(sheet.className).toContain('is-sheet')
+    expect(sheet.getAttribute('aria-modal')).toBe('true')
+    expect(STYLES).toMatch(/\.sk-tpop\.is-sheet \.sk-to \{[^}]*min-height: 44px/)
+    expect(document.querySelector('.sk-scrim.is-sheet')).not.toBeNull()
+  })
+})
+
+/** A form whose draft is component state, as Submit's are. */
+function draftForm(useSubmitAs: () => string | null) {
+  return function DraftForm() {
+    const [draft, setDraft] = useState('')
+    const as = useSubmitAs()
+    return (
+      <form>
+        <input aria-label="draft" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <button type="submit">{as === null ? 'Submit one task' : `Submit as ${as}`}</button>
+      </form>
+    )
+  }
+}
+
+let formReads = 0
+const loadForm = async (): Promise<Result<{ n: number }>> => {
+  formReads++
+  return { status: 'ok', data: { n: formReads }, fetchedAt: Date.now() }
+}
+
+describe('an unsent form across a tenant switch (2A)', () => {
+  it('is KEPT, re-read in place, and its button names the new tenant', async () => {
+    // MUTATION: key the kept page on the tenant again (the #501 discard), or
+    // leave the button saying nothing about where it now submits.
+    liveApi([ENG, RESEARCH])
+    formReads = 0
+    await shell({
+      keep: true,
+      child: ({ Shell }) => {
+        const DraftForm = draftForm(Shell.useSubmitAs)
+        return (
+          <Shell.Screen title="Submit a task" load={loadForm}>
+            {(d) => (
+              <>
+                <p data-read={d.n}>read {d.n}</p>
+                <DraftForm />
+              </>
+            )}
+          </Shell.Screen>
+        )
+      },
+    })
+    const field = await screen.findByLabelText('draft')
+    fireEvent.change(field, { target: { value: 'half a prompt' } })
+    expect(screen.getByRole('button', { name: 'Submit one task' })).toBeTruthy()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    const readsBefore = formReads
+
+    fireEvent.click(switcher()!)
+    await act(async () => {
+      fireEvent.click(rowFor('research@example.com')!)
+    })
+
+    // The draft survived: the same input, still holding what was typed.
+    expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('half a prompt')
+    // What the form was drawn from was read again, as the new tenant.
+    await waitFor(() => expect(formReads).toBeGreaterThan(readsBefore))
+    // The button and the banner name where it will now go.
+    expect(screen.getByRole('button', { name: 'Submit as research@example.com' })).toBeTruthy()
+    const banner = document.querySelector('.sk-kept .c-banner')
+    expect(banner?.textContent).toContain('You switched to research@example.com with an unsent form open.')
+    expect(banner?.textContent).toContain('it will now submit as research@example.com')
+    const back = [...banner!.querySelectorAll('button')].find((b) => b.textContent === 'Switch back to Engineering')
+    expect(back, 'the banner has no way back').toBeDefined()
+    await act(async () => {
+      fireEvent.click(back!)
+    })
+    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('half a prompt')
+  })
+
+  it('is not kept on a page that is not a form: a switch remounts it', async () => {
+    liveApi([ENG, RESEARCH])
+    await shell({
+      child: ({ Shell }) => {
+        const DraftForm = draftForm(Shell.useSubmitAs)
+        return <DraftForm />
+      },
+    })
+    fireEvent.change(await screen.findByLabelText('draft'), { target: { value: 'typed' } })
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    fireEvent.click(switcher()!)
+    await act(async () => {
+      fireEvent.click(rowFor('research@example.com')!)
+    })
+    expect((screen.getByLabelText('draft') as HTMLInputElement).value).toBe('')
+    expect(document.querySelector('.sk-kept')).toBeNull()
   })
 })
 

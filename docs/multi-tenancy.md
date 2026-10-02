@@ -217,11 +217,18 @@ a tenant on a JSON route. A header and a query parameter that disagree are a
 422 rather than a silent precedence rule. The console adds it in one place,
 `tenantQuery` in `fetch.ts`, used by `artifactRawUrl`.
 
-**A switch is a fresh screen.** The shell keys the page on the chosen tenant,
-so switching remounts it and every read runs again under the new tenant. A
-half-filled submit form is discarded with it — deliberately: a draft written
-for one tenant (its runner profile, its credentials, its budget) submitted
-unchanged into another is the mistake the switcher exists to prevent.
+**A switch is a fresh screen, except for an unsent form.** The shell keys the
+page on the chosen tenant, so switching remounts it and every read runs again
+under the new tenant. A half-filled submit form is KEPT instead (owner's pick,
+intake-tenants.html 2A, 2026-10-02; this replaces #501's deliberate discard):
+what it was drawn from — the runner profiles and pools — is read again as the
+new tenant, a banner over it says it will now submit as that tenant with a way
+back, and its submit button names the tenant ("Submit as platform"). The
+mistake the discard guarded against — a draft written for one tenant sent
+unchanged into another by someone who still thinks it goes to the first — is
+answered by saying where it goes, on the button that sends it, rather than by
+throwing the draft away. The API still validates the runner profile against
+the new tenant's catalogue on submit.
 
 ---
 

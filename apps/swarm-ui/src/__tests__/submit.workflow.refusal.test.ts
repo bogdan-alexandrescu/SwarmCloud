@@ -4,7 +4,7 @@
 // filename from two parents, or an absolute or traversing filename, at
 // submission, with HTTP 422 `invalid_dag`: the same status and code as every
 // sibling DAG refusal (a cycle, a dangling dependency). The owner chose 422 on
-// #64 for exactly the reason this file holds: `KIND_BY_STATUS` maps 422 to
+// #64 for exactly the reason this file holds: `classifyFailure` maps 422 to
 // "invalid", so the screen heads the refusal "That request was not valid" and
 // prints the server's sentence, which names the step, the parents and the
 // file. Any other status would fall through to `server_error` and a correct

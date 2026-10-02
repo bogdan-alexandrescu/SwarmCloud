@@ -244,7 +244,8 @@ def _routes() -> list[tuple[str, str, str]]:
     # from the corner's start would read the Help button's whitespace instead.
     corner = app[app.index('className="ctl-nav-util') :]
     util = corner[corner.index("go(REFERENCE)") :]
-    label = re.search(r"/>\s*(\{[^}]*\}|[^<>{}]+?)\s*</button>", util)
+    # A link since #503 (the spine's items open in a new tab), a button before.
+    label = re.search(r"/>\s*(\{[^}]*\}|[^<>{}]+?)\s*</(?:button|a)>", util)
     assert label is not None, "could not read the utility button's label"
     rows.append((ref.group(1), _resolve(app, label.group(1)), "ReferenceScreen"))
 

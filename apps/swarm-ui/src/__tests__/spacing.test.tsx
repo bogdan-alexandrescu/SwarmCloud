@@ -162,6 +162,8 @@ const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
 
 async function sweep(): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
+    // Every shipped sheet: SHEET holds src/styles/*.css (the canonical
+    // components' rules in components.css among them) as well as styles.css.
     dark: resolveSheet(SHEET, 'dark'),
     light: resolveSheet(SHEET, 'light'),
   }
