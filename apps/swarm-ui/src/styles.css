@@ -11724,6 +11724,20 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   border-radius: var(--radius);
   background: var(--surface);
 }
+.diff-main { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
+/* FIND IN THE DIFF. The box is the path filter's box; the counter is the
+   list note's micro type. A match is the Sky accent's soft fill -- the same
+   tint as the list's selected row, a selection and not a verdict, so no state
+   hue -- and the current match adds the accent's 2px outline, which still
+   reads apart from the others in greyscale. The mark sets no font, padding
+   or margin: it wraps characters in a fixed-height, unwrapped row and must
+   not move a single one of them. */
+.diff-find { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.diff-find-box { flex: 1 1 200px; min-width: 0; margin: 0; }
+.diff-find-box:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.diff-find-count { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); white-space: nowrap; }
+.diff-hit { background: var(--sk-acs); color: inherit; }
+.diff-hit.is-current { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
 .diff-picker-at { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s2); min-width: 0; font: var(--t-meta)/var(--lh-meta) var(--mono); }
 .diff-picker-pos { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
 .diff-path { white-space: pre; }
