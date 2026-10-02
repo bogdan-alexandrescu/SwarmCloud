@@ -20,6 +20,9 @@ def test_publish_refused_is_in_the_frozen_contract_with_the_requested_value():
 
 
 def test_publish_refused_is_appended_so_no_existing_value_moved():
+    # The property is "no existing value moved": PUBLISH_REFUSED sits straight
+    # after VERDICT_FAILED, where request 29 appended it. Later requests (41,
+    # CHILD_CASCADE) append after it, so it is not asserted to be the last.
     values = [c.value for c in models.EndCause]
-    assert values[-1] == "publish_refused", values
-    assert values.index("verdict_failed") == len(values) - 2, values
+    assert values.index("publish_refused") == values.index("verdict_failed") + 1, values
+    assert "child_cascade" in values[values.index("publish_refused") + 1 :], values
