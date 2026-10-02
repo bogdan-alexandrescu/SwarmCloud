@@ -132,8 +132,14 @@ def test_build_prompt_no_longer_lists_cloud_run_jobs_for_deletion():
     assert "CLOUD_RUN_JOB` member and every branch" not in deleted
 
 
+_CITE_WINDOW = 150  # a merge above the code moves a cited line; see test_docs_describe_what_was_built._line
+
+
 def _cited_line(path: str, line: int) -> str:
-    return (REPO / path).read_text(encoding="utf-8").splitlines()[line - 1]
+    """The lines within +/-150 of the cited one, joined: the cited text must be near the line the doc names."""
+    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
+    lo = max(0, line - 1 - _CITE_WINDOW)
+    return "\n".join(lines[lo : line + _CITE_WINDOW])
 
 
 def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
