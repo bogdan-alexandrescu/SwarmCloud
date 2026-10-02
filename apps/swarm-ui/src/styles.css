@@ -12073,7 +12073,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
 .cap-mx tr.is-open > td, .cap-mx tr.is-open > th[scope="row"] { background: var(--surface-2); }
 .cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
-.cap-mx-lift { font-size: var(--t-meta); color: var(--text-dim); white-space: normal; }
+/* Runs out first (#124): each binding pool on a line, its Fits under it in
+   the cell-figure grey; the opened row's per-pool table marks the binding
+   rows with the matrix's own amber edge. */
+.cap-mx-first { white-space: normal; }
+.cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
+.cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.cap-mx-fits { margin-bottom: 8px; }
+.cap-mx-fits tr.is-binding > th[scope="row"] { box-shadow: inset 3px 0 0 var(--s-warn); }
 .cap-mx-note { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 
 /* Runtimes: the pools each runtime must clear, each one a link. */
@@ -12084,6 +12091,15 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 
 /* Holders: the tenant filter beside "Every holder". */
 .hold-tenants { margin-left: 8px; }
+/* Holders narrowed to the pool a Pools link named (#125), with the way back. */
+.hold-pool { margin-left: 8px; font-size: var(--t-meta); color: var(--text-dim); }
+.hold-pool-clear { background: none; border: 0; padding: 0; font: inherit; color: var(--info); cursor: pointer; text-decoration: underline; }
+.hold-pool-clear:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
+
+/* Accounts (#127): the sign-in form behind its control; the window Clears
+   counts down and when a label was last given out, faint, under the figure. */
+.acct-add-bar { display: flex; justify-content: flex-end; margin: 0 0 var(--ctl-gutter); }
+.acct-given, .acct-clears-win { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); font-weight: 400; }
 
 /* Accounts: the list and the chosen account side by side; stacked on a phone. */
 .acct-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }

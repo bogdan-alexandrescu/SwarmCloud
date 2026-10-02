@@ -541,7 +541,8 @@ describe('Provider quota says what its cap is and which pool it feeds (CP-8)', (
     expect(heads.indexOf('Feeds pool'), heads.join(' | ')).toBe(heads.indexOf('Quota cap') + 1)
     const link = row.querySelector('td[data-label="Feeds pool"] a')
     expect(link, 'the pool is not a link').not.toBeNull()
-    expect(link!.getAttribute('href')).toBe('#capacity/pools')
+    // To THAT pool's row on Pools (#128), not to the top of the screen.
+    expect(link!.getAttribute('href')).toBe(`#capacity/pools?pool=${encodeURIComponent('provider:anthropic:tenant:eng')}`)
     expect(link!.textContent).toBe('provider:anthropic:tenant:eng')
     // The full name survives an ellipsis below 900px (CH-13).
     expect(link!.getAttribute('title')).toBe('provider:anthropic:tenant:eng')

@@ -807,7 +807,9 @@ export function fromAddress(full: string): Route {
     // Dropped here, the normalise effect rewrote the address to
     // `#admin/limits` before the screen's async read had drawn a row, and the
     // link opened the page at no row at all. Only `pool` is kept.
-    if (tab && section.id === ADMIN_SECTION && tab.id === LIMITS_TAB) {
+    // Pools and Holders keep it too (#125, #128): a Pools row links to
+    // Holders filtered by its pool, and Provider quota to the pool's row.
+    if (tab && keepsPool(section.id, tab.id)) {
       const pool = new URLSearchParams(query).get('pool')
       if (pool) return { sectionId: section.id, tab: tab.id, ...blank, view: poolQuery(pool) }
     }
@@ -830,6 +832,14 @@ export function fromAddress(full: string): Route {
 
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
+
+/** The panes whose address carries the `?pool=` a link named, and no other. */
+function keepsPool(sectionId: string, tab: string): boolean {
+  return (
+    (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) ||
+    (sectionId === CAPACITY && (tab === 'pools' || tab === 'holders'))
+  )
+}
 
 /** Pool limits' query for one pool: `pool=tenant%3Aeng`. */
 function poolQuery(pool: string): string {
@@ -859,9 +869,10 @@ export function canonical(r: Route): string {
   if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
     return `${WORK}/workflows?${r.view}`
   }
-  // And Pool limits' linked row, for the same reason (#134).
-  if (r.sectionId === ADMIN_SECTION && r.tab === LIMITS_TAB && r.view) {
-    return `${ADMIN_SECTION}/${LIMITS_TAB}?${r.view}`
+  // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
+  // Holders' (#125, #128).
+  if (keepsPool(r.sectionId, r.tab) && r.view) {
+    return `${r.sectionId}/${r.tab}?${r.view}`
   }
   return `${r.sectionId}/${r.tab}`
 }

@@ -269,6 +269,8 @@ describe('the add form states its isolation rule where it stays visible (CP-20)'
     api.loadAccountsBoard.mockResolvedValue(ok(board([account({})])))
     render(<AccountsScreen />)
     expect(await screen.findByText('eng:laptop', undefined, WAIT)).toBeTruthy()
+    // The form is behind `Add account` once the pool has an account (#127).
+    fireEvent.click(screen.getByRole('button', { name: 'Add account' }))
     const lend = document.getElementById('acct-lend')
     expect(lend, 'no lending field on the add form').not.toBeNull()
     const ids = (lend!.getAttribute('aria-describedby') ?? '').split(/\s+/).filter(Boolean)

@@ -473,6 +473,19 @@ export function setBy(pool: Pool): { term: string; detail: string } {
   if (hard_limit === null) {
     return { term: 'no limit set', detail: 'This pool has no hard limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.' }
   }
+  // THE ZERO A QUOTA STATE FORCES (#128). `quota_derived_limit_for`
+  // (quota_broker/aimd.py) returns 0 for EXHAUSTED, DISABLED and COOLDOWN, and
+  // for a `cooldown_until` still in the future, so this pool admits nothing
+  // until the state clears -- a different remedy from a provider cap that is
+  // merely lower, which is what `provider quota` says. The pool document does
+  // not carry the state, so the detail names the one other way to a 0 (a quota
+  // cap configured at 0) rather than claiming which it was.
+  if (quota_derived_limit === 0 && effective_limit === 0 && hard_limit > 0) {
+    return {
+      term: 'quota state',
+      detail: `The provider's quota state (EXHAUSTED, DISABLED or COOLDOWN, or a cooldown still running) forces this to 0 until it clears; configured is ${hard_limit}. Provider quota shows the state, and the one other way to this 0: a quota cap set to 0.`,
+    }
+  }
   if (quota_derived_limit !== null && quota_derived_limit === effective_limit && quota_derived_limit < hard_limit) {
     return { term: 'provider quota', detail: `Provider quota caps this at ${quota_derived_limit}; configured is ${hard_limit}.` }
   }

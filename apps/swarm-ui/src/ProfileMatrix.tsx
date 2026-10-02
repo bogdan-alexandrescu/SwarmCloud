@@ -1,4 +1,5 @@
 import { Fragment, useState } from 'react'
+import { isPaused } from './fetch'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -22,6 +23,11 @@ import {
  * is the pool that runs out first -- the server's `admission.binding` list,
  * never a client re-derivation, so two pools tied at the minimum are both
  * outlined and raising one of them is not mistaken for the fix (CP-4).
+ *
+ * The `Runs out first` column names each of those pools with its Fits -- how
+ * many more of the profile that pool alone has room for -- and an opened row
+ * is the per-pool Fits table with `+N if lifted` (#124), which is what the
+ * retired Profile headroom tab drew.
  *
  * Every figure is the CALLING tenant's (Trap D): a profile's pool list is
  * built by `pool_names_for(tenant_id=ctx.tenant_id)`, admin included.
@@ -86,19 +92,34 @@ export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Po
   })
 }
 
-/** "+3 if anthropic lifted", per binding pool the server priced, or ''. */
-export function liftedLine(profile: RunnerProfile): string {
-  const head = headroomFor(profile)
-  const among = [...profile.pools, ...bindingOf(profile)]
-  const said = bindingOf(profile)
-    .map((pool) => head.counterfactual.find((c) => c.pool === pool))
-    .filter((c): c is NonNullable<typeof c> => c !== undefined)
-    .map((c) => {
-      const what = poolLabelAmong(c.pool, among)
-      const verb = c.action === 'resume' ? 'resumed' : 'lifted'
-      return c.delta === null ? `${what} ${verb}: not measurable` : `+${c.delta} if ${what} ${verb}`
-    })
-  return said.join('; ')
+/**
+ * How many more tasks of a profile ONE pool has room for: its free units over
+ * the profile's units, rounded down (#124). Per task, never per unit -- a
+ * browser task weighs 2, so 3 free units fit 1. NULL when the pool was not
+ * read or has no limit set: not measured, never a 0. A PAUSED pool fits 0:
+ * `available` stays positive while it is paused (it is ceiling minus active),
+ * but admission refuses it, and the server prices it with `resume`.
+ */
+export function fitsIn(row: Pool | null, units: number): number | null {
+  if (row === null || row.available === null || row.effective_limit === null) return null
+  if (isPaused(row)) return 0
+  if (!Number.isFinite(units) || units <= 0) return null
+  return Math.max(0, Math.floor(row.available / units))
+}
+
+/**
+ * The `+N if lifted` cell for one pool (#124): what the server priced lifting
+ * (or resuming) it at, from `admission.counterfactual`. The server prices the
+ * binding pools only; any other pool is not the one running out, so lifting
+ * it changes nothing and the cell says so rather than inventing a figure.
+ */
+export function liftedFor(profile: RunnerProfile, pool: string): string {
+  const c = headroomFor(profile).counterfactual.find((x) => x.pool === pool)
+  if (c !== undefined) {
+    if (c.delta === null) return 'not measurable'
+    return c.action === 'resume' ? `+${c.delta} if resumed` : `+${c.delta}`
+  }
+  return bindingOf(profile).includes(pool) ? 'not priced' : 'no change'
 }
 
 export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
@@ -124,7 +145,11 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                 </th>
               ))}
               <th role="columnheader" scope="col" className="is-num">Can start</th>
-              <th role="columnheader" scope="col">If lifted</th>
+              {/* THE ONE CEILING TO RAISE, ON THE ROW (#124): every pool the
+                  server names as running out first, each with how many more
+                  of this profile it fits. The +N a lift buys is in the opened
+                  row's table, one figure per pool, not a sentence here. */}
+              <th role="columnheader" scope="col">Runs out first</th>
             </tr>
           </thead>
           <tbody role="rowgroup">
@@ -135,7 +160,6 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
               const isOpen = open === name
               const binds = bindingOf(profile)
               const among = [...profile.pools, ...binds]
-              const lifted = off ? '' : liftedLine(profile)
               return (
                 <Fragment key={name}>
                   <tr role="row" className={isOpen ? 'is-open' : undefined} data-profile={name}>
@@ -164,22 +188,27 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
                         </b>
                       )}
                     </td>
-                    <td role="cell" data-label="If lifted" className="cap-mx-lift">
-                      {lifted}
+                    <td role="cell" data-label="Runs out first" className="cap-mx-first">
+                      {!off &&
+                        binds.map((b) => {
+                          const fits = fitsIn(byName.get(b) ?? null, profile.units)
+                          return (
+                            <span key={b} className="cap-mx-bind" data-pool={b} title={b}>
+                              {poolLabelAmong(b, among)}{' '}
+                              <small>{fits === null ? 'fits —' : `fits ${fits}`}</small>
+                            </span>
+                          )
+                        })}
                     </td>
                   </tr>
                   {isOpen && (
                     <tr role="row" className="cap-mx-exp">
                       <td role="cell" colSpan={span}>
-                        {off
-                          ? `${name} is disabled: ${profile.disabled_reason || 'refused by the platform'}.`
-                          : binds.length === 0
-                            ? `${name} needs all ${profile.pools.length} pools at once, and none of them was named as running out first.`
-                            : `${name} needs all ${profile.pools.length} pools at once; ${binds
-                                .map((b) => poolLabelAmong(b, among))
-                                .join(' and ')} ${binds.length === 1 ? 'runs' : 'run'} out first${
-                                lifted === '' ? '' : ` (${lifted})`
-                              }, so raising any other pool changes nothing.`}{' '}
+                        {off ? (
+                          <>{`${name} is disabled: ${profile.disabled_reason || 'refused by the platform'}.`}</>
+                        ) : (
+                          <FitsTable profile={profile} byName={byName} among={among} binds={binds} />
+                        )}{' '}
                         <a className="ctl-link" href="#admin/limits">Pool limits</a>
                       </td>
                     </tr>
@@ -193,6 +222,63 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
       <p className="cap-mx-note">
         Each cell is the units free in that pool, leased/ceiling under it. The outlined cell runs out first.
       </p>
+    </div>
+  )
+}
+
+/**
+ * The opened row (#124): one line per pool the profile clears, with its Fits
+ * and what lifting it buys -- the per-pool table Profile headroom drew, in
+ * place of the counterfactual sentences. The binding rows carry the matrix's
+ * own outline mark. A task clears every row at once (invariant 2), so the
+ * profile's figure is the least Fits here, never a sum.
+ */
+function FitsTable({
+  profile,
+  byName,
+  among,
+  binds,
+}: {
+  profile: RunnerProfile
+  byName: ReadonlyMap<string, Pool>
+  among: readonly string[]
+  binds: readonly string[]
+}) {
+  return (
+    <div className="ctl-table is-scroll cap-mx-fits">
+      <table role="table">
+        <thead role="rowgroup">
+          <tr role="row">
+            <th role="columnheader" scope="col">Pool</th>
+            <th role="columnheader" scope="col" className="is-num">Leased/ceiling (units)</th>
+            <th role="columnheader" scope="col" className="is-num">Fits</th>
+            <th role="columnheader" scope="col" className="is-num">+N if lifted</th>
+          </tr>
+        </thead>
+        <tbody role="rowgroup">
+          {profile.pools.map((name) => {
+            const row = byName.get(name) ?? null
+            const fits = fitsIn(row, profile.units)
+            const binding = binds.includes(name)
+            return (
+              <tr role="row" key={name} data-pool={name} className={binding ? 'is-binding' : undefined}>
+                <th role="rowheader" scope="row" title={name}>
+                  {poolLabelAmong(name, among)}
+                </th>
+                <td role="cell" data-label="Leased/ceiling (units)" className="is-num">
+                  {row === null ? '—' : `${row.active}/${row.effective_limit === null ? '—' : row.effective_limit}`}
+                </td>
+                <td role="cell" data-label="Fits" className="is-num">
+                  {fits === null ? '—' : String(fits)}
+                </td>
+                <td role="cell" data-label="+N if lifted" className="is-num">
+                  {liftedFor(profile, name)}
+                </td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
     </div>
   )
 }
