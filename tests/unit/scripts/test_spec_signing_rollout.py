@@ -35,16 +35,16 @@ def _tfvar(name: str) -> str | None:
     return match.group(1) if match else None
 
 
-def test_dev_starts_the_verifying_worker_in_legacy():
-    assert _tfvar("spec_signature_mode") == "legacy"
+def test_dev_enforces_signed_step_specs():
+    # Runbook step 4 (#342, owner decision 2026-10-01): once no non-terminal
+    # unsigned task is left, dev admits signed specs only.
+    assert _tfvar("spec_signature_mode") == "enforce"
 
 
-def test_dev_sets_a_zoned_cutover_inside_the_legacy_window():
-    cutover = _tfvar("spec_legacy_cutover")
-    assert cutover, "legacy with no cutover admits no unsigned task at all"
-    parsed = datetime.fromisoformat(cutover.replace("Z", "+00:00"))
-    assert parsed.tzinfo is not None
-    assert parsed <= LEGACY_UNTIL
+def test_dev_keeps_no_legacy_cutover_once_it_enforces():
+    # A cutover is meaningful only in legacy mode; left behind under enforce it
+    # reads as if an unsigned window were still open.
+    assert _tfvar("spec_legacy_cutover") in (None, "")
 
 
 def test_dev_names_the_signing_version():
