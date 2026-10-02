@@ -13,6 +13,7 @@ credential-shaped value is assembled at runtime.
 
 from __future__ import annotations
 
+import os
 import random
 import shutil
 import string
@@ -54,13 +55,19 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-def _run(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+def _run(repo: Path, *args: str, clone_base: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run the module. `SWARM_CLONE_BASE` is removed from the environment the
+    test itself runs in, so only a test that asks for one sets it."""
+    env = {k: v for k, v in os.environ.items() if k != publish_scan.CLONE_BASE_ENV}
+    if clone_base is not None:
+        env[publish_scan.CLONE_BASE_ENV] = clone_base
     return subprocess.run(
         [sys.executable, "-m", "agent_worker.publish_scan", *args],
         cwd=repo,
         capture_output=True,
         text=True,
         timeout=120,
+        env=env,
     )
 
 
@@ -139,11 +146,121 @@ def test_base_defaults_to_the_merge_base_with_origin_main(repo: Path, tmp_path: 
     assert _run(repo, "--base", "HEAD").returncode == 0
 
 
-def test_without_origin_the_base_is_head(repo: Path):
-    (repo / "src" / "app.py").write_text(f'{_PW} = "{_password()}"\n')
+def test_with_no_known_base_a_committed_secret_is_never_reported_clean(repo: Path):
+    """MAJOR 1 of #470's review: HEAD was the fallback base, so a secret the
+    agent had COMMITTED was in no diff at all and the scan said clean. With
+    no clone base, no shallow boundary and no origin/main, nothing can be
+    scanned honestly: exit 2, never 0, and never a silent HEAD."""
+    value = _password()
+    (repo / "src" / "app.py").write_text(f'{_PW} = "{value}"\n')
     _git(repo, "commit", "-q", "-am", "committed")
-    assert _run(repo).returncode == 0
-    assert publish_scan.default_base(repo) == _git(repo, "rev-parse", "HEAD").strip()
+    done = _run(repo)
+    assert done.returncode == 2, (done.returncode, done.stdout, done.stderr)
+    assert "could not determine the clone base; nothing was scanned" in done.stderr
+    assert done.stdout == ""
+    assert value not in done.stderr
+    with pytest.raises(publish_scan.ScanError):
+        publish_scan.default_base(repo, environ={})
+
+
+def _two_commit_origin(tmp_path: Path) -> Path:
+    """A repository with a `feature` branch two commits deep, to clone from."""
+    origin = tmp_path / "upstream"
+    origin.mkdir()
+    _git(origin, "init", "-q", "-b", "main")
+    _git(origin, "config", "user.email", "scan@example.invalid")
+    _git(origin, "config", "user.name", "scan")
+    (origin / "app.py").write_text("X = 1\n")
+    _git(origin, "add", "-A")
+    _git(origin, "commit", "-q", "-m", "one")
+    _git(origin, "checkout", "-q", "-b", "feature")
+    (origin / "app.py").write_text("X = 2\n")
+    _git(origin, "commit", "-q", "-am", "two")
+    return origin
+
+
+def _worker_clone(origin: Path, tmp_path: Path, branch: str) -> Path:
+    """The worker's clone shape (gitops.shallow_clone): `--depth 1
+    --single-branch` of one ref, so there is no origin/main to fall back on."""
+    clone = tmp_path / "clone"
+    subprocess.run(
+        ["git", "clone", "-q", "--depth", "1", "--single-branch", "--branch", branch,
+         origin.resolve().as_uri(), str(clone)],
+        check=True, capture_output=True,
+    )
+    _git(clone, "config", "user.email", "scan@example.invalid")
+    _git(clone, "config", "user.name", "scan")
+    return clone
+
+
+def test_a_shallow_worker_clone_of_a_non_main_ref_scans_from_its_boundary(tmp_path: Path):
+    """A non-main task's clone has only origin/<ref>. The base is the shallow
+    boundary -- the commit the clone landed on -- so a committed secret is in
+    the diff."""
+    clone = _worker_clone(_two_commit_origin(tmp_path), tmp_path, "feature")
+    landed = _git(clone, "rev-parse", "HEAD").strip()
+    assert _git(clone, "rev-parse", "--is-shallow-repository").strip() == "true"
+    value = _password()
+    (clone / "app.py").write_text(f'{_PW} = "{value}"\n')
+    _git(clone, "commit", "-q", "-am", "agent work")
+    done = _run(clone)
+    assert done.returncode == 1, (done.stdout, done.stderr)
+    assert done.stdout.splitlines() == ["app.py:1 key_value_assignment"]
+    assert landed[:12] in done.stderr
+    assert value not in done.stdout + done.stderr
+
+
+def test_the_workers_exported_clone_base_wins(tmp_path: Path):
+    """The worker exports the base its publish diffs from (`SWARM_CLONE_BASE`);
+    it is used before any guess, shallow or not."""
+    clone = _worker_clone(_two_commit_origin(tmp_path), tmp_path, "feature")
+    landed = _git(clone, "rev-parse", "HEAD").strip()
+    _git(clone, "fetch", "-q", "--unshallow")  # no boundary left to find
+    (clone / "app.py").write_text(f'{_PW} = "{_password()}"\n')
+    _git(clone, "commit", "-q", "-am", "agent work")
+    assert _run(clone).returncode == 2
+    done = _run(clone, clone_base=landed)
+    assert done.returncode == 1, (done.stdout, done.stderr)
+    assert done.stdout.splitlines() == ["app.py:1 key_value_assignment"]
+
+
+def test_an_exported_clone_base_that_names_no_commit_is_an_error(repo: Path):
+    """Never a fallback to some other base: the worker said which one."""
+    done = _run(repo, clone_base="0" * 40)
+    assert done.returncode == 2
+    assert done.stdout == ""
+
+
+def test_an_empty_repository_clone_scans_against_the_empty_tree(tmp_path: Path):
+    """`SWARM_CLONE_BASE=empty` (`gitops.EMPTY_CLONE_BASE`): the repository had
+    no commit when cloned, so everything the agent committed is added."""
+    root = tmp_path / "fresh"
+    root.mkdir()
+    _git(root, "init", "-q", "-b", "main")
+    _git(root, "config", "user.email", "scan@example.invalid")
+    _git(root, "config", "user.name", "scan")
+    (root / "app.py").write_text(f'{_PW} = "{_password()}"\n')
+    _git(root, "add", "-A")
+    _git(root, "commit", "-q", "-m", "first")
+    done = _run(root, clone_base="empty")
+    assert done.returncode == 1, (done.stdout, done.stderr)
+    assert done.stdout.splitlines() == ["app.py:1 key_value_assignment"]
+
+
+def test_the_worker_exports_its_clone_base_to_the_agent(db, worker_factory, tmp_path: Path):
+    """The value the CLI prefers is set by the worker, from the base its own
+    publish diffs from (`_publish_base`), in the agent's environment."""
+    from conftest import seed_attempt
+
+    from agent_worker import workspace as workspace_mod
+
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    worker.ws = workspace_mod.create(tmp_path / "ws", "att_1")
+    assert publish_scan.CLONE_BASE_ENV not in worker._build_child_env()
+    worker._publish_base = "a" * 40
+    worker._clone_base = "a" * 40
+    assert worker._build_child_env()[publish_scan.CLONE_BASE_ENV] == "a" * 40
 
 
 def test_an_unknown_base_is_an_error_not_a_clean_scan(repo: Path):
