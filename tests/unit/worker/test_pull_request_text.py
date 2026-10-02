@@ -733,11 +733,18 @@ def _run_writing_title(db, worker_factory, monkeypatch, title: str):
     worker, _config, _exporter = worker_factory()
     published: list[bool] = []
 
-    def harvest(*, publish: bool, **_kwargs):
+    # The harvest leaves its publish for after the missing-output check
+    # (#165), as a real one does; the publish records what it was asked.
+    def harvest(**_kwargs):
+        worker._deferred_publish = {"repo": None, "work_head": None, "publish_repo": None}
+        return {"base": "a" * 40}
+
+    def publish_git(*, publish: bool, withheld: str = "", **_kwargs):
         published.append(publish)
-        return None
+        return {"published": publish, "publish_reason": withheld}
 
     monkeypatch.setattr(worker, "_harvest_git", harvest)
+    monkeypatch.setattr(worker, "_publish_git", publish_git)
     return worker, published
 
 
