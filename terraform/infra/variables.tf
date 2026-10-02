@@ -284,6 +284,17 @@ variable "tenants" {
     # (contract request 30). Bare emails of user-managed accounts in this
     # project; never a human, never an admin, never under two tenants.
     service_accounts = optional(list(string), [])
+    # The forge the #295 merge and post-verdict Jobs talk to: host, owner,
+    # repo and the review App's ids, rendered into those Jobs' environment
+    # (docs/merge-step.md §2.1b). Required once a tenant registers git-merge or
+    # git-review; modules/tenancy validates it. Never a credential.
+    forge = optional(object({
+      host              = optional(string, "api.github.com")
+      owner             = string
+      repo              = string
+      review_app_id     = optional(number)
+      review_app_bot_id = optional(number)
+    }))
   }))
   default = {}
 
