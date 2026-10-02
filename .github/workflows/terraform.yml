@@ -35,9 +35,14 @@ on:
         options: [dev, prod]
         default: dev
 
+# Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the jobs that authenticate to
+# Google (`plan`). `test` and `checkov` run the merged repository's own
+# code and must not be able to mint one.
+# A job-level `permissions:` block REPLACES this one.
 permissions:
   contents: read
-  id-token: write        # required to mint the WIF token
   # No `pull-requests: write`. It was granted "to post the plan summary" by a
   # step that could never run (see the `plan` job), so every run carried a
   # write token nothing used.
@@ -207,6 +212,11 @@ jobs:
     needs: [validate]
     if: github.event_name != 'pull_request'
     environment: ${{ github.event.inputs.environment || 'dev' }}-plan
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     env:
       # Read by scripts/lib/plan-guard.sh (through scripts/lib/common.sh) to
       # decide which project a resource is allowed to live in.

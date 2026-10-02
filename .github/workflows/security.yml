@@ -19,10 +19,14 @@ on:
     - cron: "0 6 * * 1"
   workflow_dispatch:
 
+# Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the job that authenticates to
+# Google (`images`). `security-events: write` is declared only on the two jobs
+# that upload SARIF (`filesystem`, `iac`). A job-level `permissions:` block
+# REPLACES this one.
 permissions:
   contents: read
-  security-events: write   # to upload SARIF
-  id-token: write          # WIF, for scanning published images
 
 concurrency:
   group: security-${{ github.ref }}
@@ -36,6 +40,11 @@ jobs:
   filesystem:
     name: trivy (repo)
     runs-on: ubuntu-24.04
+    # Uploads SARIF to code scanning: the only reason this job holds
+    # security-events: write.
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v5
 
@@ -114,6 +123,11 @@ jobs:
   iac:
     name: checkov (terraform + kubernetes)
     runs-on: ubuntu-24.04
+    # Uploads SARIF to code scanning: the only reason this job holds
+    # security-events: write.
+    permissions:
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@v5
 
@@ -291,6 +305,12 @@ jobs:
     # Scheduled only: this scans what is DEPLOYED, which is the question a PR
     # cannot answer. A base-image CVE published today affects a running fleet
     # that no pull request is touching.
+    #
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v5
 
