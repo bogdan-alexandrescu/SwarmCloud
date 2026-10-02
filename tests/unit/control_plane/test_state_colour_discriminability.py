@@ -1990,7 +1990,10 @@ def test_a_documented_grey_is_not_the_default_grey(sheet_scan, theme):
 #: mark for the same reading belongs here.
 PROJECTED_MARKS = (
     (frozenset({"ctl-util-fill", "ov-projected"}), "background-color"),
-    (frozenset({"ov-tilde"}), "color"),
+    # The tilde is the Accounts screen's since O1 (2026-10-02) drew Overview's
+    # account pool as one line: `.ov-tilde` went with Overview's account rows,
+    # and `.acct-tilde` is the same mark on the rows that remain.
+    (frozenset({"acct-tilde"}), "color"),
 )
 
 #: The distance a projected mark keeps from `--ctl-absent`. The same floor

@@ -20,6 +20,7 @@
 // Each test names the mutation that turns it red.
 
 import STYLES from '../styles.css?raw'
+import OVERVIEW_CSS from '../styles/overview.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
@@ -205,70 +206,48 @@ async function mount(reads: Reads = {}): Promise<HTMLElement> {
   return container
 }
 
-/** The profile group's row for `name`, found by its bold name. */
-function profileRow(el: HTMLElement, name: string): Element {
-  const row = [...el.querySelectorAll('.ov-headroom .ov-group:first-child .ctl-util')].find(
-    (r) => text(r.querySelector('.ctl-util-name b')) === name,
-  )
-  expect(row, `the profile group drew no row for ${name}`).toBeDefined()
-  return row!
+/** Headroom's tile for runner profile `name`, found by its name. */
+function profileTile(el: HTMLElement, name: string): Element {
+  const tile = [...el.querySelectorAll('.ov-headroom .ov-hp')].find((r) => text(r.querySelector('.ov-idc')) === name)
+  expect(tile, `Headroom drew no tile for ${name}`).toBeDefined()
+  return tile!
 }
 
 // ---------------------------------------------------------------------------
-// #95 -- the headroom rows carry their units
+// #95 -- the headroom figures carry their units
 // ---------------------------------------------------------------------------
 
 describe('#95: every figure in the Headroom card names what it counts', () => {
   /**
-   * "5 can start" and "0 / 10" side by side, the second in units and the
-   * first in agents, with the unit only in a hover title. The row now says
-   * `5 agents can start` and `0 / 10 units`, so the two cannot be read as
-   * the same quantity disagreeing with itself.
+   * "5 can start" and "0 / 10" side by side, the first in agents and the
+   * second in units on the binding pool, where a browser agent weighs 2. O1
+   * splits them: a profile tile counts AGENTS that can start (and its long
+   * form says the weight), a pool row counts UNITS in use, and each says so.
    *
-   * MUTATION: drop "agents" from the name, or "units" from the figure.
+   * MUTATION: drop "agents" or the weight from the tile's long form, or
+   * "units" from the pool row's.
    */
-  it('prints the headroom in agents and the binding pool in units', async () => {
+  it('counts agents on a profile tile and units on a pool row', async () => {
     const el = await mount()
-    const browser = profileRow(el, 'browser')
-    expect(text(browser.querySelector('.ctl-util-name'))).toBe('browser · 5 agents can start')
-    expect(text(browser.querySelector('.ctl-util-figure'))).toBe('0 / 10 units')
-
-    // Singular where there is one of each: `1 agent`, `1 unit`.
-    const cc = profileRow(el, 'claude-code')
-    expect(text(cc.querySelector('.ctl-util-name'))).toBe('claude-code · 1 agent can start')
-    expect(text(cc.querySelector('.ctl-util-figure'))).toBe('0 / 1 unit')
+    const browser = profileTile(el, 'browser')
+    expect(text(browser.querySelector('b'))).toBe('+5')
+    expect(browser.getAttribute('title') ?? '').toMatch(/5 more agents can start; 2 unit\(s\) per agent/)
+    expect(profileTile(el, 'claude-code').getAttribute('title') ?? '').toMatch(/1 more agent can start;/)
+    const pool = [...el.querySelectorAll('.ov-headroom .ov-pl')].find((r) => text(r.querySelector('.ov-idc')) === 'resource:browser')!
+    expect(text(pool.querySelector('b'))).toBe('0/10')
+    expect(pool.getAttribute('title') ?? '').toMatch(/0 of 10 units in use/)
   })
 
   /**
-   * The right-hand column named a pool -- `browser`, `your tenant` -- with no
-   * head and no verb, so it read as a fourth figure. It says what it is.
+   * The binding column named a pool -- `browser`, `your tenant` -- with no
+   * verb, so it read as another figure. The tile's line says it binds.
    *
    * MUTATION: print the bare pool label again.
    */
-  it('labels the binding column as the pool that binds', async () => {
+  it('labels the binding pool as the one that binds', async () => {
     const el = await mount()
-    expect(text(profileRow(el, 'browser').querySelector('.ctl-util-by'))).toBe('bound by browser')
-    expect(text(profileRow(el, 'claude-code').querySelector('.ctl-util-by'))).toBe('bound by your tenant')
-  })
-
-  /**
-   * The account row read `laptop · 0` -- a digit with no word, beside a
-   * figure in % used. It is the number of agents the account is serving.
-   *
-   * MUTATION: drop the noun, or lose the singular.
-   */
-  it('says what the account row counts', async () => {
-    const el = await mount({
-      loadAccountPool: ok(
-        accountsPage([
-          account({ account_id: 'eng:idle', label: 'idle', assigned: 0 }),
-          account({ account_id: 'eng:one', label: 'one', assigned: 1 }),
-        ]),
-      ),
-    })
-    const names = [...el.querySelectorAll('.ov-headroom .ov-dialrow-rows .ctl-util-name')].map(text)
-    expect(names).toContain('idle · 0 agents')
-    expect(names).toContain('one · 1 agent')
+    expect(text(profileTile(el, 'browser').querySelector('small'))).toBe('binds browser')
+    expect(text(profileTile(el, 'claude-code').querySelector('small'))).toBe('binds your tenant')
   })
 })
 
@@ -310,9 +289,9 @@ describe('#97: the Spend card reads without a help card', () => {
    */
   it('spells out cache read and cache write', async () => {
     const el = await mount()
-    const keys = [...el.querySelectorAll('.ov-spend .ctl-fact b')].map(text)
-    expect(keys).toContain('cache read')
-    expect(keys).toContain('cache write')
+    const keys = [...el.querySelectorAll('.ov-spend .ov-kv dt')].map(text)
+    expect(keys).toContain('cache read tokens')
+    expect(keys).toContain('cache write tokens')
     expect(text(el.querySelector('.ov-spend'))).not.toMatch(/\bc-(rd|wr)\b/)
   })
 
@@ -340,7 +319,7 @@ describe('#97: the Spend card reads without a help card', () => {
    */
   it('says in plain words that only refresh re-sums', async () => {
     const el = await mount()
-    const foot = text(el.querySelector('.ov-spend .ctl-card-foot'))
+    const foot = text(el.querySelector('.ov-spend .ov-foot'))
     expect(foot).not.toMatch(/re-poll/)
     expect(foot).toContain('updates only on refresh')
   })
@@ -349,36 +328,33 @@ describe('#97: the Spend card reads without a help card', () => {
 describe('#97: the Overview has one card-foot shape', () => {
   /** The value the cascade chooses, failing by name on a selector it could not read. */
   function won(el: Element, prop: string | readonly string[]): string | null {
-    const r = cascade(STYLES, el, prop, { width: 1440 })
+    const r = cascade(`${STYLES}\n${OVERVIEW_CSS}`, el, prop, { width: 1440 })
     expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
     return r.winner?.value ?? null
   }
 
   /**
-   * Headroom's feet are captions -- deliberately, because two --surface-2
-   * bars in one panel are two boxes with the lines rubbed out, and its two
-   * reads keep two feet with two ages. Running and Spend drew full-bleed
-   * bars. The three panels' feet are one family now: the caption.
+   * The feet are one family -- a caption under a hairline -- in every card
+   * that has one: Running now, Cost so far and Headroom's pool list. Running
+   * and Spend once drew full-bleed bars while Headroom drew captions.
    *
-   * MUTATION: drop the Running or Spend foot rule, or give either a fill.
+   * MUTATION: give one card's foot a fill or a corner of its own.
    */
-  it('draws the Running, Spend and Headroom feet with one fill and one corner', () => {
+  it('draws the Running, Cost and Headroom feet with one fill and one corner', () => {
     const host = document.createElement('div')
     host.innerHTML =
-      '<div class="ov-grid">' +
-      '<section class="ctl-card ov-running"><p class="ctl-card-foot">r</p></section>' +
-      '<section class="ctl-card ov-spend"><p class="ctl-card-foot">s</p></section>' +
-      '<section class="ctl-card ov-headroom"><div class="ov-groups">' +
-      '<div class="ov-group"><p class="ctl-card-foot">p</p></div>' +
-      '<div class="ov-group"><p class="ctl-card-foot">a</p></div>' +
-      '</div></section>' +
+      '<div class="ov-g21">' +
+      '<section class="ctl-card ov-card ov-running"><p class="ov-foot">r</p></section>' +
+      '<section class="ctl-card ov-card ov-spend"><p class="ov-foot">s</p></section>' +
+      '</div><div class="ov-g21">' +
+      '<section class="ctl-card ov-card ov-headroom"><p class="ov-foot">p</p></section>' +
       '</div>'
-    const feet = [...host.querySelectorAll('.ctl-card-foot')]
-    expect(feet.length).toBe(4)
+    const feet = [...host.querySelectorAll('.ov-foot')]
+    expect(feet.length).toBe(3)
     const BG = ['background', 'background-color'] as const
     const shapes = feet.map((f) => `${won(f, BG)} | ${won(f, 'border-radius')}`)
     expect(new Set(shapes).size, `the feet draw ${shapes.length} shapes: ${shapes.join(' ; ')}`).toBe(1)
-    expect(won(feet[0]!, BG), 'the feet are bars, not captions').toBe('none')
+    expect(won(feet[0]!, BG), 'the feet are bars, not captions').toBeNull()
   })
 })
 

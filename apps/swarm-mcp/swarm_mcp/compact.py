@@ -104,6 +104,7 @@ _EVENT_PAGE = 100
 #: What a pending task waits for, per `park_reason`, in a word or two.
 _WAITS_FOR = {
     "DEPENDENCY_INCOMPLETE": "dependency",
+    "CHILDREN_INCOMPLETE": "child tasks",
     "PROVIDER_QUOTA_EXHAUSTED": "quota",
     "PROVIDER_COOLDOWN": "quota cooldown",
     "PROVIDER_OUTAGE": "provider outage",

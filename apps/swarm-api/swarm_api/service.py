@@ -218,7 +218,7 @@ class SubmissionService:
         *,
         spec: TaskCreate,
         tenant: Tenant,
-        ctx: AuthContext,
+        ctx: AuthContext | None,
         now: datetime,
         dispatch: DispatchOptions,
         workflow_id: str | None = None,
@@ -228,7 +228,14 @@ class SubmissionService:
         priority: int | None = None,
         repository_url: str | None = None,
         repository_ref: str | None = None,
+        submitted_by: str | None = None,
     ) -> Task:
+        # `submitted_by` is set only by the child route (swarm_api.children),
+        # which has no person on the call: a child's submitter is its parent's,
+        # so the person behind the tree sees it. Every other caller passes ctx.
+        if submitted_by is None:
+            assert ctx is not None
+            submitted_by = ctx.email
         profile = validate_runner_profile(spec.runner_profile)
         # A worker action (merge, post-verdict) only inside a `single-pr`
         # workflow (#295). A workflow's steps were already checked by
@@ -291,7 +298,7 @@ class SubmissionService:
             runner_profile=profile.name,
             resource_class=resource_class,
             input=dict(spec.input),
-            submitted_by=ctx.email,
+            submitted_by=submitted_by,
             provider=profile.provider,
             model=spec.model,
             priority=spec.priority if priority is None else priority,

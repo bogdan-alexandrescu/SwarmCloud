@@ -41,9 +41,14 @@ class LocalSpecSigner:
 
     def verifies(self, doc: Mapping[str, Any], task_id: str) -> bool:
         """Does `doc`, as stored, carry a signature of its own spec by this key?"""
-        if doc.get("spec_key_version") != KEY_VERSION or doc.get("spec_format") != 1:
+        if (
+            doc.get("spec_key_version") != KEY_VERSION
+            or doc.get("spec_format") not in specsign.SPEC_FORMATS
+        ):
             return False
-        digest = specsign.spec_digest(specsign.canonical_step_spec(doc, task_id=task_id))
+        digest = specsign.spec_digest(
+            specsign.canonical_step_spec(doc, task_id=task_id, spec_format=doc["spec_format"])
+        )
         try:
             self._key.public_key().verify(
                 base64.b64decode(doc["spec_signature"]),
@@ -56,9 +61,12 @@ class LocalSpecSigner:
 
     def sign_document(self, doc: dict[str, Any], task_id: str) -> dict[str, Any]:
         """Sign a stored document in place, as submission would have."""
-        digest = specsign.spec_digest(specsign.canonical_step_spec(doc, task_id=task_id))
+        spec_format = specsign.signing_format(doc)
+        digest = specsign.spec_digest(
+            specsign.canonical_step_spec(doc, task_id=task_id, spec_format=spec_format)
+        )
         signed = self.sign(digest)
         doc["spec_signature"] = base64.b64encode(signed.signature).decode("ascii")
         doc["spec_key_version"] = signed.key_version
-        doc["spec_format"] = specsign.SPEC_FORMAT
+        doc["spec_format"] = spec_format
         return doc

@@ -486,13 +486,11 @@ def test_both_utilisation_bars_go_through_one_component():
         "each copy is a place the hatch, the baseline tick or the over-ceiling "
         "segment can be kept on one screen and lost on the next"
     )
+    # Overview's pool rows go through the shared track too (O1, 2026-10-02:
+    # Headroom is profile tiles, pool rows and one account line).
     ov = src("Overview.tsx")
-    assert ov.count("<UtilRow") == 2, (
-        "the utilisation row has stopped being shared between the profile rows "
-        "and the account rows"
-    )
-    assert "ctl-util-track" not in body_of(ov, "function ProfileRow("), (
-        "ProfileRow builds its own track again"
+    assert "<UtilTrack" in body_of(ov, "function PoolRow("), (
+        "Overview's pool rows stopped drawing the shared track"
     )
 
 
@@ -646,34 +644,32 @@ def test_the_dag_fills_the_width_it_is_given():
 def _overview_grids() -> list[tuple[str, int, int]]:
     """Each Overview grid as (class, panels it holds, tracks it has when widest).
 
-    THE OVERVIEW CHANGED SHAPE WITH THE REBRAND (2026-10-01) and the guarantee
-    this pair of tests holds did not: `.ov-grid` is TWO panels (Running, Spend)
-    in two tracks and `.ov-pair` is TWO panels (Waiting, Headroom) in two, so no
-    row ends with a panel alone and the old `.ov-headroom` span that managed a
-    three-in-two orphan is gone. What is read is the markup's panel count and
-    the sheet's track count, so adding a third panel to either grid -- the
+    O1 (overview.html, the owner's pick; built 2026-10-02) draws two `.ov-g21`
+    grids -- Running now beside Cost so far, then Waiting, and why beside
+    Headroom -- each TWO panels in two tracks, so no row ends with a panel
+    alone. The grids' rules live in the screen's own sheet,
+    `styles/overview.css`. What is read is the markup's panel count and the
+    sheet's widest track count, so adding a third panel to either grid -- the
     change that brings the orphan back -- fails here until something spans it.
     """
-    css = src("styles.css")
+    css = src("styles/overview.css")
     ov = src("Overview.tsx")
+    opener = '<div className="ov-g21">'
+    first = ov.find(opener)
+    second = ov.find(opener, first + 1)
+    # The Recent failures section's own opening tag, which carries the id.
+    end = ov.rfind("<section", 0, ov.find('id="ov-failures"'))
+    assert -1 < first < second < end, "Overview.tsx no longer draws two .ov-g21 grids before Recent failures"
 
-    def panels(start: str, end: str) -> int:
-        assert start in ov and end in ov, f"{start} / {end} is not in Overview.tsx; the count would be vacuous"
-        block = ov[ov.index(start) : ov.index(end)]
+    def panels(block: str) -> int:
         return len(re.findall(r'<section className="ctl-card\b', block))
 
-    grid_tracks = re.search(r"\.ov-grid \{ grid-template-columns: repeat\((\d+), ", css)
-    pair_tracks = re.search(
-        # The widest declaration, as the sheet writes it: `...1fr); }`. The
-        # semicolon is optional so the declaration's own punctuation is not
-        # what decides whether the track count was read.
-        r"\.ov-pair \{ grid-template-columns: ((?:minmax\(0, 1fr\) ?)+);? ?\}", css
-    )
-    assert grid_tracks is not None, "`.ov-grid` declares no explicit track count"
-    assert pair_tracks is not None, "`.ov-pair` declares no explicit track count"
+    widest = re.findall(r"\.ov-g21 \{ grid-template-columns: ((?:minmax\(0, [\d.]+fr\) ?)+);? ?\}", css)
+    assert widest, "`.ov-g21` declares no explicit track count"
+    tracks = max(t.count("minmax") for t in widest)
     return [
-        ("ov-grid", panels('className="ov-grid"', 'className="ov-pair"'), int(grid_tracks.group(1))),
-        ("ov-pair", panels('className="ov-pair"', 'id="ov-failures"'), pair_tracks.group(1).count("minmax")),
+        ("ov-g21", panels(ov[first:second]), tracks),
+        ("ov-g21", panels(ov[second:end]), tracks),
     ]
 
 
@@ -686,7 +682,7 @@ def test_no_overview_row_ends_with_a_blank_right_column():
     panels, and if the panel count leaves an orphan in the last row some panel
     is given a span in the sheet.
     """
-    css = src("styles.css")
+    css = src("styles/overview.css")
     for name, count, tracks in _overview_grids():
         body = re.search(rf"\n\.{name} \{{([^}}]*)\}}", css, re.S)
         assert body is not None, f".{name} has no rule"
@@ -716,7 +712,7 @@ def test_no_overview_panel_spans_tracks_from_an_inline_style():
     """
     ov = src("Overview.tsx")
     assert "gridColumn" not in ov, "a panel still spans tracks from an inline style"
-    spans = re.search(r"\.ov-(?:running|spend|waiting|headroom) \{ grid-column:", src("styles.css"))
+    spans = re.search(r"\.ov-(?:running|spend|waiting|headroom) \{ grid-column:", src("styles/overview.css"))
     orphans = [name for name, count, tracks in _overview_grids() if count % tracks != 0]
     assert spans or not orphans, (
         f"no panel spans tracks, and {orphans} leaves a panel alone in its last row"

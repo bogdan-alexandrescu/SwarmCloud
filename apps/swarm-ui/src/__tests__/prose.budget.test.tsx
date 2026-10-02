@@ -173,5 +173,17 @@ describe('the prose budget', () => {
  * paragraphs and four provenance paragraphs under the spend figures. None of
  * them was a measurement; every one of them shipped unconditionally on the
  * landing screen.
+ *
+ * RAISED TO 153 WITH O1 (2026-10-02), AND NOT FOR A PARAGRAPH. The owner's
+ * pick draws more of the platform, so this fixture now renders 151 words, and
+ * every one added is a label or a provenance clause beside a figure (the
+ * account line's "read just now" is the age of its one figure, which the
+ * house rule puts beside it): the lifecycle band's three
+ * heads and three qualifiers and its eleven state words under their marks,
+ * five card titles each with the destination it opens, Headroom's three
+ * sub-heads, and the cost card's four token rows named in words. The empty
+ * states were cut to the fewest words that still name their scope
+ * ("None among the 0 newest"). Two words of room, so the next sentence still
+ * has to argue with this test.
  */
-const OVERVIEW_CEILING = 110
+const OVERVIEW_CEILING = 153

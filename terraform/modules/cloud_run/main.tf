@@ -108,6 +108,24 @@ resource "google_cloud_run_v2_service" "this" {
         }
       }
 
+      # Secret Manager references. The service account must hold
+      # secretAccessor on each secret, and the version must exist, or the
+      # revision fails to start -- loudly, at deploy, rather than running
+      # without the value.
+      dynamic "env" {
+        for_each = each.value.secret_env
+        content {
+          name = env.key
+
+          value_source {
+            secret_key_ref {
+              secret  = env.value.secret
+              version = env.value.version
+            }
+          }
+        }
+      }
+
       startup_probe {
         # TCP rather than HTTP: it is true the moment the server binds, and it
         # does not depend on a handler that a future refactor might rename.

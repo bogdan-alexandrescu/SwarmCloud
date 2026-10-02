@@ -85,6 +85,7 @@ from swarm_common.states import (
     assert_transition,
 )
 
+from .children import cancel_end_cause
 from .codec import (
     as_datetime,
     pool_from_dict,
@@ -958,8 +959,10 @@ class SchedulerStore:
                 payload["next_eligible_at"] = None
                 # Why it ended, typed (contract request 23): a requested cancel
                 # or the dispatch that kept failing, never the text's words.
+                # A child its parent's cascade flagged ends CHILD_CASCADE
+                # (contract request 41), with the worker's rule.
                 payload["end_cause"] = (
-                    EndCause.CANCEL_REQUESTED
+                    cancel_end_cause(stored.get("metadata"))
                     if target is TaskState.CANCELLED
                     else EndCause.DISPATCH_FAILED
                 ).value

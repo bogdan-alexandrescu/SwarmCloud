@@ -25,7 +25,40 @@ from typing import Any, Mapping
 
 #: The canonical form's version. A change to the covered fields or the encoding
 #: is a NEW format, never an edit to this one: a signature is over a format.
-SPEC_FORMAT = 1
+#:
+#: 2 is contract request 42, applied 2026-10-02 with request 14: format 1's
+#: fields plus `parent_task_id` and `parent_attempt_id`, so a child whose
+#: parent was rewritten fails its own worker's check. swarm-api signs at
+#: SPEC_FORMAT; a worker verifies every format in SPEC_FORMATS, each under its
+#: own projection, so a document signed at format 1 keeps verifying.
+SPEC_FORMAT = 2
+
+#: Every format a verifier accepts, oldest first.
+SPEC_FORMATS = (1, 2)
+
+#: The fields format 2 adds to format 1's projection.
+_FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
+
+
+def signing_format(doc: Mapping[str, Any]) -> int:
+    """The format a signer signs `doc` at: 1 when it names no parent, else SPEC_FORMAT.
+
+    Format 2's projection of a task whose parent fields are both None differs
+    from format 1's only by carrying two nulls, so signing such a task at
+    format 1 covers exactly as much -- and keeps it verifiable by a worker
+    built before format 2, which knows only format 1 and would refuse every
+    task (SPEC_SIGNATURE_INVALID) during a rollout that updated swarm-api
+    first. Only a child is signed at format 2; a child needs a worker that
+    has the child path anyway. A rewrite of a format-1 document that adds a
+    parent STILL VERIFIES: the parent fields are then outside the signed
+    bytes, so the signature vouches for no parent at all, and the readers
+    that act on one (the cascade, the await) are platform components that
+    do not consult the signature (deferred to #476).
+    """
+    if all(doc.get(key) is None for key in _FORMAT_2_FIELDS):
+        return 1
+    return SPEC_FORMAT
+
 
 #: Domain separation. The bytes of a step spec cannot be read as another message.
 SPEC_PURPOSE = "swarm.step-spec"
@@ -42,12 +75,19 @@ class SpecNotCanonical(ValueError):
     """A value in the spec has no canonical form (see `jcs`)."""
 
 
-def canonical_step_spec(doc: Mapping[str, Any], *, task_id: str) -> bytes:
+def canonical_step_spec(
+    doc: Mapping[str, Any], *, task_id: str, spec_format: int = SPEC_FORMAT
+) -> bytes:
     """The bytes the signature covers, from a task document as stored.
 
     `task_id` is the id the document was READ BY (the worker's TASK_ID, the
-    id swarm-api minted), never the document's own `id` field.
+    id swarm-api minted), never the document's own `id` field. `spec_format`
+    picks the projection: the signer leaves it at SPEC_FORMAT, a verifier
+    passes the document's own `spec_format` (which is inside the signed bytes,
+    so a rewrite to another format fails).
     """
+    if spec_format not in SPEC_FORMATS or isinstance(spec_format, bool):
+        raise SpecNotCanonical(f"spec format {spec_format!r} is not one of {SPEC_FORMATS}")
     metadata = doc.get("metadata")
     if metadata is None:
         metadata = {}
@@ -55,7 +95,7 @@ def canonical_step_spec(doc: Mapping[str, Any], *, task_id: str) -> bytes:
         raise SpecNotCanonical("metadata is not a map")
     spec = {
         "purpose": SPEC_PURPOSE,
-        "format": SPEC_FORMAT,
+        "format": spec_format,
         "task_id": task_id,
         "tenant_id": doc.get("tenant_id"),
         "workflow_id": doc.get("workflow_id"),
@@ -73,6 +113,9 @@ def canonical_step_spec(doc: Mapping[str, Any], *, task_id: str) -> bytes:
         "repository_ref": doc.get("repository_ref"),
         "metadata": {key: metadata.get(key) for key in SIGNED_METADATA_KEYS},
     }
+    if spec_format >= 2:
+        for key in _FORMAT_2_FIELDS:
+            spec[key] = doc.get(key)
     return jcs(spec)
 
 

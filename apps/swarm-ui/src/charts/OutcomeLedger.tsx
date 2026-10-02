@@ -140,6 +140,22 @@ export const LEDGER_DRAWN = [
 
 export type LedgerDrawn = (typeof LEDGER_DRAWN)[number]
 
+/**
+ * THE WIDTH A DRAWING IS LAID OUT AT, given the chart's measured box (#503).
+ * The shown drawing takes its box's width: a 1050px column drew the 640px
+ * drawing and left the rest of the column empty. Never NARROWER than the
+ * drawing was authored at -- that is what keeps every tick at --t-micro --
+ * and only inside the band the container query shows it in, so a drawing
+ * that is hidden is not laid out wider for nothing. The phone's drawing keeps
+ * its 26px floor and scrolls; it is never stretched. An unmeasured box draws
+ * as authored.
+ */
+export function fittedWidth(d: LedgerDrawn, box: number | null): number {
+  if (box === null || d.key === 'narrow') return d.w
+  const next = d.key === 'mid' ? LEDGER_DRAWN[0].w : Number.POSITIVE_INFINITY
+  return box >= d.w && box < next ? Math.floor(box) : d.w
+}
+
 /** How far apart two axis labels must sit, in px: `Sep 21` is ~44px of --t-micro mono. */
 const LABEL_PX = 52
 
@@ -227,8 +243,8 @@ interface Geo {
   cx: (i: number) => number
 }
 
-function geometry(d: LedgerDrawn, n: number): Geo {
-  const avail = d.w - d.left - d.right
+function geometry(d: LedgerDrawn, n: number, w: number = d.w): Geo {
+  const avail = w - d.left - d.right
   const pitch = n === 0 ? avail : Math.max(d.floor, avail / n)
   const plotW = pitch * Math.max(1, n)
   const lane: Array<{ y: number; h: number }> = []
@@ -355,6 +371,7 @@ const LABEL_RISE = 20
  */
 function Drawing({
   d,
+  w,
   data,
   scales,
   pickedAt,
@@ -368,6 +385,8 @@ function Drawing({
   registerPlot,
 }: {
   d: LedgerDrawn
+  /** The width it is laid out at (`fittedWidth`). */
+  w: number
   data: Outcomes
   scales: Scales
   pickedAt: number
@@ -382,7 +401,7 @@ function Drawing({
   registerPlot: (key: string, el: HTMLDivElement | null) => void
 }) {
   const { buckets, bucket, tz } = data
-  const g = geometry(d, buckets.length)
+  const g = geometry(d, buckets.length, w)
   const hatch = `${useHatchId()}-${d.key}`
   const flat = `${hatch}-flat`
   const starts = buckets.map((b) => b.start)
@@ -826,6 +845,8 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   // sideways), not left at its oldest bucket. A drawing already opened keeps
   // wherever its reader scrolled it.
   const figure = useRef<HTMLElement>(null)
+  /** The chart's measured width, which the shown drawing is laid out at (#503). */
+  const [box, setBox] = useState<number | null>(null)
   const plots = useRef(new Map<string, HTMLDivElement | null>())
   const registerPlot = (key: string, el: HTMLDivElement | null) => {
     plots.current.set(key, el)
@@ -852,7 +873,10 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
   useEffect(() => {
     const el = figure.current
     if (el === null || typeof ResizeObserver === 'undefined') return
-    const watch = new ResizeObserver(() => openNewest())
+    const watch = new ResizeObserver(() => {
+      openNewest()
+      setBox(el.clientWidth > 0 ? el.clientWidth : null)
+    })
     watch.observe(el)
     return () => watch.disconnect()
   }, [openNewest])
@@ -938,6 +962,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
           <Drawing
             key={d.key}
             d={d}
+            w={fittedWidth(d, box)}
             data={data}
             scales={scales}
             pickedAt={pickedAt}

@@ -117,6 +117,17 @@ _GSA_ACCOUNT_ID_MAX = 30
 _MAX_TENANT_ID = _GSA_ACCOUNT_ID_MAX - len(_GSA_PREFIX)
 
 
+def worker_service_account_id(tenant_id: str) -> str:
+    """`swarm-agent-worker-<tenant_id>`: the account id the tenant's workers run as.
+
+    Contract request 43, applied 2026-10-02. The public home of the rule
+    `_GSA_PREFIX` states, for a caller that must derive a worker's identity
+    from a tenant id rather than read it from `tenants/<id>.service_account`,
+    a document any tenant identity can rewrite (swarm-api's child routes).
+    """
+    return f"{_GSA_PREFIX}{tenant_id}"
+
+
 def _slug(principal: str, prefix: str = "") -> str:
     """Slugify an email local part into a tenant id that cannot collide.
 

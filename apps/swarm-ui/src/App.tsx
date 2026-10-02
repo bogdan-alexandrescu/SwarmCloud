@@ -15,6 +15,7 @@ import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
+import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
@@ -29,10 +30,10 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
+import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick } from './components'
-import { HelpScreen } from './HelpSection'
+import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -660,6 +661,8 @@ export interface Route {
    * (`#admin/limits?pool=tenant%3Aeng`, #134).
    */
   view?: string | null
+  /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
+  page?: 'outcomes' | null
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -794,6 +797,9 @@ export function fromAddress(full: string): Route {
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
+    if (section.id === WORK && wanted === 'timeline/outcomes') {
+      return { sectionId: WORK, tab: 'timeline', ...blank, page: 'outcomes', ...(query !== '' ? { view: query } : {}) }
+    }
     if (tab && section.id === WORK && tab.id === 'timeline' && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
@@ -863,8 +869,9 @@ export function canonical(r: Route): string {
   }
   // The Timeline's view rides on its address, so a copied link reproduces the
   // page (#185). Written only for that route: no other screen reads a query.
-  if (r.sectionId === WORK && r.tab === 'timeline' && r.view) {
-    return `${WORK}/timeline?${r.view}`
+  if (r.sectionId === WORK && r.tab === 'timeline' && (r.view || r.page === 'outcomes')) {
+    const at = r.page === 'outcomes' ? `${WORK}/timeline/outcomes` : `${WORK}/timeline`
+    return r.view ? `${at}?${r.view}` : at
   }
   if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
     return `${WORK}/workflows?${r.view}`
@@ -1046,7 +1053,7 @@ export function App() {
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
           go={go}
-          helpGroup={at.sectionId === HELP ? (helpGroupOf(at.tab) ?? (at.tab === '' ? null : at.tab)) : null}
+          helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
           onApiFilter={setApiFailuresOnly}
           dock={<Dock />}
@@ -1118,6 +1125,7 @@ export function App() {
                     list={at.list ?? null}
                     onList={onList}
                     view={at.view ?? null}
+                    page={at.page ?? null}
                     onView={onView}
                     go={go}
                   />
@@ -1508,6 +1516,7 @@ function SectionBody({
   list,
   onList,
   view,
+  page,
   onView,
   go,
 }: {
@@ -1521,6 +1530,8 @@ function SectionBody({
   onList: (list: AgentList) => void
   /** The Timeline's view, from the hash's query (#185), or null. */
   view: string | null
+  /** The Timeline's page: Outcomes, or null for Lanes. */
+  page: 'outcomes' | null
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
@@ -1569,6 +1580,8 @@ function SectionBody({
   // holds it together: `nav.links.test.tsx` binds WORK/CAPACITY to SECTIONS,
   // SECTIONS declares its ids as literals, and the Python gate binds SECTIONS
   // to these cases. Nothing in it can move alone.
+  // Timeline's second page, Outcomes (`/timeline/outcomes`): today's ledger, unchanged.
+  if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen />
@@ -1578,7 +1591,7 @@ function SectionBody({
     case 'work/workflows':
       return <WorkflowsScreen view={view} onView={onView} />
     case 'work/timeline':
-      return <ActivityScreen view={view} onView={onView} />
+      return <TimelineLanesScreen view={view} onView={onView} />
     case 'work/new':
       return <SubmitScreen />
     case 'work/new-workflow':

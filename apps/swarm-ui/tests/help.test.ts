@@ -34,6 +34,15 @@ import { HelpNote } from '../src/HelpCard'
 import { HelpScreen } from '../src/HelpSection'
 import { CONCURRENCY_STATES, NEVER_WRITTEN, REAL_STATES, REASON_COPY, TERMINAL_STATES } from '../src/types'
 
+/**
+ * Every Help page, as one string. H1 (admin-help.html, the owner's pick) draws
+ * ONE GROUP PER PAGE, so "the Help section renders X" is a claim about the
+ * pages together: each group's page, rendered and joined.
+ */
+function everyPage(): string {
+  return HELP_GROUPS.map((g) => renderToStaticMarkup(createElement(HelpScreen, { topic: g.id }))).join('')
+}
+
 // esbuild inlines this file, so __dirname would be the build directory. The
 // source tree is found from the repo layout instead, which is stable.
 const SRC = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'src')
@@ -84,7 +93,7 @@ test('every topic a screen references exists in help.ts', () => {
 })
 
 test('every topic a screen references has a Help-section anchor', () => {
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const markup = everyPage()
   for (const { file, topic } of referencedTopics()) {
     assert.ok(
       markup.includes(`id="${helpAnchor(topic as TopicId)}"`),
@@ -107,7 +116,7 @@ test('every #help/ link in the app resolves to a topic', () => {
 })
 
 test('the Help section renders every topic in the registry', () => {
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const markup = everyPage()
   assert.equal(TOPIC_IDS.length, Object.keys(HELP).length, 'a topic is in no group')
   for (const id of TOPIC_IDS) {
     assert.ok(markup.includes(`id="${HELP[id].anchor}"`), `${id} has no anchor on the Help page`)
@@ -134,9 +143,12 @@ test('an unknown topic is reported, not silently swallowed', () => {
     createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }),
   )
   assert.ok(markup.includes('a-topic-that-was-renamed'), 'the asked-for topic is not named')
-  // ...and the page still carries everything it does have, rather than being
-  // a bare error: a stale link should still land somewhere useful.
-  assert.ok(markup.includes(`id="${HELP['absent-vs-zero'].anchor}"`))
+  // ...and the page still carries a group it does have (the first), rather
+  // than being a bare error: a stale link should still land somewhere useful.
+  const first = HELP_GROUPS.find((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))!
+  for (const id of TOPIC_IDS.filter((t) => HELP[t].group === first.id)) {
+    assert.ok(markup.includes(`id="${HELP[id].anchor}"`), `${id} is not on the page a stale link lands on`)
+  }
 })
 
 /**
@@ -205,18 +217,29 @@ function topicBlock(markup: string, id: string): string {
  * AH-15's sentence back.
  */
 test('the Help page head says what the page is and which topic is showing (AH-25)', () => {
-  const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id)).length
+  const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))
   const line = (markup: string): string => /<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? ''
   const bare = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
   const deep = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
   const stale = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
-  for (const markup of [bare, deep, stale]) {
-    assert.match(markup, /<div class="head"><h1>Help<\/h1><\/div><p class="sub">/, 'the Help page does not draw the shared head with its line')
+  const deepGroup = groups.find((g) => g.id === HELP['absent-vs-zero'].group)!
+  for (const [markup, group] of [
+    [bare, groups[0]!],
+    [deep, deepGroup],
+    [stale, groups[0]!],
+  ] as const) {
+    // H1: the page head is the shared one, titled with the group the page is.
+    assert.ok(
+      markup.includes(`<div class="head"><h1>${group.title}</h1></div><p class="sub">`),
+      `the Help page does not draw the shared head titled ${group.title}`,
+    )
     assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')
     assert.ok(!/looks the way it does/.test(markup), 'AH-15’s line, true of about one topic in eight, is back')
-    // WHAT THE PAGE IS, from the registry: every topic, in its groups.
+    // WHAT THE PAGE IS, from the registry: this group's topics, then every
+    // topic in its groups.
+    const n = TOPIC_IDS.filter((id) => HELP[id].group === group.id).length
     assert.ok(
-      line(markup).includes(`${TOPIC_IDS.length} topics in ${groups} groups`),
+      line(markup).startsWith(`${n} on this page · ${TOPIC_IDS.length} topics in ${groups.length} groups`),
       `the Help line does not say what the page holds: "${line(markup)}"`,
     )
     // A LINE, NOT A DESCRIPTION SENTENCE (§6.12): nothing ends in a full stop.
@@ -229,21 +252,21 @@ test('the Help page head says what the page is and which topic is showing (AH-25
 })
 
 /**
- * AH-18. A TOPIC IS A ROW OF ITS GROUP, NOT A BOX, AND IT IS STYLED BY THE
- * SHEET. Every topic was an inline-styled bordered panel -- border, surface,
- * radius, padding -- because "styles.css belongs to another track this pass".
- * Under design-system §13.3 a topic is a row inside a region, and a row draws
- * nothing. The treatment now lives in `.help-topic` in styles.css, where
- * `src/__tests__/shell.test.tsx` asks the cascade what a browser would draw:
- * no box, the h3 at `--t-lead` (AH-10), paragraphs and notes at `--measure`.
+ * AH-18, AS H1 REDRAWS IT: A TOPIC IS STYLED BY THE SHEET, NEVER INLINE.
+ * Every topic was an inline-styled bordered panel because "styles.css belongs
+ * to another track this pass". AH-18 made it an unboxed row; H1 (the owner's
+ * pick 2026-10-01) makes it a card again -- but the card is `.help-topic` in
+ * styles/help.css, where `src/__tests__/shell.test.tsx` asks the cascade what
+ * a browser would draw: the border, the fill, the h3 at `--t-lead` (AH-10),
+ * answers at `--measure`.
  *
  * What this file can see, with no stylesheet, is that the treatment is no
  * longer written inline: every topic block carries the class and no style.
  *
  * MUTATION: put the inline `style` back on a topic, or on its h3.
  */
-test('every topic is a .help-topic row with no inline box (AH-18)', () => {
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+test('every topic is a .help-topic card styled by its sheet, with no inline box (AH-18, H1)', () => {
+  const markup = everyPage()
   for (const id of TOPIC_IDS) {
     const tag = topicTag(markup, id)
     assert.match(tag, /class="help-topic"/, `${id} is not a .help-topic row`)
@@ -603,7 +626,7 @@ test('Help carries the four topics the QA pass found missing (AH-14)', () => {
 
   // THE BUDGET PARAGRAPH CROSS-LINKS token-cost (AH-21), as a link on the
   // Help page and not as a title quoted in prose.
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const markup = everyPage()
   assert.ok(
     topicBlock(markup, 'tenant-fields').includes(`href="#${helpAnchor('token-cost')}"`),
     'tenant-fields does not link to token-cost',
@@ -694,7 +717,7 @@ test('tenant-fields names every path that writes the Enforced ceiling', () => {
  * MUTATION: lowercase the strings instead of the style.
  */
 test('the Help page keeps its enum terms in the owner’s spelling', () => {
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const markup = everyPage()
   const dts = [...markup.matchAll(/<dt(?: [^>]*)?>([^<]*)<\/dt>/g)]
   assert.ok(dts.length > 0, 'the Help page renders no terms')
   // The text itself is untouched: the states still arrive in their own case.
@@ -729,7 +752,7 @@ test('help.ts restates no frozen value', () => {
 test('a topic that needs frozen values reads them, and they arrive', () => {
   // The proof that the indirection is real rather than decorative: the Help
   // page prints state names that appear nowhere in help.ts's own source.
-  const markup = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
+  const markup = everyPage()
   for (const state of REAL_STATES) {
     assert.ok(markup.includes(state), `the Help page does not list ${state}`)
   }
