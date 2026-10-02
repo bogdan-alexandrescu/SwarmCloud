@@ -28,15 +28,13 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { AgentRun, HoldersBoard, SpendRollup } from '../api'
+import type { AgentRun, SpendRollup } from '../api'
 import type { Result } from '../fetch'
 import {
   GIB,
   type Account,
   type AccountsPage,
   type Capacity,
-  type LeasePage,
-  type LeaseRow,
   type Pool,
   type ProfileAdmission,
   type RunnerProfile,
@@ -67,7 +65,6 @@ vi.mock('../api', async (importOriginal) => {
 const { OverviewScreen } = await import('../Overview')
 const { Run } = await import('../AgentDetail')
 const { CapacityScreen } = await import('../Capacity')
-const { HoldersScreen } = await import('../Holders')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -509,6 +506,8 @@ describe('Capacity draws each pool row through the shared track', () => {
         generated_at: '2026-09-24T10:00:00Z',
       }),
     )
+    // Pools reads the lease list beside the capacity read, for its holder counts.
+    api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     render(<CapacityScreen />)
     // The Cards view was set aside on 2026-10-01 (capacity.html); the track
     // it drew is now the Ceilings table's Use column, one per row.
@@ -558,62 +557,10 @@ describe('Capacity draws each pool row through the shared track', () => {
   })
 })
 
-function lease(over: Partial<LeaseRow>): LeaseRow {
-  return {
-    lease_id: 'lease-aaaaaaaaaa',
-    task_id: 'task-bbbbbbbbbb',
-    attempt_id: 'att-1',
-    tenant_id: 'eng',
-    generation: 1,
-    pools: ['global', 'resource:standard'],
-    units: 1,
-    dispatch_state: 'DISPATCHED',
-    created_at: '2026-09-24T09:00:00Z',
-    dispatch_deadline: '2026-09-24T09:05:00Z',
-    expires_at: '2026-09-24T11:00:00Z',
-    heartbeat_at: '2026-09-24T09:59:00Z',
-    released_at: null,
-    release_reason: null,
-    released: false,
-    expired: false,
-    dispatch_overdue: false,
-    silent_seconds: 30,
-    heartbeat_ever: true,
-    last_error: null,
-    ...over,
-  }
-}
 
-describe('Holders draws its class mix through the shared row', () => {
-  it('draws each class as a fill proportional to the largest', async () => {
-    const board: HoldersBoard = {
-      page: {
-        leases: [
-          lease({}),
-          lease({ lease_id: 'lease-cccccccccc', units: 4, pools: ['global', 'resource:large'] }),
-        ],
-        units_held: 5,
-        tenant_id: null,
-        active_only: true,
-        active_beyond_window: 0,
-        truncated: false,
-        examined: 2,
-      } as unknown as LeasePage,
-      pools: [pool({ name: 'global', active: 5 })],
-      poolsDetail: null,
-    }
-    api.loadHolders.mockResolvedValue(ok(board))
-    render(<HoldersScreen />)
-    await screen.findByText('Class mix', undefined, WAIT)
-
-    const large = row('large').querySelector<HTMLElement>('.ctl-util-fill')
-    const standard = row('standard').querySelector<HTMLElement>('.ctl-util-fill')
-    expect(large?.style.width).toBe('100%')
-    expect(standard?.style.width).toBe('25%')
-    expect(row('large').querySelector('.ctl-util-figure')?.textContent).toBe('4u')
-    expect(row('standard').querySelector('.ctl-util-by')?.textContent).toBe('1 lease')
-  })
-})
+// `Holders draws its class mix through the shared row` WENT WITH THE CARD: the
+// picked frame (capacity.html frame 6, the #503 audit) has no Class mix, and
+// the lease table's Units column carries what it summarised.
 
 // ---------------------------------------------------------------------------
 // One definition of each primitive
