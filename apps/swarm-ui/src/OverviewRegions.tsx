@@ -8,9 +8,7 @@
  */
 import type { Result } from './fetch'
 import { StateMark } from './marks'
-import { CONCURRENCY_STATES, whyAgent, type Task, type TaskPage } from './types'
-
-const WAITING: ReadonlySet<string> = new Set(['QUEUED', 'READY', 'PARKED'])
+import { CONCURRENCY_STATES, WAITING_STATES as WAITING, whyAgent, type Task, type TaskPage } from './types'
 
 function rows(tasks: Result<TaskPage>): Task[] | null {
   return tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data.tasks : null

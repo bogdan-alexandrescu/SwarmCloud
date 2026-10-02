@@ -2065,6 +2065,15 @@ export const TERMINAL_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
 ])
 
 /**
+ * CONTRACT.md invariant 1, the other side: the three states that WAIT and
+ * cost nothing. No lease, no pool slot, no infrastructure demand. Overview's
+ * Waiting figure and its "Waiting, and why" region both count this set.
+ */
+export const WAITING_STATES: ReadonlySet<TaskState> = new Set<TaskState>([
+  'QUEUED', 'READY', 'PARKED',
+])
+
+/**
  * A task state's tone, which is what its MARK is drawn from (design-system.md
  * §6.6).
  *

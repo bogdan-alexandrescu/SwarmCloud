@@ -200,8 +200,11 @@ describe('the landing screen is a lead and two regions, not a grid of boxes', ()
     const labels = [...el.querySelectorAll('.ctl-metrics .ctl-metric-label')].map((n) =>
       (n.textContent ?? '').trim(),
     )
-    expect(labels.length, 'the fact strip lost or gained a figure').toBe(2)
-    expect(labels).toEqual(['Running', 'Units held'])
+    // Waiting joined Running (#91): the tenant's whole backlog from the same
+    // /v1/stats read, which no panel below counts -- the band and "Waiting,
+    // and why" count the task page.
+    expect(labels.length, 'the fact strip lost or gained a figure').toBe(3)
+    expect(labels).toEqual(['Running', 'Waiting', 'Units held'])
     expect(
       labels.some((l) => /attention/i.test(l)),
       'the attention figure is in the strip AND in the lead',
