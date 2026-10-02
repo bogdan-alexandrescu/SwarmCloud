@@ -536,6 +536,38 @@ def test_the_api_serves_the_derived_state_and_the_stored_one_beside_it(db, clien
     assert db.docs["workflows/wf_test"]["state"] == "FAILED"
 
 
+def test_a_workflow_whose_integrator_published_nothing_reads_failed_naming_the_step(db, client):
+    """GUARD 2 (2026-10-02), through the existing rollup with no change to it.
+
+    wf_b9b337e107494c10a416 read SUCCEEDED with no pull request because its
+    fix step did. The worker now ends a pull-request step that published
+    nothing FAILED (tests/unit/worker/test_published_nothing.py); this holds
+    that the workflow then reads FAILED, and that the step and its reason
+    are on the same response, where the UI already renders them.
+    """
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="t1", tenant_id="eng", state="SUCCEEDED", workflow_id="wf_test")
+    seed_task(db, task_id="t2", tenant_id="eng", state="SUCCEEDED", workflow_id="wf_test")
+    fix = seed_task(db, task_id="t3", tenant_id="eng", state="FAILED", workflow_id="wf_test")
+    reason = "published_nothing: the forge refused the pull request: No commits between main and swarm/t3"
+    fix.update(last_error=reason, end_cause="outputs_missing")
+    seed_workflow(
+        db, make_workflow(steps=[("implement", "t1"), ("review", "t2"), ("fix", "t3")])
+    )
+
+    response = client.get("/v1/workflows/wf_test", headers=auth_header("alice"))
+    assert response.status_code == 200
+    body = response.json()
+    assert body["workflow"]["state"] == "FAILED"
+    assert body["workflow"]["rollup"]["reason"] == "worst_terminal_step_failed"
+    failed = [t for t in body["tasks"] if t["state"] == "FAILED"]
+    assert [t["id"] for t in failed] == ["t3"]
+    assert failed[0]["last_error"] == reason
+    assert failed[0]["end_cause"] == "outputs_missing"
+    steps = {s["step_id"]: s["task_id"] for s in body["workflow"]["steps"]}
+    assert steps["fix"] == "t3"
+
+
 def test_the_list_route_derives_too(db, client):
     seed_tenant(db, "eng")
     seed_task(db, task_id="t1", tenant_id="eng", state="RUNNING", workflow_id="wf_test")

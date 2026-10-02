@@ -1166,61 +1166,9 @@ body {
 .row {
   min-height: var(--row-h);
   display: grid;
-  /* NAMED LINES (§6.8), because a column's job should be readable in the
-     template rather than by counting commas against a comment -- and because a
-     breakpoint that redefines this one declaration cannot silently shift a
-     field into the wrong column. `[state]` and `[flags]` are the two that
-     never drop.
-     The "why" line spans the whole row underneath. */
-  /* EVERY TRACK IS WIDTH-DERIVED, NOT CONTENT-DERIVED, AND THAT IS THE WHOLE
-     REASON THE COLUMNS LINE UP. Each row is its own grid, so an `auto` track
-     resolves per row: the one row carrying a dispatch flag sized `[flags]` to
-     its own 190px tag and pulled every column left of it out of line with the
-     five rows above. Ragged columns are what a list of independent grids gives
-     you unless every track is stated. `[flags]` is an `fr` for that reason and
-     keeps its width on the rows that have nothing to put in it -- §14: a thing
-     that is absent occupies the space it would have occupied. */
-  grid-template-columns:
-    /* 112px is `dead_lettered` -- the longest of the twelve TaskStates -- at
-       `--t-body` plus the 10px mark and its gap. The state WORD IS MANDATORY
-       (§6.6) and a track that ellipses it would be the honesty invariant paid
-       out for tidiness, so the track is sized to the worst case rather than to
-       the common one. */
-    [state] 112px
-    [name] minmax(0, 1.5fr)
-    [owner] minmax(0, 84px)
-    /* 120px, not 104. F12 of the 2026-09-23 overflow inventory: `scan-terraform`
-       needs 118px and got 104, so the one step id in the fixtures rendered
-       `scan-terraf…` at EVERY width, 1440 included. A track sized under its own
-       longest known value is a truncation with no width band to blame. */
-    [step] minmax(0, 120px)
-    /* #376: the start, with the submit time on a second line under it.
-       13ch is `never started`, the longest thing the cell prints; the
-       `MM-DD HH:MM` form is 11 and `sub MM-DD HH:MM` is the micro line. */
-    [started] minmax(0, 15ch)
-    /* 19ch, NOT 76px (AG-11). At 1440 76px cut every waiting row to
-       "queued 1…", which is the one fact the Waiting tab exists to show.
-       `ch` rather than px because the cell is `tabular-nums`, so a digit IS
-       one `ch`, and the letters of the words are each within a few percent
-       of one.
-       WAS 15ch, sized when every wait read "queued 23h 59m" (14); then 19ch
-       for AG-12's "dispatched 99d 23h" (18). THAT FORM IS GONE: a state word
-       in front of the task's age read as time spent in the state, so
-       `elapsed()` now prints LEASED, DISPATCHED and every task between
-       attempts as the state word alone. The longest form it prints is
-       "waiting 99d 23h", 15 characters, so 19ch now carries four of slack.
-       Whether those four go back to `[name]` is left open, not decided here:
-       it is a width #154 measured, and this change was to the words.
-       `shell.test.tsx` derives the floor from `elapsed()` itself, over every
-       state, started or not. */
-    [age] minmax(0, 19ch)
-    /* #379: the account. 16ch is `not assigned yet`; a swap's
-       `acct-eng-01 → 02 (swapped: unreadable)` ellipses and is whole in the
-       cell's title. */
-    [account] minmax(0, 16ch)
-    [try] 44px
-    [class] minmax(0, 116px)
-    [flags] minmax(0, 0.85fr);
+  /* THE TEMPLATE IS THE COMPACT ROW'S (styles/agents.css, `.row.is-compact`):
+     every row in the list is one since agents.html V1 replaced the ten-column
+     table (#503), so the wide template and its two inspector stages went. */
   /* ROW-GAP `--ctl-s1`, COLUMN-GAP `--ctl-s3` (AG-32). One `gap` of s3 put the
      why line 12px + its own 4px margin under the row it explains and 9px above
      the next one, so at desktop a reason read as the heading of the row BELOW
@@ -1230,102 +1178,6 @@ body {
   /* No background and no border of its own: `.rows` above draws both, once. */
   padding: var(--ctl-s1) var(--ctl-s3);
 }
-/* THE NAME IS THE COLUMN THAT MUST NOT GIVE WAY, AND THE INSPECTOR IS WHAT
-   TAKES THE WIDTH.
-   ---------------------------------------------------------------------------
-   Opening an agent narrows the list from 1165px to about 670px -- no media
-   query fires, because the VIEWPORT did not change. With eight tracks and 536px
-   of them fixed, the two `fr` columns split what is left, and `[name]` resolved
-   to 23px: `claude-code claude-opus-5 a073aff5` clipped to nothing, on the one
-   screen where the row you just opened is the row you are trying to keep your
-   eye on. `.ctl-util` learned this exact lesson and its comment states it:
-   a column that loses 40px still does its job; a NAME that loses 40px stops
-   saying which row it is, and the name is the only field you cannot infer from
-   the others.
-
-   So three columns are DROPPED rather than everything being squeezed -- §6.8:
-   columns are dropped, never relabelled, and never allowed to shrink into
-   illegibility together. Owner, attempts-used and resource class are the three
-   that are all on the detail panel two inches to the right, which is open.
-   State, identity, step, age and the dispatch flag stay. */
-.app.has-inspector .row {
-  grid-template-columns:
-    [state] 112px
-    [name] minmax(0, 1fr)
-    [step] minmax(0, 120px)
-    /* The same 19ch as the full row, and for the same reason (AG-11): the
-       inspector is open on the screen where "queued 1…" was measured. */
-    [age] minmax(0, 19ch);
-  row-gap: var(--ctl-s1);
-}
-/* F3 OF THE 2026-09-23 OVERFLOW INVENTORY: A SECOND STAGE, BECAUSE FOUR TRACKS
-   IS STILL TOO MANY IN A 20px BAND.
-   ---------------------------------------------------------------------------
-   The drawer is a grid COLUMN down to 1100px, so between 1101 and 1115 the
-   list keeps the four-track template above in about 350px of content: 112 +
-   120 + 76 plus three gaps is 344 of it, `[name]` resolves to a handful of
-   pixels, and the measured result was the profile column GONE and six task ids
-   cut mid-character — `460409c`, `92eb480`, `19d91b8`. A truncated id is not
-   an unreadable id, it is a different and equally plausible id, which is the
-   one kind of truncation this console may not ship.
-
-   So the step goes at 1200, by the same rule the stage above uses (§6.8:
-   columns are dropped, never squeezed together into illegibility) and for the
-   same reason — the step id is on the panel that is open two inches to the
-   right. State, identity and age are what a row is matched on. */
-/* AND THE AGE TAKES A SECOND LINE HERE RATHER THAN THE NAME'S WIDTH (AG-11).
-   The first two templates size `[age]` to its longest value, 19ch. This one
-   cannot: in the 1101-1200 band the list is ~350px, and 19ch here is ~70px out
-   of `[name]` -- which is exactly the squeeze the stage exists to prevent, the
-   one that cut task ids mid-character. So the track is sized to the longest
-   DURATION, "23h 59m" (7 characters, plus one of slack), and the cell wraps:
-   `waiting` sits above "13m 18s" instead of "waiting 1…" sitting in one
-   line. The row grows a line only on the rows that are waiting.
-   NOT YET TRUE OF ONE WORD. `waiting` (7) and `leased` (6) fit 8ch;
-   `dispatched` is 10 and overflows it by two -- printed alone now, with no
-   duration after it, but still two over. That word arrived with AG-12
-   after this track was sized for `queued`, and the width to hold it would
-   come out of `[name]` here and in the 390px template below, which were
-   each measured down to the pixel. Which to give up is left open, not
-   decided here. */
-@media (max-width: 1200px) {
-  .app.has-inspector .row {
-    grid-template-columns:
-      [state] 100px
-      [name] minmax(0, 1fr)
-      [age] minmax(0, 8ch);
-  }
-  .app.has-inspector .row .wf { display: none; }
-  .app.has-inspector .row .when { white-space: normal; }
-  /* The Step column goes here too, so the step takes the profile's place (#94). */
-  .app.has-inspector .row .agent .agent-step { display: inline; }
-  .app.has-inspector .row .agent .agent-profile { display: none; }
-}
-/* THE DISPATCH FLAG MOVES TO ITS OWN LINE RATHER THAN BEING CLIPPED, which is
-   the same call the 390px block makes and for the same reason:
-   `integrate/contributor` cut to `integrate/contrib…` loses the half that says
-   which, and this is the row's most consequential fact. Most rows render no
-   flag at all, so it costs a line only where there is something to say. */
-.app.has-inspector .row .badges {
-  grid-column: 1 / -1;
-  justify-content: flex-start;
-  flex-wrap: wrap;
-  overflow: visible;
-}
-.app.has-inspector .row .owner,
-.app.has-inspector .row .try,
-.app.has-inspector .row .class,
-/* The start and the account go with them (#376, #379): both are in the open
-   inspector's header two inches to the right. */
-.app.has-inspector .row .started,
-.app.has-inspector .row .acct,
-/* The model goes for the same reason the three columns do: it is the line
-   under the run id in the panel that is open. What is left in `[name]` is the
-   profile and the id, which is what you match a row against. Truncating BOTH
-   to `claud…` and `claude-…` -- which is what happened when all three stayed --
-   left a row that names nothing. */
-.app.has-inspector .row .agent .model { display: none; }
-
 /* THE ONE BORDER THE ROW DRAWS. LONGHANDS, for the reason `.section + .section`
    gives above: jsdom does not expand a shorthand carrying a custom property, so
    a guard reading `borderTopColor` would pass whether this rule were here or
@@ -1355,12 +1207,6 @@ body {
    a `display: none` in the board's stray phone block -- were a selector pair
    keeping each other alive. */
 .row .when { color: var(--text-faint); font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* `[flags]`. `nowrap`, not `wrap`: a wrapping flag strip is what turned a 30px
-   row into a two-line one and put the dispatch chip on top of the class cell.
-   It truncates like every other cell instead. */
-.row .badges { display: flex; gap: var(--ctl-s2); justify-content: flex-end; flex-wrap: nowrap; min-width: 0; overflow: hidden; }
-.row .badges > * { flex: none; }
-
 /* THE OPEN AGENT'S ROW SAYS SO (AG-17). With the inspector open beside the
    list, no row showed which agent was open -- the one question a two-pane
    layout has to answer at a glance. §1.3's selection treatment, the one the
@@ -1415,30 +1261,6 @@ body {
 .row[aria-current]:not([aria-current='false']):has(.why.is-warn),
 .row[aria-current]:not([aria-current='false']):has(> .ctl-chip[data-hue='bad']) {
   background-position: 2px center;
-}
-
-/* THE RUN LIST'S HEAD ROW (AG-16). `1/3`, `1u` and the elapsed time had no
-   label anywhere on the screen. The head is itself a `.row` whose cells carry
-   the same classes as a data row's, so it sits on the same named-line grid and
-   drops the same columns at the same breakpoints without a rule of its own for
-   any of them -- a head that re-derived the template would drift from it. What
-   is here is only the head's register: the column-head treatment
-   `.ctl-table thead th` uses (mono, micro, faint, on the `--surface-2` step).
-   `.row.is-head` is the class the markup half (Agents.tsx) sets; the second
-   selector is the same row found by what it IS -- the one `.row` in a list
-   that is not a control -- so the treatment does not depend on the two lanes
-   having picked one spelling. The cell rule is (0,3,0) or more on purpose:
-   `.row .owner`, `.row .try` and `.row .class` set a body-size font at
-   (0,2,0) further down the sheet, and would otherwise win on order. */
-.row.is-head,
-.rows > .row:first-child:not(.clickable) {
-  min-height: 0;
-  background: var(--surface-2);
-}
-.row.is-head:not(.clickable) > *,
-.rows > .row:first-child:not(.clickable) > * {
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-faint);
 }
 
 /* The board-level mode switch. Replaces `.dagx-modes`: the classes it
@@ -2948,11 +2770,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   font-size: var(--t-body); font-weight: 600;
   overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto;
 }
-.row .agent .model { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; }
-/* THE STEP IN THE NAME CELL (#94, #109). Drawn only where the Step column is
-   not: at ≤560 (below) and beside an open inspector under 1200px. Wide, the
-   column says it and a second copy here would be the same fact twice. */
-.row .agent .agent-step { display: none; }
 /* `flex: 0 1 auto`, NOT `flex: none`, AND AN ELLIPSIS UNDER IT — the second
    half of F3. With `flex: none` the id refused to shrink, so it pushed past
    `.row .agent`'s own `overflow: hidden` and was cut by the CONTAINER, which
@@ -2972,25 +2789,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   min-width: 3ch;
   overflow: hidden; text-overflow: ellipsis;
 }
-.row .owner, .row .class { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .class .units { color: var(--text-faint); }
-.row .try { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; text-align: right; }
-/* `[step]`. The step id, unboxed -- see `.wf-step` in the run group. */
-.row .wf { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .wf .dash { color: var(--text-faint); }
 .row .when.ticking { color: var(--text-dim); }
-/* #376: the start over its submit time, both tabular, the submit one step
-   quieter. `never started` is a fact, not a gap, so it keeps full ink. */
-.row .started { display: flex; flex-direction: column; min-width: 0; font-variant-numeric: tabular-nums; }
-.row .started > * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .started-sub { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.row .acct { font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .acct.is-none { color: var(--text-faint); }
-/* The STARTED head is a button for its sort; it reads as the head label it
-   replaces, with the pointer the only difference. */
-.row .ag-sort { all: unset; cursor: pointer; }
-.row .ag-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-
 .section.group > h2 { display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
 /* The reason a run of the group's rows shares, said once under the header
    with the number of rows it covers (#100). The same ink and size as the row's
@@ -3020,38 +2819,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
    column in `.row` already ellipses and the name track is `minmax(0, 1fr)`, so
    the row degrades by truncating rather than by overflowing. */
 @media (max-width: 560px) {
-  /* ONE DECLARATION IS REDEFINED (§6.8), and the two columns that never drop
-     are the two that are named here. The row was three grid lines tall at
-     390px -- state/age, then the name, then the step and the flags -- which is
-     83px of glass to carry four facts, and six of those filled the screen. It
-     is one line now, the same shape as at 1440px with six columns removed.
-     Columns are DROPPED, never relabelled into "Label: value": a stacked
-     record is a different and worse thing than a row. */
-  /* `[age]` IS 8ch, NOT `auto` (AG-13). An `auto` track is sized to its own
-     row's content BEFORE the `1fr` name gets anything, so a Waiting row
-     handed "queued 13m 18s" ~108px and left the name 106 -- "brow… 0961e…",
-     profile and id both cut. And because each row is its own grid, the name
-     column moved from row to row. 8ch holds the longest duration ("23h 59m",
-     7 characters, tabular) and the state word wraps above it, so the age
-     costs a line on a waiting row instead of costing the name its width --
-     except `dispatched`, 10 characters, which overflows 8ch by two (see the
-     1101-1200 band above for why that is left open). */
-  .row {
-    grid-template-columns: [state] 112px [name] minmax(0, 1fr) [age] minmax(0, 8ch);
-    row-gap: var(--ctl-s1);
-    column-gap: var(--ctl-s2);
-    /* 12px OF SIDE PADDING BOUGHT BACK FOR THE NAME, MEASURED RATHER THAN
-       GUESSED. At 390px `[name]` resolved to 146px against the 151px that
-       `claude-code` + the id actually need, so every row read `claude-co…`.
-       Four of the five missing pixels are two 4px trims off this padding and
-       the fifth is the agent cell's own gap below; the alternative was to
-       shrink `[state]`, and a state word that ellipses is the one thing the
-       track's own comment says it may never do. The page gutter already
-       supplies the outer margin, so `--ctl-s2` inside the row is separation,
-       not crowding. */
-    padding-left: var(--ctl-s2);
-    padding-right: var(--ctl-s2);
-  }
   .row .agent { gap: var(--ctl-s1); }
   /* THE NAME CELL'S FLOOR IS THE WHOLE ID (AG-13). `shortTaskId` prints at most
      8 characters and the id is mono, so 8ch is exactly it. At desktop the id
@@ -3061,23 +2828,6 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
      and the id keeps every character. */
   .row .agent .id { min-width: 8ch; }
   .row .when { white-space: normal; }
-  /* The id survives and the model goes. On a phone the id is what somebody is
-     matching against the one in their terminal; the model is on the detail. */
-  .row .agent .model { display: none; }
-  .row .owner, .row .try, .row .class, .row .wf, .row .started, .row .acct { display: none; }
-  /* THE STEP TAKES THE PROFILE'S PLACE (#109). With the Step column gone, a
-     workflow's rows all read `claude-code <hex>`; the step is what tells them
-     apart, and the profile is one tap away on the agent. A standalone row
-     has no step and keeps its profile. */
-  .row .agent .agent-step { display: inline; }
-  .row .agent .agent-profile { display: none; }
-  /* THE DISPATCH FLAG IS NOT TRUNCATED, IT IS MOVED. `integrate/contributor`
-     is 21 characters and it is the row's most consequential fact -- this step
-     is going to write to a repository. Ellipsing it to `integrate/contrib…`
-     loses the half that says which. Most rows have no flag at all
-     (`DispatchChip` renders nothing for a plain `collect`), so this costs a
-     second line only on the rows that have something to say. */
-  .row .badges { grid-column: 1 / -1; order: 8; justify-content: flex-start; flex-wrap: wrap; overflow: visible; }
   /* THE CLAMP NEEDS ITS BOX (AG-27). `-webkit-line-clamp` alone does nothing:
      it only applies to a `display: -webkit-box` with a vertical box orient,
      and it truncates only what `overflow: hidden` actually hides. With just
@@ -3871,8 +3621,6 @@ ol.timeline li::before {
    Workflows.tsx) are another lane's, written in parallel, and either name
    lands on the same treatment. Applied when attempt_count > max_attempts --
    `>`, not `>=`: using every allowed attempt is not a fault. */
-.row .try.spent,
-.row .try.is-over,
 .wf-table .spent,
 .wf-table .is-over { color: var(--bad); font-weight: 600; }
 
@@ -7481,31 +7229,6 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    drawer at every width. A path has nowhere to break but anywhere (AG-26). */
 .drawer code { overflow-wrap: anywhere; }
 
-/* THE PANE STRIP, and it is now the inspector's alone.
-   It used to draw the SECTION's tabs as well, above every screen; those moved
-   into the rail (§B3), where they keep a fixed position instead of reflowing
-   with the section. What is left is the two panes of one agent -- Detail and
-   Attempts -- which are views of one object rather than destinations, and a
-   strip is the right shape for that.
-
-   THE STRIP IS `.ctl-seg` NOW, and this rule is only its place in the drawer.
-   It drew its two buttons as 999px pills, a filled and bordered one for the
-   selection -- "N pills" where §6.11 of design-system.md settles on one
-   bordered group with the selection marked by a surface step and weight. The
-   button rules that drew the pills are deleted, not overridden: this rule
-   sits after `.ctl-seg` in the sheet, so at equal specificity any of them would
-   have out-ranked the primitive and drawn the pills again. No `gap`, padding
-   or border here either: the primitive's own are what make it one group.
-   `display: flex` + `fit-content` is the one thing it changes, and only
-   because the strip stands alone on its line in the drawer: the primitive's
-   `inline-flex` would sit on a text baseline there and take a descender's
-   worth of air under it. It still shrinks to its two segments. */
-.ctl-subnav {
-  display: flex;
-  width: fit-content;
-  margin: var(--ctl-s2) 0 var(--ctl-s3);
-}
-
 /* -------------------------------------------------------------------------- */
 /* Dispatch: choosing how work gets merged, and reading back what was chosen    */
 /* -------------------------------------------------------------------------- */
@@ -8686,57 +8409,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   font: 600 var(--t-meta)/var(--lh-flush) var(--mono); font-style: normal;
 }
 
-/* ---- the runner catalogue, as rows ---- */
-/* INVARIANT 10, MADE VISIBLE. A `<select>` hid the one thing that makes
-   caller-named execution safe: what each name actually selects. A row per
-   profile shows its room and whether this tenant holds the key it needs
-   (#114, `RunnerPicker`, drawn by both Submit forms), and a disabled profile
-   shows the platform's own reason instead of vanishing from the list. */
-.sbf-runners { list-style: none; margin: 0 0 var(--ctl-s3); padding: 0; display: grid; gap: 2px; }
-/* INSIDE A WORKFLOW STEP, a ~370px column holding one picker per step: the
-   rows close up so five runners do not make one step a screen tall. */
-.sbf-runners.is-compact { margin: 0; gap: 0; }
-.sbf-runners.is-compact .sbf-runner { padding: var(--ctl-s1) var(--ctl-s2); min-height: 0; }
-/* The radio's margin DECLARED, not the user agent's `ex`-based default: the
-   step card is a surface, and the inset from its edge to the first text has to
-   be a length the spacing sweep can add up. The column gap spaces it. */
-.sbf-runners.is-compact .sbf-runner > input { margin: 0; }
-/* A GRID, so the radio occupies its own column and the two text lines stack
-   beside it rather than under it. */
-.sbf-runner {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: baseline;
-  column-gap: var(--ctl-s2); row-gap: 1px;
-  padding: var(--ctl-s2) var(--ctl-s3);
-  background: transparent;
-  /* DECLARED AND TRANSPARENT, the pattern §13.5 names: a rule that appeared
-     only on selection would shift every row sideways by 2px at the moment the
-     list most needs to hold still. */
-  border-left: 2px solid transparent;
-  border-radius: var(--ctl-radius-sm);
-  min-height: var(--row-h);
-  cursor: pointer;
-}
-.sbf-runner > input { grid-row: 1; grid-column: 1; align-self: center; }
-.sbf-runner > span { grid-column: 2; }
-.sbf-runner:hover { background: var(--surface-2); }
-.sbf-runner.is-on { background: var(--surface-2); border-left-color: var(--text); }
-/* The reason a profile is refused is the most useful line in the row, so the
-   row is NOT dimmed away — the name and the facts are, and the reason is not. */
-.sbf-runner.is-off { cursor: not-allowed; }
-.sbf-runner.is-off:hover { background: transparent; }
-.sbf-runner.is-off .sbf-runner-name,
-.sbf-runner.is-off .sbf-runner-facts { color: var(--text-faint); }
-.sbf-runner-name { font: 500 var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
-.sbf-runner.is-on .sbf-runner-name { font-weight: 600; }
-.sbf-runner-facts { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
-/* A MISSING KEY IS THE ONE FACT IN THE ROW SOMEBODY HAS TO ACT ON: a task
-   under it is parked until the key is registered. Warn ink, the refusal
-   reason's own, and the words carry it without the hue. */
-.sbf-runner-miss { color: var(--warn-ink); }
-
 .sbf-room {
   display: grid; gap: var(--ctl-s2); max-width: var(--measure); min-width: 0;
   background: var(--surface-2); border-radius: var(--ctl-radius-sm);
@@ -8836,17 +8508,14 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-send .ctl-fact { justify-content: space-between; gap: var(--ctl-s3); }
 .sbf-send .ctl-fact > b { flex: none; }
 .sbf-send .warn-text { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-/* THE ONE FILLED CONTROL IN THE CONSOLE, and it is ink rather than a hue: the
-   references put their primary action in the text colour, not in a sixth
-   saturated hue (§B4.2). It is the only button on either screen that commits
-   anything. */
+/* THE ONE CONTROL ON EITHER FORM THAT COMMITS ANYTHING. Its fill is the
+   accent, and pale when disabled, from styles/submit.css (`.sb-go`,
+   submit.html F1/G1); this keeps its size. */
 .sbf-go {
   width: 100%; min-height: 34px;
   justify-content: center;
-  background: var(--text); border-color: var(--text); color: var(--bg);
   font-weight: 600;
 }
-.sbf-go:not(:disabled):hover { background: var(--text-dim); border-color: var(--text-dim); color: var(--bg); }
 
 /* ==========================================================================
    The workflow plan — stages, not a list
@@ -12087,18 +11756,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
 }
 
-/* --- the Submit chooser (/submit) ---------------------------------------- */
-.sk-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 900px; }
-.sk-chooser h1 { margin: 0; font-size: var(--t-title); }
-.sk-choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 12px; }
-.sk-choice { display: flex; flex-direction: column; gap: 8px; text-align: left; padding: 20px; border: 1px solid var(--line-soft); border-radius: 10px; background: var(--surface); color: var(--text); cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
-.sk-choice:hover { border-color: var(--sk-ac); }
-.sk-choice b { font-size: var(--t-lead); }
-.sk-choice span { color: var(--text-dim); }
-.sk-choice em { font: normal var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); }
-.sk-recent-empty { border: 1px dashed var(--line-soft); border-radius: 10px; padding: 14px 16px; }
-.sk-recent-empty p { margin: 4px 0 0; color: var(--text-dim); font-size: var(--t-micro); }
-
 /* --- the state marks: one mark and one hue per state (marks.tsx) -------- */
 .sk-st { display: inline-flex; align-items: center; gap: 7px; }
 .sk-st svg { width: 12px; height: 12px; flex: none; }
@@ -12155,16 +11812,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ctl-chip[data-hue='bad'] > i { color: var(--s-bad); }
 .ctl-chip[data-hue='neu'] > i { color: var(--s-neu); }
 
-/* --- Agents V1: the 64px strip (the list collapsed by « or [) ----------- */
-@media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row > :not(.ctl-chip) { display: none; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row { grid-template-columns: 1fr; justify-items: center; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-chip { font-size: 0; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work > :not(.rows):not(.ctl-head) { display: none; }
-}
-.ctl-list-snap { display: inline-flex; gap: 6px; align-items: center; }
-.ctl-list-snap kbd { font: var(--t-micro)/var(--lh-micro) var(--mono); border: 1px solid var(--line-soft); border-radius: 2px; padding: 0 4px; color: var(--text-dim); }
-
 /* --- Overview O1: the lifecycle band, the pair, the task lists ------------ */
 .ov-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
 .ov-band-cell { background: var(--surface-2); border-radius: 10px; padding: 8px 10px; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
@@ -12184,11 +11831,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ov-list > li { border-bottom: 1px solid var(--line-soft); }
 .ov-list-row { display: grid; grid-template-columns: auto auto minmax(0, 1fr); gap: 8px; align-items: center; padding: 6px 0; color: inherit; text-decoration: none; }
 .ov-list-why { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--t-meta); }
-
-/* --- Submit a workflow: If a step fails, Priority (submit.html) ---------- */
-.sbf-wf-opts { display: flex; flex-direction: column; gap: 4px; border: 0; padding: 0; margin: 0 0 var(--ctl-gutter); font-size: var(--t-meta); }
-.sbf-wf-opts legend { padding: 0; margin-bottom: 4px; color: var(--text-dim); }
-.sbf-wf-opts input[type='number'] { width: 7em; font: var(--t-body)/var(--lh-body) var(--mono); padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); }
 
 /* ======================================================================== */
 /* --- Workflows V2 (workflows.html): list, one workflow, switcher -------- */
@@ -12491,98 +12133,8 @@ table.accounts tr.is-chosen > th { box-shadow: inset 2px 0 0 var(--text); }
 /* (Submit rules go above this line.) */
 
 
-/* ======================================================================== */
-/* --- Agents V1 remainder (agents.html): compact rows, hover cards, phone - */
-/* ======================================================================== */
-/* THE COMPACT ROW: two lines beside an open agent (Agents.tsx `CompactRow`).
-   Line one is the mark, the name and the elapsed time; line two the profile,
-   owner and try; the reason a row waits or stopped follows, never dropped.
-   The state's word stays in the row's accessible name; the mark is what the
-   drawing shows, as the strip does. */
-.app.has-inspector .row.is-compact {
-  grid-template-columns: [state] auto [name] minmax(0, 1fr) [age] auto;
-  column-gap: var(--ctl-s2);
-  row-gap: 2px;
-  align-items: baseline;
-  padding-top: 6px;
-  padding-bottom: 6px;
-}
-.app.has-inspector .row.is-compact > .ctl-chip { font-size: 0; }
-.app.has-inspector .row.is-compact > .cr-name { grid-column: name; }
-.app.has-inspector .row.is-compact > .cr-name b {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-}
-.app.has-inspector .row.is-compact > .when { grid-column: age; white-space: nowrap; }
-.app.has-inspector .row.is-compact > .cr-sub,
-.app.has-inspector .row.is-compact > .why { grid-column: name / -1; }
-.cr-sub {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: var(--t-micro);
-  line-height: var(--lh-micro);
-  color: var(--text-dim);
-}
-.cr-sub .id { font-family: var(--mono); }
-.cr-try.is-over { color: var(--bad); font-weight: 600; }
-
-/* THE STRIP'S HOVER CARD: the agent a bare mark stands for, beside it. Fixed,
-   in a portal on <body>, because the list column clips; never a pointer
-   target, so it cannot steal the hover from the row that drew it. */
-.ag-hovcard {
-  position: fixed;
-  z-index: 40;
-  width: 240px;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 11px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--line-soft);
-  border-radius: 10px;
-  box-shadow: var(--ctl-shadow-pop);
-  pointer-events: none;
-  font-size: var(--t-micro);
-  line-height: var(--lh-micro);
-}
-.ag-hovcard > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
-.ag-hovcard > small { color: var(--text-dim); }
-.ag-hovcard-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); }
-.ag-hovcard-when { font-family: var(--mono); color: var(--text-dim); }
-.ag-hovcard-hint { color: var(--text-faint); }
-
-/* THE AGENT PAGE'S BACK LINK (App.tsx `AgentDrawer`). Wherever the agent
-   covers the list -- below 1100px -- it is the way back; beside the list
-   there is nothing to go back to. */
-.ctl-agent-back {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 0;
-  border: 0;
-  background: none;
-  color: var(--info);
-  cursor: pointer;
-  font-size: var(--t-body);
-  line-height: var(--lh-body);
-}
-.ctl-agent-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-@media (min-width: 1100px) {
-  .ctl-agent-back { display: none; }
-}
-/* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
-   agent open the list is not drawn behind it, and the back link replaces the
-   close cross. */
-@media (max-width: 560px) {
-  .app.has-inspector > .work { display: none; }
-  .app.has-inspector > .ctl-drawer > .drawer-close { display: none; }
-}
-
+/* AGENTS: the list, the split detail and the log dock are styles/agents.css
+   (lane U1, 2026-10-02), imported by Agents.tsx and AgentSplit.tsx. */
 /* (Agents rules go above this line.) */
 
 /* PHONE ROWS AND TABLES KEEP WHAT TELLS ROWS APART (#109).

@@ -6,18 +6,14 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
-  type PointerEvent as ReactPointerEvent,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, backLabel, parseAgentList, type AgentList } from './agentlist'
+import { agentListPath, parseAgentList, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
-import { AgentDetailScreen } from './AgentDetail'
 import { AgentsScreen } from './Agents'
-import { ArtifactsScreen } from './Artifacts'
-import { CheckpointsPane } from './CheckpointsPane'
-import { AttemptTimelineScreen } from './AttemptTimeline'
+import { AgentSplit } from './AgentSplit'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
@@ -29,11 +25,10 @@ import {
   type ProbeRecord,
   type ScreenReads,
 } from './fetch'
-import { isOverlay, trapTab } from './focus'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
-import { Icon, SkyShell, readPref, writePref, type SpineSection } from './Spine'
+import { Icon, SkyShell, type SpineSection } from './Spine'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -43,6 +38,7 @@ import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
+import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -1112,12 +1108,13 @@ export function App() {
             </main>
 
             {at.taskId !== null && (
-              <AgentDrawer
+              <AgentSplit
                 taskId={at.taskId}
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
                 closeTo={listAddress}
                 go={go}
+                base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}
           </div>
@@ -1135,12 +1132,14 @@ function here(): string {
   return window.location.pathname + window.location.search + window.location.hash
 }
 
-/** The spine section a route belongs to. Submit belongs to none of them. */
+/** The spine section a route belongs to. Submit lights Work, as its two
+ *  forms do (submit.html M2: every frame lights Work). */
 function spineOf(sectionId: string): SpineSection {
   switch (sectionId) {
     case 'overview':
       return 'overview'
     case WORK:
+    case SUBMIT:
       return 'work'
     case CAPACITY:
       return 'capacity'
@@ -1153,42 +1152,6 @@ function spineOf(sectionId: string): SpineSection {
     default:
       return null
   }
-}
-
-/**
- * THE SUBMIT CHOOSER (/submit; submit.html, the owner's pick). Two large
- * choices, opened by the spine's Submit button and by N. Recent submissions
- * are NOT listed: no route serves "what did I submit", so the empty state
- * says so rather than inventing a list from the task feed.
- */
-function SubmitChooser({ go }: { go: (to: string) => void }) {
-  return (
-    <section className="sk-chooser" aria-labelledby="submit-h">
-      <h1 id="submit-h">Submit</h1>
-      <div className="sk-choices">
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new`)}>
-          <b>A task</b>
-          <span>
-            One agent, one runner profile, one prompt. It is created READY or PARKED and holds no capacity until it
-            is leased.
-          </span>
-          <em>/submit/task</em>
-        </button>
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new-workflow`)}>
-          <b>A workflow</b>
-          <span>Stages of steps, top to bottom, each step an agent; a step starts when the steps it names have finished.</span>
-          <em>/submit/workflow</em>
-        </button>
-      </div>
-      <div className="sk-recent-empty">
-        <b>Recent submissions</b>
-        <p>
-          Not listed. No route serves what you submitted, so this page does not guess it from the task feed; the
-          Agents list&rsquo;s Waiting and Recent tabs show every task in your tenant.
-        </p>
-      </div>
-    </section>
-  )
 }
 
 /**
@@ -1265,8 +1228,12 @@ function Head({
   const claimed = usePageAgeClaimed()
 
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
-  const home = section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
+  // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
+  // of its own, not API reads (#503), and the two forms lead back to it.
+  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')
+  const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+  const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
 
   return (
@@ -1364,8 +1331,9 @@ export function crumbsOf({
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help and API reads draw from nothing they fetch, so there is no age.
-  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+  // Help, API reads and the Submit chooser draw from nothing they fetch, so
+  // there is no age -- and no "reading…" that never resolves (#503).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -1625,350 +1593,6 @@ function SectionBody({
         </div>
       )
   }
-}
-
-/**
- * One agent, in two panes.
- *
- * WHY THE TAB STRIP IS HERE. `AttemptTimelineScreen` is a finished screen —
- * every attempt with its generation, backend, exit code, peak RSS, checkpoint
- * count and the events grouped under the attempt that wrote them — that no
- * route has ever pointed at. It is the only place per-attempt history is
- * legible, so it needed a way in, and this is the one that does not edit
- * AgentDetail.tsx.
- *
- * `AgentDetailScreen` draws its own `.drawer` and its own close button. Both
- * are flattened by two rules scoped to `.ctl-drawer` in styles.css rather than
- * by changing that file. If it ever stops drawing its own drawer, those rules
- * become no-ops rather than breakage.
- *
- * IT IS A GRID COLUMN, NOT AN OVERLAY, WHEREVER TWO PANES FIT (§B3). The
- * defect it fixes is "reading one agent takes the others off the screen": the
- * drawer was `position: fixed` at every width, so on a 1600px display it drew
- * a 560px panel over a list that had 1000px of room beside it. At 1600px the
- * work area now reflows to 1600 - 200 - 480 - gutters and the list stays
- * legible. Below 1100px total width two panes genuinely do not fit and it
- * reverts to the overlay, `role="dialog"` and all -- which is why that role is
- * on the element unconditionally rather than switched with the layout.
- *
- * THE WIDTH IS THE VIEWER'S, 400-720px, remembered per viewer through
- * `panes.ts` -- whose reads and writes are inside `try/catch`, because
- * `localStorage` THROWS in a private window and losing the shell to a
- * preference is not a trade anyone would make. It is published as a custom
- * property on the documentElement rather than as an inline width, because the
- * element that has to react to it is `.app`'s grid template, which is this
- * element's parent.
- */
-/** The three stops the agent list's divider snaps to (agents.html V1). */
-type ListSnap = 'strip' | 'list' | 'half'
-const SNAPS: readonly ListSnap[] = ['strip', 'list', 'half']
-const SNAP_WIDTH: Readonly<Record<ListSnap, string>> = { strip: '64px', list: '380px', half: '50%' }
-const SNAP_TEXT: Readonly<Record<ListSnap, string>> = {
-  strip: 'list folded to a 64px strip',
-  list: 'compact list, 380px',
-  half: 'list at half the width',
-}
-const LIST_SNAP_KEY = 'swarm.agents.list'
-
-function readSnap(): ListSnap {
-  const v = readPref(LIST_SNAP_KEY)
-  return v === 'strip' || v === 'half' ? v : 'list'
-}
-
-/** The stop nearest a pointer `x` pixels into a work area `w` pixels wide. */
-export function nearestSnap(x: number, w: number): ListSnap {
-  const stops: [ListSnap, number][] = [
-    ['strip', 64],
-    ['list', 380],
-    ['half', w / 2],
-  ]
-  return stops.reduce((best, s) => (Math.abs(s[1] - x) < Math.abs(best[1] - x) ? s : best))[0]
-}
-
-function AgentDrawer({
-  taskId,
-  pane,
-  artifact,
-  closeTo,
-  go,
-}: {
-  taskId: string
-  pane: TaskPane
-  /** The output the address names in the Artifacts pane, or null. */
-  artifact: string | null
-  /**
-   * The list address this drawer was opened from (OV-10), so closing it
-   * restores the address the list behind it is showing -- not bare
-   * `work/running`, which would name a different tab than the one on screen.
-   */
-  closeTo: string
-  go: (to: string) => void
-}) {
-  // `WORK`, NOT THE LITERAL `agents`. These two were the last places in the app
-  // still MINTING the old spelling: `openAgent` twenty lines up already builds
-  // `${WORK}/task/...`, and `nav.links.test.tsx` fails the build on an internal
-  // href that uses an alias -- but these are `go()` calls, so it could not see
-  // them. Every pane switch and every close wrote `#agents/...`, which resolved
-  // through SECTION_ALIASES and was then rewritten in place by the canonicalise
-  // effect, so nothing was visibly broken and nothing was going to make anyone
-  // update it either.
-  const base = `${WORK}/task/${encodeURIComponent(taskId)}`
-  const close = () => go(closeTo)
-  // Opening an output writes its name into the address; closing it takes it out.
-  const openArtifact = useCallback(
-    (name: string | null) => go(name === null ? `${base}/artifacts` : `${base}/artifacts/${encodeURIComponent(name)}`),
-    [base, go],
-  )
-  // AGENTS V1 (agents.html, decided 2026-10-01): the divider snaps the LIST
-  // to 64px (a strip of marks), 380px (the compact list) or half the width,
-  // remembered per browser; `«` and `[` fold the list to the strip and back.
-  const [snap, setSnap] = useState<ListSnap>(readSnap)
-  const dragging = useRef(false)
-  const panel = useRef<HTMLDivElement>(null)
-  /** The element that was focused when this opened. Where Escape puts you back. */
-  const opener = useRef<Element | null>(null)
-  /** What held focus when this first rendered, and which agent's row it was in. */
-  const born = useRef<{ el: Element | null; rowId: string | null } | null>(null)
-  if (born.current === null) {
-    const a = typeof document === 'undefined' ? null : document.activeElement
-    born.current = {
-      el: a,
-      rowId: a instanceof HTMLElement ? (a.closest('[data-task-id]')?.getAttribute('data-task-id') ?? null) : null,
-    }
-  }
-
-  useEffect(() => {
-    const root = document.documentElement
-    root.style.setProperty('--list-w', SNAP_WIDTH[snap])
-    root.dataset.agentList = snap
-    return () => {
-      root.style.removeProperty('--list-w')
-      delete root.dataset.agentList
-    }
-  }, [snap])
-
-  const choose = useCallback((next: ListSnap) => {
-    setSnap(next)
-    writePref(LIST_SNAP_KEY, next)
-  }, [])
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key !== '[' || e.metaKey || e.ctrlKey || e.altKey) return
-      const el = e.target as HTMLElement | null
-      if (el !== null && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return
-      choose(snap === 'strip' ? 'list' : 'strip')
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [snap, choose])
-
-  /*
-   * FOCUS, ON THE WAY IN AND ON THE WAY OUT.
-   *
-   * WHAT WAS WRONG. This panel carried `role="dialog"` and no focus handling of
-   * any kind. Opening it from the keyboard left focus on the row behind it, so
-   * the next Tab walked the list the panel was covering; clicking the ✕
-   * unmounted the element that held focus, which puts `document.activeElement`
-   * back on `<body>` -- a reader who had tabbed forty rows down was returned to
-   * the top of the document with nothing said. That is the single worst
-   * keyboard defect on these screens, because the agent list is the screen
-   * people arrive on and the drawer is how they read one.
-   *
-   * THE ROW IS STILL THERE TO GO BACK TO, which is what makes the restore
-   * honest rather than a guess. The drawer is a SIBLING of `<main>` (see the
-   * shell above) and the route that opens it keeps `tab: 'running'`, so the
-   * list is never unmounted. The row NODE is not always the same one, though:
-   * the list draws the compact row while an agent is open, so the clicked
-   * node is replaced on close and the row is found again by its task id.
-   *
-   * WHY THE OPENER IS CAPTURED HERE AND NOT PASSED IN. The drawer is a ROUTE --
-   * a deep link, the breadcrumb, a workflow node and a row click all open it --
-   * so there is no single caller who could hand over "the thing you came from".
-   * `document.activeElement` at mount is the only answer that is right for all
-   * of them, and when it is `<body>` (a pasted link, a page load) the restore
-   * correctly does nothing.
-   *
-   * StrictMode double-invokes this in development: mount, cleanup, mount. The
-   * cleanup restores focus to the row, so the second mount captures the row
-   * again and the net effect is the same as a single pass.
-   */
-  useEffect(() => {
-    const el = panel.current
-    // THE OPENER IS READ AT FIRST RENDER (above), not here: the same commit
-    // that mounts the drawer swaps the clicked row for the compact one, and by
-    // the time an effect runs the focused node is detached and the active
-    // element is <body>. The row is remembered by its agent's id and found
-    // again on close, where the full row has replaced the compact one.
-    const { el: came, rowId } = born.current ?? { el: null, rowId: null }
-    opener.current = came
-    // FOCUS MOVES IN ONLY WHEN THE PANEL COVERS THE LIST. Above 1100px this is
-    // a grid column beside the rows, and pulling focus off the row into a panel
-    // that did not obscure anything would be the mirror of the bug above.
-    if (el !== null && isOverlay(el)) el.focus()
-    return () => {
-      const back = opener.current
-      opener.current = null
-      if (back instanceof HTMLElement && back.isConnected && back !== document.body) {
-        back.focus()
-        return
-      }
-      if (rowId !== null) {
-        const again = [...document.querySelectorAll<HTMLElement>('.row.clickable[data-task-id]')].find(
-          (r) => r.getAttribute('data-task-id') === rowId,
-        )
-        again?.focus()
-      }
-    }
-    // Once per open. `taskId` changing swaps the CONTENTS of an open drawer and
-    // must not re-capture an opener that is now inside the drawer itself.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
-  const onMove = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragging.current) return
-    // The list's width is the distance from the work area's left edge to the
-    // pointer, snapped to the nearest stop.
-    const app = panel.current?.closest('.app')?.getBoundingClientRect()
-    if (app === undefined) return
-    setSnap(nearestSnap(e.clientX - app.left, app.width))
-  }
-  const endDrag = () => {
-    if (!dragging.current) return
-    dragging.current = false
-    writePref(LIST_SNAP_KEY, snap)
-  }
-
-  return (
-    <div
-      className="drawer ctl-drawer"
-      role="dialog"
-      aria-label={`Agent ${taskId}`}
-      ref={panel}
-      // -1, so the panel is a legal destination for `.focus()` when it opens
-      // over the list and is NOT a stop Tab lands on afterwards.
-      tabIndex={-1}
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          // An open help card inside the drawer stops Escape before it reaches
-          // here (see `HelpCard.tsx`), so the innermost open thing closes.
-          e.stopPropagation()
-          close()
-          return
-        }
-        // Only while it is an overlay. `trapTab` reads the computed position
-        // rather than a breakpoint repeated here; see `isOverlay`.
-        if (e.key === 'Tab' && panel.current !== null && isOverlay(panel.current)) {
-          trapTab(e, panel.current)
-        }
-      }}
-    >
-      <div
-        className="ctl-inspector-grip"
-        role="separator"
-        aria-orientation="vertical"
-        aria-label="Resize the agent list"
-        /*
-         * A CONTROL THE MOUSE COULD REACH AND THE KEYBOARD COULD NOT. This was
-         * four pointer handlers on a `<div>`: no `tabindex`, no key handling,
-         * so the inspector's width was adjustable only by dragging. The
-         * WAI-ARIA window-splitter pattern is a focusable separator that moves
-         * on the arrow keys and reports its position, which is what these
-         * three `aria-value*` attributes are for -- a separator that is a tab
-         * stop and does NOT report its value announces as an unlabelled
-         * landmark.
-         *
-         * LEFT WIDENS, because the inspector is anchored to the right edge:
-         * the handle moving left is the panel getting bigger, which is what
-         * the pointer drag already does.
-         */
-        tabIndex={0}
-        aria-valuenow={SNAPS.indexOf(snap)}
-        aria-valuemin={0}
-        aria-valuemax={SNAPS.length - 1}
-        aria-valuetext={SNAP_TEXT[snap]}
-        onKeyDown={(e) => {
-          const i = SNAPS.indexOf(snap)
-          const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
-          if (step === 0) return
-          e.preventDefault()
-          choose(SNAPS[Math.max(0, Math.min(SNAPS.length - 1, i + step))]!)
-        }}
-        onPointerDown={(e) => {
-          dragging.current = true
-          e.currentTarget.setPointerCapture(e.pointerId)
-        }}
-        onPointerMove={onMove}
-        onPointerUp={endDrag}
-        onPointerCancel={endDrag}
-      />
-      {/* THE WAY BACK TO THE LIST (agents.html V1, decided 2026-10-01): on a
-          phone the list and the agent are two pages, and this is the agent
-          page's back link. Shown wherever the agent covers the list (below
-          1100px); beside the list there is nothing to go back to. */}
-      <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
-        ‹ {backLabel(closeTo)}
-      </button>
-      <button className="drawer-close" onClick={close} aria-label="Close">
-        ✕
-      </button>
-      <button
-        type="button"
-        className="ctl-list-snap btn ghost"
-        aria-pressed={snap === 'strip'}
-        title="Fold the list to a strip, or open it again ([)"
-        onClick={() => choose(snap === 'strip' ? 'list' : 'strip')}
-      >
-        {snap === 'strip' ? '»' : '«'} <kbd>[</kbd>
-      </button>
-      {/* THE ONE SEGMENTED CONTROL, NOT TWO PILLS. `.ctl-subnav` drew the
-          panes as 999px pills with a filled, bordered selection -- the shape
-          design-system.md §6.11 retired in favour of `.ctl-seg` (one bordered
-          group, selection by a surface step and weight). `ctl-subnav` stays
-          only for where the strip sits in the drawer.
-
-          THREE PANES, AND THE FIRST IS `Details` (#184, the owner's decision
-          of 2026-09-25): the word was `Detail`, singular, for a pane of
-          nothing but details. `Artifacts` is what went in and what came out.
-          The route id stays `detail` -- it is an address, and renaming it
-          would move every saved link for no reader's benefit. */}
-      <div className="ctl-seg ctl-subnav" role="tablist" aria-label="Agent panes">
-        <button role="tab" aria-selected={pane === 'detail'} onClick={() => go(base)}>
-          Details
-        </button>
-        <button
-          role="tab"
-          aria-selected={pane === 'attempts'}
-          onClick={() => go(`${base}/attempts`)}
-        >
-          Attempts
-        </button>
-        <button
-          role="tab"
-          aria-selected={pane === 'artifacts'}
-          onClick={() => go(`${base}/artifacts`)}
-        >
-          Artifacts
-        </button>
-        <button
-          role="tab"
-          aria-selected={pane === 'checkpoints'}
-          onClick={() => go(`${base}/checkpoints`)}
-        >
-          Checkpoints
-        </button>
-      </div>
-      {pane === 'detail' ? (
-        <AgentDetailScreen taskId={taskId} onClose={close} />
-      ) : pane === 'attempts' ? (
-        <AttemptTimelineScreen taskId={taskId} />
-      ) : pane === 'checkpoints' ? (
-        <CheckpointsPane taskId={taskId} />
-      ) : (
-        <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
-      )}
-    </div>
-  )
 }
 
 /**

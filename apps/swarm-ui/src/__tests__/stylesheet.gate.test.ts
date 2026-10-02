@@ -23,6 +23,7 @@
 // being read quietly from disk.
 
 import STYLES from '../styles.css?raw'
+import AGENTS_CSS from '../styles/agents.css?raw'
 import { describe, expect, it } from 'vitest'
 
 import { cascade, conditionHolds, gate, specificity } from './cssgate'
@@ -221,7 +222,12 @@ describe('the cascade resolver, against fixtures', () => {
 // ---------------------------------------------------------------------------
 
 describe('the shipped stylesheets', () => {
-  const sheets: ReadonlyArray<readonly [string, () => string]> = [['styles.css', () => STYLES]]
+  // Each section's own sheet is gated as styles.css is (lane U1: the Agents
+  // list, the split and the log dock live in styles/agents.css).
+  const sheets: ReadonlyArray<readonly [string, () => string]> = [
+    ['styles.css', () => STYLES],
+    ['styles/agents.css', () => AGENTS_CSS],
+  ]
 
   for (const [label, read] of sheets) {
     describe(label, () => {

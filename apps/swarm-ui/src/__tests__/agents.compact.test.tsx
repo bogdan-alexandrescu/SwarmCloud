@@ -12,6 +12,8 @@
 // card without the strip check, or only on mouse; return 'Agents' from
 // `backLabel` whatever the address.
 
+import AGENTS_CSS from '../styles/agents.css?raw'
+import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
@@ -27,6 +29,8 @@ vi.mock('../api', async (importOriginal) => {
 
 import { AgentsScreen } from '../Agents'
 import { backLabel } from '../agentlist'
+import { resetListSnap } from '../listSnap'
+import { cascade } from './cssgate'
 
 const NOW = '2026-09-23T12:00:00.000Z'
 const THEN = '2026-09-23T10:00:00.000Z'
@@ -83,7 +87,7 @@ async function land(tasks: Task[], taskId: string | null): Promise<HTMLElement> 
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
-  await waitFor(() => expect(container.querySelector('.ctl-seg [role="tab"]')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
   return container as HTMLElement
 }
 
@@ -97,6 +101,8 @@ function rowOf(container: HTMLElement, name: string): HTMLElement {
 
 afterEach(() => {
   delete document.documentElement.dataset.agentList
+  localStorage.removeItem('swarm.agents.list')
+  resetListSnap()
 })
 
 describe('beside an open agent, a row is two lines as drawn', () => {
@@ -138,7 +144,7 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect((why!.textContent ?? '').trim()).not.toBe('')
   })
 
-  it('drops the column heads and the wide row, and keeps them with no agent open', async () => {
+  it('draws no column heads and no wide row beside an open agent', async () => {
     const open = await land([STEP, LONE], LONE.id)
     expect(open.querySelector('.row.is-head')).toBeNull()
     expect(open.querySelectorAll('.row.is-compact')).toHaveLength(2)
@@ -149,10 +155,29 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(current[0]!.querySelector('.id')?.getAttribute('title')).toBe(LONE.id)
   })
 
-  it('draws the wide list, heads and all, when no agent is open', async () => {
+  // #503: "with no agent open, the list is a full-width ten-column table";
+  // V1 is the compact list at every width.
+  it('draws the same compact list when no agent is open', async () => {
     const c = await land([STEP, LONE], null)
-    expect(c.querySelector('.row.is-head')).not.toBeNull()
-    expect(c.querySelector('.row.is-compact')).toBeNull()
+    expect(c.querySelector('.row.is-head')).toBeNull()
+    expect(c.querySelectorAll('.row.is-compact')).toHaveLength(2)
+    expect(c.querySelector('.row.clickable:not(.is-compact)')).toBeNull()
+    expect(c.querySelector('.row[aria-current]')).toBeNull()
+  })
+
+  it('puts the collapse toggle in the list header, only beside an open agent', async () => {
+    const open = await land([STEP, LONE], LONE.id)
+    const toggle = open.querySelector<HTMLButtonElement>('.ag-list-head .ag-collapse')
+    expect(toggle, 'no « in the list header').not.toBeNull()
+    expect(toggle!.getAttribute('aria-pressed')).toBe('false')
+    expect(toggle!.textContent).toContain('«')
+    fireEvent.click(toggle!)
+    expect(toggle!.getAttribute('aria-pressed')).toBe('true')
+    expect(toggle!.textContent).toContain('»')
+    fireEvent.click(toggle!)
+    expect(toggle!.textContent).toContain('«')
+    const closed = await land([STEP, LONE], null)
+    expect(closed.querySelector('.ag-collapse')).toBeNull()
   })
 })
 
@@ -220,5 +245,51 @@ describe('the agent page leads back to the tab it came from', () => {
   it('says Agents when the address names no tab', () => {
     expect(backLabel('work/running')).toBe('Agents')
     expect(backLabel('work/running/livex')).toBe('Agents')
+  })
+})
+
+// #503 AT 390x844: the section's pages sat as a boxed segmented control inside
+// the page, with no sticky strip under the phone header. They are a strip of
+// underlined tabs now, and on a phone it sticks. Asked of the cascade in the
+// order the app loads the sheets (main.tsx imports App, and with it
+// styles/agents.css, before styles.css). MUTATION: drop the phone rule.
+describe('at 390 the section’s pages are a sticky strip', () => {
+  it('draws the tabs as a strip, sticky on a phone and in the flow on a desktop', async () => {
+    const c = await land([STEP, LONE], null)
+    const strip = c.querySelector<HTMLElement>('.ag-list-tabs')!
+    expect(strip.getAttribute('role')).toBe('tablist')
+    expect(strip.closest('.ctl-seg'), 'the tabs are a boxed segmented control again').toBeNull()
+    const sheets = AGENTS_CSS + '\n' + STYLES
+    expect(cascade(sheets, strip, 'position', { width: 390 }).winner?.value).toBe('sticky')
+    expect(cascade(sheets, strip, 'position', { width: 1440 }).winner?.value ?? 'static').toBe('static')
+  })
+})
+
+// The phone header is sticky at top 0 above the strip, so a strip stuck at 0
+// is hidden behind it once the page scrolls. Asked of both header heights.
+// MUTATION: set the phone rule's `top` back to 0.
+describe('at 390 the strip sticks below the phone header, not behind it', () => {
+  it.each([
+    ['at the top of the page', ''],
+    ['once the page is scrolled', ' is-scrolled'],
+  ])('clears the header %s', (_label, cls) => {
+    const host = document.createElement('div')
+    host.innerHTML = `<div class="sk-app${cls}"><header class="sk-pbar"></header><div role="tablist" class="ag-list-tabs"></div></div>`
+    document.body.appendChild(host)
+    try {
+      const sheets = AGENTS_CSS + '\n' + STYLES
+      const bar = host.querySelector('.sk-pbar')!
+      const strip = host.querySelector('.ag-list-tabs')!
+      const px = (v: string | undefined) => {
+        expect(v, 'no value in the cascade').toMatch(/^\d+px$/)
+        return parseInt(v!, 10)
+      }
+      expect(cascade(sheets, bar, 'position', { width: 390 }).winner?.value).toBe('sticky')
+      const barHeight = px(cascade(sheets, bar, 'height', { width: 390 }).winner?.value)
+      const stripTop = px(cascade(sheets, strip, 'top', { width: 390 }).winner?.value)
+      expect(stripTop, 'the strip sticks behind the phone header').toBeGreaterThanOrEqual(barHeight)
+    } finally {
+      host.remove()
+    }
   })
 })
