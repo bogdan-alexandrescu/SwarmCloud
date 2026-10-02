@@ -214,7 +214,7 @@ describe('a disabled runner profile is not advertised with headroom (CP-3)', () 
     const start = row.querySelector('td[data-label="Can start"]')!
     expect(start.textContent).toContain('disabled')
     expect(start.textContent, 'a disabled profile still shows a headroom figure').not.toMatch(/\d/)
-    expect(row.querySelector('td[data-label="If lifted"]')!.textContent, 'a disabled profile is priced').toBe('')
+    expect(row.querySelector('td[data-label="Runs out first"]')!.textContent, 'a disabled profile is priced').toBe('')
     // The reason is text a reader can see, once the row is opened.
     fireEvent.click(toggle)
     expect(document.querySelector('.cap-mx-exp')!.textContent).toContain(REASON)

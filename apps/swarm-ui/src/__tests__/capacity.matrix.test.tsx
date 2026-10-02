@@ -114,7 +114,9 @@ describe('the profile matrix outlines exactly the binding cell', () => {
     expect(cell.querySelector('small')?.textContent).toBe('9/10')
   })
 
-  it('opens a row into one sentence naming what runs out first', async () => {
+  // RE-POINTED (#124): the opened row is a per-pool Fits table now, not a
+  // sentence; what runs out first is the outlined row of that table.
+  it('opens a row into a table that marks what runs out first', async () => {
     loadCapacity.mockResolvedValue({ status: 'ok', data: CAPACITY, fetchedAt: Date.now(), serverAt: CAPACITY.generated_at })
     render(<ProfilesScreen />)
     await waitFor(() => expect(document.querySelector('.cap-mx tr[data-profile]')).not.toBeNull())
@@ -123,7 +125,7 @@ describe('the profile matrix outlines exactly the binding cell', () => {
     fireEvent.click(toggle)
     expect(toggle.getAttribute('aria-expanded')).toBe('true')
     const exp = document.querySelector('.cap-mx tr.cap-mx-exp')
-    expect(exp?.textContent).toContain('anthropic runs out first')
+    expect(exp?.querySelector('tr.is-binding')?.getAttribute('data-pool')).toBe('provider:anthropic')
   })
 
   it('takes the binding pool over a roomier pool of the same family', () => {

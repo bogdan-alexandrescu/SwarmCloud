@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
 import { HelpCard } from './HelpCard'
 import { Mark, UtilRow } from './primitives'
-import { HOLDERS_POLL_MS } from './capacityPoll'
+import { HOLDERS_POLL_MS, useLinkedPool } from './capacityPoll'
 import { Screen } from './Shell'
 import { formatDuration, poolLabel, type LeasePage, type LeaseRow } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -494,9 +494,17 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
   // heading still says what the loaded rows are out of, so a filtered list is
   // never read as the platform's whole.
   const [tenant, setTenant] = useState<string | null>(null)
+  // AND BY POOL, WHEN A LINK NAMED ONE (#125): a Pools row's name links here
+  // as `?pool=<name>`, and the table draws the leases whose `pools` list names
+  // it. `All pools` drops it; the address is moved too, so a reload does not
+  // bring it back, and `cleared` holds the choice until the router has.
+  const linked = useLinkedPool()
+  const [cleared, setCleared] = useState<string | null>(null)
+  const pool = linked !== null && linked !== cleared ? linked : null
   const now = useNow(AGE_TICK_MS)
-  const tenants = [...new Set(rows.map((l) => l.tenant_id))].sort()
-  const shown = tenant === null ? rows : rows.filter((l) => l.tenant_id === tenant)
+  const inPool = pool === null ? rows : rows.filter((l) => Array.isArray(l.pools) && l.pools.includes(pool))
+  const tenants = [...new Set(inPool.map((l) => l.tenant_id))].sort()
+  const shown = tenant === null ? inPool : inPool.filter((l) => l.tenant_id === tenant)
   const sorted = [...shown].sort((a, b) => b.units - a.units)
   return (
     /* §B6.1: the screen's one full-width table is the one box on it. It was
@@ -510,6 +518,25 @@ function HolderTable({ rows, coverage }: { rows: LeaseRow[]; coverage: LeaseCove
             a cut list look cut: the same list at 200 of 200 and at 200 of 214
             would otherwise be the same picture. */}
         <h2 className="ctl-card-title">Every holder</h2>
+        {pool !== null && (
+          <span className="hold-pool">
+            pool{' '}
+            <span className="mono" title={pool}>
+              {pool}
+            </span>{' '}
+            · {inPool.length} of {rows.length}{' '}
+            <button
+              type="button"
+              className="hold-pool-clear"
+              onClick={() => {
+                setCleared(pool)
+                if (typeof window !== 'undefined') window.location.hash = '#capacity/holders'
+              }}
+            >
+              All pools
+            </button>
+          </span>
+        )}
         {/* Only where there is a choice: one tenant's rows filter to nothing new. */}
         {tenants.length > 1 && (
           <div className="ctl-seg hold-tenants" role="group" aria-label="Tenant">

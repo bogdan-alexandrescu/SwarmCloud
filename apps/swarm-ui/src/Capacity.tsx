@@ -1,9 +1,10 @@
+import { useEffect } from 'react'
 import { loadCapacity, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
-import { POOLS_POLL_MS } from './capacityPoll'
+import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import {
@@ -164,21 +165,55 @@ export function needsAction(pool: Pool, classes: ResourceClasses | null): boolea
  */
 function CeilingTables({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
   const classes = useResourceClasses()
-  const byName = (a: Pool, b: Pool) => a.name.localeCompare(b.name)
-  const act = pools.filter((p) => needsAction(p, classes)).sort(byName)
+  const act = pools.filter((p) => needsAction(p, classes)).sort(byUrgency)
   const rest = pools.filter((p) => !needsAction(p, classes))
+  // THE ROW A LINK NAMED (#128): Provider quota's Feeds pool lands here, on
+  // its pool's row, outlined the way Pool limits outlines its linked row.
+  const target = useLinkedPool()
+  const landed = target !== null && pools.some((p) => p.name === target)
+  useEffect(() => {
+    if (!landed) return
+    const row = document.getElementById(poolRowId(target))
+    // jsdom implements no `scrollIntoView`, hence the guard.
+    if (row !== null && typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'center' })
+  }, [landed, target])
   return (
     <div className="cap-families">
       {act.length > 0 && (
-        <Family title={`Needs action · ${act.length}`} className="cap-needs" pools={act} viewer={viewer} />
+        <Family title={`Needs action · ${act.length}`} className="cap-needs" pools={act} viewer={viewer} target={target} />
       )}
       {POOL_FAMILY_ORDER.map((kind) => {
-        const family = rest.filter((p) => poolKind(p.name) === kind).sort(byName)
+        const family = rest.filter((p) => poolKind(p.name) === kind).sort(byUrgency)
         if (family.length === 0) return null
-        return <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} />
+        return <Family key={kind} title={FAMILY_TITLE[kind]} pools={family} viewer={viewer} target={target} />
       })}
     </div>
   )
+}
+
+/** The id of a pool's row on Pools, which a `?pool=` link scrolls to. */
+function poolRowId(pool: string): string {
+  return `pool-${pool}`
+}
+
+/**
+ * ABNORMAL ROWS FIRST, THEN THE FULLEST (#125). A family used to be sorted by
+ * name, so at 3am the one full pool among twenty sat wherever its name put
+ * it. Now a family reads worst first: over ceiling, paused, no limit set or
+ * limit 0, full -- the order `classifyPool` draws its marks in -- then every
+ * other row by used/ceiling, highest first, and by name only to break a tie.
+ */
+export function byUrgency(a: Pool, b: Pool): number {
+  const rank = (p: Pool): number => {
+    const limit = p.effective_limit
+    if (overCeiling(p)) return 0
+    if (isPaused(p)) return 1
+    if (limit === null || limit === 0) return 2
+    if (p.active >= limit) return 3
+    return 4
+  }
+  const used = (p: Pool): number => (p.effective_limit !== null && p.effective_limit > 0 ? p.active / p.effective_limit : 0)
+  return rank(a) - rank(b) || used(b) - used(a) || a.name.localeCompare(b.name)
 }
 
 function Family({
@@ -186,12 +221,15 @@ function Family({
   className,
   pools,
   viewer,
+  target,
 }: {
   title: string
   className?: string
   pools: Pool[]
   /** The tenant this read is scoped to, for the rows' `this tenant`. */
   viewer: string | undefined
+  /** The pool a `?pool=` link named, or null. */
+  target: string | null
 }) {
   // Trap E: a number may only sit beside another number of the same scope, so
   // the scope is declared rather than left to be inferred -- ON EVERY ROW
@@ -205,7 +243,7 @@ function Family({
         <h2 className="ctl-card-title">{title}</h2>
       </div>
       <div className="ctl-card-body is-flush">
-        <PoolTable pools={pools} viewer={viewer} />
+        <PoolTable pools={pools} viewer={viewer} target={target} />
       </div>
     </section>
   )
@@ -214,7 +252,7 @@ function Family({
 const LEASED = 'Leased (units)'
 const CEILING = 'Ceiling (units)'
 
-function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefined }) {
+function PoolTable({ pools, viewer, target }: { pools: Pool[]; viewer: string | undefined; target: string | null }) {
   return (
     <div className="ctl-table is-scroll">
       <table role="table">
@@ -242,7 +280,7 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
         </thead>
         <tbody role="rowgroup">
           {pools.map((p) => (
-            <PoolRow key={p.name} pool={p} scope={scopeWord(p.name, viewer)} />
+            <PoolRow key={p.name} pool={p} scope={scopeWord(p.name, viewer)} target={p.name === target} />
           ))}
         </tbody>
       </table>
@@ -250,7 +288,7 @@ function PoolTable({ pools, viewer }: { pools: Pool[]; viewer: string | undefine
   )
 }
 
-function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
+function PoolRow({ pool, scope, target }: { pool: Pool; scope: string; target: boolean }) {
   const marks = classifyPool(pool)
   const by = setBy(pool)
   const limit = pool.effective_limit
@@ -264,9 +302,17 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
   const shown = limit === null ? 'no limit set' : limit > 0 ? `${Math.round((pool.active / limit) * 100)}%` : 'no room'
 
   return (
-    <tr role="row" className={marks.row}>
+    <tr
+      role="row"
+      id={poolRowId(pool.name)}
+      className={[marks.row, target ? 'is-target' : ''].filter(Boolean).join(' ') || undefined}
+    >
       <th role="rowheader" scope="row" title={pool.name}>
-        {poolLabel(pool.name)}
+        {/* THE NAME IS THE WAY TO WHO HOLDS IT (#125): Holders, filtered to
+            the leases that name this pool. */}
+        <a className="ctl-link" href={poolHref('capacity/holders', pool.name)}>
+          {poolLabel(pool.name)}
+        </a>
         <span className="ctl-sub">{pool.name}</span>
       </th>
       <td role="cell" data-label="Scope">{scope}</td>
@@ -314,9 +360,12 @@ function PoolRow({ pool, scope }: { pool: Pool; scope: string }) {
         {by.term === 'configured' ? '' : by.term}
       </td>
       <td role="cell" data-label="Links" className="cap-links">
-        <a className="ctl-link" href="#capacity/holders">holders</a>
+        {/* Both name the pool (#125): Holders filtered to it, and its own row
+            on Pool limits (#134), where an admin edits it and anyone else
+            reads it with Edit locked. */}
+        <a className="ctl-link" href={poolHref('capacity/holders', pool.name)}>holders</a>
         {' · '}
-        <a className="ctl-link" href="#admin/limits">limit</a>
+        <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
       </td>
     </tr>
   )
