@@ -6756,7 +6756,10 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 #   found inputs main refuses and the branch published. #373's real blocker
 #   was the generic key=value rule in redaction tests, not PEM markers; a
 #   test builds its marker at runtime.
-# * TIER 2, outside test paths: the generic rules refuse exactly as before.
+# * TIER 2, outside test paths: the generic rules refuse as before, except
+#   for a REFERENCE (owner decision, 2026-10-02; `_is_a_reference`): a value
+#   that is wholly one `${name}` slot, or a bare lowercase name with no digit
+#   that `_looks_like_a_credential` rejects. Vendor rules are not relaxed.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
 #   CODE only (`is_test_path`).
@@ -6765,7 +6768,12 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 # false positive there costs one masked word, not a refused publish.
 #
 # RESIDUAL RISK, accepted by the owner: a weak real password committed under a
-# test path is published. CI's trivy secret scan still runs after the push.
+# test path is published; and, since 2026-10-02, so is one ANYWHERE that is a
+# lowercase word with no digit (`letmein` assigned to a password name, or a
+# 12+ character digitless lowercase `Bearer` value under http_authorization),
+# since tier 2 reads it as a reference. Only a WHOLE value counts
+# (`_ends_the_value`): a multi-word passphrase is still refused. A `${name}`
+# slot holds no value, so it adds no risk. CI's trivy secret scan still runs after the push.
 
 #: The `swarm_redaction` rules that match a NAME followed by a value rather
 #: than a provider's own token format. Tiers 2 and 3 apply to these. Any rule
@@ -6889,6 +6897,86 @@ def _is_explicit_placeholder(tail: str) -> bool:
     )
 
 
+#: A value that is wholly one interpolation slot holding only a NAME:
+#: `${user_config.client_secret}`, `${var.anthropic}`. Anything before or after
+#: it, or a second slot, is not. Nor is a slot carrying an operator --
+#: `${DB_PW:-<literal>}` (or `-`, `=`, `:=`, `:+`, `:?`) expands to the literal
+#: it holds -- which the owner's `^\$\{[^}]+\}$` would have let through.
+_INTERPOLATION_SLOT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_.]*\}")
+#: A bare reference: a lowercase name, as a provider id or a secret's NAME is
+#: written (`anthropic`, `swarm-tenant-acme-git`, `user_config.client_secret`).
+_BARE_REFERENCE = re.compile(r"[a-z][a-z0-9._-]{0,63}")
+
+
+def _is_a_reference(value: str) -> bool:
+    """True when a generic rule's matched `value` NAMES a credential rather
+    than holding one, so tier 2 does not refuse it (owner decision,
+    2026-10-02).
+
+    WHY. Three of six SwarmCloud lanes were refused at publish for text that
+    held nothing: plugin.json's unchanged `"..._CLIENT_SECRET":
+    "${user_config.oauth_client_secret}"`, re-added by a trailing comma, and a
+    Terraform local naming the Anthropic key with the provider id `anthropic`. The
+    relaxation is narrow, for the generic rules outside test paths only:
+
+    * (i) the whole value is ONE `${...}` slot holding only a name
+      (`_INTERPOLATION_SLOT`). A slot with anything glued to it
+      (`${a}hunter2`), or with a shell default inside it (`${A:-hunter2}`),
+      is still refused: the glued part or the default may be the credential.
+    * (ii) the value is a bare lowercase name (`_BARE_REFERENCE`), holds NO
+      digit, and `_looks_like_a_credential` rejects it. The digit rule is
+      stricter than the owner's brief ("short or low entropy"), because that
+      brief's own control -- a SECRET whose value is `hunter2` three times,
+      still refused -- is a lowercase, low-entropy name: a digit is what a
+      weak password adds to a word, and a provider id or a secret's name
+      rarely needs one. With no digit `_looks_like_a_credential` always
+      rejects; it is asked anyway so a change to it cannot make this rule
+      pass a value it accepts.
+
+    Only quotes, their escaping backslashes, whitespace and a trailing `;` or
+    `,` are stripped, never a bracket, so a slot's closing brace is kept.
+    """
+    candidate = value.strip("\"'`\\ \t").rstrip(";,").strip("\"'`\\")
+    if _INTERPOLATION_SLOT.fullmatch(candidate):
+        return True
+    return (
+        _BARE_REFERENCE.fullmatch(candidate) is not None
+        and not any(c.isdigit() for c in candidate)
+        and not _looks_like_a_credential(candidate)
+    )
+
+
+#: What may follow an unquoted reference on its line: nothing, or a closing
+#: bracket, separator or (escaped) quote that ends an enclosing string.
+_VALUE_END = re.compile(r"[ \t]*(?:$|[;,)\]}]|\\*[\"'`])")
+
+
+def _ends_the_value(match: re.Match[str]) -> bool:
+    """True when a generic match's value is the WHOLE value, not its first word.
+
+    The generic rules' value class stops at whitespace, a comma or a quote, so
+    a password name assigned a quoted four-word passphrase matches only its
+    first word, a digitless lowercase word `_is_a_reference` would pass. The owner's rule
+    (ii) asks the whole value to be one identifier, so a reference counts only
+    when it ends the value: a quoted value must close right after it (the
+    rule's opening `"`, escaped or not, or a `'`/`` ` `` the value opens with),
+    and an unquoted one must end the line or meet a separator, a closing
+    bracket or the quote of an enclosing string.
+    """
+    prefix = match.group(1)
+    value = match.group(0)[len(prefix):]
+    rest = match.string[match.end():].split("\n", 1)[0]
+    if prefix.rstrip().endswith('"'):
+        return re.match(r'\\*"', rest) is not None
+    if value[:1] in ("'", "`"):
+        quote = value[0]
+        body = value[1:].rstrip(";,)]}")
+        if body.endswith(quote):
+            return len(body) > 1 and quote not in body[:-1]
+        return rest.startswith(quote)
+    return _VALUE_END.match(rest) is not None
+
+
 def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     """Whether one token-starting match of `rule` is a credential, by tier."""
     if rule.name == "jwt":
@@ -6896,9 +6984,9 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
     if rule.name in GENERIC_CREDENTIAL_RULES:
         if rule is CREDENTIAL_KEY_VALUE and not _assigns_a_literal(match):
             return False
-        if not in_tests:
-            return True  # tier 2: exactly as before
         value = match.group(0)[len(match.group(1)):]
+        if not in_tests:  # tier 2
+            return not (_is_a_reference(value) and _ends_the_value(match))
         return _looks_like_a_credential(value.strip("\"'`;,)]}\\ \t"))
     # A vendor key: refused outside tests as before; in a test path it passes
     # ONLY with an explicit placeholder (owner decision, 2026-10-01). Entropy
