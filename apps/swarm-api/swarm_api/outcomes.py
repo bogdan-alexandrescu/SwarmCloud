@@ -150,7 +150,12 @@ _CACHE_MAX_ENTRIES = 256
 #: failure class, `spec_signature_invalid`. A stored day counted under 2 has
 #: no such key, so every one is re-derived. CLASSIFIER_VERSION stays: the text
 #: rules did not change, and a typed cause is read before any of them.
-DERIVE_VERSION = 3
+#:
+#: 4 (2026-10-01, contract requests 33 and 35, #295): a worker action's own
+#: end is its own class -- `verdict_refused`, `verdict_failed`,
+#: `merge_refused`, `merge_failed`. One bump for both requests, which land
+#: together; a stored day counted under 3 has none of the four keys.
+DERIVE_VERSION = 4
 CLASSIFIER_VERSION = 2
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -237,6 +242,13 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     # Contract request 34: the worker refused a spec swarm-api did not sign.
     # Every one is a tenant's agent rewriting a step or a platform bug.
     ("spec_signature_invalid", "spec signature invalid"),
+    # Contract requests 35 and 33 (#295): a worker action ended itself. No
+    # runner ran, so "runner error" would be false. Post-verdict before merge,
+    # because that is the order the chain meets them in.
+    ("verdict_refused", "verdict refused"),
+    ("verdict_failed", "verdict failed"),
+    ("merge_refused", "merge refused"),
+    ("merge_failed", "merge failed"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
 )
@@ -307,6 +319,10 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.DISPATCH_FAILED.value: "dispatch_failed",
     EndCause.RUNNER_ERROR.value: "runner_error",
     EndCause.SPEC_SIGNATURE_INVALID.value: "spec_signature_invalid",
+    EndCause.MERGE_REFUSED.value: "merge_refused",
+    EndCause.MERGE_FAILED.value: "merge_failed",
+    EndCause.VERDICT_REFUSED.value: "verdict_refused",
+    EndCause.VERDICT_FAILED.value: "verdict_failed",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

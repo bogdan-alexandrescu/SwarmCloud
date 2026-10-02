@@ -353,6 +353,18 @@ class ApiSettings:
     #: `common_env` (terraform/infra/locals.tf).
     environment_declared: bool = False
 
+    #: The web console's public origin, `https://<frontend_hostname>`, from
+    #: SWARM_CONSOLE_URL (terraform renders it from `var.frontend_hostname`).
+    #:
+    #: THE ONE SOURCE OF A CONSOLE LINK (owner decision 2026-10-01): every task
+    #: and workflow the API serves carries `links.console` built from this
+    #: (`codec.agent_console_url`, `codec.workflow_console_url`), and the
+    #: plugin, the sc CLI and the MCP answers print that rather than spelling
+    #: the host themselves. EMPTY BY DEFAULT, and empty means NO link -- null,
+    #: never a run.app guess: swarm-ui is behind IAP, so its run.app address is
+    #: a link that does not open.
+    console_url: str = ""
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -423,4 +435,5 @@ class ApiSettings:
             # substitutes "dev" when it is absent. Blank counts as absent: a
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
+            console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
         )

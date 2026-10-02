@@ -42,15 +42,19 @@ six months is usually that its cost was never recorded.
 **Amended 2026-10-01 by owner decision; the spec moved to match the code, not
 the other way round.** This section originally made GKE Autopilot the sole
 execution substrate, with every task a pod, and retired Cloud Run Jobs. That was
-never built. What runs is:
+never built. What runs is (the last three are #295's, accepted 2026-10-01 and
+disabled for every tenant; no Job exists for them yet):
 
 | profile | backend | where the catalogue says so |
 |---|---|---|
-| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1078` |
-| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:992` |
-| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1094` |
-| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1111` |
-| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1140` |
+| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1125` |
+| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1032` |
+| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1141` |
+| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1158` |
+| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1187` |
+| `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1209` |
+| `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1228` |
+| `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1253` |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
@@ -58,7 +62,7 @@ never built. What runs is:
 `GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py:1334`); the module
 header (`apps/scheduler/scheduler/dispatch.py:8`) states the same split. No
 profile is `AUTO`, so `resolve_backend`
-(`apps/common/swarm_common/profiles.py:1150`) only passes the declared backend
+(`apps/common/swarm_common/profiles.py:1267`) only passes the declared backend
 through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue
 and fails when this table stops matching it.
 
@@ -319,10 +323,10 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3285`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3357`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:3392`,
+> (`apps/agent-worker/agent_worker/lifecycle.py:3464`,
 > `apps/agent-worker/agent_worker/accountlease.py:445`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single

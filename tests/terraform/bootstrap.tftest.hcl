@@ -376,11 +376,11 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
     error_message = "adding the fixer must not loosen the provider's attribute_condition"
   }
 
-  # The fixer's principal is on the fixer only. The deployer stays bound per
-  # repository@ref, exactly as before.
+  # The fixer's principal is on the fixer only: no deployer binding names
+  # ci-fix.yml (the deployer's own pin is asserted in the run below).
   assert {
-    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : strcontains(m.member, "/attribute.repo_ref/")])
-    error_message = "the deployer's bindings changed shape; the fixer change must not touch them"
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : !strcontains(m.member, "/ci-fix.yml@")])
+    error_message = "a deployer binding names ci-fix.yml; the fixer's workflow must not be able to become the deployer"
   }
 }
 
@@ -452,4 +452,96 @@ run "a_malformed_ci_fixer_account_is_refused" {
   }
 
   expect_failures = [var.ci_fix_service_account]
+}
+
+# THE DEPLOYER IS BOUND TO THE WORKFLOW FILES THAT AUTHENTICATE AS IT, NOT TO
+# THE REPOSITORY.
+#
+# #457. The deployer was bound to `attribute.repo_ref/<repo>@refs/heads/main`,
+# which every workflow in the repository presents when it runs on main. With
+# application.yml, terraform.yml and security.yml granting id-token at workflow
+# level, a merged test or conftest could mint a token and become the deployer
+# (docs/merge-step.md M4/R4). Owner decision, 2026-10-02: job-level grants in
+# the workflows AND this pin. Each binding names one workflow FILE on one
+# allowed ref by `attribute.job_workflow_ref`, which GitHub sets from the file
+# the job runs. tests/unit/scripts/test_workflow_id_token_scope.py holds the
+# list in wif.tf equal to the workflows that authenticate as GCP_DEPLOY_SA.
+run "the_deployer_is_bound_to_its_workflow_files_on_main" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  # Compared whole, as a set: a file added, dropped or widened fails here.
+  assert {
+    condition = toset([for m in values(google_service_account_iam_member.deployer_wif) : m.member]) == toset([
+      for f in ["application.yml", "iam-refusal-probe.yml", "release.yml", "security.yml", "terraform.yml"] :
+      "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/${f}@refs/heads/main"
+    ])
+    error_message = "the deployer must be federated to exactly release.yml, application.yml, terraform.yml, security.yml and iam-refusal-probe.yml on refs/heads/main"
+  }
+
+  # Said separately from the equality above, so that relaxing it cannot
+  # quietly admit the repository-wide forms #457 removed.
+  assert {
+    condition = alltrue([
+      for m in values(google_service_account_iam_member.deployer_wif) :
+      !strcontains(m.member, "/attribute.repository/") && !strcontains(m.member, "/attribute.repo_ref/") && !strcontains(m.member, "*")
+    ])
+    error_message = "a repository-wide principalSet on the deployer hands its identity to every workflow on main, the tests included"
+  }
+
+  assert {
+    condition     = alltrue([for m in values(google_service_account_iam_member.deployer_wif) : m.role == "roles/iam.workloadIdentityUser"])
+    error_message = "the pin is workloadIdentityUser; federation replaces a key"
+  }
+
+  # The pin narrows the binding; the pool's trust policy is untouched.
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_condition == "assertion.repository == \"saga/agent-swarm-infra\" && (assertion.ref == \"refs/heads/main\")"
+    error_message = "pinning the deployer must not change the provider's attribute_condition"
+  }
+
+  assert {
+    condition     = google_iam_workload_identity_pool_provider.github[0].attribute_mapping["attribute.job_workflow_ref"] == "assertion.job_workflow_ref"
+    error_message = "a principalSet can only name an attribute the provider maps"
+  }
+}
+
+run "the_deployer_pin_covers_every_allowed_ref" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif   = true
+    github_repository   = "saga/agent-swarm-infra"
+    github_allowed_refs = ["refs/heads/main", "refs/tags/v1"]
+  }
+
+  assert {
+    condition     = length(google_service_account_iam_member.deployer_wif) == 10
+    error_message = "one binding per (workflow file, allowed ref): five files on two refs"
+  }
+
+  assert {
+    condition     = contains(keys(google_service_account_iam_member.deployer_wif), "release.yml@refs/tags/v1")
+    error_message = "bindings are keyed <file>@<ref>, readable in plan output"
+  }
 }

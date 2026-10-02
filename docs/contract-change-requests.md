@@ -41,10 +41,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
-| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | ACCEPTED 2026-09-29 by the owner, as the design; build gated on #342; amendment proposed 2026-09-30 (#364) |
+| 33 | `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it (#295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01; #364 amendment item 1 applied with it) |
 | 34 | `models.py` / `specsign.py`: a step's spec is signed by swarm-api and verified by every worker (#342) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied in PR #353 (code) and #354 (Terraform) |
-| 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | PROPOSED 2026-09-29 |
-| 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | PROPOSED 2026-09-29 |
+| 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
+| 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
 
@@ -6082,7 +6082,16 @@ relies on for correctness.
 ## 33. `profiles.py` / `models.py`: a merge profile that runs no agent, and two end causes for it
 
 **Status: ACCEPTED 2026-09-29 by the owner, as the design; build gated on
-#342.** Recorded from #295's design step. Revised 2026-09-29, several times,
+#342. APPLIED 2026-10-01, the build accepted by the owner on 2026-10-01**
+(functionality wave 3, lane M1). The owner decided that #295 is built now
+and stays disabled for every tenant until #342 is enforced and the owner
+creates the review and merge Apps. Applied as written below: `WorkerAction`,
+`RunnerProfile.worker_action` with both `__post_init__` refusals, the `merge`
+entry and `MERGE_REFUSED`/`MERGE_FAILED`. The entry also carries
+`available=False` and a `disabled_reason` naming #295 and #342, so nothing
+can dispatch it. Terraform creates no Job for it (`profiles_without_a_job`,
+`terraform/infra/locals.tf`) until its own service account lands. Recorded
+from #295's design step. Revised 2026-09-29, several times,
 against a security review's rounds (B1, B2, M1–M5 and their minors, then B1
 corrected repeatedly against a joint review with CR 34, ending with R8
 recorded open rather than closed); see [merge-step.md](merge-step.md)'s own
@@ -6255,7 +6264,14 @@ reach it. They are listed there as rejected, not as fallbacks.
 
 ### Amendment (proposed 2026-09-30, #364)
 
-**Status: PROPOSED 2026-09-30, pending the owner's acceptance.** Found by the
+**Status: ACCEPTED — accepted by the owner 2026-10-01. Item 1 APPLIED 2026-10-01**
+(functionality wave 3, lane M1, in the same change as request 33):
+`validation.known_providers()` leaves out every `worker_action` profile's
+provider (`APP_CREDENTIAL_PROVIDERS`: `git-merge`, `git-review`), and both
+credential routes call it, so neither route file was edited and neither
+accepts the two. **Items 2 and 3 are not applied yet** (Terraform, lane M2);
+until they are, no Job and no tenant `providers` entry may name either
+provider. Found by the
 security review of #351 (CR 35/36), filed as issue #364. This amendment does
 not touch this request's frozen-contract surface (`profiles.py`/`models.py`
 are unchanged by it); it closes a gap in how the design it names is *built*,
@@ -7487,7 +7503,13 @@ it were found wrong while building it (#353, #354), and one decision was added:
 
 ## 35. `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes
 
-**Status: PROPOSED, 2026-09-29.** Part of #295. Recorded from
+**Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
+(functionality wave 3, lane M1): `WorkerAction.POST_VERDICT`, the
+`post-verdict` entry (`available=False` until #342 is enforced and the review
+App exists) and `VERDICT_REFUSED`/`VERDICT_FAILED`. Its MAJOR 1 companions:
+the API routes' refusal is applied (request 33's amendment, item 1); the
+`secret_manager` accessor override and the refresh exclusion are not yet
+(lane M2). Part of #295. Recorded from
 [merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
 the owner 2026-09-29 as the design for #295), which pointed at this as a
 separate, not-yet-filed request ([merge-step.md](merge-step.md)'s own §10
@@ -7678,7 +7700,12 @@ merge step cannot be enabled for any tenant without this.
 
 ## 36. `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint`
 
-**Status: PROPOSED, 2026-09-29.** Part of #295. Recorded from
+**Status: ACCEPTED — accepted by the owner 2026-10-01, as written; APPLIED 2026-10-01**
+(functionality wave 3, lane M1): `RunnerProfile.never_restore_checkpoint`
+(default `False`) and the `claude-code-review` entry, `available=False` until
+#342 is enforced and the review App exists. The lifecycle does not read the
+field yet (merge-step.md §10 item 4a, Track B), which is safe only because
+nothing can dispatch the profile. Part of #295. Recorded from
 [merge-step.md](merge-step.md)'s design (contract request 33, ACCEPTED by
 the owner 2026-09-29 as the design for #295), which pointed at this as a
 separate, not-yet-filed request ([merge-step.md](merge-step.md)'s own §10

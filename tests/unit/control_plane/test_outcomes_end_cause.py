@@ -70,6 +70,12 @@ END_CAUSES = [
     "workflow_sweep",
     # Contract request 34 (#342): the worker refused a spec swarm-api did not sign.
     "spec_signature_invalid",
+    # Contract request 33 (#295): the merge worker action refused, or the forge failed it.
+    "merge_refused",
+    "merge_failed",
+    # Contract request 35 (#295): the post-verdict worker action, the same pair.
+    "verdict_refused",
+    "verdict_failed",
 ]
 
 
@@ -122,20 +128,34 @@ def test_every_end_cause_has_exactly_one_class():
 def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     assert [k for k, _ in outcomes.FAILURE_CLASSES] == [
         "runner_error", "timeout", "lost_worker", "could_not_start", "inputs_unavailable",
-        "outputs_missing", "dispatch_failed", "spec_signature_invalid", "other", "no_reason",
+        "outputs_missing", "dispatch_failed", "spec_signature_invalid",
+        "verdict_refused", "verdict_failed", "merge_refused", "merge_failed",
+        "other", "no_reason",
     ]
     # Its own class, never "other" or "runner error": every one is a tenant's
     # agent rewriting a step or a platform bug, and both are alerted on.
     assert dict(outcomes.FAILURE_CLASSES)["spec_signature_invalid"] == "spec signature invalid"
     assert outcomes._FAILURE_OF_CAUSE["spec_signature_invalid"] == "spec_signature_invalid"
+    # Contract requests 33 and 35: a worker action's own end is its own class,
+    # never "runner error" -- no runner ran. Post-verdict sits before merge
+    # because that is the order the chain meets them in.
+    for key, label in (
+        ("verdict_refused", "verdict refused"),
+        ("verdict_failed", "verdict failed"),
+        ("merge_refused", "merge refused"),
+        ("merge_failed", "merge failed"),
+    ):
+        assert dict(outcomes.FAILURE_CLASSES)[key] == label
+        assert outcomes._FAILURE_OF_CAUSE[key] == key
     assert dict(outcomes.FAILURE_CLASSES)["inputs_unavailable"] == "inputs unavailable"
     assert [k for k, _ in outcomes.CANCEL_CAUSES] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "other",
     ]
     assert dict(outcomes.CANCEL_CAUSES)["after_cancel"] == "after a cancel"
     # Both versions moved, so every stored day is re-derived under the new rules.
-    # Bumped for contract request 34's class, so stored days are derived again.
-    assert outcomes.DERIVE_VERSION >= 3
+    # Bumped for contract request 34's class, and again for 33 and 35's four,
+    # so stored days are derived again.
+    assert outcomes.DERIVE_VERSION >= 4
     assert outcomes.CLASSIFIER_VERSION >= 2
     assert outcomes.VOCAB["classifier_version"] == outcomes.CLASSIFIER_VERSION
 

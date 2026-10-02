@@ -15,6 +15,7 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Any, Mapping
+from urllib.parse import quote
 
 from swarm_common.models import (
     Attempt,
@@ -38,6 +39,58 @@ from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
 #: masked with when its caller had no task to hand (`attempt_to_api`). It only
 #: masks with `remember=False`, so sharing it across requests keeps nothing.
 _RULES_ONLY = TaskMasking(None, None)
+
+
+# --------------------------------------------------------------------------
+# Console links
+# --------------------------------------------------------------------------
+#
+# THE API IS THE ONE SOURCE OF A CONSOLE LINK (owner decision 2026-10-01). The
+# plugin, the sc CLI, the MCP answers and the web UI print the `links.console`
+# these functions put on a task or a workflow, and none of them rebuilds the
+# host: a host spelled in five places is five places to drift, and the first
+# one wrong is a link that opens somebody else's console or nothing at all.
+#
+# The origin is `ApiSettings.console_url` (SWARM_CONSOLE_URL, which terraform
+# renders as `https://<frontend_hostname>`). EMPTY MEANS NO LINK: the field is
+# null, never a guess at a run.app URL -- swarm-ui behind IAP is not reachable
+# at its run.app address, so a guessed link is a link that does not open.
+#
+# The PATHS are the console's own History-API routes, apps/swarm-ui/src/paths.ts:
+# one agent is `/agents/<tab>/<id>`, and a pasted link uses `live`, the tab
+# `addressToPath` defaults to; one workflow is `/workflows/<id>`, its id
+# URI-encoded exactly as `addressToPath` encodes it.
+# tests/unit/control_plane/test_console_links.py reads paths.ts, so a route
+# renamed in the UI fails that test instead of silently breaking every link.
+
+#: The agent list a pasted link opens in (paths.ts `addressToPath`'s default).
+CONSOLE_AGENT_TAB = "live"
+
+#: What JavaScript's encodeURIComponent leaves unescaped besides quote's own
+#: `_.-~`, so a workflow id is spelled exactly as paths.ts spells it.
+_URI_COMPONENT_SAFE = "!*'()"
+
+
+def console_origin(origin: str | None) -> str | None:
+    """The configured console origin without a trailing slash, or None when unset."""
+    text = (origin or "").strip().rstrip("/")
+    return text or None
+
+
+def agent_console_url(origin: str | None, task_id: str | None) -> str | None:
+    """`<origin>/agents/live/<task_id>`, or None with no origin or no task."""
+    base = console_origin(origin)
+    if base is None or not task_id:
+        return None
+    return f"{base}/agents/{CONSOLE_AGENT_TAB}/{task_id}"
+
+
+def workflow_console_url(origin: str | None, workflow_id: str | None) -> str | None:
+    """`<origin>/workflows/<workflow_id>`, or None with no origin or no workflow."""
+    base = console_origin(origin)
+    if base is None or not workflow_id:
+        return None
+    return f"{base}/workflows/{quote(workflow_id, safe=_URI_COMPONENT_SAFE)}"
 
 
 def as_datetime(value: Any) -> datetime | None:
@@ -185,8 +238,13 @@ def task_to_api(
     waiting_for: dict[str, Any] | None = None,
     *,
     account: dict[str, Any] | None = None,
+    console_url: str | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape. Contains no credential material and no backend spec.
+
+    `console_url` is the deployment's console origin (`ApiSettings.console_url`);
+    `links.console` is this agent's page on it, the same in every state, and
+    null when the deployment has no console (see `agent_console_url`).
 
     THE INPUT AND THE METADATA ARE SERVED MASKED (owner decision, 2026-09-26,
     on #184: "the API never serves a credential-shaped string back, even to
@@ -305,6 +363,10 @@ def task_to_api(
         # (never by this serialiser, which reads nothing). Null on routes that
         # do not read it; `status` says why there is no account otherwise.
         "account": account,
+        # The console page for this agent, in every state from QUEUED to
+        # terminal -- the one link every surface prints (owner decision
+        # 2026-10-01). Null when no console is configured.
+        "links": {"console": agent_console_url(console_url, task.id)},
     }
 
 
@@ -748,8 +810,14 @@ def workflow_to_api(
     rollup: dict[str, Any] | None = None,
     *,
     step_tasks: Mapping[str, Task] | None = None,
+    console_url: str | None = None,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
+
+    `links.console` is the workflow's console page and each step's
+    `links.console` its agent's, both from `console_url`
+    (`ApiSettings.console_url`); null without one, and null on a step that
+    has no task yet.
 
     `step_tasks` maps a step's `task_id` to its task, as far as the route read
     them, and each step's `input` is masked by ITS TASK's masker (the PR #229
@@ -790,8 +858,10 @@ def workflow_to_api(
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
         "steps": [
-            _step_to_api(s, _step_masking(workflow, s, step_tasks or {})) for s in workflow.steps
+            _step_to_api(s, _step_masking(workflow, s, step_tasks or {}), console_url)
+            for s in workflow.steps
         ],
+        "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
     }
 
 
@@ -811,7 +881,11 @@ def _step_masking(
     return None
 
 
-def _step_to_api(step: WorkflowStep, masking: tuple[TaskMasking, str] | None) -> dict[str, Any]:
+def _step_to_api(
+    step: WorkflowStep,
+    masking: tuple[TaskMasking, str] | None,
+    console_url: str | None = None,
+) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
     A step's input is the input its task was created with, so it is masked by
@@ -839,6 +913,7 @@ def _step_to_api(step: WorkflowStep, masking: tuple[TaskMasking, str] | None) ->
         "input_from": {key: masker.name(value)[0] for key, value in step.input_from.items()},
         "timeout_seconds": step.timeout_seconds,
         "task_id": step.task_id,
+        "links": {"console": agent_console_url(console_url, step.task_id)},
     }
     if masking is None:
         return {**base, "input": None, "input_redaction_count": None, "input_masked_by": "not_read"}

@@ -45,7 +45,14 @@ from . import checkout, compact, config, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import TERMINAL, SwarmClient, SwarmError, outputs_of, task_id_of, task_payload
-from .follow import DEFAULT_EVENT_PAGE, DEFAULT_LOG_BUDGET, follow, follow_command
+from .follow import (
+    DEFAULT_EVENT_PAGE,
+    DEFAULT_LOG_BUDGET,
+    console_link,
+    follow,
+    follow_command,
+    with_console,
+)
 from .invocation import terminal_command
 from .patches import (
     apply_patch,
@@ -1407,12 +1414,15 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
             f"with ids {ids}; do not resend it -- read the named tasks with swarm_status"
         )
     rows = [
-        {
-            "task_id": task_id,
-            "state": task.get("state"),
-            "strategy": _accepted_strategy(task, strategy),
-            "repository": repository.as_dict(),
-        }
+        with_console(
+            {
+                "task_id": task_id,
+                "state": task.get("state"),
+                "strategy": _accepted_strategy(task, strategy),
+                "repository": repository.as_dict(),
+            },
+            task,
+        )
         for task_id, task, (_, _, repository, strategy) in zip(ids, created, prepared)
     ]
     answer: dict[str, Any] = {
@@ -1452,7 +1462,8 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
-    return described
+    # Where to watch it: the API's link, as served, or no key (`console_link`).
+    return with_console(described, task)
 
 
 def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, Any]:
@@ -1517,6 +1528,40 @@ def _collect(client: Any, task_ids: list[str], wait_seconds: int) -> dict[str, A
         )
     if unread:
         out["not_read"] = unread
+    return out
+
+
+def _with_console_links(envelope: dict[str, Any], report: dict[str, Any]) -> dict[str, Any]:
+    """A workflow read's report, with the console links the API served.
+
+    The workflow's own link at the top, and each step's on its row: the
+    step's `links.console` from the workflow document, else the one on the
+    step task the same read returned. Every one is copied as served and none is
+    built here (`follow.console_link`); a step the API served no link for --
+    one with no task yet, or a deployment with no console -- gets no key.
+    Rows are matched to steps by position, the order `workflows.step_rows`
+    keeps, and checked by `step_id` so a mismatch adds nothing rather than
+    another step's link.
+    """
+    workflow = envelope.get("workflow") or {}
+    link = console_link(workflow)
+    out: dict[str, Any] = {"workflow_id": report.get("workflow_id")}
+    if link is not None:
+        out["console"] = link
+    out.update(report)
+    tasks = {
+        str(task.get("id")): task
+        for task in envelope.get("tasks") or []
+        if isinstance(task, dict) and task.get("id")
+    }
+    for row, step in zip(out.get("steps") or [], workflow.get("steps") or []):
+        if not isinstance(step, dict) or row.get("step_id") != step.get("step_id"):
+            continue
+        served = console_link(step)
+        if served is None and step.get("task_id"):
+            served = console_link(tasks.get(str(step["task_id"])))
+        if served is not None:
+            row["console"] = served
     return out
 
 
@@ -1773,7 +1818,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         # fixing the problem is never refused as a repeat.
         _remember_dispatch(client, signature)
         return json.dumps(
-            {
+            with_console({
                 "task_id": task_id,
                 "state": task.get("state"),
                 "strategy": _accepted_strategy(task, strategy),
@@ -1789,7 +1834,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 "follow_live_with": follow_command([task_id]),
                 # Which target applied, and which layer chose it (S8).
                 "target": placed,
-            },
+            }, task),
             indent=2,
         )
 
@@ -1897,7 +1942,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
         rows = []
         for t in args["task_ids"]:
             task = client.task(t)
-            rows.append({"task_id": t, "state": task.get("state"), "masked": masked_counts(task)})
+            # `console`: the API's link to this task, as served, in every
+            # state -- a QUEUED task is the one a person opens it to watch.
+            rows.append(with_console(
+                {"task_id": t, "state": task.get("state"), "masked": masked_counts(task)}, task
+            ))
         return json.dumps(rows, indent=2)
 
     if name == "swarm_wait":
@@ -2076,17 +2125,20 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 f"{sorted(workflow)}"
             )
         steps = [
-            {
-                "step_id": step.get("step_id"),
-                "task_id": step.get("task_id"),
-                "runner_profile": step.get("runner_profile"),
-                "depends_on": step.get("depends_on") or [],
-                "input_from": step.get("input_from") or {},
-            }
+            with_console(
+                {
+                    "step_id": step.get("step_id"),
+                    "task_id": step.get("task_id"),
+                    "runner_profile": step.get("runner_profile"),
+                    "depends_on": step.get("depends_on") or [],
+                    "input_from": step.get("input_from") or {},
+                },
+                step,
+            )
             for step in workflow.get("steps") or []
         ]
-        created: dict[str, Any] = {
-            "workflow_id": workflow_id,
+        created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
+        created.update({
             "steps": steps,
             "dispatch": envelope.get("dispatch"),
             "repository": repository.as_dict(),
@@ -2100,7 +2152,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 "workflow state and this tool will not quote the stored one"
             ),
             "target": placed,
-        }
+        })
         if digest is not None:
             # What was RECEIVED, so a caller that did not pass `spec_digest` can
             # still compare it with the spec it meant.
@@ -2137,9 +2189,12 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             return out
 
         return json.dumps(
-            workflows.report(
+            _with_console_links(
                 envelope,
-                describe=_describe_step if name == "swarm_workflow_result" else None,
+                workflows.report(
+                    envelope,
+                    describe=_describe_step if name == "swarm_workflow_result" else None,
+                ),
             ),
             indent=2,
         )

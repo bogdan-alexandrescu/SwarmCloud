@@ -426,6 +426,12 @@ def test_gke_job_has_no_spot_selector_and_no_backend_retries(settings, tenant):
 # GKE and the reverse.
 
 ALL_PROFILES = sorted(RUNNER_PROFILES)
+#: The profiles that start a runner child. A `worker_action` profile (contract
+#: requests 33 and 35) has an empty `runner_argv` by contract, so there is no
+#: runner for the lifecycle to resolve and no command a pre-fix Job could carry.
+RUNNER_STARTING_PROFILES = sorted(
+    name for name, profile in RUNNER_PROFILES.items() if profile.worker_action is None
+)
 
 
 @pytest.mark.parametrize("profile_name", ALL_PROFILES)
@@ -500,7 +506,7 @@ def test_the_cloud_run_job_never_overrides_the_image_entrypoint(settings, tenant
     assert run_env["RUNNER_PROFILE"] == task.runner_profile
 
 
-@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+@pytest.mark.parametrize("profile_name", RUNNER_STARTING_PROFILES)
 def test_the_lifecycle_resolves_its_runner_from_the_environment_the_dispatcher_sets(
     settings, tenant, profile_name, monkeypatch
 ):
@@ -668,7 +674,7 @@ def _job_with_the_old_override(settings, tenant, profile_name, *, command=True, 
     return job
 
 
-@pytest.mark.parametrize("profile_name", ALL_PROFILES)
+@pytest.mark.parametrize("profile_name", RUNNER_STARTING_PROFILES)
 def test_an_existing_job_that_overrides_the_entrypoint_is_cleared_before_it_runs(
     settings, tenant, profile_name
 ):

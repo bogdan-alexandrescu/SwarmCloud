@@ -167,6 +167,7 @@ from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
 from .errors import (
     CheckpointError,
     ConfigError,
+    ControlPlaneError,
     ExitCode,
     FencedError,
     FencedWriteRefused,
@@ -873,6 +874,60 @@ class Worker:
         else:
             self.log.info("spec signature verified", spec_check=check.as_detail())
 
+    def _incomplete_parents(self, task: dict[str, Any]) -> dict[str, str | None]:
+        """The signed parents of `task` that have not SUCCEEDED, with their state.
+
+        `task` is the document `_verify_spec` just verified, and the ids come
+        from its `depends_on`, which the signature covers
+        (`swarm_common.specsign`). None as a state means the parent has no
+        document, or a state the contract does not name.
+
+        A `depends_on` that is not a list of task ids is refused, not
+        skipped: skipping it would run a step whose dependencies nobody
+        checked. swarm-api never signs one, so this is reachable only by a
+        task the legacy window admitted unsigned.
+        """
+        parents = task.get("depends_on")
+        if parents is None:
+            return {}
+        if not isinstance(parents, list) or not all(
+            isinstance(p, str) and p for p in parents
+        ):
+            raise ControlPlaneError("depends_on is not a list of task ids")
+        if not parents:
+            return {}
+        states = self.control.fetch_parent_states(parents)
+        return {
+            parent: (state.value if state is not None else None)
+            for parent, state in states.items()
+            if state is not TaskState.SUCCEEDED
+        }
+
+    def _park_dependency_incomplete(self, waiting_on: dict[str, str | None]) -> Outcome:
+        """A parent has not SUCCEEDED: park, give the slot back, run nothing.
+
+        No checkpoint and no output upload, unlike the other parks: nothing
+        has run and nothing has been restored, so the workspace is empty, and
+        a checkpoint of it would become the task's `latest_checkpoint` over
+        the real one. Due at once: the scheduler's dependency sweep, not a
+        clock, decides when it is READY again.
+        """
+        self.log.warning(
+            "a signed parent has not succeeded; parking without running",
+            park_reason=ParkReason.DEPENDENCY_INCOMPLETE.value,
+            waiting_on=waiting_on,
+        )
+        self.control.park(
+            reason=ParkReason.DEPENDENCY_INCOMPLETE,
+            next_eligible_at=utcnow(),
+            detail={
+                "waiting_on": sorted(waiting_on),
+                "parent_states": waiting_on,
+                "park_phase": "parent_states",
+            },
+        )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
     def _prepare(self) -> dict[str, str] | Callable[[], Outcome]:
         """Steps 2 to 6, the fence re-check and the quota preflight.
 
@@ -925,6 +980,23 @@ class Worker:
         self.phases.enter("verify_spec")
         task, create_time = self.control.fetch_task_snapshot()
         self._verify_spec(task, create_time)
+
+        # ---- STEP 4a: every signed parent has SUCCEEDED -------------------
+        # Contract request 34, decision 7. A tenant agent can write a parked
+        # step's `state` to READY without touching its spec, and the scheduler
+        # will admit it: the signature still verifies. So, on the SAME verified
+        # `task` -- never a re-fetch -- each parent named by its signed
+        # `depends_on` is read through the tenant gate, and one that has not
+        # SUCCEEDED parks this task as DEPENDENCY_INCOMPLETE before a
+        # checkpoint is restored, a repository cloned, an input staged or a
+        # credential read. The scheduler's dependency sweep returns it to
+        # READY, or cancels it on a failed parent. Defence in depth: it makes
+        # the early-release rewrite forge every parent's state as well; it
+        # does not close it. Inside the `verify_spec` phase, not one of its
+        # own: it is the second half of the same check on the same document.
+        waiting_on = self._incomplete_parents(task)
+        if waiting_on:
+            return functools.partial(self._park_dependency_incomplete, waiting_on)
 
         # ---- STEP 4b: restore the latest checkpoint ---------------------
         self.phases.enter("restore_checkpoint")
@@ -5186,6 +5258,17 @@ class Worker:
         # platform posts can page anyone (owner decision, 2026-09-29). The
         # agent's part already was, and a second pass changes nothing.
         body = _neutralise_mentions(body)
+        # The console links go on AFTER the neutralising pass, so no joiner
+        # can land inside a URL; they are built from the platform's own task
+        # and workflow ids and the scheduler's console origin, and a workflow
+        # id is percent-encoded, so they carry no `@` of anyone's.
+        body = pr_body_with_console_links(
+            body,
+            origin=cfg.console_url,
+            task_id=cfg.task_id,
+            workflow_id=str((self._task or {}).get("workflow_id") or "") or None,
+            enabled=cfg.pr_console_links,
+        )
         out["pull_request_text"] = {
             "title": "agent" if agent_title else "platform",
             "body": "agent" if agent_body else "platform",
@@ -6268,6 +6351,62 @@ def _neutralise_mentions(text: str) -> str:
     the input exactly. See `_MENTION_AT_RE` for which `@` qualify and why.
     """
     return _MENTION_AT_RE.sub(lambda match: match.group(1) + MENTION_BREAK, text)
+
+
+#: The console's agent list a pasted link opens in, and what JavaScript's
+#: encodeURIComponent leaves unescaped besides `quote`'s own `_.-~`.
+#:
+#: THESE SHAPES ARE THE API'S, NOT THE WORKER'S. The source of every console
+#: URL is `swarm_api.codec.agent_console_url` / `workflow_console_url` (which
+#: follow apps/swarm-ui/src/paths.ts). The worker does not depend on swarm_api,
+#: so it spells them again here, and
+#: tests/unit/worker/test_pr_body_console_links.py pins the two spellings equal.
+_CONSOLE_AGENT_TAB = "live"
+_CONSOLE_URI_COMPONENT_SAFE = "!*'()"
+
+
+def pr_body_with_console_links(
+    body: str,
+    *,
+    origin: str | None,
+    task_id: str,
+    workflow_id: str | None,
+    enabled: bool,
+) -> str:
+    """`body`, with the console links appended when the platform switch is on.
+
+    Owner decision, 2026-10-01, OFF BY DEFAULT: `enabled` is
+    `WorkerConfig.pr_console_links`, a platform setting the scheduler passes
+    through, never anything a caller sent. Off, or with no console origin,
+    the body is returned unchanged, byte for byte. On, exactly this block is
+    appended (the workflow line only when the task belongs to a workflow):
+
+        <body>
+
+        ---
+
+        Console:
+        - workflow: <origin>/workflows/<workflow_id, URI-encoded>
+        - agent: <origin>/agents/live/<task_id>
+
+    That is: a blank line, `---`, a blank line, `Console:`, then one
+    `- <kind>: <url>` line each, every line newline-terminated.
+    A Markdown list, so each bare URL autolinks on its own line.
+    """
+    # Imported here, not at the top: docs/ cite this module's lines by number
+    # (tests/unit/scripts/test_docs_spec_amendments.py), and a line added above
+    # them moves every citation.
+    from urllib.parse import quote as _url_quote
+
+    base = (origin or "").strip().rstrip("/")
+    if not enabled or not base:
+        return body
+    lines: list[str] = []
+    if workflow_id:
+        encoded = _url_quote(workflow_id, safe=_CONSOLE_URI_COMPONENT_SAFE)
+        lines.append(f"- workflow: {base}/workflows/{encoded}\n")
+    lines.append(f"- agent: {base}/agents/{_CONSOLE_AGENT_TAB}/{task_id}\n")
+    return body + "\n\n---\n\nConsole:\n" + "".join(lines)
 
 
 #: A trailer line as git reads one: `Token: value`, the token letters, digits

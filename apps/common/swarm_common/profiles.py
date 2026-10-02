@@ -42,6 +42,19 @@ class SpotStrategy(str, Enum):
     SPOT_ONLY = "spot_only"
 
 
+class WorkerAction(str, Enum):
+    """A platform action the WORKER performs instead of starting a runner.
+
+    Contract request 33 (MERGE) and 35 (POST_VERDICT), ACCEPTED by the owner on
+    2026-10-01 for #295. A profile that names one runs no agent, so a forge
+    App key read by its Job's own service account is never in a container an
+    agent shares (docs/merge-step.md §0, §1.3).
+    """
+
+    MERGE = "merge"
+    POST_VERDICT = "post_verdict"
+
+
 @dataclass(frozen=True)
 class ResourceClass:
     """A sizing envelope. `cpu` and `memory_gib` are BOTH request and limit."""
@@ -737,8 +750,35 @@ class RunnerProfile:
     #: Excluded from the hash: a mapping is not hashable, and a profile's
     #: identity is its name.
     inputs: Mapping[str, RunnerInput] = field(default_factory=dict, hash=False)
+    #: When set, the lifecycle performs this action itself and starts no
+    #: runner child, so no agent ever runs under this profile's Job identity.
+    #: `runner_argv` must then be empty, and it must be non-empty otherwise.
+    #: Contract request 33, ACCEPTED by the owner on 2026-10-01.
+    worker_action: WorkerAction | None = None
+    #: When True, the lifecycle never restores a checkpoint for this
+    #: profile, on any attempt, not only the first. False (the default)
+    #: preserves today's behaviour for every existing profile. `review`
+    #: must never resume an agent inside a workspace a previous attempt
+    #: left behind -- its whole judgement depends on seeing the checked-out
+    #: head honestly (merge-step.md's own threat model, S0).
+    #:
+    #: Contract request 36, ACCEPTED by the owner on 2026-10-01. The name is
+    #: the owner's choice of 2026-09-30 over `restore_on_retry`, which read as
+    #: "restore on attempt 1, skip only on retries". Checkpointing itself
+    #: stays on (invariant 8); only the restore is skipped.
+    never_restore_checkpoint: bool = False
 
     def __post_init__(self) -> None:
+        if self.worker_action is not None and self.runner_argv:
+            raise ValueError(
+                f"runner {self.name}: a worker_action profile starts no runner, so its "
+                "runner_argv must be empty (contract request 33)"
+            )
+        if self.worker_action is None and not self.runner_argv:
+            raise ValueError(
+                f"runner {self.name}: an empty runner_argv starts nothing; only a "
+                "worker_action profile may have one (contract request 33)"
+            )
         for key, declared in self.inputs.items():
             if not isinstance(declared, RunnerInput):
                 raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
@@ -1070,6 +1110,13 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
 }
 
 
+#: Why the three #295 profiles are refused, served to a caller who names one.
+_DISABLED_UNTIL_342 = (
+    "the merge chain (#295) is disabled for every tenant until signed step "
+    "specs (#342) are enforced and the review and merge GitHub Apps exist."
+)
+
+
 RUNNER_PROFILES: dict[str, RunnerProfile] = {
     "mock": RunnerProfile(
         name="mock",
@@ -1143,6 +1190,76 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY",),
         timeout_seconds=5400,
         inputs=_BROWSER_INPUTS,
+    ),
+    # --- #295, the merge chain: contract requests 33, 35 and 36 -------------
+    #
+    # ALL THREE ARE DISABLED. The owner accepted the requests on 2026-10-01 and
+    # decided in the same breath that #295 stays disabled for every tenant
+    # until signed step specs (#342) are enforced and the owner has created the
+    # review and merge GitHub Apps. `available=False` is what swarm-api refuses
+    # on submission (`validation.validate_runner_profile`), so an entry here
+    # is readable and dispatchable by nobody. Terraform creates no Job for any
+    # of them either (terraform/infra/locals.tf, `profiles_without_a_job`):
+    # until each runs as its own service account, a Job would run it as the
+    # tenant's worker account, which is the hole these profiles exist to close.
+    "merge": RunnerProfile(
+        name="merge",
+        image="agent-runtime-base",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        worker_action=WorkerAction.MERGE,
+        # The credential is never mounted: its secret is read by the worker at
+        # merge time, as `swarm-<tenant>-merge`, the Job's own service account.
+        # `provider` is what parks the step CREDENTIAL_MISSING, at no cost, for a
+        # tenant that has not registered one, and keeps Terraform from creating a
+        # merge Job for that tenant.
+        provider="git-merge",
+        secrets=(),
+        timeout_seconds=600,
+        inputs={},
+        available=False,
+        disabled_reason=_DISABLED_UNTIL_342,
+    ),
+    "post-verdict": RunnerProfile(
+        name="post-verdict",
+        image="agent-runtime-base",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=(),
+        worker_action=WorkerAction.POST_VERDICT,
+        # The credential is never mounted: its secret is read by the worker at
+        # post-time, as `swarm-<tenant>-post-verdict`, the Job's own service
+        # account. `provider` is what parks the step CREDENTIAL_MISSING, at no
+        # cost, for a tenant that has not registered one, and keeps Terraform
+        # from creating a post-verdict Job for that tenant.
+        #
+        # Listing `git-review` here is not by itself sufficient to keep the
+        # ordinary worker account off this secret (contract request 35, "What
+        # it would break if accepted", and its #364 amendment).
+        provider="git-review",
+        secrets=(),
+        timeout_seconds=300,
+        inputs={},
+        available=False,
+        disabled_reason=_DISABLED_UNTIL_342,
+    ),
+    # Identical to claude-code except its name -- and so its Job and service
+    # account, `swarm-<tenant>-review` -- and never_restore_checkpoint.
+    "claude-code-review": RunnerProfile(
+        name="claude-code-review",
+        image="agent-runtime-base",
+        resource_class="standard",
+        backend=Backend.CLOUD_RUN_JOB,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+        never_restore_checkpoint=True,
+        available=False,
+        disabled_reason=_DISABLED_UNTIL_342,
     ),
 }
 

@@ -94,11 +94,17 @@ def test_begin_sign_in_reaches_the_transport():
 
 def test_finish_sign_in_reaches_the_transport():
     rec = _Recorder(status=201, body={"account_id": "eng:bogdan-primary"})
-    out = _client(rec).finish_sign_in(state="s" * 40, code="code#hash#state")
+    out = _client(rec).finish_sign_in(
+        state="s" * 40, code="code#hash#state", expected_owner="eng"
+    )
 
     assert len(rec.calls) == 1
     assert rec.calls[0]["url"].endswith("/v1/accounts/exchange")
-    assert rec.calls[0]["body"] == {"state": "s" * 40, "code": "code#hash#state"}
+    assert rec.calls[0]["body"] == {
+        "state": "s" * 40,
+        "code": "code#hash#state",
+        "expected_owner": "eng",
+    }
     assert out["account_id"] == "eng:bogdan-primary"
 
 

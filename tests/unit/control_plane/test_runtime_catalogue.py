@@ -36,7 +36,7 @@ from swarm_common.profiles import (
     resolve_backend,
 )
 
-from swarm_api.validation import known_providers
+from swarm_api.validation import APP_CREDENTIAL_PROVIDERS, known_providers
 
 from .conftest import auth_header
 
@@ -200,8 +200,16 @@ def test_secret_names_are_published_and_secret_values_are_not(client, monkeypatc
 def test_every_named_provider_is_one_a_tenant_can_register(client):
     # Otherwise the view says "this runtime needs `foo`" and no credential
     # route accepts `foo`, which is a dead end wearing an instruction.
+    #
+    # EXCEPT a worker action's App credential (`git-merge`, `git-review`):
+    # #364 keeps it off both routes on purpose, because they grant the
+    # tenant's worker account. It is registered out of band, against the
+    # action's own service account, and only a worker-action profile names it.
     registrable = set(known_providers())
     for name, entry in _runtimes(client).items():
+        if entry["provider"] in APP_CREDENTIAL_PROVIDERS:
+            assert RUNNER_PROFILES[name].worker_action is not None, name
+            continue
         if entry["provider"] is not None:
             assert entry["provider"] in registrable, f"{name} needs an unregistrable provider"
 

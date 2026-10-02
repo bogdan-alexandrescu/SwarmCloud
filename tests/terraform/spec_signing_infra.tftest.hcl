@@ -321,3 +321,83 @@ run "prod_only_warns_on_the_same_untrusted_version" {
     error_message = "the control for this run: version 2 must actually be untrusted, or the run above proves nothing"
   }
 }
+
+# ---------------------------------------------------------------------------
+# Console links (owner decision 2026-10-01). Carried by this file because a
+# plan of the whole root needs the step-spec key mocks above.
+#
+# swarm-api learns the console's origin from ONE setting, SWARM_CONSOLE_URL,
+# rendered from var.frontend_hostname; the scheduler passes it, and the
+# pr_console_links switch, to every worker through worker_env.
+# ---------------------------------------------------------------------------
+
+run "a_frontend_gives_the_api_and_the_scheduler_its_console_origin" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_frontend   = true
+    frontend_hostname = "swarm.example.test"
+  }
+
+  assert {
+    condition     = output.console_service_env["swarm-api"].SWARM_CONSOLE_URL == "https://swarm.example.test"
+    error_message = "swarm-api must carry SWARM_CONSOLE_URL as https://<frontend_hostname>: it is the one source of every console link"
+  }
+
+  assert {
+    condition     = output.console_service_env["swarm-scheduler"].SWARM_CONSOLE_URL == "https://swarm.example.test"
+    error_message = "the scheduler must carry the same SWARM_CONSOLE_URL, which worker_env passes to every worker"
+  }
+
+  assert {
+    condition     = output.console_service_env["swarm-scheduler"].SWARM_PR_CONSOLE_LINKS == "false"
+    error_message = "PR console links are OFF by default: off until the owner has seen it on a real PR"
+  }
+}
+
+run "no_frontend_means_no_console_link" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # A hostname with the frontend off serves nothing, so it is not a link.
+  variables {
+    enable_frontend   = false
+    frontend_hostname = "swarm.example.test"
+  }
+
+  assert {
+    condition     = output.console_service_env["swarm-api"].SWARM_CONSOLE_URL == ""
+    error_message = "without a frontend SWARM_CONSOLE_URL must be empty (the API then serves a null link), never a guess"
+  }
+}
+
+run "the_pr_console_links_switch_reaches_the_scheduler" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_frontend   = true
+    frontend_hostname = "swarm.example.test"
+    pr_console_links  = true
+  }
+
+  assert {
+    condition     = output.console_service_env["swarm-scheduler"].SWARM_PR_CONSOLE_LINKS == "true"
+    error_message = "pr_console_links = true must reach the scheduler as SWARM_PR_CONSOLE_LINKS=true"
+  }
+
+  assert {
+    condition     = !contains(keys(output.console_service_env["swarm-api"]), "SWARM_PR_CONSOLE_LINKS")
+    error_message = "the PR switch is the worker's; swarm-api opens no PR and does not carry it"
+  }
+}

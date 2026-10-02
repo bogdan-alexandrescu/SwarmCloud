@@ -219,7 +219,7 @@ def test_the_verifier_never_reaches_the_browser(client):
 def test_finishing_the_sign_in_registers_the_account(client):
     state = _begin(client).json()["state"]
 
-    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "the-code"})
+    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "the-code", "expected_owner": TENANT})
 
     assert r.status_code == 201, r.text
     assert r.json()["account"]["label"] == "team"
@@ -230,7 +230,7 @@ def test_the_code_is_redeemed_with_the_verifier_that_started_this_sign_in(client
     """Redeeming with a fresh verifier would fail, and redeeming with somebody
     else's would be the bug PKCE exists to prevent."""
     started = _begin(client).json()
-    client.post("/v1/accounts/exchange", json={"state": started["state"], "code": "code-abc"})
+    client.post("/v1/accounts/exchange", json={"state": started["state"], "code": "code-abc", "expected_owner": TENANT})
 
     call = client.app_ref.state.token_endpoint.calls[0]
     # The state reaches the token endpoint. Claude Code sends it on the token
@@ -245,7 +245,7 @@ def test_the_code_is_redeemed_with_the_verifier_that_started_this_sign_in(client
 def test_no_credential_material_appears_in_the_response(client):
     state = _begin(client).json()["state"]
     text = client.post(
-        "/v1/accounts/exchange", json={"state": state, "code": "code-abc"}
+        "/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT}
     ).text
     for forbidden in ("at-fresh", "rt-fresh", "access_token", "refresh_token"):
         assert forbidden not in text, forbidden
@@ -253,7 +253,7 @@ def test_no_credential_material_appears_in_the_response(client):
 
 def test_the_pair_is_stored_and_only_the_access_token_reaches_the_pod(client):
     state = _begin(client).json()["state"]
-    client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc"})
+    client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT})
 
     base = f"swarm-account-{TENANT}--team"
     assert "rt-fresh" in client.app_ref.state.secret_store.versions[f"{base}-refresh"][-1]
@@ -262,7 +262,7 @@ def test_the_pair_is_stored_and_only_the_access_token_reaches_the_pod(client):
 
 
 def test_a_state_that_was_never_started_is_refused(client):
-    r = client.post("/v1/accounts/exchange", json={"state": "never-issued", "code": "code-abc"})
+    r = client.post("/v1/accounts/exchange", json={"state": "never-issued", "code": "code-abc", "expected_owner": TENANT})
     assert r.status_code == 422
     assert "expired or was already completed" in r.json()["message"]
 
@@ -272,9 +272,9 @@ def test_a_code_cannot_be_redeemed_twice(client):
     deleted here so the second attempt gets a sentence rather than a 403 from
     Anthropic."""
     state = _begin(client).json()["state"]
-    assert client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc"}).status_code == 201
+    assert client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT}).status_code == 201
 
-    again = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc"})
+    again = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT})
     assert again.status_code == 422
     assert "already completed" in again.json()["message"]
 
@@ -287,7 +287,7 @@ def test_a_paste_from_a_different_sign_in_is_refused(client):
 
     r = client.post(
         "/v1/accounts/exchange",
-        json={"state": state, "code": "somecode#a-different-state"},
+        json={"state": state, "code": "somecode#a-different-state", "expected_owner": TENANT},
     )
 
     assert r.status_code == 422
@@ -303,7 +303,7 @@ def test_a_rejected_code_does_not_tell_the_person_to_re_authenticate(client):
     )
     state = _begin(client).json()["state"]
 
-    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "stale"})
+    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "stale", "expected_owner": TENANT})
 
     assert r.status_code == 422
     assert "single-use" in r.json()["message"]
@@ -314,10 +314,10 @@ def test_a_failed_exchange_keeps_the_pending_sign_in_so_a_retry_is_one_paste(cli
     sign-in, including logging in again."""
     client.app_ref.state.token_endpoint = _Endpoint(error=CredentialError("nope"))
     state = _begin(client).json()["state"]
-    client.post("/v1/accounts/exchange", json={"state": state, "code": "wrong"})
+    client.post("/v1/accounts/exchange", json={"state": state, "code": "wrong", "expected_owner": TENANT})
 
     client.app_ref.state.token_endpoint = _Endpoint()
-    good = client.post("/v1/accounts/exchange", json={"state": state, "code": "right"})
+    good = client.post("/v1/accounts/exchange", json={"state": state, "code": "right", "expected_owner": TENANT})
     assert good.status_code == 201, "the pending sign-in was thrown away on a failed paste"
 
 
@@ -329,7 +329,7 @@ def test_a_token_response_without_a_refresh_token_is_refused(client):
     )
     state = _begin(client).json()["state"]
 
-    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc"})
+    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT})
 
     assert r.status_code == 422
     assert "kept alive" in r.json()["message"]
@@ -340,7 +340,7 @@ def test_expires_in_is_read_as_seconds_from_now_not_as_a_timestamp(client):
     """Reading it as an epoch would date every credential to 1970 and make the
     refresher think each one was already expired."""
     state = _begin(client).json()["state"]
-    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc"})
+    r = client.post("/v1/accounts/exchange", json={"state": state, "code": "code-abc", "expected_owner": TENANT})
 
     expires = datetime.fromisoformat(r.json()["expires_at"])
     assert expires > datetime.now(timezone.utc) + timedelta(hours=7)

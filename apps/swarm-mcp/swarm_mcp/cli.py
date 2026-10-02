@@ -49,6 +49,7 @@ from .follow import (
     NO_ATTEMPT_YET,
     NO_LOG_YET,
     STREAMS,
+    console_link,
     empty_log_line,
     event_type,
     follow,
@@ -324,6 +325,12 @@ def cmd_status(client: SwarmClient, args) -> int:
             f"{task_id}  {task.get('state')}  {task.get('runner_profile', '')}{step}"
             f"  {masked_words(task)}"
         )
+        # Where to watch it: the link the API served, as served, on its own
+        # line -- and no line at all when the API served none. Never built
+        # here (`follow.console_link`).
+        link = console_link(task)
+        if link is not None:
+            print(f"  console: {link}")
     return EXIT_OK
 
 

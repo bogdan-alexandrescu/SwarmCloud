@@ -70,14 +70,26 @@ def _reads(name: str) -> set[str]:
     return keys
 
 
+#: Every profile that starts a runner. A `worker_action` profile (contract
+#: requests 33 and 35) runs none, and a caller sends it `input: {}`.
+RUNNER_STARTING = sorted(n for n, p in RUNNER_PROFILES.items() if p.worker_action is None)
+
+
 def test_the_table_is_read():
     offers = _offers()
-    assert set(offers) >= set(RUNNER_PROFILES), (
+    assert set(offers) >= set(RUNNER_STARTING), (
         f"read offers for {sorted(offers)}, not every profile in the catalogue"
     )
 
 
-@pytest.mark.parametrize("name", sorted(RUNNER_PROFILES))
+def test_a_worker_action_is_offered_nothing():
+    offers = _offers()
+    for name, profile in RUNNER_PROFILES.items():
+        if profile.worker_action is not None:
+            assert not offers.get(name), f"the form offers the worker action {name} {offers[name]}"
+
+
+@pytest.mark.parametrize("name", RUNNER_STARTING)
 def test_every_offer_is_declared_and_read(name):
     offered = _offers()[name]
     assert offered, f"the form offers {name} nothing; this test reads nothing there"
