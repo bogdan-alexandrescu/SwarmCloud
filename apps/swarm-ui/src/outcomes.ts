@@ -72,6 +72,7 @@ export type FailureClassKey =
   | 'verdict_failed'
   | 'merge_refused'
   | 'merge_failed'
+  | 'publish_refused'
   | 'other'
   | 'no_reason'
 
