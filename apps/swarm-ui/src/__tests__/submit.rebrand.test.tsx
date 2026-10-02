@@ -47,9 +47,9 @@ describe('no runner is preselected, and an untouched form cannot send', () => {
     const { container } = render(<SubmitWorkflowScreen />)
     const go = await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     const step = container.querySelector<HTMLElement>('.wfb-step')!
-    const radios = [...step.querySelectorAll<HTMLInputElement>('input[type="radio"]')]
-    expect(radios.length).toBeGreaterThan(1)
-    expect(radios.filter((r) => r.checked), 'the first step starts on a runner').toEqual([])
+    const runner = (s: HTMLElement) => s.querySelector<HTMLSelectElement>('select.sb-runner-select')!
+    expect(runner(step).options.length).toBeGreaterThan(1)
+    expect(runner(step).value, 'the first step starts on a runner').toBe('')
     expect(visible(step)).toContain('no runner chosen')
     expect(go.hasAttribute('disabled')).toBe(true)
     const panel = container.querySelector<HTMLElement>('.sbf-send')!
@@ -59,10 +59,10 @@ describe('no runner is preselected, and an untouched form cannot send', () => {
     // A step added later starts empty too, rather than copying a default.
     fireEvent.click(container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!)
     const second = container.querySelectorAll<HTMLElement>('.wfb-step')[1]!
-    expect([...second.querySelectorAll<HTMLInputElement>('input[type="radio"]')].filter((r) => r.checked)).toEqual([])
+    expect(runner(second).value).toBe('')
 
     for (const s of [...container.querySelectorAll<HTMLElement>('.wfb-step')]) {
-      fireEvent.click(s.querySelector<HTMLInputElement>('input[type="radio"][value="mock"]')!)
+      fireEvent.change(runner(s), { target: { value: 'mock' } })
     }
     expect(go.hasAttribute('disabled')).toBe(false)
     expect(visible(panel.querySelector('h2'))).toBe('Ready to send')
@@ -122,7 +122,7 @@ describe('"+ Add setting ▾" is one menu, and it adds a setting', () => {
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     const step = container.querySelector<HTMLElement>('.wfb-step')!
     expect(within(step).queryByRole('button', { name: /Add setting/ }), 'offered before a runner is chosen').toBeNull()
-    fireEvent.click(step.querySelector<HTMLInputElement>('input[type="radio"][value="browser"]')!)
+    fireEvent.change(step.querySelector<HTMLSelectElement>('select.sb-runner-select')!, { target: { value: 'browser' } })
     fireEvent.click(within(step).getByRole('button', { name: /Add setting/ }))
     fireEvent.click(within(within(step).getByRole('group', { name: 'settings to add' })).getByRole('button', { name: /^url/ }))
     expect([...step.querySelectorAll('.sbf-field .sbf-name')].map(visible)).toContain('url')
