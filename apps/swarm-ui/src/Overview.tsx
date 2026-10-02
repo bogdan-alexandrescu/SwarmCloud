@@ -2715,7 +2715,10 @@ function AttentionLead({ checks }: { checks: Check[] }) {
                   : `clear: ${clear.map((c) => `${c.label.toLowerCase()} — ${c.note}`).join('; ')}`
               }
             >
-              {ran}/{checks.length} ran
+              {/* LABELLED (#98): `8/8` two lines under the head's `reads 8/8`
+                  was a second unlabelled fraction of a different thing. This
+                  one counts the CHECKS that ran, and says so first. */}
+              checks {ran}/{checks.length}
             </span>
             {blind.length > 0 && (
               <>

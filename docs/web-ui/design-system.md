@@ -1484,10 +1484,27 @@ the head that ships.)*
 
 **A title, then one line of provenance.** The line says what was read, how old
 it is, and the screen's read control: `4 tenants · read 2m ago · refresh`. It
-carries no description sentence. **A control that costs something prints its
-cost immediately before it on that line**, and the two sit in one unit that does
-not wrap apart: `not counted yet · 24 count() per run · Run the count`. The
-control is `.sub button`, the link-style read-now control, not a boxed button.
+carries no description sentence. **A control that costs something carries its
+cost on itself** (#138, 2026-10-02; AH-25 had put it immediately before the
+control), so the price is part of the control's name and cannot wrap away from
+it: `not counted yet · Run the count · 24 count()`. The control is `.sub button`,
+the link-style read-now control, not a boxed button.
+
+**One age per screen (#98).** Inside the frame the age of a fresh read is the
+head's (`.ctl-head-age`, scoped to the current screen's own reads, CH-2) and the
+dock's is the tab-wide one; a `Screen`'s line drops its own `read 4s ago` while
+the read is fresh (`FrameAge` in `Shell.tsx`) and prints it again, with
+`not refreshed`, once the read is stale or aged. It also keeps it whenever the
+data is older than the fetch (a cached payload's `generated_at`), and on the page
+under an open agent, whose head times the inspector. A screen whose data has an age
+the head cannot know -- Platform counts, as old as the count the server ran --
+claims the age (`useClaimPageAge`) and the head prints none.
+
+**The breadcrumb is the trail to the page (#138).** `crumbsOf` in `App.tsx`:
+every segment is a link back (the section to its first page; with an agent open,
+the list, which closes it), the open object's id is the last segment, and the
+trail stops before the page the `<h1>` names -- so Overview, Help and API reads
+draw no crumb, and no crumb repeats a title.
 
 `PageHead` in `Shell.tsx` is the markup, once: `.head > h1` over `p.sub`.
 `Screen` renders it on fourteen routes, and Platform counts and Help render it
@@ -1605,6 +1622,16 @@ the ~32px collapsed dock are about 180px on load, around 21% of an 844px
 screen; only the dock is fixed (the strip is `position: static` below 900px),
 so the two-fixed-bars concern above does not arise. The sticky strip and a
 "top" affordance are not part of this and stay tracked on #139.
+
+*(Amended 2026-10-02, #139, for the Sky shell that replaced the strip.)* Below
+760px the navigation is the spine's 44px phone header (`.sk-pbar`, sticky at
+the top of the frame's scroller) and a drawer holding the same spine and panel
+(`.sk-side`), so every section is one tap from any scroll position and no
+section ever moves. Past the header's own height of scroll the header compacts
+to 36px (`.sk-app.is-scrolled`, `scrollBand` in `Spine.tsx`); past one
+scrollport (floored at 600px) a `Top` control appears, sticky at the foot of the
+page so it sits above the dock rather than under it. On an 844px screen that is
+36px of header plus the ~32px collapsed dock: about 8% of the glass.
 
 ---
 
