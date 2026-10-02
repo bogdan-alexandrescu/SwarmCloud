@@ -49,6 +49,11 @@ locals {
 
   tick_id   = "swarm-tick"
   verify_id = "swarm-verify"
+  # The identity the per-tenant workflow-rollup jobs present to swarm-api
+  # (modules/scheduler jobs.tf, D17). Its own account rather than the tick's:
+  # swarm-api grants this one address one route (auth.ROLLUP_SWEEPER_ROUTES),
+  # and the tick reaches the scheduler and the reconciler.
+  rollup_sweeper_id = "swarm-rollup-sweeper"
 
   # scripts/register-tenant.sh and kubernetes/render.py spell this too; they
   # are not Terraform and cannot read it.
@@ -98,7 +103,7 @@ locals {
 
   infra_managed = sort(concat(
     keys(local.platform),
-    [local.tick_id, local.verify_id],
+    [local.tick_id, local.verify_id, local.rollup_sweeper_id],
     values(local.worker_ids),
     values(local.action_ids),
   ))

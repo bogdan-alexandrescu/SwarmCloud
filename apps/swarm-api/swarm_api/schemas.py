@@ -13,7 +13,12 @@ from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
-from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, check_repository_url
+from .validation import (
+    DEFAULT_CARRIER,
+    DEFAULT_STRATEGY,
+    check_repository_url,
+    parse_issue_ref,
+)
 
 
 class StrictModel(BaseModel):
@@ -157,6 +162,67 @@ class WorkflowCreate(StrictModel):
         # statement of it -- because a workflow's repository reaches
         # Task.repository_url without passing through TaskCreate.
         return check_repository_url(value)
+
+
+# --------------------------------------------------------------------------
+# Issue runs (#454)
+# --------------------------------------------------------------------------
+
+#: Review-then-fix rounds a run may spend. 3 by default, 1-5: the owner's
+#: decision on #454 (2026-10-01/02). One round is the floor because a run
+#: whose work is never reviewed before it publishes is what the review shape
+#: (#264) exists to prevent; five is the ceiling because a sixth review of the
+#: same change is a plan that was wrong, which a person should see.
+DEFAULT_FIX_ROUNDS = 3
+MIN_FIX_ROUNDS = 1
+MAX_FIX_ROUNDS = 5
+
+
+class RunCreate(StrictModel):
+    """Plan an issue, and run the plan once it is approved.
+
+    No profile, image, command or resource field, as everywhere else
+    (invariant 10): the planner and every step are `claude-code`, chosen by
+    `issueruns`, never by the caller.
+    """
+
+    #: `owner/repo#N` or the issue's URL, stored in its short form. A pull
+    #: request is refused, saying it is one (`validation.parse_issue_ref`).
+    issue: str = Field(min_length=1, max_length=1024)
+    #: `required`: the plan waits for a person to approve the digest they were
+    #: shown. `auto`: the plan is approved the moment it is read. Required by
+    #: default, because the plan is an agent's and its steps run with the
+    #: tenant's forge token.
+    plan_approval: Literal["required", "auto"] = "required"
+    #: End the run in a merge (#295). False by default, and refused while the
+    #: merge chain is disabled for the tenant (`issueruns.refuse_auto_merge`).
+    auto_merge: bool = False
+    fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
+
+    @field_validator("issue")
+    @classmethod
+    def _issue_ref(cls, value: str) -> str:
+        return parse_issue_ref(value).short
+
+
+class PlanApprove(StrictModel):
+    #: The digest of the plan the caller was SHOWN (`plan_digest` on the run).
+    #: Refused with 409 `plan_changed` when the plan is no longer that one (D3).
+    plan_digest: str = Field(min_length=1, max_length=128)
+
+
+class PlanEdit(StrictModel):
+    #: The digest of the plan being edited, so two editors cannot silently
+    #: overwrite each other: the second is refused with `plan_changed`.
+    plan_digest: str = Field(min_length=1, max_length=128)
+    #: The whole replacement plan, checked against `issueruns.PlanSpec`.
+    plan: dict[str, Any]
+
+
+class PlanReject(StrictModel):
+    #: Optional: when sent, the rejection is refused if the plan changed since.
+    plan_digest: str | None = Field(default=None, max_length=128)
+    reason: str | None = Field(default=None, max_length=1024)
 
 
 # --------------------------------------------------------------------------

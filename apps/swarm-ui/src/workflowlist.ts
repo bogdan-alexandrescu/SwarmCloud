@@ -44,10 +44,12 @@ export const BUCKET_LABEL: Readonly<Record<BucketFilter, string>> = {
 }
 
 /**
- * THE LIST'S ORDER (#111). `state` is the default the list has always had --
- * grouped failed, running, finished, newest first in each group -- so it is
- * never written. `failed` puts the workflows with the most failed steps first,
- * which is the triage order; `newest` and `oldest` are by submission.
+ * THE LIST'S ORDER (#111). `state` is the default, so it is never written: the
+ * V2 grouping (workflows.html frame 0, #503) -- what is running first, then
+ * what waits, then what finished, failures after the successes -- newest first
+ * in each group (`stateGroupOf`). `failed` puts the workflows with the most
+ * failed steps first, which is the triage order; `newest` and `oldest` are by
+ * submission.
  */
 export type WorkflowSort = 'state' | 'newest' | 'oldest' | 'failed'
 
@@ -75,6 +77,14 @@ export interface WorkflowQuery {
   readonly profile: string
   /** The list's order; `state` is the default and is never written. */
   readonly sort: WorkflowSort
+  /**
+   * THE TABLE'S STAGE FILTER (wide-workflows.html A: "a band count opens the
+   * Table filtered to that stage and state"): a dependency level, from 0, and
+   * the census word the band counted (`dag.ts` `censusWord`). Written only on
+   * a workflow's Table, and only together; null on every other address.
+   */
+  readonly stage: number | null
+  readonly stepState: string | null
 }
 
 export const EMPTY_QUERY: WorkflowQuery = {
@@ -85,6 +95,8 @@ export const EMPTY_QUERY: WorkflowQuery = {
   owner: '',
   profile: '',
   sort: 'state',
+  stage: null,
+  stepState: null,
 }
 
 /** The query a route's `view` carries, with anything unrecognised dropped to its default. */
@@ -94,6 +106,9 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
   const tab = p.get('tab')
   const state = p.get('state')
   const sort = p.get('sort')
+  const stageRaw = p.get('stage')
+  const stage = stageRaw !== null && /^\d{1,2}$/.test(stageRaw) ? Number(stageRaw) : null
+  const stepState = p.get('stepstate')
   return {
     wf: wf === null || wf === '' ? null : wf,
     tab: tab !== null && (WORKFLOW_VIEWS as readonly string[]).includes(tab) ? (tab as WorkflowView) : 'graph',
@@ -102,6 +117,8 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
     owner: p.get('owner') ?? '',
     profile: p.get('profile') ?? '',
     sort: sort !== null && (WORKFLOW_SORTS as readonly string[]).includes(sort) ? (sort as WorkflowSort) : 'state',
+    stage,
+    stepState: stage === null || stepState === null || stepState === '' ? null : stepState,
   }
 }
 
@@ -114,6 +131,10 @@ export function workflowQueryString(q: WorkflowQuery): string {
   const p = new URLSearchParams()
   if (q.wf !== null) p.set('wf', q.wf)
   if (q.wf !== null && q.tab !== 'graph') p.set('tab', q.tab)
+  if (q.wf !== null && q.tab === 'table' && q.stage !== null && q.stepState !== null) {
+    p.set('stage', String(q.stage))
+    p.set('stepstate', q.stepState)
+  }
   appendFilters(p, q)
   return p.toString()
 }
@@ -224,7 +245,40 @@ export function failedSteps(w: Workflow, taskById: ReadonlyMap<string, Task> | n
   return n
 }
 
-const BUCKET_ORDER: Readonly<Record<WorkflowBucket, number>> = { failed: 0, running: 1, finished: 2 }
+/**
+ * THE DEFAULT ORDER'S GROUPS (workflows.html frame 0, #503): live work first --
+ * the four states that hold capacity -- then parked, ready and queued work,
+ * which holds none, then succeeded, then failed and dead-lettered, then
+ * cancelled, and last a workflow whose state this read could not derive,
+ * which says so in its own row. It led with the failures, 24 of them before
+ * the one workflow running.
+ */
+export function stateGroupOf(w: Workflow): number {
+  const s = derivedStateOf(w)
+  if (s === null) return 8
+  switch (s) {
+    case 'LEASED':
+    case 'DISPATCHED':
+    case 'STARTING':
+    case 'RUNNING':
+      return 0
+    case 'PARKED':
+      return 1
+    case 'READY':
+      return 2
+    case 'QUEUED':
+    case 'SUBMITTED':
+      return 3
+    case 'SUCCEEDED':
+      return 4
+    case 'FAILED':
+      return 5
+    case 'DEAD_LETTERED':
+      return 6
+    case 'CANCELLED':
+      return 7
+  }
+}
 
 function submittedMs(w: Workflow): number {
   return Date.parse(w.created_at) || 0
@@ -243,7 +297,7 @@ export function sortWorkflows(
   const out = rows.slice()
   switch (sort) {
     case 'state':
-      return out.sort((a, b) => BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] || newest(a, b))
+      return out.sort((a, b) => stateGroupOf(a) - stateGroupOf(b) || newest(a, b))
     case 'newest':
       return out.sort(newest)
     case 'oldest':

@@ -593,7 +593,7 @@ class MaskingCache:
             self._bytes = 0
             self.hits = self.misses = 0
 
-    def masking_for(self, task: Task) -> TaskMasking:
+    def masking_for(self, task: Task, *, warm: bool = True) -> TaskMasking:
         text = json.dumps([task.input, task.metadata], ensure_ascii=False, default=str)
         digest = hashlib.blake2b(
             text.encode("utf-8", errors="surrogatepass"), digest_size=16
@@ -609,9 +609,12 @@ class MaskingCache:
         # Built outside the lock: two requests for the same task may both build
         # one, and the second put replaces the first. Either is correct.
         masking = TaskMasking.of(task)
-        # The first read of each pays for both here, not on a later request.
-        masking.input_value()
-        masking.metadata_value()
+        # The first read of each pays for both here, not on a later request --
+        # unless the caller serves neither (`view=summary`, #168): the masker
+        # memoises them, so a later full read pays for them once, then.
+        if warm:
+            masking.input_value()
+            masking.metadata_value()
         size = 3 * len(text) + 1024
         if size > self._max_bytes:
             return masking
@@ -636,9 +639,12 @@ MASKING_CACHE = MaskingCache(
 )
 
 
-def masking_for(task: Task) -> TaskMasking:
-    """The task's one masker, from `MASKING_CACHE` when the same document was masked before."""
-    return MASKING_CACHE.masking_for(task)
+def masking_for(task: Task, *, warm: bool = True) -> TaskMasking:
+    """The task's one masker, from `MASKING_CACHE` when the same document was masked before.
+
+    `warm=False` builds a missing one without masking the input and metadata.
+    """
+    return MASKING_CACHE.masking_for(task, warm=warm)
 
 
 def _served(scrubbed: Redacted) -> dict[str, Any]:

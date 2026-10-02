@@ -31,6 +31,7 @@ from .auth import (
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
+from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
 from .metrics import ApiMetrics
@@ -77,6 +78,12 @@ class AppContext:
     #: cache. Built here, never at import, so the cache is per app and a test
     #: gets the shipped code over an in-memory Firestore.
     outcomes: Outcomes
+    #: The issue preview's reader of the caller's tenant's forge token
+    #: (`swarm-tenant-<tenant>-git`, #454 mock-up 1A), and the pinned-host
+    #: GitHub client it is sent with. Both build no client until used, so
+    #: `create_app()` still needs no credentials; tests inject fakes.
+    forge_tokens: ForgeTokens | None = None
+    forge: GitHubIssues | None = None
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -125,6 +132,10 @@ def build_context(
     # settings": Cloud KMS when SPEC_SIGNING_KEY_VERSION is set, a refusal to
     # start in a hardened environment without it. Tests inject a local key.
     signer: SpecSigner | None | object = _MISSING,
+    # The issue preview's secret reader and forge client (#454). Secret
+    # Manager and api.github.com unless injected; neither builds a client here.
+    forge_tokens: ForgeTokens | None = None,
+    forge: GitHubIssues | None = None,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -194,6 +205,8 @@ def build_context(
         inspection=inspection,
         rollups=rollups,
         outcomes=outcomes,
+        forge_tokens=forge_tokens or SecretManagerForgeTokens(settings.project_id),
+        forge=forge or GitHubIssues(),
         now=now,
     )
 

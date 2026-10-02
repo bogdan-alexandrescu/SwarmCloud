@@ -474,3 +474,43 @@ run "the_reconciler_can_reach_the_broker_to_release_fenced_holds" {
     error_message = "swarm-reconciler has no QUOTA_BROKER_URL/QUOTA_BROKER_AUDIENCE, so a fenced attempt's account holds are never released early (#380)"
   }
 }
+
+# D17: the workflow-rollup jobs call swarm-api directly, so Cloud Run's edge
+# must let the sweeper through or the app's ROLLUP_SWEEPER_ROUTES check is never
+# reached. Planned with prod's shape of api_invokers -- tenant groups only, no
+# allUsers -- because that is the configuration in which a missing grant is a
+# 403 on every job; dev's allUsers hides it.
+run "the_rollup_sweeper_can_invoke_swarm_api_whatever_api_invokers_says" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    api_invokers = ["group:eng@saga.xyz"]
+    tenants = {
+      eng = { kind = "group", principal = "eng@saga.xyz", providers = ["anthropic"] }
+    }
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api.name == "swarm-api"
+    error_message = "the sweeper's invoker grant must be on swarm-api, the service its jobs call"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api.role == "roles/run.invoker"
+    error_message = "the sweeper needs run.invoker on swarm-api and nothing broader"
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_service_iam_member.rollup_sweeper_invokes_api.member == "serviceAccount:swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+    error_message = "the invoker grant must name the identity the workflow-rollup jobs mint their OIDC token as"
+  }
+
+  assert {
+    condition     = !contains(var.api_invokers, "allUsers")
+    error_message = "this run must plan without allUsers, or it proves nothing about prod"
+  }
+}

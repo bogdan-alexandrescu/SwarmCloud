@@ -13,6 +13,11 @@ output "verify_id" {
   value       = local.verify_id
 }
 
+output "rollup_sweeper_id" {
+  description = "The account the per-tenant workflow-rollup jobs present to swarm-api (modules/scheduler)."
+  value       = local.rollup_sweeper_id
+}
+
 output "tenant_worker_prefix" {
   description = "A tenant's worker account id is this plus the tenant key (modules/tenancy)."
   value       = local.tenant_worker_prefix
