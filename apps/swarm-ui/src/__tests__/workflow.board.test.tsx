@@ -263,7 +263,7 @@ function card(
 function openEveryBand(root: ParentNode): number {
   let opened = 0
   for (;;) {
-    const band = root.querySelector<HTMLButtonElement>('.wf-band[aria-expanded="false"]')
+    const band = root.querySelector<HTMLButtonElement>('.wf-band-toggle[aria-expanded="false"]')
     if (band === null) return opened
     fireEvent.click(band)
     opened += 1
@@ -581,7 +581,7 @@ describe('the expanded canvas', () => {
     // THE ONE WAY TO THE RUN, at the address the rest of the console uses.
     const open = inspector!.querySelector<HTMLAnchorElement>('a.wf-inspect-run')
     expect(open, 'the inspector carries no link to the run').toBeTruthy()
-    expect(open!.textContent).toBe('open agent →')
+    expect(open!.textContent).toBe('Open agent →')
     expect(open!.getAttribute('href')).toBe('#work/task/task_scan_a')
     // Let the attempt read the inspector started settle inside the test.
     await waitFor(() =>
@@ -753,7 +753,7 @@ describe('a stage too wide to draw', () => {
     expect(band.querySelector('.wf-band-n')!.textContent).toBe('13 steps')
     expect(bandCounts(band)).toEqual(['8 running', '3 succeeded', '2 not started'])
     // The census the band could not fit is still reachable without a mouse.
-    expect(band.getAttribute('aria-label')).toContain(
+    expect(band.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain(
       '13 steps in this stage: 8 running, 3 succeeded, 2 not started.',
     )
     // The 13 cards this replaces are NOT in the document. A band that summarised
@@ -781,14 +781,14 @@ describe('a stage too wide to draw', () => {
     // And not by colour alone: the brand's failed mark (the solid diamond),
     // in the failure hue (marks.tsx; rebrand 2026-10-01).
     expect(band.querySelector('.wf-band-count.is-bad [data-mark="failed"][data-hue="bad"]')).toBeTruthy()
-    expect(band.getAttribute('aria-label')).toContain('1 failed and 1 cancelled.')
+    expect(band.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain('1 failed and 1 cancelled.')
 
     // THE MODIFIER MEANS SOMETHING ONLY IF A CLEAN STAGE DOES NOT CARRY IT.
     const clean = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
     const b = card(clean.w, clean.tasks)
     const cleanBand = b.container.querySelector('.wf-band')!
     expect(cleanBand.className).not.toContain('has-failure')
-    expect(cleanBand.getAttribute('aria-label')).toContain(
+    expect(cleanBand.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain(
       'No step in this stage has failed or been cancelled.',
     )
   })
@@ -799,7 +799,7 @@ describe('a stage too wide to draw', () => {
     const { w } = wideStage(13, Array(13).fill('SUCCEEDED') as TaskState[])
     const { container } = card(w, new Map())
     const band = container.querySelector('.wf-band')!
-    const label = band.getAttribute('aria-label')!
+    const label = band.querySelector('.wf-band-toggle')!.getAttribute('aria-label')!
 
     expect(bandCounts(band)).toEqual(['13 not read'])
     expect(band.className).toContain('has-unread')
@@ -816,7 +816,10 @@ describe('a stage too wide to draw', () => {
   it('is a button with aria-expanded, and names what it controls once open', () => {
     const { w, tasks } = wideStage(13)
     const { container } = card(w, tasks)
-    const band = () => container.querySelector<HTMLButtonElement>('.wf-band')!
+    // THE DISCLOSURE IS THE BAND'S FIRST ROW since the wide-stage pick: the
+    // band holds count and chip buttons of its own, and a button may not hold
+    // a button (wide-workflows.html A).
+    const band = () => container.querySelector<HTMLButtonElement>('.wf-band > .wf-band-toggle')!
 
     expect(band().tagName).toBe('BUTTON')
     expect(band().getAttribute('type')).toBe('button')
@@ -845,7 +848,7 @@ describe('a stage too wide to draw', () => {
     const { container, rerender } = render(
       <CardHarness workflow={w} taskById={tasks} cardKey={0} />,
     )
-    fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-band')!)
+    fireEvent.click(container.querySelector<HTMLButtonElement>('.wf-band-toggle')!)
     expect(container.querySelectorAll('.node')).toHaveLength(15)
 
     // WHAT `reload()` DOES TO THE REAL BOARD. `WorkflowsScreen` bumps a key and
@@ -855,7 +858,7 @@ describe('a stage too wide to draw', () => {
     // production. A `WorkflowCard` that had quietly taken the expansion into a
     // `useState` of its own would close the stage here and nowhere else.
     rerender(<CardHarness workflow={w} taskById={tasks} cardKey={1} />)
-    expect(container.querySelector('.wf-band')!.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('.wf-band-toggle')!.getAttribute('aria-expanded')).toBe('true')
     expect(container.querySelectorAll('.node')).toHaveLength(15)
   })
 
@@ -1514,7 +1517,7 @@ describe('the QA pass: the canvas', () => {
     const band = container.querySelector('.wf-band')!
     // The cancellation is still counted, first, in its own tone ...
     expect(bandCounts(band)[0]).toBe('2 cancelled')
-    expect(band.getAttribute('aria-label')).toContain('0 failed and 2 cancelled.')
+    expect(band.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain('0 failed and 2 cancelled.')
     // ... and it does not take the failure rule and tint.
     expect(band.className, 'a stage somebody cancelled is painted as broken').not.toContain('has-failure')
     // Nor does its band on the map.
@@ -1900,9 +1903,9 @@ describe('the owner’s decisions: the open card', () => {
     const band = held.container.querySelector<HTMLElement>('.wf-band')!
     expect(band.className, 'the band holding the picked step is not marked').toContain('holds-picked')
     expect(band.querySelector('.wf-band-pick')?.textContent).toBe('scan-7')
-    expect(band.getAttribute('aria-label')).toContain('scan-7')
+    expect(band.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain('scan-7')
     // OPENED TO IT: the stage is drawn, and the picked step is outlined in it.
-    expect(band.getAttribute('aria-expanded'), 'the band holding the picked step stayed shut').toBe('true')
+    expect(band.querySelector('.wf-band-toggle')!.getAttribute('aria-expanded'), 'the band holding the picked step stayed shut').toBe('true')
     expect(nodeNamed(held.container, 'scan-7').className).toContain('is-picked')
     held.unmount()
 
@@ -1911,7 +1914,7 @@ describe('the owner’s decisions: the open card', () => {
     const quiet = other.container.querySelector<HTMLElement>('.wf-band')!
     expect(quiet.className).not.toContain('holds-picked')
     expect(quiet.querySelector('.wf-band-pick')).toBeNull()
-    expect(quiet.getAttribute('aria-expanded')).toBe('false')
+    expect(quiet.querySelector('.wf-band-toggle')!.getAttribute('aria-expanded')).toBe('false')
   })
 })
 
@@ -2205,7 +2208,7 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     expect(cause!.textContent).toBe('input collision: scan-0.md is staged by two parents (+1 other cause)')
     expect(cause!.getAttribute('title')).toContain(COLLISION('scan-0.md'))
     expect(cause!.getAttribute('title')).toContain('scan-4: exit 1: the agent crashed')
-    expect(band!.getAttribute('aria-label')).toContain('input collision: scan-0.md is staged by two parents')
+    expect(band!.querySelector('.wf-band-toggle')!.getAttribute('aria-label')).toContain('input collision: scan-0.md is staged by two parents')
     // A clean band has no cause line.
     const clean = card(wideStage(13, Array(13).fill('SUCCEEDED')).w, wideStage(13, Array(13).fill('SUCCEEDED')).tasks)
     expect(clean.container.querySelector('.wf-band')).toBeTruthy()
