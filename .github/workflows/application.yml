@@ -67,9 +67,14 @@ on:
       - "scripts/ci-gate.sh"
   workflow_dispatch:
 
+# Least privilege at workflow level (#457, docs/merge-step.md M4/R4).
+# `id-token: write` lets a job mint a Google identity token through workload
+# identity federation, so it is declared only on the jobs that authenticate to
+# Google (`build`). `python` and `integration` run the merged
+# repository's own tests and must not be able to mint one.
+# A job-level `permissions:` block REPLACES this one.
 permissions:
   contents: read
-  id-token: write
 
 concurrency:
   # ON MAIN, ONE GROUP PER COMMIT. A run on main is the only build of its
@@ -854,6 +859,11 @@ jobs:
     # is not mistaken for a built one.
     if: github.event_name != 'pull_request'
     environment: build-pr
+    # Authenticates to Google through workload identity: the only reason this
+    # job holds id-token (the workflow grants it to no one by default).
+    permissions:
+      contents: read
+      id-token: write
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}

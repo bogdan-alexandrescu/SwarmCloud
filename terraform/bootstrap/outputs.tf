@@ -41,6 +41,6 @@ output "deployer_grantable_project_roles" {
 }
 
 output "github_principals" {
-  description = "ref -> the principalSet permitted to assume the deployer SA. One per allowed ref: the binding pins the ref as well as the repository, so the provider's attribute_condition is not the only thing holding the boundary."
+  description = "<workflow file>@<ref> -> the principalSet permitted to assume the deployer SA. One per (workflow file, allowed ref), by attribute.job_workflow_ref: the binding pins the workflow file and the ref as well as the repository, so neither the provider's attribute_condition nor the repository alone holds the boundary (#457)."
   value       = local.github_principals
 }

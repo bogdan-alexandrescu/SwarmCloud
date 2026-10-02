@@ -10,7 +10,18 @@ to main was therefore code execution as the deployer. The property held here:
   no other job;
 * every job that authenticates to Google through workload identity has it
   (without it the auth step fails at run time, which no pull request exercises
-  because release.yml runs only on main).
+  because release.yml runs only on main);
+* `permissions:` is never a string, at workflow or job level. `write-all`
+  grants id-token without the word appearing, so the checks above, which read
+  the mapping, would pass it (the gap the #455 review found).
+
+This closed the exposure for release.yml only. #457 closes it for every
+workflow: application.yml, terraform.yml and security.yml lose their
+workflow-level grant (tests/unit/scripts/test_workflow_id_token_scope.py), and
+the deployer's workload identity binding is pinned to the workflow files that
+authenticate as it by `attribute.job_workflow_ref` (terraform/bootstrap/wif.tf).
+The pin holds once the bootstrap root is applied; until then any workflow on
+main that holds id-token can still present a token the deployer accepts.
 """
 
 from __future__ import annotations
@@ -51,3 +62,14 @@ def test_every_job_using_workload_identity_declares_id_token():
             assert (job.get("permissions") or {}).get("contents"), (
                 f"release.yml's {job_id} job's permissions block drops contents (a block replaces the workflow's)"
             )
+
+
+def test_permissions_are_never_a_string():
+    workflow = _workflow("release.yml")
+    blocks = [("workflow level", workflow.get("permissions"))]
+    blocks += [(f"job {job_id}", job.get("permissions")) for job_id, job in _jobs().items()]
+    for owner, block in blocks:
+        assert block is None or isinstance(block, dict), (
+            f"release.yml {owner} sets permissions to {block!r}; a string such as write-all "
+            "grants id-token without naming it"
+        )
