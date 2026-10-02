@@ -23,7 +23,7 @@
 .tl-pages {
   display: flex;
   gap: 2px;
-  border-bottom: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line);
   margin: 0 0 var(--ctl-s3);
 }
 .tl-pages a {
@@ -146,7 +146,7 @@
 .tl-strip {
   margin: 0 0 var(--ctl-s3);
   padding: var(--ctl-s2) var(--ctl-s3);
-  border: 1px solid var(--line-soft);
+  border: 1px solid var(--line);
   border-radius: 10px;
   background: var(--surface);
   font-size: var(--t-micro);
