@@ -152,6 +152,77 @@ request — the tenant determines which secrets they get, which GCS prefix their
 artifacts land in, and which budget they spend. Non-deterministic resolution
 would scatter one person's work across two tenants.
 
+### The tenant switcher: `X-Swarm-Tenant` selects, it never grants
+
+A person in more than one registered tenant group can work in any of them
+(owner decision 2026-10-01). The first match above is still the **default**,
+unchanged; a request may instead carry
+
+    X-Swarm-Tenant: <tenant_id>
+
+and the API then acts as that tenant — but **only** if it is one of the
+registered tenant groups Cloud Identity confirmed for this caller on this
+request. Anything else — another group's tenant, a tenant that does not exist,
+a personal `u-` tenant (the caller's own included), an admin group, a near
+miss in case — is a `403` with code `tenant_not_member`, raised in
+authentication before any route body runs, so nothing is read and nothing is
+written. The refusal is identical for "not yours" and "no such tenant", so the
+header is not an oracle for enumerating tenant ids.
+
+Why it selects and never grants. The tenant decides the service account, the
+secrets, the GCS prefix and the namespace a task runs under (invariant 9). A
+header that could *name* a tenant would let any caller pick any of those; a
+header that can only *choose among memberships already proven* changes nothing
+an attacker can reach — every tenant it can reach is one the same caller could
+already reach by being first in that group's priority. So:
+
+* **One membership check, not two.** `GET /v1/tenants/mine` lists, and the
+  header selects from, `AuthContext.tenant_choices` — the same confirmed
+  `member_groups` the default tenant is resolved from, walked in the same admin
+  order (`Authenticator._tenant_choices`). There is no second lookup that could
+  disagree with the first. A group whose lookup failed below a confirmed match
+  is dropped by `groups_for` and is therefore not selectable: an unverified
+  membership is never a choice.
+* **Tenant id and tenant principal move together.** The header replaces both
+  from one entry, so they still describe the same tenant and the store's
+  collision check (`assert_tenant_scope`, `ensure_tenant`) keeps working. Two
+  groups whose ids collide (`eng@saga.xyz`, `eng@partner.com`) appear once, as
+  the first in admin order — the one the id selects.
+* **Admin is unaffected.** `is_admin`, `is_pool_admin` and the caller's groups
+  are about the person, not the tenant, and the header does not touch them.
+* **A listed service account** (contract request 30) has no memberships to
+  choose among; any header is refused.
+
+The console (`apps/swarm-ui`) shows the spine's tenant block as a switcher
+when `/v1/tenants/mine` lists more than one tenant, and as the static label
+with copy-id otherwise. The pick is stored per browser (`swarm.tenant`), sent
+from one place (`apiHeaders` in `fetch.ts`, used by every read, write and both
+submit paths), and switching re-reads the screen. A stored pick the caller is no
+longer a member of is dropped on the first `tenant_not_member` 403 and the
+default used; a refused **read** is retried once on the default, a refused
+**write** is not — filing a change under a tenant its author did not pick is
+worse than the refusal.
+
+**Links the browser fetches itself carry it as `?tenant=`.** An artifact's
+`<img src>`, its download link and its "open full" tab
+(`/v1/tasks/{id}/artifacts/raw`) are requests the browser makes on its own, and
+those carry no custom header — so without another channel every artifact of a
+task in a switched-to tenant would 404 against the default. On exactly the
+routes in `auth.TENANT_QUERY_ROUTES` (today only that one), `current_auth`
+reads `?tenant=` and hands it to the **same** `_select_tenant` check as the
+header: it selects among verified memberships and never grants, and a value
+the caller is not a member of is the same `tenant_not_member` 403. Everywhere
+else the query parameter is ignored, so it cannot become a second way to name
+a tenant on a JSON route. A header and a query parameter that disagree are a
+422 rather than a silent precedence rule. The console adds it in one place,
+`tenantQuery` in `fetch.ts`, used by `artifactRawUrl`.
+
+**A switch is a fresh screen.** The shell keys the page on the chosen tenant,
+so switching remounts it and every read runs again under the new tenant. A
+half-filled submit form is discarded with it — deliberately: a draft written
+for one tenant (its runner profile, its credentials, its budget) submitted
+unchanged into another is the mistake the switcher exists to prevent.
+
 ---
 
 ## 3. Isolation, layer by layer

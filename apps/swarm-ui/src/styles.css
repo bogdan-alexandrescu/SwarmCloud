@@ -11990,6 +11990,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-tsel { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text); background: none; border: 1px solid var(--sk-ln); border-radius: 4px; padding: 1px 2px; min-width: 0; max-width: 100%; text-overflow: ellipsis; cursor: pointer; }
 .sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
 .sk-cp { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
 .sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }

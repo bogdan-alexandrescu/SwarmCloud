@@ -1,4 +1,4 @@
-import { noteFixtureProbe, read, route, write, type ApiRoute, type Result } from './fetch'
+import { noteFixtureProbe, read, route, tenantQuery, write, type ApiRoute, type Result } from './fetch'
 // A VALUE import, not a type: the attempt fixture needs the terminal-state set
 // so a live task's newest attempt is rendered as live, and the task fixture
 // needs the concurrency set to decide which rows hold a lease -- invariant 1's
@@ -885,9 +885,14 @@ export async function loadArtifactListing(taskId: string): Promise<Result<Artifa
  * every read already rides on, so the tenant check and read-time redaction
  * (for text) happen on the server exactly as for the content route. The name
  * is the manifest's, verbatim; the server resolves the object.
+ *
+ * The browser sends no `X-Swarm-Tenant` on such a fetch, so the chosen tenant
+ * rides as `?tenant=` (`tenantQuery`) -- without it every artifact of a task
+ * listed under a switched tenant would 404. Computed at render; the shell
+ * remounts the page on a switch, so a link never carries a stale choice.
  */
 export function artifactRawUrl(taskId: string, name: string, disposition: 'inline' | 'attachment'): string {
-  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, new URLSearchParams({ name, disposition })).url
+  return route('/v1/tasks/{id}/artifacts/raw', { id: taskId }, tenantQuery(new URLSearchParams({ name, disposition }))).url
 }
 
 /**
@@ -1871,6 +1876,29 @@ async function fixtureProviders(): Promise<Result<ProvidersPage>> {
 export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<Me>> {
   if (USE_FIXTURES) return fixtureMe(options)
   return read<Me>(route('/v1/tenants/me'), () => false, { frame: options.frame === true })
+}
+
+/** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
+export interface TenantChoice {
+  tenant_id: string
+  /** The registered group's email -- unique where the tenant id is not. */
+  display_name: string
+}
+
+/**
+ * `GET /v1/tenants/mine`: every registered tenant group the caller is a
+ * VERIFIED member of, in the admin order -- the only values `X-Swarm-Tenant`
+ * can select. A frame read, like `loadMe`. An empty list is a caller in no
+ * tenant group (a personal tenant), which is an answer, not a failure.
+ */
+export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 150))
+    noteFixtureProbe(route('/v1/tenants/mine'), 150, true, undefined, { frame: true })
+    // The fixture caller has a personal tenant, so there is nothing to pick.
+    return { status: 'empty', fetchedAt: Date.now() }
+  }
+  return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
 }
 
 /**

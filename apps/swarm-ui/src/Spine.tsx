@@ -21,11 +21,11 @@
  * Production draws a red pill and a 3px red bar across the top; the pill shows
  * only what was measured (`classifyEnvironment`), never a hardcoded word.
  */
-import { useCallback, useEffect, useRef, useState, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadCapacity, loadMe } from './api'
+import { loadCapacity, loadMe, loadMyTenants, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
-import type { Result } from './fetch'
+import { chooseTenant, chosenTenant, subscribeTenant, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS } from './help'
 import { MarkGlyph, STATE_MARK } from './marks'
 import type { Capacity, Me, TaskState } from './types'
@@ -190,12 +190,15 @@ export function rememberWorkflow(id: string, state: TaskState | null = null): vo
 }
 
 // ---------------------------------------------------------------------------
-// The frame's two reads: who you are, and the global pool for the meter.
-// Both are marked as the FRAME's, so the page head's "newest read" never
-// shows their age beside a screen still loading (CH-2).
+// The frame's reads: who you are, the global pool for the meter, and which
+// tenants you may switch to. All are marked as the FRAME's, so the page head's
+// "newest read" never shows their age beside a screen still loading (CH-2).
+//
+// `rereadOn` re-runs a read when it changes: the chosen tenant, so "who you are"
+// and the meter are re-read under the tenant just picked.
 // ---------------------------------------------------------------------------
 
-function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null): Result<T> {
+function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null, rereadOn = ''): Result<T> {
   const [r, setR] = useState<Result<T>>({ status: 'loading', since: Date.now() })
   useEffect(() => {
     let live = true
@@ -217,11 +220,12 @@ function useFrameRead<T>(load: () => Promise<Result<T>>, everyMs: number | null)
       live = false
       if (timer !== undefined) clearTimeout(timer)
     }
-  }, [load, everyMs])
+  }, [load, everyMs, rereadOn])
   return r
 }
 
 const loadFrameMe = () => loadMe({ frame: true })
+const loadFrameTenants = () => loadMyTenants()
 
 /**
  * WHAT SITS OVER THE PAGE AND OWNS THE KEYBOARD WHILE IT IS OPEN, for the N
@@ -361,8 +365,13 @@ export function SkyShell({
   foot,
   children,
 }: ShellProps) {
-  const me = useFrameRead(loadFrameMe, null)
-  const cap = useFrameRead(loadFrameCapacity, 30_000)
+  // THE CHOSEN TENANT (fetch.ts), null for the default. Every read sends it;
+  // a change re-reads the frame and remounts the page below so its reads run
+  // again under the new tenant rather than showing the old one's rows.
+  const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const me = useFrameRead(loadFrameMe, null, tenant ?? '')
+  const cap = useFrameRead(loadFrameCapacity, 30_000, tenant ?? '')
+  const mine = useFrameRead(loadFrameTenants, null)
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -586,7 +595,7 @@ export function SkyShell({
           <Icon name="collapse" />
         </button>
       </div>
-      <TenantBlock me={me} />
+      <TenantBlock me={me} mine={mine} />
       <div className="sk-pscroll">{pages}</div>
       <Meter meter={meter} unread={cap.status === 'error'} />
       <div className="sk-pfoot">
@@ -625,7 +634,9 @@ export function SkyShell({
         <Flyout section={fly} tab={section === fly ? tab : ''} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
       )}
       <main className="sk-main">
-        {children}
+        {/* Keyed on the chosen tenant: a switch is a fresh screen, every read
+            of it made again with the new X-Swarm-Tenant. */}
+        <Fragment key={tenant ?? ''}>{children}</Fragment>
         {/* A WAY BACK UP, once the page is more than a screen long and the
             reader is past the first screen of it (#139). Drawn below 760px
             only (styles.css): above it the spine never scrolls away. */}
@@ -674,11 +685,17 @@ function EnvPill({ label, prod, title, mini = false }: { label: string; prod: bo
 }
 
 /**
- * The tenant block: a static label with copy-id. The SWITCHER the mock-ups
- * draw for people in more than one tenant group is not built: `/v1/tenants/me`
- * serves one tenant and there is no route that lists or switches the others.
+ * The tenant block: a static label with copy-id, and a SWITCHER when
+ * `/v1/tenants/mine` lists more than one tenant (owner decision 2026-10-01).
+ *
+ * The switcher SELECTS among the caller's verified memberships; it grants
+ * nothing. Its options are exactly what the API confirmed, and the API refuses
+ * any other `X-Swarm-Tenant` anyway. The value shown is the tenant `/v1/tenants/me`
+ * says is in force, not the stored pick, so the block never claims a tenant the
+ * API did not answer as. A failed or one-row `/mine` read is the static label,
+ * as before: a list we could not read is not a list of one.
  */
-function TenantBlock({ me }: { me: Result<Me> }) {
+function TenantBlock({ me, mine }: { me: Result<Me>; mine: Result<TenantChoice[]> }) {
   const [said, setSaid] = useState('')
   const who = dataOf(me)
   if (who === null) {
@@ -702,13 +719,25 @@ function TenantBlock({ me }: { me: Result<Me> }) {
     )
   }
   const name = who.tenant.display_name ?? id
+  const choices = dataOf(mine) ?? []
   return (
     <div className="sk-tenant">
       <span className="sk-tg" aria-hidden>
         {name.charAt(0).toUpperCase()}
       </span>
       <span className="sk-tt">
-        <b title={id}>{name}</b>
+        {choices.length > 1 ? (
+          <select className="sk-tsel" aria-label="Tenant" title={id} value={id} onChange={(e) => chooseTenant(e.target.value)}>
+            {choices.some((c) => c.tenant_id === id) ? null : <option value={id}>{name}</option>}
+            {choices.map((c) => (
+              <option key={c.tenant_id} value={c.tenant_id}>
+                {c.display_name}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <b title={id}>{name}</b>
+        )}
         <small>
           tenant{' '}
           <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>

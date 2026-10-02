@@ -51,6 +51,29 @@ def get_me(
     }
 
 
+@router.get("/mine")
+def get_mine(auth: AuthContext = Depends(current_auth)) -> list[dict]:
+    """Every tenant the caller may select with `X-Swarm-Tenant`, admin order.
+
+    Exactly `AuthContext.tenant_choices`: the registered tenant groups Cloud
+    Identity confirmed for this request, computed by the same pass that
+    resolved the default tenant -- not a second membership check that could
+    disagree with it. Nothing is read from or written to Firestore, so a
+    tenant listed here need not have a tenant document yet; selecting it on
+    a submit creates one exactly as a first submit by its default member does.
+
+    `display_name` is the group email: it is what an admin registered, it is
+    unique where the tenant id is not, and it needs no read.
+
+    Empty for a caller whose tenant is personal (in no registered group): a
+    personal tenant is not a membership and cannot be selected.
+    """
+    return [
+        {"tenant_id": tenant_id, "display_name": group}
+        for tenant_id, group in auth.tenant_choices
+    ]
+
+
 @router.post("/me/credentials", status_code=status.HTTP_201_CREATED)
 def put_credential(
     body: CredentialCreate,
