@@ -13,14 +13,11 @@ import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
-<<<<<<< HEAD
 import { ArtifactsScreen } from './Artifacts'
 import { CheckpointsPane } from './CheckpointsPane'
 import { AttemptTimelineScreen } from './AttemptTimeline'
 import { TimelineLanesScreen } from './TimelineLanes'
-=======
 import { AgentSplit } from './AgentSplit'
->>>>>>> origin/main
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
 import {
