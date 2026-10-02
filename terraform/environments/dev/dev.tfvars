@@ -71,8 +71,20 @@ artifact_retention_days = 14
 immutable_image_tags = false
 
 # --- capacity --------------------------------------------------------------
-# Small on purpose. Dev exists to prove the control plane behaves, not to run
-# the fleet, and a runaway loop here spends real money.
+# DOUBLED by owner decision 2026-10-02 ("double the capacity settings across all
+# tenants and across all runtimes"), to raise parallel throughput. The live
+# values were doubled at ~05:20Z through scripts/pool-limit.sh (pools) and
+# PUT /v1/admin/tenants/{id}/limits (tenants); the numbers below are those live
+# values, so `scripts/pool-limit.sh --check` reports no drift and a new
+# environment is born with them. tests/unit/scripts/test_dev_tfvars_capacity.py
+# holds every derived pool and tenant limit to them.
+#
+# A ceiling above what a provider can really serve is not a cost: admission
+# simply holds the excess QUEUED or PARKED, which hold no capacity and create no
+# infrastructure demand (invariant 1), and AIMD still backs off below the
+# ceiling on the first 429. What a runaway loop can spend is still bounded by
+# `global` and each tenant's own pool.
+#
 # CHANGING THESE DOES NOT CHANGE A RUNNING ENVIRONMENT. Verified on
 # 2026-09-19: raising every number here and applying moved the terraform OUTPUT
 # and nothing else -- the live pools stayed at 20/10/5.
@@ -107,32 +119,39 @@ immutable_image_tags = false
 # tasks were denied, and that would be a different and more urgent problem than
 # the one actually measured.
 #
-# provider_tenant is now sized for the ACCOUNT POOL rather than for one
-# subscription -- three accounts at roughly five concurrent agents each. AIMD
-# still backs off multiplicatively on the first 429, so this is room to search
-# in, not a promise that fifteen will work.
+# provider_tenant is sized for the ACCOUNT POOL rather than for one
+# subscription. It was 15 (three accounts at roughly five concurrent agents
+# each) and is 40 since the 2026-10-02 doubling, which matches every live
+# provider:<p>:tenant:<t> pool terraform creates. AIMD still backs off
+# multiplicatively on the first 429, so this is room to search in, not a
+# promise that forty will work.
+#
+# Not expressible here: the live `provider:mock-provider` (100) and
+# `provider:mock-provider:tenant:eng` (100). mock-provider is what the mock
+# runner reports at runtime and no catalogue profile names it, so terraform
+# creates neither pool and `--check` does not compare them.
 pool_limits = {
-  global          = 40
-  default_tenant  = 20
-  provider_tenant = 15
+  global          = 100
+  default_tenant  = 40
+  provider_tenant = 40
 
   resource_classes = {
-    standard = 40
-    browser  = 4
-    large    = 2
+    standard = 80
+    browser  = 20
+    large    = 40
   }
 
   runner_profiles = {
-    mock        = 20
-    generic     = 10
-    claude-code = 20
-    codex       = 10
-    browser     = 4
+    mock        = 40
+    generic     = 20
+    claude-code = 80
+    codex       = 20
+    browser     = 20
   }
 
   backends = {
-    CLOUD_RUN_JOB = 40
-    GKE_AUTOPILOT = 4
+    CLOUD_RUN_JOB = 100
+    GKE_AUTOPILOT = 40
   }
 
   providers = {
@@ -140,12 +159,12 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + u-bogdan  = 2 x 15 = 30
-    #   openai     eng             = 1 x 15 = 15
-    anthropic = 30
+    #   anthropic  eng + u-bogdan  = 2 x 40 = 80   (set: 100)
+    #   openai     eng             = 1 x 40 = 40   (set: 40)
+    anthropic = 100
 
-    # Raised from 10 only because provider_tenant went to 15 and this is the
-    # floor that implies. It is NOT a measurement: the account-pool reasoning
+    # Exactly the floor provider_tenant = 40 implies, and the live value since
+    # the 2026-10-02 doubling. It is NOT a measurement: the account-pool reasoning
     # above is about three Anthropic subscriptions, and there is no equivalent
     # OpenAI pool behind this number. provider_tenant applies to every provider
     # uniformly, so lifting it for one lifts the floor for all of them.
@@ -153,7 +172,7 @@ pool_limits = {
     # If that uniformity turns out to be wrong, the fix is a per-provider
     # tenant ceiling, not a smaller number here -- a number below this floor
     # does not fail at runtime, it fails the plan.
-    openai = 15
+    openai = 40
   }
 }
 
@@ -219,8 +238,8 @@ tenants = {
     directory_group = true
     display_name    = "Engineering"
     providers       = ["anthropic", "openai"]
-    max_active      = 10
-    capacity_units  = 20
+    max_active      = 40
+    capacity_units  = 40
   }
 
   # The mock runner needs no provider key, so this tenant can smoke-test the
@@ -241,8 +260,10 @@ tenants = {
     directory_group = false
     display_name    = "Smoke tests"
     providers       = []
-    max_active      = 2
-    capacity_units  = 4
+    # Live values since the 2026-10-02 doubling. The tenant pool is
+    # min(max_active, capacity_units), so smoke's ceiling is 8, not 20.
+    max_active     = 20
+    capacity_units = 8
   }
 
   # The in-VPC verification job's own tenant.
@@ -270,8 +291,8 @@ tenants = {
     display_name    = "Verification gate"
     directory_group = false
     providers       = []
-    max_active      = 2
-    capacity_units  = 4
+    max_active      = 4
+    capacity_units  = 8
   }
 
   # A personal fallback tenant. swarm_common.identity maps a caller who is in
@@ -294,8 +315,8 @@ tenants = {
     # scripts/create-secrets.sh adds versions, so no plaintext ever reaches the
     # Terraform state file, which several teams can read.
     providers      = ["anthropic"]
-    max_active     = 2
-    capacity_units = 4
+    max_active     = 80
+    capacity_units = 80
   }
 }
 
