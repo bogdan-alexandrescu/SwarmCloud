@@ -516,8 +516,13 @@
 
 /* --- the phone ------------------------------------------------------------ */
 @media (max-width: 560px) {
-  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (#503 at 390x844). */
-  .ag-list-tabs { position: sticky; top: 0; z-index: 2; padding-top: 4px; }
+  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (#503 at 390x844).
+     The header (`.sk-pbar`, styles.css) is itself sticky at top 0, 44px tall
+     and 36px once the page is scrolled, and it sits above this strip (z 15),
+     so a strip stuck at top 0 is hidden behind it. Stick it at the header's
+     foot: 44px, and 36px while `.sk-app.is-scrolled` compacts the header. */
+  .ag-list-tabs { position: sticky; top: 44px; z-index: 2; padding-top: 4px; }
+  .sk-app.is-scrolled .ag-list-tabs { top: 36px; }
   /* THE LOG IS A BOTTOM SHEET: its newest line, and a tap for the full log. */
   .ag-logdock.is-phone.is-strip {
     position: fixed;

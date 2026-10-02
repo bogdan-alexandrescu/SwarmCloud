@@ -264,3 +264,32 @@ describe('at 390 the section’s pages are a sticky strip', () => {
     expect(cascade(sheets, strip, 'position', { width: 1440 }).winner?.value ?? 'static').toBe('static')
   })
 })
+
+// The phone header is sticky at top 0 above the strip, so a strip stuck at 0
+// is hidden behind it once the page scrolls. Asked of both header heights.
+// MUTATION: set the phone rule's `top` back to 0.
+describe('at 390 the strip sticks below the phone header, not behind it', () => {
+  it.each([
+    ['at the top of the page', ''],
+    ['once the page is scrolled', ' is-scrolled'],
+  ])('clears the header %s', (_label, cls) => {
+    const host = document.createElement('div')
+    host.innerHTML = `<div class="sk-app${cls}"><header class="sk-pbar"></header><div role="tablist" class="ag-list-tabs"></div></div>`
+    document.body.appendChild(host)
+    try {
+      const sheets = AGENTS_CSS + '\n' + STYLES
+      const bar = host.querySelector('.sk-pbar')!
+      const strip = host.querySelector('.ag-list-tabs')!
+      const px = (v: string | undefined) => {
+        expect(v, 'no value in the cascade').toMatch(/^\d+px$/)
+        return parseInt(v!, 10)
+      }
+      expect(cascade(sheets, bar, 'position', { width: 390 }).winner?.value).toBe('sticky')
+      const barHeight = px(cascade(sheets, bar, 'height', { width: 390 }).winner?.value)
+      const stripTop = px(cascade(sheets, strip, 'top', { width: 390 }).winner?.value)
+      expect(stripTop, 'the strip sticks behind the phone header').toBeGreaterThanOrEqual(barHeight)
+    } finally {
+      host.remove()
+    }
+  })
+})
