@@ -284,3 +284,75 @@ run "an_api_key_only_deployment_grows_no_refresh_secrets" {
     error_message = "refresh secrets exist only where a refresher does"
   }
 }
+
+# #454 (intake mock-up 1A, 2026-10-02): swarm-api previews an issue with the
+# caller's tenant's forge token, so it reads every tenant's `-git` secret --
+# that secret alone, in its own authoritative binding, beside the tenant's
+# worker. Not a provider key, not an App key, not a project grant.
+run "swarm_api_reads_each_tenants_git_secret_and_no_other" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    tenant_secrets = {
+      eng = {
+        providers = ["anthropic", "git", "git-merge"]
+        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+        accessor_overrides = {
+          git-merge = ["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"]
+        }
+      }
+      research = {
+        providers = ["git"]
+        accessor  = "serviceAccount:swarm-agent-worker-research@saga-agents-staging.iam.gserviceaccount.com"
+      }
+    }
+    forge_readers = ["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"]
+  }
+
+  assert {
+    condition = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git"].members == toset([
+      "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com",
+      "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com",
+    ])
+    error_message = "a tenant's -git secret is read by its worker and by swarm-api, and by nobody else"
+  }
+
+  assert {
+    condition     = contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-research-git"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    error_message = "the preview reads every tenant's -git secret, each by its own binding"
+  }
+
+  assert {
+    condition     = !contains(google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-anthropic"].members, "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com")
+    error_message = "swarm-api must never read a tenant's provider key"
+  }
+
+  assert {
+    condition     = google_secret_manager_secret_iam_binding.accessor["swarm-tenant-eng-git-merge"].members == toset(["serviceAccount:swarm-eng-merge@saga-agents-staging.iam.gserviceaccount.com"])
+    error_message = "the merge App key keeps its sole reader; swarm-api is not added to it"
+  }
+}
+
+run "a_forge_reader_must_be_a_service_account" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/secret_manager"
+  }
+
+  variables {
+    tenant_secrets = {
+      eng = {
+        providers = ["git"]
+        accessor  = "serviceAccount:swarm-agent-worker-eng@saga-agents-staging.iam.gserviceaccount.com"
+      }
+    }
+    forge_readers = ["user:someone@saga.xyz"]
+  }
+
+  expect_failures = [var.forge_readers]
+}
