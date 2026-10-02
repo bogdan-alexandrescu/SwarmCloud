@@ -69,7 +69,7 @@ from typing import Any, Callable
 from swarm_common.states import PENDING_STATES
 
 from .client import SwarmClient, SwarmError, task_id_of
-from .follow import AGENT_STREAMS, DEFAULT_EVENT_PAGE, follow, follow_command, render
+from .follow import AGENT_STREAMS, DEFAULT_EVENT_PAGE, console_link, follow, follow_command, render
 from .follow import STREAMS as RUNNER_STREAMS
 from .patches import describe_task, explain_failure
 from .render import describe_blocker, parse_time, task_label
@@ -638,6 +638,10 @@ def watch(
             "read": task.get("read"),
             "streams": "runner" if groups.get(task_id) == "runner" else "agent",
         }
+        if task.get("console"):
+            # The link `follow` copied from the API's task document; absent
+            # when the API served none.
+            row["console"] = task["console"]
         if task.get("park_reason"):
             row["park_reason"] = task["park_reason"]
         if task.get("read") == "failed":
@@ -809,6 +813,11 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     failure = explain_failure(client, task)
     if failure is not None:
         out["failure"] = failure
+    # Where the whole answer can be read: the link the API served, as served,
+    # and no key at all when it served none (`follow.console_link`).
+    link = console_link(task)
+    if link is not None:
+        out["console"] = link
     return out
 
 
