@@ -78,7 +78,15 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request, status
 
-from ..accountholds import TaskCheck, Viewer, history_view, holders_view, own_page, viewer_of
+from ..accountholds import (
+    EVERY_ACCOUNT,
+    TaskCheck,
+    Viewer,
+    history_view,
+    holders_view,
+    own_page,
+    viewer_of,
+)
 from ..auth import AuthContext, require_admin
 from ..brokerclient import AccountPool, BrokerClient
 from ..deps import AppContext, current_auth, get_context
@@ -198,6 +206,23 @@ def list_accounts(
             if isinstance(payload.get("unreadable_document_count"), int)
             else len(payload.get("unreadable_documents") or [])
         ),
+        #: Whether the broker's refresh sweep is still running (U27): when it
+        #: last completed and how. By allow-list, like everything here. An
+        #: older broker that does not serve it reads as `readable: false` --
+        #: unknown -- never as a sweep that is fine.
+        "refresh_sweep": _refresh_sweep(payload.get("refresh_sweep")),
+    }
+
+
+def _refresh_sweep(raw: Any) -> dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {"last_completed_at": None, "last_outcome": None, "readable": False}
+    completed = raw.get("last_completed_at")
+    outcome = raw.get("last_outcome")
+    return {
+        "last_completed_at": completed if isinstance(completed, str) and completed else None,
+        "last_outcome": outcome if outcome in ("ok", "error") else None,
+        "readable": raw.get("readable") is True,
     }
 
 
@@ -407,23 +432,35 @@ def _viewer(
     ctx: AppContext,
     pool: AccountPool,
     platform_route: tuple[str, str],
-) -> tuple[Viewer, str | None]:
-    """(viewer, tenant) for a holder read, or a refusal.
+) -> tuple[Viewer, str | None, Any]:
+    """(viewer, tenant, visible accounts) for a holder read, or a refusal.
 
     `scope=platform` is the admin view and goes through `require_admin` FIRST,
     before any tenant is resolved or any broker call is made. Every other
     caller sees the account only when the broker lists it for their tenant --
     owned or lent -- and gets the same 404 an unknown id gets otherwise.
+
+    The third element is what a swap may name (`accountholds._swap_side`):
+    the accounts in this tenant's own listing, id to label, and nothing else
+    -- the same set this tenant may already read on `GET /v1/accounts`.
     """
     if scope not in (None, "", "tenant", "platform"):
         raise ValidationFailed("scope must be 'tenant' or 'platform'")
     if scope == "platform":
         require_admin(auth, platform_route)
-        return "platform", None
+        return "platform", None, EVERY_ACCOUNT
     tenant_id = _tenant_id(ctx, auth)
-    for account in pool.list_accounts(tenant_id).get("accounts") or []:
-        if isinstance(account, dict) and account.get("account_id") == account_id:
-            return viewer_of(account, tenant_id), tenant_id
+    listed = [
+        a for a in pool.list_accounts(tenant_id).get("accounts") or [] if isinstance(a, dict)
+    ]
+    visible = {
+        str(a["account_id"]): str(a.get("label") or "")
+        for a in listed
+        if isinstance(a.get("account_id"), str) and a.get("account_id")
+    }
+    for account in listed:
+        if account.get("account_id") == account_id:
+            return viewer_of(account, tenant_id), tenant_id, visible
     raise NotFound(f"no account {account_id!r} in this tenant's pool")
 
 
@@ -449,13 +486,16 @@ def account_holders(
     lent account sees how many of each borrowing tenant's agents are on it;
     a borrower sees a count of everyone else's. No assignment id, no secret.
     """
-    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HOLDERS_PLATFORM_ROUTE)
+    viewer, tenant_id, visible = _viewer(
+        scope, account_id, auth, ctx, pool, HOLDERS_PLATFORM_ROUTE
+    )
     return holders_view(
         pool.holds(account_id),
         viewer=viewer,
         tenant_id=tenant_id,
         check=_check(ctx),
         now=datetime.now(timezone.utc),
+        visible=visible,
     )
 
 
@@ -560,7 +600,9 @@ def account_history(
     its own, and a count of everyone else's. The broker validates
     the window and the cursor and answers a bad one with a 422 that names it.
     """
-    viewer, tenant_id = _viewer(scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE)
+    viewer, tenant_id, visible = _viewer(
+        scope, account_id, auth, ctx, pool, HISTORY_PLATFORM_ROUTE
+    )
     now = datetime.now(timezone.utc)
     _check_range(start, "from", now)
     _check_range(end, "to", now)
@@ -598,4 +640,5 @@ def account_history(
         check=_check(ctx),
         now=datetime.now(timezone.utc),
         continued=bool(cursor),
+        visible=visible,
     )

@@ -778,3 +778,253 @@ def test_a_reconciler_with_no_bucket_configured_sweeps_nothing(db_and_objects, c
 
     assert report.checkpoint_sweep is None
     assert objects.exists(record.manifest_key)
+
+
+# ---------------------------------------------------------------------------
+# The bucket's own clock never reaches a checkpoint (D14, days_since_custom_time)
+# ---------------------------------------------------------------------------
+#
+# terraform/modules/storage/main.tf deletes a LIVE object
+# `days_since_custom_time = artifact_retention_days` after its customTime, and
+# GCS never matches that condition against an object that HAS no customTime. The
+# worker stamps one on every object it uploads except a checkpoint's
+# (`agent_worker.objectstore.is_checkpoint_key`), so the clock takes artifacts
+# and logs and cannot see a checkpoint at all: reference, through the collector
+# above, is the only thing that removes one. These tests drive the production
+# `GcsObjectStore` and `GcsCheckpointStore` over a real google-cloud-storage
+# `Blob` whose transport is a dict, and record the exact object resource the
+# library would send -- `_get_writable_metadata()` -- so "customTime" here is the
+# library's field, not a name this test invented.
+
+REPO_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _artifact_retention_days() -> int:
+    """The longest `artifact_retention_days` any environment sets: a
+    checkpoint older than every environment's clock window."""
+    import re
+
+    found = []
+    for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars")):
+        match = re.search(
+            r"^artifact_retention_days\s*=\s*(\d+)", tfvars.read_text(), flags=re.MULTILINE
+        )
+        if match:
+            found.append(int(match.group(1)))
+    assert len(found) >= 2, f"expected dev and prod to set artifact_retention_days, found {found}"
+    return max(found)
+
+
+def _bucket_rule_would_delete(resource: dict, *, now, days: int) -> bool:
+    """GCS's `daysSinceCustomTime` on one object: no customTime, no match."""
+    from datetime import datetime
+
+    stamp = resource.get("customTime")
+    if stamp is None:
+        return False
+    when = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+    return now - when >= timedelta(days=days)
+
+
+class _DictGcs:
+    """A google-cloud-storage client whose only state is a dict of objects."""
+
+    def __init__(self) -> None:
+        from google.cloud import storage
+
+        self.objects: dict[str, tuple[bytes, dict]] = {}
+        client = self
+
+        class RecordingBlob(storage.Blob):
+            def upload_from_string(self, data, content_type=None, **_):
+                if isinstance(data, str):
+                    data = data.encode("utf-8")
+                client.objects[self.name] = (bytes(data), self._get_writable_metadata())
+
+            def upload_from_filename(self, filename, content_type=None, **_):
+                self.upload_from_string(Path(filename).read_bytes(), content_type)
+
+            def download_as_bytes(self, **_):
+                return client.objects[self.name][0]
+
+            def download_to_filename(self, filename, **_):
+                Path(filename).write_bytes(client.objects[self.name][0])
+
+            def exists(self, **_):
+                return self.name in client.objects
+
+            def delete(self, **_):
+                client.objects.pop(self.name, None)
+
+        class DictBucket(storage.Bucket):
+            def blob(self, blob_name, *args, **kwargs):
+                return RecordingBlob(blob_name, bucket=self)
+
+        self._bucket_type = DictBucket
+
+    def bucket(self, name):
+        return self._bucket_type(client=self, name=name)
+
+    def list_blobs(self, bucket, prefix=""):
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(name=k) for k in sorted(self.objects) if k.startswith(prefix)]
+
+
+def test_a_parked_checkpoint_older_than_artifact_retention_days_is_kept(
+    db_and_objects, config, log
+):
+    """The defect D14 names, end to end: a task PARKED longer than the bucket's
+    retention window. Its checkpoints carry no customTime, so the bucket rule
+    cannot match them however old they are, and the collector keeps them by
+    reference. The same attempt's artifacts and logs DO carry one, so they still
+    expire on the clock exactly as before."""
+    from datetime import datetime, timezone
+
+    from agent_worker.objectstore import GcsObjectStore
+    from reconciler.checkpoints import GcsCheckpointStore
+
+    db, _local, tmp_path = db_and_objects
+    days = _artifact_retention_days()
+    gcs = _DictGcs()
+    store = GcsObjectStore(BUCKET, client=gcs)
+
+    uploaded_at = datetime.now(timezone.utc)
+    records = write_checkpoints(
+        store, tmp_path, log, task_id="task_parked", attempt_id="att_1",
+        age=timedelta(days=days + 1), count=2,
+    )
+    artifact = "tenants/eng/tasks/task_parked/attempts/att_1/artifacts/result.json"
+    logfile = "tenants/eng/tasks/task_parked/attempts/att_1/logs/runner/stdout.log"
+    store.upload_bytes(artifact, b"tenant output")
+    (tmp_path / "stdout.log").write_text("runner output")
+    store.upload_file(logfile, tmp_path / "stdout.log")
+
+    seed_task(db, task_id="task_parked", state=TaskState.PARKED, latest_checkpoint=records[-1].uri)
+    seed_attempt_doc(db, task_id="task_parked", attempt_id="att_1", completed=True)
+
+    later = uploaded_at + timedelta(days=days + 1)
+    report = CheckpointCollector(
+        reader=ControlStore(db, logger=log, txn_runner=FakeTransactionRunner(db)),
+        objects=GcsCheckpointStore(BUCKET, client=gcs),
+        config=config,
+        logger=log,
+    ).sweep(now=later)
+
+    assert report.checkpoints_examined == 2
+    assert report.reclaimed == 0
+    checkpoint_keys = [k for r in records for k in (r.manifest_key, r.archive_key)]
+    for key in checkpoint_keys:
+        assert key in gcs.objects, f"{key} was deleted"
+        resource = gcs.objects[key][1]
+        assert "customTime" not in resource, f"{key} carries a customTime the bucket clock can match"
+        assert not _bucket_rule_would_delete(resource, now=later, days=days)
+
+    for key in (artifact, logfile):
+        resource = gcs.objects[key][1]
+        assert "customTime" in resource, f"{key} has no customTime and would never expire"
+        stamped = datetime.fromisoformat(resource["customTime"].replace("Z", "+00:00"))
+        assert abs(stamped - uploaded_at) < timedelta(minutes=5)
+        assert _bucket_rule_would_delete(resource, now=later, days=days)
+        assert not _bucket_rule_would_delete(resource, now=uploaded_at, days=days)
+
+
+@pytest.mark.parametrize(
+    "key",
+    [
+        f"{checkpoint_prefix(tenant_id='eng', task_id='t', attempt_id='a', checkpoint_id='ckpt-00001')}/manifest.json",
+        f"{checkpoint_prefix(tenant_id='eng', task_id='t', attempt_id='a', checkpoint_id='ckpt-00001')}/archive.tar.gz",
+        "tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-1/nested/part",
+        "tenants/eng/tasks/t/attempts/a/artifacts/out.json",
+        "tenants/eng/tasks/t/attempts/a/artifacts/checkpoints/out.json",
+        "tenants/eng/tasks/t/attempts/a/logs/runner.log",
+        "tenants/eng/tasks/t/attempts/a/checkpoints/ckpt-1",
+        "tenants/eng/tasks/t/checkpoints/ckpt-1/manifest.json",
+        "tenants/eng/tasks/t/attempts/a/checkpoints//manifest.json",
+        "tenants/eng/verdicts/v.json",
+        "tenants/eng/.tenant",
+        "somewhere/else/entirely.txt",
+    ],
+)
+def test_the_worker_and_the_collector_agree_on_what_a_checkpoint_is(key):
+    """The two rules must be ONE rule. An object the worker leaves unstamped
+    but the collector does not recognise is kept by nothing and deleted by
+    nothing, for ever; one the worker stamps but the collector counts as a
+    checkpoint is back on the clock this change took it off."""
+    from agent_worker.objectstore import is_checkpoint_key
+
+    assert is_checkpoint_key(key) is (parse_checkpoint_key(key) is not None)
+
+
+def _age_objects(objects: LocalObjectStore, keys, *, age: timedelta) -> None:
+    import os
+
+    stamp = (utcnow() - age).timestamp()
+    for key in keys:
+        os.utime(objects.root / key, (stamp, stamp))
+
+
+def test_a_manifestless_orphan_is_dated_by_its_objects_and_collected_after_the_backstop(
+    db_and_objects, config, log
+):
+    """An archive whose manifest is gone -- a delete that died between the two
+    objects, or an upload that never committed -- with no task left to own it.
+
+    The collector cannot date it from a manifest, and until D14 it did not need
+    to: the bucket's `age` rule removed it. That rule now keys on customTime,
+    which a checkpoint never carries, so without a date of its own this object
+    would be kept by everything and deleted by nothing, for ever. It is dated by
+    its objects' creation time instead, and only the backstop takes it."""
+    db, objects, tmp_path = db_and_objects
+    window = timedelta(seconds=config.checkpoint_orphan_backstop_seconds)
+    old = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_old")
+    fresh = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_new")
+    for record in (old, fresh):
+        objects.delete(record.manifest_key)
+    _age_objects(objects, [old.archive_key], age=window + timedelta(days=1))
+
+    report = collector(db, objects, config, log).sweep(now=utcnow())
+
+    assert report.checkpoints_examined == 2
+    assert not objects.exists(old.archive_key), "an undatable orphan is kept for ever"
+    assert objects.exists(fresh.archive_key), "the backstop took an orphan inside its window"
+    assert report.reclaimed == 1
+
+
+def test_a_manifestless_orphan_whose_objects_cannot_be_dated_is_kept(
+    db_and_objects, config, log
+):
+    """A store that cannot say when an object was written holds the orphan:
+    a guard whose failure reads as "old enough" is the defect this module
+    keeps refusing."""
+    db, objects, tmp_path = db_and_objects
+    record = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_1")
+    objects.delete(record.manifest_key)
+    _age_objects(
+        objects,
+        [record.archive_key],
+        age=timedelta(seconds=config.checkpoint_orphan_backstop_seconds) + timedelta(days=30),
+    )
+
+    class Undatable:
+        def list_keys(self, prefix):
+            return objects.list_keys(prefix)
+
+        def download_bytes(self, key):
+            return objects.download_bytes(key)
+
+        def delete(self, key):
+            objects.delete(key)
+
+        def created_at(self, key):
+            raise RuntimeError("metadata read 503")
+
+    report = CheckpointCollector(
+        reader=ControlStore(db, logger=log, txn_runner=FakeTransactionRunner(db)),
+        objects=Undatable(),
+        config=config,
+        logger=log,
+    ).sweep(now=utcnow())
+
+    assert report.reclaimed == 0
+    assert objects.exists(record.archive_key)

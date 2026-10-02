@@ -574,6 +574,12 @@ locals {
       ADMIN_POOL_USERS        = join(",", sort(var.admin_pool_users))
       GROUPS_IMPERSONATE_USER = var.groups_impersonate_user
 
+      # The workflow-rollup jobs' identity (modules/scheduler, D17): may call
+      # POST /v1/admin/workflows/rollup and no other route
+      # (swarm_api.auth.ROLLUP_SWEEPER_ROUTES). Derived, not a tfvars entry,
+      # because it is exactly one account this root creates.
+      ROLLUP_SWEEPER_USERS = module.scheduler.rollup_sweeper_email
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in

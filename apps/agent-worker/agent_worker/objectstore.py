@@ -17,11 +17,22 @@ Two implementations, one interface. `GcsObjectStore` is production;
 `RUN_MODE=local` smoke runs. The local one is not a mock -- it implements the
 same semantics, including the prefix listing order the checkpoint code relies
 on, so a checkpoint round-trip test exercises the real code path.
+
+RETENTION IS DECIDED HERE, AT UPLOAD. The artifact bucket's only Delete rule on
+live objects is `days_since_custom_time = artifact_retention_days`
+(terraform/modules/storage/main.tf), and GCS never matches that condition
+against an object with no customTime. `GcsObjectStore` stamps customTime on
+every object it uploads EXCEPT a checkpoint's (`is_checkpoint_key`), so
+artifacts and logs expire on the clock and a checkpoint is invisible to it: the
+reference collector, `reconciler.checkpoints`, is the only thing that removes
+one. It replaced an `age` rule that deleted a PARKED task's only checkpoint on
+the same schedule as a finished task's leftovers (D14).
 """
 
 from __future__ import annotations
 
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Protocol, runtime_checkable
 
@@ -43,6 +54,36 @@ def validate_key(key: str) -> str:
     if not parts or any(p in ("", ".", "..") for p in parts):
         raise ObjectStoreError(f"object key contains an unsafe path segment: {key!r}")
     return key
+
+
+#: The path segment that marks a checkpoint, at the position
+#: `agent_worker.checkpoint.checkpoint_prefix` puts it. The same rule as
+#: `reconciler.checkpoints.parse_checkpoint_key`, which decides what the
+#: collector may delete; tests/unit/worker/test_checkpoint_retention.py holds
+#: the two equal, key by key. They must be ONE rule: an object this leaves
+#: unstamped and the collector does not recognise is deleted by nothing.
+CHECKPOINTS_SEGMENT = "checkpoints"
+
+
+def is_checkpoint_key(key: str) -> bool:
+    """True for an object inside a checkpoint directory:
+    `tenants/<t>/tasks/<task>/attempts/<attempt>/checkpoints/<id>/<object...>`.
+
+    Anything else -- artifacts, logs, verdicts, a layout this does not
+    recognise -- is False, and so is stamped and expires on the bucket's clock,
+    exactly as every object did before checkpoints were taken off it.
+    """
+    parts = key.split("/")
+    if len(parts) < 9:
+        return False
+    if (
+        parts[0] != "tenants"
+        or parts[2] != "tasks"
+        or parts[4] != "attempts"
+        or parts[6] != CHECKPOINTS_SEGMENT
+    ):
+        return False
+    return all(parts[1:8])
 
 
 @runtime_checkable
@@ -113,6 +154,15 @@ class LocalObjectStore:
     def exists(self, key: str) -> bool:
         return self._path(key).exists()
 
+    def created_at(self, key: str) -> datetime | None:
+        """When the object was last written, as GCS's `timeCreated` is for a
+        live object: every upload replaces it. Lets the reconciler's collector
+        date a checkpoint that has no manifest (`reconciler.checkpoints`)."""
+        path = self._path(key)
+        if not path.exists():
+            return None
+        return datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+
     def delete(self, key: str) -> None:
         path = self._path(key)
         if path.exists():
@@ -146,13 +196,24 @@ class GcsObjectStore:
     def uri(self, key: str) -> str:
         return f"gs://{self.bucket}/{validate_key(key)}"
 
-    def upload_file(self, key: str, source: Path, content_type: str | None = None) -> int:
+    def _upload_blob(self, key: str):
+        """The blob an upload writes, with customTime set unless it is a
+        checkpoint's (see the module docstring). Set on the blob before the
+        upload, so it is part of the object resource the upload sends: the
+        object is never, even briefly, live without the stamp the bucket's
+        Delete rule keys on."""
         blob = self._get_bucket().blob(validate_key(key))
+        if not is_checkpoint_key(key):
+            blob.custom_time = datetime.now(timezone.utc)
+        return blob
+
+    def upload_file(self, key: str, source: Path, content_type: str | None = None) -> int:
+        blob = self._upload_blob(key)
         blob.upload_from_filename(str(source), content_type=content_type)
         return Path(source).stat().st_size
 
     def upload_bytes(self, key: str, data: bytes, content_type: str | None = None) -> int:
-        blob = self._get_bucket().blob(validate_key(key))
+        blob = self._upload_blob(key)
         blob.upload_from_string(data, content_type=content_type or "application/octet-stream")
         return len(data)
 

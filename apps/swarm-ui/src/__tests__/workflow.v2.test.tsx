@@ -162,7 +162,17 @@ function rowIds(): string[] {
 describe('the list address', () => {
   it('parses and writes one canonical query, and drops what it does not know', () => {
     const q = wl.parseWorkflowQuery('owner=priya&state=failed&q=core&profile=codex&junk=1')
-    expect(q).toEqual({ wf: null, tab: 'graph', state: 'failed', q: 'core', owner: 'priya', profile: 'codex', sort: 'state' })
+    expect(q).toEqual({
+      wf: null,
+      tab: 'graph',
+      state: 'failed',
+      q: 'core',
+      owner: 'priya',
+      profile: 'codex',
+      sort: 'state',
+      stage: null,
+      stepState: null,
+    })
     expect(wl.workflowQueryString(q)).toBe('state=failed&q=core&owner=priya&profile=codex')
     expect(wl.parseWorkflowQuery('state=bogus&tab=table').state).toBe('all')
     // A tab means nothing on the list, so it is not written there.
@@ -267,7 +277,7 @@ describe('the workflow list', () => {
 // ---------------------------------------------------------------------------
 
 describe('one workflow', () => {
-  it('opens on its graph beside the step that needs a look, with the step table under it, and records itself in Recent', async () => {
+  it('opens on its graph with the step that needs a look in the card under it, the step table below, and records itself in Recent', async () => {
     render(<WorkflowsScreen view="wf=wf_broker&state=running&owner=priya" />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
     // The back link keeps the filters.
@@ -275,10 +285,10 @@ describe('one workflow', () => {
     expect(back.closest('a')!.getAttribute('href')).toBe('/workflows?state=running&owner=priya')
     // No board controls on a page.
     expect(screen.queryByRole('checkbox', { name: /chains only/i })).toBeNull()
-    // The running step is picked into the card beside the graph.
-    await waitFor(() => expect(document.querySelector('.wf-split.has-panel')).toBeTruthy())
+    // The running step is picked into the card, stacked under the graph (#503).
+    await waitFor(() => expect(document.querySelector('.wf-split.has-panel.is-stack')).toBeTruthy())
     expect(document.querySelector('.wfp-steps table, .wfp-steps [role="table"], .wfp-steps .wf-table')).toBeTruthy()
-    expect(recentWorkflows()[0]).toEqual({ id: 'wf_broker', state: 'RUNNING' })
+    expect(recentWorkflows()[0]).toEqual({ id: 'wf_broker', state: 'RUNNING', name: null })
   })
 
   it('draws each node in its brand mark and tint', async () => {
@@ -346,7 +356,9 @@ describe('Cancel workflow', () => {
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={onDone} cancel={cancel} />)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, cancel the workflow' }))
+    // A step runs, so the id is typed first (states.html §12; workflow.u2.test.tsx holds the lock).
+    fireEvent.change(screen.getByRole('textbox', { name: 'Type wf_broker to confirm' }), { target: { value: 'wf_broker' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel the workflow' }))
     expect(cancel).toHaveBeenCalledTimes(1)
     expect(cancel).toHaveBeenCalledWith('wf_broker')
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1))
@@ -372,7 +384,8 @@ describe('Cancel workflow', () => {
     const b = fixture()
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={onDone} cancel={cancel} />)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Yes, cancel the workflow' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Type wf_broker to confirm' }), { target: { value: 'wf_broker' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel the workflow' }))
     expect((await screen.findByRole('alert')).textContent).toContain('not a member')
     expect(onDone).not.toHaveBeenCalled()
   })
@@ -395,14 +408,14 @@ describe('the Recent (5) store', () => {
     for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) rememberWorkflow(id, 'RUNNING')
     rememberWorkflow('c', 'FAILED')
     expect(recentWorkflows().map((w) => w.id)).toEqual(['c', 'f', 'e', 'd', 'b'])
-    expect(recentWorkflows()[0]).toEqual({ id: 'c', state: 'FAILED' })
+    expect(recentWorkflows()[0]).toEqual({ id: 'c', state: 'FAILED', name: null })
   })
 
   it('still opens the bare ids the first form of the store held, unmarked', () => {
     window.localStorage.setItem(RECENT_WORKFLOWS_KEY, JSON.stringify(['wf_old', { id: 'wf_new', state: 'PARKED' }, 7]))
     expect(recentWorkflows()).toEqual([
-      { id: 'wf_old', state: null },
-      { id: 'wf_new', state: 'PARKED' },
+      { id: 'wf_old', state: null, name: null },
+      { id: 'wf_new', state: 'PARKED', name: null },
     ])
   })
 })

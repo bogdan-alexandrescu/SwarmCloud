@@ -802,8 +802,28 @@ Workflows nobody reads are converged by an explicit sweep:
 ./scripts/api.sh POST "/admin/workflows/rollup?tenant_id=$TENANT"
 ```
 
-There is no periodic caller for that route yet; see request #7 in
-[contract-change-requests.md](contract-change-requests.md).
+A Cloud Scheduler job calls that route for every registered tenant (the keys
+of `var.tenants`), every 15 minutes: `google_cloud_scheduler_job.workflow_rollup`
+in `terraform/modules/scheduler/jobs.tf`, named `swarm-workflow-rollup-<tenant>`.
+It presents an OIDC token for its own account, `swarm-rollup-sweeper`, which
+holds no project role. Its one grant is `roles/run.invoker` on swarm-api
+(`rollup_sweeper_invokes_api` in `terraform/infra/main.tf`), because in prod
+`api_invokers` names only the tenant groups and Cloud Run's edge would refuse
+the job before the application saw it. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
+set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup` and to
+nothing else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
+`tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an admin
+because admin is one boolean that opens every `/v1/admin` route, including the
+one that disables a tenant.
+
+So the stored copy of a workflow nobody reads lags its steps by at most one
+schedule interval plus a sweep, and a reader never sees the lag at all. Two
+limits: a personal `u-` tenant the API creates at runtime is not in `var.tenants`
+and is not swept (its workflows still converge on every read), and a sweep
+examines one page of a tenant's live workflows, reporting `truncated: true` when
+there are more. Request #7 in
+[contract-change-requests.md](contract-change-requests.md) is the alternative
+that would have put this write on the scheduler's own tick.
 
 ## Inspecting
 

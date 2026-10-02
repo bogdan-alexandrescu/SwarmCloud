@@ -24,6 +24,7 @@ import {
 import { classUnits, useResourceClasses } from './Blockers'
 import {
   autoTier,
+  censusWord,
   depUnits,
   edgeKinds,
   edgePath,
@@ -33,10 +34,13 @@ import {
   layoutOf,
   levelsOf,
   lookClass,
+  partialDeps,
   stepLook,
   profileMix,
   shapeOf,
   stageCensus,
+  stageGlyph,
+  stageMix,
   stepCostOf,
   stepDuration,
   workflowSpend,
@@ -45,6 +49,7 @@ import {
   DECLARED_WORDS,
   NEVER_STARTED_WORD,
   PAD,
+  SKIPPED_WORD,
   TIER_DROPS,
   ZOOM_TIERS,
   type DagBand,
@@ -52,7 +57,9 @@ import {
   type DagShape,
   type EdgeKind,
   type EdgeProvenance,
+  type MixPart,
   type StageCensus,
+  type StageMix,
   type StepDuration,
   type StepInputs,
   type StepLook,
@@ -77,7 +84,7 @@ import {
   USAGE_NOT_SAMPLED,
 } from './measure'
 import { workflowDispatchOf } from './Dispatch'
-import { Id, Screen, timeAgo } from './Shell'
+import { Id, Screen } from './Shell'
 import {
   axisOf,
   boardResultNote,
@@ -94,6 +101,7 @@ import {
   tokenPairCell,
   workflowLabel,
   workflowPullRequest,
+  VIEW_LABEL,
   type BoardTelemetryGap,
   type StepWhy,
   type WorkflowPullRequest,
@@ -101,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { MarkGlyph, STATE_MARK, StateMark } from './marks'
-import { rememberWorkflow } from './Spine'
+import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import {
@@ -135,7 +143,11 @@ import {
   type ScrubFocus,
   type SiblingRef,
   type StepRowModel,
+  type StepLook as RowLook,
+  WfStepMark,
 } from './WorkflowViews'
+import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
+import './styles/workflows.css'
 import {
   anyRunning,
   backLabel,
@@ -319,9 +331,14 @@ export function WorkflowsScreen({
   const query = useMemo(() => parseWorkflowQuery(current), [current])
   const choose = useCallback((next: WorkflowQuery) => setView(workflowQueryString(next)), [setView])
   const stores = useBoardStores()
+  const name = useRecentName(query.wf)
 
   if (query.wf !== null) {
     const id = query.wf
+    // A local, not an inline expression: the nav-heading test reads a literal or
+    // module constant as the tab's heading ('Workflows', below) and skips a
+    // per-workflow local like this one.
+    const pageTitle = name ?? id
     return (
       <>
         <a className="wfp-back" href={listHref(query)}>
@@ -329,10 +346,18 @@ export function WorkflowsScreen({
         </a>
         <Screen
           key={`wf:${id}:${stores.reloads}`}
-          title={id}
+          // THE PAGE IS TITLED BY THE WORKFLOW'S NAME (#503: the id was the
+          // `h1` and the name a second heading under it). The name is the
+          // spec's label as Recent last read it -- the list or this page
+          // records it -- and the id until one is known; the id stays on the
+          // page whole, as the head's chip.
+          title={pageTitle}
           help="absent-vs-zero"
           load={() => loadWorkflowPage(id)}
           pollMs={workflowPoll}
+          // THE META LINE UNDER THE TITLE (workflows.html B). Without it the
+          // shell's line opened on a stray "·" before the read's age.
+          summary={(d) => pageSummary(d, id)}
           empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
         >
           {(d) => <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} />}
@@ -362,6 +387,32 @@ export function WorkflowsScreen({
       {(d) => <WorkflowList board={d} query={query} choose={choose} />}
     </Screen>
   )
+}
+
+/** The name Recent holds for `id`, kept current as the list or the page records it. */
+function useRecentName(id: string | null): string | null {
+  const [name, setName] = useState<string | null>(() => (id === null ? null : recentName(id)))
+  useEffect(() => {
+    const again = () => setName(id === null ? null : recentName(id))
+    again()
+    globalThis.addEventListener?.(RECENT_WORKFLOWS_EVENT, again)
+    return () => globalThis.removeEventListener?.(RECENT_WORKFLOWS_EVENT, again)
+  }, [id])
+  return name
+}
+
+/** `4 steps · 1 → 2 → 1 · 1 of 4 done · by priya · started 8m ago`: one workflow's meta line. */
+function pageSummary(d: WorkflowBoard, id: string): string {
+  const w = d.workflows.find((x) => x.workflow_id === id)
+  if (w === undefined) return 'not in this read'
+  const shape = shapeOf(w.steps)
+  const started = workflowStartText(w, d.taskById)
+  return [
+    `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
+    rollupLine(w, d.taskById).text,
+    `by ${ownerShort(w.submitted_by)}`,
+    `started ${started.text}`,
+  ].join(' · ')
 }
 
 /** `2 running · 31 finished · 1 failed`, the list's sub-line. */
@@ -525,8 +576,8 @@ function Board({
     return {
       ids: found.map((f) => f.workflowId),
       refs: found.map((f) => {
-        const p = present(stepState(f.step, board.taskById))
-        return { workflowId: f.workflowId, dot: dotClass({ tone: p.tone, derived: p.derived }), word: p.word }
+        const l = rowLook(stepState(f.step, board.taskById))
+        return { workflowId: f.workflowId, mark: l.mark, hue: l.hue, word: l.word }
       }),
     }
   }, [scrubbable, board.taskById, pick])
@@ -631,6 +682,9 @@ function Board({
               reload={reload}
               usage={usage}
               classes={classes}
+              tableFilter={focus.filter}
+              onStageTable={focus.onStageTable}
+              onClearFilter={focus.onClearFilter}
             />
           )
         })}
@@ -647,6 +701,17 @@ interface BoardFocus {
   readonly onView: (v: WorkflowView) => void
   /** Open another workflow's page, in a view: what the same-step scrubber does there. */
   readonly onOpen: (id: string, v: WorkflowView) => void
+  /** The Table's stage filter from the address, or null. */
+  readonly filter: StageFilter | null
+  /** A band count: open the Table at one stage's steps in one state. */
+  readonly onStageTable: (level: number, word: string) => void
+  readonly onClearFilter: () => void
+}
+
+/** One stage's steps in one census word: what a band count opens the Table at. */
+export interface StageFilter {
+  readonly level: number
+  readonly word: string
 }
 
 /**
@@ -949,6 +1014,9 @@ export function WorkflowCard({
   reload,
   classes = null,
   page = false,
+  tableFilter = null,
+  onStageTable,
+  onClearFilter,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -1005,6 +1073,10 @@ export function WorkflowCard({
    * workflow's head (`WorkflowHead`), and the list is `WorkflowList`.
    */
   page?: boolean
+  /** The Table's stage filter (a band count opened it), on a workflow's page only. */
+  tableFilter?: StageFilter | null
+  onStageTable?: (level: number, word: string) => void
+  onClearFilter?: () => void
 }) {
   const roll = rollupLine(workflow, taskById)
   // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
@@ -1056,6 +1128,8 @@ export function WorkflowCard({
       onFocused={onScrubFocused}
       onClose={onClose}
       loadAttempts={loadAttempts}
+      page={page}
+      reload={reload}
     />
   )
 
@@ -1067,24 +1141,30 @@ export function WorkflowCard({
       <div className="wf-body">
         {/* THE OPEN CARD'S HEAD STATES BOTH WHOLE (#376), with the UTC
             instant and age in each hover. */}
-        <ul className="ctl-facts wf-times">
-          <li className="ctl-fact" title={started.title}>
-            <b>started</b>
-            {started.text}
-          </li>
-          <li className="ctl-fact" title={started.submittedTitle}>
-            <b>submitted</b>
-            {started.submitted}
-          </li>
-        </ul>
-        <CensusFact roll={roll} />
+        {/* ON A WORKFLOW'S PAGE THE META LINE UNDER THE TITLE SAYS BOTH: the
+            census and when it started (`pageSummary`), so the body card does
+            not say them a second time. */}
+        {!page && (
+          <ul className="ctl-facts wf-times">
+            <li className="ctl-fact" title={started.title}>
+              <b>started</b>
+              {started.text}
+            </li>
+            <li className="ctl-fact" title={started.submittedTitle}>
+              <b>submitted</b>
+              {started.submitted}
+            </li>
+          </ul>
+        )}
+        {!page && <CensusFact roll={roll} />}
         <StateDrift drift={workflow.drift} />
         <WorkflowDispatchLine workflow={workflow} taskById={taskById} pr={pr} />
         {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
             and the one mark that belongs to the workflow rather than to any
             view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
         <div className="wf-viewbar">
-          <ViewControl view={view} onChoose={chooseView} />
+          {/* The page's views are its underline tabs (`WfTabs`), under the title. */}
+          {!page && <ViewControl view={view} onChoose={chooseView} />}
           <StrayMark strays={straysOf(workflow, taskById)} />
           <UnreadableMark counts={unreadableOf(workflow, taskById)} />
         </div>
@@ -1094,7 +1174,12 @@ export function WorkflowCard({
           // tall graph is a screen away from the node that opened it. It is
           // a column on the right now, the graph narrows to make room, and
           // at phone width it is a bottom sheet (styles.css `.wf-split`).
-          <div className={`wf-split${picked !== null ? ' has-panel' : ''}`}>
+          //
+          // ON A WORKFLOW'S PAGE THE CARD SITS UNDER THE GRAPH (workflows.html
+          // B; #503): beside it, the card's same-step strip ran out past its
+          // right edge, and with the panel open the graph and the card no
+          // longer fit side by side. `is-stack` lays the split as one column.
+          <div className={`wf-split${picked !== null ? ' has-panel' : ''}${page ? ' is-stack' : ''}`}>
             <div className="wf-split-main">
               <WorkflowGraph
                 workflow={workflow}
@@ -1108,7 +1193,9 @@ export function WorkflowCard({
                 picked={picked}
                 onPick={pickStep}
                 reload={reload}
+                onStageTable={page ? onStageTable : undefined}
               />
+              {page && <WfPhoneStages workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} />}
             </div>
             {picked !== null && (
               <StepPanel
@@ -1155,6 +1242,8 @@ export function WorkflowCard({
                 picked={picked}
                 onPick={pickStep}
                 detail={picked !== null && narrow ? inspector(picked, () => closePanel(picked)) : null}
+                filter={view === 'table' ? tableFilter : null}
+                onClearFilter={onClearFilter}
               />
             </div>
             {picked !== null && !narrow && (
@@ -1266,15 +1355,29 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
 export function LookMark({ look }: { look: StepLook }) {
   const mark = look.kind === 'unknown' ? 'queued' : look.mark
   const hue = look.kind === 'unknown' ? 'warn' : look.hue
+  const skipped = look.kind === 'state' && look.skipped === true
   return (
     <span
       className={`sk-st is-${hue} wf-mk`}
-      data-mark={look.kind === 'unknown' ? 'unknown' : look.mark}
+      data-mark={look.kind === 'unknown' ? 'unknown' : skipped ? 'skipped' : look.mark}
       data-hue={hue}
       aria-hidden
     >
       <svg viewBox="0 0 12 12" focusable="false">
-        <MarkGlyph mark={mark} />
+        {skipped ? (
+          // The dashed check: ended clean, and the agent never ran.
+          <path
+            d="M2 6.4 4.8 9.1 10 3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray="2 1.6"
+          />
+        ) : (
+          <MarkGlyph mark={mark} />
+        )}
       </svg>
     </span>
   )
@@ -1702,7 +1805,6 @@ function stepRows(
   return workflow.steps
     .map((step) => {
       const state = stepState(step, taskById)
-      const p = present(state)
       const f = figuresFor(state, usage, now)
       // THE WAIT SPLITS WHERE THE LAST PARENT FINISHED (#107), read from the
       // same task read as the step's own state.
@@ -1722,7 +1824,7 @@ function stepRows(
       const row: StepRowModel = {
         step,
         taskId,
-        look: { tone: p.tone, word: p.word, title: p.title, dot: dotClass({ tone: p.tone, derived: p.derived }) },
+        look: rowLook(state),
         times,
         ran: f.ran,
         attempts: attemptsCell(state),
@@ -1770,6 +1872,8 @@ function WorkflowSteps({
   picked,
   onPick,
   detail = null,
+  filter = null,
+  onClearFilter,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -1780,10 +1884,20 @@ function WorkflowSteps({
   onPick: (stepId: string) => void
   /** The inspector, drawn under the picked row or track (#110); null when it is docked or closed. */
   detail?: ReactNode
+  /** Only one stage's steps in one census word (a band count opened the Table at them). */
+  filter?: StageFilter | null
+  onClearFilter?: () => void
 }) {
   const now = useNow()
-  const rows = stepRows(workflow, taskById, usage, now, classes)
-  if (rows.length === 0) return <span className="ctl-mark">no steps</span>
+  const all = stepRows(workflow, taskById, usage, now, classes)
+  // THE STAGE FILTER READS THE BAND'S OWN WORDS (`censusWord`) and its own
+  // levels (`stepOrder`), so "3 running" on the band opens exactly those 3.
+  const order = filter === null ? null : stepOrder(workflow.steps)
+  const rows =
+    filter === null || order === null
+      ? all
+      : all.filter((r) => order.get(r.step.step_id)?.level === filter.level && censusWord(stepState(r.step, taskById)) === filter.word)
+  if (all.length === 0) return <span className="ctl-mark">no steps</span>
   if (view === 'table') {
     // THE TOTAL, SUMMED FROM THE FIGURES THE ROWS ABOVE IT SHOW (WF-5). The
     // page head sums the same read (`useWorkflowUsage`, handed to both), and
@@ -1794,6 +1908,21 @@ function WorkflowSteps({
     const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
     return (
       <>
+        {filter !== null && (
+          <p className="wf-filter">
+            <span className="wf-filter-chip">
+              stage {filter.level + 1} · {filter.word}
+              {onClearFilter !== undefined && (
+                <button type="button" className="wf-filter-x" aria-label="Clear the stage filter" onClick={onClearFilter}>
+                  ×
+                </button>
+              )}
+            </span>
+            <span className="wf-filter-n">
+              {rows.length} of {all.length} steps
+            </span>
+          </p>
+        )}
         <WorkflowTable rows={rows} picked={picked} onPick={onPick} detail={detail} />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
@@ -1837,6 +1966,8 @@ function InspectorSlot({
   onFocused,
   onClose,
   loadAttempts,
+  page = false,
+  reload,
 }: {
   workflow: Workflow
   /** The spec's label, or null: the inspector's head names the workflow by it (#330). */
@@ -1851,6 +1982,9 @@ function InspectorSlot({
   onFocused: (() => void) | undefined
   onClose: () => void
   loadAttempts: AttemptLoader | undefined
+  /** On a workflow's page the card carries the step's Stop and its review or merge card. */
+  page?: boolean
+  reload: () => void
 }) {
   const now = useNow()
   const row = stepRows(workflow, taskById, usage, now, classes).find((r) => r.step.step_id === stepId)
@@ -1865,7 +1999,7 @@ function InspectorSlot({
   const refs: readonly SiblingRef[] =
     siblings !== undefined && siblings.length > 0
       ? siblings
-      : [{ workflowId: workflow.workflow_id, dot: row.look.dot, word: row.look.word }]
+      : [{ workflowId: workflow.workflow_id, mark: row.look.mark, hue: row.look.hue, word: row.look.word }]
   const index = Math.max(
     0,
     refs.findIndex((s) => s.workflowId === workflow.workflow_id),
@@ -1886,7 +2020,154 @@ function InspectorSlot({
       onClose={onClose}
       now={now}
       load={loadAttempts}
-    />
+    >
+      {page ? <StepCardExtras workflow={workflow} step={row.step} state={state} taskById={taskById} reload={reload} /> : null}
+    </StepInspector>
+  )
+}
+
+/**
+ * WHAT THE PAGE'S STEP CARD ADDS (workflows.html B, agent-detail-2.html A3):
+ * Stop step beside Open agent, then a review step's verdict card and the merge
+ * step's checklist, each drawn only from what the step's tasks recorded.
+ */
+function StepCardExtras({
+  workflow,
+  step,
+  state,
+  taskById,
+  reload,
+}: {
+  workflow: Workflow
+  step: WorkflowStep
+  state: StepState
+  taskById: ReadonlyMap<string, Task> | null
+  reload: () => void
+}) {
+  const tasks =
+    taskById === null
+      ? []
+      : workflow.steps.flatMap((s) => {
+          const t = s.task_id === null || s.task_id === undefined ? undefined : taskById.get(s.task_id)
+          return t === undefined ? [] : [{ ...t, step_id: t.step_id ?? s.step_id }]
+        })
+  const task = state.kind === 'state' ? state.task : null
+  const verdict = task === null ? null : verdictFor(task.id, tasks)
+  const reviewed = task !== null && verdict === null && isReviewedBy(task.id, tasks)
+  const merge = task === null ? null : mergeOf(task)
+  return (
+    <>
+      {task !== null && (
+        <div className="wf-inspect-acts" role="group" aria-label="Stop step">
+          <StopRun task={task} what={`step ${step.step_id}`} workflow={workflow} step={step} reload={reload} variant="inline" />
+        </div>
+      )}
+      {verdict !== null && <VerdictCard verdict={verdict} />}
+      {reviewed && (
+        <p className="wf-verdict is-pending">
+          <b>Review verdict</b> <span className="wf-cell is-absent">not read yet</span>: no step that gates on this review has
+          run, and the review's verdict file is read only by them.
+        </p>
+      )}
+      {merge !== null && <MergeCard merge={merge} />}
+    </>
+  )
+}
+
+/**
+ * THE REVIEW VERDICT (agent-detail-2.html A3): MERGE or NOT_YET, and the
+ * findings grouped Blocker, Major, Minor, then Not graded. The findings are the
+ * review agent's own words, printed as plain text; a finding without a
+ * severity goes under Not graded, never Blocker.
+ */
+function VerdictCard({ verdict }: { verdict: VerdictRead }) {
+  const tone = verdict.verdict === 'MERGE' ? 'is-merge' : verdict.verdict === 'NOT_YET' ? 'is-notyet' : 'is-other'
+  return (
+    <section className="wf-verdict" aria-label="Review verdict">
+      <div className="wf-card-h">
+        <b>Review verdict</b>
+        <span className={`wf-verdict-pill ${tone}`}>{verdict.verdict}</span>
+        <span className="wf-card-r">
+          read by {verdict.readBy}
+          {verdict.file !== null && ` · ${verdict.file}`}
+        </span>
+      </div>
+      {verdict.groups.map((g) => (
+        <div key={g.key} className={`wf-sev is-${g.key}`}>
+          <span className="wf-sev-h">
+            {g.label} <span className="wf-sev-n">{g.items.length}</span>
+          </span>
+          {g.items.map((text, i) => (
+            <p key={i} className="wf-finding">
+              {text}
+            </p>
+          ))}
+        </div>
+      ))}
+      <p className="wf-card-foot">
+        The review agent's own words, as plain text.{' '}
+        {verdict.groups.length === 1
+          ? 'No finding carries a severity, so none is graded.'
+          : 'A finding without a severity goes under Not graded, never Blocker.'}{' '}
+        {verdict.dropped !== null && verdict.dropped > 0 ? `${verdict.dropped} more were not kept.` : ''}
+      </p>
+    </section>
+  )
+}
+
+const CHECK_GLYPH: Readonly<Record<MergeRead['checks'][number]['state'], string>> = {
+  passed: '✓',
+  failed: '✕',
+  waiting: '⏸',
+  not_read: '—',
+}
+
+/**
+ * THE MERGE STEP'S CHECKLIST (agent-detail-2.html A3, A3b): its outcome, the
+ * refusal code, then every check in the design's row order with its state.
+ * A check past the first refusal reads "not read", not a cross.
+ */
+function MergeCard({ merge }: { merge: MergeRead }) {
+  return (
+    <section className="wf-merge" aria-label="Merge checks">
+      <div className="wf-card-h">
+        <b>Merge</b>
+        <span className={`wf-merge-out${merge.refusal !== null ? ' is-bad' : ''}`}>{merge.outcome}</span>
+        {merge.label !== null && <span className="wf-merge-label">{merge.label}</span>}
+        {merge.refusal !== null && <span className="wf-card-r">refusal {merge.refusal.code}</span>}
+      </div>
+      {merge.headline !== null && (
+        <p className="wf-merge-head">
+          <b>{merge.headline}</b>
+          {merge.refusal?.message != null && <> {merge.refusal.message}</>}
+        </p>
+      )}
+      {merge.checks.length > 0 && (
+        <ol className="wf-checks">
+          {merge.checks.map((c, i) => (
+            <li key={i} data-check={c.state} className={`wf-check is-${c.state}`}>
+              <span className="wf-check-m" aria-hidden>
+                {CHECK_GLYPH[c.state]}
+              </span>
+              <span className="wf-check-t">
+                {c.name}
+                {c.message !== null && <small>{c.message}</small>}
+                {c.state === 'not_read' && <small>not read</small>}
+              </span>
+              {c.code !== null && (c.state === 'failed' || c.state === 'not_read') && <span className="wf-check-c">{c.code}</span>}
+            </li>
+          ))}
+        </ol>
+      )}
+      <p className="wf-card-foot">
+        {merge.mergedByThisTask === null
+          ? 'Whether this step merged was not recorded.'
+          : merge.mergedByThisTask
+            ? 'This step merged the pull request.'
+            : 'This step did not merge the pull request.'}{' '}
+        From the step's result_summary.merge. The console shows the gate and the label; it changes neither.
+      </p>
+    </section>
   )
 }
 
@@ -2106,11 +2387,10 @@ function ZoomNotice({ tier, choice }: { tier: ZoomTier; choice: ZoomChoice }) {
  * They are scaled independently, on purpose, and the strip is a map of the
  * HORIZONTAL extent with the levels kept in order down it.
  *
- * ITS HEIGHT IS `BAND_H`, DERIVED AND NOT PICKED. 45px is what this sheet
- * already gives a one-line summary of a whole stage (`dag.ts` sums it from the
- * band's own rows), and a one-line summary of the whole canvas is the same kind
- * of object at the next level up. Its width is the wrapper's, so nothing about
- * it is a number somebody chose.
+ * ITS HEIGHT IS 45px: one line of summary that clears the 44px touch target.
+ * It was `BAND_H` when a band was one line; the band has three rows since the
+ * wide-stage pick (2026-10-02) and the map kept its one. Its width is the
+ * wrapper's, so nothing about it is a number somebody chose.
  *
  * A FAILURE IS VISIBLE IN HERE TOO. A step in a bad state draws in the bad
  * tone, and a COLLAPSED stage holding one draws its band in that tone -- so
@@ -2248,6 +2528,7 @@ function WorkflowGraph({
   picked,
   onPick,
   reload,
+  onStageTable,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -2262,8 +2543,18 @@ function WorkflowGraph({
   /** Clicking a node puts its step in the inspector (WF-7). */
   onPick: (stepId: string) => void
   reload: () => void
+  /**
+   * Open the Table filtered to one stage and one census word (a band count's
+   * click, wide-workflows.html A). Only a workflow's page has a Table to open;
+   * elsewhere the counts are words, not controls.
+   */
+  onStageTable?: (level: number, word: string) => void
 }) {
   const now = useNow()
+  // THE STEP UNDER THE POINTER OR FOCUS, whose own edges are lit with the
+  // picked step's (wide-workflows.html A: "lit on hover/select"). Focus does
+  // what hover does, so it is not a mouse-only reading.
+  const [hovered, setHovered] = useState<string | null>(null)
   const levels = levelsOf(workflow.steps)
   // WHAT EACH STEP DECLARED AND WHAT ARRIVED, joined once per render. Every
   // edge's style and every node's `↑` line read this, so the two cannot
@@ -2313,6 +2604,11 @@ function WorkflowGraph({
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
   const kinds = edgeKinds(layout, inputs)
+  // WHICH EDGES ARE LIT: the hovered step's, else the picked step's, own edges
+  // in and out. With either, every other edge fades; with neither, none does.
+  const focusStep = hovered ?? picked
+  const edgeLight = (e: { from: string; to: string }): string =>
+    focusStep === null ? '' : e.from === focusStep || e.to === focusStep ? ' is-lit' : ' is-faded'
 
   // WHERE THE VIEWPORT IS, for the minimap. Read off the wrapper rather than
   // computed, because it is the one number on this screen that genuinely is a
@@ -2589,7 +2885,7 @@ function WorkflowGraph({
                 // that one dependency draws one mark is unchanged.
                 <g
                   key={`${e.from}->${e.to}`}
-                  className={linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}
+                  className={`${linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}${edgeLight(e)}`}
                   data-edge={`${e.from}->${e.to}`}
                 >
                   <path
@@ -2644,6 +2940,7 @@ function WorkflowGraph({
                     w={layout.nodeW}
                     h={n.h}
                     reload={reload}
+                    onHover={setHovered}
                   />
                 ))
               if (cards.length === 0) return null
@@ -2663,10 +2960,13 @@ function WorkflowGraph({
                 key={b.level}
                 band={b}
                 census={stageCensus(b.steps, taskById)}
+                mix={stageMix(b.steps, taskById)}
                 cause={stageCause(b.steps, notes)}
                 controls={stageDomId(workflow.workflow_id, b.level)}
                 picked={picked !== null && b.steps.some((s) => s.step_id === picked) ? picked : null}
                 onToggle={() => onToggleStage(stageKey(workflow.workflow_id, b.level), b.expanded)}
+                onPick={onPick}
+                onCount={onStageTable === undefined ? undefined : (word) => onStageTable(b.level, word)}
               />
             ))}
           </div>
@@ -2713,13 +3013,18 @@ function WorkflowGraph({
 function StageBand({
   band,
   census,
+  mix,
   cause,
   controls,
   picked,
   onToggle,
+  onPick,
+  onCount,
 }: {
   band: DagBand
   census: StageCensus
+  /** The stage's state mix, slots held and named steps (`stageMix`; wide-workflows.html A). */
+  mix: StageMix
   /** What broke in this stage, when something did (#105). `stageCause`. */
   cause: StageCause | null
   controls: string
@@ -2730,6 +3035,10 @@ function StageBand({
    */
   picked: string | null
   onToggle: () => void
+  /** A named chip picks its step, as its card would. */
+  onPick: (stepId: string) => void
+  /** A count opens the Table filtered to this stage and that word; absent, counts are words. */
+  onCount?: (word: string) => void
 }) {
   // `failed` ONLY -- which already counts DEAD_LETTERED (`stageCensus`). A
   // stage of cancelled and succeeded steps was painted with the failure rule
@@ -2748,62 +3057,219 @@ function StageBand({
     // THE SELECTION IS NOT A STATE, so it takes no hue: the same three-sided
     // `--text` outline `.node.is-picked` draws, and a word (WF-10).
     picked !== null ? 'holds-picked' : '',
-    // NO `is-open` MODIFIER. Open and closed are told apart by the caret, which
-    // is the same glyph in the same slot that `.wf-bar` uses one level up for
-    // the same gesture; a second visual channel for it would be teaching a
-    // reader two answers to one question.
+    band.expanded ? 'is-opened' : '',
   ]
     .filter((c) => c !== '')
     .join(' ')
+  const first = band.steps[0]?.step_id ?? ''
+  const last = band.steps[band.steps.length - 1]?.step_id ?? ''
+  // SLOTS HELD AND WAITING (invariant 1): only LEASED to RUNNING hold
+  // capacity, so a parked or ready step is named as waiting and never counted
+  // as running. With unread steps both are floors, and the line says so.
+  const hold = holdLine(mix)
+  const chips = mix.chips.slice(0, BAND_CHIPS)
+  const more = mix.chips.length - chips.length
   return (
-    <button
-      type="button"
+    // A GROUP, NOT A BUTTON, SINCE THE WIDE-STAGE PICK: the band now holds
+    // controls of its own -- each count opens the Table, each chip picks its
+    // step -- and a button may not hold a button. The disclosure is the first
+    // row, `.wf-band-toggle`, and it keeps the census as its name.
+    <div
       className={cls}
       style={{ left: band.x, top: band.y, width: band.w, height: band.h }}
-      aria-expanded={band.expanded}
-      // Only when the stage is open, because only then does the element exist.
-      // `aria-controls` pointing at an id that is not in the document is worse
-      // than omitting it: it tells a screen reader there is somewhere to go.
-      aria-controls={band.expanded ? controls : undefined}
-      aria-label={`${census.sentence}${cause === null ? '' : ` ${cause.said}`}${picked === null ? '' : ` It holds the picked step, ${picked}.`} ${
-        band.expanded
-          ? 'Activate to collapse this stage back to one band.'
-          : `Activate to draw all ${census.steps} steps.`
-      }`}
-      onClick={onToggle}
+      role="group"
+      aria-label={`Stage ${band.level + 1}`}
+      data-level={band.level}
     >
-      <span className="wf-band-n">
-        {census.steps} step{census.steps === 1 ? '' : 's'}
-      </span>
-      <span className="wf-band-counts">
-        {census.counts.map((c) => (
-          <span key={c.word} className={`wf-band-count ${bandClass(c.look)} ${lookClass(c.look)}`}>
-            <LookMark look={c.look} />
-            {c.n} {c.word}
-          </span>
-        ))}
-      </span>
-      {/* WHY IT BROKE, ON ONE LINE (#105). The commonest cause, as the first
-          step that failed of it wrote it, and how many other causes there
-          are; every failed step's whole error is the title, and the band's
-          name says the cause for a reader who focuses it. After the counts,
-          because the counts are what says a failure is here at all. */}
-      {cause !== null && (
-        <span className="wf-band-cause" title={cause.full}>
-          {cause.text}
+      <button
+        type="button"
+        className="wf-band-toggle"
+        aria-expanded={band.expanded}
+        // Only when the stage is open, because only then does the element exist.
+        // `aria-controls` pointing at an id that is not in the document is worse
+        // than omitting it: it tells a screen reader there is somewhere to go.
+        aria-controls={band.expanded ? controls : undefined}
+        aria-label={`${census.sentence}${hold === null ? '' : ` It ${hold.said}.`}${cause === null ? '' : ` ${cause.said}`}${picked === null ? '' : ` It holds the picked step, ${picked}.`} ${
+          band.expanded
+            ? 'Activate to collapse this stage back to one band.'
+            : `Activate to draw all ${census.steps} steps.`
+        }`}
+        onClick={onToggle}
+      >
+        <span className="wf-band-n">
+          {census.steps} step{census.steps === 1 ? '' : 's'}
         </span>
-      )}
-      {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10). It
-          never gives way to the counts: the counts clip and the failures are
-          first, so what the clip costs is the end of the census, which the
-          band's name still carries whole. */}
-      {picked !== null && <span className="wf-band-pick">{picked}</span>}
-      {/* The same glyph and the same column as the workflow row's own caret,
-          because it is the same gesture one level down. */}
-      <span className="wf-caret" aria-hidden>
-        {band.expanded ? '▾' : '▸'}
+        {first !== '' && <span className="wf-band-range">{first === last ? first : `${first} … ${last}`}</span>}
+        <MixBar parts={mix.parts} className="wf-band-mix" />
+        {hold !== null && (
+          <span className="wf-band-hold" title={hold.title}>
+            {hold.text}
+          </span>
+        )}
+        {/* The same glyph and the same column as the workflow row's own caret,
+            because it is the same gesture one level down. */}
+        <span className="wf-caret">
+          {band.expanded ? 'close' : `show all ${census.steps}`} <span aria-hidden>{band.expanded ? '▾' : '▸'}</span>
+        </span>
+      </button>
+      <span className="wf-band-counts">
+        {census.counts.map((c) =>
+          onCount === undefined ? (
+            <span key={c.word} className={`wf-band-count ${bandClass(c.look)} ${lookClass(c.look)}`}>
+              <LookMark look={c.look} />
+              {c.n} {c.word}
+            </span>
+          ) : (
+            <button
+              key={c.word}
+              type="button"
+              className={`wf-band-count ${bandClass(c.look)} ${lookClass(c.look)}`}
+              aria-label={`Open the Table at the ${c.n} ${c.word} step${c.n === 1 ? '' : 's'} of stage ${band.level + 1}`}
+              onClick={() => onCount(c.word)}
+            >
+              <LookMark look={c.look} />
+              {c.n} {c.word}
+            </button>
+          ),
+        )}
+        {/* WHY IT BROKE, ON ONE LINE (#105). The commonest cause, as the first
+            step that failed of it wrote it, and how many other causes there
+            are; every failed step's whole error is the title. After the
+            counts, because the counts are what says a failure is here at all. */}
+        {cause !== null && (
+          <span className="wf-band-cause" title={cause.full}>
+            {cause.text}
+          </span>
+        )}
       </span>
-    </button>
+      {/* THE STEPS THAT NEED A LOOK, BY NAME: failed, then holding capacity,
+          then parked, each a pick target, so a failure is visible without
+          opening anything, by name and not only by count. */}
+      <span className="wf-band-chips">
+        {chips.map((c) => (
+          <button
+            key={c.stepId}
+            type="button"
+            className={`wf-band-chip ${lookClass(c.look)}${c.stepId === picked ? ' is-picked' : ''}`}
+            aria-pressed={c.stepId === picked}
+            onClick={() => onPick(c.stepId)}
+          >
+            <LookMark look={c.look} />
+            {c.stepId}
+          </button>
+        ))}
+        {more > 0 && <span className="wf-band-chip is-more">+{more} more</span>}
+        {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10),
+            when it is not one of the chips already. */}
+        {picked !== null && !chips.some((c) => c.stepId === picked) && <span className="wf-band-pick">{picked}</span>}
+      </span>
+    </div>
+  )
+}
+
+/** How many steps a phone stage card names before it counts the rest: the frame's two. */
+const PHONE_NAMED = 2
+
+/**
+ * THE GRAPH AT PHONE WIDTH (workflows.html B, phone frame): the stages as
+ * stacked cards, top to bottom -- `first · 1 step`, then `then · 4 steps` --
+ * each naming the steps that need a look (failed, holding capacity, parked,
+ * as a band names them; else the first in stage order) and counting the rest.
+ * A step picks into the card under it, as a node does. The stylesheet shows
+ * this, and hides the canvas, only below 561px; a level still never wraps.
+ */
+function WfPhoneStages({
+  workflow,
+  taskById,
+  picked,
+  onPick,
+}: {
+  workflow: Workflow
+  taskById: ReadonlyMap<string, Task> | null
+  picked: string | null
+  onPick: (stepId: string) => void
+}) {
+  const levels = levelsOf(workflow.steps)
+  if (levels.length === 0) return null
+  return (
+    <ol className="wf-ph-stages" aria-label="Stages">
+      {levels.map((level, i) => {
+        const urgent = stageMix(level, taskById).chips.map((c) => c.stepId)
+        const named = [...urgent, ...level.map((s) => s.step_id).filter((id) => !urgent.includes(id))].slice(0, PHONE_NAMED)
+        const more = level.length - named.length
+        return (
+          <li key={i} className="wf-ph-stage">
+            <span className="wf-ph-h">
+              {i === 0 ? 'first' : 'then'} · {level.length} step{level.length === 1 ? '' : 's'}
+            </span>
+            {named.map((id) => {
+              const s = level.find((x) => x.step_id === id)!
+              const state = stepState(s, taskById)
+              const l = rowLook(state)
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  className={`wf-ph-step ${lookClass(stepLook(state))}${id === picked ? ' is-picked' : ''}`}
+                  data-ph-step={id}
+                  aria-pressed={id === picked}
+                  title={l.title}
+                  onClick={() => onPick(id)}
+                >
+                  <WfStepMark look={l} />
+                  <span className="wf-ph-name">{id}</span>
+                  <span className="wf-ph-state">{l.word}</span>
+                </button>
+              )
+            })}
+            {more > 0 && <span className="wf-ph-more">+{more} more in this stage</span>}
+          </li>
+        )
+      })}
+    </ol>
+  )
+}
+
+/** How many steps a band names before it counts the rest: the frame's five. */
+const BAND_CHIPS = 5
+
+/** `holds 3 slots · 2 waiting hold none`, its title, and the clause the band's name gains; null with neither. */
+function holdLine(mix: StageMix): { text: string; title: string; said: string } | null {
+  if (mix.holding === 0 && mix.waiting === 0) return null
+  const slots = `holds ${mix.holding} slot${mix.holding === 1 ? '' : 's'}`
+  const wait = mix.waiting === 0 ? '' : ` · ${mix.waiting} waiting hold none`
+  const floor = mix.unread > 0 ? ` · ${mix.unread} not read` : ''
+  return {
+    text: `${slots}${wait}${floor}`,
+    title: `${mix.holding} step${mix.holding === 1 ? ' is' : 's are'} leased, dispatched, starting or running, and each holds its capacity. ${mix.waiting} ${mix.waiting === 1 ? 'is' : 'are'} queued, ready or parked and hold${mix.waiting === 1 ? 's' : ''} none.${mix.unread > 0 ? ` ${mix.unread} step state${mix.unread === 1 ? ' was' : 's were'} not read, so both figures are a floor.` : ''}`,
+    said: `${slots}${mix.waiting === 0 ? '' : `, and ${mix.waiting} waiting hold none`}${mix.unread > 0 ? `, counting only the steps that were read` : ''}`,
+  }
+}
+
+/** The words for a mix part, as the bar's hover says them. */
+const MIX_WORD: Readonly<Record<MixPart['kind'], string>> = {
+  bad: 'failed',
+  live: 'holding capacity',
+  park: 'parked',
+  wait: 'waiting',
+  done: 'succeeded',
+  skip: 'skipped by verdict',
+  can: 'cancelled',
+  unk: 'not read',
+}
+
+/**
+ * A STATE-MIX BAR (wide-workflows.html A): proportions at a glance, in the
+ * brand order. Decoration over the counts beside it, which say every figure,
+ * so it is hidden from assistive technology; each part's hover names it.
+ */
+function MixBar({ parts, className }: { parts: readonly MixPart[]; className: string }) {
+  return (
+    <span className={className} aria-hidden>
+      {parts.map((p) => (
+        <i key={p.kind} className={`mx-${p.kind}`} style={{ flexGrow: p.n }} title={`${p.n} ${MIX_WORD[p.kind]}`} />
+      ))}
+    </span>
   )
 }
 
@@ -2881,7 +3347,20 @@ function present(state: StepState): {
         title: `Task ${state.taskId} exists but was not in the task read. Its state is unknown -- this does not mean it is idle.`,
         derived: true,
       }
-    case 'state':
+    case 'state': {
+      // A STEP ITS VERDICT GATE KEPT FROM RUNNING (#264) ends SUCCEEDED like
+      // one whose agent did the work. It never reads like one: its word says
+      // the agent was skipped, and its title says by which verdict.
+      if (state.state === 'SUCCEEDED' && skippedByVerdict(state.task)) {
+        const verdict = gateVerdictOf(state.task)
+        return {
+          tone: stateTone(state.state),
+          glyph: stateGlyph(state.state),
+          word: SKIPPED_WORD,
+          title: `Task ${state.task.id} SUCCEEDED without running its agent: the review verdict was ${verdict ?? 'not recorded'}, which this step's gate does not run on. The step still published the reviewed work.`,
+          derived: true,
+        }
+      }
       return {
         tone: stateTone(state.state),
         glyph: stateGlyph(state.state),
@@ -2889,6 +3368,20 @@ function present(state: StepState): {
         title: `Task ${state.task.id}, attempt ${state.task.attempt_count} of ${state.task.max_attempts}`,
         derived: true,
       }
+    }
+  }
+}
+
+/** How a step's state is drawn in the Table, the Timeline and the inspector: the node's own mark (#503). */
+function rowLook(state: StepState): RowLook {
+  const p = present(state)
+  const look = stepLook(state)
+  return {
+    tone: p.tone,
+    word: p.word,
+    title: p.title,
+    mark: look.kind === 'unknown' ? 'unknown' : look.skipped === true ? 'skipped' : look.mark,
+    hue: look.kind === 'unknown' ? 'warn' : look.hue,
   }
 }
 
@@ -2914,6 +3407,7 @@ function StepNode({
   w,
   h,
   reload,
+  onHover,
 }: {
   step: WorkflowStep
   state: StepState
@@ -2949,11 +3443,16 @@ function StepNode({
   w: number
   h: number
   reload: () => void
+  /** The pointer or focus is on this card (null: it left), so the graph lights its edges. */
+  onHover?: (stepId: string | null) => void
 }) {
   const p = present(state)
   // THE BRAND LOOK (rebrand 2026-10-01): the node's mark and its tint, from
   // marks.tsx through `stepLook`, the one place a step's state becomes a hue.
   const look = stepLook(state)
+  // SKIPPED BY ITS VERDICT GATE: no agent ran, so no figure on this card may
+  // be read as the agent's run time (wide-workflows.html A).
+  const skipped = look.kind === 'state' && look.skipped === true
   const dur = stepDuration(state, now)
   // THE FIGURES ARE THE TIER, so they are only computed at the tier that draws
   // them. `figuresFor` is pure and cheap, but computing four cells per node per
@@ -3074,7 +3573,7 @@ function StepNode({
           because an empty slot where `not started` belongs is the exact
           confusion between "no measurement" and "no problem" that this screen
           exists to prevent. */}
-      {tier === 'details' && <StepTime dur={dur} />}
+      {tier === 'details' && (skipped ? <div className="node-dur is-skip">agent not run</div> : <StepTime dur={dur} />)}
       {/* The llm used. The owner's "the way it's done today", kept verbatim.
 
           MEASURED AND NOT MERGED INTO THE ID ROW, which is the obvious way to
@@ -3114,7 +3613,15 @@ function StepNode({
           costs. */}
       {f !== null && (
         <dl className="node-nums">
-          <NodeNum label="ran" cell={f.ran} pending={false} />
+          {skipped ? (
+            <NodeNum
+              label="agent"
+              cell={{ kind: 'absent', text: 'not run', note: 'The verdict gate kept this step’s agent from running; the attempt only published the reviewed work, so it has no run time.' }}
+              pending={false}
+            />
+          ) : (
+            <NodeNum label="ran" cell={f.ran} pending={false} />
+          )}
           <NodeNum label="cost" cell={f.cost} pending={pending} />
           <NodeNum label="tokens" cell={f.tokens} pending={pending} />
           <NodeNum label="ckpts" cell={f.checkpoints} pending={pending} />
@@ -3174,12 +3681,16 @@ function StepNode({
     <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
       <button
         type="button"
-        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}`}
+        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}`}
         data-step={step.step_id}
         title={p.title}
         aria-pressed={picked}
         aria-describedby={note === null ? undefined : noteId}
         onClick={() => onPick(step.step_id)}
+        onMouseEnter={onHover === undefined ? undefined : () => onHover(step.step_id)}
+        onMouseLeave={onHover === undefined ? undefined : () => onHover(null)}
+        onFocus={onHover === undefined ? undefined : () => onHover(step.step_id)}
+        onBlur={onHover === undefined ? undefined : () => onHover(null)}
       >
         {body}
       </button>
@@ -3756,16 +4267,16 @@ function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
  * THE LIST'S COLUMNS, named once, so the loading skeleton draws the head the
  * loaded table will (#113) and the first row lands where the skeleton's was.
  */
-const LIST_COLUMNS: readonly { label: string; num?: boolean }[] = [
-  { label: 'State' },
-  { label: 'Workflow' },
-  { label: 'Shape' },
-  { label: 'Steps done' },
-  { label: 'Runners' },
-  { label: 'Cost', num: true },
-  { label: 'Owner' },
-  { label: 'Started' },
-  { label: 'Duration', num: true },
+const LIST_COLUMNS: readonly { col: string; label: string; num?: boolean }[] = [
+  { col: 'state', label: 'State' },
+  { col: 'workflow', label: 'Workflow' },
+  { col: 'shape', label: 'Shape' },
+  { col: 'done', label: 'Steps done' },
+  { col: 'runners', label: 'Runners' },
+  { col: 'cost', label: 'Cost', num: true },
+  { col: 'owner', label: 'Owner' },
+  { col: 'started', label: 'Started' },
+  { col: 'duration', label: 'Duration', num: true },
 ]
 
 function ListHead() {
@@ -3773,7 +4284,8 @@ function ListHead() {
     <thead>
       <tr>
         {LIST_COLUMNS.map((c) => (
-          <th key={c.label} className={c.num === true ? 'num' : undefined}>
+          // `data-col` is what styles/workflows.css gives each column its share of the width by.
+          <th key={c.label} data-col={c.col} className={c.num === true ? 'num' : undefined}>
             {c.label}
           </th>
         ))}
@@ -3957,6 +4469,16 @@ function WorkflowList({
   // here would re-render every row once a second.
   const now = useSharedClock(AGE_TICK_MS)
 
+  // RECENT (5) BEFORE ANYTHING WAS OPENED (#503): the list read's five newest,
+  // by name, with the state this read derived, fill the panel's switcher
+  // behind the workflows opened in this browser. No read of its own.
+  useEffect(() => {
+    const newest = [...board.workflows].sort((a, b) => (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0))
+    offerNewestWorkflows(
+      newest.slice(0, 5).map((w) => ({ id: w.workflow_id, state: derivedStateOf(w), name: labels.get(w.workflow_id) ?? null })),
+    )
+  }, [board.workflows, labels])
+
   return (
     <div className="wfl">
       <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
@@ -4044,8 +4566,14 @@ function WorkflowListRow({
         {why !== null && <RowWhyLine why={why} />}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>
-      <td>
+      <td className="wfl-shape">
+        <StageGlyph steps={workflow.steps} taskById={taskById} />
         <Shape shape={shapeOf(workflow.steps)} />
+        {partialDeps(workflow.steps) && (
+          <span className="wf-pchip" title="Some steps depend on part of the level above, not all of it">
+            partial
+          </span>
+        )}
       </td>
       <td>
         <StepsDone workflow={workflow} roll={roll} />
@@ -4056,7 +4584,9 @@ function WorkflowListRow({
       <td className="num">
         <Spend spend={spend} />
       </td>
-      <td className="wfl-owner">{workflow.submitted_by ?? 'not recorded'}</td>
+      <td className="wfl-owner" title={workflow.submitted_by ?? undefined}>
+        {ownerShort(workflow.submitted_by)}
+      </td>
       <td className="wfl-started" title={started.title}>
         {started.text}
       </td>
@@ -4064,6 +4594,39 @@ function WorkflowListRow({
         {dur.text}
       </td>
     </tr>
+  )
+}
+
+/**
+ * THE OWNER, AS THE NAME BEFORE THE @ (#503: the whole address made Owner
+ * 369px wide at 1440 and pushed Started and Duration off the table). The
+ * address is the cell's title, whole; a value with no @ is printed as it is.
+ */
+export function ownerShort(owner: string | null | undefined): string {
+  if (owner === null || owner === undefined || owner === '') return 'not recorded'
+  const at = owner.indexOf('@')
+  return at > 0 ? owner.slice(0, at) : owner
+}
+
+/**
+ * THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one column per stage, taller
+ * for a wider one, filled with that stage's state mix (`stageGlyph`). Beside
+ * the text shape, which stays and says it in words; so this is decoration and
+ * hidden from assistive technology.
+ */
+function StageGlyph({ steps, taskById }: { steps: readonly WorkflowStep[]; taskById: ReadonlyMap<string, Task> | null }) {
+  const cols = stageGlyph(steps, taskById)
+  if (cols.length === 0) return null
+  return (
+    <span className="wf-sgl" aria-hidden="true">
+      {cols.map((c, i) => (
+        <i key={i} style={{ height: `${c.h}px` }}>
+          {c.mix.map((m) => (
+            <b key={m.kind} className={`mx-${m.kind}`} style={{ height: `${(100 * m.n) / c.n}%` }} />
+          ))}
+        </i>
+      ))}
+    </span>
   )
 }
 
@@ -4148,9 +4711,10 @@ function WorkflowPage({
 
   // OPENING A WORKFLOW RECORDS IT in the panel's Recent (5), with the state it
   // was read in, so the switcher can draw its mark without a read of its own.
+  const label = workflow === null ? null : workflowLabel(workflow, board.taskById)
   useEffect(() => {
-    if (found) rememberWorkflow(id, derived)
-  }, [id, found, derived])
+    if (found) rememberWorkflow(id, derived, label)
+  }, [id, found, derived, label])
 
   // THE STEP CARD BESIDE THE GRAPH: on arrival, the step that most needs a
   // look -- the first failure, else the first step holding capacity -- is
@@ -4169,8 +4733,13 @@ function WorkflowPage({
     () => ({
       id,
       view: query.tab,
-      onView: (v) => choose({ ...query, tab: v }),
-      onOpen: (target, v) => choose({ ...query, wf: target, tab: v }),
+      // A tab change puts the Table's stage filter down: it belongs to the
+      // band count that opened it, not to the Table.
+      onView: (v) => choose({ ...query, tab: v, stage: null, stepState: null }),
+      onOpen: (target, v) => choose({ ...query, wf: target, tab: v, stage: null, stepState: null }),
+      filter: query.tab === 'table' && query.stage !== null && query.stepState !== null ? { level: query.stage, word: query.stepState } : null,
+      onStageTable: (level, word) => choose({ ...query, tab: 'table', stage: level, stepState: word }),
+      onClearFilter: () => choose({ ...query, stage: null, stepState: null }),
     }),
     [id, query, choose],
   )
@@ -4186,8 +4755,37 @@ function WorkflowPage({
   return (
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
+      <WfTabs view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
       <Board board={board} stores={stores} focus={focus} usage={usage} />
     </div>
+  )
+}
+
+/** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline. */
+const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
+
+/**
+ * UNDERLINE TABS UNDER THE TITLE (workflows.html B; components.html A
+ * `.c-tabs`), with the step count on Table. They were a boxed segmented control
+ * inside the body card (#503). Each tab is a route of its own, so the one on
+ * screen is `aria-current="page"`, not a pressed toggle.
+ */
+function WfTabs({ view, steps, onView }: { view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+  return (
+    <nav className="wf-tabs" aria-label="Views of this workflow">
+      {PAGE_TABS.map((v) => (
+        <button
+          key={v}
+          type="button"
+          className={v === view ? 'is-on' : undefined}
+          aria-current={v === view ? 'page' : undefined}
+          onClick={() => onView(v)}
+        >
+          {VIEW_LABEL[v]}
+          {v === 'table' && <span className="wf-tab-n">{steps}</span>}
+        </button>
+      ))}
+    </nav>
   )
 }
 
@@ -4215,33 +4813,27 @@ function WorkflowHead({
   /** The page's attempt read: the head totals from the figures the table does (WF-5). */
   usage: UsageRead
 }) {
-  const roll = rollupLine(workflow, taskById)
-  const shape = shapeOf(workflow.steps)
   const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
-  const facts = [
-    `${shape.steps} step${shape.steps === 1 ? '' : 's'} · ${shape.text}`,
-    roll.text,
-    spend.usd === null ? 'cost not reported' : money(spend.usd),
-    `by ${workflow.submitted_by ?? 'not recorded'}`,
-    timeAgo(workflow.created_at),
-  ]
+  // ONE ROW, CHIPS LEFT AND ACTIONS RIGHT (workflows.html B; #503). The title
+  // and its meta line are the shell's head above (`pageSummary`); this row
+  // carries what is not a sentence -- the state, the pull request, the failure
+  // policy, the cost, the id when the title is the name -- and Copy link and
+  // Cancel workflow, centred on the row so nothing leaves blank space under them.
   return (
     <div className="wfp-head">
-      <div className="wfp-head-l">
-        <div className="wfp-chips">
-          <WorkflowStateMark workflow={workflow} />
-          {pr !== null && <PullRequestLink pr={pr} className="wfp-chip" />}
-          <span className="wfp-chip">
-            on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}
-          </span>
-          {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
-        </div>
-        {label !== null && <b className="wfp-label">{label}</b>}
-        <span className="wfp-facts" title={roll.why}>
-          {facts.join(' · ')}
+      <div className="wfp-chips">
+        <WorkflowStateMark workflow={workflow} />
+        {pr !== null && <PullRequestLink pr={pr} className="wfp-chip" />}
+        <span className="wfp-chip">
+          on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}
         </span>
+        <span className="wfp-chip wfp-cost">
+          {spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}
+        </span>
+        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </div>
       <span className="wfp-actions">
         <CopyLink />
@@ -4320,9 +4912,16 @@ export function CancelWorkflow({
 }) {
   const [phase, setPhase] = useState<'idle' | 'asking' | 'sending' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [typed, setTyped] = useState('')
   const derived = derivedStateOf(workflow)
   if (derived !== null && TERMINAL_STATES.has(derived)) return null
   if (cancelPending(workflow) && phase === 'idle') return null
+  // THE ID IS TYPED WHILE A STEP RUNS (states.html §12, picked C): stopping a
+  // step that holds capacity ends work in flight, so the confirm unlocks only
+  // on the exact workflow id. With nothing running, the two-click confirm
+  // stays: cancelling work that has not started loses nothing.
+  const typedConfirm = holdsCapacity(workflow, taskById)
+  const unlocked = !typedConfirm || typed === workflow.workflow_id
 
   const send = async () => {
     setPhase('sending')
@@ -4346,19 +4945,78 @@ export function CancelWorkflow({
   return (
     <div className="wfp-confirm" role="group" aria-label="Confirm cancelling this workflow">
       <p>{cancelConsequence(workflow, taskById)}</p>
+      {typedConfirm && <WfTypedConfirm expect={workflow.workflow_id} value={typed} onChange={setTyped} disabled={phase === 'sending'} />}
       {phase === 'failed' && error !== null && (
         <p className="wfp-confirm-err" role="alert">
           The cancel was not recorded: {error}
         </p>
       )}
       <span className="wfp-confirm-do">
-        <button type="button" className="btn danger wfp-btn" disabled={phase === 'sending'} onClick={() => void send()}>
-          {phase === 'sending' ? 'Cancelling…' : 'Yes, cancel the workflow'}
+        <button
+          type="button"
+          className="btn danger wfp-btn"
+          disabled={phase === 'sending' || !unlocked}
+          onClick={() => {
+            if (unlocked) void send()
+          }}
+        >
+          {phase === 'sending' ? 'Cancelling…' : typedConfirm ? 'Cancel the workflow' : 'Yes, cancel the workflow'}
         </button>
-        <button type="button" className="btn wfp-btn" disabled={phase === 'sending'} onClick={() => setPhase('idle')}>
+        <button
+          type="button"
+          className="btn wfp-btn"
+          disabled={phase === 'sending'}
+          onClick={() => {
+            setTyped('')
+            setPhase('idle')
+          }}
+        >
           Keep it running
         </button>
       </span>
     </div>
+  )
+}
+
+/** Whether any step of the workflow holds capacity on this read: LEASED, DISPATCHED, STARTING or RUNNING. */
+function holdsCapacity(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): boolean {
+  return workflow.steps.some((s) => {
+    const st = stepState(s, taskById)
+    return st.kind === 'state' && STATE_MARK[st.state].hue === 'live'
+  })
+}
+
+/**
+ * THE TYPED CONFIRM, LOCAL TO THIS SECTION (components.html A `.c-dlg` with
+ * its typed variant; named `Wf` so a later pass can swap in the shared one):
+ * "Type <id> to confirm", in the mono face, unlocking only on an exact match.
+ */
+function WfTypedConfirm({
+  expect: want,
+  value,
+  onChange,
+  disabled,
+}: {
+  expect: string
+  value: string
+  onChange: (v: string) => void
+  disabled: boolean
+}) {
+  return (
+    <label className="wf-typed">
+      <span className="wf-typed-l">
+        Type <b className="mono">{want}</b> to confirm
+      </span>
+      <input
+        type="text"
+        className="mono"
+        autoComplete="off"
+        spellCheck={false}
+        value={value}
+        disabled={disabled}
+        aria-label={`Type ${want} to confirm`}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </label>
   )
 }
