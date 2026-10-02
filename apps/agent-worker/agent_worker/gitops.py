@@ -2423,7 +2423,11 @@ def fetch_branch_tip(
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
     cred_file = _write_credentials(url, token, private_dir)
-    config_args = [*_TOKEN_SAFE, "-c", f"credential.helper=store --file={cred_file}"]
+    # As in `push_branch`: no helper at all for a host the token may not go to
+    # (#307), so the fetch runs without a credential rather than not at all.
+    config_args = [*_TOKEN_SAFE]
+    if cred_file is not None:
+        config_args += ["-c", f"credential.helper=store --file={cred_file}"]
     slug = "carrier-fetch"
     try:
         code, _ = _git_text(
@@ -2440,7 +2444,8 @@ def fetch_branch_tip(
         )
     finally:
         try:
-            cred_file.unlink(missing_ok=True)
+            if cred_file is not None:
+                cred_file.unlink(missing_ok=True)
         except OSError as exc:
             logger.error("could not remove the git credential file", error=str(exc))
     if code != 0:
