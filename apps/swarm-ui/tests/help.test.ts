@@ -218,7 +218,10 @@ function topicBlock(markup: string, id: string): string {
  */
 test('the Help page head says what the page is and which topic is showing (AH-25)', () => {
   const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id))
-  const line = (markup: string): string => /<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? ''
+  // The line's TEXT: the shared page head (U0) wraps it in a `c-age` span, so
+  // tags inside the paragraph are dropped before the words are judged.
+  const line = (markup: string): string =>
+    (/<p class="sub">([\s\S]*?)<\/p>/.exec(markup)?.[1] ?? '').replace(/<[^>]+>/g, '')
   const bare = renderToStaticMarkup(createElement(HelpScreen, { topic: '' }))
   const deep = renderToStaticMarkup(createElement(HelpScreen, { topic: 'absent-vs-zero' }))
   const stale = renderToStaticMarkup(createElement(HelpScreen, { topic: 'a-topic-that-was-renamed' }))
