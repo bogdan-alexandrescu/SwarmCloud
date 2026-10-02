@@ -67,7 +67,10 @@ EXPECTED_TOOLS = {
     "step": {"swarm_follow"},
     # `swarm_workflow_spec` reads a spec FILE for /sc:run (epic #227): a workflow
     # script has no filesystem, so the bridge reads it and digests it.
-    "workflow": {"swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status"},
+    # `swarm_follow` is the probe (owner decision, 2026-10-01): after a submit
+    # or an attach it makes the rows' own progress follow once, so a bridge
+    # that refuses it fails the workflow instead of every row falling back.
+    "workflow": {"swarm_workflow", "swarm_workflow_spec", "swarm_workflow_status", "swarm_follow"},
 }
 
 #: The globals a workflow script's body may use: the workflow runtime's own
@@ -522,7 +525,7 @@ def test_run_js_meta_is_a_pure_literal_naming_the_command():
     assert "SwarmCloud" in meta["description"]
     assert isinstance(meta["description"], str) and meta["description"].strip()
     titles = [phase["title"] for phase in meta.get("phases", [])]
-    assert titles == ["Submit", "Result"], titles
+    assert titles == ["Submit", "Attach", "Result"], titles
 
 
 def test_run_js_uses_only_the_workflow_globals():
@@ -600,7 +603,7 @@ def test_run_js_uses_no_regex_literal_or_template():
 def test_every_literal_phase_the_script_starts_is_in_meta():
     """A `phase()` title with no meta entry gets a progress group of its own --
     right for the per-level groups, which cannot be known in advance, and wrong
-    for the two fixed ones, which would appear twice."""
+    for the three fixed ones, which would appear twice."""
     source = _RUN_JS.read_text()
     literal = set(re.findall(r"phase\('([^']+)'\)", source)) | set(re.findall(r"phase: '([^']+)'", source))
     titles = {phase["title"] for phase in _meta()["phases"]}
@@ -952,8 +955,13 @@ def test_run_js_takes_the_spec_as_json_text_and_refuses_what_is_not_a_spec(tmp_p
 
 
 def _read(spec, digest=None, **extra):
-    return {"path": "/work/widgets/specs/scan.json", "spec": spec,
-            "spec_digest": _bridge_digest(spec) if digest is None else digest, "error": None, **extra}
+    """What the READ SPEC row relays: the bridge's ref, digest and outline -- never the spec."""
+    outline = {"label": spec.get("label"), "steps": [
+        {"step_id": s["step_id"], "depends_on": s.get("depends_on", []), "stage": s.get("stage")} for s in spec["steps"]
+    ]}
+    return {"path": "/work/widgets/specs/scan.json", "spec_ref": "spec_00112233aabbccdd",
+            "spec_digest": _bridge_digest(spec) if digest is None else digest, "outline": outline,
+            "error": None, **extra}
 
 
 def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_path):
@@ -964,25 +972,29 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
     assert (read["agentType"], read["phase"], read["label"]) == (
         "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
-    lines = submit["prompt"].split("\n")
-    assert lines[0] == "SUBMIT" and lines[1] == "spec_digest: " + workflows.spec_digest(_SPEC)
-    assert json.loads("\n".join(lines[3:-1])) == _SPEC
+    # By the ref the bridge holds: the submit row never sees the spec.
+    assert submit["prompt"] == "SUBMIT\nspec_digest: " + workflows.spec_digest(_SPEC) + "\nspec_ref: spec_00112233aabbccdd"
     assert got["result"]["workflow_id"] == "wf_1"
     assert "read the spec from /work/widgets/specs/scan.json" in got["logs"][0], got["logs"]
 
 
-def test_run_js_submits_nothing_when_the_relayed_spec_is_not_the_file_the_bridge_read(tmp_path):
-    changed = json.loads(json.dumps(_SPEC))
-    changed["steps"][0]["prompt"] = "scan a, tidied"
-    got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": _read(changed, digest=_bridge_digest(_SPEC))})
+def test_run_js_submits_nothing_when_the_read_row_drops_the_ref_or_the_outline(tmp_path):
+    for broken in (_read(_SPEC, spec_ref=None), _read(_SPEC, outline=None), _read(_SPEC, digest="")):
+        got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": broken})
+        assert [c["prompt"].split("\n")[0] for c in got["calls"]] == ["READ SPEC"], "it submitted without a ref"
+        assert got["result"]["state"] == "NOT_SUBMITTED"
 
-    assert [c["prompt"].split("\n")[0] for c in got["calls"]] == ["READ SPEC"], "it submitted a changed spec"
-    assert got["result"]["state"] == "NOT_SUBMITTED"
-    assert "changed on the way" in got["result"]["error"], got["result"]["error"]
+
+def test_run_js_starts_no_row_when_the_reply_disagrees_with_the_files_outline(tmp_path):
+    """A relay that changed the outline or the reply: the two no longer agree,
+    so no row starts -- the same check a spec object gets."""
+    got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": _read(_SPEC),
+                                             "SUBMIT": {**_SUBMITTED, "spec_digest": "fnv1a32:00000000"}})
+    assert got["result"]["state"] == "SUBMITTED_UNVERIFIED"
 
 
 def test_run_js_submits_nothing_when_the_bridge_could_not_read_the_file(tmp_path):
-    refused = {"path": None, "spec": None, "spec_digest": None,
+    refused = {"path": None, "spec_ref": None, "spec_digest": None, "outline": None,
                "error": "specs/scan.json does not exist in /work/widgets"}
     got = _run(tmp_path, "specs/scan.json", {**_ANSWERS, "READ SPEC": refused})
 
@@ -1053,15 +1065,15 @@ def test_the_step_result_shape_is_unchanged(tmp_path):
 def test_the_step_row_follows_the_progress_format_and_never_streams():
     """Measured 2026-10-01: rows following `format: "lines"` cost 4.0M tokens
     for one row and ~22M for six three-step workflows. A row follows
-    `format: "progress"`; a step waiting on its parents makes one long call
-    per turn and writes nothing until it starts."""
+    `format: "progress"`, holds every call for the bridge's maximum (#448),
+    and writes nothing while nothing changed."""
     _, body = _load(_PLUGIN / "agents" / "step.md")
     flat = " ".join(body.split())
     assert '`format: "progress"`' in flat, "step.md must follow the progress format"
     assert '"lines"' not in flat, "step.md must not ask for the streamed log"
-    assert "`wait_seconds: 120`" in flat
     assert "`changed` is `false`" in flat and "write nothing" in flat.lower()
-    assert "`wait_seconds: 600`" in flat, "a waiting step makes one long call per turn"
+    assert "`wait_seconds: 1800`" in flat, "every call holds for the maximum"
+    assert "`wait_seconds: 120`" not in flat and "`wait_seconds: 600`" not in flat
     for field in ("state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error"):
         assert f"`{field}`" in flat, f"step.md no longer answers with {field}"
 

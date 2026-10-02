@@ -25,11 +25,23 @@ state and why it waits, and is re-read at most every
 one word (`unrecorded`, `none`), a read that failed in one word
 (`unreadable`); none is ever estimated, and an unrecorded cost is never $0.
 
-THE WINDOW. The first call (no `since`) answers at once. After that a call
-holds until a task's state, attempt or wait reason changes, every task has
-finished or been given up on, or `wait_seconds` (at most `MAX_WAIT_SECONDS`)
-pass. A checkpoint or a cost change alone does not end a window early; it
-shows in the line the window ends with.
+THE WINDOW (owner decision, 2026-10-01, #448: the largest row that day made
+20 calls over 39 turns and re-read 830k cached tokens). The first call (no
+`since`) answers at once. After that a call holds until a task's STATE changes,
+every task has finished or been given up on, or `wait_seconds` (at most
+`MAX_WAIT_SECONDS`) pass. Progress inside one state -- a checkpoint, spend,
+elapsed time -- does not end a window; it shows in the line the window ends
+with. "State" is what a row acts on (`_wake_key`): waiting for admission or
+capacity, parked and why, holding capacity, or finished. LEASED, DISPATCHED,
+STARTING and RUNNING are one state for the hold: start-up is nothing a row can
+act on, and waking on each step of it cost a call apiece.
+
+THE PARENT HOLD. A step whose parents have not finished cannot start, and a
+row that follows it has nothing to say until they do. Given `parents` -- the
+parents' task ids, from the workflow read -- a call holds, the first call too,
+while the task is SUBMITTED, QUEUED or PARKED on DEPENDENCY_INCOMPLETE and any
+parent is unfinished. So a dependent step's row makes ONE call while its
+parents run, then follows as above.
 
 GIVING UP is `progress.watch`'s rule, unchanged: a 403 or 404 at once,
 `progress.READ_FAILURE_LIMIT` calls in a row that could not read the task, or
@@ -44,6 +56,8 @@ import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Callable
+
+from swarm_common.states import CONCURRENCY_STATES
 
 from .client import TERMINAL, SwarmClient, SwarmError
 from .follow import event_type
@@ -60,11 +74,21 @@ from .progress import (
 )
 from .render import describe_blocker, parse_time, task_label
 
-#: The longest one progress call may hold. Longer than `lines`' 300 s on
-#: purpose: a held progress call costs one task read per poll and nothing in
-#: the row's context, and a step waiting hours on its parents should spend as
-#: few of its turns as it can.
-MAX_WAIT_SECONDS = 600
+#: The longest one progress call may hold: thirty minutes (owner decision,
+#: 2026-10-01, #448). A held call costs a task read per poll and NOTHING in the
+#: row's context, while every reply it returns is re-read on each later turn --
+#: so a row should spend a call only when its task's state changes, and a
+#: twenty-minute RUNNING step should be one call, not ten.
+#:
+#: IT MUST STAY UNDER THE MCP TOOL-CALL TIMEOUT the plugin runs with, or Claude
+#: Code abandons the call and the row reads an error instead of a reply. The
+#: plugin sets no limit of its own (`plugin/.claude-plugin/plugin.json` passes
+#: no timeout and no `MCP_TOOL_TIMEOUT`), so Claude Code's default applies:
+#: `MCP_TOOL_TIMEOUT`, 100,000,000 ms (about 27.8 hours) unless the developer
+#: lowers it. 1800 s is far under that, and under the 3600 s `swarm_wait`
+#: already holds by default in the same plugin. A developer who sets
+#: `MCP_TOOL_TIMEOUT` below 1,800,000 ms makes every held row call fail.
+MAX_WAIT_SECONDS = 1800
 
 #: How often a running task is re-read inside a window. One small read.
 POLL_SECONDS = 10.0
@@ -170,13 +194,41 @@ def waits_for(task: dict[str, Any]) -> str:
     return str(state).lower()
 
 
+#: The states that hold capacity (invariant 3: concurrency counts from LEASED),
+#: from the frozen contract. One state for the hold: see the module docstring.
+_HOLDING = frozenset(state.value for state in CONCURRENCY_STATES)
+
+#: What a dependent step waits in before it can start.
+_DEPENDENCY_WAIT = "DEPENDENCY_INCOMPLETE"
+
+
 def _wake_key(task: dict[str, Any]) -> str:
-    """What ends a window early: the state, the attempt, why it waits."""
+    """What ends a window early: the task's state, as a row acts on it.
+
+    Waiting (SUBMITTED, QUEUED, READY) is one state: none of them holds
+    capacity and the row can do nothing about any of them. PARKED is its own,
+    with its reason -- a dependency wait and a quota park are different news.
+    Holding capacity (LEASED through RUNNING) is one. A finished task is its
+    own state. Progress inside any of these is not a change.
+    """
     if task.get("read") != "ok":
         return "unread"
     state = task.get("state")
-    why = waits_for(task) if state in _PENDING else ""
-    return f"{state}|{task.get('attempt_count')}|{why}"
+    if state == "PARKED":
+        return f"PARKED:{task.get('park_reason') or ''}"
+    if state in _PENDING:
+        return "waiting"
+    if state in _HOLDING:
+        return "holding"
+    return str(state)
+
+
+def _waits_on_parents(task: dict[str, Any]) -> bool:
+    """Whether a task is still in the wait its parents end."""
+    if task.get("read") != "ok":
+        return False
+    state = task.get("state")
+    return state in ("SUBMITTED", "QUEUED") or (state == "PARKED" and task.get("park_reason") == _DEPENDENCY_WAIT)
 
 
 def _spend(client: SwarmClient, task_id: str) -> tuple[str, str]:
@@ -294,6 +346,7 @@ def watch_progress(
     since: Any = None,
     wait_seconds: float = 0,
     step_id: str | None = None,
+    parents: list[str] | None = None,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
     now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
@@ -304,7 +357,15 @@ def watch_progress(
     `changed` is whether it holds any. A finished task carries `outcome`, the
     step result's fields. `stop` is `progress.watch`'s: every task finished
     with its outcome, or given up on (`abandoned_because`).
+
+    `parents` (one task only) holds the call -- the first one too -- while
+    the task waits on them (`_waits_on_parents`) and any of them is
+    unfinished; the reply's `parents` maps each to its state.
     """
+    if parents and len(task_ids) != 1:
+        raise SwarmError(
+            f"`parents` names the parents of ONE task, and {len(task_ids)} task ids were given"
+        )
     if step_id is not None and len(task_ids) != 1:
         raise SwarmError(
             f"`step_id` names the step of ONE task, and {len(task_ids)} task ids were "
@@ -318,6 +379,7 @@ def watch_progress(
     latest: dict[str, dict[str, Any]] = {}
     read_ok: set[str] = set()
     wake_before = {t: (keys.get(t) or "").rsplit("|", 1)[0] for t in task_ids}
+    parent_states: dict[str, Any] = {}
 
     while True:
         for task_id in task_ids:
@@ -325,6 +387,21 @@ def watch_progress(
             latest[task_id] = task
             if task["read"] == "ok":
                 read_ok.add(task_id)
+        held_by_parents = False
+        if parents:
+            parent_states = {}
+            unfinished = False
+            for parent in parents:
+                seen = _read(client, parent)
+                if seen["read"] == "ok":
+                    parent_states[parent] = seen.get("state")
+                    unfinished = unfinished or not seen["terminal"]
+                else:
+                    parent_states[parent] = None
+                    # A parent this identity can never read cannot be waited
+                    # for; any other failure is waited through, like the task's.
+                    unfinished = unfinished or seen.get("http_status") not in PERMANENT_READ_STATUSES
+            held_by_parents = unfinished and _waits_on_parents(latest[task_ids[0]])
         wrong = {
             t for t in task_ids
             if step_id is not None and latest[t]["read"] == "ok" and latest[t].get("step_id") != step_id
@@ -337,7 +414,10 @@ def watch_progress(
         moved = any(
             latest[t]["read"] == "ok" and _wake_key(latest[t]) != wake_before[t] for t in task_ids
         )
-        if first_call or settled or moved:
+        if parents:
+            if settled or not held_by_parents:
+                break
+        elif first_call or settled or moved:
             break
         remaining = deadline - clock()
         if remaining <= 0:
@@ -410,7 +490,7 @@ def watch_progress(
         rows.append(row)
 
     stop = bool(rows) and all(r.get("abandoned") or (r["terminal"] and r.get("outcome")) for r in rows)
-    return {
+    reply = {
         "progress": progress,
         "changed": bool(progress),
         "transitions": transitions,
@@ -418,3 +498,6 @@ def watch_progress(
         "since": encode_since(states, keys, failures),
         "tasks": rows,
     }
+    if parents:
+        reply["parents"] = parent_states
+    return reply
