@@ -321,6 +321,7 @@ describe('the split is ONE drawer: AgentDetail does not draw a second one inside
     const root = document.querySelector<HTMLElement>('.ag-split')!
     expect(root.querySelectorAll('[role="dialog"]').length + (root.getAttribute('role') === 'dialog' ? 1 : 0)).toBe(1)
     expect(root.querySelectorAll('.drawer'), 'a second .drawer inside the split').toHaveLength(0)
-    expect(root.querySelectorAll('.drawer-close'), 'a second close button').toHaveLength(0)
+    // AgentSplit's own close is the one; AgentDetail's must not add another.
+    expect(root.querySelectorAll('.drawer-close'), 'not exactly one close button').toHaveLength(1)
   })
 })
