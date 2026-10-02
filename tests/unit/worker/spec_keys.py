@@ -50,8 +50,14 @@ def sign_digest(digest: bytes, *, forged: bool = False) -> bytes:
     return key.sign(digest, ec.ECDSA(utils.Prehashed(hashes.SHA256())))
 
 
-def signature_for(doc: Mapping[str, Any], task_id: str, *, forged: bool = False) -> str:
-    canonical = specsign.canonical_step_spec(doc, task_id=task_id)
+def signature_for(
+    doc: Mapping[str, Any],
+    task_id: str,
+    *,
+    forged: bool = False,
+    spec_format: int = specsign.SPEC_FORMAT,
+) -> str:
+    canonical = specsign.canonical_step_spec(doc, task_id=task_id, spec_format=spec_format)
     return base64.b64encode(sign_digest(specsign.spec_digest(canonical), forged=forged)).decode()
 
 
@@ -61,9 +67,10 @@ def sign_document(
     *,
     key_version: str = KEY_VERSION,
     forged: bool = False,
+    spec_format: int = specsign.SPEC_FORMAT,
 ) -> dict[str, Any]:
     """Sign `doc` in place, as swarm-api would have at submission, and return it."""
-    doc["spec_signature"] = signature_for(doc, task_id, forged=forged)
+    doc["spec_signature"] = signature_for(doc, task_id, forged=forged, spec_format=spec_format)
     doc["spec_key_version"] = key_version
-    doc["spec_format"] = specsign.SPEC_FORMAT
+    doc["spec_format"] = spec_format
     return doc

@@ -311,6 +311,15 @@ module "cloud_run" {
       vpc_egress  = "ALL_TRAFFIC"
       concurrency = 80
       env         = local.service_env["swarm-api"]
+      # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
+      # Secret Manager reference, only once enable_child_tasks is on
+      # (child_tasks.tf).
+      secret_env = local.child_key_secret_env
+      # The audience a worker mints its ID token for when it calls the child
+      # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
+      # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
+      # in addition to the URL; people's clients are unaffected.
+      custom_audiences = [local.push_audiences["swarm-api"]]
       # THE IAP SERVICE AGENT, EXPLICITLY.
       #
       # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
@@ -332,9 +341,13 @@ module "cloud_run" {
       #
       #   gcloud beta services identity create \
       #     --service=iap.googleapis.com --project=<project>
+      #
+      # And each tenant's WORKER, once child tasks are on: the worker-only
+      # child routes are the one thing a worker calls here (child_tasks.tf).
       invokers = merge(
         { for member in var.api_invokers : member => member },
         { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+        local.child_route_invokers,
       )
     }
     "swarm-scheduler" = {
@@ -349,6 +362,7 @@ module "cloud_run" {
       concurrency      = 1
       request_timeout  = "540s"
       env              = local.service_env["swarm-scheduler"]
+      secret_env       = local.scheduler_child_key_secret_env
       custom_audiences = [local.push_audiences["swarm-scheduler"]]
       invokers         = { tick = module.iam.tick_member }
     }

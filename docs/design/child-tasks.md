@@ -1,12 +1,12 @@
 # Child tasks: a running agent submits helpers through its worker
 
-**Status: design, phase 1 of B15 (2026-10-02). Nothing here is built.** It
-answers the owner's decisions OD-B15-1 to OD-B15-4 and is the brief phase 2 is
-built from. The frozen-contract half is a request, not a change:
+**Status: design, phase 1 of B15 (2026-10-02); BUILT by phase 2 (lane B15b,
+2026-10-02), deployment switch off -- see "Where phase 2 stands" in section
+9.** It answers the owner's decisions OD-B15-1 to OD-B15-4 and is the brief
+phase 2 was built from. The frozen-contract half was a request:
 [contract request 14](../contract-change-requests.md#14-modelspy-a-sub-agent-has-nowhere-to-name-its-parent)
-and the requests 40-43 its amendment files. No file under
-`apps/common/swarm_common/` is edited by this design or may be by phase 2
-without the owner's acceptance recorded there (CLAUDE.md rule 1).
+and the requests 40-43 its amendment files, all accepted by the owner on
+2026-10-02 and APPLIED there (CLAUDE.md rule 1).
 
 Every `file:line` below was read on 2026-10-02 at `b2becab`. Lines move; the
 symbol named beside each one is what to search for when they have.
@@ -356,7 +356,11 @@ worker: restore checkpoint, stage children's results, start the agent again
    running: their outputs would land after the only consumer had gone, and
    nothing would ever read them. An agent that exits non-zero fails its attempt
    in the ordinary way; its children keep running, and the retried attempt
-   finds them in `children.json` (§5 F4).
+   finds them in `children.json` (§5 F4). An attempt with NO child path (its
+   registration failed, or its heap was unprotected) whose restored spool
+   records children cannot list them, so it parks conservatively rather than
+   skip this await; the scheduler's sweep, which reads the children itself,
+   promotes it once they are done.
 
 ### 3.4 Cancelling
 
@@ -546,7 +550,7 @@ repository the person who started the parent did not choose.
 | F11 | Some tenant's agent rewrites a child's `parent_task_id` to name another tenant's task, or a task in its own tenant. | The cascade and the sweeps act only on a child in its parent's tenant. Request 42 puts the parent fields inside the signed spec, so the rewritten child's own worker refuses to run it (`SPEC_SIGNATURE_INVALID`). Request 42 does NOT stop the scheduler's cascade sweep: the sweep reads `parent_task_id` and does not verify signatures, so it still cancels a same-tenant task whose `parent_task_id` was rewritten to name a cancelled parent. That grants nothing new -- a tenant identity can already set `cancel_requested` on any task of its tenant whose id it knows -- but it is not closed by request 42, and the sweep's `why: parent_cancelled` event on such a task is the only trace. |
 | F12 | The worker's memory protection was not established, so an attempt key would sit in a readable heap. | The worker generates no key. It registers a tombstone in the attempt's slot before the agent exists, so the nonce the agent can read in `/proc/1/environ` is spent; it does not create `$SWARM_CHILDREN` and refuses every request with `code: worker_unprotected`, as it refuses to read the git token (`_git_token_refusal`). |
 | F13 | `swarm-child-key` is rotated while attempts run. | swarm-api accepts a nonce or an attestation under the current and the previous secret version and derives registration ids under both; the scheduler mints with the current one. A rotation is two steps a dispatch window apart. |
-| F14 | The parent has used `max_child_await_resumes` and awaits again. | The park counts the attempt; at `max_attempts` the parent ends `FAILED` and F6 cancels its children. |
+| F14 | The parent has used `max_child_await_resumes` and awaits again. | The park counts the attempt; at `max_attempts` the scheduler's await sweep dead-letters the parent as soon as it finds it -- it does not wait for the children, because no resume is coming to read them -- and F6 cancels its children as `parent_ended`. |
 | F15 | The agent awaits with no children. | Logged and ignored; the attempt ends as the agent's exit says. No park, no container restart. |
 | F16 | A tenant is disabled while its parent awaits. | The sweep promotes the parent; admission refuses to lease a disabled tenant's work, as today. The children are unaffected by the sweep. |
 | F18 | The agent reads `SWARM_CHILD_NONCE` from `/proc/1/environ` and calls the registration route, or calls the children route with the tenant ID token and no key. | Registration: `409 child_key_taken`, because the worker spent the slot before spawning it, and `409 child_key_window_closed` anyway, because the task is `RUNNING`. Children route: `403 child_submit_unproven`, because nothing it holds verifies against the attested key. The only residual is §3.2's empty slot. |
@@ -675,6 +679,7 @@ The spool, under `$SWARM_CHILDREN` (`work/.swarm-children/`, added to
 | `requests/<request_id>.json` | agent | one child request (§3.1 step 1) |
 | `responses/<request_id>.json` | worker | `{"task_id": …}` or `{"refused": {"code": …, "message": …, "retryable": bool}}` |
 | `await` | agent | presence is the request; contents ignored |
+| `README.md` | worker, every attempt with a child path | the agent's guide to this table and §3.1-§3.3 (`agent_worker.children.AGENT_GUIDE`, [child-tasks-for-agents.md](../child-tasks-for-agents.md)); the CLI runners add one prompt line naming it |
 | `results/children.json`, `results/<child_task_id>/…` | worker, on resume | §3.3 step 7 |
 
 No response, result or event ever carries the token, the nonce, the private
@@ -755,6 +760,23 @@ S1 per the planner):
 4. **Worker**: the spool, the await park with its refund, the staging on
    resume, the implicit await, the `worker_unprotected` refusal.
 5. **Scheduler**: the await sweep, the cascade sweep, the await deadline.
+
+**Where phase 2 stands (2026-10-02).** Items 1, 3, 4 and 5 are built, and
+item 2's deployment wiring is in `terraform/infra/child_tasks.tf`: the
+`swarm-child-key` secret (no version in terraform; `scripts/create-secrets.sh
+--child-key` generates and adds one), its authoritative accessor binding for
+`swarm-scheduler` and `swarm-api` alone, both services reading it as
+`SWARM_CHILD_KEY` by Secret Manager reference, the scheduler handing workers
+`SWARM_API_URL` and `SWARM_API_AUDIENCE`, a custom audience on swarm-api that
+its child routes pin a worker's token to, and `run.invoker` on swarm-api for
+every tenant's worker account. The workers already egress `ALL_TRAFFIC`
+through the VPC, the path they reach the internal-ingress quota broker by.
+**All of it is off until `enable_child_tasks` is set**, and item 2's
+measurement -- whether another container of the tenant can read
+`SWARM_CHILD_NONCE` -- has NOT been made; it is deferred to #476 with the
+other security findings, and the switch must stay off until it is. CLI agents
+are told how to use the path by the guide the worker writes into the spool
+([child-tasks-for-agents.md](../child-tasks-for-agents.md)).
 
 Tests (phase 2), first red then green:
 `uv run pytest tests/unit/common tests/unit/control_plane tests/unit/worker -k 'child or parent or cancel' -q`

@@ -173,6 +173,9 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         spec_signature=data.get("spec_signature") or None,
         spec_key_version=data.get("spec_key_version") or None,
         spec_format=_spec_format(data.get("spec_format")),
+        # Contract request 14. Absent on every task that is not a child.
+        parent_task_id=data.get("parent_task_id") or None,
+        parent_attempt_id=data.get("parent_attempt_id") or None,
     )
 
 
@@ -346,6 +349,10 @@ def task_to_api(
         "workflow_id": task.workflow_id,
         "step_id": task.step_id,
         "depends_on": task.depends_on,
+        # Contract request 14 (docs/design/child-tasks.md §6.3): the parent a
+        # child was submitted by, set by swarm-api, null for everything else.
+        "parent_task_id": task.parent_task_id,
+        "parent_attempt_id": task.parent_attempt_id,
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,

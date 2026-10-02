@@ -17,6 +17,17 @@
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --stdin --disable-previous
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --subscription --stdin
 #   scripts/create-secrets.sh --list [--tenant eng]
+#   scripts/create-secrets.sh --child-key
+#
+# --child-key adds a version to `swarm-child-key`, the PLATFORM key the
+# scheduler mints child-task registration nonces with and swarm-api verifies
+# and attests them with (docs/design/child-tasks.md §3.2). Its value is
+# GENERATED here -- 48 random bytes from python3's `secrets` -- written to the
+# same private 0600 file, added as a version and removed; nobody ever sees it,
+# so there is nothing to paste and nothing to leak from a clipboard. The
+# secret itself and its two accessor bindings (swarm-scheduler, swarm-api,
+# nobody else) are terraform's (terraform/infra/child_tasks.tf); this script
+# never creates the container, so a typo cannot make an unbound twin.
 #
 # --subscription stores a Claude SUBSCRIPTION credential (the JSON Claude Code
 # keeps in the keychain: accessToken, refreshToken, expiresAt) in
@@ -42,6 +53,7 @@ FROM_FILE=""
 READ_STDIN=0
 DISABLE_PREVIOUS=0
 LIST=0
+CHILD_KEY=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -51,7 +63,8 @@ while [[ $# -gt 0 ]]; do
     --stdin)            READ_STDIN=1; shift ;;
     --disable-previous) DISABLE_PREVIOUS=1; shift ;;
     --list|-l)          LIST=1; shift ;;
-    -h|--help)          sed -n '2,22p' "$0"; exit 0 ;;
+    --child-key)        CHILD_KEY=1; shift ;;
+    -h|--help)          sed -n '2,41p' "$0"; exit 0 ;;
     # There is deliberately no --name. The secret's name is
     # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
     # spelling the first of three independent mechanisms keeping one tenant's key
@@ -92,6 +105,42 @@ if [[ "${LIST}" -eq 1 ]]; then
   gcloud secrets list --project "${PROJECT_ID}" --filter "${filter}" \
     --format='table(name.basename():label=SECRET,labels.tenant:label=TENANT,labels.provider:label=PROVIDER,createTime.date("%Y-%m-%d"):label=CREATED)'
   dim "values are never printed by this tool"
+  exit 0
+fi
+
+if [[ "${CHILD_KEY}" -eq 1 ]]; then
+  # Nothing about a tenant applies, and a value an operator supplies is a value
+  # an operator has seen. Refused rather than ignored.
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 ]]; then
+    die "--child-key takes no --tenant, --provider, --stdin, --from-file or --subscription: the value is generated here and never shown"
+  fi
+  # A rotation is TWO steps a dispatch window apart (§5 F13): swarm-api accepts
+  # the previous version while workers dispatched under it register. Disabling
+  # it in the same run would refuse every attempt dispatched just before.
+  if [[ "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--disable-previous is refused with --child-key: pin the old version as child_key_previous_version, apply, wait one dispatch window (the lease's 300 s dispatch deadline), then disable it by hand"
+  fi
+  require_cmd python3
+  CHILD_SECRET="swarm-child-key"
+  step "Secret ${CHILD_SECRET}"
+  CHILD_ERR=""
+  if ! CHILD_ERR="$(gcloud secrets describe "${CHILD_SECRET}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${CHILD_ERR}"
+    die "${CHILD_SECRET} does not exist in ${PROJECT_ID}. terraform creates it with its two accessor bindings (terraform/infra/child_tasks.tf): run 'make apply' first, then this"
+  fi
+  CHILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${CHILD_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${CHILD_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${CHILD_TMP}' 2>/dev/null || true" EXIT INT TERM
+  CHILD_FILE="${CHILD_TMP}/value"
+  ( umask 077; python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(48))' >"${CHILD_FILE}" )
+  [[ -s "${CHILD_FILE}" ]] || die "could not generate a key"
+  CHILD_VERSION="$(gcloud secrets versions add "${CHILD_SECRET}" \
+    --project "${PROJECT_ID}" --data-file="${CHILD_FILE}" --format='value(name)')"
+  ok "added version ${CHILD_VERSION##*/} of ${CHILD_SECRET}; its value was never printed"
+  dim "swarm-scheduler and swarm-api read it as SWARM_CHILD_KEY once enable_child_tasks = true is applied"
+  dim "rotating: set child_key_previous_version to the version this one replaced and apply in the same change"
   exit 0
 fi
 

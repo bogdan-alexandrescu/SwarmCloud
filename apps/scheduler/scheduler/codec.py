@@ -71,6 +71,11 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         last_error=data.get("last_error"),
         result_summary=data.get("result_summary"),
         latest_checkpoint=data.get("latest_checkpoint"),
+        # Contract request 14: a child's parent, which the dispatcher reads to
+        # decide whether the attempt gets a child path, and the child sweeps
+        # read to find a parent's children (docs/design/child-tasks.md).
+        parent_task_id=data.get("parent_task_id") or None,
+        parent_attempt_id=data.get("parent_attempt_id") or None,
     )
 
 

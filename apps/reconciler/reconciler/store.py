@@ -40,6 +40,7 @@ from .model import (
     ControlSnapshot,
     LeaseView,
     TaskView,
+    cancel_end_cause,
     count_startup_end,
     startup_refunds_used,
 )
@@ -495,8 +496,10 @@ class ControlStore:
         """Move a task out of a concurrency state it can no longer justify.
 
         THE END CAUSE IS DECIDED HERE, INSIDE THE TRANSACTION, because the
-        terminal state is (contract request 23). A CANCELLED end is always
-        CANCEL_REQUESTED: only the flag, re-read below, picks it. A FAILED end
+        terminal state is (contract request 23). A CANCELLED end is
+        CANCEL_REQUESTED, or CHILD_CASCADE for a child its parent's cascade
+        flagged (contract request 41): only the flag, re-read below, picks it,
+        and the re-read metadata picks which. A FAILED end
         is `failed_cause` -- LOST_WORKER for a requeue this downgraded on spent
         attempts, which is every caller but the one that fails a worker that
         could not start (CANNOT_START).
@@ -642,7 +645,7 @@ class ControlStore:
             if target in TERMINAL_STATES:
                 payload["completed_at"] = utcnow()
                 payload["end_cause"] = (
-                    EndCause.CANCEL_REQUESTED
+                    cancel_end_cause(data.get("metadata"))
                     if target is TaskState.CANCELLED
                     else failed_cause
                 ).value

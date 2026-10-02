@@ -242,12 +242,53 @@ GOLDEN_SHA256 = "86d2a8f146e6f700c19d6ed76ca53fd0e861c43b2793eb76f5301d688f785f4
 
 
 def test_the_golden_vector():
-    """A change here is a new FORMAT, not an edit: bump SPEC_FORMAT with it."""
-    canonical = canonical_step_spec(GOLDEN_DOC, task_id="task_0123456789abcdef")
+    """A change here is a new FORMAT, not an edit: bump SPEC_FORMAT with it.
+
+    Format 1's vector is unchanged by contract request 42: a document signed
+    at format 1 keeps verifying under format 1's projection.
+    """
+    canonical = canonical_step_spec(GOLDEN_DOC, task_id="task_0123456789abcdef", spec_format=1)
     assert canonical == GOLDEN_BYTES
     assert spec_digest(canonical).hex() == GOLDEN_SHA256
-    assert specsign.SPEC_FORMAT == 1
+    assert specsign.SPEC_FORMAT == 2
+    assert specsign.SPEC_FORMATS == (1, 2)
     assert specsign.SPEC_PURPOSE == "swarm.step-spec"
+
+
+GOLDEN_BYTES_V2 = (
+    GOLDEN_BYTES.replace(b'"format":1,', b'"format":2,')
+    .replace(
+        b'"model":null,',
+        b'"model":null,"parent_attempt_id":"att_parent","parent_task_id":"task_parent",',
+    )
+)
+
+
+def test_format_2_covers_the_parent_fields():
+    """Contract request 42: a child's parent is inside the signed bytes."""
+    doc = {**GOLDEN_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"}
+    canonical = canonical_step_spec(doc, task_id="task_0123456789abcdef")
+    assert canonical == GOLDEN_BYTES_V2
+    rewritten = canonical_step_spec(
+        {**doc, "parent_task_id": "task_other"}, task_id="task_0123456789abcdef"
+    )
+    assert spec_digest(rewritten) != spec_digest(canonical)
+    # Format 1 does not see them, so a format-1 document's digest is unchanged.
+    assert canonical_step_spec(doc, task_id="task_0123456789abcdef", spec_format=1) == GOLDEN_BYTES
+
+
+def test_a_task_that_names_no_parent_is_signed_at_format_1():
+    """Contract request 42's rollout: a worker built before format 2 knows only
+    format 1, so every non-child task is signed at it; only a child is format 2."""
+    assert specsign.signing_format(GOLDEN_DOC) == 1
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_task_id": None}) == 1
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_task_id": "task_p"}) == 2
+    assert specsign.signing_format({**GOLDEN_DOC, "parent_attempt_id": "att_p"}) == 2
+
+
+def test_an_unknown_format_has_no_projection():
+    with pytest.raises(specsign.SpecNotCanonical):
+        canonical_step_spec(GOLDEN_DOC, task_id="task_x", spec_format=3)
 
 
 def test_the_task_id_is_the_one_read_by_never_the_documents_own():

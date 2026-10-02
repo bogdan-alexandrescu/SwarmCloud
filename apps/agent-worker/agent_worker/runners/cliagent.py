@@ -700,6 +700,16 @@ def run_cli_agent(
                 "directory; the agent is not started without the issue it was pointed at"
             )
         prompt = f"{prompt}\n\n{issue_mod.prompt_line(issue_file)}"
+    # CHILD TASKS (docs/design/child-tasks.md). The worker sets SWARM_CHILDREN
+    # only for an attempt with a child path, and writes the guide into it; the
+    # prompt names where the guide is, and the guide says the rest. No
+    # variable, no line: a child, or an attempt without the path, reads nothing
+    # about a feature it cannot use.
+    spool = os.environ.get("SWARM_CHILDREN", "").strip()
+    if spool:
+        from .. import children as children_mod  # lazy: the runner rarely needs it
+
+        prompt = f"{prompt}\n\n{children_mod.prompt_line(spool)}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the

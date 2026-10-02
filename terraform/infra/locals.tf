@@ -473,8 +473,11 @@ locals {
   # apply, accepted by Cloud Run IN ADDITION to the service URL, and minted by
   # the Pub/Sub and Cloud Scheduler OIDC tokens. Both sides then name the same
   # constant and nothing needs to know a URL.
+  #
+  # swarm-api's is for the WORKERS calling its child routes (child_tasks.tf);
+  # people's clients keep using API_AUDIENCE, the service URL.
   push_audiences = {
-    for name in ["swarm-scheduler", "swarm-quota-broker"] :
+    for name in ["swarm-scheduler", "swarm-quota-broker", "swarm-api"] :
     name => "https://${name}.${var.environment}.swarm.internal"
   }
 
@@ -642,6 +645,12 @@ locals {
       # The console origin every served task and workflow's `links.console` is
       # built from (swarm_api.settings `console_url`). See local.console_url.
       SWARM_CONSOLE_URL = local.console_url
+
+      # The audience the child routes pin a worker's ID token to
+      # (swarm_api.settings `child_audience`, routes/children.py): the custom
+      # audience this service accepts, and the value the scheduler hands each
+      # worker below. Harmless while child tasks are off: no worker calls.
+      SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings
@@ -733,6 +742,15 @@ locals {
       # serves.
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
+
+      # Child tasks (child_tasks.tf): passed through to a worker the scheduler
+      # also mints a registration nonce for -- only when it holds
+      # SWARM_CHILD_KEY, and never to a child -- so the worker can reach the
+      # worker-only child routes and mint its ID token for their audience.
+      # DECLARED, for QUOTA_BROKER_URL's reason; the swarm_api_url_is_wired
+      # check holds it to the deployed URL.
+      SWARM_API_URL      = var.swarm_api_url
+      SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a

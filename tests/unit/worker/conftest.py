@@ -338,6 +338,8 @@ def build_worker(
     reap_before_publish: Any | None = None,
     sign_spec: bool = True,
     quota_reporter: Any | None = None,
+    child_api: Any | None = None,
+    memory: MemoryProtection | None = None,
     heartbeat_extension_seconds: int = 120,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
@@ -402,7 +404,10 @@ def build_worker(
         db=db,
         metrics_exporter=exporter,
         secret_client=secret_client or FakeSecretClient(),
-        memory=ENTRYPOINT_MEMORY,
+        memory=memory or ENTRYPOINT_MEMORY,
+        # The child routes' client (docs/design/child-tasks.md). None, and no
+        # SWARM_API_URL in the config, means the attempt has no child path.
+        child_api=child_api,
     )
     worker = Worker(config, deps)
     # The production reaper runs `os.kill(-1, SIGKILL)`, which would take this

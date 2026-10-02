@@ -69,8 +69,10 @@ if TYPE_CHECKING:  # pragma: no cover
 #: remembers to turn off stops working anyway.
 SPEC_LEGACY_UNTIL = datetime(2026, 10, 20, tzinfo=timezone.utc)
 
-#: The formats of the canonical form this worker can verify.
-KNOWN_FORMATS = frozenset({specsign.SPEC_FORMAT})
+#: The formats of the canonical form this worker can verify: every one the
+#: contract names (format 2 is contract request 42, a child's parent fields),
+#: each under its own projection, so a task signed before format 2 still runs.
+KNOWN_FORMATS = frozenset(specsign.SPEC_FORMATS)
 
 #: Where a GKE pod finds `swarm-spec-verify-keys`, mounted read-only by
 #: `GkeJobDispatcher._manifest` and kubernetes/worker-templates. Each key of
@@ -338,7 +340,11 @@ def verify_step_spec(
 
     # 4. The signature over the canonical form. Not canonical is a refusal.
     try:
-        digest = specsign.spec_digest(specsign.canonical_step_spec(doc, task_id=task_id))
+        digest = specsign.spec_digest(
+            specsign.canonical_step_spec(
+                doc, task_id=task_id, spec_format=int(doc["spec_format"])
+            )
+        )
     except specsign.SpecNotCanonical as exc:
         # Not `str(exc)`: it names the path to the value, and a path is made
         # of the spec's own keys. The reason is enough to act on.

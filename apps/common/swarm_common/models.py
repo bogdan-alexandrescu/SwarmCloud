@@ -189,7 +189,13 @@ class EndCause(str, Enum):
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
         WORKFLOW_SWEEP, CANCEL_REQUESTED;
-      * the API's cancel: CANCEL_REQUESTED.
+      * the API's cancel: CANCEL_REQUESTED, and CHILD_CASCADE for the
+        children of the task it cancelled;
+      * CHILD_CASCADE (request 41) is written by the API's cancel cascade and
+        the scheduler's sweep, and by the worker or reconciler ending a child
+        flagged by either -- every writer above that ends a task CANCELLED on
+        its `cancel_requested` writes CHILD_CASCADE instead of
+        CANCEL_REQUESTED when the task's `metadata.child_cascade` is set.
 
     SUCCEEDED carries None: nothing about a success needs a cause. So does a
     task that ended before this field existed, and one a writer ended for a
@@ -239,6 +245,14 @@ class EndCause(str, Enum):
     retryably, so the cause is the task's only once its attempts are spent.
     It names the refusal, never the value: the attempt's error names the
     file, never its content.
+    CHILD_CASCADE is contract request 41, applied with request 14 (owner
+    decision OD-B15-4, 2026-10-02): a CHILD task (`Task.parent_task_id` set)
+    ended because of its parent -- the parent was cancelled, ended FAILED or
+    DEAD_LETTERED, or its await outlived `child_await_max_seconds`. It is not
+    CANCELLED_PARENT, which names an UPSTREAM workflow step, and not
+    CANCEL_REQUESTED, which the outcome ledger reads as a cancel somebody
+    pressed. The specific reason (`parent_cancelled`, `parent_ended`,
+    `await_expired`) is event detail, not a frozen vocabulary.
     """
 
     TIMEOUT = "timeout"
@@ -258,6 +272,7 @@ class EndCause(str, Enum):
     VERDICT_REFUSED = "verdict_refused"   # a condition for posting the review was not met; nothing changed on the forge
     VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
     PUBLISH_REFUSED = "publish_refused"   # the worker refused to publish: a credential in the final tree, or an unusable pr-title.txt
+    CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
 
 
 @dataclass
@@ -314,6 +329,15 @@ class Task:
     #: `specsign.SPEC_FORMAT` at signing. Read to choose the projection; it is
     #: also inside the signed bytes, so a rewrite to another format fails.
     spec_format: int | None = None
+    #: The task whose agent submitted this one from inside a running attempt.
+    #: None for work a person, a client or a workflow submitted. Contract
+    #: request 14, applied 2026-10-02 (docs/design/child-tasks.md): SET BY
+    #: swarm-api from the submitting attempt's attested registration, never
+    #: supplied by a caller.
+    parent_task_id: str | None = None
+    #: The parent's ATTEMPT. A parent can be retried, and the children of attempt 1
+    #: and attempt 2 are different work -- the second may re-create the first's.
+    parent_attempt_id: str | None = None
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""
