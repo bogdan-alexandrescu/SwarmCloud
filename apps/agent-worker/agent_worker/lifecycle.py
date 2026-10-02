@@ -6856,8 +6856,10 @@ def _added_by_file(diff: str) -> list[tuple[str, str]]:
 # publishes, as a reference, a WHOLE value (`_ends_the_value`: nothing joined
 # to it by `+`, `,` or another literal, and an escaped quote does not close
 # it) that is one of:
-#   - a single lowercase word of at most `REFERENCE_WORD_MAX_CHARS` letters,
-#     no `-`, `.`, `_` or digit (`anthropic`, `retained`) -- so a weak
+#   - a single lowercase word of ANY length (no cap since the owner's decision
+#     of 2026-10-02; an all-lowercase, digitless random token outside test
+#     paths therefore publishes, a residual risk the owner accepted), no `-`,
+#     `.`, `_` or digit (`anthropic`, `retained`) -- so a weak
 #     one-word secret under a `token`/`secret`/`api_key` name, or after a
 #     prose `Bearer`/`Basic` (`http_authorization`), publishes. There is no
 #     dictionary: `letmein` under `token = ` publishes. Under a name ending
@@ -7000,15 +7002,13 @@ def _is_explicit_placeholder(tail: str) -> bool:
 #: `${DB_PW:-<literal>}` (or `-`, `=`, `:=`, `:+`, `:?`) expands to the literal
 #: it holds -- which the owner's `^\$\{[^}]+\}$` would have let through.
 _INTERPOLATION_SLOT = re.compile(r"\$\{[A-Za-z_][A-Za-z0-9_.]*\}")
-#: The longest single word read as a reference. A provider id is short
-#: (`anthropic`, `huggingface`, `openrouter`); a lowercase random token is
-#: not, and from `CREDENTIAL_MIN_CHARS` up a value is long enough to be one.
-#: Below this, a lowercase-only word of 15 letters still carries ~70 bits,
-#: which is the accepted residue (#470's review: 32 lowercase letters had
-#: passed with no length bound at all).
-REFERENCE_WORD_MAX_CHARS = CREDENTIAL_MIN_CHARS - 1
-#: One lowercase word: no `-`, `.`, `_` or digit to join it to another.
-_REFERENCE_WORD = re.compile(r"[a-z]{1,%d}" % REFERENCE_WORD_MAX_CHARS)
+#: One lowercase word of ANY length (owner decision, 2026-10-02: the single-word
+#: length cap is removed): no `-`, `.`, `_` or digit to join it to another.
+#: RESIDUAL RISK, accepted by the owner: an all-lowercase, digitless random
+#: token (32 letters carry ~150 bits, but a weak one-word secret carries few)
+#: under a non-password name, outside test paths, publishes. Only
+#: `_REFERENCE_MAX_CHARS` bounds it. Under a password name it is still refused.
+_REFERENCE_WORD = re.compile(r"[a-z]+")
 #: The KNOWN shapes of a multi-segment reference (owner decision, 2026-10-02,
 #: #470's review), and no other: a tenant secret's name (`swarm-tenant-eng-git`),
 #: a name that says it names a credential (`anthropic-api-key`, `github-token`,
@@ -7046,8 +7046,8 @@ def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = 
       (`_INTERPOLATION_SLOT`). A slot with anything glued to it
       (`${a}hunter2`), or with a shell default inside it (`${A:-hunter2}`),
       is still refused: the glued part or the default may be the credential.
-    * (ii) otherwise, the value is a single lowercase word of at most
-      `REFERENCE_WORD_MAX_CHARS` letters (`_REFERENCE_WORD`) or one of the
+    * (ii) otherwise, the value is a single lowercase word of any length
+      (`_REFERENCE_WORD`) or one of the
       KNOWN reference shapes (`_REFERENCE_SHAPE`), holds no digit, and
       `_looks_like_a_credential` rejects it (with no digit it always does;
       it is asked so a change to it cannot make this rule pass a value it

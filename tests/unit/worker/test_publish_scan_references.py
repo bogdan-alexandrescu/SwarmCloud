@@ -74,7 +74,14 @@ def test_a_tenant_secret_name_publishes():
         "swarm-tenant-acme-git", "openai", "retained", "user_config.oauth_client_secret",
         "anthropic-api-key", "github-token", "db-secret", "tenant-git", "var.anthropic",
         "local.provider_key", "data.vault_name", "module.secrets.name",
+        # Owner, 2026-10-02: a bare lowercase word is a reference at any length
+        # outside password names; the residual risk is accepted.
+        "".join(random.Random(3).choice(string.ascii_lowercase) for _ in range(32)),
+        "abcdefghijklmnop",
     ],
+    ids=["tenant-secret", "openai", "retained", "user-config-path", "api-key-name",
+         "token-name", "db-secret", "tenant-git", "var-path", "local-path", "data-path",
+         "module-path", "32-lowercase", "16-lowercase"],
 )
 def test_a_bare_lowercase_reference_publishes(value):
     text = f'config = {{"{_SEC.lower()}": "{value}"}}\n'
@@ -90,17 +97,23 @@ def test_a_bare_lowercase_reference_publishes(value):
         "-".join(["correct", "horse", "battery", "staple"]),
         ".".join(["correct", "horse", "battery", "staple"]),
         "hunter-correct-horse",
-        "".join(random.Random(3).choice(string.ascii_lowercase) for _ in range(32)),
-        "abcdefghijklmnop",
         "vars.anthropic",
         "swarm-tenant",
     ],
-    ids=["hyphen-words", "dot-words", "three-words", "32-lowercase", "16-lowercase",
-         "unknown-root", "prefix-alone"],
+    ids=["hyphen-words", "dot-words", "three-words", "unknown-root", "prefix-alone"],
 )
 def test_a_lowercase_value_of_no_known_reference_shape_is_refused(value):
     text = f'config = {{"{_SEC.lower()}": "{value}"}}\n'
     assert _rule("apps/swarm-api/swarm_api/routes.py", text) == "key_value_assignment"
+
+
+@pytest.mark.parametrize(
+    "word",
+    ["".join(random.Random(3).choice(string.ascii_lowercase) for _ in range(32)), "abcdefghijklmnop"],
+    ids=["32-lowercase", "16-lowercase"],
+)
+def test_a_long_lowercase_word_under_a_password_name_is_refused(word):
+    assert _rule("src/app.py", f'{_PW} = "{word}"\n') == "key_value_assignment"
 
 
 @pytest.mark.parametrize("quote", ['"', "'"])
