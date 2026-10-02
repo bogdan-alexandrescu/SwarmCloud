@@ -92,8 +92,9 @@ locals {
 
       # "" rather than null: the two are the same statement here ("this runner
       # needs no provider key"), and a string keeps the map's element type
-      # uniform for the caller's comparison.
-      provider = length(regexall("provider=\"([a-z]+)\"", c)) > 0 ? regexall("provider=\"([a-z]+)\"", c)[0][0] : ""
+      # uniform for the caller's comparison. Hyphens allowed: `git-merge` and
+      # `git-review` (#295) would otherwise read as no provider at all.
+      provider = length(regexall("provider=\"([a-z][a-z-]*)\"", c)) > 0 ? regexall("provider=\"([a-z][a-z-]*)\"", c)[0][0] : ""
 
       timeout_seconds = length(regexall("timeout_seconds=([0-9]+)", c)) > 0 ? tonumber(regexall("timeout_seconds=([0-9]+)", c)[0][0]) : local.default_timeout
 

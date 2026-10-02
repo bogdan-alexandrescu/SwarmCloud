@@ -68,6 +68,10 @@ export type FailureClassKey =
   | 'outputs_missing'
   | 'dispatch_failed'
   | 'spec_signature_invalid'
+  | 'verdict_refused'
+  | 'verdict_failed'
+  | 'merge_refused'
+  | 'merge_failed'
   | 'other'
   | 'no_reason'
 

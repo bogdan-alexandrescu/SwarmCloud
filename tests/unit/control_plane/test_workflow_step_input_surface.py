@@ -467,6 +467,11 @@ def test_the_contract_is_keyed_off_the_frozen_catalogue_and_not_a_name_list():
     is the step that gets missed.
     """
     for name, profile in RUNNER_PROFILES.items():
+        if profile.worker_action is not None:
+            # Contract requests 33 and 35: no runner, so no module and no
+            # requirement -- a caller names the profile and sends `input: {}`.
+            assert runner_module(profile) is None and required_input_keys(profile) == (), name
+            continue
         assert runner_module(profile) == profile.runner_argv[-1], name
         assert profile.runner_argv[:2] == ("python", "-m"), (
             f"{name} is not started as `python -m <module>`; runner_module would "
@@ -489,6 +494,8 @@ def test_the_api_table_matches_the_runners_that_actually_call_run_cli_agent():
     """
     calls_cli_agent = set()
     for name, profile in RUNNER_PROFILES.items():
+        if profile.worker_action is not None:
+            continue  # no runner module to read (contract requests 33 and 35)
         module = runner_module(profile)
         assert module is not None, name
         path = RUNNERS / f"{module.rsplit('.', 1)[1]}.py"

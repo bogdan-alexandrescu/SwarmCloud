@@ -114,8 +114,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 5
-    error_message = "five runner profiles: mock, generic, claude-code, codex, browser"
+    condition     = length(output.runner_backends) == 8
+    error_message = "eight runner profiles: mock, generic, claude-code, codex, browser, and #295's merge, post-verdict, claude-code-review"
   }
 }
 
@@ -150,7 +150,10 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
 
   assert {
     condition = alltrue([
-      for r in ["runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser"] :
+      for r in [
+        "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
+        "runner:merge", "runner:post-verdict", "runner:claude-code-review",
+      ] :
       contains(output.pool_names, r)
     ])
     error_message = "every runner profile needs a pool"
@@ -231,6 +234,19 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "4 Cloud-Run profiles for eng plus 2 credential-free ones for smoke"
   }
 
+  # #295: merge, post-verdict and claude-code-review must each run as their
+  # own per-tenant service account, and every Job here runs as the worker
+  # account. eng holds anthropic, so without the exclusion it would get a
+  # claude-code-review Job running as exactly the identity that profile
+  # exists to avoid.
+  assert {
+    condition = !anytrue([
+      for name in output.job_names :
+      endswith(name, "-merge") || endswith(name, "-post-verdict") || endswith(name, "-claude-code-review")
+    ])
+    error_message = "a #295 profile got a Cloud Run Job running as the tenant's worker account; none may exist until each has its own service account"
+  }
+
   # Cloud Run only exposes memory-medium ephemeral volumes, so a workspace sized
   # at the full memory limit would OOM-kill the agent instead of failing a write.
   assert {
@@ -308,8 +324,8 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 5
-    error_message = "expected 5 runner profiles in profiles.py (mock, generic, claude-code, codex, browser); the parser read a different number"
+    condition     = length(output.runner_profiles) == 8
+    error_message = "expected 8 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review); the parser read a different number"
   }
 
   assert {

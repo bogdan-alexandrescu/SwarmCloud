@@ -74,6 +74,10 @@ def test_the_catalogue_is_what_the_amendment_describes():
         "generic",
         "claude-code",
         "codex",
+        # #295, contract requests 33, 35 and 36 (accepted 2026-10-01).
+        "merge",
+        "post-verdict",
+        "claude-code-review",
     }
 
 

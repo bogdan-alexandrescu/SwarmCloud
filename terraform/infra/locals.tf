@@ -95,7 +95,55 @@ locals {
       secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
       timeout_seconds = 5400
     }
+    # --- #295, contract requests 33, 35 and 36 (accepted 2026-10-01) -------
+    #
+    # Mirrored so the catalogue comparison holds, and so their pools exist
+    # (evaluate_capacity reads a missing pool as unlimited). They get NO Job:
+    # see `profiles_without_a_job` below. merge and post-verdict mount no
+    # secret -- the worker reads the App key at action time as the Job's own
+    # service account -- so their secret_env is empty.
+    "merge" = {
+      image           = "agent-runtime-base"
+      resource_class  = "standard"
+      backend         = "CLOUD_RUN_JOB"
+      provider        = "git-merge"
+      secret_env      = {}
+      timeout_seconds = 600
+    }
+    "post-verdict" = {
+      image           = "agent-runtime-base"
+      resource_class  = "standard"
+      backend         = "CLOUD_RUN_JOB"
+      provider        = "git-review"
+      secret_env      = {}
+      timeout_seconds = 300
+    }
+    "claude-code-review" = {
+      image          = "agent-runtime-base"
+      resource_class = "standard"
+      backend        = "CLOUD_RUN_JOB"
+      provider       = "anthropic"
+      # checkov:skip=CKV_SECRET_6:env-var names mapped to a provider id, not credentials, exactly as claude-code above.
+      secret_env = {
+        ANTHROPIC_API_KEY       = "anthropic"
+        CLAUDE_CODE_OAUTH_TOKEN = "anthropic"
+      }
+      timeout_seconds = 7200
+    }
   }
+
+  # --- profiles that get no Cloud Run Job (#295) ---------------------------
+  #
+  # Every Job below runs as `module.tenancy.worker_service_accounts[tenant]`.
+  # These three must each run as their OWN per-tenant service account
+  # (`swarm-<tenant>-merge`, `-post-verdict`, `-review`; docs/merge-step.md
+  # §1.3, §10 item 4), and a Job running one of them as the worker account is
+  # the hole contract requests 33, 35 and 36 exist to close: any agent of the
+  # tenant can mint that account's token. So none of them gets a Job until
+  # the Terraform that gives each its own identity lands (lane M2). The
+  # profiles are also `available=False` in the catalogue, so nothing can be
+  # dispatched to them meanwhile.
+  profiles_without_a_job = ["merge", "post-verdict", "claude-code-review"]
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
@@ -296,7 +344,7 @@ locals {
           env_name => "swarm-tenant-${tenant_id}-${provider}"
         }
       }
-      if profile.backend == "CLOUD_RUN_JOB" && (
+      if profile.backend == "CLOUD_RUN_JOB" && !contains(local.profiles_without_a_job, profile_name) && (
         profile.provider == null || contains(cfg.providers, profile.provider)
       )
     ]

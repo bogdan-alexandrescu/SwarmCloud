@@ -2825,11 +2825,14 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "generic": {"required_keys": []},
   "claude-code": {"required_keys": ["prompt"]},
   "codex": {"required_keys": ["prompt"]},
-  "browser": {"required_keys": []}
+  "browser": {"required_keys": []},
+  "merge": {"required_keys": []},
+  "post-verdict": {"required_keys": []},
+  "claude-code-review": {"required_keys": ["prompt"]}
 }
 
 /**
- * Whether each of the five may be dispatched, as `/v1/capacity` now serves it
+ * Whether each profile may be dispatched, as `/v1/capacity` now serves it
  * (CP-3, visual QA 2026-09-25). A fixture whose `codex` is on offer develops
  * Pools, Profile headroom and Submit against a platform that does not exist --
  * which is how the disabled branch of all three shipped unexercised.
@@ -2853,7 +2856,10 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "generic": {"available": true, "disabled_reason": ""},
   "claude-code": {"available": true, "disabled_reason": ""},
   "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
-  "browser": {"available": true, "disabled_reason": ""}
+  "browser": {"available": true, "disabled_reason": ""},
+  "merge": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {

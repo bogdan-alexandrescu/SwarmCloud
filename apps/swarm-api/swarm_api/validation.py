@@ -72,8 +72,33 @@ def known_providers() -> tuple[str, ...]:
 
     It also keeps re-enabling cheap: the key can be replaced before the profile
     is switched back on, rather than after.
+
+    EXCEPT A WORKER ACTION'S PROVIDER (`APP_CREDENTIAL_PROVIDERS`). Both
+    credential routes accept exactly this set (`routes/tenants.py`,
+    `routes/admin.py`), and a credential registered through them is granted to
+    the tenant's ORDINARY worker account (`credentials._grant_accessor`), whose
+    token any agent of the tenant can mint. `git-merge` and `git-review` are
+    GitHub App keys that only the merge and post-verdict Jobs' own service
+    accounts may read (contract request 33's #364 amendment, accepted
+    2026-10-01), so neither may ever enter through that path.
     """
-    return tuple(sorted({p.provider for p in RUNNER_PROFILES.values() if p.provider}))
+    return tuple(
+        sorted(
+            {p.provider for p in RUNNER_PROFILES.values() if p.provider}
+            - APP_CREDENTIAL_PROVIDERS
+        )
+    )
+
+
+#: The providers of the `worker_action` profiles: `git-merge` (contract request
+#: 33) and `git-review` (35). Derived from the catalogue rather than named, so a
+#: third worker action is left out of `known_providers()` the day it is added
+#: rather than the day someone remembers this line. A worker action's
+#: credential is read by its own Job's service account at action time and is
+#: never registered against the worker account.
+APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
+    p.provider for p in RUNNER_PROFILES.values() if p.worker_action is not None and p.provider
+)
 
 
 def validate_runner_profile(name: str) -> RunnerProfile:

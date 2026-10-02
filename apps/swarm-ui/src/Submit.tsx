@@ -288,6 +288,17 @@ const SUGGESTED: Record<string, Suggestion[]> = {
   codex: [
     { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
   ],
+  // claude-code's runner under its own Job (contract request 36, #295).
+  'claude-code-review': [
+    { name: 'prompt', kind: 'text', note: 'the whole instruction, passed as one argument' },
+  ],
+  // The two worker actions (contract requests 33 and 35, #295) start no
+  // runner and take `input: {}`, so they are offered nothing. Listed, empty,
+  // so check-contract-parity.sh sees every catalogue profile here.
+  merge: [
+  ],
+  'post-verdict': [
+  ],
   // runners/generic.py -- GENERIC_COMMANDS is the frozen argv catalogue, and
   // `command` NAMES an entry in it. That is invariant 10's own pattern, not an
   // exception to it: the caller picks a name, the platform owns the argv.
