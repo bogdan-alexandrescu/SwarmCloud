@@ -402,8 +402,9 @@ def test_every_firestore_call_before_the_runner_carries_the_startup_budget_and_n
     commit has landed, and a second commit of the same transaction is refused,
     which would report a transition that had in fact been made.
 
-    After the runner starts, every call has the library's defaults again. How
-    long a running agent tolerates a Firestore outage is a separate decision.
+    After the runner starts, no call carries the startup budget: each carries
+    its mid-run budget (`control.MID_RUN_BUDGETS`, #70) or the library's
+    defaults.
     """
     from google.api_core import exceptions as core
 
@@ -471,7 +472,9 @@ def test_every_firestore_call_before_the_runner_carries_the_startup_budget_and_n
     for expected in [
         ("get", "tasks"), ("get", "leases"), ("get", "attempts"),
         ("txn.get", "tasks"), ("txn.get", "leases"),
-        ("set", "attempts"), ("set", "events"), ("update", "leases"),
+        # The heartbeat is a transaction on the lease since #70 (its read is
+        # the `txn.get` on leases above; its write is the `txn.update`).
+        ("set", "attempts"), ("set", "events"),
     ]:
         assert expected in seen, f"{expected} was never called before the runner: {sorted(seen)}"
     assert any(kind == "get" and path == "tasks/task_up" for kind, path, _ in before), (
@@ -479,9 +482,12 @@ def test_every_firestore_call_before_the_runner_carries_the_startup_budget_and_n
     )
     assert db.rpcs.names()[:rpcs_before].count("begin") >= 3
 
-    leaked = [(kind, path, kwargs) for kind, path, kwargs in after if kwargs]
+    leaked = [(kind, path, kwargs) for kind, path, kwargs in after if _is_budget(kwargs, budget)]
     assert not leaked, f"the startup budget outlived the startup: {leaked}"
-    rpc_leaked = [(name, kwargs) for name, kwargs in db.rpcs.calls[rpcs_before:] if kwargs]
+    rpc_leaked = [
+        (name, kwargs) for name, kwargs in db.rpcs.calls[rpcs_before:]
+        if _is_budget(kwargs, budget)
+    ]
     assert not rpc_leaked, f"the startup budget outlived the startup: {rpc_leaked}"
     assert after, "nothing was called after the runner started; the second half measured nothing"
 

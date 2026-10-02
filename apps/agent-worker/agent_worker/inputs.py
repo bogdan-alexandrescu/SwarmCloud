@@ -66,6 +66,7 @@ from typing import Any
 
 from swarm_common.states import TaskState
 
+from . import expected_outputs as expected_mod
 from .errors import InputUnavailable
 from .objectstore import ObjectStore, validate_key
 
@@ -464,20 +465,42 @@ def artifact_reference(
         )
 
     # A skipped artifact is a different fault with a different remedy: the file
-    # was produced and deliberately not uploaded because the attempt was over
-    # its artifact cap. Saying "not found" would send somebody looking at the
-    # agent's prompt instead of at `MAX_ARTIFACT_BYTES`.
-    skipped = summary.get("artifacts_skipped")
-    if isinstance(skipped, list) and filename in skipped:
+    # was produced and not uploaded. Saying "not found" would send somebody
+    # looking at the agent's prompt instead of at the cause, and the cause is
+    # the one the upstream attempt RECORDED (#165): the artifact cap and an
+    # upload that raised have different remedies, and assuming the cap sent
+    # an operator to `MAX_ARTIFACT_BYTES` for a bucket that refused a write.
+    recorded = dict(expected_mod.skipped_entries(summary.get("artifacts_skipped")))
+    if filename in recorded:
+        cause = recorded[filename]
+        if cause is None:
+            raise InputUnavailable(
+                f"upstream task {upstream_task_id} produced {filename!r} but did not "
+                "upload it, and its attempt recorded no cause (an attempt from "
+                "before causes were recorded skipped a file for the artifact size "
+                "cap or for an upload error)"
+            )
         raise InputUnavailable(
             f"upstream task {upstream_task_id} produced {filename!r} but did not "
-            "upload it: the attempt exceeded its artifact size cap"
+            f"upload it: {_SKIP_TEXT.get(cause, f'it was skipped ({cause})')}"
         )
     raise InputUnavailable(
         f"upstream task {upstream_task_id} did not produce an artifact named "
         f"{filename!r}; it uploaded "
         + (", ".join(repr(n) for n in sorted(names)) if names else "nothing")
     )
+
+
+#: A recorded skip cause (an `artifacts_skipped` entry's `cause`), as a
+#: dependant's refusal says it.
+_SKIP_TEXT = {
+    expected_mod.CAUSE_CAP: "the attempt exceeded its artifact size cap (cap)",
+    expected_mod.CAUSE_UPLOAD_ERROR: "its upload failed (upload_error)",
+    expected_mod.CAUSE_REFUSED: (
+        "it was refused when read: a link, not a regular file, or a name no "
+        "object can carry (refused)"
+    ),
+}
 
 
 def artifact_key(

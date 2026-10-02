@@ -607,7 +607,9 @@ class ContendedTransactionRunner:
         self._max_attempts = max_attempts
         self.aborted: list[str] = []
 
-    def run(self, fn: Callable[[Any], Any]) -> Any:
+    def run(self, fn: Callable[[Any], Any], *, call_options: Any = None) -> Any:
+        # `call_options` is the budget for begin, commit and rollback, which
+        # this single-threaded model does not make.
         for _ in range(self._max_attempts):
             txn = _ContendedTransaction(self._db)
             result = fn(txn)

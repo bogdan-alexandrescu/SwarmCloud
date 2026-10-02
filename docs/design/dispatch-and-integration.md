@@ -164,6 +164,92 @@ paths through it, and that is the risk this choice accepts deliberately:
   on a clock, and an integration step that runs a week later would find
   nothing.
 
+**`carrier: branches` IS BUILT** (D13, owner decision 2026-10-01: wire it).
+`carrier: checkpoints`, the default, is byte-for-byte what it was. With
+`branches`:
+
+* **The checkpoints taken after the runner stops push the step's committed
+  work** -- park, cancel, SIGTERM and finish; never the periodic ones (see
+  "Periodic checkpoints do not push" below) -- to
+  `<git_branch_prefix><task id>`, the branch the publish uses
+  (`Worker._push_carrier_branch`). NEVER FORCED: the push is one worker commit
+  of the agent's committed tree on top of the branch's current tip
+  (`gitops.commit_tree_onto`), so every push fast-forwards the last, across
+  checkpoints and attempts. It passes the publish's gates -- the reap, a
+  worker-owned repository, the final-tree leak scan, the authorship check,
+  `push_branch`'s prefix and protected-branch refusals. A failed push is
+  logged and never ends the attempt. The cost of never forcing: when a retry
+  cloned a default branch that has moved since the tip was built, its worker
+  commit's diff against the tip also shows the default branch's intervening
+  changes. The tree is still exactly the work; one commit's diff is noisier.
+* **A dependant that starts from its parent's branch already holds the
+  parent's work.** If it also declares the parent's `swarm-work.patch` in
+  `input_from`, that patch is the same change twice; the worker stages it
+  anyway and logs that it is redundant.
+* **Periodic checkpoints do not push** (owner decision, 2026-10-02,
+  accepting the narrowing of D13's "every checkpoint"). **The git token is
+  never held while agent code can run.** The agent shares the worker's uid, so
+  while it runs, the credential file and the token-bearing git process would
+  be within its reach: a token in hand mid-run is a token the agent can read,
+  and with `branches` it is a token with write scope. So a checkpoint taken
+  with the runner alive pushes nothing and logs that it did not: the periodic
+  ones, and the control-plane-outage one (#70 orders it checkpoint, THEN stop
+  the runner). The branch is pushed at the **park, cancel, SIGTERM and finish**
+  checkpoints, each taken after the runner has stopped
+  (`Worker._carrier_push` returns early while the child is alive). What this
+  costs: between those points the branch lags the work by up to the whole run,
+  and a worker lost without a SIGTERM (an OOM kill, a node loss) leaves the
+  branch at the last push -- the GCS checkpoint still holds the rest. Pushing
+  mid-run would need the push to run under a process identity the agent
+  cannot reach, which is not built.
+* **The finish pushes too**, under every strategy -- a `collect` step pushes
+  its branch and opens no pull request -- with the final tree, uncommitted
+  work included, as one worker commit on the branch's tip (the agent's commits
+  are not replayed one by one under this carrier: a replay writes new shas
+  each time and would not fast-forward the checkpoints' pushes). The result
+  records `result_summary.branch = {name, head}`.
+* **A dependant starts from its parent's branch.** A step with one direct
+  parent (`depends_on`) that recorded `result_summary.branch` under the name
+  the worker derives from the parent's id clones that branch instead of the
+  default one. An integrator merges its parents' branches in step order
+  (`integrates`) at its publish, as it already did. A step with several
+  parents and no integrator role starts from the default branch.
+* **The API refuses `carrier: branches` only without a repository** (422
+  `invalid_dispatch`, `detail.missing: "repository_url"`). With one it is
+  accepted (201), whatever the token can do: swarm-api reads no tenant's git
+  secret and holds no path to one.
+* **The worker refuses a token that cannot push, before the agent runs**
+  (owner decision, 2026-10-02). After the clone, a `branches` attempt reads
+  the tenant's own `swarm-tenant-<tenant>-git` secret and asks the forge with
+  it, exactly as the carrier push and the publish do
+  (`Worker._carrier_scope_refusal`, `forge.probe_repository`: one
+  `GET /repos/{owner}/{repo}`, `permissions.push`). Three answers:
+  * **no git credential, or `permissions.push` not `true`**: the task ends
+    FAILED at once, whatever attempts are left, with cause
+    `forge_read_only` -- the prefix of `last_error` and
+    `result_summary.carrier_check.cause` -- and end cause `cannot_start`. Not
+    retried: the next attempt reads the same secret and asks the same forge.
+    The agent never started, so it cost no agent time and no provider quota;
+  * **the forge could not be asked** (a network failure, a 429, a 5xx): the
+    attempt fails RETRYABLY with cause `forge_unreachable`, after a 60-second
+    delay, bounded by `max_attempts`;
+  * **a token that can push**: the attempt proceeds.
+
+  `checkpoints` asks nothing and reads no extra secret. The token is never
+  logged, stored or put in the error; the reason is the probe's own words.
+
+  **Why the worker and not the API.** A submit-time 422 would be friendlier --
+  the caller hears at once instead of from a failed task -- and B4 first built
+  it that way. It required swarm-api to read every tenant's git secret, which
+  breaks the rule that exactly one identity may read each secret, the
+  tenant's own worker service account
+  (`terraform/modules/secret_manager/main.tf`), and made swarm-api depend on
+  the worker package. A credential that grants write on a tenant's
+  repositories is the last place to add a second reader. The worker already
+  reads that secret for the clone and the publish, so the check costs no new
+  grant; the price is that a read-only token is reported a few seconds into
+  the attempt rather than at submission.
+
 ---
 
 ## 5. What would have to be built
@@ -210,6 +296,6 @@ the names mean, and nothing is left to map here.
 |---|---|
 | `integrate` exists | the worker must honour `input_from`; an integrate runner profile; a conflict-resolving agent whose output reaches `main` |
 | `direct-pr` exists | write scope on the tenant token, which is a real widening |
-| `carrier: branches` | the same write scope, earlier in the run |
+| `carrier: branches` | the same write scope, earlier in the run (built, D13: pushed at each checkpoint taken after the runner stops, and at the finish; not at the periodic or outage checkpoints; see 4.3) |
 | `carrier: checkpoints` | retention driven by whether anything still needs a checkpoint, not by a clock |
 | `collect` stays default | nothing; this is today's behaviour |

@@ -28,6 +28,7 @@ import json
 import os
 from pathlib import Path
 
+from agent_worker.expected_outputs import skipped_names
 from agent_worker import artifact_manifest as manifest_mod
 from agent_worker import workspace as workspace_mod
 from agent_worker.standalone_outputs import SHOWN_NAME_CHARS
@@ -114,7 +115,7 @@ def test_a_folder_swapped_for_a_link_after_the_plan_is_neither_uploaded_nor_rewr
     assert (outside / "report.txt").read_bytes() == before, (
         "the redaction pass rewrote a file outside the workspace through a link"
     )
-    assert "sub/report.txt" in (summary.get("artifacts_skipped") or []), summary
+    assert "sub/report.txt" in skipped_names(summary.get("artifacts_skipped")), summary
     # The positive control: the upload itself still works.
     assert store.download_bytes(f"{config.artifact_prefix}/kept.txt") == b"an ordinary artifact\n"
 
@@ -135,7 +136,7 @@ def test_a_file_swapped_for_a_link_after_the_plan_is_not_uploaded(
 
     for key, body in _every_object(store).items():
         assert OUTSIDE.encode() not in body, f"{key} carries a file from behind a link"
-    assert "report.txt" in (summary.get("artifacts_skipped") or []), summary
+    assert "report.txt" in skipped_names(summary.get("artifacts_skipped")), summary
 
 
 def test_what_is_uploaded_is_what_was_read_even_if_a_link_appears_mid_upload(
@@ -307,7 +308,7 @@ def test_a_tree_a_thousand_folders_deep_does_not_abort_the_upload(db, store, tmp
         _remove_deep(ws.artifacts)
 
     assert store.download_bytes(f"{config.artifact_prefix}/ok.txt") == b"an ordinary artifact\n"
-    skipped = summary.get("artifacts_skipped") or []
+    skipped = skipped_names(summary.get("artifacts_skipped"))
     deep = [name for name in skipped if name.startswith("d/d/d/")]
     assert deep, skipped
     assert all(len(name) <= SHOWN_NAME_CHARS + 3 for name in deep), [len(n) for n in deep]
@@ -354,7 +355,7 @@ def test_a_name_over_the_byte_cap_is_scrubbed_then_cut(db, store, tmp_path):
 
     summary = worker._upload_outputs()
 
-    skipped = summary.get("artifacts_skipped") or []
+    skipped = skipped_names(summary.get("artifacts_skipped"))
     assert skipped, summary
     for entry in skipped:
         assert len(entry) <= SHOWN_NAME_CHARS + 3, len(entry)
@@ -378,7 +379,7 @@ def test_a_name_whose_upload_failed_is_scrubbed_then_cut(db, store, tmp_path, mo
     monkeypatch.setattr(store, "upload_file", upload_file)
     summary = worker._upload_outputs()
 
-    skipped = summary.get("artifacts_skipped") or []
+    skipped = skipped_names(summary.get("artifacts_skipped"))
     assert skipped, summary
     for entry in skipped:
         assert len(entry) <= SHOWN_NAME_CHARS + 3, len(entry)
@@ -406,7 +407,7 @@ def test_a_file_dropped_by_the_byte_cap_is_not_reported_as_uploaded_unredacted(
     summary = worker._upload_outputs()
 
     assert not store.exists(f"{config.artifact_prefix}/z.bin")
-    assert "z.bin" in (summary.get("artifacts_skipped") or []), summary
+    assert "z.bin" in skipped_names(summary.get("artifacts_skipped")), summary
     unredacted = [entry.get("file") for entry in summary.get("redaction_skipped") or []]
     assert not [name for name in unredacted if name and name.endswith("z.bin")], unredacted
     assert "uploaded as-is" not in log.getvalue()

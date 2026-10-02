@@ -30,6 +30,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api.main import create_app
+from swarm_api.routes import accounts as accounts_route
 
 from .conftest import auth_header, seed_task
 from .test_log_redaction import _shape
@@ -601,16 +602,41 @@ def test_an_owners_window_is_not_snapped(client, broker):
     assert ("hold_history", SHARED, _z(lo), _z(hi), None) in broker.calls
 
 
-def test_a_borrower_with_no_window_is_served_whole_hours_ending_at_the_next_hour(client, broker):
+def _freeze_route_clock(monkeypatch, at: datetime) -> None:
+    """Pin the history route's `datetime.now` to `at`.
+
+    The route reads the wall clock per request, and the module-level NOW above
+    was read at import: a run that straddled an hour boundary between the two
+    (it read 03:00 against a NOW of 02:59) failed on code that never touched
+    holders. A frozen clock makes the hour the route rounds up to a known value.
+    """
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):  # noqa: ANN001 - mirrors datetime.now
+            return at if tz is None else at.astimezone(tz)
+
+    monkeypatch.setattr(accounts_route, "datetime", _Frozen)
+
+
+@pytest.mark.parametrize("past_the_hour", [
+    timedelta(minutes=59, seconds=59, microseconds=999999),  # the CI failure: one tick before the hour
+    timedelta(0),                                           # exactly on the hour: already whole
+    timedelta(minutes=17, seconds=3),
+], ids=["just-before-the-hour", "on-the-hour", "mid-hour"])
+def test_a_borrower_with_no_window_is_served_whole_hours_ending_at_the_next_hour(
+        client, broker, monkeypatch, past_the_hour):
     broker.history_rows = []
+    frozen = _HOUR + past_the_hour
+    _freeze_route_clock(monkeypatch, frozen)
 
     client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"))
 
     asked = [c for c in broker.calls if c[0] == "hold_history"][-1]
     lo, hi = datetime.fromisoformat(asked[2]), datetime.fromisoformat(asked[3])
+    next_hour = _HOUR if past_the_hour == timedelta(0) else _HOUR + timedelta(hours=1)
+    assert hi == next_hour
     assert (lo.minute, lo.second, lo.microsecond) == (0, 0, 0)
-    assert (hi.minute, hi.second, hi.microsecond) == (0, 0, 0)
-    assert timedelta(0) <= hi - NOW.replace(microsecond=0) <= timedelta(hours=1)
+    assert timedelta(0) <= hi - frozen < timedelta(hours=1)
     assert hi - lo == timedelta(days=7)
 
 

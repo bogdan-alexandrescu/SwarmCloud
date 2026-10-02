@@ -737,6 +737,34 @@ describe('Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-
   })
 })
 
+describe('Outputs names the cause the worker recorded for each skipped file', () => {
+  // #165, OWNER DECISION OF 2026-09-28. The worker records WHY each file was
+  // not uploaded; the listing route serves each skipped file as
+  // `{name, cause}` (owner decision, 2026-10-02). A name with no recorded
+  // cause (a summary from before causes) is shown bare, never assumed to be
+  // the cap.
+  it('says the cap for a cap skip, the upload for an upload error, and nothing for an older name', async () => {
+    await openPane(
+      finishedRoutes({
+        [`/v1/tasks/${REF}/artifacts`]: listing({
+          artifacts_skipped: [
+            { name: 'core.dump', cause: 'cap' },
+            { name: 'notes.md', cause: 'upload_error' },
+            { name: 'old.bin', cause: null },
+          ],
+        }),
+      }),
+    )
+    const out = await sectionReady('Outputs', /3 skipped/)
+    const say = [...out.querySelectorAll('.ctl-mark')].map((m) => m.getAttribute('aria-label') ?? '').find((t) => t.includes('core.dump'))
+    expect(say, 'the skipped note names no file').toBeDefined()
+    expect(say).toContain('core.dump (over the size cap)')
+    expect(say).toContain('notes.md (the upload failed)')
+    expect(say).toMatch(/old\.bin(,|$)/)
+    expect(say).not.toContain('old.bin (')
+  })
+})
+
 // ---------------------------------------------------------------------------
 // Inputs
 // ---------------------------------------------------------------------------

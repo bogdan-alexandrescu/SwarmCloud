@@ -2327,6 +2327,139 @@ class MergeOutcome:
         return not self.conflicted and not self.missing
 
 
+def fetch_branch_tip(
+    *,
+    repo: Path,
+    url: str,
+    branch: str,
+    token: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+    branch_prefix: str = "swarm/",
+) -> str | None:
+    """Fetch `refs/heads/<branch>` from `url` into `repo`; its sha, or None when absent.
+
+    For `carrier: branches` (D13): every push of a step's work to its branch
+    is made on top of what the branch already holds, so it is a fast-forward
+    and is never forced (`push_branch`). The tip is fetched with full depth so
+    a commit can be made on it.
+
+    `repo` MUST be a worker-owned publish repository, as for `merge_branches`:
+    the fetch carries the tenant token. The branch must carry `branch_prefix`,
+    the rule every token-bearing ref in this module is held to.
+    """
+    branch = validate_ref(branch) or ""
+    if not branch or not branch.startswith(branch_prefix):
+        raise GitError(f"refusing to fetch {branch!r}: outside {branch_prefix!r}")
+    url = validate_repository_url(url)
+    repo = Path(repo)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    cred_file = _write_credentials(url, token, private_dir)
+    config_args = [*_TOKEN_SAFE, "-c", f"credential.helper=store --file={cred_file}"]
+    slug = "carrier-fetch"
+    try:
+        code, _ = _git_text(
+            [
+                git_binary, *config_args, "fetch", "--no-tags", "--depth=2147483647",
+                "--", url, f"refs/heads/{branch}",
+            ],
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+    finally:
+        try:
+            cred_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("could not remove the git credential file", error=str(exc))
+    if code != 0:
+        # Absent: no checkpoint of this step has pushed yet. A fetch that failed
+        # for another reason surfaces at the push, which is refused unless it
+        # fast-forwards.
+        return None
+    code, text = _git_text(
+        [git_binary, *_NO_HOOKS, "rev-parse", "--verify", "--quiet", "FETCH_HEAD^{commit}"],
+        repo=repo,
+        private_dir=private_dir,
+        logs_dir=logs_dir,
+        slug="carrier-fetch-head",
+        timeout_seconds=timeout_seconds,
+        logger=logger,
+    )
+    sha = text.strip()
+    return sha if code == 0 and re.fullmatch(r"[0-9a-f]{40}", sha) else None
+
+
+def commit_tree_onto(
+    *,
+    repo: Path,
+    parent: str,
+    message: str,
+    author_name: str,
+    author_email: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> str | None:
+    """Commit HEAD's tree as ONE worker commit on `parent`, and move HEAD there.
+
+    Returns the new commit, or None when `parent` already has HEAD's tree and
+    there is nothing to add. The commit is the worker's, made with
+    `_worker_identity` (#219's rule that the worker writes every commit it
+    pushes), so `verify_worker_authorship` passes it. `repo` is a worker-owned
+    publish repository; the index and working tree are not touched.
+
+    For `carrier: branches` (D13): each push of a step's work is this commit
+    on the branch's current tip, so the branch only ever fast-forwards, push
+    after push, across checkpoints and attempts. A replay of the agent's
+    commits (`lifecycle.replay_agent_commits`) writes new shas every time it
+    runs, so a second replay of the same work would not descend from the
+    first one pushed, and the push, never forced, would be refused.
+    """
+    g = [git_binary, *_NO_HOOKS, *_worker_identity(author_name, author_email)]
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=Path(repo),
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    code, tree = run([*g, "rev-parse", "--verify", "HEAD^{tree}"], "carrier-tree")
+    tree = tree.strip()
+    if code != 0 or not re.fullmatch(r"[0-9a-f]{40}", tree):
+        raise GitError("could not read the tree of the work to push")
+    code, parent_tree = run([*g, "rev-parse", "--verify", f"{parent}^{{tree}}"], "carrier-parent")
+    if code != 0:
+        raise GitError(f"could not read the tree of {parent[:12]}")
+    if parent_tree.strip() == tree:
+        code, _ = run([*g, "reset", "--soft", parent], "carrier-reset")
+        if code != 0:
+            raise GitError("could not move the branch onto its pushed tip")
+        return None
+    code, made = run([*g, "commit-tree", tree, "-p", parent, "-m", message], "carrier-commit")
+    made = made.strip()
+    if code != 0 or not re.fullmatch(r"[0-9a-f]{40}", made):
+        raise GitError("could not commit the work onto the branch's tip")
+    code, _ = run([*g, "reset", "--soft", made], "carrier-reset")
+    if code != 0:
+        raise GitError("could not move the branch onto the worker's commit")
+    return made
+
+
 def merge_branches(
     *,
     repo: Path,

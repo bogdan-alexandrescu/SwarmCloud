@@ -338,6 +338,7 @@ def build_worker(
     reap_before_publish: Any | None = None,
     sign_spec: bool = True,
     quota_reporter: Any | None = None,
+    heartbeat_extension_seconds: int = 120,
     **overrides: Any,
 ) -> tuple[Worker, WorkerConfig, RecordingExporter]:
     profile = RUNNER_PROFILES[runner_profile]
@@ -389,6 +390,9 @@ def build_worker(
         # Never the environment's broker: a test's provider outcomes are
         # recorded, and read back through `control.quota_reporter`.
         quota_reporter=quota_reporter or RecordingQuotaReporter(),
+        # The platform's `lease_timeout_seconds` by default. A test of what
+        # outlasts the lease sets a short one rather than waiting two minutes.
+        heartbeat_extension_seconds=heartbeat_extension_seconds,
     )
     exporter = RecordingExporter()
     deps = WorkerDeps(
