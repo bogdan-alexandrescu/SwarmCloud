@@ -29,6 +29,19 @@ vi.mock('../api', async (importOriginal) => {
 
 const { TimelineLanesScreen } = await import('../TimelineLanes')
 
+// jsdom has no PointerEvent, and without one a pointer event carries no
+// clientX: a MouseEvent with a pointerId is what a browser hands the axis.
+if (typeof window.PointerEvent === 'undefined') {
+  class PointerEventShim extends MouseEvent {
+    pointerId: number
+    constructor(type: string, init: PointerEventInit = {}) {
+      super(type, init)
+      this.pointerId = init.pointerId ?? 0
+    }
+  }
+  window.PointerEvent = PointerEventShim as unknown as typeof PointerEvent
+}
+
 const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
 const failed = <T,>(httpStatus: number, message: string): Result<T> => ({
   status: 'error',
@@ -262,9 +275,51 @@ describe('Lanes: the outcome strip', () => {
     expect(link.getAttribute('href')).toBe('/timeline/outcomes?span=24h')
   })
 
+  it('prints no settled fence count while lanes are unread: a floor, and the lanes it could not read', async () => {
+    api.loadTaskEventsPage.mockImplementation(() => new Promise(() => {}))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/1\+ generations fenced, events not read on 3 lanes/))
+  })
+
   it('suggests Outcomes past 7 days', async () => {
     render(<TimelineLanesScreen view="span=30d" onView={() => {}} />)
     expect(await screen.findByText(/bars are slivers/i)).toBeTruthy()
+  })
+})
+
+describe('Lanes: refresh', () => {
+  it('a refresh reads every lane in view again, and draws its marks again', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan')?.querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
+    const asked = (id: string) => api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === id && (c[1] as { order?: string }).order === 'desc' && !(c[1] as { pageToken?: string }).pageToken).length
+    expect(asked('task_plan')).toBe(1)
+    expect(asked('task_solo')).toBe(1)
+    fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
+    await waitFor(() => expect(asked('task_plan')).toBe(2))
+    await waitFor(() => expect(asked('task_solo')).toBe(2))
+    expect(asked('task_test')).toBe(2)
+    await waitFor(() => expect(lane('task_plan').querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/1 generation fenced/))
+    expect(document.querySelector('.tl-strip')?.textContent).not.toMatch(/events not read/)
+  })
+
+  it('drops an events page that lands after a newer read began', async () => {
+    let release: (() => void) | null = null
+    api.loadTaskEventsPage.mockImplementation((id: string) =>
+      id === 'task_plan' && release === null
+        ? new Promise((res) => {
+            release = () => res(ok(eventsPage([ev('task_plan', 'cancel_requested', 170, 1)])))
+          })
+        : Promise.resolve(ok(eventsPage(id === 'task_plan' ? [] : (EVENTS[id] ?? [])))),
+    )
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(release).not.toBeNull())
+    fireEvent.click(await screen.findByRole('button', { name: 'refresh' }))
+    await waitFor(() => expect(api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === 'task_plan').length).toBe(2))
+    release!()
+    await new Promise((r) => setTimeout(r, 20))
+    expect(lane('task_plan').querySelector('[data-mark="cancel_requested"]')).toBeNull()
   })
 })
 
@@ -275,9 +330,9 @@ describe('Lanes: span and zoom', () => {
     await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
     const axis = document.querySelector('.tl-axis .tl-trk') as HTMLElement
     axis.getBoundingClientRect = () => ({ left: 0, width: 1000, top: 0, height: 30, right: 1000, bottom: 30, x: 0, y: 0, toJSON: () => ({}) })
-    fireEvent.mouseDown(axis, { clientX: 250, button: 0 })
-    fireEvent.mouseMove(axis, { clientX: 500 })
-    fireEvent.mouseUp(axis, { clientX: 500 })
+    fireEvent.pointerDown(axis, { clientX: 250, button: 0, pointerId: 1 })
+    fireEvent.pointerMove(axis, { clientX: 500, pointerId: 1 })
+    fireEvent.pointerUp(axis, { clientX: 500, pointerId: 1 })
     expect(onView).toHaveBeenCalled()
     const q = new URLSearchParams(onView.mock.calls.at(-1)![0] as string)
     expect(q.get('since')).not.toBeNull()

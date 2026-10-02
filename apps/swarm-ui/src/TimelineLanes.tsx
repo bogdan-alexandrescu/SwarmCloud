@@ -27,7 +27,7 @@
  * Shared components (U0's, components.html A) are not on main yet, so the few
  * this page needs are local and prefixed `Tl` for a later pass to swap.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 
 import {
   loadAttemptsPage,
@@ -337,16 +337,29 @@ export function TimelineLanesScreen({
 
   // ---- one events page per lane in view -----------------------------------
   const [events, setEvents] = useState<Map<string, EventsRead>>(new Map())
-  const askedEv = useRef(new Set<string>())
-  useEffect(() => {
-    askedEv.current = new Set()
+  // THE ASKED SET BELONGS TO ONE READ. A refresh keeps the drawing mounted,
+  // so no row leaves the view and none would ask again on its own: each row
+  // re-asks on the new `nonce`, and the first ask of a read starts its set
+  // and map afresh. React runs the rows' effects before this screen's, so the
+  // reset lives in ensureEvents, with the screen's effect covering a read in
+  // which no row asked. A page landing after a newer read began is dropped.
+  const nonceNow = useRef(nonce)
+  nonceNow.current = nonce
+  const askedEv = useRef({ gen: nonce, ids: new Set<string>() })
+  const startRead = () => {
+    if (askedEv.current.gen === nonceNow.current) return
+    askedEv.current = { gen: nonceNow.current, ids: new Set() }
     setEvents(new Map())
-  }, [nonce])
+  }
+  useEffect(startRead, [nonce])
   const ensureEvents = useCallback((id: string) => {
-    if (askedEv.current.has(id)) return
-    askedEv.current.add(id)
+    startRead()
+    if (askedEv.current.ids.has(id)) return
+    askedEv.current.ids.add(id)
+    const gen = askedEv.current.gen
     setEvents((m) => new Map(m).set(id, { status: 'reading' }))
     loadTaskEventsPage(id, { order: 'desc' }).then((r) => {
+      if (askedEv.current.gen !== gen) return
       setEvents((m) =>
         new Map(m).set(
           id,
@@ -362,15 +375,17 @@ export function TimelineLanesScreen({
     })
   }, [])
   const retryEvents = (id: string) => {
-    askedEv.current.delete(id)
+    askedEv.current.ids.delete(id)
     ensureEvents(id)
   }
   const readOlder = (id: string) => {
     const cur = events.get(id)
     if (cur?.status !== 'ok' || cur.next === null || cur.older === 'reading') return
     const token = cur.next
+    const gen = askedEv.current.gen
     setEvents((m) => new Map(m).set(id, { ...cur, older: 'reading' }))
     loadTaskEventsPage(id, { order: 'desc', pageToken: token }).then((r) => {
+      if (askedEv.current.gen !== gen) return
       setEvents((m) => {
         const c = m.get(id)
         if (c?.status !== 'ok') return m
@@ -599,6 +614,7 @@ export function TimelineLanesScreen({
                     selected={view.lane === l.taskId}
                     onSelect={() => select(view.lane === l.taskId ? null : l.taskId)}
                     onSeen={ensureEvents}
+                    readNonce={nonce}
                     onRetry={retryEvents}
                   />
                 ))}
@@ -760,16 +776,18 @@ function Axis({
   const wide = until - since > 36 * 3_600_000
   const [drag, setDrag] = useState<{ x0: number; x1: number; w: number; left: number } | null>(null)
   const at = (x: number, d: { w: number; left: number }) => since + (Math.min(Math.max(x - d.left, 0), d.w) / d.w) * (until - since)
-  const down = (e: ReactMouseEvent<HTMLDivElement>) => {
+  const down = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return
     const r = e.currentTarget.getBoundingClientRect()
     if (!(r.width > 0)) return
+    // Captured, so a drag by touch or pen keeps reaching the axis.
+    e.currentTarget.setPointerCapture?.(e.pointerId)
     setDrag({ x0: e.clientX, x1: e.clientX, w: r.width, left: r.left })
   }
-  const move = (e: ReactMouseEvent<HTMLDivElement>) => {
+  const move = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (drag !== null) setDrag({ ...drag, x1: e.clientX })
   }
-  const up = (e: ReactMouseEvent<HTMLDivElement>) => {
+  const up = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (drag === null) return
     const d = { ...drag, x1: e.clientX }
     setDrag(null)
@@ -792,10 +810,10 @@ function Axis({
       <div
         className="tl-trk"
         title="Drag across the axis to zoom"
-        onMouseDown={down}
-        onMouseMove={move}
-        onMouseUp={up}
-        onMouseLeave={() => setDrag(null)}
+        onPointerDown={down}
+        onPointerMove={move}
+        onPointerUp={up}
+        onPointerCancel={() => setDrag(null)}
       >
         {ticks.map((t) => (
           <span key={t} className="tl-tk" style={{ left: `${pct(t, since, until)}%` }}>
@@ -888,6 +906,7 @@ function LaneRow({
   selected,
   onSelect,
   onSeen,
+  readNonce,
   onRetry,
 }: {
   lane: Lane
@@ -899,12 +918,14 @@ function LaneRow({
   selected: boolean
   onSelect: () => void
   onSeen: (id: string) => void
+  /** The screen's read generation: a refresh asks a row still in view again. */
+  readNonce: number
   onRetry: (id: string) => void
 }) {
   const [ref, inView] = useInView<HTMLDivElement>()
   useEffect(() => {
     if (inView && !lane.neverRan) onSeen(lane.taskId)
-  }, [inView, lane.neverRan, lane.taskId, onSeen])
+  }, [inView, lane.neverRan, lane.taskId, onSeen, readNonce])
   const t = lane.task
   const name = t !== null ? agentName(t) : lane.taskId
   const wide = until - since > 36 * 3_600_000
@@ -1015,9 +1036,16 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
           <span className="tl-x">
             <b>{strip.data.totals.cancelled.total}</b> cancelled
           </span>
-          <span className="tl-x">
-            <b>{fenced}</b> {fenced === 1 ? 'generation' : 'generations'} fenced
-          </span>
+          {unread > 0 && fenced === 0 ? (
+            <span className="tl-x">
+              fenced <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}
+            </span>
+          ) : (
+            <span className="tl-x">
+              <b>{unread > 0 ? `${fenced}+` : fenced}</b> {fenced === 1 && unread === 0 ? 'generation' : 'generations'} fenced
+              {unread > 0 && `, events not read on ${unread} ${unread === 1 ? 'lane' : 'lanes'}`}
+            </span>
+          )}
           {unread > 0 ? (
             <span className="tl-x">
               parks <b className="tl-dash">—</b> events not read on {unread} {unread === 1 ? 'lane' : 'lanes'}

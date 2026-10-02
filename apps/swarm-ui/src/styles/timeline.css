@@ -316,6 +316,7 @@
   background-image: none;
   cursor: col-resize;
   user-select: none;
+  touch-action: pan-y;
 }
 .tl-tk {
   position: absolute;
