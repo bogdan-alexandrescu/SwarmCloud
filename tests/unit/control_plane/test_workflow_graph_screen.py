@@ -401,7 +401,7 @@ def test_a_picked_step_carries_a_link_to_its_run_and_the_node_itself_navigates_n
         "href={`#%s/task/${encodeURIComponent(taskId)}`}" % _work_id() in inspector
     ), "the inspector carries no href, so there is no click that reaches the agent run"
     assert "<a\n" in inspector or "<a " in inspector, "the inspector renders no anchor"
-    assert "open agent →" in inspector, "the inspector's link is not the 'open agent →' the owner decided"
+    assert "Open agent →" in inspector, "the inspector's link is not the 'Open agent →' the picked mock-ups draw (workflows.html V2, wide-workflows.html A)"
 
     node = _code(_decl(_src("Workflows.tsx"), "function StepNode("))
     assert "href=" not in node, (

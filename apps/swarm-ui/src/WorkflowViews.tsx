@@ -1146,7 +1146,7 @@ export function StepInspector({
             no link rather than a dead one. */}
         {taskId !== null && (
           <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
-            open agent →
+            Open agent →
           </a>
         )}
         <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
