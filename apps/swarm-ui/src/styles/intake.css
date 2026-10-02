@@ -138,6 +138,9 @@
   border: 1px solid var(--warn-ink); border-radius: var(--ctl-radius-sm);
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
+/* A plan a poll brought in while the reader looked at another: offered, not swapped. */
+.rn-held { flex-wrap: wrap; }
+.rn-held > .sb-btn { margin-left: auto; }
 
 /* ---- the list: 32px rows --------------------------------------------------- */
 .rn-list { display: grid; gap: 12px; min-width: 0; }

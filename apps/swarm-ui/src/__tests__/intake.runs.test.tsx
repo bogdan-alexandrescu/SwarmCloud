@@ -8,13 +8,16 @@
 //     names it, and an empty tenant is an empty state, not a blank table;
 //   * Approve sends THE DIGEST OF THE PLAN SHOWN (owner decision D3), and a
 //     409 `plan_changed` re-reads the run and says the plan changed;
+//   * a poll that serves another plan is HELD, not drawn: the plan on screen
+//     stays the one Approve and Edit name, an editor saves with the digest it
+//     opened on, and a notice offers the new plan;
 //   * Reject sends the shown digest and the reason;
 //   * what the run document does not serve -- the PR, the plan and status
 //     comments, overlaps, cost -- is a dash with its reason, never hidden and
 //     never invented; a workflow not yet created is "none yet".
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 const WAIT = { timeout: 4000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
@@ -70,7 +73,16 @@ async function mount(view: string | null, go = vi.fn()) {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.useRealTimers()
 })
+
+async function advance(ms: number): Promise<void> {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(ms)
+  })
+}
+
+const EDITED = { summary: 'Someone else\'s plan.', steps: [{ step_id: 'one', title: 'one step', prompt: 'do it' }] }
 
 describe('/runs: the tenant\'s runs, newest first as served', () => {
   it('draws one row per run in the served order, with the state the API names', async () => {
@@ -257,5 +269,97 @@ describe('/runs/<id>: one run', () => {
     serve(() => ({ status: 404, body: { code: 'not_found', message: "run 'run_x' not found" } }))
     await mount('run=run_x')
     await screen.findByText("run 'run_x' not found", undefined, WAIT)
+  })
+
+  it('a poll that serves another plan under an open editor is held; Save sends the digest the editor opened on', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    let reads = 0
+    const calls = serve((m, url) => {
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
+        reads += 1
+        return { status: 200, body: { run: reads === 1 ? run()
+          : run({ plan_digest: DIGEST_B, plan_revision: 2, plan_edited_by: 'someone@example.com', plan: EDITED }) } }
+      }
+      if (url.endsWith('plan:edit')) {
+        return { status: 409, body: { code: 'plan_changed', message: 'the plan has changed since it was shown',
+          detail: { plan_digest: DIGEST_B } } }
+      }
+      return null
+    })
+    const { container, RUN_POLL_MS } = await (async () => {
+      const m = await mount('run=run_4c1e09d2')
+      const { RUN_POLL_MS: ms } = await import('../Runs')
+      return { ...m, RUN_POLL_MS: ms }
+    })()
+    await advance(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit plan' }))
+    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'My edit of the first plan.' } })
+
+    // Someone else edits; the next poll reads their plan.
+    await advance(RUN_POLL_MS)
+    expect(reads).toBe(2)
+    // The editor and the digest on screen are still the first plan's, and the change is offered, not swapped in.
+    expect((screen.getByLabelText('Summary') as HTMLTextAreaElement).value).toBe('My edit of the first plan.')
+    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_A)
+    expect(visible(container.querySelector('.rn-held'))).toContain('The plan changed since this page drew it')
+    expect(visible(container.querySelector('.rn-held'))).toContain('someone@example.com')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
+    await advance(0)
+    const post = calls.find((c) => c.url.endsWith('plan:edit'))!
+    expect(post.body).toEqual({
+      plan_digest: DIGEST_A,
+      plan: { summary: 'My edit of the first plan.', steps: run().plan.steps },
+    })
+    // The API refuses it: the run is read again and the page says why.
+    await advance(0)
+    expect(reads).toBe(3)
+    expect(screen.getByText(/The plan changed since you opened it/)).not.toBeNull()
+    expect(visible(container.querySelector('.rn-plan'))).toContain("Someone else's plan.")
+    expect(container.querySelector('.rn-digest')!.getAttribute('title')).toBe(DIGEST_B)
+  })
+
+  it('a poll never swaps the plan under Approve: it approves the digest shown until the reader asks for the new plan', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    let reads = 0
+    const calls = serve((m, url) => {
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') {
+        reads += 1
+        return { status: 200, body: { run: reads === 1 ? run()
+          : run({ plan_digest: DIGEST_B, plan_revision: 2, plan_edited_by: 'someone@example.com', plan: EDITED }) } }
+      }
+      if (url.endsWith('plan:approve')) {
+        return { status: 200, body: { run: run({ state: 'APPROVED', plan_digest: DIGEST_B, plan: EDITED,
+          approved_by: 'operator@example.com', approved_at: '2026-10-02T14:20:00Z', approved_digest: DIGEST_B }) } }
+      }
+      return null
+    })
+    const { container } = await mount('run=run_4c1e09d2')
+    const { RUN_POLL_MS } = await import('../Runs')
+    await advance(0)
+    await advance(RUN_POLL_MS)
+    expect(reads).toBe(2)
+    expect(visible(container.querySelector('.rn-plan'))).toContain('Sum step spend into the workflow read')
+
+    // Asking for it draws it, and only then does Approve name it.
+    fireEvent.click(screen.getByRole('button', { name: 'Show the plan now' }))
+    expect(container.querySelector('.rn-held')).toBeNull()
+    expect(visible(container.querySelector('.rn-plan'))).toContain("Someone else's plan.")
+    fireEvent.click(screen.getByRole('button', { name: 'Approve and run' }))
+    await advance(0)
+    const post = calls.find((c) => c.url.endsWith('plan:approve'))!
+    expect(post.body).toEqual({ plan_digest: DIGEST_B })
+  })
+
+  it('planMovedUnder holds only a changed plan on a run still PLANNED', async () => {
+    const { planMovedUnder } = await import('../Runs')
+    type R = Parameters<typeof planMovedUnder>[0]
+    const a = run() as unknown as R
+    expect(planMovedUnder(a, run({ plan_digest: DIGEST_B }) as unknown as R)).toBe(true)
+    expect(planMovedUnder(a, run() as unknown as R)).toBe(false)
+    // The first plan arriving is drawn at once.
+    expect(planMovedUnder(run({ state: 'PLANNING', plan: null, plan_digest: null }) as unknown as R, a)).toBe(false)
+    // A run that left PLANNED is drawn at once: no action is left naming the old plan.
+    expect(planMovedUnder(a, run({ state: 'APPROVED', plan_digest: DIGEST_B }) as unknown as R)).toBe(false)
   })
 })

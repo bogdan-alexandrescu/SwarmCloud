@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
@@ -249,14 +249,49 @@ function stateLine(run: IssueRun): string {
   }
 }
 
+/**
+ * Whether a fresh read replaced the plan the reader is looking at while it can
+ * still be acted on. A plan first appearing (PLANNING -> PLANNED) and a run that
+ * left PLANNED are drawn at once: neither leaves an action naming stale text.
+ */
+export function planMovedUnder(shown: IssueRun, served: IssueRun): boolean {
+  return shown.plan_digest !== null && served.state === 'PLANNED' && served.plan_digest !== shown.plan_digest
+}
+
 function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: string) => void; go: (to: string) => void }) {
   const now = useNow()
   // THE ANSWER TO AN ACTION IS DRAWN AT ONCE: the API returns the run it
   // moved, and a poll that lands later replaces it with whatever it reads.
   const [run, setRun] = useState(served)
-  useEffect(() => setRun(served), [served])
+  // A POLL NEVER SWAPS THE PLAN UNDER THE READER. Approve, Edit and Reject
+  // carry the digest of the plan on screen (D3); if a 15s poll replaced that
+  // plan silently, the next click would carry a digest for text nobody read,
+  // and an editor opened on the old plan would overwrite the new one. So a
+  // read that serves a different digest for a still-PLANNED run is held, and
+  // a notice offers it; the plan on screen stays the one the actions name.
+  const [held, setHeld] = useState<IssueRun | null>(null)
+  const shown = useRef(run)
+  shown.current = run
+  useEffect(() => {
+    if (planMovedUnder(shown.current, served)) {
+      setHeld(served)
+    } else {
+      setHeld(null)
+      setRun(served)
+    }
+  }, [served])
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
-  const [open, setOpen] = useState<'none' | 'edit' | 'reject'>('none')
+  // The editor records the digest it opened on, and saves with that one.
+  const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject' }>(
+    { kind: 'none' },
+  )
+  const close = () => setOpen({ kind: 'none' })
+  const showHeld = () => {
+    if (held === null) return
+    setRun(held)
+    setHeld(null)
+    close()
+  }
 
   const canAct = run.state === 'PLANNED' && run.plan_digest !== null && run.plan !== null
   const busy = acting.kind === 'busy'
@@ -267,7 +302,8 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
     if (r.status === 'ok' || r.status === 'stale') {
       const next = (r.data as { run?: IssueRun } | null)?.run
       setActing({ kind: 'idle' })
-      setOpen('none')
+      close()
+      setHeld(null)
       if (next !== undefined && next !== null && typeof next.id === 'string') setRun(next)
       else reread('The API accepted this and did not echo the run, so it was read again.')
       return
@@ -275,7 +311,7 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
     if (r.status !== 'error') return
     if (r.error.code === 'plan_changed') {
       setActing({ kind: 'idle' })
-      setOpen('none')
+      close()
       reread(
         'The plan changed since you opened it, so nothing was done. This is the plan now: read it, then act on it again.',
       )
@@ -283,7 +319,7 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
     }
     if (r.error.code === 'invalid_run_transition' || r.error.kind === 'conflict') {
       setActing({ kind: 'idle' })
-      setOpen('none')
+      close()
       reread(`The run moved on since you opened it, so nothing was done: ${r.error.message}`)
       return
     }
@@ -327,6 +363,20 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
           </div>
         )}
 
+        {held !== null && (
+          <div className="rn-notice rn-held" role="status">
+            <span className="sk-st is-warn" data-mark="warn">
+              <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
+            </span>
+            <span>
+              The plan changed since this page drew it
+              {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The actions below still name the
+              plan shown, so the API will refuse them.
+            </span>
+            <button type="button" className="sb-btn" disabled={busy} onClick={showHeld}>Show the plan now</button>
+          </div>
+        )}
+
         <section className="rn-plan" aria-label="The plan">
           <h3>
             The plan
@@ -338,12 +388,16 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
                 ? 'No plan yet: the planner task is still working.'
                 : 'No plan: the planner did not produce one this run could read.'}
             </p>
-          ) : open === 'edit' && canAct ? (
+          ) : open.kind === 'edit' && canAct ? (
             <PlanEditor
+              key={open.digest}
               plan={run.plan}
               busy={busy}
-              onCancel={() => setOpen('none')}
-              onSave={(plan) => void act('edit', () => editPlan(run.id, digest!, plan))}
+              onCancel={close}
+              onSave={(plan) => {
+                const opened = open.digest
+                void act('edit', () => editPlan(run.id, opened, plan))
+              }}
             />
           ) : (
             <>
@@ -375,10 +429,10 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
           </p>
         </section>
 
-        {canAct && open !== 'edit' && (
+        {canAct && open.kind !== 'edit' && (
           <div className="rn-actions">
-            {open === 'reject' ? (
-              <RejectForm busy={busy} onCancel={() => setOpen('none')}
+            {open.kind === 'reject' ? (
+              <RejectForm busy={busy} onCancel={close}
                 onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />
             ) : (
               <>
@@ -386,8 +440,8 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
                   onClick={() => void act('approve', () => approvePlan(run.id, digest!))}>
                   {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
                 </button>
-                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen('edit')}>Edit plan</button>
-                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen('reject')}>Reject</button>
+                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</button>
+                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen({ kind: 'reject' })}>Reject</button>
               </>
             )}
           </div>
@@ -442,6 +496,16 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
               <b>Pull request</b>
               <i className="ctl-em">&mdash; not served by the run</i>
             </li>
+          </ul>
+        </section>
+        <section className="rn-card" aria-label="Read from the issue">
+          <h3>Read from the issue</h3>
+          <ul className="ctl-facts">
+            <li className="ctl-fact"><b>issue</b><span className="mono">{run.issue.ref}</span></li>
+            <li className="ctl-fact is-absent"><b>title</b><i className="ctl-em">&mdash; not served by the run</i></li>
+            <li className="ctl-fact is-absent"><b>labels</b><i className="ctl-em">&mdash; not served by the run</i></li>
+            <li className="ctl-fact is-absent"><b>body</b><i className="ctl-em">&mdash; not served by the run</i></li>
+            <li className="ctl-fact is-absent"><b>comments</b><i className="ctl-em">&mdash; not served by the run</i></li>
           </ul>
         </section>
         <section className="rn-card" aria-label="Chosen at submission">
