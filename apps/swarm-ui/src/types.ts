@@ -1585,6 +1585,32 @@ export interface AttemptRow {
   account?: TaskAccount | null
 }
 
+/**
+ * One page of `GET /v1/attempts` (routes/attempts.py): the tenant's attempts,
+ * newest first, `since` inclusive and `until` exclusive on `created_at`.
+ * `next_page_token` says older rows exist, NEVER how many -- so a count of
+ * the pages left is unknown, not zero. `coverage` counts this page's rows
+ * only (`scope: "page"`); the Lanes page does not sum cost, so it is typed
+ * loosely.
+ */
+export interface AttemptsPage {
+  tenant_id: string
+  read_at: string
+  attempts: AttemptRow[]
+  next_page_token: string | null
+  coverage: { scope: 'page' } & Record<string, unknown>
+}
+
+/**
+ * One page of `GET /v1/tasks/{id}/events` asked for with `order` and
+ * `page_token` (routes/tasks.py, redesign-v2 S1). A null token is the last
+ * page in that order.
+ */
+export interface TaskEventsPage {
+  events: TaskEvent[]
+  next_page_token: string | null
+}
+
 // --------------------------------------------------------------------------
 // Requested vs utilised
 // --------------------------------------------------------------------------
