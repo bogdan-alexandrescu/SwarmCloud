@@ -1,0 +1,244 @@
+/* ==========================================================================
+   ISSUE INTAKE -- intake-tenants.html 1A, the owner's pick of 2026-10-02:
+   the issue form (/submit/issue, IssueSubmit.tsx) and Work › Runs (/runs and
+   /runs/<id>, Runs.tsx). Imported by both screens.
+   ==========================================================================
+
+   A SHEET OF ITS OWN for the reason styles/submit.css gives: seven UI lanes
+   ran at once on 2026-10-02, and one shared sheet would be seven lanes
+   editing one file. The form reuses the task form's frame (`.sbf`, the moves,
+   the send panel, the runner cards) and adds only what 1A drew new.
+
+   TO components.html A (picked 2026-10-02) until lane U0's canonical set
+   lands: 32px rows and controls, the 3:1 control border (`--line`), pill
+   chips, the brand state marks (`.sk-st`). The radii are the live tokens
+   (`--radius` for a card, `--ctl-radius-sm` for a control,
+   `--ctl-radius-pill` for a chip), which U0 moves to A's scale. Every class is
+   `in-` (the form) or `rn-` (Runs), so a later pass can swap each for U0's
+   component by name.
+
+   TYPE: the 12px floor, sentence case, no letter-spacing (PICKS.md). */
+
+/* ---- step 1: the reference and its read -------------------------------- */
+.in-ask { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.in-ref {
+  flex: 1 1 280px; min-width: 0; min-height: 32px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.in-ref:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.in-ask .sb-btn:disabled { opacity: .45; cursor: not-allowed; }
+.in-ask + .sb-note { margin-top: 8px; }
+.in-reading { display: grid; gap: 8px; margin-top: 12px; }
+
+/* The issue as read: a card inside the move. */
+.in-preview {
+  display: grid; gap: 8px; margin-top: 12px; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface-2);
+  padding: 12px 14px;
+}
+.in-preview > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text); }
+.in-meta {
+  margin: 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+.in-meta > a { color: var(--sk-ac); }
+.in-chips { margin: 0; display: flex; gap: 6px; flex-wrap: wrap; }
+.in-chip {
+  display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-pill);
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+}
+/* The body AS SERVED, its line breaks kept; cut on screen until asked, never
+   re-cut in the text itself. */
+.in-body {
+  max-height: 120px; overflow: hidden;
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.in-body.is-whole { max-height: none; }
+.in-row { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* A closed issue: a warning with its way through, never a refusal. */
+.in-closed {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 10px;
+  border: 1px solid var(--warn-ink); border-radius: var(--ctl-radius-sm);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.in-closed > span:nth-child(2) { flex: 1 1 220px; }
+
+/* A refusal the preview route served, in its own words. */
+.in-refusal {
+  display: flex; gap: 10px; align-items: flex-start; margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--warn-ink); border-radius: var(--ctl-radius-sm);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.in-refusal .sk-st { margin-top: 3px; }
+.in-refusal-t { display: grid; gap: 6px; min-width: 0; }
+.in-refusal-t > p { margin: 0; }
+
+/* ---- step 3: what it may do on its own ----------------------------------- */
+.in-choice {
+  display: flex; gap: 12px; align-items: flex-start;
+  padding: 8px 0;
+}
+.in-choice + .in-choice { border-top: 1px solid var(--line); }
+.in-choice-t { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.in-choice-t b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text); }
+.in-choice-t small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* Required | Auto: one control of two segments (components.html A), the
+   chosen one a filled pill inside the track. A 4px gutter between them: the
+   spacing gate holds two surfaces in a row to it, and a shared edge would read
+   as one button. */
+.in-seg {
+  flex: none; display: inline-flex; gap: 4px; padding: 2px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+}
+.in-seg-o {
+  position: relative;
+  display: inline-flex; align-items: center; min-height: 28px; padding: 0 12px;
+  border-radius: var(--ctl-radius-sm);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+  cursor: pointer;
+}
+.in-seg-o.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.in-seg-o > input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.in-seg-o:focus-within { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+
+/* Auto-merge: a switch drawn off and disabled until #295. */
+.in-switch { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; }
+.in-switch > input { width: 32px; height: 18px; margin: 0; accent-color: var(--sk-ac); }
+.in-switch > input:disabled { opacity: .45; cursor: not-allowed; }
+.in-switch-w { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+.in-rounds {
+  flex: none; width: 72px; min-height: 32px; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.in-rounds[aria-invalid='true'] { border-color: var(--warn-ink); }
+
+/* ==========================================================================
+   WORK › RUNS
+   ========================================================================== */
+
+.rn-back {
+  display: inline-block; margin-bottom: 8px;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--sk-ac);
+}
+.rn-notice {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 12px;
+  padding: 8px 12px;
+  border: 1px solid var(--warn-ink); border-radius: var(--ctl-radius-sm);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+
+/* ---- the list: 32px rows --------------------------------------------------- */
+.rn-list { display: grid; gap: 12px; min-width: 0; }
+.rn-table-wrap { overflow-x: auto; }
+.rn-table { width: 100%; border-collapse: collapse; }
+.rn-table th {
+  text-align: left; padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
+}
+.rn-row > td {
+  height: 32px; padding: 4px 10px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+  white-space: nowrap;
+}
+.rn-row a { color: var(--sk-ac); }
+.rn-more { margin: 0; }
+
+/* ---- one run --------------------------------------------------------------- */
+.rn-page {
+  display: grid; gap: 28px; align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+}
+@media (min-width: 1080px) {
+  .rn-page { grid-template-columns: minmax(0, 1fr) 300px; }
+}
+.rn-main { display: grid; gap: 12px; min-width: 0; }
+.rn-title { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
+.rn-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.rn-state-t { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.rn-error { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); overflow-wrap: anywhere; }
+.rn-wait {
+  padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+
+.rn-plan, .rn-overlaps, .rn-history, .rn-card {
+  display: grid; gap: 8px; min-width: 0;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+  padding: 12px 14px;
+}
+.rn-plan h3, .rn-overlaps h3, .rn-history h3, .rn-card h3 {
+  margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text);
+}
+.rn-digest { font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; }
+.rn-summary { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.rn-steps { margin: 0; padding: 0; list-style: none; display: grid; gap: 8px; }
+.rn-step {
+  display: grid; gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.rn-prompt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.rn-overlaps .sb-note, .rn-plan .sb-note { margin: 0; }
+
+.rn-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rn-actions .sb-btn:disabled { opacity: .45; cursor: not-allowed; }
+
+.rn-history ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.rn-history li {
+  display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+
+.rn-side { display: grid; gap: 12px; min-width: 0; }
+.rn-card .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
+.rn-card .ctl-fact { justify-content: space-between; gap: 12px; }
+.rn-card .ctl-fact > b { flex: none; }
+.rn-card a { color: var(--sk-ac); overflow-wrap: anywhere; }
+
+/* The plan editor and the rejection, in place of the plan and the actions. */
+.rn-edit, .rn-reject { display: grid; gap: 10px; }
+.rn-field { display: grid; gap: 4px; }
+.rn-field > b { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+.rn-field > input, .rn-field > textarea {
+  min-height: 32px; padding: 6px 8px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+.rn-field-set {
+  display: grid; gap: 8px; margin: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+}
+.rn-field-set > legend { padding: 0 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ---- a phone (intake-tenants.html's 390px frames) --------------------------- */
+/* The three steps stack (the `.sbf` grid already does), the summary becomes
+   the button's own line, and every target is 44px. */
+@media (max-width: 560px) {
+  .in-ref, .in-rounds, .in-seg-o, .rn-row > td { min-height: 44px; }
+  .in-choice { flex-direction: column; gap: 6px; }
+  .rn-table thead { display: none; }
+  .rn-table, .rn-table tbody, .rn-row, .rn-row > td { display: block; width: 100%; }
+  .rn-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .rn-row > td { height: auto; min-height: 0; padding: 2px 0; border-bottom: 0; white-space: normal; }
+  .rn-row > td::before { content: attr(data-label) ' · '; color: var(--text-dim); font-size: var(--t-micro); }
+}

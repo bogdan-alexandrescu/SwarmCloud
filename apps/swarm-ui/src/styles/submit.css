@@ -154,8 +154,8 @@
 .sb-prio > small { flex: 1 1 260px; }
 
 /* ---- the chooser (M2) ---------------------------------------------------- */
-/* ROOM FOR A THIRD CARD: "From a GitHub issue" (intake-tenants.html 1A) is a
-   later lane's, and the grid takes it without a change. */
+/* THREE CARDS: task, workflow, and "From a GitHub issue" (intake-tenants.html
+   1A, whose own form is styles/intake.css). The grid took the third unchanged. */
 .sb-chooser { display: flex; flex-direction: column; gap: 16px; max-width: 1200px; }
 .sb-chooser h1 { margin: 0; font-size: var(--t-title); }
 .sb-choices {

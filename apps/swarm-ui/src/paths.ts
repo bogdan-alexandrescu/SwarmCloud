@@ -35,6 +35,10 @@ const FIXED: Readonly<Record<string, string>> = {
   'work/timeline/outcomes': '/timeline/outcomes',
   'work/new': '/submit/task',
   'work/new-workflow': '/submit/workflow',
+  // intake-tenants.html 1A: the issue form, and Work › Runs (one run is
+  // `/runs/<id>`, below).
+  'work/new-issue': '/submit/issue',
+  'work/runs': '/runs',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -104,6 +108,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const base = wf !== null && wf !== '' ? `/workflows/${encodeURIComponent(wf)}${pane}` : '/workflows'
     return rest === '' ? base : `${base}?${rest}`
   }
+  // One issue run rides on the Runs list's query as `run=<id>`: `/runs/<id>`.
+  if (bare === 'work/runs' && query !== '') {
+    const run = new URLSearchParams(query).get('run')
+    if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
+  }
   // Help: a topic lands at its group's page, scrolled to it; a group is a page.
   if (seg[0] === HELP_ROUTE && seg.length > 1) {
     const tail = seg.slice(1).join('/')
@@ -158,6 +167,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     if (pane !== null) params.append('tab', pane)
     for (const [k, v] of new URLSearchParams(query)) if (k !== 'wf' && (pane === null || k !== 'tab')) params.append(k, v)
     return plain(`work/workflows?${params.toString()}`)
+  }
+
+  if (seg[0] === 'runs' && seg.length >= 2) {
+    return plain(`work/runs?${new URLSearchParams({ run: decodeURIComponent(seg.slice(1).join('/')) }).toString()}`)
   }
 
   if (seg[0] === 'help' && seg.length >= 2) {
