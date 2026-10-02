@@ -106,6 +106,20 @@ class WorkflowStepCreate(StrictModel):
     #: stages each `input_from` file at `<parent step id>/<filename>`. Checked
     #: by `validation.resolve_input_layout`, which names the accepted values.
     metadata: dict[str, Any] = Field(default_factory=dict)
+    #: This step's part in a `single-pr` workflow's one pull request (#295):
+    #: `author`, `reader` or `amender` on an agent step; absent or `none` on a
+    #: worker-action step (post-verdict, merge). Refused under every other
+    #: strategy. Checked by `validation.resolve_single_pr`, which names the
+    #: accepted values, rather than declared as a `Literal` here, for the same
+    #: reason as `strategy`.
+    pr_role: str | None = Field(default=None, max_length=16)
+    #: On the `merge` step of a `single-pr` workflow only, and optional: the
+    #: upstream STEP ids it checks, keyed `author`, `review`, `post-verdict`,
+    #: `fix`, `proof` (`validation.MERGES_KEYS`). The API derives the block
+    #: from the roles either way; a caller who states it is refused if the
+    #: graph says otherwise, so a chain wired differently from what was meant
+    #: is caught at submission rather than at merge time.
+    merges: dict[str, str] | None = Field(default=None, max_length=5)
 
 
 class WorkflowCreate(StrictModel):

@@ -56,9 +56,50 @@ locals {
 
   worker_ids = { for t in var.tenant_ids : t => "${local.tenant_worker_prefix}${t}" }
 
+  # --- #295: the three profiles that must not run as the worker account -----
+  #
+  # runner profile -> the suffix of its per-tenant account, and the provider
+  # whose registration brings it into being (docs/merge-step.md §1.3, §10 item
+  # 4; contract requests 33, 35, 36). `swarm-<tenant>-merge` is the only
+  # accessor of `-git-merge`, `swarm-<tenant>-post-verdict` the only accessor of
+  # `-git-review`, and `swarm-<tenant>-review` runs the review agent with the
+  # one grant nothing else holds: create under tenants/<tenant>/verdicts/.
+  #
+  # The review account is keyed on git-review, not on its profile's own
+  # provider (anthropic): a tenant without a review App has no verdict to
+  # write, so it has no use for the account.
+  #
+  # Every id fits IAM's 30 characters for an 11-character tenant key, the
+  # longest modules/tenancy admits: "swarm-" + 11 + "-post-verdict" is 30.
+  #
+  # `sole_accessor`: the account is the ONLY reader of its provider's secret,
+  # which the tenant's worker account must never read. `also_reads`: the
+  # secrets of the profile's own provider (the review agent's Anthropic key),
+  # read beside the worker account. tests/terraform/merge_step_iam.tftest.hcl
+  # holds `also_reads` to terraform/infra's catalogue mirror.
+  action_accounts = {
+    "merge"              = { suffix = "-merge", provider = "git-merge", sole_accessor = true, also_reads = [] }
+    "post-verdict"       = { suffix = "-post-verdict", provider = "git-review", sole_accessor = true, also_reads = [] }
+    "claude-code-review" = { suffix = "-review", provider = "git-review", sole_accessor = false, also_reads = ["anthropic"] }
+  }
+
+  action_account_prefix = "swarm-"
+
+  # "<tenant>:<profile>" -> account id, for each tenant whose providers
+  # include the profile's gating provider. Empty for a caller that passes no
+  # providers, which is every caller that predates #295.
+  action_ids = merge([
+    for t, providers in var.tenant_providers : {
+      for profile, a in local.action_accounts :
+      "${t}:${profile}" => "${local.action_account_prefix}${t}${a.suffix}"
+      if contains(providers, a.provider)
+    }
+  ]...)
+
   infra_managed = sort(concat(
     keys(local.platform),
     [local.tick_id, local.verify_id],
     values(local.worker_ids),
+    values(local.action_ids),
   ))
 }

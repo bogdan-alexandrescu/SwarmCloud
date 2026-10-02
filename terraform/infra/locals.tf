@@ -98,10 +98,12 @@ locals {
     # --- #295, contract requests 33, 35 and 36 (accepted 2026-10-01) -------
     #
     # Mirrored so the catalogue comparison holds, and so their pools exist
-    # (evaluate_capacity reads a missing pool as unlimited). They get NO Job:
-    # see `profiles_without_a_job` below. merge and post-verdict mount no
-    # secret -- the worker reads the App key at action time as the Job's own
-    # service account -- so their secret_env is empty.
+    # (evaluate_capacity reads a missing pool as unlimited). Each gets a Job
+    # only for a tenant that registers the provider its own account is keyed
+    # on, and that Job runs as that account, never the worker's: see
+    # `action_profiles` below. merge and post-verdict mount no secret -- the
+    # worker reads the App key at action time as the Job's own service
+    # account -- so their secret_env is empty.
     "merge" = {
       image           = "agent-runtime-base"
       resource_class  = "standard"
@@ -132,18 +134,34 @@ locals {
     }
   }
 
-  # --- profiles that get no Cloud Run Job (#295) ---------------------------
+  # --- profiles that run as their own account (#295) -----------------------
   #
-  # Every Job below runs as `module.tenancy.worker_service_accounts[tenant]`.
-  # These three must each run as their OWN per-tenant service account
+  # Every other Job below runs as `module.tenancy.worker_service_accounts`.
+  # These three each run as their OWN per-tenant service account
   # (`swarm-<tenant>-merge`, `-post-verdict`, `-review`; docs/merge-step.md
-  # §1.3, §10 item 4), and a Job running one of them as the worker account is
-  # the hole contract requests 33, 35 and 36 exist to close: any agent of the
-  # tenant can mint that account's token. So none of them gets a Job until
-  # the Terraform that gives each its own identity lands (lane M2). The
-  # profiles are also `available=False` in the catalogue, so nothing can be
-  # dispatched to them meanwhile.
-  profiles_without_a_job = ["merge", "post-verdict", "claude-code-review"]
+  # §1.3, §10 item 4), because a Job running one of them as the worker account
+  # is the hole contract requests 33, 35 and 36 exist to close: any agent of
+  # the tenant can mint that account's token. So a Job exists for one of them
+  # only where its account does -- for a tenant registering the provider
+  # modules/service_account_ids keys it on -- and names that account.
+  #
+  # The profiles stay `available=False` in the catalogue until #342 is
+  # enforced and the owner has created the review and merge Apps, so nothing
+  # can be dispatched to these Jobs meanwhile; no tenant in any tfvars
+  # registers git-merge or git-review, so none exists yet either.
+  action_profiles = module.tenancy.action_profiles
+
+  # The forge record each worker-action Job reads instead of a task's
+  # repository_url (merge-step.md §2.1b, decided 2026-09-29): post-verdict
+  # needs the host, owner and repo, and the App id to check the key it read
+  # against; merge needs those and the review App's bot user id, the one
+  # reviewer whose verdict it accepts. On the Job, where only the platform
+  # writes, never in the dispatcher's per-execution overrides, which a task
+  # shapes. None of these is a credential.
+  forge_env_names = {
+    "post-verdict" = ["FORGE_HOST", "FORGE_OWNER", "FORGE_REPO", "REVIEW_APP_ID"]
+    "merge"        = ["FORGE_HOST", "FORGE_OWNER", "FORGE_REPO", "REVIEW_APP_ID", "REVIEW_APP_BOT_ID"]
+  }
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
@@ -165,8 +183,12 @@ locals {
   # catalogue has no model, and giving it one is a contract request.
   # Only claude-code: codex is an OpenAI CLI, where this name would fail every
   # run, and mock, generic and browser start no model.
+  # claude-code-review is claude-code under its own account (contract request
+  # 36), so it runs the same model: a review agent on the CLI's default would
+  # judge with a different model than the one that wrote the change.
   runner_models = {
-    "claude-code" = "claude-opus-5-5"
+    "claude-code"        = "claude-opus-5-5"
+    "claude-code-review" = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
@@ -343,19 +365,35 @@ locals {
           for env_name, provider in profile.secret_env :
           env_name => "swarm-tenant-${tenant_id}-${provider}"
         }
+        # "" for a Job that runs as the tenant's worker account.
+        action_key = contains(keys(local.action_profiles), profile_name) ? "${tenant_id}:${profile_name}" : ""
+        forge_env = cfg.forge == null ? {} : {
+          for name, value in {
+            FORGE_HOST        = cfg.forge.host
+            FORGE_OWNER       = cfg.forge.owner
+            FORGE_REPO        = cfg.forge.repo
+            REVIEW_APP_ID     = cfg.forge.review_app_id == null ? null : format("%d", cfg.forge.review_app_id)
+            REVIEW_APP_BOT_ID = cfg.forge.review_app_bot_id == null ? null : format("%d", cfg.forge.review_app_bot_id)
+          } : name => value
+          if value != null && contains(lookup(local.forge_env_names, profile_name, []), name)
+        }
       }
-      if profile.backend == "CLOUD_RUN_JOB" && !contains(local.profiles_without_a_job, profile_name) && (
+      if profile.backend == "CLOUD_RUN_JOB" && (
         profile.provider == null || contains(cfg.providers, profile.provider)
+        ) && (
+        !contains(keys(local.action_profiles), profile_name) || contains(cfg.providers, try(local.action_profiles[profile_name].provider, ""))
       )
     ]
   ])
 
   jobs = {
     for job in local.job_matrix : job.key => {
-      tenant_id             = job.tenant_id
-      runner_profile        = job.runner_profile
-      resource_class        = job.resource_class
-      service_account_email = module.tenancy.worker_service_accounts[job.tenant_id]
+      tenant_id      = job.tenant_id
+      runner_profile = job.runner_profile
+      resource_class = job.resource_class
+      # The #295 profiles run as their own account; every other profile as
+      # the tenant's worker account.
+      service_account_email = job.action_key == "" ? module.tenancy.worker_service_accounts[job.tenant_id] : module.tenancy.action_service_accounts[job.action_key]
       image                 = job.image
       timeout_seconds       = job.timeout_seconds
       secret_env            = job.secret_env
@@ -396,6 +434,9 @@ locals {
         # there. Absent, not empty, on a profile with none: the worker reads an
         # empty MODEL as "no model", but a Job with no such variable says so.
         { for name, value in { MODEL = job.model } : name => value if value != null },
+        # The forge record, on the merge and post-verdict Jobs only; see
+        # `forge_env_names`.
+        job.forge_env,
         # The step-spec verification settings (contract request 34,
         # spec_signing.tf): the public keys, the key, the rollout mode. On the
         # Job, where only the platform writes; never in the dispatcher's

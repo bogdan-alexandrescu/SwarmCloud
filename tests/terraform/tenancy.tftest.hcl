@@ -66,22 +66,31 @@ run "a_tenant_can_only_reach_its_own_objects" {
     source = "../../terraform/modules/tenancy"
   }
 
-  # Two clauses, both needed. The first scopes get/create/delete on an object
-  # path; the second scopes LIST, which carries no object name -- without the
-  # objectListPrefix clause a worker could enumerate every tenant's object keys.
+  # Two clauses on the read grant, both needed. The first scopes get on an
+  # object path; the second scopes LIST, which carries no object name --
+  # without the objectListPrefix clause a worker could enumerate every
+  # tenant's object keys. Writing is a second grant, which excludes
+  # tenants/<tenant>/verdicts/ (#295; merge_step_iam.tftest.hcl holds the
+  # exact expressions).
   assert {
-    condition     = strcontains(google_storage_bucket_iam_member.worker_objects["eng"].condition[0].expression, "objects/tenants/eng/")
+    condition = (
+      strcontains(google_storage_bucket_iam_member.worker_objects_read["eng"].condition[0].expression, "objects/tenants/eng/")
+      && strcontains(google_storage_bucket_iam_member.worker_objects_write["eng"].condition[0].expression, "objects/tenants/eng/")
+    )
     error_message = "object access must be scoped to the tenant's own prefix"
   }
 
   assert {
-    condition     = strcontains(google_storage_bucket_iam_member.worker_objects["eng"].condition[0].expression, "objectListPrefix")
+    condition     = strcontains(google_storage_bucket_iam_member.worker_objects_read["eng"].condition[0].expression, "objectListPrefix")
     error_message = "without an objectListPrefix clause a worker can list every tenant's object names"
   }
 
   assert {
-    condition     = google_storage_bucket_iam_member.worker_objects["eng"].role == "roles/storage.objectUser"
-    error_message = "objectUser, not a bucket-wide role"
+    condition = (
+      google_storage_bucket_iam_member.worker_objects_read["eng"].role == "roles/storage.objectViewer"
+      && google_storage_bucket_iam_member.worker_objects_write["eng"].role == "roles/storage.objectUser"
+    )
+    error_message = "objectViewer and objectUser, not a bucket-wide role"
   }
 
   # legacyBucketReader would hand over objects.list across the WHOLE bucket.

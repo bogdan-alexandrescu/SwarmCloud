@@ -62,7 +62,9 @@ def test_the_documented_defaults_are_todays_behaviour():
     """`collect` over `checkpoints`: harvest the patch, push nothing."""
     assert DEFAULT_STRATEGY == "collect"
     assert DEFAULT_CARRIER == "checkpoints"
-    assert DISPATCH_STRATEGIES == ("collect", "direct-pr", "integrate")
+    # `single-pr` (#295) is accepted and never a default: a caller reaches it
+    # only by naming it, and only for a workflow.
+    assert DISPATCH_STRATEGIES == ("collect", "direct-pr", "integrate", "single-pr")
     assert DISPATCH_CARRIERS == ("checkpoints", "branches")
 
 

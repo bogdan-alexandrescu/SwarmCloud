@@ -31,6 +31,7 @@ from swarm_common.profiles import (
     RUNNER_PROFILES,
     InputRefused,
     RunnerProfile,
+    WorkerAction,
     check_inputs,
 )
 
@@ -510,7 +511,40 @@ def validate_batch_size(count: int, max_batch_size: int) -> None:
 #:               pushed. The only strategy that works with a read-only token.
 #:   direct-pr   every agent pushes `swarm/<task>` and opens its own PR.
 #:   integrate   one final step receives the others' patches and opens ONE PR.
-DISPATCH_STRATEGIES = ("collect", "direct-pr", "integrate")
+#:   single-pr   one `author` step opens ONE PR, later steps read or amend that
+#:               same branch, and the chain ends in a `merge` worker action that
+#:               merges it (#295, docs/merge-step.md §3). Workflow scale only.
+DISPATCH_STRATEGIES = ("collect", "direct-pr", "integrate", "single-pr")
+
+#: The strategy whose chain merges its own pull request (#295).
+SINGLE_PR = "single-pr"
+
+#: The worker actions a `single-pr` chain must contain exactly one step of
+#: each: the step that posts the review's verdict to GitHub and the step that
+#: merges. Neither runs an agent (contract requests 33 and 35).
+SINGLE_PR_WORKER_ACTIONS = (WorkerAction.POST_VERDICT, WorkerAction.MERGE)
+
+
+def dispatchable_strategies() -> tuple[str, ...]:
+    """`DISPATCH_STRATEGIES` less any strategy no workflow could complete today.
+
+    `single-pr` is ACCEPTED as a word -- a caller who names it is told what
+    its chain lacks, not that the word is unknown -- but it cannot run while
+    the catalogue disables the `merge` or `post-verdict` profile, which the
+    owner decided on 2026-10-01 it does for every tenant until #342 is
+    enforced and the review and merge Apps exist. A surface that OFFERS
+    strategies (the UI, the CLI) offers these, so it never offers a control
+    that refuses every time; the day both profiles are enabled this equals
+    `DISPATCH_STRATEGIES` and the parity tests demand the surfaces follow.
+    """
+    enabled = {
+        p.worker_action for p in RUNNER_PROFILES.values()
+        if p.available and p.worker_action is not None
+    }
+    return tuple(
+        s for s in DISPATCH_STRATEGIES
+        if s != SINGLE_PR or all(a in enabled for a in SINGLE_PR_WORKER_ACTIONS)
+    )
 
 #: Accepted `carrier` values -- where a step's work is kept for the next step.
 #:
@@ -602,7 +636,7 @@ RESERVED_METADATA_KEYS = (
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
-_NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate")
+_NEEDS_REPOSITORY_STRATEGIES = ("direct-pr", "integrate", "single-pr")
 
 #: Strategies under which EVERY step pushes `swarm/<its task id>`: `direct-pr`
 #: and an `integrate` contributor both push, and so does the integrator. A step
@@ -618,6 +652,32 @@ _EVERY_STEP_PUSHES_STRATEGIES = ("direct-pr", "integrate")
 #: control plane, and tests/unit/worker/test_verdict_gate.py holds the two
 #: equal.
 REVIEW_VERDICTS = ("MERGE", "NOT_YET")
+
+#: A `single-pr` step's part in the one pull request (docs/merge-step.md §3),
+#: in the order every refusal lists them.
+#:
+#:   author   clones `repository_ref`, pushes `swarm/<own task id>` and opens
+#:            the pull request. Exactly one per chain.
+#:   reader   clones the author's branch and pushes nothing (review, proof).
+#:   amender  clones the author's branch and fast-forward pushes to it,
+#:            opening nothing (fix). At most one per chain.
+#:   none     clones nothing: a worker-action step (post-verdict, merge). The
+#:            only role a worker action may hold, and the one it is given
+#:            when it declares none.
+PR_ROLES = ("author", "reader", "amender", "none")
+PR_ROLE_NONE = "none"
+
+#: The roles an AGENT step of a `single-pr` chain may declare.
+_AGENT_PR_ROLES = ("author", "reader", "amender")
+
+#: The keys of the merge step's `merges` block, in the order it is written.
+#: Corrected in the joint review with CR 34 (docs/merge-step.md §4.1) to
+#: include `post-verdict`, whose signed spec the merge verifies with the rest.
+#: `fix` is present only when the chain has an amender.
+MERGES_KEYS = ("author", "review", "post-verdict", "fix", "proof")
+
+#: The one file the merge stages, from the proof (docs/merge-step.md §4.1).
+PROOF_FILENAME = "proof.json"
 
 
 # --------------------------------------------------------------------------
@@ -785,6 +845,20 @@ class DispatchOptions:
     #: and because `input_from`'s `{task id: filename}` shape is read as such by
     #: the UI and the masking.
     input_parents: tuple[tuple[str, str], ...] = ()
+    #: This step's part in a `single-pr` chain (`PR_ROLES`), None under every
+    #: other strategy (#295).
+    pr_role: str | None = None
+    #: The author's TASK id, on a `single-pr` reader or amender: the worker
+    #: derives the branch it clones (and an amender pushes to) as
+    #: `swarm/<pr_author>`, never reading a branch name.
+    pr_author: str | None = None
+    #: The review's TASK id, on the `post-verdict` step only. It derives the
+    #: verdicts-prefix path of review.json from this and its own workflow id,
+    #: which the spec signature makes facts (docs/merge-step.md §4.3).
+    verdict_source: str | None = None
+    #: `(MERGES_KEYS key, upstream TASK id)`, on the `merge` step only: the
+    #: tasks whose `result_summary.git` and signed specs it checks (§4.1, §4.2).
+    merges: tuple[tuple[str, str], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -820,6 +894,23 @@ class DispatchOptions:
         """This step's `{upstream task id: upstream step id}`, for a `by_parent` step."""
         return replace(self, input_parents=tuple(sorted(parents.items())))
 
+    def with_pr_role(
+        self,
+        pr_role: str,
+        *,
+        pr_author: str | None = None,
+        verdict_source: str | None = None,
+        merges: Mapping[str, str] | None = None,
+    ) -> "DispatchOptions":
+        """This `single-pr` step's role and the upstream task ids it needs."""
+        return replace(
+            self,
+            pr_role=pr_role,
+            pr_author=pr_author,
+            verdict_source=verdict_source,
+            merges=tuple((k, merges[k]) for k in MERGES_KEYS if k in (merges or {})),
+        )
+
     def to_metadata(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""
         block: dict[str, Any] = {"strategy": self.strategy, "carrier": self.carrier}
@@ -843,6 +934,17 @@ class DispatchOptions:
         # `agent_worker.inputs.PARENTS_KEY`.
         if self.input_parents:
             block["input_parents"] = dict(self.input_parents)
+        # Absent outside `single-pr` (#295), so every other strategy stores
+        # exactly the block it stored before. Inside `dispatch`, so the spec
+        # signature covers all four (`swarm_common.specsign.SIGNED_METADATA_KEYS`).
+        if self.pr_role is not None:
+            block["pr_role"] = self.pr_role
+        if self.pr_author:
+            block["pr_author"] = self.pr_author
+        if self.verdict_source:
+            block["verdict_source"] = {"review": self.verdict_source}
+        if self.merges:
+            block["merges"] = dict(self.merges)
         return block
 
 
@@ -956,6 +1058,14 @@ def resolve_dispatch_options(
         carrier=_accepted_value("carrier", carrier, DISPATCH_CARRIERS,
                                 "accepted_carriers"),
     )
+    if options.strategy == SINGLE_PR and scale != "workflow":
+        raise DispatchOptionError(
+            "strategy 'single-pr' names a chain of steps -- an author, the steps "
+            "that read or amend its pull request, and the step that merges it -- "
+            "and a single task (or a batch, whose tasks are independent) is not "
+            "one. Submit a workflow, or choose 'collect' or 'direct-pr'.",
+            detail={"scale": scale, "accepted_strategies": list(DISPATCH_STRATEGIES)},
+        )
     if options.strategy == "integrate" and scale != "workflow":
         raise DispatchOptionError(
             "strategy 'integrate' has nothing to integrate here: it names a final "
@@ -1034,12 +1144,285 @@ def _ancestors(steps: Sequence[StepSpec]) -> dict[str, set[str]]:
     return found
 
 
+def refuse_worker_action_outside_single_pr(
+    profile: RunnerProfile, strategy: str, *, step_id: str | None = None
+) -> None:
+    """A worker-action profile (merge, post-verdict) runs only inside `single-pr`.
+
+    It acts on the one pull request that chain opens, after the steps that
+    order it -- the merge after the posted verdict and the proof, the verdict
+    before any later agent. As a standalone task, or a step of any other
+    strategy, there is no such pull request and no such ordering, so it is
+    refused at submission (#295). Called for a task by `_build_task` and for a
+    workflow step by `validate_step_routing`.
+    """
+    if profile.worker_action is None or strategy == SINGLE_PR:
+        return
+    where = f"step {step_id!r}" if step_id is not None else "this task"
+    raise DispatchOptionError(
+        f"{where} runs the {profile.name!r} worker action, which only a "
+        "'single-pr' workflow may contain: it acts on the one pull request that "
+        f"chain opens, after the steps that order it. Strategy {strategy!r} has "
+        "no such chain.",
+        detail={"step_id": step_id, "runner_profile": profile.name,
+                "strategy": strategy},
+    )
+
+
+def _worker_action(step: StepSpec) -> WorkerAction | None:
+    """The worker action `step`'s profile performs instead of an agent, if any."""
+    profile = RUNNER_PROFILES.get(step.runner_profile or "")
+    return profile.worker_action if profile is not None else None
+
+
+@dataclass(frozen=True)
+class SinglePrPlan:
+    """A `single-pr` chain's steps by their part in it, all STEP ids (#295).
+
+    Built by `resolve_single_pr`, after every refusal in docs/merge-step.md §3
+    has passed, and read by `SubmissionService._step_dispatch` to write each
+    step's role and the task ids it needs into its signed dispatch block.
+    """
+
+    #: Every step's `PR_ROLES` value, worker actions as `none`.
+    roles: Mapping[str, str] = field(hash=False)
+    author: str
+    review: str
+    post_verdict: str
+    proof: str
+    merge: str
+    fix: str | None = None
+
+    def merges_steps(self) -> dict[str, str]:
+        """The merge step's `merges` block, by STEP id, in `MERGES_KEYS` order."""
+        found = {
+            "author": self.author,
+            "review": self.review,
+            "post-verdict": self.post_verdict,
+            "fix": self.fix,
+            "proof": self.proof,
+        }
+        return {k: found[k] for k in MERGES_KEYS if found[k] is not None}
+
+
+def resolve_single_pr(steps: Sequence[StepSpec]) -> SinglePrPlan:
+    """Refuse a `single-pr` workflow that is not the chain §3 allows, else plan it.
+
+    Call only AFTER `validate_dag`. The chain is
+    implement -> review -> post-verdict -> fix -> proof -> merge, and each rule
+    below is a way it would otherwise run and merge something other than what
+    was reviewed (docs/merge-step.md §3, §4.3, §7):
+
+    * every agent step declares an author, reader or amender role, and a
+      worker action declares none (or `none`): the worker clones and pushes
+      by role, so a step with no role would do neither predictably;
+    * exactly one `post-verdict` step and one `merge` step: the merge checks
+      ONE posted verdict on ONE pull request;
+    * exactly one author, an ancestor of every other step: every other step
+      clones its branch, which must exist before they start; at most one
+      amender, because two would race fast-forward pushes to that branch;
+    * `merge` is the only sink, so nothing runs after the merge;
+    * `post-verdict` stages nothing and depends on exactly one reader, the
+      review: it reads review.json from the path its signed `verdict_source`
+      derives, never through `input_from`'s tenant-writable staging (§4.3);
+    * nothing stages from `post-verdict`, which writes no artifact;
+    * every step downstream of the review, other than `post-verdict`, is
+      downstream of `post-verdict` too, and the amender and the merge depend
+      on it directly: an ORDERING-only edge, which is what keeps every later
+      agent from acting before the verdict is an immutable GitHub review (T3a);
+    * the merge stages exactly the proof's proof.json, from a reader;
+    * a `merges` the caller stated names exactly the steps the graph does.
+
+    Graph-shape refusals are `invalid_dag`; a role or `merges` that is not one
+    the API accepts is `invalid_dispatch`, the split `validate_step_routing`
+    already makes.
+    """
+    by_id = {step.step_id: step for step in steps}
+    order = [step.step_id for step in steps]
+    roles: dict[str, str] = {}
+    actions: dict[WorkerAction, list[str]] = {a: [] for a in SINGLE_PR_WORKER_ACTIONS}
+
+    for step in steps:
+        action = _worker_action(step)
+        if action is not None:
+            if step.pr_role not in (None, PR_ROLE_NONE):
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} runs the {step.runner_profile!r} worker "
+                    "action, which clones nothing and runs no agent, so its pr_role "
+                    f"can only be {PR_ROLE_NONE!r} (or absent), not {step.pr_role!r}.",
+                    detail={"step_id": step.step_id, "pr_role": step.pr_role,
+                            "accepted_pr_roles": [PR_ROLE_NONE]},
+                )
+            if step.when_step is not None:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} runs the {step.runner_profile!r} worker "
+                    "action, which runs no agent, so a verdict gate on it would gate "
+                    "nothing. Remove its `when`.",
+                    detail={"step_id": step.step_id, "when": step.when_step},
+                )
+            roles[step.step_id] = PR_ROLE_NONE
+            actions.setdefault(action, []).append(step.step_id)
+        else:
+            if step.pr_role not in _AGENT_PR_ROLES:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r}: under strategy 'single-pr' every agent "
+                    "step declares its part in the one pull request as pr_role, one "
+                    "of " + ", ".join(_AGENT_PR_ROLES)
+                    + (f"; {step.pr_role!r} is not one" if step.pr_role is not None
+                       else "; it declares none") + ".",
+                    detail={"step_id": step.step_id, "pr_role": step.pr_role,
+                            "accepted_pr_roles": list(_AGENT_PR_ROLES)},
+                )
+            roles[step.step_id] = step.pr_role
+        if step.merges is not None and action is not WorkerAction.MERGE:
+            raise DispatchOptionError(
+                f"step {step.step_id!r} declares `merges`, which only the step on "
+                "the 'merge' profile may: it names the upstream steps that merge "
+                "checks.",
+                detail={"step_id": step.step_id},
+            )
+
+    for action in SINGLE_PR_WORKER_ACTIONS:
+        found = actions[action]
+        if len(found) != 1:
+            profile = next(
+                n for n, p in RUNNER_PROFILES.items() if p.worker_action is action
+            )
+            raise DagError(
+                f"a 'single-pr' workflow has exactly one step on the {profile!r} "
+                f"profile; this one has {len(found)}"
+                + (": " + ", ".join(found) if found else "") + ".",
+                detail={"runner_profile": profile, "steps": found},
+            )
+    post_verdict = actions[WorkerAction.POST_VERDICT][0]
+    merge = actions[WorkerAction.MERGE][0]
+
+    authors = [sid for sid in order if roles[sid] == "author"]
+    if len(authors) != 1:
+        raise DagError(
+            "a 'single-pr' workflow has exactly one step with pr_role 'author' -- "
+            f"the one that opens the pull request; this one has {len(authors)}"
+            + (": " + ", ".join(authors) if authors else "") + ".",
+            detail={"authors": authors},
+        )
+    author = authors[0]
+    amenders = [sid for sid in order if roles[sid] == "amender"]
+    if len(amenders) > 1:
+        raise DagError(
+            "a 'single-pr' workflow has at most one step with pr_role 'amender': "
+            "two would both fast-forward push to the author's branch. This one has "
+            + ", ".join(amenders) + ".",
+            detail={"amenders": amenders},
+        )
+
+    ancestors = _ancestors(steps)
+    stray = [sid for sid in order if sid != author and author not in ancestors[sid]]
+    if stray:
+        raise DagError(
+            f"every step of a 'single-pr' workflow clones the branch its author "
+            f"{author!r} pushes, so every step must be downstream of it; "
+            + ", ".join(stray) + " is not.",
+            detail={"author": author, "not_downstream_of_author": stray},
+        )
+
+    depended_on = {dep for step in steps for dep in step.depends_on}
+    terminals = [sid for sid in order if sid not in depended_on]
+    if terminals != [merge]:
+        raise DagError(
+            f"the merge step {merge!r} is the last thing a 'single-pr' workflow "
+            "does, so it must be the only step nothing depends on. This workflow's "
+            "final steps are " + ", ".join(terminals) + ".",
+            detail={"merge_step_id": merge, "terminal_steps": terminals},
+        )
+
+    pv = by_id[post_verdict]
+    if pv.input_from:
+        raise DagError(
+            f"step {post_verdict!r} posts the review's verdict, and reads review.json "
+            "only from the path its own signed spec derives (docs/merge-step.md "
+            "§4.3), so it may stage nothing through input_from. Remove its "
+            "input_from; its depends_on on the review is what orders it.",
+            detail={"step_id": post_verdict, "input_from": dict(pv.input_from)},
+        )
+    if len(pv.depends_on) != 1 or roles[pv.depends_on[0]] != "reader":
+        raise DagError(
+            f"step {post_verdict!r} posts ONE review's verdict, so it depends on "
+            "exactly one step -- the review, a step with pr_role 'reader' -- and "
+            "nothing else. It depends on " + (", ".join(pv.depends_on) or "nothing")
+            + ".",
+            detail={"step_id": post_verdict, "depends_on": list(pv.depends_on)},
+        )
+    review = pv.depends_on[0]
+
+    for step in steps:
+        if post_verdict in step.input_from:
+            raise DagError(
+                f"step {step.step_id!r} stages a file from {post_verdict!r}, which "
+                "runs no agent and writes no artifact. Keep the depends_on edge, "
+                "which orders it, and drop the input_from entry.",
+                detail={"step_id": step.step_id, "stages_from": post_verdict},
+            )
+    for sid in order:
+        if sid != post_verdict and review in ancestors[sid] and post_verdict not in ancestors[sid]:
+            raise DagError(
+                f"step {sid!r} comes after the review {review!r} but not after "
+                f"{post_verdict!r}, so its agent could act before the verdict is "
+                f"posted to GitHub. Add {post_verdict!r} to its depends_on (an "
+                "ordering-only edge, with no input_from entry).",
+                detail={"step_id": sid, "post_verdict_step_id": post_verdict},
+            )
+    for sid in [*amenders, merge]:
+        if post_verdict not in by_id[sid].depends_on:
+            raise DagError(
+                f"step {sid!r} depends on {post_verdict!r} directly under "
+                "'single-pr' (docs/merge-step.md §3): an ordering-only edge, with "
+                "no input_from entry, so it never starts before the verdict is "
+                "posted.",
+                detail={"step_id": sid, "post_verdict_step_id": post_verdict},
+            )
+
+    merge_inputs = dict(by_id[merge].input_from)
+    proof = next(iter(merge_inputs), None)
+    if (
+        len(merge_inputs) != 1
+        or merge_inputs[proof] != PROOF_FILENAME
+        or roles[proof] != "reader"
+    ):
+        raise DagError(
+            f"the merge step {merge!r} stages exactly one file, the proof's "
+            f"{PROOF_FILENAME}, from a step with pr_role 'reader': "
+            f'`"input_from": {{"<proof step>": "{PROOF_FILENAME}"}}`.',
+            detail={"step_id": merge, "input_from": merge_inputs},
+        )
+
+    plan = SinglePrPlan(
+        roles=roles,
+        author=author,
+        review=review,
+        post_verdict=post_verdict,
+        proof=proof,
+        merge=merge,
+        fix=amenders[0] if amenders else None,
+    )
+    stated = by_id[merge].merges
+    if stated is not None and dict(stated) != plan.merges_steps():
+        raise DispatchOptionError(
+            f"step {merge!r} states `merges` as {dict(stated)!r}, but this "
+            f"workflow's roles make it {plan.merges_steps()!r}. `merges` names "
+            "steps by their part in the chain (" + ", ".join(MERGES_KEYS)
+            + "; `fix` only when there is an amender); omit it to have it derived.",
+            detail={"step_id": merge, "merges": dict(stated),
+                    "derived": plan.merges_steps()},
+        )
+    return plan
+
+
 def validate_step_routing(
     steps: Sequence[StepSpec],
     *,
     strategy: str,
     integrator_step_id: str | None,
-) -> None:
+) -> SinglePrPlan | None:
     """Refuse a verdict gate or a `builds_on` that could not work (#264).
 
     Call only AFTER `validate_dag` and, under `integrate`,
@@ -1069,7 +1452,33 @@ def validate_step_routing(
 
     Graph-shape refusals are `invalid_dag`; strategy refusals are
     `invalid_dispatch`, the same split `resolve_integrator_step` makes.
+
+    Under `single-pr` (#295) the chain's own rules are `resolve_single_pr`'s,
+    and the plan it returns is returned from here. Under every other strategy
+    a `pr_role`, a `merges` or a worker-action profile is refused: each means
+    something only to a chain that ends in its own merge, and a worker action
+    anywhere else would run outside the ordering that makes it safe.
     """
+    plan: SinglePrPlan | None = None
+    if strategy == SINGLE_PR:
+        plan = resolve_single_pr(steps)
+    else:
+        for step in steps:
+            profile = RUNNER_PROFILES.get(step.runner_profile or "")
+            if profile is not None:
+                refuse_worker_action_outside_single_pr(
+                    profile, strategy, step_id=step.step_id
+                )
+            if step.pr_role is not None or step.merges is not None:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} declares "
+                    + ("pr_role" if step.pr_role is not None else "merges")
+                    + f", which means something only under strategy 'single-pr'; "
+                    f"under {strategy!r} it would be ignored. Remove it, or choose "
+                    "'single-pr'.",
+                    detail={"step_id": step.step_id, "strategy": strategy},
+                )
+
     ancestors = _ancestors(steps)
     staged_by: dict[str, list[str]] = {}
     for step in steps:
@@ -1141,6 +1550,15 @@ def validate_step_routing(
                     "through another step.",
                     detail={"step_id": step.step_id, "builds_on": step.builds_on},
                 )
+            if strategy == SINGLE_PR:
+                raise DispatchOptionError(
+                    f"step {step.step_id!r} builds on {step.builds_on!r}'s branch, and "
+                    "under strategy 'single-pr' the branch every step clones is "
+                    "decided by its pr_role: a reader or amender starts from the "
+                    "author's. Remove builds_on.",
+                    detail={"step_id": step.step_id, "strategy": strategy,
+                            "builds_on": step.builds_on},
+                )
             if strategy not in _EVERY_STEP_PUSHES_STRATEGIES:
                 raise DispatchOptionError(
                     f"step {step.step_id!r} builds on {step.builds_on!r}'s branch, and "
@@ -1150,6 +1568,7 @@ def validate_step_routing(
                     detail={"step_id": step.step_id, "strategy": strategy,
                             "builds_on": step.builds_on},
                 )
+    return plan
 
 
 def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:
@@ -1187,6 +1606,15 @@ class StepSpec:
     #: Where this step's `input_from` files land (#75): `INPUT_LAYOUTS`,
     #: already resolved by `resolve_input_layout`.
     input_layout: str = DEFAULT_INPUT_LAYOUT
+    #: The step's runner profile BY NAME, as submitted. Read here only to tell
+    #: a worker-action step (post-verdict, merge) from an agent step (#295);
+    #: whether the profile exists and is enabled is `validate_runner_profile`'s.
+    runner_profile: str | None = None
+    #: `pr_role` and `merges` as submitted (#295), checked by
+    #: `validate_step_routing`. `merges` names STEP ids; the service resolves
+    #: them to task ids.
+    pr_role: str | None = None
+    merges: Mapping[str, str] | None = field(default=None, hash=False)
 
 
 class DagError(ValidationFailed):
