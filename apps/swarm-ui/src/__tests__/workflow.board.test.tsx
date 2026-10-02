@@ -489,7 +489,9 @@ describe('the expanded canvas', () => {
 
   it('draws a real edge for every real dependency', () => {
     const { container } = card(fanOut(), new Map())
-    const edges = container.querySelectorAll('.wf-edge')
+    // On the canvas: the key's three samples (#108) are edges too, and drawn
+    // with the same class on purpose.
+    const edges = container.querySelectorAll('.wf-edges .wf-edge')
     expect(edges).toHaveLength(10)
     for (const e of edges) expect(e.getAttribute('d')).toMatch(/^M [\d.]+ [\d.]+ C /)
     // Flow direction is drawn, not implied: every edge ends in an arrowhead.
@@ -511,7 +513,7 @@ describe('the expanded canvas', () => {
     expect(container.querySelectorAll('.node')).toHaveLength(2)
     // 13 into `report` and 13 out of `plan`, none of which has a node at
     // either end drawn as a card.
-    expect(container.querySelectorAll('.wf-edge')).toHaveLength(26)
+    expect(container.querySelectorAll('.wf-edges .wf-edge')).toHaveLength(26)
   })
 
   /**

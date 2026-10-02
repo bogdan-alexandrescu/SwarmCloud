@@ -765,7 +765,8 @@ describe('U3: an edge that carries a file', () => {
     expect(links).toHaveLength(3)
     // One path per pair is unchanged: a data edge is a KIND of edge, not a
     // second edge drawn on top of the first.
-    expect(container.querySelectorAll('.wf-edge')).toHaveLength(3)
+    // On the canvas; the key's samples (#108) are drawn with the same class.
+    expect(container.querySelectorAll('.wf-edges .wf-edge')).toHaveLength(3)
     for (const l of links) expect(l.querySelectorAll('.wf-edge')).toHaveLength(1)
     expect(container.querySelectorAll('.wf-link.is-order[data-edge]')).toHaveLength(1)
     expect(container.querySelectorAll('.wf-link.is-staged[data-edge]')).toHaveLength(1)

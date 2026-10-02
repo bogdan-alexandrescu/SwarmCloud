@@ -144,6 +144,7 @@ export function Screen<T>({
   summary,
   empty,
   pollMs,
+  skeleton,
   children,
 }: {
   title: string
@@ -162,6 +163,13 @@ export function Screen<T>({
   empty?: { heading: string; body: ReactNode; link?: LinkOut; say?: string }
   /** Re-read on this cadence. Omitted, the screen reads once per mount. */
   pollMs?: ScreenPoll<T>
+  /**
+   * What the first read draws while it is in flight, in place of the generic
+   * `SkeletonRows`: a screen whose layout is known before its data (the
+   * Workflows list's toolbar and table head, #113) draws that layout, so
+   * nothing moves when the data lands. Omitted, the generic rows.
+   */
+  skeleton?: ReactNode
   children: (data: T, reading: ScreenReading) => ReactNode
 }) {
   const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
@@ -373,7 +381,7 @@ export function Screen<T>({
         <StaleBanner error={state.error} fetchedAt={state.fetchedAt} now={now} />
       )}
 
-      {state.status === 'loading' && <SkeletonRows />}
+      {state.status === 'loading' && (skeleton ?? <SkeletonRows />)}
       {state.status === 'error' && <FailedPanel error={state.error} onRetry={retry} />}
 
       {/* THE SHARED EMPTY STATE (CH-10), where this was a hand-built `.state`

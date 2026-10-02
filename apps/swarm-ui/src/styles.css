@@ -988,8 +988,31 @@ body {
    a loading row flashing as hard as a live agent -- instead of the .5 <-> .85
    written here. Two names now, one per job, and `stylesheet.gate.test.ts`
    fails on any name declared twice. */
-.skeleton { background: var(--surface-2); border-radius: var(--track-radius); animation: ctl-placeholder-pulse 1.4s ease-in-out infinite; }
 @keyframes ctl-placeholder-pulse { 0%, 100% { opacity: .5 } 50% { opacity: .85 } }
+/* THE SHARED LOADING BAR (#113), every screen's `SkeletonRows`. It sat on
+   `--surface-2`, about 1.03:1 against the light page -- loading drawn and not
+   seen -- and `--ctl-pending` sweeps over that same `--surface-2`, so swapping
+   the class would not have fixed it. The contrast step itself changes:
+   `--text-faint` mixed into the surface, 1.5:1 or better against both `--bg`
+   and `--surface` in both themes (workflow.readability.test.tsx), with a
+   lighter band sweeping across it on `ctl-sweep` -- the same step and sweep
+   as the Workflows list's `.wfl-skel`. A sweep says "in flight" where a
+   breath at this contrast read as a dim, finished bar. */
+.skeleton {
+  border-radius: var(--track-radius);
+  background-color: color-mix(in srgb, var(--text-faint) 45%, var(--surface));
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}
 
 /* THE PENDING ROW'S GEOMETRY, out of a React inline style and into the sheet.
    `Shell.tsx` wrote `{ height: 38, marginBottom: 6, borderRadius: 8 }` inline,
@@ -9732,6 +9755,22 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-link.is-data .wf-edge-halo { stroke-width: 6.5; }
 .wf-link.is-declared .wf-edge { stroke-dasharray: 6 4; }
 
+/* THE GRAPH'S KEY (#108): three short edges painted by the rules above, each
+   with its one word. At the end of the zoom strip, pushed right so it never
+   sits between the zoom control and what the control explains. The micro
+   step is this sheet's 12px floor. */
+.wf-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ctl-s3);
+  margin: 0 0 0 auto;
+  padding: 0;
+  list-style: none;
+}
+.wf-key-item { display: inline-flex; align-items: center; gap: var(--ctl-s1); }
+.wf-key-sample { flex: none; overflow: visible; }
+.wf-key-word { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+
 /* The `(plan.md)` on a node's dependency line. Staged: one step brighter than
    the line around it, because it is a reported fact. Declared and not yet
    reported: the dashed underline every absent figure on this canvas wears.
@@ -10139,6 +10178,25 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .wf-panel > .wf-inspect { border-radius: 0; border-width: 0; }
 }
+
+/* THE TABLE'S AND THE TIMELINE'S INSPECTOR, NEXT TO THE PICKED STEP (#110).
+   At 1100px and up these views use the split above, so the panel docks in
+   the same right-hand column the Graph's does; the component decides the
+   width (`DOCK_QUERY` in Workflows.tsx) because below it the inspector is in
+   a different place in the DOM, not merely a different box. Below 1100 it is
+   a full-width row directly under the picked table row, or a grid row
+   spanning both of the Timeline's columns under the picked track. Inside a
+   table that scrolls sideways it sticks to the left edge and stays within the
+   viewport, so the reader never scrolls the table to read it. */
+.wf-viewbar + .wf-split.is-rows { margin-top: var(--ctl-s3); }
+.wf-inline-row > td { padding: 0 0 var(--ctl-s2); border-bottom: 1px solid var(--line); }
+.wf-inline {
+  position: sticky; left: 0;
+  max-width: calc(100vw - var(--ctl-s3) * 4);
+}
+.wf-inline > .wf-inspect { margin-top: var(--ctl-s1); }
+.wf-tl-inline { grid-column: 1 / -1; min-width: 0; }
+.wf-tl-inline > .wf-inspect { margin-top: 0; }
 
 /* -------------------------------------------------------------------------- */
 /* 14b. The inspector charts  (charts/AttemptPhases, PeakMemory,               */
@@ -12010,6 +12068,40 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-clear { font: inherit; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
+.wfl-started { color: var(--text-dim); white-space: nowrap; }
+.wfl-dur { white-space: nowrap; }
+.wfl-dur.is-absent { color: var(--text-faint); }
+.wfl-filters select:disabled,
+.wfl-filters input:disabled,
+.wfl-seg button:disabled { cursor: progress; }
+/* THE LIST'S LOADING BARS (#113). The shared `.skeleton` is a full-width
+   38px row; these are line-height bars inside the real cells. They take the
+   same contrast step as `.skeleton` -- `--text-faint` mixed into the card's
+   own surface, 1.5:1 or better against both `--bg` and `--surface` in both
+   themes (workflow.readability.test.tsx) -- and sweep a lighter band across it.
+   They sit inside the real cells at the line's own height, so a skeleton row
+   is as tall as a loaded one and the first row lands where it was. */
+.wfl-skel {
+  display: block;
+  max-width: 100%;
+  height: 1em;
+  margin: calc((var(--lh-meta) * 1em - 1em) / 2) 0;
+  border-radius: var(--ctl-radius-sm);
+  background-color: color-mix(in srgb, var(--text-faint) 45%, var(--surface));
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--surface) 55%, transparent) 50%,
+    transparent 100%
+  );
+  background-size: 220% 100%;
+  animation: ctl-sweep 1.4s linear infinite;
+}
+.wfl-skel.is-sub { height: var(--t-micro); }
+.wfl-table .num .wfl-skel { margin-left: auto; }
+@media (prefers-reduced-motion: reduce) {
+  .wfl-skel { animation: none; }
+}
 
 /* One workflow (workflows.html B): the back link, the head, the confirm. */
 .wfp-back { display: inline-block; margin-bottom: 6px; font-size: var(--t-meta); color: var(--sk-ac); text-decoration: none; }
