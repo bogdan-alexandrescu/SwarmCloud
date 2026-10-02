@@ -20,6 +20,10 @@ variable "tenant_secrets" {
     providers     = list(string)
     accessor      = string # serviceAccount:swarm-agent-worker-<tenant>@...
     admin_members = optional(list(string), [])
+    # provider -> the COMPLETE list of identities that may read that
+    # provider's secret, in place of `accessor`. Required for every provider
+    # in var.action_providers, whose secret the worker account must never read.
+    accessor_overrides = optional(map(list(string)), {})
   }))
 
   validation {
@@ -32,12 +36,54 @@ variable "tenant_secrets" {
   validation {
     condition = alltrue([
       for t, v in var.tenant_secrets : alltrue([
-        for m in concat([v.accessor], v.admin_members) :
+        for m in concat([v.accessor], v.admin_members, flatten(values(v.accessor_overrides))) :
         m != "allUsers" && m != "allAuthenticatedUsers"
       ])
     ])
     error_message = "allUsers/allAuthenticatedUsers may never appear on a provider-key secret."
   }
+
+  validation {
+    condition = alltrue([
+      for t, v in var.tenant_secrets : alltrue([
+        for p, members in v.accessor_overrides :
+        length(members) > 0 && alltrue([for m in members : startswith(m, "serviceAccount:")])
+      ])
+    ])
+    error_message = "an accessor override names at least one reader, and every reader is a service account."
+  }
+
+  # Without an override an App key's secret would fall back to the worker
+  # account -- the one identity every agent of the tenant can mint a token for.
+  validation {
+    condition = alltrue([
+      for t, v in var.tenant_secrets : alltrue([
+        for p in v.providers : !contains(var.action_providers, p) || contains(keys(v.accessor_overrides), p)
+      ])
+    ])
+    error_message = "git-merge and git-review need an accessor override naming the merge or post-verdict account: their secret must never fall back to the tenant's worker account."
+  }
+
+  validation {
+    condition = alltrue([
+      for t, v in var.tenant_secrets : alltrue([
+        for p, members in v.accessor_overrides : !contains(var.action_providers, p) || !contains(members, v.accessor)
+      ])
+    ])
+    error_message = "the tenant's worker account may never read a git-merge or git-review secret: any agent of the tenant can mint its token."
+  }
+}
+
+variable "action_providers" {
+  description = <<-EOT
+    Providers whose secret is a GitHub App key that only a #295 worker-action
+    account may read: `git-merge` (the merge account) and `git-review` (the
+    post-verdict account). A tenant listing one must name its readers in
+    `accessor_overrides`, and must not name its worker account there; neither
+    is ever refreshed (contract request 35, MAJOR 1, and its git-merge twin).
+  EOT
+  type        = list(string)
+  default     = ["git-merge", "git-review"]
 }
 
 variable "version_destroy_ttl" {

@@ -89,7 +89,7 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
   }
 
   assert {
-    condition     = length(output.worker_models) == 1 && output.worker_models["claude-code"] == "claude-opus-5-5"
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, so a Job the scheduler creates runs what a Terraform Job runs"
+    condition     = length(output.worker_models) == 2 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's (the same: it is claude-code under its own account, #295), so a Job the scheduler creates runs what a Terraform Job runs"
   }
 }

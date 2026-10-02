@@ -687,9 +687,11 @@ resource "google_monitoring_alert_policy" "reconciler_blind" {
 # cloud_run_job: a GKE browser pod verifies the same way and its refusal pages
 # too (the metric's filter already names both workers' resource types).
 #
-# The upstream half (MERGE_REFUSED / VERDICT_REFUSED with an `upstream:`
-# reason) joins this policy as a second condition when contract request 33 is
-# built; see the metric.
+# TWO CONDITIONS, ONE POLICY. The second is the upstream half: a merge or
+# post-verdict worker refusing an upstream step's spec (MERGE_REFUSED /
+# VERDICT_REFUSED with an `upstream:` reason; metrics.tf,
+# spec_upstream_invalid). It is the same attack one step later -- an agent
+# rewrote a step the chain depends on -- so it pages the same people.
 # ---------------------------------------------------------------------------
 resource "google_monitoring_alert_policy" "spec_signature_invalid" {
   count = var.create_alerts ? 1 : 0
@@ -728,11 +730,35 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
     }
   }
 
+  conditions {
+    display_name = "A merge or post-verdict worker refused an upstream step's spec"
+
+    condition_threshold {
+      # The same resource.type restriction as the condition above, for the
+      # same reason (run 36655830725).
+      filter = join(" AND ", [
+        "resource.type = one_of(\"cloud_run_job\", \"k8s_container\")",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.spec_upstream_invalid.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause", "metric.label.reason"]
+      }
+    }
+  }
+
   notification_channels = local.notification_channels
 
   documentation {
     mime_type = "text/markdown"
-    content   = "A worker refused to run a task because its step spec did not verify (end cause `spec_signature_invalid`). Every occurrence is an agent rewriting a parked step's task document or a platform bug. Read the worker's ERROR line (`spec signature invalid: refusing to run this task`): `spec_check.reason` says which check failed and `spec_check.task_id` which task. `unsigned` after the legacy window, or `foreign_key_version` right after a key rotation, is a rollout problem (docs/runbooks/spec-signing-rollout.md); `signature_mismatch` or `not_canonical` on a task nobody resubmitted is the attack -- look at who wrote the task document after its submission.${local.alert_docs_suffix}"
+    content   = "A worker refused to run a task because its step spec did not verify (end cause `spec_signature_invalid`). Every occurrence is an agent rewriting a parked step's task document or a platform bug. Read the worker's ERROR line (`spec signature invalid: refusing to run this task`): `spec_check.reason` says which check failed and `spec_check.task_id` which task. `unsigned` after the legacy window, or `foreign_key_version` right after a key rotation, is a rollout problem (docs/runbooks/spec-signing-rollout.md); `signature_mismatch` or `not_canonical` on a task nobody resubmitted is the attack -- look at who wrote the task document after its submission. The second condition is a merge or post-verdict worker refusing an UPSTREAM step's spec (end cause `merge_refused` or `verdict_refused`, `spec_check.reason` = `upstream:<task id>:<why>`): the same reading applies to the named upstream task, and nothing reached the forge.${local.alert_docs_suffix}"
   }
 
   alert_strategy {

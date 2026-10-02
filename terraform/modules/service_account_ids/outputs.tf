@@ -23,6 +23,21 @@ output "worker_ids" {
   value       = local.worker_ids
 }
 
+output "action_accounts" {
+  description = "runner profile -> {suffix, provider}: the #295 profiles that each run as their own per-tenant account, and the provider that brings that account into being."
+  value       = local.action_accounts
+}
+
+output "action_account_prefix" {
+  description = "A #295 account id is this, the tenant key, and its profile's suffix."
+  value       = local.action_account_prefix
+}
+
+output "action_ids" {
+  description = "\"<tenant>:<runner profile>\" -> account id, for var.tenant_providers."
+  value       = local.action_ids
+}
+
 output "infra_managed" {
   description = "Every account id terraform/infra manages for var.tenant_ids, sorted."
   value       = local.infra_managed
@@ -33,5 +48,12 @@ output "infra_managed" {
   precondition {
     condition     = alltrue([for id in local.infra_managed : can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", id))])
     error_message = "a service account id must be 6-30 lowercase letters, digits and hyphens, starting with a letter; check the tenant keys against the worker prefix."
+  }
+
+  # Two names for one account would make one tenant's merge identity another
+  # tenant's worker, or a platform account.
+  precondition {
+    condition     = length(distinct(local.infra_managed)) == length(local.infra_managed)
+    error_message = "two accounts terraform/infra manages derive the same id; a tenant key collides with another account's name."
   }
 }

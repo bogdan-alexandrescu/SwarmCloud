@@ -342,11 +342,10 @@ resource "google_logging_metric" "dispatch_failures" {
 # message and the end cause, so neither an unrelated line that happens to carry
 # the end cause nor a reworded one counts. No spec content is ever in the line.
 #
-# THE OWN-SPEC HALF ONLY. Contract request 33's worker actions will refuse an
-# UPSTREAM step's spec with end cause MERGE_REFUSED or VERDICT_REFUSED and a
-# `spec_check.reason` starting `upstream:`; those end causes have other,
-# unrelated causes too, so that half is keyed on the reason prefix and is added
-# with CR 33's build, not matched here early.
+# THE OWN-SPEC HALF. Contract request 33's worker actions refusing an UPSTREAM
+# step's spec are counted by `spec_upstream_invalid` below, keyed on the reason
+# prefix: MERGE_REFUSED and VERDICT_REFUSED have other, unrelated causes, so
+# this metric must not match them.
 # ---------------------------------------------------------------------------
 resource "google_logging_metric" "spec_signature_invalid" {
   project = var.project_id
@@ -382,5 +381,73 @@ resource "google_logging_metric" "spec_signature_invalid" {
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
     reason    = "EXTRACT(jsonPayload.spec_check.reason)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# A worker action refused an UPSTREAM step's spec (contract requests 33 and
+# 34; merge-step.md §6 row 42, §6a row 5).
+#
+# `merge` verifies the signed specs of the union it depends on -- author,
+# review, post-verdict, fix, proof -- and `post-verdict` those of its own
+# upstream, before either reads a credential. A failure ends the task
+# MERGE_REFUSED or VERDICT_REFUSED, and the detail goes in CR 34's own field,
+# `spec_check.reason = "upstream:<task id>:<why>"`, where <why> is CR 34's
+# vocabulary verbatim (`unsigned`, `signature_mismatch`, ...).
+#
+# THE EMITTER this metric expects (Track B, merge-step.md §10 item 7): the
+# worker logs, at ERROR,
+# `{"message": "upstream spec signature invalid: refusing this worker action",
+#   "end_cause": "merge_refused" | "verdict_refused",
+#   "spec_check": {"reason": "upstream:<task id>:<why>", ...}, "labels": {...}}`
+# -- the same StructuredLogger shape as the own-spec line above. Keyed on the
+# message, the two end causes AND the `upstream:` prefix, so neither the
+# end causes' other refusals (a red check, a stale head) nor a reworded line
+# counts. Nothing emits it until that worker is built; a metric with no
+# writer reads zero, which is what a disabled merge step should read.
+#
+# `why` is extracted, not the whole reason: the task id in the middle is
+# unbounded, and a label carrying it would mint a time series per task.
+# ---------------------------------------------------------------------------
+resource "google_logging_metric" "spec_upstream_invalid" {
+  project = var.project_id
+  name    = "${var.name_prefix}/spec-upstream-invalid"
+
+  description = "A merge or post-verdict worker refused because an upstream step's spec did not verify (end cause merge_refused or verdict_refused, spec_check.reason upstream:...). Every occurrence is an attack on the chain or a platform bug."
+
+  filter = join(" AND ", [
+    "resource.type=(\"cloud_run_job\" OR \"k8s_container\")",
+    "jsonPayload.message=\"upstream spec signature invalid: refusing this worker action\"",
+    "jsonPayload.end_cause=(\"merge_refused\" OR \"verdict_refused\")",
+    "jsonPayload.spec_check.reason=~\"^upstream:\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "tenant_id"
+      value_type = "STRING"
+    }
+
+    # merge_refused or verdict_refused: which worker action refused.
+    labels {
+      key        = "end_cause"
+      value_type = "STRING"
+    }
+
+    # CR 34's reason vocabulary, the <why> of upstream:<task id>:<why>.
+    labels {
+      key        = "reason"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
+    end_cause = "EXTRACT(jsonPayload.end_cause)"
+    reason    = "REGEXP_EXTRACT(jsonPayload.spec_check.reason, \"^upstream:[^:]*:(.*)$\")"
   }
 }
