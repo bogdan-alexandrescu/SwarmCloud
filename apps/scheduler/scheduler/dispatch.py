@@ -498,6 +498,21 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         audience = str(getattr(settings, "quota_broker_audience", "") or "").strip()
         if audience:
             env["QUOTA_BROKER_AUDIENCE"] = audience
+    # THE PULL REQUEST CONSOLE LINKS (owner decision, 2026-10-01; off by
+    # default). Both are PLATFORM settings, read from the scheduler's own
+    # configuration (SWARM_CONSOLE_URL and SWARM_PR_CONSOLE_LINKS on this
+    # service) and never from anything a caller sent: invariant 10 holds, the
+    # same way it does for the broker URL above. Like that URL, each is
+    # OMITTED rather than written empty or "false": a Cloud Run execution
+    # override MERGES with the Job's own environment, so a value written here
+    # would override one terraform had baked into the Job. The worker's own
+    # default for an absent switch is OFF and for an absent origin is "no
+    # link", so omission means off unless the Job itself says otherwise.
+    console_url = str(getattr(settings, "console_url", "") or "").strip()
+    if console_url:
+        env["SWARM_CONSOLE_URL"] = console_url
+    if getattr(settings, "pr_console_links", False) is True:
+        env["SWARM_PR_CONSOLE_LINKS"] = "true"
     return env
 
 

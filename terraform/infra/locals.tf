@@ -437,6 +437,14 @@ locals {
     name => "https://${name}.${var.environment}.swarm.internal"
   }
 
+  # THE CONSOLE'S PUBLIC ORIGIN, rendered once (owner decision 2026-10-01: the
+  # API is the one source of a console link; nothing downstream rebuilds the
+  # host). EMPTY WITHOUT A FRONTEND, and empty means no link -- the API serves
+  # null rather than a run.app guess, because swarm-ui behind IAP does not open
+  # at its run.app address. A hostname with enable_frontend off is a name that
+  # serves nothing yet, so it is not a link either.
+  console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
+
   service_env = {
     "swarm-api" = merge(local.common_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
@@ -583,6 +591,10 @@ locals {
       # what the deployed API returned before this line was added.
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # The console origin every served task and workflow's `links.console` is
+      # built from (swarm_api.settings `console_url`). See local.console_url.
+      SWARM_CONSOLE_URL = local.console_url
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings
@@ -666,6 +678,14 @@ locals {
       # the one place that matters -- is completely silent at runtime.
       QUOTA_BROKER_URL      = var.quota_broker_url
       QUOTA_BROKER_AUDIENCE = local.push_audiences["swarm-quota-broker"]
+
+      # Passed THROUGH to each worker by `scheduler.dispatch.worker_env`, the
+      # same path QUOTA_BROKER_URL takes: the worker appends the console links
+      # to a PR body it opens only when SWARM_PR_CONSOLE_LINKS is on
+      # (var.pr_console_links, off by default), from the same origin the API
+      # serves.
+      SWARM_CONSOLE_URL      = local.console_url
+      SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a

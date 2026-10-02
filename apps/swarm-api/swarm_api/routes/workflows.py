@@ -61,7 +61,9 @@ def create_workflow(
         # review): the tasks this request just built carry the workflow's
         # metadata, and the step copy must mask what the task copy masks.
         "workflow": workflow_to_api(
-            workflow, step_tasks={task.id: task for task in submission.tasks}
+            workflow,
+            step_tasks={task.id: task for task in submission.tasks},
+            console_url=ctx.settings.console_url,
         ),
         # Echoed so the caller sees what was ACCEPTED rather than what they
         # sent: a submission that named neither field gets the defaults back,
@@ -102,7 +104,13 @@ def list_workflows(
         # the read budget left unread borrows a sibling's, and a workflow none
         # of whose tasks were read serves its step inputs as null.
         "workflows": [
-            workflow_to_api(r.workflow, r.to_api(), step_tasks=r.step_tasks) for r in results
+            workflow_to_api(
+                r.workflow,
+                r.to_api(),
+                step_tasks=r.step_tasks,
+                console_url=ctx.settings.console_url,
+            )
+            for r in results
         ],
         "next_page_token": page.next_page_token,
         "tenant_id": tenant_id,
@@ -144,14 +152,20 @@ def get_workflow(
         # so `workflow.steps[i].input` and `tasks[i].input` agree (the PR #229
         # review), from the tasks this route already loaded.
         "workflow": workflow_to_api(
-            workflow, result.to_api(), step_tasks={t.id: t for t in tasks.items}
+            workflow,
+            result.to_api(),
+            step_tasks={t.id: t for t in tasks.items},
+            console_url=ctx.settings.console_url,
         ),
         # Read back off the tasks, which is where the options are stored; the
         # frozen `Workflow` dataclass has no metadata field to hold them. The
         # list route has no equivalent because it loads no tasks.
         "dispatch": workflow_dispatch(tasks.items),
         # #379: each step's account, one bounded query per 30 steps.
-        "tasks": [task_to_api(t, account=accounts.get(t.id)) for t in tasks.items],
+        "tasks": [
+            task_to_api(t, account=accounts.get(t.id), console_url=ctx.settings.console_url)
+            for t in tasks.items
+        ],
     }
 
 

@@ -240,11 +240,13 @@ CODECS: tuple[Codec, ...] = (
         # userinfo of its repository URL. `waiting_for` (#362) is a live read
         # of a READY task's pools by `swarm_api.waiting`, never stored.
         # `account` (#379) is derived from the task's own account events by
-        # `swarm_api.task_accounts`, never stored.
+        # `swarm_api.task_accounts`, never stored. `links` is the console
+        # page, built from `ApiSettings.console_url` (owner decision
+        # 2026-10-01: the API is the one source of a console link).
         api_computed=(
             "dispatch", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
-            "repository_url_redaction_count", "waiting_for", "account",
+            "repository_url_redaction_count", "waiting_for", "account", "links",
         ),
     ),
     Codec(
@@ -321,7 +323,8 @@ CODECS: tuple[Codec, ...] = (
         #: say which answer the caller got. They are computed on purpose, and
         #: naming them here is what makes that a decision rather than drift:
         #: delete either from the codec and the shape test below fails.
-        api_computed=("stored_state", "state_source"),
+        #: `links` is the workflow's console page (`codec.workflow_console_url`).
+        api_computed=("stored_state", "state_source", "links"),
     ),
 )
 
