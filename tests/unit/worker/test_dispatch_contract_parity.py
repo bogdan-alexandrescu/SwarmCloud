@@ -36,6 +36,7 @@ from swarm_api.validation import (
     DISPATCH_METADATA_KEY,
     DISPATCH_STRATEGIES,
     DispatchOptions,
+    dispatchable_strategies,
 )
 
 
@@ -56,7 +57,12 @@ def test_every_carrier_the_api_accepts_is_read_back_unchanged(worker_factory, ca
     assert w._dispatch_carrier() == carrier
 
 
-@pytest.mark.parametrize("strategy", DISPATCH_STRATEGIES)
+# Every strategy a task can be dispatched with: `single-pr` (#295) is accepted
+# by the API but cannot be dispatched while its merge profiles are disabled,
+# and the worker half of it is merge-step.md §10 item 7. Until then the worker
+# reads it as `collect`, the deliberately safe fallback; the day the profiles
+# are enabled it joins this list and this test demands the worker read it.
+@pytest.mark.parametrize("strategy", dispatchable_strategies())
 def test_every_strategy_the_api_accepts_is_read_back_unchanged(worker_factory, strategy):
     w = _worker(worker_factory, {"strategy": strategy})
     assert w._dispatch_strategy() == strategy
