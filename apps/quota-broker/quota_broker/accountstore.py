@@ -39,6 +39,7 @@ from .accounts import (
     account_id_for,
     secret_name,
     validate_label,
+    windows_to_firestore,
 )
 
 log = logging.getLogger(__name__)
@@ -245,6 +246,13 @@ class AccountStore:
                 # belongs. Dropping it here would silently turn a paused
                 # account's recovery into AVAILABLE.
                 state_before_reauth=current.state_before_reauth,
+                # The refresh sweep's record of this credential, carried for
+                # the reason the holds are: this is a `set`, and changing who
+                # an account is lent to must not blank the token's expiry the
+                # Accounts screen shows.
+                last_refresh_at=current.last_refresh_at,
+                token_expires_at=current.token_expires_at,
+                last_refresh_reason=current.last_refresh_reason,
                 # PRESERVED, never re-derived. An account registered before the
                 # naming rule changed keeps pointing at the secret that holds
                 # its credential; re-deriving here would orphan it on the next
@@ -369,34 +377,78 @@ class AccountStore:
         windows: dict[str, WindowReading],
         observed_at: datetime,
     ) -> Account | None:
-        """Fold a worker's rate-limit reading into an account.
+        """Fold a rate-limit reading into an account, window by window.
 
-        Out-of-order reports are expected: several pods report at once, and the
-        network does not preserve order. `Account.with_reading` keeps the newer
-        one, so a late arrival cannot make an exhausted account look available.
+        Two writers now: the broker's usage poller and every worker holding an
+        account (`POST /v1/accounts/{id}/readings`). A MERGE per window --
+        `Account.with_reading` -- so a reading carrying only `seven_day` keeps
+        the stored `five_hour` (docs/web-ui/06-accounts.md P4). Out-of-order
+        reports are expected, and the newer reading of each window wins.
+
+        IN A TRANSACTION, because a merge is a read-modify-write and two pods
+        reporting different windows of the same account at once would
+        otherwise each write back the other's window as it was before.
         """
+        from google.cloud import firestore
+
+        from .sweeplease import txn_snapshot
+
         ref = self._db.collection(COLLECTION).document(account_id)
-        snap = ref.get()
-        if not getattr(snap, "exists", False):
+
+        @firestore.transactional
+        def _apply(txn: Any) -> Account | None:
+            snap = txn_snapshot(txn.get(ref))
+            if not getattr(snap, "exists", False):
+                return None
+            current = _decode(account_id, snap.to_dict() or {})
+            updated = current.with_reading(windows, observed_at)
+            if updated is current:
+                return current
+            txn.update(
+                ref,
+                {
+                    "windows": windows_to_firestore(updated.windows),
+                    "observed_at": updated.observed_at,
+                },
+            )
+            return updated
+
+        result = _apply(self._db.transaction())
+        if result is None:
             log.warning(
                 "a reading arrived for an account that is not registered",
                 extra={"account_id": account_id},
             )
-            return None
-        current = _decode(account_id, snap.to_dict() or {})
-        updated = current.with_reading(windows, observed_at)
-        if updated is current:
-            return current
-        ref.update(
-            {
-                "windows": {
-                    name: {"utilization": w.utilization, "resets_at": w.resets_at}
-                    for name, w in updated.windows.items()
-                },
-                "observed_at": updated.observed_at,
-            }
-        )
-        return updated
+        return result
+
+    def record_refresh(
+        self,
+        account_id: str,
+        *,
+        at: datetime,
+        reason: str,
+        expires_at: datetime | None,
+    ) -> bool:
+        """Write what the refresh sweep did with this account. False if it is gone.
+
+        KEYED BY ACCOUNT ID, which is `tenant:label` and the document id: a
+        label is unique only within a tenant (docs/web-ui/06-accounts.md P2).
+
+        `token_expires_at` is written only when the outcome carries one. A
+        failed exchange says nothing about when the stored token expires, and
+        blanking a known expiry on every failure would hide exactly the figure
+        an operator needs while it is failing.
+        """
+        ref = self._db.collection(COLLECTION).document(account_id)
+        snap = ref.get()
+        if not getattr(snap, "exists", False):
+            # Removed while the sweep was in flight; `remove` may race it.
+            return False
+        payload: dict[str, Any] = {"last_refresh_at": at, "last_refresh_reason": reason}
+        if expires_at is not None:
+            payload["token_expires_at"] = expires_at
+        ref.update(payload)
+        return True
 
     def secret_for(self, account: Account) -> str:
         """Where this account's credential actually lives.
