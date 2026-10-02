@@ -448,6 +448,16 @@ body {
 :where(.app button:not(:disabled):hover) { color: var(--text); border-color: var(--text-faint); }
 :where(.app button:disabled) { opacity: .45; cursor: not-allowed; }
 
+/* BORDERLESS BUTTONS IN A SECTION SHEET. A section sheet (src/styles/*.css)
+   loads BEFORE this file, and jsdom (spacing.test.tsx) resolves the cascade by
+   source order alone, so the zero-specificity `:where(.app button)` border
+   above out-ranks a section rule that says `border: 0` -- the probe then
+   graded a 1px --line boundary on the warning callout (2.74:1) and the chosen
+   row (2.89:1) that no browser draws. Restated here, after it, for the two
+   capacity.css buttons that are meant to be borderless. */
+.acct-callout .acct-link,
+.acct-li > .acct-open { border: 0; }
+
 /* A LINK NOBODY STYLED IS STILL A `.ctl-link`, NOT THE BROWSER'S BLUE (CH-5).
    The 2026-09-25 QA pass found three anchors with no class at all -- API
    reads' "What these mean ->", the workflow inspector's "run ->" and the

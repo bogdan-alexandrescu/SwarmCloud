@@ -24,8 +24,13 @@
 .cap-seg {
   display: inline-flex;
   align-self: flex-start;
+  gap: var(--ctl-s1);
+  padding: var(--ctl-s1);
   margin: 0 0 var(--ctl-s3);
-  border: 1px solid var(--sk-ln);
+  /* A control's own boundary, so --line (3:1 on the page), not the nav
+     hairline --sk-ln (1.2-1.4:1). The segments sit 4px apart rather than
+     touching, so no rule between them is needed. */
+  border: 1px solid var(--line);
   border-radius: 6px;
   overflow: hidden;
   background: var(--surface);
@@ -38,9 +43,8 @@
   font-size: var(--t-micro);
   color: var(--text-dim);
   text-decoration: none;
-  border-right: 1px solid var(--sk-ln);
+  border-radius: 2px;
 }
-.cap-seg a:last-child { border-right: 0; }
 .cap-seg a[aria-current="page"] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .cap-seg a:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
 
@@ -139,7 +143,7 @@
   align-items: flex-start;
   margin: 0 0 var(--ctl-s3);
   padding: 10px 12px;
-  border: 1px solid color-mix(in srgb, var(--s-warn) 35%, transparent);
+  border: 1px solid var(--s-warn);
   border-radius: 10px;
   background: var(--s-warnb);
   font-size: var(--t-meta);
@@ -197,7 +201,7 @@
 .acct-callout {
   display: flex; gap: 10px; align-items: flex-start;
   margin: 0 0 var(--ctl-gutter); padding: 10px 14px;
-  border: 1px solid color-mix(in srgb, var(--s-warn) 45%, transparent);
+  border: 1px solid var(--s-warn);
   border-radius: 10px; background: var(--s-warnb);
   font-size: var(--t-meta); color: var(--text);
 }
@@ -212,7 +216,7 @@
 
 .acct-split {
   display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; align-items: stretch;
-  border: 1px solid var(--line-soft); border-radius: 10px;
+  border: 1px solid var(--line); border-radius: 10px;
   background: var(--surface); overflow: hidden;
 }
 @media (min-width: 901px) {
@@ -225,11 +229,11 @@
   margin: 0; padding: 0; border: 0; border-radius: 0; background: none;
 }
 @media (min-width: 901px) {
-  .acct-split > .acct-list { border-right: 1px solid var(--line-soft); }
+  .acct-split > .acct-list { border-right: 1px solid var(--line); }
 }
 .acct-list-head {
   display: flex; align-items: center; justify-content: space-between; gap: 8px;
-  padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
+  padding: 10px 12px; border-bottom: 1px solid var(--line);
 }
 .acct-list-head > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
 .acct-add {
@@ -295,7 +299,7 @@
 .acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
 .acct-pill {
   display: inline-flex; align-items: center; padding: 1px 8px;
-  border: 1px solid var(--line-soft); border-radius: 999px;
+  border: 1px solid var(--line); border-radius: 999px;
   font-size: var(--t-micro); color: var(--text-dim);
 }
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
