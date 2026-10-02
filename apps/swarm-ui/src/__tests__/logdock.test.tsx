@@ -231,6 +231,19 @@ describe('search covers this window, and wrap and the keys work', () => {
     fireEvent.keyDown(window, { key: 'w' })
     expect(wrap.getAttribute('aria-pressed')).toBe('true')
     expect(dock().querySelector('.ag-logtext')?.classList.contains('is-wrap')).toBe(true)
+
+    // A letter typed while a control OUTSIDE the dock holds focus is not the
+    // log's. MUTATION: drop the outside-control check from the key handler.
+    const outside = document.createElement('button')
+    document.body.appendChild(outside)
+    try {
+      fireEvent.keyDown(outside, { key: 'w' })
+      expect(wrap.getAttribute('aria-pressed'), 'a key typed on another control toggled wrap').toBe('true')
+    } finally {
+      outside.remove()
+    }
+    fireEvent.keyDown(wrap, { key: 'w' })
+    expect(wrap.getAttribute('aria-pressed')).toBe('false')
   })
 })
 
@@ -351,6 +364,35 @@ describe('output missing between two reads', () => {
     })
     expect(gap.textContent).toContain('Output missing between byte 1,000,100 and 1,318,400')
     expect(gap.getAttribute('role')).toBe('note')
+  })
+
+  // With the picker on "latest", the next read can be a NEW attempt's. Its
+  // first tail is not the continuation of the old attempt's, so comparing the
+  // two would draw a gap that is only a new attempt. MUTATION: key the
+  // comparison on the pick ('latest') instead of the attempt the read returned.
+  it('draws no gap when the latest read is a new attempt', async () => {
+    vi.useFakeTimers({ toFake: ['setInterval'] })
+    const tail = (objectOffset: number, content: string, at: string): LogStream =>
+      stream('agent_stderr', {
+        source: 'live',
+        content,
+        offset: 30,
+        returned_bytes: content.length,
+        total_bytes: 30 + content.length,
+        tail_window: { object_offset: objectOffset, stream_size: objectOffset + content.length, published_at: at },
+      })
+    api.loadTaskLogs.mockResolvedValue(ok(logs([tail(1_000_000, 'x'.repeat(100), '2026-10-02T14:02:11Z'), stream('stdout'), stream('stderr')])))
+    render(<LogDock task={running()} />)
+    chooseStream('Agent stderr')
+    await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(1))
+    api.loadTaskLogs.mockResolvedValue(
+      ok(logs([tail(1_318_400, 'y'.repeat(100), '2026-10-02T14:02:16Z'), stream('stdout'), stream('stderr')], 2, 'att_2')),
+    )
+    await act(async () => {
+      vi.advanceTimersByTime(5_000)
+    })
+    await waitFor(() => expect(dock().textContent).toContain('y'.repeat(100)))
+    expect(dock().querySelector('.ag-gap'), 'a new attempt drawn as missing output').toBeNull()
   })
 })
 

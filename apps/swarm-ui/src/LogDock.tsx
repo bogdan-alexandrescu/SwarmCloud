@@ -149,6 +149,7 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const search = useRef<HTMLInputElement | null>(null)
   const dragging = useRef(false)
   const autoScroll = useRef(false)
+  const root = useRef<HTMLElement | null>(null)
 
   const setOpen = useCallback((next: boolean) => {
     setOpenState(next)
@@ -245,7 +246,10 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const [gaps, setGaps] = useState<Record<string, Gap | GapUnknown | undefined>>({})
   useEffect(() => {
     if (latest === null) return
-    const key = attemptId ?? 'latest'
+    // KEYED ON THE ATTEMPT THE READ RETURNED, not on the pick: with the picker
+    // on "latest", a new attempt's first tail compared with the previous
+    // attempt's last window would be drawn as output missing between them.
+    const key = okFeed(latest.logs)?.attempt_id ?? attemptId ?? 'latest'
     const now = positions(latest)
     const prev = last.current !== null && last.current.attempt === key ? last.current.at : null
     if (prev === null) setGaps({})
@@ -332,12 +336,15 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const toggleFollow = useCallback(() => setFollow((f) => !f), [])
 
   // THE KEYS: F follow, W wrap, E next error, / search. `[` stays the list
-  // toggle (listSnap.ts). Never inside a field, never with a modifier.
+  // toggle (listSnap.ts). Never inside a field, never with a modifier, and
+  // never while another control outside the dock (a tab, a button, a link)
+  // holds focus: a letter typed there is not addressed to the log.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.metaKey || e.ctrlKey || e.altKey) return
       const t = e.target as HTMLElement | null
       if (t !== null && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      if (t instanceof Element && t.closest('button, a[href], [role="tab"], [role="separator"], [role="slider"]') !== null && !root.current?.contains(t)) return
       const k = e.key.toLowerCase()
       if (k === 'f') toggleFollow()
       else if (k === 'w') setWrap((w) => !w)
@@ -407,6 +414,7 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   return (
     <LogMarksContext.Provider value={marks}>
       <section
+        ref={root}
         className={cls}
         aria-label="Log"
         style={expanded && !full ? { height } : undefined}
@@ -534,16 +542,17 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                     : `${hitAt < 0 ? '–' : hitAt + 1} of ${targets.hits.length} · this window`}
                 </span>
               )}
-              <button type="button" className="ag-logdock-btn" aria-pressed={follow} onClick={toggleFollow}>
+              <button type="button" className="ag-logdock-btn" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
                 {follow ? 'Following' : 'Paused · Follow'} <kbd>F</kbd>
               </button>
-              <button type="button" className="ag-logdock-btn" aria-pressed={wrap} onClick={() => setWrap((w) => !w)}>
+              <button type="button" className="ag-logdock-btn" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
                 Wrap <kbd>W</kbd>
               </button>
               <button
                 type="button"
                 className="ag-logdock-btn"
                 disabled={targets.errors.length === 0}
+                aria-keyshortcuts="E"
                 onClick={() => jump(targets.errors)}
                 title={`Matches a transcript tool result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
               >

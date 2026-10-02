@@ -6,7 +6,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react'
 
-import { AgChildrenPane, AgParentLink, childrenServed, useChildCount } from './AgentChildren'
+import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
 import { AgentDetailScreen, Chip, DRAWER_POLL_MS } from './AgentDetail'
 import { agentName, backLabel } from './agentlist'
 import { loadTask } from './api'
@@ -202,7 +202,7 @@ export function AgentSplit({
   const phone = phoneWidth()
   const tabs: { id: TaskPane | 'children'; label: string; count: number | null; say: string | null; to: string | null }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
-    ...(task !== null && childrenServed(task)
+    ...(task !== null && offersChildren(task)
       ? [
           {
             id: 'children' as const,

@@ -49,6 +49,8 @@ function stored(): ListSnap {
 }
 
 let current: ListSnap | null = null
+/** The last width the list was open at, so » returns to it rather than to 380px. */
+let opened: ListSnap | null = null
 const listeners = new Set<() => void>()
 
 /** The snap in force: the stored one until something sets another. */
@@ -64,6 +66,7 @@ export function listSnap(): ListSnap {
  */
 export function setListSnap(next: ListSnap, remember = true): void {
   current = next
+  if (remember && next !== 'strip') opened = next
   if (remember) {
     try {
       safeStorage()?.setItem(LIST_SNAP_PREF, next)
@@ -74,9 +77,11 @@ export function setListSnap(next: ListSnap, remember = true): void {
   for (const fn of listeners) fn()
 }
 
-/** Fold the list to the strip, or open it again to the compact list. */
+/** Fold the list to the strip, or open it again to the width it was folded from (the compact list if none). */
 export function toggleListSnap(): void {
-  setListSnap(listSnap() === 'strip' ? 'list' : 'strip')
+  const now = listSnap()
+  if (now !== 'strip') opened = now
+  setListSnap(now === 'strip' ? (opened ?? 'list') : 'strip')
 }
 
 function subscribe(fn: () => void): () => void {
@@ -91,6 +96,7 @@ export function useListSnap(): ListSnap {
 /** Forget the in-memory value, so the next read takes the stored one. For tests. */
 export function resetListSnap(): void {
   current = null
+  opened = null
   for (const fn of listeners) fn()
 }
 

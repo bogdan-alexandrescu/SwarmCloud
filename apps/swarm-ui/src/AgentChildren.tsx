@@ -30,6 +30,15 @@ export function childrenServed(task: Task): boolean {
   return Object.prototype.hasOwnProperty.call(task, 'parent_task_id')
 }
 
+/**
+ * Whether this task gets a Children tab: the API serves the child fields and
+ * the task is not itself a child. Children are one level deep (depth 1), so a
+ * child's tab could only ever read 0.
+ */
+export function offersChildren(task: Task): boolean {
+  return childrenServed(task) && (task.parent_task_id ?? null) === null
+}
+
 /** The park the parent takes while it waits (request 40), compared as a string: main's `ParkReason` lacks it. */
 export const CHILDREN_INCOMPLETE = 'CHILDREN_INCOMPLETE'
 
@@ -110,7 +119,7 @@ export function AgParentLink({ task, parent }: { task: Task; parent?: Task | nul
 
 /** The Children tab's count, or null while it is unknown. */
 export function useChildCount(task: Task | null, readKey: string): number | null {
-  const id = task !== null && childrenServed(task) ? task.id : ''
+  const id = task !== null && offersChildren(task) ? task.id : ''
   const held = useRead<TaskPage>(
     () => (id === '' ? Promise.resolve<Result<TaskPage>>({ status: 'loading', since: Date.now() }) : loadChildren(id)),
     id,
