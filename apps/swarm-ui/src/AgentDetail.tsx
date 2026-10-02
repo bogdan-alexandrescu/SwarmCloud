@@ -3164,7 +3164,7 @@ function HandedFile({ task, file, to }: { task: Task; file: ArtifactRef; to: str
         )}
       </p>
       {open && read !== null && (
-        <ArtifactViewer taskId={task.id} artifact={file} onClose={() => setOpen(false)} load={load} />
+        <ArtifactViewer taskId={task.id} artifact={file} onClose={() => setOpen(false)} load={load} backLabel="Close" />
       )}
     </div>
   )

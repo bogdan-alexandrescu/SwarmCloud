@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
-import { loadArtifactContent } from './api'
+import { artifactRawUrl, loadArtifactContent } from './api'
+import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import {
@@ -49,10 +50,17 @@ export function ArtifactViewer({
   load: loadContent,
   kind,
   absent,
+  backLabel,
 }: {
   taskId: string
   artifact: ArtifactRef
   onClose: () => void
+  /**
+   * The patch bar's back button, where the viewer is not opened from the
+   * Artifacts list: `‹ Artifacts` names a list that the Code section and the
+   * checkpoint browser do not have.
+   */
+  backLabel?: string
   /** Where the content comes from, when it is not the artifact-content route.
    *  CheckpointBrowser passes the checkpoint per-file read, which answers in
    *  the same shape, so one viewer renders both. Must be stable (useCallback):
@@ -117,14 +125,20 @@ export function ArtifactViewer({
     void load()
   }, [load])
 
+  // A PATCH CARRIES ITS OWN BAR -- `‹ Artifacts`, the name, size and attempt
+  // -- so the generic head is not drawn above it a second time.
+  const patch = state.kind === 'ok' && showsAsDiff(state.data, kind ?? null)
+
   return (
     <div className="art-viewer" role="region" aria-label={`Artifact ${artifact.name}`}>
-      <div className="art-head">
-        <h3 className="mono">{artifact.name}</h3>
-        <button type="button" className="art-close" onClick={onClose} aria-label="Close artifact">
-          ✕
-        </button>
-      </div>
+      {!patch && (
+        <div className="art-head">
+          <h3 className="mono">{artifact.name}</h3>
+          <button type="button" className="art-close" onClick={onClose} aria-label="Close artifact">
+            ✕
+          </button>
+        </div>
+      )}
       {/* STILL READING IS NOT NOTHING REPORTED (§8.7.1), and the difference is
           drawn rather than written: `.ctl-pending` is the moving, lighter
           surface at the geometry the text will occupy, and the mark says
@@ -173,6 +187,12 @@ export function ArtifactViewer({
           // Paging needs the artifact route's offsets; a caller's own loader
           // reads one window and says so through `truncated`.
           onPage={loadContent === undefined ? setOffset : null}
+          // THE WHOLE OBJECT, for a patch this read holds only a window of:
+          // the artifact raw route, which the server redacts as it does this
+          // one. A caller's own loader has no such route.
+          rawUrl={loadContent === undefined ? artifactRawUrl(taskId, artifact.name, 'attachment') : null}
+          onClose={onClose}
+          backLabel={backLabel}
         />
       )}
     </div>
@@ -185,12 +205,18 @@ function Body({
   verdictByName,
   absent,
   onPage,
+  rawUrl,
+  onClose,
+  backLabel,
 }: {
   data: ArtifactContent
   kind: ArtifactKindName | null
   verdictByName: boolean
   absent?: { heading: string; say: string } | undefined
   onPage: ((offset: number | null) => void) | null
+  rawUrl: string | null
+  onClose: () => void
+  backLabel: string | undefined
 }) {
   const name = data.artifact.name ?? ''
 
@@ -268,6 +294,21 @@ function Body({
   }
 
   const content = data.content ?? ''
+  const whole = data.offset === 0 && data.next_offset === null && !data.truncated
+
+  if (showsAsDiff(data, kind)) {
+    return (
+      <PatchArtifact
+        data={data}
+        content={content}
+        whole={whole}
+        rawUrl={rawUrl}
+        onClose={onClose}
+        backLabel={backLabel}
+        provenance={<Provenance data={data} onPage={onPage} />}
+      />
+    )
+  }
 
   return (
     <>
@@ -284,12 +325,7 @@ function Body({
           0 bytes
         </p>
       ) : (
-        <Rendered
-          name={name}
-          content={content}
-          kind={kind ?? data.kind ?? null}
-          whole={data.offset === 0 && data.next_offset === null && !data.truncated}
-        />
+        <Rendered name={name} content={content} kind={kind ?? data.kind ?? null} whole={whole} />
       )}
     </>
   )
@@ -535,17 +571,7 @@ function Rendered({
   kind: ArtifactKindName | null
   whole: boolean
 }) {
-  // A DIFF FIRST, whatever the server's kind (#104). The name table calls a
-  // `.patch` `text` -- true of the bytes, silent on how to read them -- so the
-  // name is asked here, and a file the table could only call text or a log is
-  // sniffed for `diff --git` or a hunk header. Markdown and JSON are not
-  // sniffed: a README quoting a hunk is still a README.
-  if (
-    artifactKind(name) === 'diff' ||
-    ((kind === null || kind === 'text' || kind === 'log') && looksLikeDiff(content))
-  ) {
-    return <DiffView source={content} whole={whole} />
-  }
+  // A diff never reaches here: `Body` hands it to `PatchArtifact` first.
   if (kind !== null) {
     switch (kind) {
       case 'markdown':
@@ -566,30 +592,201 @@ function Rendered({
       return <Markdown source={content} />
     case 'transcript':
       return <Transcript source={content} />
+    // `diff` is drawn by `PatchArtifact` before `Rendered` is reached
+    // (`isDiffArtifact` answers yes for every name this case matches).
     case 'diff':
-      return <DiffView source={content} whole={whole} />
     case 'text':
       return <pre className="art-text">{content}</pre>
   }
 }
 
 // ---------------------------------------------------------------------------
-// A unified diff, line by line
+// A patch: drawn by the #310 viewer, counted here
 // ---------------------------------------------------------------------------
+
+/**
+ * Whether an artifact is drawn as a patch, whatever the server's kind (#104).
+ * The name table calls a `.patch` `text` -- true of the bytes, silent on how
+ * to read them -- so the name is asked here, and a file the table could only
+ * call text or a log is sniffed for `diff --git` or a hunk header. Markdown
+ * and JSON are not sniffed: a README quoting a hunk is still a README.
+ */
+export function isDiffArtifact(name: string, kind: ArtifactKindName | null, content: string): boolean {
+  return (
+    artifactKind(name) === 'diff' || ((kind === null || kind === 'text' || kind === 'log') && looksLikeDiff(content))
+  )
+}
+
+/** A served read that `Body` hands to the patch viewer: readable, not empty, and a diff. */
+function showsAsDiff(data: ArtifactContent, kind: ArtifactKindName | null): boolean {
+  if (data.status !== 'ok' || data.content === null || data.content === '') return false
+  return isDiffArtifact(data.artifact.name ?? '', kind ?? data.kind ?? null, data.content)
+}
+
+/** What a WINDOW of a patch holds whole, and what it cut. */
+export interface PatchWindow {
+  /** The files wholly inside the window, as patch text: `''` when there are none. */
+  patch: string
+  /** The window starts inside a file that began before it (a later page's head). */
+  before: boolean
+  /**
+   * The path of the file the window's end cut, from its header -- or `''`
+   * when the cut text names none. Null when nothing follows the window.
+   */
+  after: string | null
+}
+
+/**
+ * The files of a WINDOW that are whole. A window of a patch starts and ends
+ * wherever the byte cap fell, so its first file can begin mid-hunk and its
+ * last can stop mid-hunk -- and the parser, rightly, will not read a hunk that
+ * is shorter than its header says. Where the window lies in the object is
+ * read off the server's offsets, never guessed from the text:
+ *
+ *   - a window from byte 0 starts at the top of the patch; a later one starts
+ *     inside whatever file the page before it cut, up to its first header;
+ *   - a window with nothing after it ends at the end of the patch; any other
+ *     ends inside its last file, which is named so it can be paged to.
+ *
+ * Nothing is invented and nothing is repaired. A window with no whole file in
+ * it -- one file bigger than the window, or the middle of one -- has an empty
+ * `patch`, and the viewer says so rather than reporting a parse error.
+ */
+export function patchWindow(
+  served: string,
+  at: { offset: number; next_offset: number | null; truncated: boolean },
+): PatchWindow {
+  const heads: number[] = []
+  const re = /^diff --git /gm
+  for (let m = re.exec(served); m !== null; m = re.exec(served)) heads.push(m.index)
+  const start = at.offset === 0 ? 0 : (heads[0] ?? served.length)
+  const more = at.next_offset !== null || at.truncated
+  let end = served.length
+  if (more) {
+    const last = heads[heads.length - 1]
+    // The last file runs to the window's end, so it is the one cut. With no
+    // header after `start`, everything from `start` is that one file.
+    end = last !== undefined && last >= start ? last : start
+  }
+  const tail = served.slice(end)
+  return {
+    patch: served.slice(start, end),
+    before: start > 0,
+    after: more && tail !== '' ? pathOf(tail) : null,
+  }
+}
+
+/** The path a cut file's header names: `diff --git a/x b/<path>`, else `+++ b/<path>`, else `''`. */
+function pathOf(fragment: string): string {
+  const git = /^diff --git a\/.+? b\/(.+)$/m.exec(fragment)
+  if (git?.[1]) return git[1]
+  const plus = /^\+\+\+ (?:b\/)?(.+?)\t?$/m.exec(fragment)
+  return plus?.[1] && plus[1] !== '/dev/null' ? plus[1] : ''
+}
+
+/**
+ * A PATCH, IN THE #310 VIEWER (owner decision 2026-10-01): a file list on the
+ * left, one file on the right, a bar with `‹ Artifacts`, the name, size and
+ * attempt, Unified/Split, Copy patch and Download. This file draws no diff of
+ * its own. The provenance strip stays under the bar -- truncation and the
+ * masked count are shown for a patch as for any artifact.
+ *
+ * A WINDOW IS NOT THE FILE. When the served window is not the whole patch the
+ * bar says `partial`, only the window's whole files are drawn, and the files
+ * the window's edges cut are named. Copy says `Copy window` and copies the
+ * window. Download fetches the WHOLE object through the artifact raw route
+ * -- a blob of the window named `change.diff` would be a patch that applies
+ * and is silently incomplete -- and is refused, with the reason, where there
+ * is no such route.
+ */
+function PatchArtifact({
+  data,
+  content,
+  whole,
+  rawUrl,
+  onClose,
+  backLabel,
+  provenance,
+}: {
+  data: ArtifactContent
+  content: string
+  whole: boolean
+  rawUrl: string | null
+  onClose: () => void
+  backLabel: string | undefined
+  provenance: ReactNode
+}) {
+  const name = data.artifact.name ?? 'change.diff'
+  const bar = {
+    name,
+    size: bytesLabel(data.total_bytes),
+    attempt: data.attempt_id,
+    onBack: onClose,
+    ...(backLabel === undefined ? {} : { backLabel }),
+  }
+  if (whole) return <DiffView patch={content} {...bar} meta={provenance} />
+
+  const w = patchWindow(content, data)
+  const cut = (
+    <div className="diff-cut" role="note" aria-label="What this window cut">
+      {w.before ? (
+        <p>This window starts inside a file the page before it cut; those lines are not drawn here.</p>
+      ) : null}
+      {w.after !== null ? (
+        <p>
+          <span className="mono">{w.after === '' ? 'the last file' : w.after}</span> cut by the window, page on.
+        </p>
+      ) : null}
+    </div>
+  )
+  return (
+    <DiffView
+      patch={w.patch}
+      {...bar}
+      copy={{ label: 'Copy window', text: content }}
+      download={
+        rawUrl !== null
+          ? { href: rawUrl }
+          : { refused: 'This read is a window of the patch and there is no route to the whole object here. Read it from its uri.' }
+      }
+      meta={
+        <>
+          {provenance}
+          {cut}
+        </>
+      }
+      empty={
+        <p className="diff-empty" role="status">
+          No file lies wholly inside this window, so none is drawn.{' '}
+          {rawUrl !== null ? 'Page on with next window, or download the whole patch.' : 'Read the whole patch from its uri.'}
+        </p>
+      }
+      note={
+        <span className="diff-meta">
+          <Mark
+            kind="partial"
+            say="This is a window of the patch, not the whole of it. Only the files wholly inside the window are drawn; the files its edges cut are named under the bar."
+          />{' '}
+          partial
+        </span>
+      }
+    />
+  )
+}
 
 /** What one line of a unified diff is. `meta` is a file header, never a change. */
 type DiffLineKind = 'add' | 'del' | 'hunk' | 'meta' | 'ctx'
 
 interface DiffLine {
   kind: DiffLineKind
-  /** The gutter glyph: `+`, `−`, or blank. Text, so kind never rests on hue. */
-  glyph: string
   /** The line without its marker column (for `+`, `-` and context lines). */
   text: string
 }
 
 /**
- * A unified diff's lines, classified.
+ * A unified diff's lines, classified -- for COUNTING (`diffStat`), never for
+ * drawing: a patch is drawn by the #310 viewer. Unlike `parseUnifiedDiff`,
+ * this reads a window cut mid-hunk, which a count over a partial read needs.
  *
  * THE HEADERS ARE THE TRAP. `+++ b/file` starts with `+` and `--- a/file` with
  * `-`, and a reader that went by the first character alone counted every file
@@ -605,18 +802,18 @@ function diffLines(source: string): DiffLine[] {
   return rows.map((line) => {
     if (line.startsWith('diff --git ')) {
       header = true
-      return { kind: 'meta', glyph: '', text: line }
+      return { kind: 'meta', text: line }
     }
     if (line.startsWith('@@')) {
       header = false
-      return { kind: 'hunk', glyph: '', text: line }
+      return { kind: 'hunk', text: line }
     }
-    if (header) return { kind: 'meta', glyph: '', text: line }
-    if (line.startsWith('+')) return { kind: 'add', glyph: '+', text: line.slice(1) }
-    if (line.startsWith('-')) return { kind: 'del', glyph: '−', text: line.slice(1) }
+    if (header) return { kind: 'meta', text: line }
+    if (line.startsWith('+')) return { kind: 'add', text: line.slice(1) }
+    if (line.startsWith('-')) return { kind: 'del', text: line.slice(1) }
     // `\ No newline at end of file` is git's note, not a line of either side.
-    if (line.startsWith('\\')) return { kind: 'meta', glyph: '', text: line }
-    return { kind: 'ctx', glyph: '', text: line.startsWith(' ') ? line.slice(1) : line }
+    if (line.startsWith('\\')) return { kind: 'meta', text: line }
+    return { kind: 'ctx', text: line.startsWith(' ') ? line.slice(1) : line }
   })
 }
 
@@ -636,64 +833,6 @@ export function diffStat(source: string): { files: number; insertions: number; d
     insertions: lines.filter((l) => l.kind === 'add').length,
     deletions: lines.filter((l) => l.kind === 'del').length,
   }
-}
-
-/**
- * A UNIFIED DIFF, DRAWN AS ONE (#104).
- *
- * Each line carries its glyph in a gutter column -- `+`, `−`, or nothing --
- * so an added line is told from a removed one in greyscale and by a screen
- * reader, never by hue alone; the tint is the second signal. Hunk headers
- * (`@@ … @@`) and file headers are styled apart from the code.
- *
- * LONG LINES SCROLL, AND THE SCROLL IS SAID. Wrapping a diff by default breaks
- * the one-line-one-change reading, so it is off, and a horizontal scroll that
- * paints no scrollbar (as the drawer's does not) is a hidden column: the cue
- * says it on the glass. The toggle wraps for a reader who would rather see it
- * all at once.
- *
- * A WINDOW IS NOT THE FILE. When the served window is not the whole diff the
- * bar says `partial`, beside the fraction the provenance strip already gives.
- */
-function DiffView({ source, whole }: { source: string; whole: boolean }) {
-  const [wrap, setWrap] = useState(false)
-  const lines = diffLines(source)
-  return (
-    <>
-      <p className="art-diff-bar">
-        <button
-          type="button"
-          className="copy art-diff-wrap"
-          aria-pressed={wrap}
-          onClick={() => setWrap((w) => !w)}
-        >
-          wrap lines
-        </button>
-        {!wrap && <span className="art-diff-cue">long lines scroll ⇆</span>}
-        {!whole && (
-          <span className="art-diff-partial">
-            <Mark
-              kind="partial"
-              say="This is a window of the diff, not the whole of it. The lines after it were not read, so a file or a hunk may be cut off here."
-            />{' '}
-            partial
-          </span>
-        )}
-      </p>
-      <div className={`art-diff${wrap ? ' is-wrapped' : ''}`} role="table" aria-label="Unified diff">
-        {lines.map((l, i) => (
-          <div key={i} className={`art-diff-line is-${l.kind}`} role="row">
-            <span className="art-diff-glyph" role="cell">
-              {l.glyph}
-            </span>
-            <code className="art-diff-text" role="cell">
-              {l.text}
-            </code>
-          </div>
-        ))}
-      </div>
-    </>
-  )
 }
 
 /** JSON, pretty-printed only when this window is the whole file and parses. */
