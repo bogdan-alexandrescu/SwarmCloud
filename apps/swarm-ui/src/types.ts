@@ -595,7 +595,8 @@ export interface Task {
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
-   * field existed.
+   * field existed. One of `END_CAUSES` from this build's contract; typed as a
+   * string because a newer API may send a value this build does not know.
    */
   end_cause?: string | null
   /**
@@ -2242,6 +2243,27 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
 }
 
 /** `ParkReason`, states.py:125-137. All eight are really written. */
+/**
+ * `swarm_common.models.EndCause`, in the frozen order: why a task ended
+ * FAILED or CANCELLED. Held to the enum by section 5 of
+ * scripts/lib/check-contract-parity.sh, so a value added there (contract
+ * request 29 added `publish_refused`, 2026-10-02) is added here too.
+ */
+export type EndCause =
+  | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
+  | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
+  | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
+  | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
+  | 'publish_refused'
+
+export const END_CAUSES: readonly EndCause[] = [
+  'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
+  'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
+  'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
+  'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
+  'publish_refused',
+]
+
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
