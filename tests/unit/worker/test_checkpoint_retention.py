@@ -954,3 +954,77 @@ def test_the_worker_and_the_collector_agree_on_what_a_checkpoint_is(key):
     from agent_worker.objectstore import is_checkpoint_key
 
     assert is_checkpoint_key(key) is (parse_checkpoint_key(key) is not None)
+
+
+def _age_objects(objects: LocalObjectStore, keys, *, age: timedelta) -> None:
+    import os
+
+    stamp = (utcnow() - age).timestamp()
+    for key in keys:
+        os.utime(objects.root / key, (stamp, stamp))
+
+
+def test_a_manifestless_orphan_is_dated_by_its_objects_and_collected_after_the_backstop(
+    db_and_objects, config, log
+):
+    """An archive whose manifest is gone -- a delete that died between the two
+    objects, or an upload that never committed -- with no task left to own it.
+
+    The collector cannot date it from a manifest, and until D14 it did not need
+    to: the bucket's `age` rule removed it. That rule now keys on customTime,
+    which a checkpoint never carries, so without a date of its own this object
+    would be kept by everything and deleted by nothing, for ever. It is dated by
+    its objects' creation time instead, and only the backstop takes it."""
+    db, objects, tmp_path = db_and_objects
+    window = timedelta(seconds=config.checkpoint_orphan_backstop_seconds)
+    old = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_old")
+    fresh = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_new")
+    for record in (old, fresh):
+        objects.delete(record.manifest_key)
+    _age_objects(objects, [old.archive_key], age=window + timedelta(days=1))
+
+    report = collector(db, objects, config, log).sweep(now=utcnow())
+
+    assert report.checkpoints_examined == 2
+    assert not objects.exists(old.archive_key), "an undatable orphan is kept for ever"
+    assert objects.exists(fresh.archive_key), "the backstop took an orphan inside its window"
+    assert report.reclaimed == 1
+
+
+def test_a_manifestless_orphan_whose_objects_cannot_be_dated_is_kept(
+    db_and_objects, config, log
+):
+    """A store that cannot say when an object was written holds the orphan:
+    a guard whose failure reads as "old enough" is the defect this module
+    keeps refusing."""
+    db, objects, tmp_path = db_and_objects
+    record = write_checkpoint(objects, tmp_path, log, task_id="task_gone", attempt_id="att_1")
+    objects.delete(record.manifest_key)
+    _age_objects(
+        objects,
+        [record.archive_key],
+        age=timedelta(seconds=config.checkpoint_orphan_backstop_seconds) + timedelta(days=30),
+    )
+
+    class Undatable:
+        def list_keys(self, prefix):
+            return objects.list_keys(prefix)
+
+        def download_bytes(self, key):
+            return objects.download_bytes(key)
+
+        def delete(self, key):
+            objects.delete(key)
+
+        def created_at(self, key):
+            raise RuntimeError("metadata read 503")
+
+    report = CheckpointCollector(
+        reader=ControlStore(db, logger=log, txn_runner=FakeTransactionRunner(db)),
+        objects=Undatable(),
+        config=config,
+        logger=log,
+    ).sweep(now=utcnow())
+
+    assert report.reclaimed == 0
+    assert objects.exists(record.archive_key)
