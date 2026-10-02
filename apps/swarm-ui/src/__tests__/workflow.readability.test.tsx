@@ -392,7 +392,8 @@ describe('#111: the workflows list sorts, and shows start and duration', () => {
     const b = fixture()
     const ids = (sort: import('../workflowlist').WorkflowSort) =>
       wl.sortWorkflows(b.workflows, sort, b.taskById).map((w) => w.workflow_id)
-    expect(ids('state')).toEqual(['wf_one', 'wf_two', 'wf_new', 'wf_done'])
+    // The V2 grouping (#503, workflows.html frame 0): running first, then succeeded, failed after them.
+    expect(ids('state')).toEqual(['wf_new', 'wf_done', 'wf_one', 'wf_two'])
     expect(ids('newest')).toEqual(['wf_new', 'wf_one', 'wf_two', 'wf_done'])
     expect(ids('oldest')).toEqual(['wf_done', 'wf_two', 'wf_one', 'wf_new'])
     expect(ids('failed')).toEqual(['wf_two', 'wf_one', 'wf_new', 'wf_done'])

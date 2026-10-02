@@ -318,6 +318,19 @@ locals {
       ]
     }
 
+    # ---- issue runs (#454) ---------------------------------------------------
+    # GET /v1/runs -- the caller's tenant's runs, newest first
+    # (swarm_api.issueruns.IssueRuns.list). The collection is the run
+    # document's own, tenant-scoped like tasks, so tenant_id leads.
+    "issue-runs-tenant-created" = {
+      collection  = "issue_runs"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
     # ---- workflows ----------------------------------------------------------
     "workflows-tenant-state-created" = {
       collection  = "workflows"

@@ -69,6 +69,15 @@
 # Add one provider to a tenant that is already registered, keeping the others:
 #   scripts/register-tenant.sh --tenant eng --add-provider git
 #   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
+#
+# A GitHub App key (#295, docs/merge-step.md) is never the worker's to read.
+# `--add-provider git-review` binds the post-verdict account to the review App's
+# key and the review account to its agent's key, and pins the App's bot user id
+# into the tenant's tfvars entry; `--add-provider git-merge` binds the merge
+# account alone. `--tfvars` names that file (default: this environment's):
+#   scripts/register-tenant.sh --tenant eng --add-provider git-review --dry-run
+#   scripts/register-tenant.sh --tenant eng --add-provider git-merge \
+#                              --tfvars terraform/environments/dev/dev.tfvars
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -87,6 +96,7 @@ DRY_RUN=0
 SKIP_K8S=0
 ADD_PROVIDER=""
 ADD_PROVIDER_GIVEN=0
+TFVARS_FILE=""
 # The flags only a full registration reads, as typed. --add-provider refuses
 # them rather than ignoring them: an operator who typed `--max-active 5` meant
 # it, and a run that quietly did not apply it is worse than one that stops.
@@ -104,8 +114,9 @@ while [[ $# -gt 0 ]]; do
     --display-name)    DISPLAY_NAME="$2"; FULL_ONLY_FLAGS+=" $1"; shift 2 ;;
     --skip-k8s)        SKIP_K8S=1; FULL_ONLY_FLAGS+=" $1"; shift ;;
     --add-provider)    ADD_PROVIDER="$2"; ADD_PROVIDER_GIVEN=1; shift 2 ;;
+    --tfvars)          TFVARS_FILE="$2"; shift 2 ;;
     --dry-run|-n)      DRY_RUN=1; shift ;;
-    -h|--help)         sed -n '2,54p' "$0"; exit 0 ;;
+    -h|--help)         sed -n '2,80p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -129,6 +140,37 @@ from swarm_api.validation import known_providers
 from agent_worker.secrets import GIT_PROVIDER
 print("\n".join(sorted(set(known_providers()) | {GIT_PROVIDER})))
 PY
+}
+
+# The providers whose key is a GitHub App's, one per line:
+# swarm_api.validation.APP_CREDENTIAL_PROVIDERS, the worker actions' providers
+# (git-merge, git-review). known_providers() above leaves them out for the
+# reason this script refuses them for the worker: only the merge and
+# post-verdict Jobs' own accounts may read those keys (contract request 33's
+# #364 amendment). Asked of the code, like the list above.
+app_credential_providers() {
+  python3 - "${REPO_ROOT}" <<'PY'
+import sys
+from pathlib import Path
+root = Path(sys.argv[1])
+sys.path[:0] = [str(root / "apps" / d) for d in ("common", "swarm-api")]
+from swarm_api.validation import APP_CREDENTIAL_PROVIDERS
+print("\n".join(sorted(APP_CREDENTIAL_PROVIDERS)))
+PY
+}
+
+# app_key_readers PROVIDER  ->  the profiles terraform/modules/service_account_ids
+# makes the SOLE reader of PROVIDER's secret, comma-joined; empty for none.
+app_key_readers() {
+  tf_action_accounts | awk -F'|' -v p="$1" '$3 == p && $4 == "true" { print $1 }' | paste -sd, -
+}
+
+APP_PROVIDERS="$(app_credential_providers)" \
+  || die "could not read swarm_api.validation.APP_CREDENTIAL_PROVIDERS (python's error is above), so
+  whether a provider's key is a GitHub App's -- which the worker must never read -- cannot be
+  checked. Nothing was changed."
+is_app_provider() {
+  printf '%s\n' "${APP_PROVIDERS}" | grep -Fqx -- "$1"
 }
 
 if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
@@ -160,7 +202,8 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   KNOWN_PROVIDERS="$(known_providers)" \
     || die "could not read the provider list from swarm_api.validation and agent_worker.secrets
   (python's error is above), so '${ADD_PROVIDER}' cannot be checked against it. Nothing was changed."
-  if ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
+  if ! is_app_provider "${ADD_PROVIDER}" \
+     && ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
     die "provider '${ADD_PROVIDER}' is not one this platform reads a key for. Known providers:
   $(printf '%s\n' "${KNOWN_PROVIDERS}" | paste -sd, - | sed 's/,/, /g')
   (swarm_api.validation.known_providers(), plus agent_worker.secrets.GIT_PROVIDER). Nothing was changed."
@@ -332,6 +375,31 @@ fi
 
 GSA_EMAIL="${GSA_ID}@${PROJECT_ID}.iam.gserviceaccount.com"
 
+# NO APP KEY FOR THE WORKER (#295; docs/merge-step.md §1.3, §10 item 5). The
+# full registration binds every listed provider's secret to the worker, and
+# the worker's token is one any agent of the tenant can mint from the metadata
+# server (§0) -- so `--providers git-merge` would hand every agent the merge
+# App, and `git-review` the App that signs verdicts. Refused before anything
+# is created, naming the account the key does belong to; --add-provider binds
+# that account instead.
+if [[ -n "${PROVIDERS_CSV}" ]]; then
+  IFS=',' read -r -a REQUESTED_PROVIDERS <<<"${PROVIDERS_CSV}"
+  for requested in ${REQUESTED_PROVIDERS[@]+"${REQUESTED_PROVIDERS[@]}"}; do
+    is_app_provider "${requested}" || continue
+    readers="$(app_key_readers "${requested}")"
+    owners=""
+    while IFS= read -r profile; do
+      [[ -n "${profile}" ]] || continue
+      owners+="${owners:+, }$(tenant_action_account_id "${TENANT_ID}" "${profile}")"
+    done < <(printf '%s\n' "${readers}" | tr ',' '\n')
+    die "provider '${requested}' is a GitHub App key, and it belongs to ${owners:-the account terraform/modules/service_account_ids names for it}
+  -- never the tenant's worker ${GSA_ID}, whose token any agent of the tenant can mint.
+  Register everything else without it, then bind it to its own account:
+      scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider ${requested}
+  Nothing was changed."
+  done
+fi
+
 run() {
   if [[ "${DRY_RUN}" -eq 1 ]]; then
     dim "  would run: $*"
@@ -448,6 +516,393 @@ refuse_foreign_secret() {
   (invariant 9: a tenant's key is readable by that tenant's worker alone). Nothing was granted."
 }
 
+# require_grantable_secret SECRET PROVIDER READER
+#
+# --add-provider's check on a secret before READER (an account id, for the
+# message) is bound to it: this tenant's, for this provider, with a key in it
+# (tenant_secret_state above). Tri-state, as at the custom roles in section 3:
+# a denied or expired lookup is not an absent secret, and must not send the
+# operator to create one. Returns only for a secret that may be granted.
+require_grantable_secret() {
+  local sm_name="$1" provider="$2" reader="$3" rc=0
+  tenant_secret_state "${sm_name}" "${provider}" || rc=$?
+  case "${rc}" in
+    0)
+      ok "${sm_name} is labelled tenant=${TENANT_ID} provider=${provider} and has an enabled version"
+      ;;
+    1)
+      die "${sm_name} does not exist, so there is no ${provider} key for ${reader}
+  to read. Store it first, then run this again:
+      scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin
+  Nothing was changed: listing ${provider} with no secret behind it would admit this
+  tenant's ${provider} tasks and fail every one of them when the worker asks for the key."
+      ;;
+    3)
+      refuse_foreign_secret "${sm_name}" "${provider}"
+      ;;
+    4)
+      die "${sm_name} is tenant ${TENANT_ID}'s, but it has no ENABLED version, so there is no
+  ${provider} key in it for ${reader} to read. Nothing was changed: listing
+  ${provider} now would admit this tenant's ${provider} tasks and fail every one of them.
+  Store a key, then run this again:
+      scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin
+  (A subscription credential is different: its versions here are written by the quota
+  broker from ${sm_name}-refresh on its next sweep. Run this again once one has been.)"
+      ;;
+    *)
+      die "stopping: whether ${sm_name} exists, and whose it is, could not be established
+  (gcloud's answer is above). That is a failure to LOOK, not a missing secret -- fix the
+  session or the permission and run this again. Nothing was changed."
+      ;;
+  esac
+}
+
+# require_action_account EMAIL  -- the #295 account must exist before anything
+# is bound to it. This script does not create it: terraform/modules/tenancy
+# `google_service_account.action` adopts one made before the release under the
+# same squatting refusal the worker account has (section 2b), and binding an
+# account that is not there fails half-way through the grants.
+require_action_account() {
+  local email="$1" errfile reason rc=0
+  errfile="$(mktemp "${TMPDIR:-/tmp}/swarm-action-sa.XXXXXX")"
+  gcloud iam service-accounts describe "${email}" --project "${PROJECT_ID}" \
+    --format='value(email)' >/dev/null 2>"${errfile}" || rc=$?
+  reason="$(cat "${errfile}")"
+  rm -f "${errfile}"
+  [[ "${rc}" -eq 0 ]] && { ok "${email} exists"; return 0; }
+  die_if_auth_failure "${reason}"
+  if gcloud_not_found "${reason}"; then
+    die "${email} does not exist, so it cannot be granted its key. It is the account
+  terraform/modules/tenancy runs this provider's Job as (google_service_account.action),
+  and it must exist before the release that adds the provider (#334). Nothing was changed."
+  fi
+  err "could not establish whether ${email} exists:"
+  printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
+  die "stopping: that is a failure to LOOK, not a missing account. Nothing was changed."
+}
+
+# forge_tfvars read FILE TENANT          -> the tenant's `forge` entry, as JSON
+# forge_tfvars write FILE TENANT BOT_ID  -> pin forge.review_app_bot_id
+#
+# THE TFVARS FILE IS WHERE review_app_bot_id LIVES (docs/merge-step.md §2.1b,
+# §5.2a): terraform renders it into the merge Job's environment, and nothing a
+# tenant identity can write ever holds it. The file is edited in place, inside
+# `tenants = { <tenant> = { forge = { ... } } }` and nowhere else, with the
+# block's `=` re-aligned the way `terraform fmt` aligns it, so `make lint`'s
+# fmt -check passes on the result. Braces inside strings, comments and
+# heredocs do not count. Anything this cannot place exactly -- no tenants map,
+# no entry for the tenant, no multi-line forge block, a value it cannot read --
+# is refused (exit 2) rather than guessed. A DIFFERENT value already pinned is
+# refused too (exit 3): it is the identity merge trusts a verdict from, and
+# replacing it is the owner's edit to make by hand, not a side effect.
+#
+# The checks on host, owner and repo are modules/tenancy's validations: they
+# are spliced into a URL that carries the App's JWT.
+forge_tfvars() {
+  python3 - "$@" <<'PY'
+import json
+import os
+import re
+import sys
+import tempfile
+
+mode, path, tenant = sys.argv[1], sys.argv[2], sys.argv[3]
+text = open(path, encoding="utf-8").read()
+
+
+def fail(msg, code=2):
+    print(msg, file=sys.stderr)
+    sys.exit(code)
+
+
+def braces(src):
+    """(offset, char) of every structural { and }."""
+    out, i, n = [], 0, len(src)
+    while i < n:
+        c = src[i]
+        if c == '"':
+            i += 1
+            while i < n and src[i] != '"':
+                i += 2 if src[i] == "\\" else 1
+            i += 1
+            continue
+        if c == "#" or src.startswith("//", i):
+            j = src.find("\n", i)
+            i = n if j < 0 else j
+            continue
+        if src.startswith("/*", i):
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        m = re.match(r"<<-?([A-Za-z_][A-Za-z0-9_]*)[ \t]*\n", src[i:]) if c == "<" else None
+        if m:
+            j = i + m.end()
+            while True:
+                k = src.find("\n", j)
+                if k < 0:
+                    i = n
+                    break
+                if src[j:k].strip() == m.group(1):
+                    i = k
+                    break
+                j = k + 1
+            continue
+        if c in "{}":
+            out.append((i, c))
+        i += 1
+    return out
+
+
+blocks, stack = [], []
+for pos, c in braces(text):
+    if c == "{":
+        stack.append(pos)
+    elif stack:
+        start = stack.pop()
+        blocks.append((start, pos, len(stack)))
+    else:
+        fail(f"{path}: an unmatched '}}' -- not a tfvars file this can edit")
+if stack:
+    fail(f"{path}: an unclosed '{{' -- not a tfvars file this can edit")
+
+
+def key_of(start):
+    line_start = text.rfind("\n", 0, start) + 1
+    m = re.fullmatch(r'\s*"?([A-Za-z0-9_-]+)"?\s*=\s*', text[line_start:start])
+    return m.group(1) if m else None
+
+
+def child(parent, depth, key):
+    found = [
+        b for b in blocks
+        if b[2] == depth and (parent is None or parent[0] < b[0] < parent[1]) and key_of(b[0]) == key
+    ]
+    return found
+
+
+tenants = child(None, 0, "tenants")
+if len(tenants) != 1:
+    fail(f"{path} has no single top-level `tenants = {{ ... }}` map")
+entry = child(tenants[0], 1, tenant)
+if len(entry) != 1:
+    fail(f"{path} has no entry for tenant {tenant} in `tenants` (add it, with its forge block, first)")
+forge = child(entry[0], 2, "forge")
+if len(forge) != 1:
+    fail(
+        f"tenant {tenant} in {path} declares no `forge = {{ ... }}` block. Add one with owner,\n"
+        "  repo and review_app_id (terraform/modules/tenancy requires them for git-merge and git-review)."
+    )
+f_open, f_close, _ = forge[0]
+lines = text.splitlines(keepends=True)
+offsets, acc = [], 0
+for line in lines:
+    offsets.append(acc)
+    acc += len(line)
+
+
+def line_at(offset):
+    lo = 0
+    for idx, start in enumerate(offsets):
+        if start <= offset:
+            lo = idx
+    return lo
+
+
+first, last = line_at(f_open), line_at(f_close)
+if first == last or lines[last].strip() != "}":
+    fail(f"tenant {tenant}'s forge block in {path} is not a multi-line block this can edit")
+
+ATTR = re.compile(r'^(\s*)([a-z_]+)(\s*)=\s*(.*?)\s*$')
+attrs = {}
+for idx in range(first + 1, last):
+    body = lines[idx].strip()
+    if not body or body.startswith(("#", "//")):
+        continue
+    m = ATTR.match(lines[idx].rstrip("\n"))
+    if not m:
+        fail(f"tenant {tenant}'s forge block in {path} has a line this cannot read: {body}")
+    raw = m.group(4)
+    if re.fullmatch(r'"(?:[^"\\]|\\.)*"', raw):
+        value = json.loads(raw)
+    elif re.fullmatch(r"[0-9]+", raw):
+        value = int(raw)
+    else:
+        fail(f"tenant {tenant}'s forge.{m.group(2)} in {path} is not a plain string or number")
+    attrs[m.group(2)] = (idx, value)
+
+forge_values = {k: v for k, (_, v) in attrs.items()}
+host = forge_values.get("host", "api.github.com")
+owner, repo = forge_values.get("owner"), forge_values.get("repo")
+host_re = r"[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+"
+if not isinstance(host, str) or not re.fullmatch(host_re, host):
+    fail(f"tenant {tenant}'s forge.host in {path} is not a bare lower-case hostname")
+if not isinstance(owner, str) or not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9-]{0,37}[A-Za-z0-9])?", owner):
+    fail(f"tenant {tenant}'s forge.owner in {path} is missing or not a GitHub owner name")
+if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,100}", repo) or repo in (".", ".."):
+    fail(f"tenant {tenant}'s forge.repo in {path} is missing or not a GitHub repository name")
+for name in ("review_app_id", "review_app_bot_id"):
+    v = forge_values.get(name)
+    if v is not None and (not isinstance(v, int) or v <= 0):
+        fail(f"tenant {tenant}'s forge.{name} in {path} is not a positive integer")
+
+if mode == "read":
+    # api.github.com IS the API host; any other host is an Enterprise Server
+    # install, which serves the same API under /api/v3 (agent_worker.forge).
+    api = "https://api.github.com" if host == "api.github.com" else f"https://{host}/api/v3"
+    print(json.dumps({
+        "host": host, "owner": owner, "repo": repo, "api_base": api,
+        "review_app_id": forge_values.get("review_app_id"),
+        "review_app_bot_id": forge_values.get("review_app_bot_id"),
+    }))
+    sys.exit(0)
+
+bot = int(sys.argv[4])
+current = forge_values.get("review_app_bot_id")
+if current == bot:
+    print("unchanged")
+    sys.exit(0)
+if current is not None:
+    fail(
+        f"tenant {tenant}'s forge.review_app_bot_id in {path} is already {current}, and the review\n"
+        f"  App's installation now answers {bot}. That id is the one identity merge accepts a verdict\n"
+        "  from, so it is not replaced here: if the review App really was replaced, edit the line\n"
+        "  by hand, in a reviewed pull request.",
+        3,
+    )
+
+indent = ATTR.match(lines[attrs["owner"][0]].rstrip("\n")).group(1)
+insert_at = max(idx for idx, _ in attrs.values()) + 1
+lines.insert(insert_at, f"{indent}review_app_bot_id = {bot}\n")
+# terraform fmt aligns the `=` of consecutive single-line attributes; a blank
+# or comment line ends the run. Re-align the run the new line joined.
+lo = insert_at
+while lo - 1 > first and ATTR.match(lines[lo - 1].rstrip("\n")) and not lines[lo - 1].strip().startswith(("#", "//")):
+    lo -= 1
+hi = insert_at
+while hi + 1 < last + 1 and ATTR.match(lines[hi + 1].rstrip("\n")) and not lines[hi + 1].strip().startswith(("#", "//")):
+    hi += 1
+run = [ATTR.match(lines[i].rstrip("\n")) for i in range(lo, hi + 1)]
+width = max(len(m.group(2)) for m in run)
+for i, m in zip(range(lo, hi + 1), run):
+    lines[i] = f"{m.group(1)}{m.group(2).ljust(width)} = {m.group(4)}\n"
+
+directory = os.path.dirname(os.path.abspath(path))
+fd, tmp = tempfile.mkstemp(dir=directory, prefix=".swarm-tfvars.")
+try:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write("".join(lines))
+    os.chmod(tmp, os.stat(path).st_mode & 0o7777)
+    os.replace(tmp, path)
+except BaseException:
+    if os.path.exists(tmp):
+        os.unlink(tmp)
+    raise
+print("written")
+PY
+}
+
+# b64url  -- stdin to unpadded base64url, the JWT encoding.
+b64url() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+
+# resolve_review_bot_id SECRET API_BASE OWNER REPO REVIEW_APP_ID
+#
+# Sets REVIEW_BOT_ID to the review App's bot USER id, asked once, with the
+# App's OWN freshly minted JWT (docs/merge-step.md §5.2a): the key being
+# registered attests its own installation, so nothing else is trusted to say
+# who the review App is. GET /repos/{owner}/{repo}/installation names the App
+# (its app_id must be the one registered) and its slug; the bot user is
+# `<slug>[bot]`, whose id GitHub serves publicly at /users/<slug>[bot].
+#
+# THE KEY NEVER LEAVES A 0600 FILE IN A 0700 DIRECTORY, removed on every exit:
+# it is read from Secret Manager to a file (never a variable, never argv),
+# signed with by openssl from that file, and deleted as soon as the signature
+# exists. The JWT reaches curl as `-H @file`, so it is never on a command line
+# either, and nothing here prints the secret, the key or the JWT -- a failure
+# says which step failed and passes gcloud's and curl's own words through
+# `redact`. No redirect is followed (no -L): a redirect is how a credential
+# leaves the pinned host (§2.1b).
+REVIEW_BOT_ID=""
+REVIEW_APP_DIR=""
+resolve_review_bot_id() {
+  local sm_name="$1" api="$2" owner="$3" repo="$4" want_app="$5"
+  local dir app_id now header payload sig code slug reason
+  dir="$(mktemp -d "${TMPDIR:-/tmp}/swarm-review-app.XXXXXX")"
+  REVIEW_APP_DIR="${dir}"
+  trap 'rm -rf "${REVIEW_APP_DIR}"' EXIT INT TERM
+  chmod 700 "${dir}"
+
+  if ! (umask 077; gcloud secrets versions access latest --secret "${sm_name}" \
+         --project "${PROJECT_ID}" >"${dir}/app.json" 2>"${dir}/err"); then
+    reason="$(cat "${dir}/err")"
+    die_if_auth_failure "${reason}"
+    err "could not read the latest version of ${sm_name}:"
+    printf '%s\n' "${reason}" | redact | head -n 3 | sed 's/^/     /' >&2
+    die "the review App's bot id cannot be resolved without its key. Nothing was changed."
+  fi
+  if ! jq -e 'type == "object"
+              and ((.app_id | tostring) | test("^[1-9][0-9]*$"))
+              and ((.private_key | type) == "string") and ((.private_key | length) > 0)' \
+         "${dir}/app.json" >/dev/null 2>&1; then
+    die "${sm_name} does not hold the review App as JSON {app_id, private_key} (its content is not
+  printed). Store it in that shape with scripts/create-secrets.sh --stdin. Nothing was changed."
+  fi
+  app_id="$(jq -r '.app_id | tostring' "${dir}/app.json")"
+  (umask 077; jq -r '.private_key' "${dir}/app.json" >"${dir}/key.pem")
+  chmod 600 "${dir}/key.pem"
+  rm -f "${dir}/app.json"
+  [[ "${app_id}" == "${want_app}" ]] \
+    || die "${sm_name} holds the key of App ${app_id}, but tenant ${TENANT_ID}'s forge.review_app_id
+  is ${want_app}. One of them is wrong; nothing was changed."
+
+  # iat a minute back for clock skew, exp inside GitHub's ten-minute ceiling.
+  now="$(date +%s)"
+  header="$(printf '%s' '{"alg":"RS256","typ":"JWT"}' | b64url)"
+  payload="$(printf '{"iat":%d,"exp":%d,"iss":%d}' "$((now - 60))" "$((now + 540))" "${app_id}" | b64url)"
+  if ! sig="$(printf '%s.%s' "${header}" "${payload}" \
+               | openssl dgst -sha256 -sign "${dir}/key.pem" -binary 2>/dev/null | b64url)" \
+     || [[ -z "${sig}" ]]; then
+    die "could not sign a JWT with the key in ${sm_name}: openssl did not read it as an RSA
+  private key. Nothing was changed."
+  fi
+  rm -f "${dir}/key.pem"
+  (umask 077; printf 'Authorization: %s %s.%s.%s\n' Bearer "${header}" "${payload}" "${sig}" >"${dir}/auth")
+  sig=""
+
+  code="$(curl -sS --proto '=https' --max-time "${HTTP_TIMEOUT:-30}" \
+            -H @"${dir}/auth" -H 'Accept: application/vnd.github+json' \
+            -o "${dir}/installation.json" -w '%{http_code}' \
+            "${api}/repos/${owner}/${repo}/installation" 2>"${dir}/curl.err")" || code="000"
+  rm -f "${dir}/auth"
+  if [[ "${code}" != "200" ]]; then
+    err "GitHub did not answer GET ${api}/repos/${owner}/${repo}/installation with 200 (got ${code}):"
+    { cat "${dir}/curl.err"; jq -r '.message? // empty' "${dir}/installation.json" 2>/dev/null; } \
+      | redact | head -n 3 | sed 's/^/     /' >&2
+    die "the review App is not installed on ${owner}/${repo}, or its key was refused. Nothing was changed."
+  fi
+  jq -e --arg a "${app_id}" '(.app_id | tostring) == $a' "${dir}/installation.json" >/dev/null 2>&1 \
+    || die "the installation on ${owner}/${repo} that answered belongs to App
+  $(jq -r '.app_id // "?"' "${dir}/installation.json" 2>/dev/null), not the review App ${app_id}. Nothing was changed."
+  slug="$(jq -r '.app_slug // ""' "${dir}/installation.json")"
+  [[ "${slug}" =~ ^[a-z0-9][a-z0-9-]*$ ]] \
+    || die "the installation names no usable App slug ('${slug}'). Nothing was changed."
+
+  code="$(curl -sS --proto '=https' --max-time "${HTTP_TIMEOUT:-30}" \
+            -H 'Accept: application/vnd.github+json' \
+            -o "${dir}/bot.json" -w '%{http_code}' \
+            "${api}/users/${slug}%5Bbot%5D" 2>"${dir}/curl.err")" || code="000"
+  if [[ "${code}" != "200" ]]; then
+    err "GitHub did not answer GET ${api}/users/${slug}[bot] with 200 (got ${code}):"
+    redact <"${dir}/curl.err" | head -n 3 | sed 's/^/     /' >&2
+    die "the review App's bot user could not be read. Nothing was changed."
+  fi
+  jq -e --arg l "${slug}[bot]" \
+       '.type == "Bot" and .login == $l and (.id | type) == "number" and .id > 0' \
+       "${dir}/bot.json" >/dev/null 2>&1 \
+    || die "GitHub's answer for ${slug}[bot] is not that App's bot user. Nothing was changed."
+  REVIEW_BOT_ID="$(jq -r '.id' "${dir}/bot.json")"
+  rm -rf "${dir}"
+}
+
 # --- A. add one provider to a registered tenant, and change nothing else -----
 #
 # WHY THIS IS ITS OWN PATH. Adding a provider to a tenant that already has some
@@ -541,51 +996,159 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   ok "tenants/${TENANT_ID} belongs to ${DOC_KIND} ${DOC_PRINCIPAL}"
 
   # 1. the grant, and only on a secret that is this tenant's, for this
-  # provider, with a key in it (tenant_secret_state above). Tri-state, as at
-  # the custom roles in section 3: a denied or expired lookup is not an absent
-  # secret, and must not send the operator to create one.
+  # provider, with a key in it (require_grantable_secret above).
   provider="${ADD_PROVIDER}"
   secret="swarm-tenant-${TENANT_ID}-${provider}"
-  SECRET_RC=0
-  tenant_secret_state "${secret}" "${provider}" || SECRET_RC=$?
-  case "${SECRET_RC}" in
-    0)
-      ok "${secret} is labelled tenant=${TENANT_ID} provider=${provider} and has an enabled version"
-      ;;
-    1)
-      die "${secret} does not exist, so there is no ${provider} key for this tenant's worker
-  to read. Store it first, then run this again:
-      scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin
-  Nothing was changed: listing ${provider} with no secret behind it would admit this
-  tenant's ${provider} tasks and fail every one of them when the worker asks for the key."
-      ;;
-    3)
-      refuse_foreign_secret "${secret}" "${provider}"
-      ;;
-    4)
-      die "${secret} is tenant ${TENANT_ID}'s, but it has no ENABLED version, so there is no
-  ${provider} key in it for this tenant's worker to read. Nothing was changed: listing
-  ${provider} now would admit this tenant's ${provider} tasks and fail every one of them.
-  Store a key, then run this again:
-      scripts/create-secrets.sh --tenant ${TENANT_ID} --provider ${provider} --stdin
-  (A subscription credential is different: its versions here are written by the quota
-  broker from ${secret}-refresh on its next sweep. Run this again once one has been.)"
-      ;;
-    *)
-      die "stopping: whether ${secret} exists, and whose it is, could not be established
-  (gcloud's answer is above). That is a failure to LOOK, not a missing secret -- fix the
-  session or the permission and run this again. Nothing was changed."
-      ;;
-  esac
-  run gcloud secrets add-iam-policy-binding "${secret}" \
-    --project "${PROJECT_ID}" \
-    --member "serviceAccount:${GSA_EMAIL}" \
-    --role roles/secretmanager.secretAccessor --quiet >/dev/null
-  # A dry run granted nothing, so it must not say it did.
-  if [[ "${DRY_RUN}" -eq 1 ]]; then
-    dim "  would let ${GSA_ID} read ${secret}"
+  # (secret, member, account id) per grant, made in this order once every
+  # check below has passed -- so a refusal anywhere changes nothing.
+  GRANT_SECRETS=()
+  GRANT_MEMBERS=()
+  GRANT_NAMES=()
+  if ! is_app_provider "${provider}"; then
+    require_grantable_secret "${secret}" "${provider}" "this tenant's worker"
+    GRANT_SECRETS+=("${secret}")
+    GRANT_MEMBERS+=("serviceAccount:${GSA_EMAIL}")
+    GRANT_NAMES+=("${GSA_ID}")
   else
-    ok "${secret}: ${GSA_ID} may read it"
+    # A GITHUB APP KEY IS NEVER THE WORKER'S (#295; docs/merge-step.md §1.3,
+    # §10 item 5). The accounts that read it, and what else they read, are
+    # terraform/modules/service_account_ids' `action_accounts`, read through
+    # common.sh rather than restated: the SOLE reader of the provider's own
+    # secret (merge for git-merge, post-verdict for git-review), and -- for
+    # git-review -- the review account, which runs the review agent and so
+    # reads that agent's provider key beside the worker (`also_reads`), only
+    # for a provider the tenant lists, as modules/tenancy's secret_readers does.
+    step "GitHub App key ${provider}: its own accounts, never ${GSA_ID}"
+    SOLE_READERS="$(app_key_readers "${provider}")"
+    [[ -n "${SOLE_READERS}" ]] \
+      || die "terraform/modules/service_account_ids names no sole reader of ${provider}'s secret (or
+  its action_accounts table no longer reads the way common.sh tf_action_accounts expects), so
+  there is no account to bind ${secret} to -- and the worker ${GSA_ID} must never be. Nothing was changed."
+    SOLE_IDS=""
+    while IFS= read -r profile; do
+      [[ -n "${profile}" ]] || continue
+      SOLE_IDS+="${SOLE_IDS:+, }$(tenant_action_account_id "${TENANT_ID}" "${profile}")"
+    done < <(printf '%s\n' "${SOLE_READERS}" | tr ',' '\n')
+    info "${secret} belongs to ${SOLE_IDS} alone; ${GSA_ID} is not granted it"
+    CURRENT_CREDS="$(jq -c '[(.credentials // [])[] | tostring]' <<<"${TENANT_DOC}")"
+
+    [[ -n "${TFVARS_FILE}" ]] || TFVARS_FILE="$(tf_var_file)"
+    [[ -f "${TFVARS_FILE}" ]] || die "no tfvars file at ${TFVARS_FILE}. Nothing was changed."
+    FORGE_JSON="$(forge_tfvars read "${TFVARS_FILE}" "${TENANT_ID}")" \
+      || die "tenant ${TENANT_ID}'s forge record in ${TFVARS_FILE} cannot be used (the reason is above).
+  The merge and post-verdict Jobs take host, owner and repo from it and never from a task. Nothing was changed."
+    FORGE_BOT_ID="$(jq -r '.review_app_bot_id // ""' <<<"${FORGE_JSON}")"
+    if [[ "${provider}" == "git-merge" && -z "${FORGE_BOT_ID}" ]]; then
+      die "tenant ${TENANT_ID} has no forge.review_app_bot_id in ${TFVARS_FILE}. merge accepts a verdict only
+  from the review App's bot user, and terraform/modules/tenancy refuses git-merge without it.
+  Register the review App first:
+      scripts/register-tenant.sh --tenant ${TENANT_ID} --add-provider git-review
+  Nothing was changed."
+    fi
+
+    require_grantable_secret "${secret}" "${provider}" "its own account"
+    ACTION_LINES=()
+    while IFS= read -r line; do
+      [[ -n "${line}" ]] && ACTION_LINES+=("${line}")
+    done < <(tf_action_accounts)
+    for line in ${ACTION_LINES[@]+"${ACTION_LINES[@]}"}; do
+      IFS='|' read -r a_profile _ a_provider a_sole a_also <<<"${line}"
+      [[ "${a_provider}" == "${provider}" ]] || continue
+      a_id="$(tenant_action_account_id "${TENANT_ID}" "${a_profile}")" \
+        || die "could not derive tenant ${TENANT_ID}'s ${a_profile} account from terraform/modules/service_account_ids. Nothing was changed."
+      [[ "${#a_id}" -le 30 ]] \
+        || die "${a_id} is ${#a_id} characters; GCP caps a service account id at 30, so tenant ${TENANT_ID}
+  cannot have a ${a_profile} account (modules/service_account_ids sizes them for an 11-character id). Nothing was changed."
+      a_email="${a_id}@${PROJECT_ID}.iam.gserviceaccount.com"
+      require_action_account "${a_email}"
+      if [[ "${a_sole}" == "true" ]]; then
+        GRANT_SECRETS+=("${secret}")
+        GRANT_MEMBERS+=("serviceAccount:${a_email}")
+        GRANT_NAMES+=("${a_id}")
+      fi
+      also_list=()
+      [[ -z "${a_also}" ]] || IFS=',' read -r -a also_list <<<"${a_also}"
+      for also in ${also_list[@]+"${also_list[@]}"}; do
+        if ! jq -e --arg p "${also}" 'any(.[]; . == $p)' <<<"${CURRENT_CREDS}" >/dev/null; then
+          dim "  tenant ${TENANT_ID} does not list ${also}, so ${a_id} is given no ${also} key (as terraform: also_reads only a listed provider)"
+          continue
+        fi
+        also_name="swarm-tenant-${TENANT_ID}-${also}"
+        ALSO_RC=0
+        tenant_secret_state "${also_name}" "${also}" || ALSO_RC=$?
+        case "${ALSO_RC}" in
+          0|4) ;;
+          1)
+            warn "${also_name} does not exist, so ${a_id} is given no ${also} key; if the tenant's ${also}"
+            warn "comes from the account pool, the review agent is served from there instead"
+            continue
+            ;;
+          3) refuse_foreign_secret "${also_name}" "${also}" ;;
+          *)
+            die "stopping: whether ${also_name} exists, and whose it is, could not be established
+  (gcloud's answer is above). Nothing was changed."
+            ;;
+        esac
+        GRANT_SECRETS+=("${also_name}")
+        GRANT_MEMBERS+=("serviceAccount:${a_email}")
+        GRANT_NAMES+=("${a_id}")
+      done
+    done
+
+    # THE REVIEW APP'S BOT USER, pinned before anything is granted, so a key
+    # that does not match the registered App, or an App not installed on the
+    # repository, stops the run with nothing changed.
+    if [[ "${provider}" == "git-review" ]]; then
+      FORGE_APP_ID="$(jq -r '.review_app_id // ""' <<<"${FORGE_JSON}")"
+      FORGE_OWNER="$(jq -r '.owner' <<<"${FORGE_JSON}")"
+      FORGE_REPO="$(jq -r '.repo' <<<"${FORGE_JSON}")"
+      FORGE_API="$(jq -r '.api_base' <<<"${FORGE_JSON}")"
+      [[ -n "${FORGE_APP_ID}" ]] \
+        || die "tenant ${TENANT_ID} has no forge.review_app_id in ${TFVARS_FILE}: the integer GitHub gave the
+  owner when the review App was created. terraform/modules/tenancy requires it for git-review. Nothing was changed."
+      if [[ "${DRY_RUN}" -eq 1 ]]; then
+        dim "  would resolve the review App's bot user id: read ${secret} to a 0600 file, sign a JWT"
+        dim "  as App ${FORGE_APP_ID}, ask GET ${FORGE_API}/repos/${FORGE_OWNER}/${FORGE_REPO}/installation,"
+        dim "  then write review_app_bot_id into tenant ${TENANT_ID}'s forge block in ${TFVARS_FILE}"
+        [[ -z "${FORGE_BOT_ID}" ]] || dim "  (it is pinned there as ${FORGE_BOT_ID} now; a different answer would be refused)"
+      else
+        resolve_review_bot_id "${secret}" "${FORGE_API}" "${FORGE_OWNER}" "${FORGE_REPO}" "${FORGE_APP_ID}"
+        ok "the review App ${FORGE_APP_ID}'s bot user on ${FORGE_OWNER}/${FORGE_REPO} is ${REVIEW_BOT_ID}"
+        if [[ -n "${FORGE_BOT_ID}" && "${FORGE_BOT_ID}" != "${REVIEW_BOT_ID}" ]]; then
+          die "tenant ${TENANT_ID}'s forge.review_app_bot_id in ${TFVARS_FILE} is already ${FORGE_BOT_ID}, and the
+  review App's installation now answers ${REVIEW_BOT_ID}. That id is the one identity merge accepts a
+  verdict from, so it is not replaced here: if the review App really was replaced, edit the line by
+  hand, in a reviewed pull request. Nothing was changed."
+        fi
+      fi
+    fi
+  fi
+
+  for ((i = 0; i < ${#GRANT_SECRETS[@]}; i++)); do
+    run gcloud secrets add-iam-policy-binding "${GRANT_SECRETS[$i]}" \
+      --project "${PROJECT_ID}" \
+      --member "${GRANT_MEMBERS[$i]}" \
+      --role roles/secretmanager.secretAccessor --quiet >/dev/null
+    # A dry run granted nothing, so it must not say it did.
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      dim "  would let ${GRANT_NAMES[$i]} read ${GRANT_SECRETS[$i]}"
+    else
+      ok "${GRANT_SECRETS[$i]}: ${GRANT_NAMES[$i]} may read it"
+    fi
+  done
+
+  # 1b. the pin, after the grants and before the list: a tenant that lists
+  # git-review is one whose merge Job must already know the bot it trusts.
+  if [[ "${provider}" == "git-review" && "${DRY_RUN}" -eq 0 ]]; then
+    PIN="$(forge_tfvars write "${TFVARS_FILE}" "${TENANT_ID}" "${REVIEW_BOT_ID}")" \
+      || die "review_app_bot_id was not written into ${TFVARS_FILE} (the reason is above). The grants
+  above are in place; nothing was listed."
+    if [[ "${PIN}" == "unchanged" ]]; then
+      ok "tenant ${TENANT_ID}'s forge.review_app_bot_id is already ${REVIEW_BOT_ID} in ${TFVARS_FILE}"
+    else
+      ok "wrote review_app_bot_id = ${REVIEW_BOT_ID} into tenant ${TENANT_ID}'s forge block in ${TFVARS_FILE}"
+      dim "  commit it on a branch; the release renders it into the merge Job's environment"
+    fi
   fi
 
   # 2. the list.
@@ -1004,13 +1567,19 @@ fi
 # because this script and that module must grant IDENTICAL authority -- a tenant
 # onboarded here must not end up more privileged than one terraform created:
 #
-#   * roles/storage.objectUser, NOT roles/storage.objectAdmin. objectAdmin adds
-#     storage.objects.setIamPolicy, which lets a compromised worker grant its own
-#     objects to anyone. Nothing in the worker path sets an object policy.
-#   * the condition has TWO clauses. The first covers get/create/delete on an
-#     object path. The second covers LIST, which carries no object name at all --
-#     the only attribute that can scope a list request is objectListPrefix, and
-#     without it the worker can enumerate every tenant's object names.
+#   * TWO bindings, terraform/modules/tenancy's `worker_objects_read` and
+#     `worker_objects_write` (#295; docs/merge-step.md §4.3, §10 item 5):
+#     roles/storage.objectViewer on tenants/<t>/, and roles/storage.objectUser
+#     on tenants/<t>/ EXCEPT tenants/<t>/verdicts/, which only the review
+#     account may create in. GCS IAM is allow-only, so the exclusion is the
+#     write binding's condition, not a deny rule. Never objectAdmin, which adds
+#     storage.objects.setIamPolicy: a compromised worker could share its own
+#     objects with anyone. Nothing in the worker path sets an object policy.
+#   * the READ condition has TWO clauses. The first covers get on an object
+#     path. The second covers LIST, which carries no object name at all -- the
+#     only attribute that can scope a list request is objectListPrefix, and
+#     without it the worker can enumerate every tenant's object names. The
+#     write binding has no list clause: listing is the read binding's.
 #   * a separate custom role for storage.buckets.get. Cloud Storage FUSE and the
 #     client libraries both need the bucket's own metadata, and a prefix
 #     condition can never match the bucket resource name. legacyBucketReader
@@ -1024,25 +1593,42 @@ shared_resource_present "artifact bucket gs://${ARTIFACT_BUCKET}" \
   --project "${PROJECT_ID}" --format='value(name)' || BUCKET_RC=$?
 if [[ "${BUCKET_RC}" -eq 0 ]]; then
   # --condition-from-file, NOT --condition. gcloud parses --condition as
-  # comma-separated key=value pairs, and this expression contains a comma
-  # inside api.getAttribute(..., '') -- so gcloud split it mid-expression and
-  # refused the fragment as an unknown key. The description contained an
-  # apostrophe as well. This binding has therefore never been applied by this
-  # script for any tenant, which means those tenants got their GCS access from
-  # terraform or not at all.
-  CONDITION_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-condition.XXXXXX")"
-  BUCKET_POLICY_FILE="$(mktemp "${TMPDIR:-/tmp}/swarm-bucket-policy.XXXXXX")"
-  trap 'rm -f "${CONDITION_FILE}" "${BUCKET_POLICY_FILE}"' EXIT INT TERM
-  cat >"${CONDITION_FILE}" <<CONDEOF
-title: tenant_prefix_only
-description: Only this tenant's object prefix, listing included
-expression: resource.name.startsWith('projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/') || api.getAttribute('storage.googleapis.com/objectListPrefix', '').startsWith('${GCS_PREFIX}/')
-CONDEOF
+  # comma-separated key=value pairs, and the read expression contains a comma
+  # inside api.getAttribute(..., "") -- so gcloud split it mid-expression and
+  # refused the fragment as an unknown key. Written as JSON by jq, so no
+  # quote in an expression or a description needs escaping by hand.
+  #
+  # THE CONDITIONS ARE TERRAFORM'S, CHARACTER FOR CHARACTER: the title,
+  # description and expression of worker_objects_read and worker_objects_write
+  # in terraform/modules/tenancy/main.tf, built from its `object_prefix`,
+  # `list_prefix` and `verdicts_prefix` locals.
+  # tests/unit/scripts/test_register_tenant_merge_step.py renders those locals
+  # and holds this to them, because the check below recognises the split by
+  # its expressions: a tenant terraform applied must read as already split
+  # here, not be granted a near-duplicate beside it.
+  BUCKET_WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/swarm-bucket.XXXXXX")"
+  BUCKET_POLICY_FILE="${BUCKET_WORK_DIR}/policy.json"
+  : >"${BUCKET_POLICY_FILE}"
+  trap 'rm -rf "${BUCKET_WORK_DIR}"' EXIT INT TERM
+  OBJECT_PREFIX_EXPR="resource.name.startsWith(\"projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/\")"
+  LIST_PREFIX_EXPR="api.getAttribute(\"storage.googleapis.com/objectListPrefix\", \"\").startsWith(\"${GCS_PREFIX}/\")"
+  VERDICTS_PREFIX_EXPR="resource.name.startsWith(\"projects/_/buckets/${ARTIFACT_BUCKET}/objects/${GCS_PREFIX}/verdicts/\")"
+  READ_EXPR="${OBJECT_PREFIX_EXPR} || ${LIST_PREFIX_EXPR}"
+  WRITE_EXPR="${OBJECT_PREFIX_EXPR} && !${VERDICTS_PREFIX_EXPR}"
+  READ_CONDITION_FILE="${BUCKET_WORK_DIR}/read-condition.json"
+  WRITE_CONDITION_FILE="${BUCKET_WORK_DIR}/write-condition.json"
+  jq -n --arg t "swarm-tenant-prefix-read-${TENANT_ID}" \
+        --arg d "Read and list objects under ${GCS_PREFIX}/ only." \
+        --arg e "${READ_EXPR}" '{title:$t, description:$d, expression:$e}' >"${READ_CONDITION_FILE}"
+  jq -n --arg t "swarm-tenant-prefix-write-${TENANT_ID}" \
+        --arg d "Write objects under ${GCS_PREFIX}/, except ${GCS_PREFIX}/verdicts/." \
+        --arg e "${WRITE_EXPR}" '{title:$t, description:$d, expression:$e}' >"${WRITE_CONDITION_FILE}"
   # Shown, not hidden. The condition IS the isolation -- it is the only thing
   # standing between this tenant's service account and every other tenant's
   # artifacts -- so an operator applying it should see what they are applying,
   # and a --dry-run that does not show it is not a rehearsal of anything.
-  dim "  condition: objects/${GCS_PREFIX}/ and listing prefix ${GCS_PREFIX}/"
+  dim "  read condition:  objects/${GCS_PREFIX}/ and listing prefix ${GCS_PREFIX}/"
+  dim "  write condition: objects/${GCS_PREFIX}/ except objects/${GCS_PREFIX}/verdicts/"
   # Read the bucket policy ONCE, here, and answer both "already granted?"
   # questions below from that one document. Two reads are two chances to decide
   # two grants against two different policies, and this one is long -- it is the
@@ -1061,7 +1647,7 @@ CONDEOF
   # cannot render at version 1 is refused with "Specified policy version (1)
   # must be at least 3" -- that error was the only one on screen, and it is not
   # the cause. The reason is shown now, before the grants.
-  BUCKET_POLICY_ERR="$(mktemp "${TMPDIR:-/tmp}/swarm-bucket-policy-err.XXXXXX")"
+  BUCKET_POLICY_ERR="${BUCKET_WORK_DIR}/policy.err"
   if ! gcloud storage buckets get-iam-policy "gs://${ARTIFACT_BUCKET}" \
        --project "${PROJECT_ID}" --format=json >"${BUCKET_POLICY_FILE}" 2>"${BUCKET_POLICY_ERR}"; then
     : >"${BUCKET_POLICY_FILE}"
@@ -1069,34 +1655,124 @@ CONDEOF
     rm -f "${BUCKET_POLICY_ERR}"
     die_if_auth_failure "${policy_err}"
     warn "could NOT read the IAM policy on gs://${ARTIFACT_BUCKET}, so whether this tenant"
-    warn "already holds its two grants there is UNKNOWN -- attempting both; each lands or fails loudly:"
+    warn "already holds its grants there is UNKNOWN -- attempting them; each lands or fails loudly."
+    warn "Whether it still carries the OLD single objectUser binding is unknown too: re-run once the"
+    warn "policy can be read, or that binding keeps its worker able to write under ${GCS_PREFIX}/verdicts/:"
     printf '%s\n' "${policy_err}" | redact | head -n 3 | sed 's/^/     /' >&2
   fi
   rm -f "${BUCKET_POLICY_ERR}"
-  # Skip if the binding is already there. terraform/modules/tenancy grants this
-  # same conditioned binding for every tenant it manages, and adding it twice is
-  # not merely redundant: gcloud reads the bucket policy at version 1, the
-  # existing conditions make it version 3, and the write is refused with
+  # Skip a binding that is already there. terraform/modules/tenancy grants
+  # these same conditioned bindings for every tenant it manages, and adding one
+  # twice is not merely redundant: gcloud reads the bucket policy at version 1,
+  # the existing conditions make it version 3, and the write is refused with
   # "Specified policy version (1) must be at least 3" -- which aborts this
   # script before it reaches the tenant document, the thing it is actually
   # needed for.
   #
-  # Role AND member, not either alone. This bucket's policy names every tenant,
-  # so "is this member in the policy at all" is a different question: a tenant
-  # holding only the metadata role below would have its object grant skipped and
-  # its worker left unable to read the artifacts it writes.
-  if iam_policy_binds_member "${BUCKET_POLICY_FILE}" \
-       roles/storage.objectUser "serviceAccount:${GSA_EMAIL}"; then
-    ok "storage access already granted (terraform manages this tenant's binding)"
-    rm -f "${CONDITION_FILE}"
+  # Role, member AND expression. This bucket's policy names every tenant, so
+  # "is this member in the policy at all" is a different question; and since
+  # the split, so is "does this member hold objectUser": the OLD single
+  # binding holds objectUser too. Treating any objectUser as done is exactly
+  # the check that would leave every tenant registered before #295 able to
+  # write a verdict forever (merge-step.md §4.3, MAJOR 1c).
+  bucket_binding_present() {
+    local role="$1" expression="$2"
+    [[ -s "${BUCKET_POLICY_FILE}" ]] || return 1
+    jq -e --arg r "${role}" --arg m "serviceAccount:${GSA_EMAIL}" --arg e "${expression}" \
+      'any((.bindings? // [])[]; .role == $r and any(.members[]?; . == $m)
+           and (.condition.expression? // "") == $e)' \
+      "${BUCKET_POLICY_FILE}" >/dev/null 2>&1
+  }
+  SPLIT_DONE=1
+  if bucket_binding_present roles/storage.objectViewer "${READ_EXPR}"; then
+    ok "storage.objectViewer already granted (read and list under gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/)"
   else
+    SPLIT_DONE=0
+    run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+      --member "serviceAccount:${GSA_EMAIL}" \
+      --role roles/storage.objectViewer \
+      --condition-from-file "${READ_CONDITION_FILE}" \
+      >/dev/null
+    ok "storage.objectViewer (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
+  fi
+  if bucket_binding_present roles/storage.objectUser "${WRITE_EXPR}"; then
+    ok "storage.objectUser already granted (write under gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, except verdicts/)"
+  else
+    SPLIT_DONE=0
     run gcloud storage buckets add-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
       --member "serviceAccount:${GSA_EMAIL}" \
       --role roles/storage.objectUser \
-      --condition-from-file "${CONDITION_FILE}" \
+      --condition-from-file "${WRITE_CONDITION_FILE}" \
       >/dev/null
-    rm -f "${CONDITION_FILE}"
-    ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, listing included)"
+    ok "storage.objectUser (only gs://${ARTIFACT_BUCKET}/${GCS_PREFIX}/, except ${GCS_PREFIX}/verdicts/)"
+  fi
+
+  # THE OLD BINDING, REPLACED: any other objectUser binding this worker holds
+  # on the bucket -- the pre-#295 single grant (`tenant_prefix_only`, or
+  # terraform's retired `worker_objects`), or one with no condition at all.
+  # Each overlaps the write binding without its verdicts/ exclusion, so while
+  # it stands the split excludes nothing. Removed only AFTER both new bindings
+  # exist (above; a failed add has already stopped the run under set -e), so
+  # the worker is never without read or write for a moment, and only with a
+  # typed confirmation: it is a removal from a policy every tenant shares.
+  # `remove-iam-policy-binding` matches the (member, role, condition) triple
+  # exactly, so each is removed with its condition as read off the policy.
+  OLD_BINDINGS_FILE="${BUCKET_WORK_DIR}/old-bindings.jsonl"
+  : >"${OLD_BINDINGS_FILE}"
+  if [[ -s "${BUCKET_POLICY_FILE}" ]]; then
+    jq -c --arg m "serviceAccount:${GSA_EMAIL}" --arg e "${WRITE_EXPR}" \
+      '(.bindings? // [])[]
+       | select(.role == "roles/storage.objectUser" and any(.members[]?; . == $m)
+                and (.condition.expression? // null) != $e)
+       | (.condition // null)' \
+      "${BUCKET_POLICY_FILE}" >"${OLD_BINDINGS_FILE}" 2>/dev/null || : >"${OLD_BINDINGS_FILE}"
+  fi
+  OLD_COUNT="$(grep -c . "${OLD_BINDINGS_FILE}" || true)"
+  if [[ "${OLD_COUNT}" -gt 0 ]]; then
+    warn "${GSA_ID} still holds ${OLD_COUNT} storage.objectUser binding(s) WITHOUT the verdicts/ exclusion:"
+    while IFS= read -r old; do
+      if [[ "${old}" == "null" ]]; then
+        warn "  (no condition: write anywhere in gs://${ARTIFACT_BUCKET})"
+      else
+        warn "  title: $(jq -r '.title // ""' <<<"${old}")"
+        dim  "    expression: $(jq -r '.expression // ""' <<<"${old}")"
+      fi
+    done <"${OLD_BINDINGS_FILE}"
+    warn "while it stands, this tenant's worker can write under ${GCS_PREFIX}/verdicts/, the prefix only"
+    warn "the review account may create in (docs/merge-step.md §4.3)"
+    if [[ "${DRY_RUN}" -eq 1 ]]; then
+      dim "  would remove it once the two bindings above exist, after a typed confirmation:"
+    else
+      # SWARM_ASSUME_YES never answers this (CLAUDE.md: destructive steps take
+      # a typed confirmation), and confirm() refuses without a terminal; this
+      # says what is in place when it does.
+      [[ -t 0 ]] || die "not removing the old binding without an interactive, typed confirmation (no terminal).
+  The read and write-except-verdicts bindings above are in place; the old one is unchanged and
+  still lets ${GSA_ID} write under ${GCS_PREFIX}/verdicts/. Run this again from a terminal."
+      SWARM_ASSUME_YES="" confirm "Remove the old storage.objectUser binding(s) of ${GSA_EMAIL} from gs://${ARTIFACT_BUCKET}?" "${TENANT_ID}"
+    fi
+    old_index=0
+    while IFS= read -r old; do
+      old_index=$((old_index + 1))
+      if [[ "${old}" == "null" ]]; then
+        run gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+          --member "serviceAccount:${GSA_EMAIL}" \
+          --role roles/storage.objectUser \
+          --condition None >/dev/null </dev/null
+      else
+        old_file="${BUCKET_WORK_DIR}/old-condition-${old_index}.json"
+        jq '{title, description, expression} | with_entries(select(.value != null))' <<<"${old}" >"${old_file}"
+        run gcloud storage buckets remove-iam-policy-binding "gs://${ARTIFACT_BUCKET}" \
+          --member "serviceAccount:${GSA_EMAIL}" \
+          --role roles/storage.objectUser \
+          --condition-from-file "${old_file}" >/dev/null </dev/null
+      fi
+    done <"${OLD_BINDINGS_FILE}"
+    if [[ "${DRY_RUN}" -eq 0 ]]; then
+      ok "removed the old storage.objectUser binding(s); ${GSA_ID} can no longer write under ${GCS_PREFIX}/verdicts/"
+    fi
+  elif [[ "${SPLIT_DONE}" -eq 1 ]]; then
+    ok "storage access already split (read + write-except-verdicts, as terraform/modules/tenancy grants it); nothing changed"
   fi
 
   # Tri-state, as at the Firestore role: a denied iam.roles.get used to print

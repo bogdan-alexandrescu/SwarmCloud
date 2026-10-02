@@ -281,7 +281,7 @@ def task_to_api(
     `task_input.masking_for`, which keeps it per task: a list page of large
     inputs is masked once, not on every refresh.
     """
-    masking = masking_for(task)
+    masking = masking_for(task, warm=not summary)
     masked_input: Any = None
     masked_metadata: Any = None
     result_summary: Any = None

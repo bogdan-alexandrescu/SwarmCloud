@@ -22,7 +22,6 @@
 // the value, rather than adding the element to a list of exceptions here.
 
 import STYLES from '../styles.css?raw'
-import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
@@ -147,17 +146,26 @@ function merge(parts: Report[]): Report {
  * exists does not change with the theme, because the light block in
  * `styles.css` redefines colour tokens and nothing else.
  */
+/**
+ * A SECTION'S OWN SHEET (`src/styles/*.css`, imported by its screen) IS PART
+ * OF WHAT SHIPS. Vitest's `css: true` injects it into the test document
+ * UNRESOLVED, so without this every `var()` in it read as "unresolved" here.
+ * Resolved like the main sheet and placed BEFORE it -- the order the app loads
+ * them, since main.tsx imports App (and so every screen's sheet) first. The
+ * resolved copy comes after the injected one in the document, so it is the
+ * one the cascade picks.
+ */
+const SECTION_SHEETS = Object.values(
+  import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true }),
+)
+const SHEET = [...SECTION_SHEETS, STYLES].join('\n')
+
 async function sweep(): Promise<Record<Theme, Report>> {
-  const tables = { dark: tokenTables(STYLES).dark, light: tokenTables(STYLES).light }
-  // A SECTION'S OWN SHEET IS PROBED AS styles.css IS (lane U1: the Agents
-  // list, the split and the log dock are styles/agents.css). It declares no
-  // token, so it is resolved against styles.css's tables, and it is placed
-  // after the main sheet here: the test document already holds the copy the
-  // import injected, unresolved, and this one has to out-rank it.
   const sheets: Record<Theme, string> = {
-    dark: resolveSheet(STYLES, 'dark') + '\n' + resolveVars(stripComments(AGENTS_CSS), tables.dark),
-    light: resolveSheet(STYLES, 'light') + '\n' + resolveVars(stripComments(AGENTS_CSS), tables.light),
+    dark: resolveSheet(SHEET, 'dark'),
+    light: resolveSheet(SHEET, 'light'),
   }
+  const tables = { dark: tokenTables(SHEET).dark, light: tokenTables(SHEET).light }
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of ROUTES) {
@@ -343,5 +351,9 @@ describe('spacing', () => {
 
     expect(lines(r.dark)).toEqual([])
     expect(lines(r.light)).toEqual([])
-  }, 240000)
+  // 300s, not 240: the sweep took 198s on main at 29a1421 in a full run on a
+  // loaded machine and 242s once the workflow page grew its band chips, tabs
+  // and phone stage cards (wave 4 U2) -- 184s against 172s run alone. A probe
+  // that goes red because the machine was busy is re-run until it passes.
+  }, 300000)
 })

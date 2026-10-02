@@ -40,6 +40,19 @@ A hold with no task at all -- an older worker image, or a hold from before the
 stamp existed -- is `recorded: false`, and the console says "task not
 recorded". That is different from "unverified", and the two are kept apart.
 
+A SWAP, AND WHO MAY SEE WHERE IT WENT (S13/S14)
+-----------------------------------------------
+An attempt can move from one account to another mid-run, and the broker
+records it on both holds: the one left closes `swapped` naming where it went,
+the one taken names where it came from. Wherever this module already serves a
+hold or a span in full -- the caller's own, an owner's view of a borrower's
+span on its account, the platform's -- it serves the swap beside it: which
+side, the reason, and the OTHER account. That account's id and label are shown
+only when the caller may see that account (it is in the caller's own listing,
+owned or lent); otherwise the swap is served with `withheld: true` and neither,
+exactly as a task id the caller does not own is withheld. Where a hold is
+collapsed into a count, its swap is collapsed with it.
+
 WHAT IS NEVER SERVED
 --------------------
 The assignment id (it authorises a release), the secret name, and anything of
@@ -55,9 +68,40 @@ from typing import Any, Callable, Iterable, Literal
 
 Viewer = Literal["owner", "borrower", "platform"]
 
-#: The three ways a recorded hold ends, as the broker writes them. Anything
-#: else is served as no end at all rather than passed through.
-_ENDS = ("released", "unusable", "expired")
+#: The ways a recorded hold ends, as the broker writes them. Anything else is
+#: served as no end at all rather than passed through. `swapped`: the attempt
+#: moved to another account in one transaction (S13/S14).
+_ENDS = ("released", "unusable", "expired", "swapped")
+
+#: Why an attempt moved, as the broker writes it (`quota_broker.accounts`).
+_SWAP_REASONS = ("exhausted", "drain", "unusable")
+
+
+class _Everything:
+    """`visible` for the platform: every account may be named."""
+
+    def __contains__(self, account_id: object) -> bool:
+        return True
+
+    def get(self, account_id: str, default: Any = None) -> Any:
+        # An account id is `<owner>:<label>` by construction (`account_id_for`).
+        return account_id.split(":", 1)[1] if ":" in account_id else default
+
+
+#: Pass as `visible` for the platform viewer.
+EVERY_ACCOUNT: Any = _Everything()
+
+
+def _swap_side(account_id: Any, reason: Any, visible: Any) -> dict[str, Any] | None:
+    """One side of a swap, naming the other account only when the caller may see it."""
+    other = _text(account_id)
+    if other is None:
+        return None
+    why = reason if reason in _SWAP_REASONS else None
+    if visible is not None and other in visible:
+        return {"account_id": other, "label": visible.get(other), "reason": why,
+                "withheld": False}
+    return {"account_id": None, "label": None, "reason": why, "withheld": True}
 
 
 def _instant(raw: Any) -> datetime | None:
@@ -148,8 +192,12 @@ def holders_view(
     tenant_id: str | None,
     check: TaskCheck,
     now: datetime,
+    visible: Any = None,
 ) -> dict[str, Any]:
     """`GET /v1/accounts/{id}/holders` for one viewer.
+
+    `visible` maps the account ids this caller may see to their labels
+    (`EVERY_ACCOUNT` for the platform); None names no other account at all.
 
     EXPIRED HOLDS ARE NEVER SERVED. The broker filters them already; this
     filters again on the served deadline, so a broker clock or a cached answer
@@ -182,6 +230,9 @@ def holders_view(
                 entry["tenant"] = tenant
             entry.update(_work(h, tenant=tenant, check=check,
                                show_unverified=viewer == "platform"))
+            came = _swap_side(h.get("swapped_from"), h.get("swapped_from_reason"), visible)
+            if came is not None:
+                entry["swapped_from"] = came
             holders.append(entry)
             continue
         others += 1
@@ -209,8 +260,12 @@ def history_view(
     check: TaskCheck,
     now: datetime,
     continued: bool = False,
+    visible: Any = None,
 ) -> dict[str, Any]:
     """`GET /v1/accounts/{id}/history` for one viewer: spans, newest first.
+
+    `visible` is as for `holders_view`: a swap names the other account only
+    when it is in there.
 
     A borrower's `others` is served only when the page IS the whole hour-aligned
     window: no cursor in (`continued` False), none out, and the scan not
@@ -254,6 +309,18 @@ def history_view(
             "end": end,
             "mine": mine,
         }
+        # Present only on a span a swap began or ended, so every other span
+        # keeps exactly the shape it had.
+        came = _swap_side(r.get("swapped_from"), r.get("swapped_from_reason"), visible)
+        if came is not None:
+            span["swapped_from"] = came
+        went = (
+            _swap_side(r.get("swapped_to"), r.get("swapped_to_reason"), visible)
+            if end == "swapped"
+            else None
+        )
+        if went is not None:
+            span["swapped_to"] = went
         if viewer == "platform":
             span["tenant"] = tenant
             span.update(_work(r, tenant=tenant, check=check, show_unverified=True))
@@ -351,4 +418,12 @@ def own_page(
     return served
 
 
-__all__ = ["TaskCheck", "Viewer", "history_view", "holders_view", "own_page", "viewer_of"]
+__all__ = [
+    "EVERY_ACCOUNT",
+    "TaskCheck",
+    "Viewer",
+    "history_view",
+    "holders_view",
+    "own_page",
+    "viewer_of",
+]

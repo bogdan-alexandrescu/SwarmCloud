@@ -28,9 +28,11 @@ from .routes import (
     checkpoints,
     children,
     health,
+    issues,
     leases,
     outcomes,
     platform,
+    runs,
     tasks,
     tenants,
     workflows,
@@ -93,6 +95,11 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     # platform scope only behind require_admin, which the route runs first.
     app.include_router(outcomes.router)
     app.include_router(workflows.router)
+    # Issue runs (#454): plan an issue, approve the plan's digest, run it as a
+    # new workflow. Tenant-scoped; the document is `issueruns`'s own.
+    app.include_router(runs.router)
+    # The issue preview, read with the caller's tenant's forge token (#454 1A).
+    app.include_router(issues.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

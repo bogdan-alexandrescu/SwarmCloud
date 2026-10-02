@@ -359,14 +359,14 @@ describe('the send panel', () => {
     expect(go.hasAttribute('disabled')).toBe(true)
     expect(sendHeading(container)).toBe('Not ready to send')
     // A runner that requires nothing: now it can.
-    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="mock"]')!)
+    fireEvent.change(container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!, { target: { value: 'mock' } })
     expect(go.hasAttribute('disabled')).toBe(false)
     expect(sendHeading(container)).toBe('Ready to send')
 
     // A runner that requires `input.prompt`, left blank. The step card already
     // said `Not sent`; the button stayed live and the only statement of the
     // refusal appeared ~2,100px above it after the click.
-    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="claude-code"]')!)
+    fireEvent.change(container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!, { target: { value: 'claude-code' } })
     expect(go.hasAttribute('disabled'), 'a plan that would fail can still be sent').toBe(true)
     expect(sendHeading(container), '"Ready to send" over a plan that cannot be sent').toBe('Not ready to send')
     const count = container.querySelector<HTMLElement>('.sbf-send .warn-text')
@@ -493,7 +493,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
   it('reserves "Not sent" for the result of a click, on the workflow form too', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, { timeout: 4000 })
-    fireEvent.click(container.querySelector<HTMLInputElement>('.wfb-step input[type="radio"][value="claude-code"]')!)
+    fireEvent.change(container.querySelector<HTMLSelectElement>('.wfb-step select.sb-runner-select')!, { target: { value: 'claude-code' } })
     // Nothing has been clicked, so nothing has been "not sent".
     expect(visible(container), 'a live problem is worded as the outcome of a send').not.toContain('Not sent')
     expect(visible(container)).not.toMatch(/input\.prompt|non-empty string/)

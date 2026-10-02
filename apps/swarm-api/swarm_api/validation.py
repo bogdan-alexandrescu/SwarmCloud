@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Mapping, Sequence
@@ -805,6 +806,140 @@ def check_repository_url(value: str | None) -> str | None:
             + REPOSITORY_CREDENTIAL_PATH
         )
     return value
+
+
+# --------------------------------------------------------------------------
+# An issue reference: `owner/repo#N` or the issue's URL (#454)
+# --------------------------------------------------------------------------
+#
+# An issue run (`swarm_api.issueruns`) and the console's issue preview both
+# start from one string a person typed or pasted. Two spellings are accepted
+# because both are what people have: the short form GitHub itself renders, and
+# the URL in the browser's address bar.
+#
+# THE REPOSITORY GOES THROUGH `check_repository_url`, the one rule every other
+# repository on this platform passes: the planner task and the compiled
+# workflow clone it, so it must be a URL a task would have accepted. A pasted
+# URL is checked AS PASTED first, so one carrying a token before `@` is refused
+# by that rule's own words (which name no part of the value) instead of being
+# taken apart.
+#
+# A PULL REQUEST IS NOT AN ISSUE. GitHub numbers both from one sequence, so
+# `/pull/12` parsed as "issue 12" would plan work against a pull request's
+# description. The URL says which it is, so the refusal says so; `owner/repo#N`
+# cannot, and the preview's forge read refuses it there (`forge.py`).
+
+#: The one forge an issue reference may name. The worker's issue fetch and the
+#: preview's client both read GitHub's API and nothing else.
+ISSUE_FORGE_HOSTS = ("github.com", "www.github.com")
+
+#: The catalogue's own ceiling on the `issue` runner input (contract request
+#: 28): a reference past it names an issue no planner task could be given.
+MAX_ISSUE_NUMBER = 999_999
+
+_ISSUE_OWNER = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})"
+_ISSUE_REPO = r"[A-Za-z0-9._-]{1,100}"
+_SHORT_ISSUE_REF = re.compile(rf"^({_ISSUE_OWNER})/({_ISSUE_REPO})#([0-9]{{1,7}})$")
+_ISSUE_URL_PATH = re.compile(
+    rf"^/({_ISSUE_OWNER})/({_ISSUE_REPO})/(issues|pull|pulls)/([0-9]{{1,7}})/?$"
+)
+
+
+class PullRequestReference(ValueError):
+    """The reference names a pull request. Its own type so the preview can
+    answer `is_pull_request` rather than a generic refusal."""
+
+
+@dataclass(frozen=True)
+class IssueRef:
+    owner: str
+    repo: str
+    number: int
+
+    @property
+    def repository(self) -> str:
+        return f"{self.owner}/{self.repo}"
+
+    @property
+    def repository_url(self) -> str:
+        return f"https://github.com/{self.owner}/{self.repo}"
+
+    @property
+    def url(self) -> str:
+        return f"{self.repository_url}/issues/{self.number}"
+
+    @property
+    def short(self) -> str:
+        return f"{self.owner}/{self.repo}#{self.number}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ref": self.short,
+            "owner": self.owner,
+            "repo": self.repo,
+            "number": self.number,
+            "url": self.url,
+            "repository_url": self.repository_url,
+        }
+
+
+def _issue_repo_name(repo: str) -> str:
+    name = repo[:-4] if repo.lower().endswith(".git") else repo
+    if name in ("", ".", "..") or name.startswith("."):
+        raise ValueError("issue must name a repository: owner/repo#N")
+    return name
+
+
+def _issue_number(raw: str) -> int:
+    number = int(raw)
+    if number < 1 or number > MAX_ISSUE_NUMBER:
+        raise ValueError(f"issue number must be between 1 and {MAX_ISSUE_NUMBER}")
+    return number
+
+
+def parse_issue_ref(value: str) -> IssueRef:
+    """`owner/repo#N` or `https://github.com/owner/repo/issues/N` -> IssueRef.
+
+    Raises ValueError (pydantic's 422 naming the field), and
+    `PullRequestReference` for a `/pull/N` URL. The value is never echoed: a
+    URL can carry a credential, and the rule that refuses it names none.
+    """
+    text = (value or "").strip()
+    if not text:
+        raise ValueError("issue is required: owner/repo#N or the issue's URL")
+    short = _SHORT_ISSUE_REF.match(text)
+    if short is not None:
+        owner, repo, number = short.group(1), _issue_repo_name(short.group(2)), short.group(3)
+    else:
+        # As pasted, before anything is taken apart: the scheme rule and the
+        # credential rule, in that rule's own words.
+        check_repository_url(text)
+        if not text.startswith("https://"):
+            raise ValueError("an issue URL must be https://github.com/<owner>/<repo>/issues/<N>")
+        rest = text[len("https://"):]
+        cut = min([at for at in (rest.find("?"), rest.find("#")) if at >= 0], default=len(rest))
+        authority, _, path = rest[:cut].partition("/")
+        if authority.lower() not in ISSUE_FORGE_HOSTS:
+            raise ValueError(
+                "an issue URL must be on github.com: the planner and the preview "
+                "read GitHub's API and no other forge"
+            )
+        matched = _ISSUE_URL_PATH.match("/" + path)
+        if matched is None:
+            raise ValueError(
+                "issue must be owner/repo#N or https://github.com/<owner>/<repo>/issues/<N>"
+            )
+        if matched.group(3) != "issues":
+            raise PullRequestReference(
+                f"#{int(matched.group(4))} is a pull request, not an issue; "
+                "an issue run plans work from an issue"
+            )
+        owner, repo, number = matched.group(1), _issue_repo_name(matched.group(2)), matched.group(4)
+    ref = IssueRef(owner=owner, repo=repo, number=_issue_number(number))
+    # The repository every task of the run clones passes the rule every other
+    # repository does.
+    check_repository_url(ref.repository_url)
+    return ref
 
 
 class DispatchOptionError(ValidationFailed):
