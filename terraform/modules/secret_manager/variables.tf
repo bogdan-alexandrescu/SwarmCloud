@@ -86,6 +86,35 @@ variable "action_providers" {
   default     = ["git-merge", "git-review"]
 }
 
+variable "forge_provider" {
+  description = "The provider named by the forge credential's secret id, swarm-tenant-<tenant>-git."
+  type        = string
+  default     = "git"
+
+  validation {
+    condition     = !contains(var.action_providers, var.forge_provider)
+    error_message = "the forge-token provider can never be a git-merge or git-review App key: those have exactly the readers their accessor override names."
+  }
+}
+
+variable "forge_readers" {
+  description = <<-EOT
+    Platform identities that read EVERY tenant's forge token
+    (`swarm-tenant-<tenant>-git`) beside that tenant's worker: swarm-api, for
+    the issue preview (#454; the owner accepted a second reader of the token
+    when picking intake mock-up 1A on 2026-10-02). Added to that one secret's
+    authoritative accessor binding, per secret; never to a provider key, a
+    git-merge or git-review App key, or a project-level grant.
+  EOT
+  type        = list(string)
+  default     = []
+
+  validation {
+    condition     = alltrue([for m in var.forge_readers : startswith(m, "serviceAccount:")])
+    error_message = "a forge-token reader must be a service account."
+  }
+}
+
 variable "version_destroy_ttl" {
   description = "Delayed destruction window. A rotation that turns out wrong can be undone inside it."
   type        = string

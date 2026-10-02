@@ -260,6 +260,10 @@ module "secret_manager" {
   # Never refreshed, and the worker account never their reader.
   action_providers = module.tenancy.action_providers
 
+  # swarm-api reads each tenant's -git secret for the issue preview (#454,
+  # mock-up 1A), by a per-secret binding on that secret alone.
+  forge_readers = [module.iam.service_account_members["swarm-api"]]
+
   # One writer, and this is it. See the variable's own description, and
   # quota_broker.credentials, for why a second one corrupts a rotating
   # credential rather than merely duplicating work.
