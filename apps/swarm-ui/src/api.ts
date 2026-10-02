@@ -833,6 +833,30 @@ export async function loadTask(taskId: string): Promise<Result<Task>> {
 }
 
 /**
+ * ONE PARENT'S CHILDREN (D15): `GET /v1/tasks?parent_task_id=`, the list
+ * route's filter that docs/design/child-tasks.md §6.3 names as the only source
+ * a tree may be drawn from. NOT ON MAIN'S API YET, and an API that does not
+ * know the filter IGNORES it and answers the tenant's newest tasks -- so this
+ * read is never trusted as a child list on its own: `childrenOf`
+ * (AgentChildren.tsx) keeps a row only when it names this parent, and calls
+ * the read "not served" when any row does not carry the field at all.
+ *
+ * No empty predicate: `tasks: []` from an API that honours the filter is a
+ * real zero, and the screen decides that, not this read.
+ */
+export async function loadChildren(taskId: string): Promise<Result<TaskPage>> {
+  if (USE_FIXTURES) {
+    await new Promise((r) => setTimeout(r, 60))
+    noteFixtureProbe(route('/v1/tasks', {}, new URLSearchParams({ parent_task_id: taskId })), 60, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { tasks: [], next_page_token: null, tenant_id: 'u-bogdan' } }
+  }
+  return read<TaskPage>(
+    route('/v1/tasks', {}, new URLSearchParams({ parent_task_id: taskId, limit: String(TASK_PAGE_LIMIT) })),
+    () => false,
+  )
+}
+
+/**
  * HOW MANY ENTRIES THE ARTIFACTS PANE ASKS THE LISTING FOR: 200, which is
  * `max_page_size`, the server's own cap.
  *

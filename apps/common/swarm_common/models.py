@@ -184,7 +184,7 @@ class EndCause(str, Enum):
       * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
         INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED,
         SPEC_SIGNATURE_INVALID, MERGE_REFUSED, MERGE_FAILED, VERDICT_REFUSED,
-        VERDICT_FAILED;
+        VERDICT_FAILED, PUBLISH_REFUSED;
       * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
@@ -231,6 +231,14 @@ class EndCause(str, Enum):
     means the action was allowed and the forge did not do it. The specific
     reason is a worker vocabulary, not a frozen one: `result_summary.merge.
     refusal` and `result_summary.verdict.refusal` (docs/merge-step.md §6, §6a).
+
+    PUBLISH_REFUSED is contract request 29, ACCEPTED by the owner on
+    2026-09-29 (#259) and applied 2026-10-02: the worker refused to publish --
+    the branch it would push adds a credential in its final tree, or the
+    agent's `pr-title.txt` is present and unusable. Both fail the attempt
+    retryably, so the cause is the task's only once its attempts are spent.
+    It names the refusal, never the value: the attempt's error names the
+    file, never its content.
     """
 
     TIMEOUT = "timeout"
@@ -249,6 +257,7 @@ class EndCause(str, Enum):
     MERGE_FAILED = "merge_failed"     # the merge was allowed, and the forge did not do it
     VERDICT_REFUSED = "verdict_refused"   # a condition for posting the review was not met; nothing changed on the forge
     VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
+    PUBLISH_REFUSED = "publish_refused"   # the worker refused to publish: a credential in the final tree, or an unusable pr-title.txt
 
 
 @dataclass
