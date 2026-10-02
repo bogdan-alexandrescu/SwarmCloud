@@ -374,6 +374,51 @@ def test_an_integrator_fetch_from_another_host_is_handed_no_credential(tmp_path,
         assert token not in _everything_git_saw(call)
 
 
+def _fetch_tip(tmp_path: Path, url: str, token: str, git: Path) -> str | None:
+    return gitops.fetch_branch_tip(
+        repo=_git_repo(tmp_path),
+        url=url,
+        branch="swarm/t-1",
+        token=token,
+        private_dir=tmp_path / "private",
+        logs_dir=tmp_path,
+        timeout_seconds=30,
+        logger=_logger(),
+        git_binary=str(git),
+    )
+
+
+def test_a_carrier_fetch_from_another_host_runs_without_a_credential(tmp_path, monkeypatch):
+    """The carrier fetch (`carrier: branches`) runs, without a credential, for a
+    host the token may not go to. It used to build its helper from a credential
+    file `_write_credentials` had not written and crash on the cleanup's
+    `None.unlink()`, so every carrier push to such a host was lost."""
+    token = _token()
+    git, record = _fake_git(tmp_path)
+    monkeypatch.setattr(gitops, "_git_text", _recording_git_text(record))
+    assert _fetch_tip(tmp_path, "https://evil.example/o/r.git", token, git) == "0" * 40
+    calls = _calls(record)
+    assert any("fetch" in c["argv"] for c in calls)
+    for call in calls:
+        assert token not in _everything_git_saw(call)
+        assert not any(a.startswith("credential.helper=store") for a in call["argv"])
+        assert not any("--file=None" in a for a in call["argv"])
+    assert not (tmp_path / "private" / ".git-credentials").exists()
+
+
+def test_a_carrier_fetch_from_github_still_carries_the_credential(tmp_path, monkeypatch):
+    token = _token()
+    git, record = _fake_git(tmp_path)
+    monkeypatch.setattr(gitops, "_git_text", _recording_git_text(record))
+    _fetch_tip(tmp_path, "https://github.com/o/r.git", token, git)
+    fetch = [c for c in _calls(record) if "fetch" in c["argv"]]
+    assert fetch
+    (body,) = fetch[0]["credential_files"].values()
+    assert body.strip() == f"https://x-access-token:{token}@github.com"
+    # Removed once the fetch has run, as for the clone and the push.
+    assert not (tmp_path / "private" / ".git-credentials").exists()
+
+
 def _recording_git_text(record: Path):
     """Run the argv `_git_text` is given through the fake git, synchronously,
     so the credential file is read while it exists."""
