@@ -4484,3 +4484,125 @@ export function stoppingEndsALiveAttempt(task: { state: TaskState }): boolean {
 export function pluralise(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? '' : 's'}`
 }
+
+// ---------------------------------------------------------------------------
+// Issue runs and the issue preview (#454; intake-tenants.html 1A)
+// ---------------------------------------------------------------------------
+//
+// THE API'S OWN SHAPES, from swarm-api on main (#511): `IssueRef.to_dict`
+// (validation.py), `forge.preview` (routes/issues.py) and `IssueRun.to_api`
+// (issueruns.py). The run document is issueruns' own and not the frozen
+// contract's, so these are declared here and nowhere in swarm_common.
+
+/** `issueruns.RunState`, as the API names it. */
+export type IssueRunState =
+  | 'PLANNING'
+  | 'PLANNED'
+  | 'APPROVED'
+  | 'RUNNING'
+  | 'DONE'
+  | 'FAILED'
+  | 'REJECTED'
+  | 'CANCELLED'
+
+/** `IssueRef.to_dict()`: the reference in its short form and the two URLs. */
+export interface IssueRefDoc {
+  /** `owner/repo#N`, the form a run stores. */
+  ref: string
+  owner: string
+  repo: string
+  number: number
+  /** The issue's canonical link. */
+  url: string
+  repository_url: string
+}
+
+/** `forge.preview`: the issue, masked and bounded, read with the TENANT's credential. */
+export interface IssuePreview extends IssueRefDoc {
+  title: string
+  /** As served: masked (`body_redacted`) and cut at the server's bound (`body_truncated`). */
+  body: string
+  body_truncated: boolean
+  body_redacted: boolean
+  labels: string[]
+  /** `open` or `closed`. A closed issue is served, not refused. */
+  state: string
+  comments: number
+}
+
+/** `GET /v1/issues/preview`. */
+export interface IssuePreviewRead {
+  issue: IssuePreview
+  tenant_id: string
+}
+
+/** `issueruns.PlanStep`: an id, a title and a prompt. Nothing else (invariant 10). */
+export interface PlanStepDoc {
+  step_id: string
+  title: string
+  prompt: string
+}
+
+/** `issueruns.PlanSpec`. */
+export interface RunPlan {
+  summary: string
+  steps: PlanStepDoc[]
+}
+
+/** One transition, as `IssueRun.history` serves it. */
+export interface RunTransition {
+  at: string | null
+  from: IssueRunState | null
+  to: IssueRunState
+  by: string
+}
+
+/** `IssueRun.to_api()`. */
+export interface IssueRun {
+  id: string
+  tenant_id: string
+  state: IssueRunState
+  terminal: boolean
+  issue: IssueRefDoc
+  plan_approval: 'required' | 'auto'
+  auto_merge: boolean
+  fix_rounds: number
+  planner_task_id: string
+  plan: RunPlan | null
+  /** `sha256:<hex>` of the plan; what an approval must carry (D3). */
+  plan_digest: string | null
+  plan_revision: number
+  plan_edited_by: string | null
+  /** Null until approval creates the workflow. */
+  workflow_id: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  approved_by: string | null
+  approved_at: string | null
+  approved_digest: string | null
+  rejected_by: string | null
+  rejection_reason: string | null
+  error: string | null
+  history: RunTransition[]
+}
+
+/** `GET /v1/runs`: newest first, as the server orders them. */
+export interface IssueRunPage {
+  runs: IssueRun[]
+  next_page_token: string | null
+  tenant_id: string
+}
+
+/** `GET /v1/runs/{id}` and every plan action's answer. */
+export interface IssueRunRead {
+  run: IssueRun
+}
+
+/** `schemas.RunCreate`: everything a caller may choose. No runner, no image (invariant 10). */
+export interface RunCreateBody {
+  issue: string
+  plan_approval: 'required' | 'auto'
+  auto_merge: boolean
+  fix_rounds: number
+}

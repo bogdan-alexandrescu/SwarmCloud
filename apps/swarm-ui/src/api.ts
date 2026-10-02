@@ -19,6 +19,7 @@ import type {
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
+  IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
 } from './types'
 
 // The fetch contract lives in fetch.ts. This file is only the list of reads
@@ -1028,6 +1029,179 @@ export interface WorkflowRead {
 export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowRead>> {
   if (USE_FIXTURES) return fixtureWorkflowRead(workflowId)
   return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
+}
+
+// ---------------------------------------------------------------------------
+// Issue runs (#454; intake-tenants.html 1A): the preview, the runs, the plan
+// ---------------------------------------------------------------------------
+//
+// The routes are swarm-api's on main (#511): routes/issues.py and
+// routes/runs.py. Every refusal comes back as `error` with the server's
+// `code`, which the screens branch on (forge.py's five preview codes;
+// `plan_changed` for a stale digest) -- never as an empty result.
+
+/**
+ * `GET /v1/issues/preview?issue=<ref>`: the issue read with the TENANT's forge
+ * credential, before anything is created. Never empty: a 200 is an issue.
+ */
+export async function loadIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
+  if (USE_FIXTURES) return fixtureIssuePreview(issue)
+  return read<IssuePreviewRead>(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), () => false)
+}
+
+/** `GET /v1/runs`: the tenant's runs, newest first. Empty is a measured zero. */
+export async function loadRuns(pageToken: string | null = null): Promise<Result<IssueRunPage>> {
+  if (USE_FIXTURES) return fixtureRuns(pageToken)
+  const query = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
+  return read<IssueRunPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
+}
+
+/** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */
+export async function loadRun(runId: string): Promise<Result<IssueRunRead>> {
+  if (USE_FIXTURES) return fixtureRun(runId)
+  return read<IssueRunRead>(route('/v1/runs/{id}', { id: runId }), () => false)
+}
+
+/** `POST /v1/runs`: plan an issue. The body is RunCreate's fields and nothing else. */
+export async function createRun(body: RunCreateBody): Promise<Result<IssueRunRead>> {
+  if (USE_FIXTURES) return fixtureCreateRun(body)
+  return write(route('/v1/runs'), 'POST', body) as Promise<Result<IssueRunRead>>
+}
+
+/** Approve THE DIGEST OF THE PLAN SHOWN (D3); a different plan is refused `plan_changed`. */
+export async function approvePlan(runId: string, planDigest: string): Promise<Result<IssueRunRead>> {
+  if (USE_FIXTURES) return fixturePlanAction(runId, 'approve')
+  return write(route('/v1/runs/{id}/plan:approve', { id: runId }), 'POST', { plan_digest: planDigest }) as Promise<
+    Result<IssueRunRead>
+  >
+}
+
+/** Replace the plan, carrying the digest it replaces so two editors cannot overwrite each other. */
+export async function editPlan(runId: string, planDigest: string, plan: RunPlan): Promise<Result<IssueRunRead>> {
+  if (USE_FIXTURES) return fixturePlanAction(runId, 'edit', plan)
+  return write(route('/v1/runs/{id}/plan:edit', { id: runId }), 'POST', { plan_digest: planDigest, plan }) as Promise<
+    Result<IssueRunRead>
+  >
+}
+
+/** Turn the plan down. The shown digest is sent, so a plan edited since is not rejected unseen. */
+export async function rejectPlan(runId: string, planDigest: string | null, reason: string): Promise<Result<IssueRunRead>> {
+  if (USE_FIXTURES) return fixturePlanAction(runId, 'reject')
+  const body: Record<string, string> = {}
+  if (planDigest !== null) body.plan_digest = planDigest
+  if (reason.trim() !== '') body.reason = reason.trim()
+  return write(route('/v1/runs/{id}/plan:reject', { id: runId }), 'POST', body) as Promise<Result<IssueRunRead>>
+}
+
+/**
+ * THE DEVELOPMENT FIXTURES FOR RUNS. Example data, in the mock-up's words
+ * (intake-tenants.html): one run waiting for approval and one running. Each
+ * fixture registers its route as a live call would (CH-18).
+ */
+const FIXTURE_PLAN: RunPlan = {
+  summary: 'Sum the steps\' recorded spend into the workflow read, then draw a cost column with a dash and a reason for unrecorded spend.',
+  steps: [
+    { step_id: 'api', title: 'api: sum step spend into the workflow read', prompt: 'Add the sum to routes/workflows.py, with tests first.' },
+    { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw the column in Workflows.tsx, a dash and its reason where spend was not recorded.' },
+  ],
+}
+
+function fixtureIssueRun(id: string, over: Partial<IssueRun> = {}): IssueRun {
+  const issue: IssueRefDoc = {
+    ref: 'example-org/agent-swarm-infra#512', owner: 'example-org', repo: 'agent-swarm-infra', number: 512,
+    url: 'https://github.com/example-org/agent-swarm-infra/issues/512',
+    repository_url: 'https://github.com/example-org/agent-swarm-infra',
+  }
+  const at = new Date(Date.now() - 6 * 60_000).toISOString()
+  return {
+    id, tenant_id: 'eng', state: 'PLANNED', terminal: false, issue,
+    plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner_fixture',
+    // The digest is computed text in the live API; the fixture's is built, not a literal.
+    plan: FIXTURE_PLAN, plan_digest: `sha256:${'9f2c41'.padEnd(64, '0')}`, plan_revision: 1, plan_edited_by: null,
+    workflow_id: null, created_by: 'operator@example.com', created_at: at, updated_at: at,
+    approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null,
+    error: null,
+    history: [{ at, from: null, to: 'PLANNING', by: 'operator@example.com' }, { at, from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' }],
+    ...over,
+  }
+}
+
+function fixtureIssueRuns(): IssueRun[] {
+  return [
+    fixtureIssueRun('run_4c1e09d2'),
+    fixtureIssueRun('run_19ab77e0', {
+      state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com',
+      approved_at: new Date(Date.now() - 30 * 60_000).toISOString(),
+      created_at: new Date(Date.now() - 50 * 60_000).toISOString(),
+    }),
+  ]
+}
+
+async function fixtureIssuePreview(issue: string): Promise<Result<IssuePreviewRead>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), 60, true)
+  const m = /([\w.-]+)\/([\w.-]+)(?:#|\/issues\/)(\d+)/.exec(issue)
+  if (m === null) {
+    return { status: 'error', error: { kind: 'invalid', httpStatus: 422, code: 'validation_failed',
+      message: 'issue must name an issue: owner/repo#N or its URL' } }
+  }
+  const [, owner, repo, num] = m as unknown as [string, string, string, string]
+  const ref = `${owner}/${repo}#${num}`
+  const url = `https://github.com/${owner}/${repo}/issues/${num}`
+  return {
+    status: 'ok', fetchedAt: Date.now(),
+    data: {
+      tenant_id: 'eng',
+      issue: {
+        ref, owner, repo, number: Number(num), url, repository_url: `https://github.com/${owner}/${repo}`,
+        title: 'The workflow list shows no cost column, so a finished workflow\'s spend needs opening every step',
+        body: 'What are you trying to do?\nSee what a finished workflow cost without opening each step.\n\nWhat would you like to see?\nA cost column on Work › Workflows, with a dash and a reason when a step\'s spend was not recorded.',
+        body_truncated: false, body_redacted: false, labels: ['enhancement', 'ui'], state: 'open', comments: 4,
+      },
+    },
+  }
+}
+
+async function fixtureRuns(pageToken: string | null): Promise<Result<IssueRunPage>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/runs'), 60, true)
+  const runs = pageToken === null ? fixtureIssueRuns() : []
+  return { status: 'ok', fetchedAt: Date.now(), data: { runs, next_page_token: null, tenant_id: 'eng' } }
+}
+
+async function fixtureRun(runId: string): Promise<Result<IssueRunRead>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/runs/{id}', { id: runId }), 60, true)
+  const run = fixtureIssueRuns().find((r) => r.id === runId)
+  if (run === undefined) {
+    return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: 'not_found', message: `run '${runId}' not found` } }
+  }
+  return { status: 'ok', fetchedAt: Date.now(), data: { run } }
+}
+
+async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRead>> {
+  await new Promise((r) => setTimeout(r, 60))
+  noteFixtureProbe(route('/v1/runs'), 60, true)
+  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun('run_4c1e09d2', {
+    state: 'PLANNING', plan: null, plan_digest: null, plan_revision: 0,
+    plan_approval: body.plan_approval, fix_rounds: body.fix_rounds,
+  }) } }
+}
+
+async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan): Promise<Result<IssueRunRead>> {
+  await new Promise((r) => setTimeout(r, 60))
+  // Spelled out per action, not `plan:${action}`: tests/unit/control_plane
+  // test_every_v1_path_the_ui_calls_is_served_by_this_api reads these literals
+  // and a template hole in the verb matches no route the API declares.
+  const planPath = action === 'approve' ? '/v1/runs/{id}/plan:approve'
+    : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
+  noteFixtureProbe(route(planPath, { id: runId }), 60, true)
+  const over: Partial<IssueRun> = action === 'approve'
+    ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date().toISOString() }
+    : action === 'reject'
+      ? { state: 'REJECTED', terminal: true, rejected_by: 'operator@example.com' }
+      : { plan: plan ?? FIXTURE_PLAN, plan_revision: 2, plan_edited_by: 'operator@example.com' }
+  return { status: 'ok', fetchedAt: Date.now(), data: { run: fixtureIssueRun(runId, over) } }
 }
 
 /**

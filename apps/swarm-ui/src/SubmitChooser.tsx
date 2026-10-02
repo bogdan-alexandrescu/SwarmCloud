@@ -5,10 +5,9 @@ import './styles/submit.css'
 /**
  * THE SUBMIT CHOOSER (/submit; submit.html M2, the owner's pick 2026-10-01).
  *
- * Two large choices, opened by the spine's Submit button and by N: a card per
- * form, each with its icon, a Start button and its key (T, W). The grid takes
- * a third card -- "From a GitHub issue" (intake-tenants.html 1A) is a later
- * lane's -- without a change here.
+ * Three large choices, opened by the spine's Submit button and by N: a card
+ * per form, each with its icon, a Start button and its key (T, W, I). The
+ * third is "From a GitHub issue" (intake-tenants.html 1A, /submit/issue).
  *
  * RECENT SUBMISSIONS ARE NOT LISTED, and the card says why in place (states.html
  * C, a region state). No route serves "what did I submit, with what settings":
@@ -16,7 +15,7 @@ import './styles/submit.css'
  * made with, so a list built from it could neither re-open a form nor tell a
  * task from a workflow step. The card stays empty rather than guessing.
  *
- * T AND W FOLLOW N's GUARDS (SkyShell in Spine.tsx): never while focus is in a
+ * T, W AND I FOLLOW N's GUARDS (SkyShell in Spine.tsx): never while focus is in a
  * field, never with a modifier held, never for a key another handler already
  * consumed, and never while something sits over the page.
  */
@@ -24,8 +23,10 @@ import './styles/submit.css'
 /** The task form's and the workflow form's addresses, as `go` takes them. */
 export const TASK_FORM = 'work/new'
 export const WORKFLOW_FORM = 'work/new-workflow'
+/** The issue form (intake-tenants.html 1A): /submit/issue, key I. */
+export const ISSUE_FORM = 'work/new-issue'
 
-const KEYS: Readonly<Record<string, string>> = { t: TASK_FORM, w: WORKFLOW_FORM }
+const KEYS: Readonly<Record<string, string>> = { t: TASK_FORM, w: WORKFLOW_FORM, i: ISSUE_FORM }
 
 /** What sits over the page and owns the keyboard: the same list as N's. */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
@@ -48,6 +49,16 @@ function WorkflowGlyph() {
       <circle cx="6" cy="18" r="2.2" />
       <circle cx="18" cy="12" r="2.2" />
       <path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8" />
+    </svg>
+  )
+}
+
+/** The issue card's icon: an issue's ring and dot (intake-tenants.html 1A). */
+function IssueGlyph() {
+  return (
+    <svg className="sb-glyph" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <circle cx="12" cy="12" r="8.5" />
+      <circle cx="12" cy="12" r="1.8" />
     </svg>
   )
 }
@@ -93,6 +104,18 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
               Start a workflow
             </button>
             <kbd className="sb-kbd">W</kbd>
+          </span>
+        </div>
+        <div className="sb-card sb-choice">
+          <h2><IssueGlyph />From a GitHub issue</h2>
+          <p className="sb-note">
+            Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow.
+          </p>
+          <span className="sb-row">
+            <button type="button" className="sb-btn" aria-keyshortcuts="I" onClick={() => go(ISSUE_FORM)}>
+              Start from an issue
+            </button>
+            <kbd className="sb-kbd">I</kbd>
           </span>
         </div>
       </div>

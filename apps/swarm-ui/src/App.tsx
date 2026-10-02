@@ -41,6 +41,8 @@ import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
+import { IssueSubmitScreen } from './IssueSubmit'
+import { RunsScreen } from './Runs'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
 
@@ -279,6 +281,8 @@ export const SECTIONS: SectionDef[] = [
     tabs: [
       { id: 'running', label: 'Agents' },
       { id: 'workflows', label: 'Workflows' },
+      // ISSUE RUNS (intake-tenants.html 1A): /runs and /runs/<id>.
+      { id: 'runs', label: 'Runs' },
       // TIMELINE, FROM THE SECTION THAT NO LONGER EXISTS. The id is
       // `timeline`, unchanged, which is what lets `#history/timeline` --
       // the address in every runbook that ever named this screen -- resolve
@@ -296,6 +300,7 @@ export const SECTIONS: SectionDef[] = [
       // until the collapse to three; the name came from the route either way).
       { id: 'new', label: 'Submit a task' },
       { id: 'new-workflow', label: 'Submit a workflow' },
+      { id: 'new-issue', label: 'Submit from a GitHub issue' },
     ],
   },
   {
@@ -802,7 +807,7 @@ export function fromAddress(full: string): Route {
     }
     // The Workflows list's filters and its open workflow (`wf=<id>`) ride on
     // its address the same way: `/workflows/<id>?owner=me` (paths.ts).
-    if (tab && section.id === WORK && tab.id === 'workflows' && query !== '') {
+    if (tab && section.id === WORK && (tab.id === 'workflows' || tab.id === 'runs') && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
     // THE ROW A LINK NAMED rides on Pool limits' address (#134): the Tenants
@@ -870,8 +875,8 @@ export function canonical(r: Route): string {
     const at = r.page === 'outcomes' ? `${WORK}/timeline/outcomes` : `${WORK}/timeline`
     return r.view ? `${at}?${r.view}` : at
   }
-  if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
-    return `${WORK}/workflows?${r.view}`
+  if (r.sectionId === WORK && (r.tab === 'workflows' || r.tab === 'runs') && r.view) {
+    return `${WORK}/${r.tab}?${r.view}`
   }
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
   // Holders' (#125, #128).
@@ -1238,7 +1243,7 @@ function Head({
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
   // of its own, not API reads (#503), and the two forms lead back to it.
-  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')
+  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow' || at.tab === 'new-issue')
   const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
     : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
@@ -1564,6 +1569,10 @@ function SectionBody({
       return <SubmitScreen />
     case 'work/new-workflow':
       return <SubmitWorkflowScreen />
+    case 'work/new-issue':
+      return <IssueSubmitScreen go={go} />
+    case 'work/runs':
+      return <RunsScreen view={view} go={go} />
 
     case 'capacity/pools':
       return <CapacityScreen />

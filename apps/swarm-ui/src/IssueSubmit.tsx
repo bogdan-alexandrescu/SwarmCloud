@@ -1,0 +1,516 @@
+import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { createRun, loadCapacity, loadIssuePreview } from './api'
+import type { ApiError } from './fetch'
+import { MarkGlyph } from './marks'
+import { RunnerPicker, useProviderKeys } from './RunnerPicker'
+import { FailedPanel, Screen } from './Shell'
+import { Move } from './Submit'
+import { TASK_FORM } from './SubmitChooser'
+import type { Capacity, IssuePreviewRead, RunCreateBody, RunnerProfile } from './types'
+import './styles/submit.css'
+import './styles/intake.css'
+
+/**
+ * SUBMIT FROM A GITHUB ISSUE (/submit/issue; intake-tenants.html 1A, the
+ * owner's pick 2026-10-02). One page, three moves, and a summary that repeats
+ * every choice beside the one button.
+ *
+ * 1. NAME THE ISSUE, AND SEE IT BEFORE ANYTHING IS CREATED. `owner/repo#N` or
+ *    its URL, read through `GET /v1/issues/preview` with the TENANT's forge
+ *    credential (routes/issues.py). The preview is drawn as served -- the body
+ *    masked and bounded by the server, never re-cut here -- and each refusal
+ *    the route serves has its own words, keyed on its `code` (forge.py). A
+ *    CLOSED issue is a warning with "Plan it anyway", never a refusal: the
+ *    route serves it on purpose, because planning a closed issue is
+ *    sometimes the point.
+ *
+ * 2. THE RUNNER, BY NAME, AS THE TASK FORM DRAWS IT (`RunnerPicker`). An issue
+ *    run plans and builds with `claude-code` -- issueruns.PLANNER_PROFILE and
+ *    STEP_PROFILE, fixed by the API, and `RunCreate` has no runner field
+ *    (invariant 10) -- so that is the one card that can be chosen, and every
+ *    other runner stays in the list, held back with that reason, rather than
+ *    offering a choice the API would refuse.
+ *
+ * 3. WHAT IT MAY DO ON ITS OWN, decided now and nowhere else (#454): plan
+ *    approval (Required by default), auto-merge (drawn OFF and DISABLED until
+ *    #295 -- the API refuses it, `refuse_auto_merge`), and the fix-round cap
+ *    (3, within 1-5).
+ *
+ * WHAT IT COSTS (invariant 1). The planner is one ordinary task; a PLANNED run
+ * is a Firestore document and nothing else, so the time a person takes to
+ * read a plan is time no pool spends.
+ *
+ * THE CLASSES ARE `in-` so a later pass can swap them for lane U0's canonical
+ * components by name (components.html A).
+ */
+
+/** The runner an issue run plans and builds with: issueruns.PLANNER_PROFILE / STEP_PROFILE. */
+export const ISSUE_RUN_PROFILE = 'claude-code'
+
+/** RunCreate's fix-round range and default (schemas.py, MIN/MAX/DEFAULT_FIX_ROUNDS). */
+export const MIN_FIX_ROUNDS = 1
+export const MAX_FIX_ROUNDS = 5
+export const DEFAULT_FIX_ROUNDS = 3
+
+/** Why every runner but one is held back, in the card's "disabled:" line. */
+const ONLY_RUNNER = `an issue run plans and builds with ${ISSUE_RUN_PROFILE}; POST /v1/runs takes no runner`
+
+/** The router address of one run: `/runs/<id>`. */
+export function runAddress(id: string): string {
+  return `work/runs?${new URLSearchParams({ run: id }).toString()}`
+}
+
+type Preview =
+  | { kind: 'idle' }
+  | { kind: 'reading'; ref: string }
+  | { kind: 'read'; ref: string; data: IssuePreviewRead; at: number }
+  | { kind: 'refused'; ref: string; error: ApiError }
+
+type Sending =
+  | { kind: 'idle' | 'sending' }
+  | { kind: 'failed'; error: ApiError }
+  /** A 2xx whose answer named no run: something may exist that this page cannot name. */
+  | { kind: 'unnamed' }
+
+/** The issue number out of what was typed, for a refusal's sentence; null when none is legible. */
+function issueNumber(ref: string): string | null {
+  const m = /(?:#|\/issues\/)(\d+)\/?$/.exec(ref.trim())
+  return m?.[1] ?? null
+}
+
+export function IssueSubmitScreen({ go }: { go: (to: string) => void }) {
+  return (
+    <Screen
+      title="Submit from a GitHub issue"
+      load={loadCapacity}
+      summary={(c) => `${Object.keys(c.runner_profiles).length} runner profiles · ${c.pools.length} pools you are admitted against`}
+      empty={{
+        heading: 'No pools came back',
+        body: 'The read of the pools this tenant is admitted against succeeded and returned none. The planner is a task like any other and needs them, and the runner profiles arrive in that same response, so this page cannot submit.',
+      }}
+    >
+      {(c) => <IssueForm capacity={c} go={go} />}
+    </Screen>
+  )
+}
+
+function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => void }) {
+  const [typed, setTyped] = useState('')
+  const [preview, setPreview] = useState<Preview>({ kind: 'idle' })
+  const [closedOk, setClosedOk] = useState(false)
+  const [approval, setApproval] = useState<'required' | 'auto'>('required')
+  const [rounds, setRounds] = useState(String(DEFAULT_FIX_ROUNDS))
+  const [sending, setSending] = useState<Sending>({ kind: 'idle' })
+  const keys = useProviderKeys()
+
+  // THE CATALOGUE, every runner in it, and all but one held back with the
+  // reason. A profile the platform already disables keeps its own reason.
+  const catalogue = useMemo(
+    () =>
+      Object.entries(capacity.runner_profiles)
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([n, p]): [string, RunnerProfile] =>
+          n === ISSUE_RUN_PROFILE || (p.available ?? true) === false
+            ? [n, p]
+            : [n, { ...p, available: false, disabled_reason: ONLY_RUNNER }]),
+    [capacity],
+  )
+  const runner = capacity.runner_profiles[ISSUE_RUN_PROFILE] ?? null
+  const runnerOff = runner !== null && (runner.available ?? true) === false
+
+  const read = preview.kind === 'read' ? preview.data : null
+  const closed = read !== null && read.issue.state === 'closed'
+  const roundsN = /^\d+$/.test(rounds.trim()) ? Number(rounds.trim()) : NaN
+  const roundsOk = Number.isInteger(roundsN) && roundsN >= MIN_FIX_ROUNDS && roundsN <= MAX_FIX_ROUNDS
+  const blocked = read === null || (closed && !closedOk) || !roundsOk || sending.kind === 'sending'
+  const tenant = read?.tenant_id ?? capacity.tenant_id ?? null
+
+  async function readIssue() {
+    const ref = typed.trim()
+    if (ref === '') return
+    setPreview({ kind: 'reading', ref })
+    setClosedOk(false)
+    const r = await loadIssuePreview(ref)
+    // A reference changed while its read was in flight: the answer is not the
+    // one on screen any more, so it is dropped.
+    setPreview((now) => {
+      if (now.kind !== 'reading' || now.ref !== ref) return now
+      if (r.status === 'ok' || r.status === 'stale') return { kind: 'read', ref, data: r.data, at: Date.now() }
+      if (r.status === 'error') return { kind: 'refused', ref, error: r.error }
+      return now
+    })
+  }
+
+  function retype(value: string) {
+    setTyped(value)
+    // The preview belongs to the reference it was read for; another reference
+    // has to be read again before it can be planned.
+    if (preview.kind !== 'idle' && value.trim() !== preview.ref) setPreview({ kind: 'idle' })
+    setSending({ kind: 'idle' })
+  }
+
+  async function submit(e?: FormEvent) {
+    e?.preventDefault()
+    if (blocked || read === null) return
+    const body: RunCreateBody = {
+      // THE REFERENCE AS THE PREVIEW SERVED IT, so what is planned is what was shown.
+      issue: read.issue.ref,
+      plan_approval: approval,
+      // Sent, and always false: the API refuses true until #295.
+      auto_merge: false,
+      fix_rounds: roundsN,
+    }
+    setSending({ kind: 'sending' })
+    const r = await createRun(body)
+    if (r.status === 'ok' || r.status === 'stale') {
+      const id = (r.data as { run?: { id?: unknown } } | null)?.run?.id
+      if (typeof id === 'string' && id !== '') {
+        setSending({ kind: 'idle' })
+        go(runAddress(id))
+        return
+      }
+      setSending({ kind: 'unnamed' })
+      return
+    }
+    if (r.status === 'error') setSending({ kind: 'failed', error: r.error })
+  }
+
+  return (
+    <form className="sbf in-form" onSubmit={submit}>
+      <div className="sbf-build">
+        <Move n={1} title="Name the issue">
+          <div className="in-ask">
+            <input
+              className="mono in-ref"
+              aria-label="Issue reference"
+              placeholder="owner/repo#N or an issue URL"
+              value={typed}
+              spellCheck={false}
+              autoComplete="off"
+              onChange={(e) => retype(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void readIssue()
+                }
+              }}
+            />
+            <button type="button" className="sb-btn" disabled={typed.trim() === '' || preview.kind === 'reading'}
+              onClick={() => void readIssue()}>
+              Read
+            </button>
+          </div>
+          {preview.kind === 'idle' && (
+            <p className="sb-note">
+              Read with this tenant&rsquo;s own forge credential: only repositories it can read are reachable from
+              here. Nothing is created by reading.
+            </p>
+          )}
+          {preview.kind === 'reading' && (
+            <div className="in-reading" aria-busy="true">
+              <span className="skeleton ctl-skeleton-row" />
+              <span className="skeleton ctl-skeleton-row" />
+              <p className="sb-note">reading {preview.ref}…</p>
+            </div>
+          )}
+          {preview.kind === 'read' && (
+            <IssuePreviewCard read={preview.data} at={preview.at} closedOk={closedOk} onPlanAnyway={() => setClosedOk(true)} />
+          )}
+          {preview.kind === 'refused' && (
+            <Refusal error={preview.error} typed={preview.ref} tenant={tenant}
+              onAgain={() => void readIssue()} onTask={() => go(TASK_FORM)} />
+          )}
+        </Move>
+
+        <Move n={2} title="The runner it plans and builds with" dim={read === null}>
+          <RunnerPicker group="issue-runner" label="runner" profiles={catalogue} chosen={ISSUE_RUN_PROFILE}
+            keys={keys} onPick={() => {}} />
+          {runner === null && (
+            <p className="warn-text" role="alert">
+              {ISSUE_RUN_PROFILE} is not in this tenant&rsquo;s catalogue, so the API would have no runner to plan with.
+            </p>
+          )}
+          {runnerOff && (
+            <p className="warn-text" role="alert">
+              {ISSUE_RUN_PROFILE} is disabled for this tenant: {runner?.disabled_reason || 'refused by the platform'}.
+            </p>
+          )}
+          <p className="sb-note">
+            By name only. The planner and every step it plans run as {ISSUE_RUN_PROFILE}; the API chooses it, and the
+            run takes no other.
+          </p>
+        </Move>
+
+        <Move n={3} title="Decide what it may do on its own" dim={read === null}>
+          <div className="in-choice">
+            <div className="in-seg" role="radiogroup" aria-label="Plan approval">
+              <label className={`in-seg-o${approval === 'required' ? ' is-on' : ''}`}>
+                <input type="radio" name="plan-approval" value="required" checked={approval === 'required'}
+                  onChange={() => setApproval('required')} />
+                Required
+              </label>
+              <label className={`in-seg-o${approval === 'auto' ? ' is-on' : ''}`}>
+                <input type="radio" name="plan-approval" value="auto" checked={approval === 'auto'}
+                  onChange={() => setApproval('auto')} />
+                Auto
+              </label>
+            </div>
+            <div className="in-choice-t">
+              <b>Plan approval</b>
+              <small>
+                {approval === 'required'
+                  ? 'Required (default): the run waits PLANNED, holding no capacity, until someone in this tenant approves, edits or rejects the plan.'
+                  : 'Auto: the plan is approved the moment it is read, and the work starts without anyone being asked.'}
+              </small>
+            </div>
+          </div>
+
+          <div className="in-choice in-merge">
+            <span className="in-switch">
+              <input type="checkbox" role="switch" checked={false} disabled
+                aria-label="Merge the pull request when it is ready" onChange={() => {}} />
+              <span className="in-switch-w">off</span>
+            </span>
+            <div className="in-choice-t">
+              <b>Merge the pull request when it is ready</b>
+              <small>
+                Off, and not available until #295: the merge chain has not shipped, and the API refuses auto-merge. A
+                person merges the run&rsquo;s pull request.
+              </small>
+            </div>
+          </div>
+
+          <div className="in-choice">
+            <input id="in-fix-rounds" className="mono in-rounds" type="number" inputMode="numeric"
+              min={MIN_FIX_ROUNDS} max={MAX_FIX_ROUNDS} step={1} value={rounds}
+              aria-invalid={!roundsOk || undefined} onChange={(e) => setRounds(e.target.value)} />
+            <div className="in-choice-t">
+              <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
+              <small>
+                {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. The cap travels with the run; the workflow compiled from its plan
+                runs one review-then-fix round today, whatever the cap.
+              </small>
+              {!roundsOk && <small className="sbf-bad" role="alert">Not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
+            </div>
+          </div>
+        </Move>
+      </div>
+
+      <aside className="sbf-side">
+        <div className="sbf-send in-send">
+          <h2>{blocked && sending.kind !== 'sending' ? 'Not ready to send' : 'Ready to send'}</h2>
+          <ul className="ctl-facts">
+            <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+              <b>issue</b>
+              {read === null ? <i className="ctl-em">&mdash; read one first</i>
+                : <span><code>{read.issue.ref}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
+            </li>
+            <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+              <b>repository</b>
+              {read === null ? <i className="ctl-em">&mdash;</i> : <code>{read.issue.owner}/{read.issue.repo}</code>}
+            </li>
+            <li className="ctl-fact">
+              <b>runner</b>
+              <code>{ISSUE_RUN_PROFILE}</code>
+            </li>
+            <li className="ctl-fact">
+              <b>plan</b>
+              {approval === 'required' ? 'waits for approval' : 'runs straight on'}
+            </li>
+            <li className="ctl-fact">
+              <b>auto-merge</b>
+              off · not available until #295
+            </li>
+            <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
+              <b>fix rounds</b>
+              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">not a number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
+            </li>
+            <li className={tenant === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+              <b>tenant</b>
+              {tenant === null ? <i className="ctl-em">&mdash; not served</i> : <code>{tenant}</code>}
+            </li>
+            <li className="ctl-fact">
+              <b>lands as</b>
+              PLANNING, then PLANNED · a planned run holds no capacity
+            </li>
+          </ul>
+          <button type="submit" className="sbf-go sb-go" disabled={blocked}>
+            {sending.kind === 'sending' ? 'Planning…' : 'Plan this issue'}
+          </button>
+          <p className="sb-note">
+            A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is
+            approved.
+          </p>
+          {sending.kind === 'failed' && (
+            <>
+              <FailedPanel error={sending.error} onRetry={() => void submit()} />
+              <p className="warn-text">
+                <strong>Check Runs before submitting again.</strong> This failed on a write, so the run may exist anyway.
+              </p>
+            </>
+          )}
+          {sending.kind === 'unnamed' && (
+            <p className="warn-text" role="alert">
+              The API accepted this and named no run. Open Runs to find it before submitting again.
+            </p>
+          )}
+        </div>
+      </aside>
+    </form>
+  )
+}
+
+/** A label as a pill chip (components.html A). Swappable for U0's chip by name. */
+function InChip({ children }: { children: string }) {
+  return <span className="in-chip">{children}</span>
+}
+
+/** What was read, as served: title, state, comments, labels, the body, the link. */
+function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
+  read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
+}) {
+  const { issue } = read
+  const [whole, setWhole] = useState(false)
+  const closed = issue.state === 'closed'
+  const time = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  return (
+    <section className="in-preview" aria-label="The issue as read">
+      <h3>{issue.title === '' ? <i className="ctl-em">&mdash; untitled</i> : issue.title}</h3>
+      <p className="in-meta">
+        <a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a>
+        {' · '}
+        <span className={`sk-st ${closed ? 'is-neu' : 'is-live'}`} data-mark={closed ? 'succeeded' : 'ready'}>
+          <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+            <MarkGlyph mark={closed ? 'succeeded' : 'ready'} />
+          </svg>
+          <span className="sk-st-w">{issue.state}</span>
+        </span>
+        {' · '}
+        {issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}
+        {' · '}read {time} with this tenant&rsquo;s forge credential
+      </p>
+      {issue.labels.length > 0 ? (
+        <p className="in-chips">{issue.labels.map((l) => <InChip key={l}>{l}</InChip>)}</p>
+      ) : (
+        <p className="sb-note">no labels</p>
+      )}
+      {issue.body === '' ? (
+        <p className="sb-note">The issue has no body.</p>
+      ) : (
+        <>
+          <div className={`in-body${whole ? ' is-whole' : ''}`}>{issue.body}</div>
+          <p className="in-row">
+            <button type="button" className="sb-btn" onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
+              {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}
+            </button>
+          </p>
+        </>
+      )}
+      {issue.body_truncated && (
+        <p className="sb-note">
+          The preview holds the first part of the body only; the API cut it. The planner reads all of it again.
+        </p>
+      )}
+      {issue.body_redacted && (
+        <p className="sb-note">Values that looked like credentials were masked by the API before this was served.</p>
+      )}
+      {closed && (
+        <div className="in-closed" role="alert">
+          <span className="sk-st is-warn" data-mark="warn">
+            <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
+          </span>
+          <span>
+            <b>This issue is closed.</b> Planning it would reopen work someone marked done.
+          </span>
+          {closedOk ? (
+            <span className="sb-note">planning it anyway</span>
+          ) : (
+            <button type="button" className="sb-btn" onClick={onPlanAnyway}>Plan it anyway</button>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
+/**
+ * ONE FORM PER CODE THE PREVIEW ROUTE SERVES (forge.py), and the server's own
+ * sentence under it, since it names the repository, the tenant and the secret.
+ * No figure: nothing was read, so no state, count or label is drawn.
+ */
+function Refusal({ error, typed, tenant, onAgain, onTask }: {
+  error: ApiError; typed: string; tenant: string | null; onAgain: () => void; onTask: () => void
+}) {
+  const n = issueNumber(typed)
+  const issue = n === null ? 'this issue' : `issue #${n}`
+  let words: ReactNode
+  let action: ReactNode = null
+  switch (error.code) {
+    case 'not_found':
+      words = (
+        <>
+          <b>{n === null ? 'No such issue' : `No issue #${n}`} that this tenant can see: not found or not visible.</b>{' '}
+          GitHub gives the same answer for an issue that does not exist and for a private repository the credential
+          cannot read, so this cannot tell the two apart. Check the number, or ask an operator whether this
+          tenant&rsquo;s credential covers the repository.
+        </>
+      )
+      break
+    case 'no_access':
+      words = (
+        <>
+          <b>This tenant&rsquo;s forge credential was refused.</b> It lacks read access to the repository, or the
+          organisation requires single sign-on approval for it. Nothing was submitted. Another tenant&rsquo;s
+          repository is not reachable from here.
+        </>
+      )
+      break
+    case 'is_pull_request':
+      words = (
+        <>
+          <b>{n === null ? 'That' : `#${n}`} is a pull request.</b> This form plans issues; a pull request that needs
+          finishing is a task on its branch.
+        </>
+      )
+      action = <button type="button" className="sb-btn" onClick={onTask}>Submit a task instead</button>
+      break
+    case 'no_forge_credential':
+      words = (
+        <>
+          <b>{tenant === null ? 'This tenant has' : <>Tenant <code>{tenant}</code> has</>} no forge credential,</b> so no
+          issue can be read and no pull request opened. An operator stores it with{' '}
+          <code>scripts/create-secrets.sh --stdin</code>. It is never pasted here.
+        </>
+      )
+      break
+    case 'read_failed':
+      words = (
+        <>
+          <b>The read did not finish.</b> The state of {issue} is unknown, so it is shown as unknown, not as open.
+        </>
+      )
+      action = <button type="button" className="sb-btn" onClick={onAgain}>Read again</button>
+      break
+    case 'validation_failed':
+      words = (
+        <>
+          <b>Not an issue reference.</b> Name it as <code>owner/repo#N</code> or paste its URL.
+        </>
+      )
+      break
+    default:
+      return <FailedPanel error={error} onRetry={onAgain} />
+  }
+  return (
+    <div className="in-refusal" role="alert" data-code={error.code ?? ''}>
+      <span className="sk-st is-warn" data-mark="warn">
+        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
+      </span>
+      <div className="in-refusal-t">
+        <p>{words}</p>
+        <p className="sb-note">{error.message}</p>
+        {action}
+      </div>
+    </div>
+  )
+}

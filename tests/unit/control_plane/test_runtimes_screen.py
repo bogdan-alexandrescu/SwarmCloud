@@ -60,7 +60,7 @@ ROUTE = "/v1/runtimes"
 #: "outcomes" is GET /v1/outcomes (#185), which the Timeline calls.
 ROUTER_MODULES = (
     "platform", "tasks", "attempts", "workflows", "tenants", "admin", "accounts", "outcomes",
-    "leases",
+    "leases", "runs", "issues",
 )
 
 
