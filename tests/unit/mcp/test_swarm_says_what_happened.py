@@ -775,11 +775,14 @@ def test_the_workflow_strategy_and_carrier_are_choices():
 def test_the_workflow_choices_are_the_apis():
     """The choices are a copy of the API's -- the bridge cannot import it -- so
     this is what keeps the copy honest."""
-    from swarm_api.validation import DISPATCH_CARRIERS, DISPATCH_STRATEGIES
+    from swarm_api.validation import DISPATCH_CARRIERS, dispatchable_strategies
 
     actions = {a.dest: a for a in _workflow_parser()._actions}
     assert actions["strategy"].choices is not None
-    assert tuple(actions["strategy"].choices) == DISPATCH_STRATEGIES
+    # The strategies a workflow can actually run: `single-pr` (#295) is
+    # accepted by the API but disabled with its merge profiles, and joins this
+    # comparison -- so the CLI must offer it -- the day they are enabled.
+    assert tuple(actions["strategy"].choices) == dispatchable_strategies()
     assert actions["carrier"].choices is not None
     assert tuple(actions["carrier"].choices) == DISPATCH_CARRIERS
 
