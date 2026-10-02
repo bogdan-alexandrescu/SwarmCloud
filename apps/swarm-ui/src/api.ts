@@ -1190,7 +1190,12 @@ async function fixtureCreateRun(body: RunCreateBody): Promise<Result<IssueRunRea
 
 async function fixturePlanAction(runId: string, action: 'approve' | 'edit' | 'reject', plan?: RunPlan): Promise<Result<IssueRunRead>> {
   await new Promise((r) => setTimeout(r, 60))
-  noteFixtureProbe(route(`/v1/runs/{id}/plan:${action}`, { id: runId }), 60, true)
+  // Spelled out per action, not `plan:${action}`: tests/unit/control_plane
+  // test_every_v1_path_the_ui_calls_is_served_by_this_api reads these literals
+  // and a template hole in the verb matches no route the API declares.
+  const planPath = action === 'approve' ? '/v1/runs/{id}/plan:approve'
+    : action === 'edit' ? '/v1/runs/{id}/plan:edit' : '/v1/runs/{id}/plan:reject'
+  noteFixtureProbe(route(planPath, { id: runId }), 60, true)
   const over: Partial<IssueRun> = action === 'approve'
     ? { state: 'RUNNING', workflow_id: 'wf_8b21d0e4', approved_by: 'operator@example.com', approved_at: new Date().toISOString() }
     : action === 'reject'
