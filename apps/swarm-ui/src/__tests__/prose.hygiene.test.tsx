@@ -19,6 +19,7 @@ import { render } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import APP from '../App.tsx?raw'
+import SPLIT from '../AgentSplit.tsx?raw'
 import STYLES from '../styles.css?raw'
 import { HelpCard } from '../HelpCard'
 import { LivenessBadge } from '../Liveness'
@@ -275,18 +276,19 @@ describe("a chart with nothing measured says so in §6.9's shape", () => {
 // The drawer's pane strip
 // ---------------------------------------------------------------------------
 
-describe("the agent drawer's panes are one segmented control, not pills", () => {
-  it('renders Details / Attempts / Artifacts as the .ctl-seg primitive', () => {
-    // BREAK IT: drop `ctl-seg` from the strip's className in App.tsx.
-    const m = /<div className="([^"]*)"\s+role="tablist"\s+aria-label="Agent panes"/.exec(APP)
-    expect(m, 'App.tsx no longer renders the Agent panes tablist this test knows').not.toBeNull()
-    expect(m![1]!.split(/\s+/)).toContain('ctl-seg')
+describe("the agent's panes are underline tabs with counts (agents.html V1)", () => {
+  it('renders Details / Attempts / Artifacts / Checkpoints as `.ag-tabs`, not a boxed segmented control', () => {
+    // #503 measured the panes as a boxed `.ctl-seg` with no counts; V1 draws
+    // underline tabs with counts. BREAK IT: put `ctl-seg` back on the strip.
+    const m = /<div className="([^"]*)" role="tablist" aria-label="Agent panes">/.exec(SPLIT)
+    expect(m, 'AgentSplit.tsx no longer renders the Agent panes tablist this test knows').not.toBeNull()
+    expect(m![1]!.split(/\s+/)).toContain('ag-tabs')
+    expect(m![1]!.split(/\s+/)).not.toContain('ctl-seg')
+    expect(APP, 'App.tsx draws a pane strip of its own again').not.toMatch(/aria-label="Agent panes"/)
   })
 
   it('leaves no pill treatment behind for the strip', () => {
-    // BREAK IT: restore `.ctl-subnav button { border-radius: 999px }`. With
-    // the strip also a `.ctl-seg`, that later rule would out-rank the
-    // primitive and draw the pills again.
+    // BREAK IT: restore `.ctl-subnav button { border-radius: 999px }`.
     expect(stripComments(STYLES)).not.toMatch(/\.ctl-subnav\s+button/)
   })
 })

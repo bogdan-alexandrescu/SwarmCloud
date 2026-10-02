@@ -22,6 +22,7 @@
 // the value, rather than adding the element to a list of exceptions here.
 
 import STYLES from '../styles.css?raw'
+import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
@@ -147,11 +148,16 @@ function merge(parts: Report[]): Report {
  * `styles.css` redefines colour tokens and nothing else.
  */
 async function sweep(): Promise<Record<Theme, Report>> {
-  const sheets: Record<Theme, string> = {
-    dark: resolveSheet(STYLES, 'dark'),
-    light: resolveSheet(STYLES, 'light'),
-  }
   const tables = { dark: tokenTables(STYLES).dark, light: tokenTables(STYLES).light }
+  // A SECTION'S OWN SHEET IS PROBED AS styles.css IS (lane U1: the Agents
+  // list, the split and the log dock are styles/agents.css). It declares no
+  // token, so it is resolved against styles.css's tables, and it is placed
+  // after the main sheet here: the test document already holds the copy the
+  // import injected, unresolved, and this one has to out-rank it.
+  const sheets: Record<Theme, string> = {
+    dark: resolveSheet(STYLES, 'dark') + '\n' + resolveVars(stripComments(AGENTS_CSS), tables.dark),
+    light: resolveSheet(STYLES, 'light') + '\n' + resolveVars(stripComments(AGENTS_CSS), tables.light),
+  }
 
   const snapshots: { el: HTMLElement; local: { el: Element; source: string }[] }[] = []
   for (const route of ROUTES) {

@@ -428,7 +428,13 @@ def test_every_identifier_rendered_under_an_uppercasing_rule_carries_it():
     # `.tag` uppercases too, and both of these hold identifiers. The value is
     # WRAPPED rather than the chip re-classed: `.id` beats the ancestor by
     # inheritance, so it cannot be out-specified from above.
-    assert "<Id>{task.step_id}</Id>" in _src("Agents.tsx")
+    # The Agents list is the compact list now (agents.html V1, lane U1,
+    # 2026-10-02): the step id is the row's NAME, on line one, and no rule
+    # uppercases it -- the wide table's `.tag`-styled Step column is gone. So
+    # what is held is that nothing in the list's own sheet transforms case.
+    agents = _src("Agents.tsx")
+    assert '<b title={task.id}>{name}</b>' in agents
+    assert "text-transform" not in (UI / "styles" / "agents.css").read_text()
     assert "<Id>{c}</Id>" in _src("Activity.tsx")
 
     # The inline override is gone; the shared rule replaced it.
