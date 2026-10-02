@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Protocol
 
 from swarm_common.identity import (
@@ -22,6 +22,7 @@ from swarm_common.identity import (
     Principal,
     assert_allowed_domain,
     resolve_tenant,
+    tenant_id_for_group,
     tenant_member_for,
 )
 
@@ -30,6 +31,40 @@ from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
 
 log = logging.getLogger(__name__)
+
+
+#: The request header a caller uses to pick ONE of its verified tenant
+#: memberships (the tenant switcher, owner decision 2026-10-01). It SELECTS and
+#: never grants: `Authenticator._select_tenant` honours it only when the named
+#: tenant is among the registered tenant groups Cloud Identity confirmed for
+#: this caller on this request. Absent (or empty), the tenant is today's first
+#: match in the admin-ordered `tenant_groups`.
+TENANT_HEADER = "X-Swarm-Tenant"
+
+#: The same selection as a QUERY parameter, accepted on `TENANT_QUERY_ROUTES`
+#: only. Those are the routes a browser fetches by itself -- an `<img src>`, a
+#: download `href`, an "open full" tab -- and a browser-initiated request
+#: carries no custom header, so without this a console switched to a
+#: non-default tenant would 404 every artifact of the tasks it lists. It is
+#: validated by exactly the same `Authenticator._select_tenant` as the header:
+#: it selects among the caller's verified memberships and never grants one.
+TENANT_QUERY = "tenant"
+TENANT_QUERY_ROUTES: frozenset[tuple[str, str]] = frozenset({
+    ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+})
+
+
+class TenantNotMember(Forbidden):
+    """`X-Swarm-Tenant` named a tenant the caller is not a verified member of.
+
+    Its own code so a client can drop a stale stored choice on exactly this
+    refusal and on no other 403. The message never echoes the header value,
+    and is the same whether the named tenant exists or not: "not yours" and
+    "no such tenant" must not be distinguishable, or the header is an oracle
+    for enumerating tenant ids.
+    """
+
+    code = "tenant_not_member"
 
 
 def _redact(token: str) -> str:
@@ -76,6 +111,14 @@ class AuthContext:
     #: read by `require_admin` -- `is_admin`/`is_pool_admin` stay False for
     #: every listed account regardless of this field.
     member_scope: str = ""
+    #: Every registered tenant group Cloud Identity CONFIRMED this caller is in,
+    #: as (tenant_id, group email), in the admin order of `tenant_groups` --
+    #: what `GET /v1/tenants/mine` lists and the only values `X-Swarm-Tenant`
+    #: may select. Derived from the same `member_groups` the default tenant is
+    #: resolved from, so the list and the default can never disagree: when it
+    #: is non-empty its first entry IS the default tenant. Empty for a
+    #: personal tenant and for a listed service account.
+    tenant_choices: tuple[tuple[str, str], ...] = ()
 
     @property
     def email(self) -> str:
@@ -291,7 +334,24 @@ class Authenticator:
         self._iap = iap
 
     def authenticate(
-        self, authorization: str | None, iap_assertion: str | None = None
+        self,
+        authorization: str | None,
+        iap_assertion: str | None = None,
+        *,
+        tenant: str | None = None,
+    ) -> AuthContext:
+        """`tenant` is the `X-Swarm-Tenant` value, None or "" when absent.
+
+        It is applied AFTER the identity is verified and its memberships
+        resolved, and can only narrow the result to one of them -- see
+        `_select_tenant`. A refusal raises before any route body runs.
+        """
+        return self._select_tenant(
+            self._authenticate(authorization, iap_assertion), tenant
+        )
+
+    def _authenticate(
+        self, authorization: str | None, iap_assertion: str | None
     ) -> AuthContext:
         # IAP FIRST, when it is present and configured. Behind the load balancer
         # there is no Authorization header to fall back to -- a browser has no
@@ -524,6 +584,66 @@ class Authenticator:
             # survives while the answer is still False.
             admin_unresolved=admin_unresolved and not is_admin,
             is_pool_admin=email.lower() in admin_pool_users,
+            tenant_choices=self._tenant_choices(member_groups),
+        )
+
+    def _tenant_choices(self, member_groups: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
+        """(tenant_id, group) for every registered tenant group in `member_groups`.
+
+        The SAME walk as `_tenant_principal` and `resolve_tenant` -- admin
+        order over `tenant_groups`, membership from what Cloud Identity
+        confirmed -- just not stopping at the first match. Nothing is asked of
+        the directory here: `member_groups` holds only confirmed memberships
+        (`groups_for` drops a group whose lookup failed below a confirmed
+        match), so an unanswered group is never offered.
+
+        One entry per tenant id. The frozen `tenant_id_for_group` slugs the
+        local part only, so two registered groups can share an id; the first
+        in admin order is the one the id selects, which is the one the default
+        rule would pick too, and listing the second would offer a choice that
+        selects something else.
+        """
+        member_of = {g.lower() for g in member_groups}
+        choices: dict[str, str] = {}
+        for group in self._settings.tenant_groups:
+            if group.lower() in member_of:
+                choices.setdefault(tenant_id_for_group(group), group.lower())
+        return tuple(choices.items())
+
+    def _select_tenant(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Apply `X-Swarm-Tenant`: pick one of `ctx.tenant_choices`, or refuse.
+
+        THE HEADER SELECTS; IT NEVER GRANTS (invariant 9). The only tenants it
+        can name are the ones in `tenant_choices`, which this request's own
+        verified identity produced. Everything else -- another group's tenant,
+        a personal `u-` tenant (the caller's own included), an admin group, a
+        tenant that does not exist -- is one 403, raised here, before any route
+        body runs, so nothing is read and nothing is written.
+
+        `tenant_id` and `tenant_principal` are replaced TOGETHER from one
+        entry, so they keep describing the same tenant (`_tenant_principal`'s
+        invariant) and `Store.assert_tenant_scope`/`ensure_tenant` keep their
+        collision check. Nothing else changes: `is_admin`, `admin_unresolved`,
+        `is_pool_admin` and `principal.groups` are about the caller, not the
+        tenant, and stay exactly as resolved.
+
+        Absent or empty: the context is returned untouched -- today's
+        first-match, byte for byte. Matched exactly: tenant ids are lowercase
+        slugs, and a near miss is a 403 rather than a guess.
+        """
+        if not requested:
+            return ctx
+        for tenant_id, group in ctx.tenant_choices:
+            if tenant_id == requested:
+                if tenant_id == ctx.tenant_id and group == ctx.tenant_principal:
+                    return ctx
+                return replace(ctx, tenant_id=tenant_id, tenant_principal=group)
+        # The value is caller-supplied and arbitrary; it is not logged.
+        log.info("%s refused for %s: not a verified membership", TENANT_HEADER, ctx.email)
+        raise TenantNotMember(
+            f"{TENANT_HEADER} names a tenant you are not a verified member of. "
+            "It can only select one of the tenants GET /v1/tenants/mine lists; "
+            f"send no {TENANT_HEADER} to use your default tenant."
         )
 
     def _tenant_principal(self, member_groups: tuple[str, ...], email: str) -> str:

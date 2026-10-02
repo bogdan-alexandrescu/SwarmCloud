@@ -499,6 +499,12 @@ def read_artifact_raw(
     disposition -- is the JSON envelope, sent before any byte. Chunked, with
     `X-Artifact-Bytes` carrying the stored size instead of a Content-Length.
     Staged inputs are read the same way, from the upstream task.
+
+    `?tenant=` is accepted here (`auth.TENANT_QUERY_ROUTES`) because a browser
+    fetching an `<img src>` or a download link sends no `X-Swarm-Tenant`. It
+    is not a parameter of this function: `current_auth` reads it and puts it
+    through the header's own membership check, so `tenant_scope` below is
+    still the only tenant this body sees.
     """
     raw = service.raw_artifact(
         tenant_id, task_id, name=name, disposition=disposition, submitted_by=submitted_by

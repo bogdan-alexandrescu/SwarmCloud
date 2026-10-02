@@ -104,6 +104,12 @@ function classify(status: number, env: ErrorEnvelope | null, retryAfter: number 
   const lower = message.toLowerCase()
 
   if (status === 401) return { ...base, kind: 'unauthenticated' }
+  // The tenant switcher's refusal: the stored `X-Swarm-Tenant` names a tenant
+  // this caller is not (or no longer) a verified member of. Keyed on the
+  // server's CODE, which exists so that this 403 and no other drops the
+  // stored choice (`dropRefusedTenant`). Not an admin question, so it must
+  // not fall through to the admin-required screen below.
+  if (status === 403 && code === TENANT_REFUSED) return { ...base, kind: 'tenant_unresolved' }
   if (status === 403) {
     if (lower.includes('admin group membership is required')) {
       return { ...base, kind: 'admin_required' }
@@ -577,6 +583,102 @@ export function forgetProbes(): void {
   for (const fn of screenListeners) fn()
 }
 
+// ---------------------------------------------------------------------------
+// The tenant switcher (owner decision 2026-10-01; docs/multi-tenancy.md)
+// ---------------------------------------------------------------------------
+// A caller in more than one registered tenant group picks which one the
+// console works in. The pick is sent as `X-Swarm-Tenant` on EVERY request, and
+// it leaves from here and nowhere else: `read` and `write` below, and the two
+// submit paths that call `fetch` themselves, all build their headers with
+// `apiHeaders`. A request that forgot it would act on the DEFAULT tenant while
+// the spine shows another -- a submit filed where its author is not looking.
+//
+// The header SELECTS; it never grants. The API honours it only when the tenant
+// is one Cloud Identity confirmed for this caller on that request, and answers
+// anything else with a 403 coded `tenant_not_member` before reading or writing
+// a thing. Nothing here decides membership.
+
+/** The request header the API reads (`swarm_api.auth.TENANT_HEADER`). */
+export const TENANT_HEADER = 'X-Swarm-Tenant'
+/** The per-browser key the choice is kept under. */
+export const TENANT_PREF = 'swarm.tenant'
+/** The API's code for a header naming a tenant the caller is not verified in. */
+export const TENANT_REFUSED = 'tenant_not_member'
+/** The query parameter standing in for the header on the routes a browser
+ *  fetches by itself -- `<img src>`, download and open links (`tenantQuery`). */
+export const TENANT_QUERY = 'tenant'
+
+const tenantListeners = new Set<() => void>()
+
+/**
+ * The choice, or null for "the default tenant". Every storage access is inside
+ * try/catch: storage throws in a private window, and losing the console to a
+ * preference is no trade.
+ */
+export function chosenTenant(): string | null {
+  try {
+    const v = globalThis.localStorage?.getItem(TENANT_PREF) ?? null
+    return v === null || v === '' ? null : v
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Store (or, with null, forget) the choice, and tell the shell to re-read.
+ *
+ * Nothing is kept in memory when storage refuses: the default tenant is always
+ * safe, so a window that cannot remember the pick works in the default,
+ * visibly, rather than in a pick that vanishes on the next reload.
+ */
+export function chooseTenant(id: string | null): void {
+  try {
+    if (id === null || id === '') globalThis.localStorage?.removeItem(TENANT_PREF)
+    else globalThis.localStorage?.setItem(TENANT_PREF, id)
+  } catch {
+    /* refused: the default tenant stays in force */
+  }
+  for (const fn of tenantListeners) fn()
+}
+
+export function subscribeTenant(fn: () => void): () => void {
+  tenantListeners.add(fn)
+  return () => tenantListeners.delete(fn)
+}
+
+/** `base`, plus `X-Swarm-Tenant` when a tenant was chosen. THE one place. */
+export function apiHeaders(base: Record<string, string>): Record<string, string> {
+  const tenant = chosenTenant()
+  return tenant === null ? { ...base } : { ...base, [TENANT_HEADER]: tenant }
+}
+
+/**
+ * `query`, plus `tenant=<chosen>` when a tenant was chosen: the header's
+ * stand-in for a URL the BROWSER fetches (an `<img src>`, a download `href`),
+ * which can carry no header. The API accepts it on those routes only
+ * (`swarm_api.auth.TENANT_QUERY_ROUTES`) and validates it exactly as the
+ * header -- it selects among verified memberships and never grants one.
+ */
+export function tenantQuery(query: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams(query)
+  const tenant = chosenTenant()
+  if (tenant !== null) out.set(TENANT_QUERY, tenant)
+  return out
+}
+
+/**
+ * A `tenant_not_member` 403 for a request that carried `sent`: forget the
+ * choice -- the caller left that group, or an admin unregistered it -- so the
+ * default is used from the next request on. True when it dropped something.
+ * Only when the stored value is still the one that was refused: a switch made
+ * while the request was in flight is a newer decision and is kept.
+ */
+export function dropRefusedTenant(status: number, code: string | null, sent: string | null): boolean {
+  if (status !== 403 || code !== TENANT_REFUSED || sent === null) return false
+  if (chosenTenant() === sent) chooseTenant(null)
+  return true
+}
+
 export interface FetchOptions {
   /** Previous data, if any. A failure with data in hand becomes `stale`. */
   previous?: { data: unknown; fetchedAt: number; serverAt?: string } | null
@@ -626,10 +728,11 @@ export async function read<T>(
     settle(ok ? 'ok' : kind === 'admin_required' ? 'admin' : 'failed')
   }
 
+  const tenant = chosenTenant()
   let res: Response
   try {
     res = await fetch(target.url, {
-      headers: { accept: 'application/json' },
+      headers: apiHeaders({ accept: 'application/json' }),
       // Behind IAP the browser already holds the session cookie; nothing here
       // handles tokens, and nothing here should.
       credentials: 'same-origin',
@@ -693,6 +796,11 @@ export async function read<T>(
     const ra = Number(res.headers.get('retry-after'))
     const err = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
     note(res.status, err.kind, false)
+    // A stored tenant the caller is no longer in: dropped, and this READ asked
+    // once more under the default. Only when the drop took: storage that
+    // refused the removal still holds the refused value, and asking again with
+    // it would be refused again, forever.
+    if (dropRefusedTenant(res.status, err.code, tenant) && chosenTenant() !== tenant) return read(target, isEmpty, opts)
     return asStale(err)
   }
 
@@ -752,14 +860,15 @@ export async function write(
       lastSuccessAt: ok ? Date.now() : null,
     })
 
+  const tenant = chosenTenant()
   let res: Response
   try {
     res = await fetch(target.url, {
       method,
-      headers: {
+      headers: apiHeaders({
         accept: 'application/json',
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
-      },
+      }),
       credentials: 'same-origin',
       body: body === undefined ? undefined : JSON.stringify(body),
     })
@@ -810,6 +919,10 @@ export async function write(
     const ra = Number(res.headers.get('retry-after'))
     const error = classify(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
     note(res.status, error.kind, false)
+    // Dropped, but a WRITE is not retried: the person chose that tenant for
+    // this change, and quietly filing it under the default instead is the one
+    // outcome worse than the refusal. The spine redraws on the default.
+    dropRefusedTenant(res.status, error.code, tenant)
     return { status: 'error', error }
   }
 

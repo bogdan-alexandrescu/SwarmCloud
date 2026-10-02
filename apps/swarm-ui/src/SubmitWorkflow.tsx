@@ -1,7 +1,7 @@
 import { Fragment, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
-import { errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, errorHeading, TENANT_REFUSED, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { RunnerPicker, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo } from './Shell'
@@ -151,11 +151,13 @@ const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string):
 /** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
  *  Exported for `submit.workflow.refusal.test.ts`, which hands it real responses. */
 export async function postWorkflow(body: unknown): Promise<Submission> {
+  const tenant = chosenTenant()
   let res: Response
   try {
     res = await fetch('/v1/workflows', {
       method: 'POST',
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      // apiHeaders: the chosen tenant (X-Swarm-Tenant), as on every read.
+      headers: apiHeaders({ 'content-type': 'application/json', accept: 'application/json' }),
       credentials: 'same-origin',
       body: JSON.stringify(body),
     })
@@ -183,10 +185,14 @@ export async function postWorkflow(body: unknown): Promise<Submission> {
     // 201 with a body we could not read. It WAS created; we just cannot name it.
     return unsure('server_error', res.status, 'The workflow was accepted but its id could not be read.')
   }
-  const mapped = KIND_BY_STATUS[res.status]
+  const code = typeof env?.code === 'string' ? env.code : null
+  // A stored tenant the caller is no longer in: forgotten, as read()/write()
+  // do, and NOT resubmitted under the default.
+  dropRefusedTenant(res.status, code, tenant)
+  const mapped = res.status === 403 && code === TENANT_REFUSED ? 'tenant_unresolved' : KIND_BY_STATUS[res.status]
   const error: ApiError = {
     kind: mapped === undefined ? 'server_error' : mapped, httpStatus: res.status, detail: env?.detail,
-    code: typeof env?.code === 'string' ? env.code : null,
+    code,
     message: typeof env?.message === 'string' ? env.message : `The API returned HTTP ${res.status}.`,
   }
   // A 4xx carrying our own error envelope was decided by a handler, so nothing was
