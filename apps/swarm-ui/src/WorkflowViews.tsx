@@ -662,11 +662,13 @@ export function WorkflowTable({
 }) {
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
+  const more = useMoreRight<HTMLDivElement>()
   return (
     // `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
     // so below 900px it scrolls with the step column held in view rather than
-    // stacking (design-system.md §7.3).
-    <div className="ctl-table wf-table is-scroll">
+    // stacking (design-system.md §7.3). `has-more` is the right-edge fade
+    // while columns are off that edge (#109).
+    <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}`}>
       <table>
         <thead>
           <tr>
@@ -743,6 +745,34 @@ export function WorkflowTable({
       </table>
     </div>
   )
+}
+
+/**
+ * WHETHER A SIDEWAYS SCROLLER HAS COLUMNS OFF ITS RIGHT EDGE (#109). At 390
+ * the step Table showed step, state and why, and waited, ran and cost sat off
+ * screen with nothing saying so. The cue is a `mask-image` fade on the right
+ * edge, drawn only while there is more to the right: a fade over the last
+ * column once it is in view would dim a figure for no reason. A mask, not the
+ * `background-attachment` scroll shadow, which was reverted for breaking the
+ * contrast probe. Re-measured on scroll and on resize.
+ */
+export function useMoreRight<T extends HTMLElement>(): { ref: Ref<T>; on: boolean } {
+  const ref = useRef<T>(null)
+  const [on, setOn] = useState(false)
+  useEffect(() => {
+    const el = ref.current
+    if (el === null) return
+    const measure = () => setOn(el.scrollLeft + el.clientWidth < el.scrollWidth - 1)
+    measure()
+    el.addEventListener('scroll', measure, { passive: true })
+    const watch = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    watch?.observe(el)
+    return () => {
+      el.removeEventListener('scroll', measure)
+      watch?.disconnect()
+    }
+  }, [])
+  return { ref, on }
 }
 
 // ---------------------------------------------------------------------------
