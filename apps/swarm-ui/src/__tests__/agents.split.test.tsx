@@ -316,7 +316,6 @@ describe('the split is ONE drawer: AgentDetail does not draw a second one inside
   // child `.ctl-drawer > .drawer` and U1 (#517) put the pane between them.
   it('has exactly one dialog, no nested .drawer and one close control', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
-    api.loadAgentRun.mockResolvedValue(ok({ task: agent(), events: null, attempts: [], classes: null }))
     render(split())
     await screen.findByText('fix-heartbeat')
     const root = document.querySelector<HTMLElement>('.ag-split')!
