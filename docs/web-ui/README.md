@@ -198,7 +198,7 @@ is under `/v1`.
 | Screen G — Reconciler last pass | still blocked: the report is held in process memory and never written to Firestore | `apps/reconciler/reconciler/service.py:121` |
 | Agents table — cost and token column | partly shipped: the attempt carries typed spend and the agent detail shows it; the Agents table has no cost column | `apps/swarm-api/swarm_api/codec.py:578`, `apps/swarm-ui/src/AgentDetail.tsx:935` |
 | Agents table — fencing-generation indicator | partly shipped: `task_to_api` serves `current_generation` and `current_lease_id`; no screen reads them | `apps/swarm-api/swarm_api/codec.py:266` |
-| Agent detail — attempt and pod panel | shipped: `GET /v1/tasks/{id}/attempts` and `GET /v1/attempts`; execution name, peak RSS and OOM near miss on the detail | `apps/swarm-api/swarm_api/routes/tasks.py:232`, `apps/swarm-api/swarm_api/routes/attempts.py:37`, `apps/swarm-ui/src/AgentDetail.tsx:1643` |
+| Agent detail — attempt and pod panel | shipped: `GET /v1/tasks/{id}/attempts` and `GET /v1/attempts`; execution name, peak RSS and OOM near miss on the detail | `apps/swarm-api/swarm_api/routes/tasks.py:251`, `apps/swarm-api/swarm_api/routes/attempts.py:37`, `apps/swarm-ui/src/AgentDetail.tsx:1643` |
 | Per-engineer agent grouping / owner filter | still blocked: `GET /v1/tasks` takes no `submitted_by` filter; the owner column is client-side | `apps/swarm-api/swarm_api/routes/tasks.py:106` |
 | Cross-tenant 'all agents' admin table | still blocked: every task list is scoped to the caller's tenant | `apps/swarm-api/swarm_api/deps.py:287` |
 | Agent-spawns-sub-agent social graph | still blocked: a worker still cannot create a task | — |
@@ -216,7 +216,7 @@ is under `/v1`.
 | Trouble board — silent workers | shipped: `GET /v1/admin/leases`, counted by the Overview checks | `apps/swarm-api/swarm_api/routes/admin.py:401`, `apps/swarm-ui/src/checks.ts:205` |
 | Trouble board — admitted but never dispatched | shipped: the same route, filtered on `dispatch_overdue` | `apps/swarm-api/swarm_api/routes/admin.py:401`, `apps/swarm-ui/src/checks.ts:233` |
 | Trouble board — failures that need a human, platform-wide | partly shipped: a FAILED check over the caller's own tenant; no cross-tenant route | `apps/swarm-api/swarm_api/routes/tasks.py:106`, `apps/swarm-ui/src/checks.ts:438` |
-| Task timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py:232`, `apps/swarm-ui/src/AttemptTimeline.tsx:321` |
+| Task timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py:251`, `apps/swarm-ui/src/AttemptTimeline.tsx:321` |
 | Activity stream | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py:190` |
 | Signals — the eleven metric charts | still blocked: no Monitoring proxy, and swarm-api holds no `monitoring.viewer` | `terraform/modules/iam/bindings.tf:75` |
 | Signals — alert policy register | still blocked, for the same reason | `terraform/modules/iam/bindings.tf:75` |
