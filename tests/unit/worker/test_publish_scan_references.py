@@ -293,9 +293,21 @@ def _secret_value() -> str:
         f'{_SEC.lower()} = "anthropic" "{_secret_value()}"\n',
         f'{_SEC.lower()} = "anthropic" +\n',
         f'{_SEC.lower()} = ["anthropic", "{_secret_value()}"]\n',
+        f'{_SEC.lower()} = "anthropic" . "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic" & "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic" || "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic" ~ "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic"|"{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic"{_secret_value()}\n',
+        f'{_SEC.lower()} = "anthropic" {_secret_value()}\n',
+        f'{_SEC.lower()} = "anthropic" if x else "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic"; other = "{_secret_value()}"\n',
+        f'{_SEC.lower()} = "anthropic"#"{_secret_value()}"\n',
     ],
     ids=["plus", "comma-literal", "single-quoted-plus", "reference-plus", "adjacent-literal",
-         "plus-at-line-end", "list-of-literals"],
+         "plus-at-line-end", "list-of-literals", "dot", "ampersand", "double-pipe", "tilde",
+         "pipe-no-space", "bare-token-no-space", "bare-token", "conditional",
+         "semicolon-then-more", "hash-without-space"],
 )
 def test_a_reference_followed_by_more_of_the_value_is_refused(text):
     """#470's review: `_ends_the_value` looked at the first quoted string only,
@@ -311,8 +323,15 @@ def test_a_reference_followed_by_more_of_the_value_is_refused(text):
         f'f({_SEC.lower()}="anthropic", region="us")\n',
         f'x = "{{\\"{_SEC.lower()}\\": \\"anthropic\\"}}"\n',
         f"x = '\"{_SEC.lower()}\": \"anthropic\"'\n",
+        f'{_SEC.lower()} = "anthropic"  # the provider name\n',
+        f'f({_SEC.lower()}="anthropic")\n',
+        f'{_SEC.lower()} = "anthropic";\n',
+        f'{_SEC.lower()} = "anthropic",\n',
+        f'{_SEC.lower()} = "${{ANTHROPIC_REF}}"\n',
     ],
-    ids=["json-next-key", "next-kwarg", "escaped-json-in-a-string", "json-in-single-quotes"],
+    ids=["json-next-key", "next-kwarg", "escaped-json-in-a-string", "json-in-single-quotes",
+         "trailing-comment", "closing-bracket","semicolon-eol",
+         "trailing-comma", "interpolation-slot"],
 )
 def test_a_whole_reference_followed_by_the_next_entry_publishes(text):
     """The control: what follows is the next key or argument, not more value."""
@@ -324,6 +343,15 @@ def test_an_escaped_quote_does_not_close_the_value(name):
     """#470's review: `\\"` was taken as the closing quote, so `letmein\\"
     <secret>"` was read as the whole value `letmein`."""
     text = f'{name} = "anthropic\\" {_secret_value()}"\n'
+    assert _rule("src/app.py", text) == "key_value_assignment"
+
+
+@pytest.mark.parametrize("quote", ["'", "`"])
+@pytest.mark.parametrize("name", [_PW, _SEC.lower()])
+def test_an_escaped_single_or_backtick_quote_does_not_close_the_value(name, quote):
+    """The same defect in the other quote kinds: a body ending in an odd run of
+    backslashes is not closed, so the rest of the line is still the value."""
+    text = f"{name} = {quote}anthropic\\{quote} {_secret_value()}{quote}\n"
     assert _rule("src/app.py", text) == "key_value_assignment"
 
 

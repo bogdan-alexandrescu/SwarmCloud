@@ -7016,6 +7016,10 @@ _REFERENCE_WORD = re.compile(r"[a-z]+")
 #: Terraform, a plugin manifest or a module reads (`var.`, `local.`,
 #: `user_config.`, `data.`, `module.`). `correct-horse-battery-staple` and
 #: `correct.horse.battery.staple` are none of them, and are refused.
+#: RESIDUAL RISK, accepted by the owner (2026-10-02): these shapes are UNCAPPED
+#: in segments. A passphrase with a known prefix or suffix publishes outside
+#: test paths -- `correct-horse-battery-staple-token`, `swarm-tenant-<words>`,
+#: a `var.<words>` path -- up to the 64-character bound. No segment cap.
 _REFERENCE_SHAPE = re.compile(
     r"swarm-tenant(?:-[a-z]+)+"
     r"|[a-z]+(?:-[a-z]+)*-(?:api-key|token|secret|git)"
@@ -7090,6 +7094,12 @@ def _is_a_reference(value: str, rule: Any = None, match: re.Match[str] | None = 
 _VALUE_END = re.compile(r"[ \t]*(?:$|[;,)\]}]|\\*[\"'`])")
 
 
+def _odd_backslashes(text: str) -> bool:
+    """True when `text` ends in an odd run of backslashes, i.e. a quote right
+    after it is escaped."""
+    return (len(text) - len(text.rstrip("\\"))) % 2 == 1
+
+
 def _ends_the_value(match: re.Match[str]) -> bool:
     """True when a generic match's value is the WHOLE value, not its first word.
 
@@ -7111,7 +7121,11 @@ def _ends_the_value(match: re.Match[str]) -> bool:
         # <secret>"` the `\"` is part of the value, not its end (#470's review).
         escapes = len(opened[:-1]) - len(opened[:-1].rstrip("\\"))
         close = re.match(r'(\\*)"', rest)
-        if close is None or len(close.group(1)) != escapes:
+        # The value class swallows a backslash right before the close, so the
+        # backslashes the value ends in count with the close's own: `NAME =
+        # "x\" <rest>"` reads as the value `x\` and a bare `"`.
+        trailing = len(value) - len(value.rstrip("\\"))
+        if close is None or trailing + len(close.group(1)) != escapes:
             return False
         return not _value_continues(rest[close.end():], '"', escapes)
     if value[:1] in ("'", "`"):
@@ -7120,8 +7134,12 @@ def _ends_the_value(match: re.Match[str]) -> bool:
         if body.endswith(quote):
             if not (len(body) > 1 and quote not in body[:-1]):
                 return False
+            if _odd_backslashes(body[:-1]):
+                return False  # the quote is escaped, so it does not close
             return not _value_continues(rest, quote, 0)
         if rest.startswith(quote):
+            if _odd_backslashes(body):
+                return False
             return not _value_continues(rest[1:], quote, 0)
         return False
     return _VALUE_END.match(rest) is not None and not _value_continues(rest, None, 0)
@@ -7131,12 +7149,29 @@ def _ends_the_value(match: re.Match[str]) -> bool:
 _OPEN_QUOTE = re.compile(r"(\\*)([\"'`])")
 
 
+#: A comment start, which may follow a value only after whitespace.
+_COMMENT_START = re.compile(r"(?:#|//|--)")
+
+#: The next key or argument after a `,`: an identifier then `=` (not `==`) or `:`.
+_NEXT_KEY = re.compile(r"[A-Za-z_][\w.\-]*[ \t]*(?::|=(?!=))")
+
+
+def _comment_or_nothing(text: str) -> bool:
+    """True when `text` is empty, whitespace, or whitespace then a comment."""
+    if not text.strip():
+        return True
+    return text[:1] in " \t" and _COMMENT_START.match(text.lstrip(" \t")) is not None
+
+
 def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
-    """True when the text `after` a value's end on its line carries MORE of the
-    value: a `+`, another string literal right after it, or a `,` and then a
-    string literal that is not the next key of a mapping (#470's review: `token
-    = "x" + "<secret>"` and `token = "x", "<secret>"` were read as the
-    reference `x`).
+    """True unless the text `after` a value's end on its line PROVES the value
+    ended there. An allow-list (#470's review: every deny-list of joiners, `+`,
+    `,`-literal, adjacency, missed `.`, `&`, `||`, `~`, `|`, a bare token, a
+    conditional and `;`). After the close the value is whole only when what
+    follows is the end of the line, whitespace, a `;` ending the statement, a
+    closing bracket (then `,`, `;` or the line's end), a comment after
+    whitespace, or a `,` and then the next key or argument. Anything else is
+    read as more of the value, so the generic rule refuses.
 
     `closed` is the quote the value just closed with (None when it was
     unquoted) and `escapes` how many backslashes escaped it. A quote of
@@ -7150,14 +7185,31 @@ def _value_continues(after: str, closed: str | None, escapes: int) -> bool:
     ):
         return False
     rest = after.lstrip(" \t")
-    if rest.startswith("+") or _OPEN_QUOTE.match(rest):
-        return True
-    if not rest.startswith(","):
+    if not rest:
         return False
-    following = rest[1:].lstrip(" \t")
+    if len(rest) != len(after) and _COMMENT_START.match(rest):
+        return False
+    while rest[:1] in (")", "]", "}") and rest:
+        rest = rest[1:]
+        if not rest:
+            return False
+        if rest[:1] in " \t":
+            return not _comment_or_nothing(rest)
+        if _OPEN_QUOTE.match(rest):
+            return False  # the bracket ends a literal inside an enclosing string
+    if rest[:1] == ";":
+        return not _comment_or_nothing(rest[1:])
+    if rest[:1] != ",":
+        return True
+    following = rest[1:]
+    if _comment_or_nothing(following):
+        return False
+    following = following.lstrip(" \t")
+    if _NEXT_KEY.match(following):
+        return False
     literal = _OPEN_QUOTE.match(following)
     if literal is None:
-        return False  # the next argument or key, unquoted: `f(a="x", b=1)`
+        return True
     end = following.find(literal.group(2), literal.end())
     if end < 0:
         return True

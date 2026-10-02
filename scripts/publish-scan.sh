@@ -12,8 +12,10 @@
 # there), so a clean result here is the worker's answer for the same diff --
 # except for a task's registered secrets, which only the worker knows.
 #
-# It scans the git work tree you run it from, against `--base`, else the
-# merge-base of HEAD with origin/main, else HEAD; untracked files count, since
+# It scans the git work tree you run it from, against `--base`, else
+# SWARM_CLONE_BASE, else the shallow boundary of a `--depth 1` clone, else the
+# merge-base of HEAD with origin/main, else it exits 2 (never HEAD: that would
+# leave every committed secret out of the diff); untracked files count, since
 # the worker commits them. It prints `path:line rule` for each hit and never
 # the value.
 #
