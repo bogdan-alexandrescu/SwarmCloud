@@ -20,7 +20,7 @@
 // is for the next release's screenshots.
 
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { AccountsBoard } from '../api'
@@ -194,8 +194,8 @@ describe("CH-13: a chosen account's detail stays inside what the phone shows", (
   it('draws the detail beside the scrolling table, never inside it', async () => {
     api.loadAccountsBoard.mockResolvedValue(ok(board([account()])))
     render(<AccountsScreen />)
-    const open = await screen.findByRole('button', { name: /laptop/ }, WAIT)
-    if (open.getAttribute('aria-expanded') !== 'true') fireEvent.click(open)
+    // The pane opens the first account with no click (#503).
+    await screen.findByText('Subscription accounts', undefined, WAIT)
 
     const detail = document.querySelector('.acct-pane .acct-detail')
     expect(detail, 'the chosen account drew no detail in the pane').not.toBeNull()
