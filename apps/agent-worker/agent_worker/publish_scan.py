@@ -20,8 +20,11 @@ WHAT DIFFERS, AND WHY.
   them all in one pass. Each window is asked again from the line after a
   hit until the predicate finds nothing more.
 * The worker diffs the clone base against its commit of everything; here
-  the base is `--base`, else the merge-base of HEAD with `origin/main`, else
-  HEAD, diffed against the WORKING TREE -- and an untracked, unignored file
+  the base is `--base`, else `SWARM_CLONE_BASE` (the worker's own clone
+  base, exported to the agent), else the shallow boundary of the worker's
+  `--depth 1` clone, else the merge-base of HEAD with `origin/main` -- and
+  never HEAD, which would leave every committed secret out of the diff (exit
+  2 instead) -- diffed against the WORKING TREE; an untracked, unignored file
   is diffed against nothing, because the worker's `git add -A` will commit
   it.
 * A task's REGISTERED secrets are known only to the worker, so they are not
@@ -36,12 +39,15 @@ never reported as clean.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Mapping
 
+from agent_worker.gitops import EMPTY_CLONE_BASE
 from agent_worker.lifecycle import (
+    CLONE_BASE_ENV,
     SCAN_OVERLAP_CHARS,
     SCAN_WINDOW_CHARS,
     CredentialHit,
@@ -72,15 +78,60 @@ def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def default_base(repo: Path) -> str:
-    """The merge-base of HEAD with `origin/main`, or HEAD when there is none."""
+def _empty_tree(repo: Path) -> str:
+    made = _git(repo, "hash-object", "-t", "tree", "/dev/null")
+    if made.returncode != 0 or not made.stdout.strip():
+        raise ScanError("could not name the empty tree")
+    return made.stdout.strip()
+
+
+def _shallow_boundary(repo: Path) -> str | None:
+    """The one commit a shallow clone's history stops at, or None.
+
+    The worker's clone is `--depth 1 --single-branch` (`gitops.shallow_clone`),
+    so its boundary IS the commit the clone landed on. More than one boundary
+    (the agent fetched more) names no single base, so it is not guessed at."""
+    shallow = _git(repo, "rev-parse", "--is-shallow-repository")
+    if shallow.returncode != 0 or shallow.stdout.strip() != "true":
+        return None
+    where = _git(repo, "rev-parse", "--git-path", "shallow")
+    if where.returncode != 0 or not where.stdout.strip():
+        return None
+    path = Path(where.stdout.strip())
+    try:
+        lines = [line.strip() for line in (repo / path).read_text().splitlines() if line.strip()]
+    except OSError:
+        return None
+    return lines[0] if len(lines) == 1 else None
+
+
+def default_base(repo: Path, environ: Mapping[str, str] | None = None) -> str:
+    """The base the worker's publish will diff from, or a ScanError.
+
+    In order: `SWARM_CLONE_BASE`, which the worker exports to the agent
+    (`Worker._build_child_env`; `empty` for a repository cloned with no
+    commit, scanned against the empty tree); the shallow boundary of a worker
+    clone; the merge-base of HEAD with `origin/main`, for a full checkout on
+    a laptop. NEVER HEAD (#470's review): a worker clone of a pinned SHA or of
+    a non-main ref has no origin/main, and HEAD as the base left every
+    COMMITTED secret out of the diff, so the scan said clean over them.
+    """
+    env = os.environ if environ is None else environ
+    exported = (env.get(CLONE_BASE_ENV) or "").strip()
+    if exported == EMPTY_CLONE_BASE:
+        return _empty_tree(repo)
+    if exported:
+        return exported  # `scan` verifies it; a bad one is an error, not a guess
+    boundary = _shallow_boundary(repo)
+    if boundary:
+        return boundary
     merged = _git(repo, "merge-base", "HEAD", "origin/main")
     if merged.returncode == 0 and merged.stdout.strip():
         return merged.stdout.strip()
-    head = _git(repo, "rev-parse", "--verify", "--quiet", "HEAD")
-    if head.returncode == 0 and head.stdout.strip():
-        return head.stdout.strip()
-    raise ScanError("no base: HEAD names no commit and there is no origin/main")
+    raise ScanError(
+        "could not determine the clone base; nothing was scanned "
+        f"(no {CLONE_BASE_ENV}, no shallow boundary, no origin/main; pass --base)"
+    )
 
 
 class _AllHits:
@@ -142,7 +193,8 @@ def _stream(
 
 def scan(repo: Path, base: str) -> list[ScanHit]:
     """Every credential the working tree ADDS against `base`, in diff order."""
-    verified = _git(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}")
+    # `^{tree}`: a commit, or the empty tree an empty repository's clone base names.
+    verified = _git(repo, "rev-parse", "--verify", "--quiet", f"{base}^{{tree}}")
     if verified.returncode != 0:
         raise ScanError(f"the base {base!r} names no commit")
     leaks = _AllHits()
@@ -168,7 +220,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--base",
-        help="the revision to diff against (default: the merge-base with origin/main, else HEAD)",
+        help=(
+            "the revision to diff against (default: $SWARM_CLONE_BASE, else the shallow "
+            "boundary, else the merge-base with origin/main; never HEAD)"
+        ),
     )
     args = parser.parse_args(argv)
     repo = Path.cwd()
