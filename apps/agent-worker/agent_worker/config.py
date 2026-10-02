@@ -186,6 +186,18 @@ class WorkerConfig:
     #: explicitly rather than inferred, and falls back to the URL.
     quota_broker_audience: str | None = None
 
+    # --- pull request console links -------------------------------------------
+    #: The console's origin (SWARM_CONSOLE_URL), passed through by the
+    #: scheduler's `worker_env` from its own settings -- never from a caller.
+    #: None means no link is ever written.
+    console_url: str | None = None
+    #: Whether a pull request this worker opens carries the workflow and agent
+    #: console links (SWARM_PR_CONSOLE_LINKS). Default False: off until the
+    #: owner has seen it on a real PR (owner decision, 2026-10-01). The
+    #: scheduler omits the variable when the switch is off, so the default is
+    #: what an unswitched deployment gets.
+    pr_console_links: bool = False
+
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
     #: The model the agent CLI runs, from the Job's `MODEL` (#226). Set per
@@ -379,6 +391,8 @@ class WorkerConfig:
             quota_broker_audience=(
                 os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip() or None
             ),
+            console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip() or None,
+            pr_console_links=_bool_env("SWARM_PR_CONSOLE_LINKS", False),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
             spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),

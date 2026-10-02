@@ -81,8 +81,8 @@ function session(isAdmin: boolean): Result<Me> {
   } as unknown as Me)
 }
 
-async function open(name: string): Promise<HTMLElement> {
-  api.loadCapacity.mockResolvedValue(ok(capacity()))
+async function open(name: string, cap: Capacity = capacity()): Promise<HTMLElement> {
+  api.loadCapacity.mockResolvedValue(ok(cap))
   render(<AdminSettingsScreen />)
   const row = await waitFor(() => {
     const r = document.getElementById(`limit-${name}`)
@@ -177,6 +177,56 @@ describe('Pool limits asks for the pool name before a drastic change (L2)', () =
     type(side, '')
     expect(within(side).queryByRole('button', { name: 'Set to 0' })).toBeNull()
     expect((within(side).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+/**
+ * THE CUT IS MEASURED FROM THE CEILING ADMISSION APPLIES, NOT THE HARD LIMIT.
+ * tenant:eng has a hard limit of 20 and AIMD holding it at 8: the editor shows
+ * 8 as its Ceiling. Drastic is to 0, or a cut of half or more OF THAT 8 -- so
+ * 3 (8 -> 3, a 62% cut) asks for the name, 6 (8 -> 6, 25%) does not, and 10
+ * (half the hard limit, but the ceiling stays 8) does not either.
+ *
+ * MUTATION: compare against `pool.hard_limit` again and 3 writes on Save alone
+ * while 10 asks for the name.
+ */
+describe('a drastic cut is measured from the effective ceiling', () => {
+  function lowered(): Capacity {
+    const cap = capacity()
+    cap.pools = cap.pools.map((p) =>
+      p.name === 'tenant:eng' ? { ...p, hard_limit: 20, adaptive_target: 8, effective_limit: 8, available: 4 } : p,
+    )
+    return cap
+  }
+
+  it('asks for the name for 3 when AIMD holds a hard limit of 20 at 8', async () => {
+    const side = await open('tenant:eng', lowered())
+    type(side, '3')
+    expect(confirmField(side), 'a cut of 8 -> 3 asked for no confirmation').not.toBeNull()
+    expect((within(side).getByRole('button', { name: 'Set to 3' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('does not ask for 6, a cut of less than half of 8', async () => {
+    const side = await open('tenant:eng', lowered())
+    type(side, '6')
+    expect(confirmField(side), 'a cut of 8 -> 6 asked for the name').toBeNull()
+    expect((within(side).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('does not ask for 10, which halves the hard limit but leaves the ceiling at 8', async () => {
+    const side = await open('tenant:eng', lowered())
+    type(side, '10')
+    expect(confirmField(side), 'a change that leaves the ceiling at 8 asked for the name').toBeNull()
+  })
+
+  it('measures from a quota-lowered ceiling the same way', async () => {
+    const cap = capacity()
+    cap.pools = cap.pools.map((p) =>
+      p.name === 'tenant:eng' ? { ...p, hard_limit: 20, quota_derived_limit: 8, effective_limit: 8, available: 4 } : p,
+    )
+    const side = await open('tenant:eng', cap)
+    type(side, '4')
+    expect(confirmField(side), 'a cut of 8 -> 4 asked for no confirmation').not.toBeNull()
   })
 })
 

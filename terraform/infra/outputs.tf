@@ -182,3 +182,11 @@ output "quota_broker_url" {
   description = "Paste into quota_broker_url in tfvars. See that variable for why this is a two-step, and the quota_broker_url_is_wired check for what happens while it is empty."
   value       = module.cloud_run.service_urls["swarm-quota-broker"]
 }
+
+output "console_service_env" {
+  description = "swarm-api and swarm-scheduler -> the console-link variables their environment carries (SWARM_CONSOLE_URL, SWARM_PR_CONSOLE_LINKS)."
+  value = {
+    for svc in ["swarm-api", "swarm-scheduler"] :
+    svc => { for k, v in local.service_env[svc] : k => v if startswith(k, "SWARM_CONSOLE_") || startswith(k, "SWARM_PR_CONSOLE_") }
+  }
+}

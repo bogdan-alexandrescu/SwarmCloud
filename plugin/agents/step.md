@@ -55,6 +55,12 @@ line: the reply's `progress` line, as given — for example `PARKED · waiting
 ago · 210k tok · $0.31`. A step waiting on its parents can wait a long time.
 That is normal and costs nothing: a waiting task holds no capacity.
 
+When the deployment has a console, this first line ends with `· console:
+<link>` -- the link SwarmCloud's API served for this step's task, the page
+where a person watches it, queued or running. Keep it on the line exactly as
+given. Never build a console link yourself and never add one the reply did
+not carry: a line without one means this deployment served none.
+
 ## 2. Follow it until it stops
 
 Call `swarm_follow` again with `task_ids: [<task_id>]`, `step_id:
@@ -73,7 +79,8 @@ reply's `progress` line, and any `transitions` before it on the same line.
 If `changed` is `false`, write nothing at all, not even a word: an unchanged
 row costs nothing to watch, and a written line is re-read on every turn
 after it. Never quote anything else from a reply. Stop when the reply's
-`stop` is `true`.
+`stop` is `true`. The reply that stops carries the step's final line, which
+ends with the same `· console: <link>` as the first: write it as given.
 
 **Turn budget.** This row has `maxTurns: 60`, and Claude Code's own cutoff at
 that cap answers nothing -- it is a hard stop, not a chance to report. So
@@ -107,6 +114,7 @@ answer with `state: "UNKNOWN"`, `last_error` set to the last error (or
 You stopped polling at your own 56-call limit, not because the task ended.
 Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 `state: "running"`, `last_error` set to `resume with: swarm follow <task_id>`,
+`console` set to `tasks[0].console` of the last reply (null when it has none),
 and null or empty for everything else -- a progress report, not the step's
 result.
 
@@ -128,6 +136,9 @@ last reply and copied, never estimated:
 * `pr_url` — `outcome.pr_url`
 * `artifacts` — `outcome.artifacts`, the artifact names, as given
 * `last_error` — `outcome.last_error`
+* `console` — `tasks[0].console` of the last reply, copied character for
+  character; null when the reply has no `console`. It is the link the API
+  served: never build one, never guess one
 
 If `StructuredOutput` refuses an answer, call it again with
 `answer_excerpt: null` and every other field unchanged -- never with the

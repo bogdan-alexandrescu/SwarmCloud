@@ -1,5 +1,5 @@
-// THE DIFF AS A FLAT LIST OF FIXED-HEIGHT ROWS, which is what makes a
-// 50,000-line patch cheap: the viewer draws only the rows whose offsets fall
+// ONE FILE OF THE DIFF AS A FLAT LIST OF FIXED-HEIGHT ROWS, which is what
+// makes a 50,000-line file cheap: the viewer draws only the rows whose offsets fall
 // inside the scroller's window, and the height of everything else is two
 // spacers. Pure functions, so the model is testable without a DOM.
 //
@@ -105,7 +105,8 @@ export function splitFile(body: string): string[] {
 
 export interface RowInput {
   files: readonly DiffFile[]
-  collapsed: ReadonlySet<number>
+  /** The one file drawn: the viewer shows the file picked in its list, never the whole patch. */
+  file: number
   mode: ViewMode
   /** Whether a `getFile` was given; without it no trailing gap is offered. */
   canExpand: boolean
@@ -157,28 +158,28 @@ function gapRows(input: RowInput, fi: number, g: number, out: Row[]): void {
 
 export function buildRows(input: RowInput): Row[] {
   const out: Row[] = []
-  input.files.forEach((f, fi) => {
-    out.push({ t: 'file', file: fi })
-    if (input.collapsed.has(fi)) return
-    if (f.binary) {
-      out.push({ t: 'note', file: fi, text: 'binary file not shown' })
-      return
+  const fi = input.file
+  const f = input.files[fi]
+  if (f === undefined) return out
+  out.push({ t: 'file', file: fi })
+  if (f.binary) {
+    out.push({ t: 'note', file: fi, text: 'binary file not shown' })
+    return out
+  }
+  if (f.hunks.length === 0) {
+    out.push({ t: 'note', file: fi, text: 'no content change' })
+    return out
+  }
+  f.hunks.forEach((h, hi) => {
+    gapRows(input, fi, hi, out)
+    out.push({ t: 'hunk', file: fi, hunk: hi })
+    if (input.mode === 'split') {
+      for (const [left, right] of pairs(h)) out.push({ t: 'pair', file: fi, hunk: hi, left, right })
+    } else {
+      h.lines.forEach((_, li) => out.push({ t: 'line', file: fi, hunk: hi, line: li }))
     }
-    if (f.hunks.length === 0) {
-      out.push({ t: 'note', file: fi, text: 'no content change' })
-      return
-    }
-    f.hunks.forEach((h, hi) => {
-      gapRows(input, fi, hi, out)
-      out.push({ t: 'hunk', file: fi, hunk: hi })
-      if (input.mode === 'split') {
-        for (const [left, right] of pairs(h)) out.push({ t: 'pair', file: fi, hunk: hi, left, right })
-      } else {
-        h.lines.forEach((_, li) => out.push({ t: 'line', file: fi, hunk: hi, line: li }))
-      }
-    })
-    gapRows(input, fi, f.hunks.length, out)
   })
+  gapRows(input, fi, f.hunks.length, out)
   return out
 }
 
@@ -202,75 +203,108 @@ export function rowAt(offsets: Float64Array, y: number): number {
   return lo
 }
 
-// ---------------------------------------------------------------------------
-// Find
-// ---------------------------------------------------------------------------
-
-export interface Match {
-  file: number
-  hunk: number
-  line: number
-  start: number
-  length: number
-}
-
-/**
- * Case-insensitive where lower-casing keeps every index in place, which is
- * every string except a handful of Unicode letters whose lower case is longer;
- * for those the search is exact, so a highlight can never land on the wrong
- * characters.
- */
-export function occurrences(text: string, query: string): number[] {
-  if (query === '') return []
-  const lt = text.toLowerCase()
-  const lq = query.toLowerCase()
-  const [hay, needle] = lt.length === text.length && lq.length === query.length ? [lt, lq] : [text, query]
-  const out: number[] = []
-  let at = hay.indexOf(needle)
-  while (at !== -1) {
-    out.push(at)
-    at = hay.indexOf(needle, at + needle.length)
-  }
-  return out
-}
-
-/** Every match in every hunk line of every file, in reading order. */
-export function findMatches(files: readonly DiffFile[], query: string): Match[] {
-  const out: Match[] = []
-  if (query === '') return out
-  files.forEach((f, fi) =>
-    f.hunks.forEach((h, hi) =>
-      h.lines.forEach((l, li) => {
-        for (const start of occurrences(l.text, query)) out.push({ file: fi, hunk: hi, line: li, start, length: query.length })
-      }),
-    ),
-  )
-  return out
-}
-
-/** The row that draws hunk line `line`, in either mode, or -1. */
-export function rowOfLine(rows: readonly Row[], file: number, hunk: number, line: number): number {
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i]!
-    if (r.file !== file) continue
-    if (r.t === 'line' && r.hunk === hunk && r.line === line) return i
-    if (r.t === 'pair' && r.hunk === hunk && (r.left === line || r.right === line)) return i
-  }
-  return -1
-}
-
-/** The widest line, in characters with a tab counted at the stylesheet's tab-size. */
-export function widestLine(files: readonly DiffFile[]): number {
+/** The widest line of one file, in characters with a tab counted at the stylesheet's tab-size. */
+export function widestLine(f: DiffFile): number {
   let w = 0
-  for (const f of files) {
-    for (const h of f.hunks) {
-      if (h.header.length > w) w = h.header.length
-      for (const l of h.lines) {
-        let n = l.text.length
-        for (let i = 0; i < l.text.length; i++) if (l.text.charCodeAt(i) === 9) n += 3
-        if (n > w) w = n
-      }
+  for (const h of f.hunks) {
+    if (h.header.length > w) w = h.header.length
+    for (const l of h.lines) {
+      let n = l.text.length
+      for (let i = 0; i < l.text.length; i++) if (l.text.charCodeAt(i) === 9) n += 3
+      if (n > w) w = n
     }
   }
   return w
+}
+
+// ---------------------------------------------------------------------------
+// The file list: directories, change letters and the five-cell bar
+// ---------------------------------------------------------------------------
+
+/** The directory part of a path, '' for a file at the root. */
+export function dirOf(path: string): string {
+  const at = path.lastIndexOf('/')
+  return at === -1 ? '' : path.slice(0, at)
+}
+
+/** The file-name part of a path. */
+export function baseOf(path: string): string {
+  return path.slice(path.lastIndexOf('/') + 1)
+}
+
+export interface DirGroup {
+  /** '' is the repository root. */
+  dir: string
+  /** File indices into the patch, in patch order. */
+  files: number[]
+}
+
+/**
+ * The files grouped by directory. Directories come in the order the patch
+ * first reaches them and files keep patch order inside each one, so the list
+ * reads in the order the patch was written and the first file of the patch is
+ * always the first row. `filter` keeps the files whose path (or, for a rename
+ * or a copy, old path) holds it, case-insensitively; a directory left with no
+ * file is not drawn.
+ */
+export function groupByDirectory(files: readonly DiffFile[], filter = ''): DirGroup[] {
+  const q = filter.trim().toLowerCase()
+  const out: DirGroup[] = []
+  const at = new Map<string, DirGroup>()
+  files.forEach((f, fi) => {
+    if (q !== '' && !f.path.toLowerCase().includes(q) && !(f.oldPath ?? '').toLowerCase().includes(q)) return
+    const dir = dirOf(f.path)
+    let g = at.get(dir)
+    if (g === undefined) {
+      g = { dir, files: [] }
+      at.set(dir, g)
+      out.push(g)
+    }
+    g.files.push(fi)
+  })
+  return out
+}
+
+/** The list's reading order: every file of every group, top to bottom. */
+export function listOrder(groups: readonly DirGroup[]): number[] {
+  return groups.flatMap((g) => g.files)
+}
+
+/**
+ * The change letter git's `--name-status` uses. A copy is `C`: it is neither
+ * a new file nor a move, and calling it either would misstate what happened.
+ */
+export function changeLetter(f: DiffFile): 'M' | 'A' | 'D' | 'R' | 'C' {
+  switch (f.status) {
+    case 'added':
+      return 'A'
+    case 'deleted':
+      return 'D'
+    case 'renamed':
+      return 'R'
+    case 'copied':
+      return 'C'
+    case 'modified':
+      return 'M'
+  }
+}
+
+export type BarCell = 'add' | 'del' | 'none'
+
+/** Cells in a file's +/- bar. */
+export const BAR_CELLS = 5
+
+/**
+ * A file's +/- bar: five cells split between added and removed lines in
+ * proportion, each side that changed holding at least one cell so a one-line
+ * deletion beside a thousand additions is still seen. A file with no line
+ * changes (a binary, a pure rename, a mode change) is five empty cells.
+ */
+export function barCells(additions: number, deletions: number): BarCell[] {
+  const total = additions + deletions
+  if (total === 0) return Array<BarCell>(BAR_CELLS).fill('none')
+  let add = Math.round((BAR_CELLS * additions) / total)
+  if (additions > 0 && add === 0) add = 1
+  if (deletions > 0 && add === BAR_CELLS) add = BAR_CELLS - 1
+  return Array.from({ length: BAR_CELLS }, (_, i) => (i < add ? 'add' : 'del'))
 }

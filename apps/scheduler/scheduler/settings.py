@@ -295,6 +295,19 @@ class SchedulerSettings:
     #: which is correct for a deployment with no custom audience.
     quota_broker_audience: str = ""
 
+    #: The console's origin, `https://<frontend_hostname>` (SWARM_CONSOLE_URL,
+    #: rendered by terraform onto this service). Passed THROUGH to every worker
+    #: by `worker_env`, which is the only way a worker learns it; the worker
+    #: uses it for nothing but the console links in a pull request body.
+    #: Empty means "no console link anywhere", never a guessed run.app URL --
+    #: swarm-ui behind IAP does not open at its run.app address.
+    console_url: str = ""
+    #: Whether a pull request a worker opens carries the workflow and agent
+    #: console links (SWARM_PR_CONSOLE_LINKS, terraform `pr_console_links`).
+    #: Default False: off until the owner has seen it on a real PR (owner
+    #: decision, 2026-10-01).
+    pr_console_links: bool = False
+
     project_id: str = ""
     region: str = "us-central1"
     artifact_registry_host: str = ""
@@ -361,6 +374,8 @@ class SchedulerSettings:
             or "swarm-agent-worker",
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
+            console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
             project_id=core.project_id,
             region=core.region,
             artifact_registry_host=registry,

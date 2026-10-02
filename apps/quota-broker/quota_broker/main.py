@@ -180,6 +180,11 @@ class AccountExchange(StrictModel):
     #: Accepted as pasted. The callback renders `<code>#<state>` and people
     #: paste what is on screen, so the whole thing is taken and split here.
     code: str = Field(min_length=4, max_length=2048)
+    #: The tenant the CALLER is, as the caller checked it. A platform caller
+    #: (swarm-api) must send it and it must equal the pending sign-in's owner;
+    #: see `finish_account_authorization`. Optional in the schema only so that
+    #: its absence is refused as a 403 that names it, not as a bare 422.
+    expected_owner: str | None = Field(default=None, max_length=128)
 
 
 class AccountLending(StrictModel):
@@ -1884,6 +1889,9 @@ def create_app(
     # verifier the client holds is a PKCE flow that proves nothing.
 
     PENDING_AUTH = "account_auth"
+    #: The 403 code for "the caller is not the tenant that started this
+    #: sign-in". swarm-api's BrokerClient matches this exact string.
+    SIGN_IN_OWNER_MISMATCH = "sign_in_owner_mismatch"
     PENDING_TTL = timedelta(minutes=15)
 
     @app.post("/v1/accounts/authorize")
@@ -1923,6 +1931,39 @@ def create_app(
         body: AccountExchange,
         authorization: str | None = Header(default=None, alias="Authorization"),
     ) -> dict[str, Any]:
+        # WHO IS FINISHING THIS, resolved before anything else is read. The
+        # pending record decides where the account lands; this decides whether
+        # the caller may land it there at all. A platform caller speaks for
+        # whichever tenant it names, so it MUST name one -- swarm-api sends the
+        # tenant it resolved for the human through `tenant_for` -- and a missing
+        # one is refused rather than trusted, so a swarm-api older than this
+        # check cannot skip it by not sending the field. A tenant caller is its
+        # own identity and cannot widen that by naming somebody else.
+        try:
+            caller_tenant, is_platform = request.app.state.identity.resolve(authorization)
+        except BrokerAuthError:
+            request.app.state.metrics.auth_failures.labels(kind="token").inc()
+            raise
+        claimed = (body.expected_owner or "").strip()
+        if is_platform:
+            if not claimed:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="missing_expected_owner"
+                ).inc()
+                raise BrokerAuthError(
+                    "a platform caller must send expected_owner, the tenant it "
+                    "checked the person to be; without it this sign-in cannot "
+                    "be tied to whoever is finishing it"
+                )
+            caller = claimed
+        else:
+            caller = str(caller_tenant or "")
+            if claimed and claimed != caller:
+                request.app.state.metrics.auth_failures.labels(
+                    kind="tenant_mismatch"
+                ).inc()
+                raise BrokerAuthError("caller may not finish a sign-in for another tenant")
+
         store = _accounts(request)
         secrets_store = getattr(request.app.state, "secret_store", None)
         if secrets_store is None:
@@ -1947,6 +1988,42 @@ def create_app(
             )
         pending = snap.to_dict() or {}
 
+        # THE CALLER MUST BE THE TENANT THAT STARTED THIS SIGN-IN, compared
+        # BEFORE the code is redeemed and before the age check below, so a
+        # mismatch spends nothing and changes nothing: no redemption, no
+        # credential filed, and the pending record left exactly as it was.
+        #
+        # Left, not deleted, deliberately. Deleting it would let anyone who has
+        # seen a `state` burn somebody else's sign-in for the cost of one
+        # request. Keeping it costs nothing, because nothing was redeemed: the
+        # code is still unspent at Anthropic, it is bound to this record's PKCE
+        # verifier so it is useless anywhere else, and the record still expires
+        # on its own 15-minute TTL. The one case this does not cover is a code
+        # the refused caller produced themselves by signing in on the owner's
+        # authorize URL -- and that code can now only ever be filed into the
+        # owner's tenant by the owner, which is the property being kept.
+        #
+        # ITS OWN CODE, not the generic `forbidden`. swarm-api reads every
+        # other 401/403 from here as its OWN identity being rejected, which is
+        # true of all of them but this one: this is the HUMAN caller's refusal,
+        # and `SIGN_IN_OWNER_MISMATCH` is how swarm-api tells the two apart.
+        owner = str(pending.get("owner_tenant") or "")
+        if not owner or caller != owner:
+            from fastapi.responses import JSONResponse
+
+            request.app.state.metrics.auth_failures.labels(kind="tenant_mismatch").inc()
+            return JSONResponse(
+                status_code=403,
+                content={
+                    "code": SIGN_IN_OWNER_MISMATCH,
+                    "message": (
+                        "this sign-in was started by a different tenant; only "
+                        "that tenant can finish it. Press Add account to start "
+                        "your own."
+                    ),
+                },
+            )
+
         started = pending.get("created_at")
         if isinstance(started, datetime):
             age = datetime.now(timezone.utc) - _aware_utc(started)
@@ -1957,10 +2034,8 @@ def create_app(
                     "Press Add account to start again."
                 )
 
-        owner = str(pending.get("owner_tenant") or "")
-        # The pending record decides the tenant, never the request. Otherwise a
-        # caller could complete somebody else's sign-in into their own tenant.
-        _authorize(request, authorization, owner)
+        # The pending record decides the tenant, never the request: `owner`
+        # above is read off it, and the caller has just been proven to be it.
 
         try:
             payload = request.app.state.token_endpoint.redeem(

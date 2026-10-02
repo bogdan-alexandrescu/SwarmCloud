@@ -355,8 +355,12 @@ secret_admin_members = [
 #   4. once no non-terminal unsigned task is left, a PR sets
 #      spec_signature_mode = "enforce" -- before 2026-10-20, after which the
 #      worker enforces regardless.
-spec_signature_mode = "legacy"
-spec_legacy_cutover = "2026-09-30T21:24:36Z"
+# Step 4 (owner decision 2026-10-01): dev admits signed specs only. The 14
+# unsigned smoke tasks parked since 2026-09-25 in u-sw-c90291 -- swarm-verify's
+# old personal tenant, which no principal resolves to since swarm-verify joined
+# the eng group -- cannot be cancelled through the API and are left PARKED;
+# under enforce, any dispatch of one is refused as spec_signature_invalid.
+spec_signature_mode = "enforce"
 # Version 1 is the one Cloud KMS creates with the key (terraform/bootstrap).
 spec_signing_key_version = 1
 

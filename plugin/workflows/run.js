@@ -90,14 +90,29 @@ export const meta = {
 // the spec; the submit row passes the ref and the digest, and the reply is
 // checked against the outline exactly as it is checked against a spec.
 //
+// A CONSOLE LINK IS COPIED, NEVER BUILT (owner decision, 2026-10-01). The API
+// serves `links.console` on every task, workflow and step, the bridge hands it
+// on as `console`, and the relay rows copy it into their answers. This script
+// prints that string -- the workflow's on the submit and result lines, each
+// step's on its final line -- and spells no host and no path of its own. A
+// null or missing link prints nothing.
+//
 // This script derives nothing SwarmCloud decides. The workflow's final state
 // is read back from swarm_workflow_status, which serves the state the server
 // derived from its steps; it is never computed here from the rows.
+
+// What a relay answers for a console link: the bridge reply's `console`,
+// copied, or null when the reply has none.
+const CONSOLE = {
+  type: ['string', 'null'],
+  description: "the reply's `console`, copied character for character; null when the reply has none. Never build a link",
+}
 
 const SUBMITTED = {
   type: 'object',
   properties: {
     workflow_id: { type: ['string', 'null'] },
+    console: CONSOLE,
     steps: {
       type: 'array',
       items: {
@@ -106,8 +121,9 @@ const SUBMITTED = {
           step_id: { type: 'string' },
           task_id: { type: ['string', 'null'] },
           depends_on: { type: 'array', items: { type: 'string' } },
+          console: CONSOLE,
         },
-        required: ['step_id', 'task_id', 'depends_on'],
+        required: ['step_id', 'task_id', 'depends_on', 'console'],
       },
     },
     repository: { type: ['string', 'null'] },
@@ -123,13 +139,14 @@ const SUBMITTED = {
     follow_error: { type: ['string', 'null'] },
     error: { type: ['string', 'null'] },
   },
-  required: ['workflow_id', 'steps', 'repository', 'repository_notes', 'spec_digest', 'bridge_version', 'follow_error', 'error'],
+  required: ['workflow_id', 'console', 'steps', 'repository', 'repository_notes', 'spec_digest', 'bridge_version', 'follow_error', 'error'],
 }
 
 const ATTACHED = {
   type: 'object',
   properties: {
     workflow_id: { type: ['string', 'null'] },
+    console: { type: ['string', 'null'] },
     state: { type: ['string', 'null'] },
     state_note: { type: ['string', 'null'] },
     bridge_version: { type: ['string', 'null'] },
@@ -143,13 +160,14 @@ const ATTACHED = {
           task_id: { type: ['string', 'null'] },
           depends_on: { type: 'array', items: { type: 'string' } },
           state: { type: ['string', 'null'] },
+          console: { type: ['string', 'null'] },
         },
-        required: ['step_id', 'task_id', 'depends_on', 'state'],
+        required: ['step_id', 'task_id', 'depends_on', 'state', 'console'],
       },
     },
     error: { type: ['string', 'null'] },
   },
-  required: ['workflow_id', 'state', 'state_note', 'bridge_version', 'follow_error', 'steps', 'error'],
+  required: ['workflow_id', 'console', 'state', 'state_note', 'bridge_version', 'follow_error', 'steps', 'error'],
 }
 
 const READ = {
@@ -196,8 +214,9 @@ const STEP_RESULT = {
     pr_url: { type: ['string', 'null'] },
     artifacts: { type: 'array', items: { type: 'string' } },
     last_error: { type: ['string', 'null'] },
+    console: CONSOLE,
   },
-  required: ['state', 'answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error'],
+  required: ['state', 'answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error', 'console'],
 }
 
 const WORKFLOW_STATE = {
@@ -205,6 +224,7 @@ const WORKFLOW_STATE = {
   properties: {
     state: { type: ['string', 'null'] },
     state_note: { type: ['string', 'null'] },
+    console: CONSOLE,
     steps: {
       type: 'array',
       items: {
@@ -217,7 +237,7 @@ const WORKFLOW_STATE = {
       },
     },
   },
-  required: ['state', 'state_note', 'steps'],
+  required: ['state', 'state_note', 'console', 'steps'],
 }
 
 // What /sc:swarmcloud was given: { attach } for {attach: "<workflow_id>"};
@@ -360,15 +380,25 @@ function rowLabel(name, suffix) {
   return LABEL_PREFIX + clip(name, room) + tail
 }
 
+// ' · console: <link>' for a link a relay copied from the bridge, else ''.
+// The link is printed as given: nothing here builds or repairs one.
+function consoleSuffix(link) {
+  return typeof link === 'string' && link.trim() ? ' · console: ' + link.trim() : ''
+}
+
 function failureText(error) {
   return String((error && error.message) || error)
 }
 
-// One narrator line per finished step: 'scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231'.
-function narrate(stepId, result) {
+// One narrator line per finished step: 'scan-03 SUCCEEDED · 4m12s · $0.21 · PR #231',
+// ending with the step's console link: the row's own answer's, else the one
+// the submit reply carried for the step -- a row that failed still says where
+// its task can be watched.
+function narrate(stepId, result, submittedLink) {
+  const link = consoleSuffix((result && result.console) || submittedLink)
   if (!result || result.row_error) {
     const why = result && result.row_error ? ': ' + clip(result.row_error, 100) : ''
-    return stepId + ' · its row stopped before the task finished' + why + ' -- the SwarmCloud task is unaffected'
+    return stepId + ' · its row stopped before the task finished' + why + ' -- the SwarmCloud task is unaffected' + link
   }
   const parts = [stepId + ' ' + (result.state || 'UNKNOWN'), duration(result.duration_s), money(result.cost_usd)]
   const pr = pullRequest(result.pr_url)
@@ -380,7 +410,7 @@ function narrate(stepId, result) {
   if (made.length > 0) parts.push('produced ' + clip(made.join(', '), 120))
   else if (result.state === 'SUCCEEDED') parts.push('produced no artifacts')
   if (result.state !== 'SUCCEEDED' && result.last_error) parts.push(clip(result.last_error, 100))
-  return parts.join(' · ')
+  return parts.join(' · ') + link
 }
 
 function sameSet(left, right) {
@@ -496,11 +526,12 @@ async function followSteps(workflowId, workflowName, steps, stages, parentTasksO
       }
     },
     (result, step) => {
-      log(narrate(step.step_id, result))
+      log(narrate(step.step_id, result, step.console))
       const row = { step_id: step.step_id, task_id: step.task_id, depends_on: step.depends_on || [] }
       if (!result || result.row_error) {
         row.state = null
         row.row_error = result && result.row_error ? result.row_error : 'the row stopped before its task finished'
+        if (consoleSuffix(step.console)) row.console = step.console.trim()
         return row
       }
       return Object.assign(row, result)
@@ -511,7 +542,7 @@ async function followSteps(workflowId, workflowName, steps, stages, parentTasksO
 // The final status read, the same after a submission and after an attach.
 // The rows are returned whatever happens here: a Result row that fails must
 // not take every step's result down with it.
-async function finish(workflowId, workflowName, rows) {
+async function finish(workflowId, workflowName, rows, knownConsole) {
   phase('Result')
   let final = null
   let finalFailure = null
@@ -557,14 +588,20 @@ async function finish(workflowId, workflowName, rows) {
     : finalFailure
       ? 'the row reading the workflow state failed: ' + finalFailure
       : 'the row reading the workflow state stopped before it answered'
-  log(workflowId + ' ' + (state || 'state not read') + (note ? ' · ' + clip(note, 160) : ''))
+  // The workflow's console link: the result row's copy, else the one the
+  // submit or attach reply carried.
+  const workflowConsole = (final && final.console) || knownConsole
+  const workflowLink = consoleSuffix(workflowConsole)
+  log(workflowId + ' ' + (state || 'state not read') + (note ? ' · ' + clip(note, 160) : '') + workflowLink)
 
-  return {
+  const finished = {
     workflow_id: workflowId,
     state: state,
     state_note: note,
     steps: rows,
   }
+  if (workflowLink) finished.console = workflowConsole.trim()
+  return finished
 }
 
 const given = readSpec(args)
@@ -605,13 +642,14 @@ if (given.attach) {
   for (const step of attached.steps) {
     if (!finished(step)) continue
     // Said once, here, and given no row: there is nothing left to watch.
-    log(step.step_id + ' ' + step.state + ' · finished before attach')
+    log(step.step_id + ' ' + step.state + ' · finished before attach' + consoleSuffix(step.console))
     doneRows[step.step_id] = {
       step_id: step.step_id, task_id: step.task_id, depends_on: step.depends_on || [],
       state: step.state, finished_before_attach: true,
     }
+    if (consoleSuffix(step.console)) doneRows[step.step_id].console = step.console.trim()
   }
-  log(workflowId + ' attached · ' + attached.steps.length + ' step(s) · ' + open.length + ' unfinished')
+  log(workflowId + ' attached · ' + attached.steps.length + ' step(s) · ' + open.length + ' unfinished' + consoleSuffix(attached.console))
 
   const followed = await followSteps(workflowId, workflowId, open, {}, (step) =>
     (step.depends_on || [])
@@ -621,7 +659,7 @@ if (given.attach) {
   const byStep = {}
   for (const row of followed) if (row) byStep[row.step_id] = row
   const rows = attached.steps.map((step) => doneRows[step.step_id] || byStep[step.step_id]).filter(Boolean)
-  return await finish(workflowId, workflowId, rows)
+  return await finish(workflowId, workflowId, rows, attached.console)
 }
 
 phase('Submit')
@@ -710,7 +748,7 @@ if (problems.length > 0) {
 if (submitted.follow_error) return followRefused(submitted.workflow_id, submitted.bridge_version, submitted.follow_error)
 
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
-log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where)
+log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where + consoleSuffix(submitted.console))
 // Every inference note the bridge made, verbatim: it exists only in this
 // reply, and this is the one place a session watching the workflow can see it.
 for (const note of submitted.repository_notes || []) log(submitted.workflow_id + ' repository note: ' + note)
@@ -723,4 +761,4 @@ const workflowName = specLabel || submitted.workflow_id
 const rows = await followSteps(submitted.workflow_id, workflowName, submitted.steps, stages, (step) =>
   (step.depends_on || []).map((parent) => taskOf[parent]).filter((id) => typeof id === 'string' && id),
 )
-return await finish(submitted.workflow_id, workflowName, rows)
+return await finish(submitted.workflow_id, workflowName, rows, submitted.console)

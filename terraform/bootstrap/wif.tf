@@ -18,16 +18,50 @@ locals {
   # mint at all. On its own that is a single point of failure: a second provider
   # added to this pool later, or a widened `github_allowed_refs`, silently
   # extends secret-provisioning and project-IAM-admin rights with nothing
-  # failing. So the service account binding is ALSO per-ref, through a composite
-  # attribute -- a principalSet naming only `attribute.repository` would accept
-  # any ref the pool ever decides to issue.
+  # failing. So the service account binding is ALSO per-ref -- and, since #457,
+  # per workflow FILE.
   #
-  # `attribute.repo_ref` is mapped from assertion.repository + "@" +
-  # assertion.ref, because a principalSet can name exactly one attribute and the
-  # boundary needs both halves.
+  # THE DEPLOYER IS BOUND TO THE WORKFLOW FILES THAT AUTHENTICATE AS IT, by
+  # `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@<ref>`,
+  # which GitHub sets from the file the job runs and a caller cannot choose.
+  # The binding used to name `attribute.repo_ref/<repo>@<ref>`, which EVERY
+  # workflow in the repository presents on main: with application.yml,
+  # terraform.yml and security.yml granting id-token at workflow level, a merged
+  # test or conftest could mint a token and become the deployer (#457,
+  # docs/merge-step.md M4/R4). Owner decision, 2026-10-02: job-level id-token
+  # grants in the workflows AND this pin. The job-level grants decide which
+  # JOBS of these files can mint a token at all; this list decides which FILES
+  # the deployer trusts, so a workflow added next week is refused here whatever
+  # it grants itself. ci-fix.yml is not on it: it federates as its own account
+  # (ci_fix.tf).
+  #
+  # The job_workflow_ref carries the ref the workflow file was read from --
+  # `refs/heads/main` for a push, a schedule and a workflow_dispatch on main --
+  # and an environment-gated job (release.yml `deploy`, application.yml
+  # `build`) presents the same value, unlike `sub`, which changes to
+  # `environment:<env>` (see below for what that did to a `sub` clause).
+  #
+  # THIS LIST IS STATED TWICE ON PURPOSE AND COMPARED:
+  # tests/unit/scripts/test_workflow_id_token_scope.py fails unless it equals
+  # the set of workflow files whose google-github-actions/auth step names
+  # GCP_DEPLOY_SA. A file missing here fails its auth step on main with
+  # `Permission 'iam.serviceAccounts.getAccessToken' denied`.
+  #
+  # The jobs in each file that authenticate: release.yml build, promote,
+  # infrastructure, infrastructure-iam, deploy, acceptance; application.yml
+  # build; terraform.yml plan; security.yml images (scheduled);
+  # iam-refusal-probe.yml probe (owner-dispatched).
+  deployer_workflows = [
+    "release.yml",
+    "application.yml",
+    "terraform.yml",
+    "security.yml",
+    "iam-refusal-probe.yml",
+  ]
+
   github_principals = var.enable_github_wif ? {
-    for ref in var.github_allowed_refs :
-    ref => "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github[0].name}/attribute.repo_ref/${var.github_repository}@${ref}"
+    for pair in setproduct(local.deployer_workflows, var.github_allowed_refs) :
+    "${pair[0]}@${pair[1]}" => "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github[0].name}/attribute.job_workflow_ref/${var.github_repository}/.github/workflows/${pair[0]}@${pair[1]}"
   } : {}
 
   ref_condition = join(" || ", [
@@ -100,13 +134,16 @@ resource "google_iam_workload_identity_pool_provider" "github" {
     "attribute.repository" = "assertion.repository"
     "attribute.ref"        = "assertion.ref"
     "attribute.actor"      = "assertion.actor"
-    # Composite: a principalSet can name one attribute, and the SA binding needs
-    # to pin the repository AND the ref, so the two are mapped as one value.
+    # Composite of the repository and the ref. No binding names it since #457
+    # (the deployer moved to job_workflow_ref); kept because removing a mapping
+    # is a provider change with nothing to gain, and a binding on it would be
+    # refused by tests/terraform/bootstrap.tftest.hcl.
     "attribute.repo_ref" = "assertion.repository + \"@\" + assertion.ref"
     # `<owner>/<repo>/.github/workflows/<file>@<ref>` of the workflow FILE the
     # job runs, which GitHub sets and a caller cannot choose. It lets a binding
     # name one workflow rather than the whole repository: the CI fixer's
-    # account is bound to ci-fix.yml on main alone (ci_fix.tf). A mapping adds
+    # account is bound to ci-fix.yml on main alone (ci_fix.tf), and the
+    # deployer to the workflow files in `deployer_workflows` (#457). A mapping adds
     # nothing to what the pool admits -- that is attribute_condition below,
     # unchanged -- it only gives a binding something narrower to name.
     "attribute.job_workflow_ref" = "assertion.job_workflow_ref"
