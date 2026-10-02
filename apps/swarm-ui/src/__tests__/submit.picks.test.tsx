@@ -54,7 +54,7 @@ describe('/submit is a page of its own in the frame', () => {
   })
 
   it('gives the two forms a trail back to the chooser', async () => {
-    for (const [path, h1] of [['/submit/task', 'Submit a task'], ['/submit/workflow', 'Submit a workflow']] as const) {
+    for (const [path, h1] of [['/submit/task', 'Submit a task'], ['/submit/workflow', 'Submit a workflow'], ['/submit/issue', 'Submit from a GitHub issue']] as const) {
       window.history.replaceState(null, '', path)
       const { unmount } = render(<App />)
       await screen.findByRole('heading', { name: h1, level: 1 }, WAIT)
@@ -71,25 +71,30 @@ describe('/submit is a page of its own in the frame', () => {
 // the chooser (M2)
 // ---------------------------------------------------------------------------
 
-describe('the chooser draws the two picked cards', () => {
+describe('the chooser draws the three picked cards', () => {
   it('each card has an icon, its heading, its Start button and its key', () => {
     const go = vi.fn()
     const { container } = render(<SubmitChooser go={go} />)
     const cards = [...container.querySelectorAll<HTMLElement>('.sb-choice')]
-    expect(cards).toHaveLength(2)
-    const [task, wf] = cards as [HTMLElement, HTMLElement]
+    // The third is intake-tenants.html 1A's "From a GitHub issue".
+    expect(cards).toHaveLength(3)
+    const [task, wf, issue] = cards as [HTMLElement, HTMLElement, HTMLElement]
     for (const c of cards) expect(c.querySelector('h2 svg'), 'a chooser card has no icon').not.toBeNull()
     expect(visible(task.querySelector('h2'))).toBe('Submit a task')
     expect(visible(wf.querySelector('h2'))).toBe('Submit a workflow')
     expect(visible(task.querySelector('kbd'))).toBe('T')
     expect(visible(wf.querySelector('kbd'))).toBe('W')
+    expect(visible(issue.querySelector('h2'))).toBe('From a GitHub issue')
+    expect(visible(issue.querySelector('kbd'))).toBe('I')
     // No route printed as monospace text.
-    expect(visible(container)).not.toMatch(/\/submit\/(task|workflow)/)
+    expect(visible(container)).not.toMatch(/\/submit\/(task|workflow|issue)/)
 
     fireEvent.click(within(task).getByRole('button', { name: 'Start a task' }))
     expect(go).toHaveBeenLastCalledWith('work/new')
     fireEvent.click(within(wf).getByRole('button', { name: 'Start a workflow' }))
     expect(go).toHaveBeenLastCalledWith('work/new-workflow')
+    fireEvent.click(within(issue).getByRole('button', { name: 'Start from an issue' }))
+    expect(go).toHaveBeenLastCalledWith('work/new-issue')
   })
 
   it('T and W open the two forms, but not while typing or with a modifier', () => {
@@ -107,6 +112,8 @@ describe('the chooser draws the two picked cards', () => {
     expect(go).toHaveBeenLastCalledWith('work/new')
     fireEvent.keyDown(document.body, { key: 'W' })
     expect(go).toHaveBeenLastCalledWith('work/new-workflow')
+    fireEvent.keyDown(document.body, { key: 'i' })
+    expect(go).toHaveBeenLastCalledWith('work/new-issue')
   })
 
   it('"Start from a recent one" is a card stating the missing route, not a dashed box', () => {
