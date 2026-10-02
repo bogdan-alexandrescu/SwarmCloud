@@ -286,7 +286,9 @@ def test_refreshing_goes_through_the_same_refresher_as_the_sweep(client):
     client.app_ref.state.credential_refresher = refresher
 
     client.post(f"/v1/accounts/{TENANT}:personal/refresh")
-    assert refresher.calls == [(f"swarm-account-{TENANT}--personal", "personal")]
+    # The ACCOUNT ID, not the label: the outcome is keyed by what is passed,
+    # and a label is unique only within a tenant (docs/web-ui/06-accounts.md P2).
+    assert refresher.calls == [(f"swarm-account-{TENANT}--personal", f"{TENANT}:personal")]
 
 
 def test_a_dead_refresh_token_marks_the_account_rather_than_retrying_forever(client):

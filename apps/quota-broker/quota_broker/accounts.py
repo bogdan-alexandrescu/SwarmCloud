@@ -129,6 +129,45 @@ HOLD_LOG_RETENTION = timedelta(days=90)
 HOLD_END_RELEASED = "released"
 HOLD_END_UNUSABLE = "unusable"
 HOLD_END_EXPIRED = "expired"
+#: The hold was given up for a hold on ANOTHER account, in one transaction
+#: (`main.swap_hold`): the attempt moved, it did not stop. Its record carries
+#: `swapped_to`; the new hold's record carries `swapped_from`, so the 90-day
+#: history serves the swap from both accounts' side with no second store.
+HOLD_END_SWAPPED = "swapped"
+
+#: Every end a record may carry. The broker's history read and swarm-api's
+#: serve exactly these and nothing else.
+HOLD_ENDS = (HOLD_END_RELEASED, HOLD_END_UNUSABLE, HOLD_END_EXPIRED, HOLD_END_SWAPPED)
+
+#: Why an attempt moved from one account to another mid-run (S13/S14).
+#:
+#:   exhausted  the account it was on ran out of quota;
+#:   drain      an operator set the account DRAINING, which marks every live
+#:              hold on it to move (`Hold.move`);
+#:   unusable   the account it had just moved to could not start the agent --
+#:              its secret could not be read -- so it moved again.
+SWAP_EXHAUSTED = "exhausted"
+SWAP_DRAIN = "drain"
+SWAP_UNUSABLE = "unusable"
+SWAP_REASONS = (SWAP_EXHAUSTED, SWAP_DRAIN, SWAP_UNUSABLE)
+
+#: What `CredentialRefresher` can answer for one account, which the sweep
+#: records as `last_refresh_reason` (docs/web-ui/06-accounts.md P2). Named so
+#: a reader of the document knows the closed set; the refresher is the writer.
+REFRESH_REASONS = (
+    "no_refresh_credential",
+    "store_unavailable",
+    "unreadable",
+    "still_valid",
+    "published",
+    "published_unverified",
+    "unverified_skipped",
+    "publish_failed",
+    "reauth_required",
+    "refresh_failed",
+    "refreshed",
+    "error",
+)
 
 
 class Unavailable(str, Enum):
@@ -233,6 +272,14 @@ class WindowReading:
     #: 0.0 = untouched, 1.0 = exhausted.
     utilization: float
     resets_at: datetime
+    #: When THIS window was read. Per window because readings now arrive per
+    #: window -- a worker's stream reports `five_hour` and `seven_day` in
+    #: separate events -- and `Account.with_reading` merges them, so the
+    #: account's `observed_at` (the newest of them) no longer dates each one.
+    #: None on a window stored before this field, which is dated by the
+    #: account's `observed_at` as it always was. Not part of equality: two
+    #: readings of the same figures are the same reading.
+    observed_at: datetime | None = field(default=None, compare=False)
 
     def remaining(self) -> float:
         return max(0.0, 1.0 - self.utilization)
@@ -266,6 +313,16 @@ class Hold:
 
     #: When the hold was taken. None on a hold from before this field.
     assigned_at: datetime | None = None
+
+    #: Set when this hold must MOVE to another account at the worker's next
+    #: turn boundary (S14): `drain` when an operator set the account DRAINING,
+    #: written in the same transaction as the state change. None means stay.
+    move: str | None = None
+
+    #: Set on a hold that was taken by a SWAP rather than an assign: the
+    #: account the attempt came from and why it moved. None on every other.
+    swapped_from: str | None = None
+    swap_reason: str | None = None
 
     def is_expired(self, now: datetime) -> bool:
         return now >= self.expires_at
@@ -353,6 +410,16 @@ class Account:
     #: quietly back on the one shared per-tenant subscription. The sweep says
     #: so out loud.
     last_assigned_at: datetime | None = None
+
+    #: What the refresh sweep last did with this account's credential, written
+    #: back on EVERY sweep (docs/web-ui/06-accounts.md P2). The sweep had each
+    #: account's `RefreshOutcome.expires_at` in hand and threw it away, so the
+    #: Accounts screen could show a token's expiry only after a manual refresh.
+    #: None on an account no sweep has visited since this field existed.
+    #: Metadata only: an instant and a reason, never the token or its length.
+    last_refresh_at: datetime | None = None
+    token_expires_at: datetime | None = None
+    last_refresh_reason: str = ""
 
     def live_holds(self, now: datetime) -> tuple[Hold, ...]:
         return tuple(h for h in self.holds if not h.is_expired(now))
@@ -483,16 +550,39 @@ class Account:
     def with_reading(
         self, windows: dict[str, WindowReading], observed_at: datetime
     ) -> "Account":
-        """A newer reading, or this account unchanged.
+        """This account with a reading folded in PER WINDOW, or unchanged.
 
-        Older readings are DISCARDED rather than merged. Reports arrive from
-        several pods at once and out of order, and letting a stale one overwrite
-        a fresh one would make an exhausted account look available again --
-        precisely the wrong direction to be wrong in.
+        A MERGE, NOT A REPLACEMENT (docs/web-ui/06-accounts.md P4, audit
+        finding 4). Readings now arrive one window at a time -- a worker's
+        stream reports `five_hour` and `seven_day` in separate
+        `rate_limit_event`s -- and a replacement let a reading carrying only
+        `seven_day` erase a binding `five_hour`, which would make a spent
+        account look available.
+
+        Per window, an OLDER reading is DISCARDED. Reports arrive from several
+        pods at once and out of order, and letting a stale one overwrite a
+        fresh one would make an exhausted account look available again --
+        precisely the wrong direction to be wrong in. Each window is dated by
+        its own `observed_at`, or by the account's for a window stored before
+        windows carried one.
         """
-        if self.observed_at is not None and observed_at <= self.observed_at:
+        merged = dict(self.windows)
+        changed = False
+        for name, reading in windows.items():
+            current = merged.get(name)
+            dated = None
+            if current is not None:
+                dated = current.observed_at or self.observed_at
+            if current is not None and dated is not None and observed_at <= dated:
+                continue
+            merged[name] = replace(reading, observed_at=observed_at)
+            changed = True
+        if not changed:
             return self
-        return replace(self, windows=dict(windows), observed_at=observed_at)
+        newest = observed_at
+        if self.observed_at is not None and self.observed_at > newest:
+            newest = self.observed_at
+        return replace(self, windows=merged, observed_at=newest)
 
     @property
     def secret(self) -> str:
@@ -533,10 +623,10 @@ class Account:
             ),
             "secret": self.secret_ref,
             "observed_at": self.observed_at,
-            "windows": {
-                name: {"utilization": w.utilization, "resets_at": w.resets_at}
-                for name, w in self.windows.items()
-            },
+            "windows": windows_to_firestore(self.windows),
+            "last_refresh_at": self.last_refresh_at,
+            "token_expires_at": self.token_expires_at,
+            "last_refresh_reason": self.last_refresh_reason,
         }
 
     @classmethod
@@ -546,9 +636,11 @@ class Account:
             resets = raw.get("resets_at")
             if not isinstance(resets, datetime):
                 continue
+            seen = raw.get("observed_at")
             windows[name] = WindowReading(
                 utilization=float(raw.get("utilization", 0.0)),
                 resets_at=_aware(resets),
+                observed_at=_aware(seen) if isinstance(seen, datetime) else None,
             )
         observed = data.get("observed_at")
         return cls(
@@ -575,7 +667,27 @@ class Account:
             assigned=int(data.get("assigned", 0)),
             reason=data.get("reason", "") or "",
             state_before_reauth=_optional_state(data.get("state_before_reauth")),
+            # Descriptive, so a malformed value reads as absent rather than
+            # making the account unreadable and taking it out of the pool.
+            last_refresh_at=_optional_instant(data.get("last_refresh_at")),
+            token_expires_at=_optional_instant(data.get("token_expires_at")),
+            last_refresh_reason=_optional_text(data.get("last_refresh_reason")) or "",
         )
+
+
+def windows_to_firestore(windows: dict[str, WindowReading]) -> dict[str, Any]:
+    """`Account.windows` as stored. One spelling, for every writer of the map."""
+    out: dict[str, Any] = {}
+    for name, w in windows.items():
+        item: dict[str, Any] = {"utilization": w.utilization, "resets_at": w.resets_at}
+        if w.observed_at is not None:
+            item["observed_at"] = w.observed_at
+        out[name] = item
+    return out
+
+
+def _optional_instant(raw: Any) -> datetime | None:
+    return _aware(raw) if isinstance(raw, datetime) else None
 
 
 def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
@@ -594,6 +706,12 @@ def holds_to_firestore(holds: Iterable[Hold]) -> list[dict[str, Any]]:
             item["attempt_id"] = h.attempt_id
         if h.assigned_at is not None:
             item["assigned_at"] = h.assigned_at
+        if h.move:
+            item["move"] = h.move
+        if h.swapped_from:
+            item["swapped_from"] = h.swapped_from
+        if h.swap_reason:
+            item["swap_reason"] = h.swap_reason
         out.append(item)
     return out
 
@@ -609,6 +727,8 @@ def hold_log_entry(
     *,
     end: str | None = None,
     released_at: datetime | None = None,
+    swapped_to: str | None = None,
+    swap_reason: str | None = None,
 ) -> dict[str, Any]:
     """The `account_holds/{assignment_id}` document for one hold.
 
@@ -623,6 +743,12 @@ def hold_log_entry(
     from when it closed; an OPEN one keeps it from when its hold would lapse,
     so a record whose hold is never closed -- the account removed under a live
     agent -- still ages out rather than living forever.
+
+    A SWAP IS TWO RECORDS (S13/S14). The hold that was left closes with
+    `end: swapped` and `swapped_to` naming the account the attempt moved to;
+    the hold that was taken opens with `swapped_from` (from `Hold`). Each side
+    carries the swap's reason (`swapped_to_reason`, `swapped_from_reason`). Written in the swap's own transaction, so either
+    account's history read serves the swap.
 
     NO SECRET NAME, and nothing else from the account: the record says who
     held what, when, and how it ended.
@@ -639,6 +765,14 @@ def hold_log_entry(
         "end": end,
         "hold_expires_at": hold.expires_at,
         "expires_at": anchor + HOLD_LOG_RETENTION,
+        # How this hold BEGAN, when a swap began it -- carried on every write
+        # of the record, open or closed, so a hold that came in by a swap and
+        # later left by one says both.
+        "swapped_from": hold.swapped_from,
+        "swapped_from_reason": hold.swap_reason if hold.swapped_from else None,
+        # How it ENDED, when a swap ended it.
+        "swapped_to": swapped_to if end == HOLD_END_SWAPPED else None,
+        "swapped_to_reason": swap_reason if end == HOLD_END_SWAPPED else None,
     }
 
 
@@ -676,6 +810,9 @@ def holds_from_firestore(raw: Any) -> tuple[Hold, ...]:
                 task_id=_optional_text(item.get("task_id")),
                 attempt_id=_optional_text(item.get("attempt_id")),
                 assigned_at=_aware(assigned) if isinstance(assigned, datetime) else None,
+                move=_optional_text(item.get("move")),
+                swapped_from=_optional_text(item.get("swapped_from")),
+                swap_reason=_optional_text(item.get("swap_reason")),
             )
         )
     return tuple(holds)
@@ -898,7 +1035,14 @@ __all__ = [
     "DEFAULT_STALE_AFTER",
     "HOLD_END_EXPIRED",
     "HOLD_END_RELEASED",
+    "HOLD_END_SWAPPED",
     "HOLD_END_UNUSABLE",
+    "HOLD_ENDS",
+    "REFRESH_REASONS",
+    "SWAP_DRAIN",
+    "SWAP_EXHAUSTED",
+    "SWAP_REASONS",
+    "SWAP_UNUSABLE",
     "HOLD_LOG_COLLECTION",
     "HOLD_LOG_RETENTION",
     "account_id_for",
@@ -911,4 +1055,5 @@ __all__ = [
     "hold_log_entry",
     "secret_name",
     "validate_label",
+    "windows_to_firestore",
 ]
