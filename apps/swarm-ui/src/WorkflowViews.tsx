@@ -4,6 +4,7 @@ import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
+import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Id } from './Shell'
 import {
   DEFAULT_SORT,
@@ -51,8 +52,47 @@ export interface StepLook {
   readonly tone: Tone | 'unknown'
   readonly word: string
   readonly title: string
-  /** The `.ctl-dot` class for this state -- the silhouette that survives greyscale. */
-  readonly dot: string
+  /**
+   * THE BRAND STATE MARK (marks.tsx) and its hue: the same silhouette the
+   * graph's node draws, so the table, the inspector and the graph on one page
+   * draw one state one way (#503: RUNNING was a filled accent-blue dot here and
+   * the haloed live disc on the node; PARKED the amber warning triangle here
+   * and the violet pause bars there). `skipped` is a step whose verdict gate
+   * kept its agent from running; `unknown` a step whose task was not read --
+   * the queued ring in amber, the warning colour, never a state's hue.
+   */
+  readonly mark: MarkName | 'skipped' | 'unknown'
+  readonly hue: MarkHue | 'warn'
+}
+
+/**
+ * A STEP'S BRAND MARK, in the `.sk-st` shape every state mark in the console
+ * uses. `word` draws the state word beside it; without it the word is the
+ * mark's accessible name.
+ */
+export function WfStepMark({ look, word = false }: { look: Pick<StepLook, 'mark' | 'hue' | 'word'>; word?: boolean }) {
+  return (
+    <span className={`sk-st is-${look.hue} wf-mk`} data-mark={look.mark} data-hue={look.hue}>
+      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+        {look.mark === 'skipped' ? (
+          // THE DASHED CHECK (wide-workflows.html A): the step ended clean and
+          // its agent never ran, so it is not the solid check of work done.
+          <path
+            d="M2 6.4 4.8 9.1 10 3"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeDasharray="2 1.6"
+          />
+        ) : (
+          <MarkGlyph mark={look.mark === 'unknown' ? 'queued' : look.mark} />
+        )}
+      </svg>
+      {word ? <span className="sk-st-w">{look.word}</span> : <span className="sk-vh">{look.word}</span>}
+    </span>
+  )
 }
 
 /** One step, built once, drawn by either view. */
@@ -248,7 +288,7 @@ function PickButton({
       title={row.look.title}
       onClick={() => onPick(row.step.step_id)}
     >
-      {withDot && <i className={row.look.dot} aria-hidden />}
+      {withDot && <WfStepMark look={row.look} />}
       <span className="wf-pick-id">{row.step.step_id}</span>
     </button>
   )
@@ -698,15 +738,22 @@ export function WorkflowTable({
             <Fragment key={r.step.step_id}>
             <tr
               data-step={r.step.step_id}
-              className={r.look.tone === 'bad' ? 'is-bad' : r.look.tone === 'unknown' ? 'is-warn' : undefined}
+              className={
+                r.look.tone === 'bad'
+                  ? 'is-bad'
+                  : r.look.tone === 'unknown'
+                    ? 'is-warn'
+                    : r.look.mark === 'skipped'
+                      ? 'is-skipped'
+                      : undefined
+              }
             >
               <td data-col="step">
                 <PickButton row={r} picked={picked === r.step.step_id} onPick={onPick} withDot={false} />
               </td>
               <td data-col="state">
                 <span className="wf-cell-state" title={r.look.title}>
-                  <i className={r.look.dot} aria-hidden />
-                  {r.look.word}
+                  <WfStepMark look={r.look} word />
                 </span>
               </td>
               <td data-col="why">
@@ -804,8 +851,24 @@ export type AttemptLoader = (taskId: string) => Promise<Result<{ attempts: Attem
 /** One occurrence of the picked step on the board, as the scrubber shows it. */
 export interface SiblingRef {
   readonly workflowId: string
-  readonly dot: string
+  readonly mark: StepLook['mark']
+  readonly hue: StepLook['hue']
   readonly word: string
+}
+
+/**
+ * HOW MANY OCCURRENCES THE SAME-STEP STRIP DRAWS: fifteen around the current
+ * one, the rest counted at each end. All 62 of a busy board ran past the
+ * card's right edge (#503); the position beside the strip is the fact, and the
+ * strip only shows where in the run of workflows this one sits.
+ */
+export const STRIP_MAX = 15
+
+/** The window of `n` occurrences the strip draws around `at`, and how many fall either side. */
+export function stripWindow(n: number, at: number, max = STRIP_MAX): { from: number; to: number } {
+  if (n <= max) return { from: 0, to: n }
+  const from = Math.min(Math.max(0, at - Math.floor(max / 2)), n - max)
+  return { from, to: from + max }
 }
 
 type AttemptsRead =
@@ -939,6 +1002,7 @@ export function StepInspector({
   onClose,
   now,
   load = loadAttempts,
+  children = null,
 }: {
   workflowId: string
   /**
@@ -977,6 +1041,12 @@ export function StepInspector({
   onClose: () => void
   now: number
   load?: AttemptLoader
+  /**
+   * What the workflow page adds under the head (agent-detail-2.html A): the
+   * step's own actions, a review step's verdict card, the merge step's
+   * checklist. Null everywhere else.
+   */
+  children?: ReactNode
 }) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -1010,6 +1080,7 @@ export function StepInspector({
 
   const newerRef = useRef<HTMLButtonElement | null>(null)
   const olderRef = useRef<HTMLButtonElement | null>(null)
+  const strip = stripWindow(siblings.length, siblingIndex)
   const hasNewer = siblingIndex > 0
   const hasOlder = siblingIndex < siblings.length - 1
 
@@ -1059,7 +1130,7 @@ export function StepInspector({
             started {workflowStarted.text} · sub {workflowStarted.submitted}
           </span>
         )}
-        <i className={row.look.dot} aria-hidden />
+        <WfStepMark look={row.look} />
         <span className="wf-inspect-id">{row.step.step_id}</span>
         <span className="wf-inspect-state" title={row.look.title}>
           {row.look.word}
@@ -1075,13 +1146,15 @@ export function StepInspector({
             no link rather than a dead one. */}
         {taskId !== null && (
           <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
-            open agent →
+            Open agent →
           </a>
         )}
         <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
           ×
         </button>
       </div>
+
+      {children}
 
       <div
         className="wf-scrub"
@@ -1162,13 +1235,27 @@ export function StepInspector({
             -- the position above is the fact, and each workflow's state is one
             press away -- so it is hidden from assistive technology rather than
             announced as a list of unlabelled dots. */}
+        {strip.from > 0 && (
+          <span className="wf-scrub-more" aria-hidden>
+            +{strip.from}
+          </span>
+        )}
         <ol className="wf-scrub-strip" aria-hidden>
-          {siblings.map((s, i) => (
-            <li key={s.workflowId} className={i === siblingIndex ? 'is-here' : undefined} title={`${s.workflowId}: ${s.word}`}>
-              <i className={s.dot} />
+          {siblings.slice(strip.from, strip.to).map((s, k) => (
+            <li
+              key={s.workflowId}
+              className={strip.from + k === siblingIndex ? 'is-here' : undefined}
+              title={`${s.workflowId}: ${s.word}`}
+            >
+              <WfStepMark look={s} />
             </li>
           ))}
         </ol>
+        {strip.to < siblings.length && (
+          <span className="wf-scrub-more" aria-hidden>
+            +{siblings.length - strip.to}
+          </span>
+        )}
         <Id title={workflowId}>{workflowId}</Id>
       </div>
     </section>
