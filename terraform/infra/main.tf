@@ -510,6 +510,24 @@ module "scheduler" {
   depends_on = [module.project_services]
 }
 
+# The workflow-rollup jobs (D17) call swarm-api directly, so Cloud Run's edge
+# must let their identity through before the app's ROLLUP_SWEEPER_ROUTES check
+# is ever reached. `api_invokers` is not that grant: dev sets it to allUsers,
+# prod to the tenant groups, and the sweeper is in neither -- so without this
+# every prod job is a 403 and stored Workflow.state stays stale. Modelled on
+# verify.tf's verify_invokes_api, the only other direct caller, and granted in
+# every environment for the same reason. run.invoker on this one service is
+# the account's only grant; the route allow-list narrows it from there.
+resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
+  project  = var.project_id
+  location = var.region
+  # `service_names` is a sorted list; take the name from the map-shaped output,
+  # as verify_invokes_api does.
+  name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  role   = "roles/run.invoker"
+  member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
+}
+
 # The external front door: an ALB with IAP in front of swarm-api.
 #
 # Gated by a flag rather than by the presence of a hostname, for the reason the

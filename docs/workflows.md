@@ -746,7 +746,10 @@ A Cloud Scheduler job calls that route for every registered tenant (the keys
 of `var.tenants`), every 15 minutes: `google_cloud_scheduler_job.workflow_rollup`
 in `terraform/modules/scheduler/jobs.tf`, named `swarm-workflow-rollup-<tenant>`.
 It presents an OIDC token for its own account, `swarm-rollup-sweeper`, which
-holds no project role. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
+holds no project role. Its one grant is `roles/run.invoker` on swarm-api
+(`rollup_sweeper_invokes_api` in `terraform/infra/main.tf`), because in prod
+`api_invokers` names only the tenant groups and Cloud Run's edge would refuse
+the job before the application saw it. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
 set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup` and to
 nothing else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
 `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an admin

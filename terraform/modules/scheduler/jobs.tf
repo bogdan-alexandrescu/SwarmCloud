@@ -124,7 +124,9 @@ resource "google_cloud_scheduler_job" "quota_refresh" {
 #
 # ITS OWN IDENTITY, NOT THE TICK. swarm-api lets this one address call this one
 # route and nothing else (swarm_api.auth.ROLLUP_SWEEPER_ROUTES, via
-# ROLLUP_SWEEPER_USERS); it holds no project role and no grant on any resource.
+# ROLLUP_SWEEPER_USERS); it holds no project role, and its one grant is
+# run.invoker on swarm-api (terraform/infra main.tf, rollup_sweeper_invokes_api),
+# without which Cloud Run's edge refuses it wherever api_invokers is not allUsers.
 # The account id is spelled in modules/service_account_ids so terraform/bootstrap
 # grants the release deployer serviceAccountAdmin on it, and terraform/infra's
 # deployer.tf gives the deployer actAs on it, which creating a job that mints
