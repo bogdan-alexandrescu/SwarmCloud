@@ -528,7 +528,19 @@ ships both.
   Submit row stopped or failed, possibly after the workflow was created — look
   for it before running again, or it is submitted twice) or
   `SUBMITTED_UNVERIFIED` (created, but the relayed reply does not match the
-  spec — it runs regardless; read or cancel it by its `workflow_id`).
+  spec — it runs regardless; read or cancel it by its `workflow_id`), or
+  `FOLLOW_REFUSED` (created, but this session's bridge refused the progress
+  follow the rows make — usually a `SWARM_MCP_FROM` override; fix it, then
+  attach).
+* **Re-attaching to a workflow that is still running:
+  `/sc:swarmcloud {attach: "<workflow_id>"}`** (or `/sc attach <workflow_id>`).
+  It submits nothing. When the Claude Code session restarts, a workflow's rows
+  stop but its tasks run on in SwarmCloud; attach reads the workflow once,
+  reports each finished step once without a row, starts the same `sc:step` row
+  for every unfinished step — a step whose parents have not finished makes one
+  call that holds until they do — and ends with the same final state read. An
+  id this deployment does not have, or another tenant's, ends `NOT_ATTACHED`
+  with the API's error.
 
 Say these differences BEFORE swapping a local step for a remote one, because
 each is a way the same prompt does different work:

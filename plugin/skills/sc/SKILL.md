@@ -1,6 +1,10 @@
 ---
 name: sc
-description: Show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", or before dispatching a long batch.
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does — the only verb that writes. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "show my workflow's rows again", before dispatching a long batch, or to run a spec.
+argument-hint: "[status <wf_id|task_id> | attach <wf_id> | run <spec path|JSON>]"
+arguments:
+  - verb
+  - target
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -26,7 +30,74 @@ allowed-tools:
   - Bash(uv run swarm profiles:*)
 ---
 
-# sc — SwarmCloud cluster state
+# sc — SwarmCloud cluster state, and the front door
+
+This skill reads only, except `run`, which submits and says so first.
+
+## The verb
+
+`/sc` (or `/sc:sc` when another command already claims `/sc`) reads its verb
+from the first word of `$ARGUMENTS` and its target from the rest. One verb,
+one action — never a second one the developer did not ask for:
+
+| `$ARGUMENTS` | What happens | Writes? |
+|---|---|---|
+| no verb (empty) | today's cluster state: `uv run sc`, read by the rules below | no |
+| `status <wf_id\|task_id>` | one status read of that workflow or task | no |
+| `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
+| `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
+| a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
+
+Anything else: say which verbs exist and run nothing. `/sc:swarmcloud` keeps
+working unchanged; these verbs are a shorter way in, not a replacement.
+
+### `status <wf_id|task_id>`
+
+ONE read, then report it. An id beginning `wf_` is a workflow: call
+`swarm_workflow_status` with it once and report the workflow's `state` (null
+means it was not derived — say that, never quote `stored_state`) and each
+step's state. Any other id is a task: call `swarm_status` with
+`task_ids: [<id>]` once and report its state. An error is reported verbatim:
+an id the API does not have and another tenant's id read the same. Never poll;
+a second look is the developer's next `/sc status`. Both tools are the sc
+plugin's own read tools and work outside a checkout; they are not pre-granted
+here -- this skill's grants mark it as the checkout-bound view surface -- so
+the session may ask once before the first read.
+
+### `attach <wf_id>`
+
+Runs the `/sc:swarmcloud` workflow with args `{attach: <wf_id>}` — the id as
+given, nothing else. It submits nothing: it reads the workflow once, reports
+its finished steps once, starts a live row for every unfinished step, and ends
+with the workflow's state. This is how a session that restarted gets its rows
+back for a workflow that kept running in SwarmCloud. An unknown or
+other-tenant id ends with the API's error; report it verbatim.
+
+### `run <spec path|JSON>`
+
+The one verb that writes: it spends the shared pool, a step at a time.
+
+1. Load the spec. Given a path, read the file (relative to this session's
+   directory) and parse it as JSON; given JSON text, parse that. Text that is
+   neither is an error — say so and stop.
+2. Say, before anything is submitted: "about to submit SwarmCloud workflow
+   `<label or path>`: <n> steps (<step ids>) — they run remotely and spend the
+   shared pool". Then run it; do not wait for a reply the developer did not
+   ask to give.
+3. Run the `/sc:swarmcloud` workflow with the spec OBJECT as its args — never
+   a bare path, and never the JSON as a string: a path makes a haiku agent
+   retype the spec, which is how long specs came back altered and were
+   refused. Given a file, the args are `{spec: <the spec object>, spec_path:
+   "<its absolute path>"}`; given JSON text, `{spec: <the spec object>}`.
+   `spec_path` beside the object is a reference, not the spec: the bridge
+   reads those exact bytes for the submission and checks them against the
+   digest of the object, so nothing is retyped and a spec that changed on the
+   way is refused, not submitted.
+4. Report what the workflow returned: its `workflow_id`, its state, and any
+   `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
+   `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
+
+## The views
 
 Every `sc` VIEW is read-only towards the cluster. A view never writes to it,
 never refreshes an account's credential and never cancels anything, so every
