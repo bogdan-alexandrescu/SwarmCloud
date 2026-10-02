@@ -759,7 +759,7 @@ echoes it as `dispatch.continues_task`, and adding it to every task's
 
 ## 7. The workflow rollup has no shared home, so only one service can own it
 
-**Status:** open, found 2026-09-22 while making `Workflow.state` advance at all.
+**Status:** open, found 2026-09-22 while making `Workflow.state` advance at all. The periodic caller this request was one way to get is built without it (D17, 2026-10-02): a Cloud Scheduler job per registered tenant calls `POST /v1/admin/workflows/rollup` as the dedicated `swarm-rollup-sweeper` account, which swarm-api admits to that route alone (`terraform/modules/scheduler/jobs.tf` `workflow_rollup`, `swarm_api.auth.ROLLUP_SWEEPER_ROUTES`). What remains open is the shared home for the derivation.
 
 ### The problem
 

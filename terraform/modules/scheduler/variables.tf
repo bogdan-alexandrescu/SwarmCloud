@@ -86,6 +86,51 @@ variable "quota_broker_path" {
   default     = "/v1/quota/sweep"
 }
 
+variable "api_endpoint" {
+  description = "HTTPS base URL of the swarm-api service, which the workflow-rollup jobs call. Unused when rollup_tenant_ids is empty."
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.api_endpoint == "" || startswith(var.api_endpoint, "https://")
+    error_message = "the API endpoint must be https; the rollup jobs carry an OIDC token."
+  }
+}
+
+variable "api_audience" {
+  description = "OIDC audience the rollup jobs mint their token for. Empty means the endpoint itself, which is what a Cloud Run ID token names and what swarm-api's API_AUDIENCE is set to for its other direct callers (infra verify.tf)."
+  type        = string
+  default     = ""
+}
+
+variable "rollup_tenant_ids" {
+  description = <<-EOT
+    The registered tenants whose workflows are swept, one Cloud Scheduler job
+    each (POST /v1/admin/workflows/rollup?tenant_id=<t>). The root passes the
+    keys of var.tenants: a set the configuration knows at plan, so the
+    for_each never depends on a value that exists only after apply.
+  EOT
+  type        = set(string)
+  default     = []
+}
+
+variable "workflow_rollup_schedule" {
+  description = <<-EOT
+    How often each tenant's stored workflow states are converged.
+
+    Every fifteen minutes. Nothing a READER sees waits on this: every workflow
+    read derives the state from its steps (docs/workflows.md). What waits is
+    the queryable stored copy of a workflow nobody has opened, so the bound
+    is on how stale "list my failed workflows" can be, and a quarter of an
+    hour is well inside what anyone asking that question needs. Each sweep
+    reads one page of a tenant's live workflows and their step tasks, so a
+    tighter schedule multiplies Firestore reads by the tenant count for no
+    reader-visible gain.
+  EOT
+  type        = string
+  default     = "*/15 * * * *"
+}
+
 variable "tick_service_account" {
   description = "Email of the OIDC identity Cloud Scheduler and Pub/Sub push present."
   type        = string

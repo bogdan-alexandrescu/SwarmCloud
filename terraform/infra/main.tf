@@ -476,6 +476,12 @@ module "scheduler" {
   tick_service_account = module.iam.tick_service_account
   kms_key_name         = var.pubsub_kms_key_name
 
+  # D17: one workflow-rollup job per registered tenant, calling swarm-api as
+  # the module's rollup-sweeper account. The audience is the service URL, the
+  # same value verify.tf gives its own direct caller of swarm-api.
+  api_endpoint      = module.cloud_run.service_urls["swarm-api"]
+  rollup_tenant_ids = toset(keys(var.tenants))
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {
