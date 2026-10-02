@@ -54,6 +54,7 @@ export const PARK_WORD: Readonly<Record<ParkReason, string>> = {
   MANUAL_PAUSE: 'paused by someone',
   BUDGET_EXHAUSTED: 'budget used up',
   CREDENTIAL_MISSING: 'credential missing',
+  CHILDREN_INCOMPLETE: 'waiting on its helpers',
 }
 
 function isParkReason(v: string): v is ParkReason {
