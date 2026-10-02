@@ -120,7 +120,8 @@ describe('a Pools row is one click from its holders and its limit (#125)', () =>
     const limit = links.find((a) => a.textContent === 'limit')
     expect(limit).toBeTruthy()
     expect(limit!.getAttribute('href')).toBe(`#admin/limits?pool=${encodeURIComponent('runner:zeta')}`)
-    const holders = links.find((a) => a.textContent === 'holders')
+    // `N holders` when the lease read could count them, `holders` when not.
+    const holders = links.find((a) => /holders?$/.test(a.textContent ?? ''))
     expect(holders!.getAttribute('href')).toBe(`#capacity/holders?pool=${encodeURIComponent('runner:zeta')}`)
   })
 

@@ -23,7 +23,15 @@ import { expectNoFigures } from './setup'
 
 const loadCapacity = vi.hoisted(() => vi.fn<() => Promise<Result<Capacity>>>())
 const loadRuntimeTopology = vi.hoisted(() => vi.fn<() => Promise<Result<RuntimeTopology>>>())
-vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology }))
+// Pools counts holders from the admin lease read beside its capacity read;
+// these readers are not admins, so it answers 403 and the links carry no count.
+const loadLeases = vi.hoisted(() =>
+  vi.fn(async () => ({
+    status: 'error' as const,
+    error: { kind: 'admin_required' as const, httpStatus: 403, code: 'forbidden', message: 'admin group membership is required' },
+  })),
+)
+vi.mock('../api', () => ({ loadCapacity, loadRuntimeTopology, loadLeases }))
 
 const { CapacityScreen } = await import('../Capacity')
 const { ProfilesScreen } = await import('../Profiles')
@@ -98,8 +106,11 @@ describe('the capacity board as a whole', () => {
         f.querySelector('.ctl-card-head > .ctl-card-note'),
         'a family still declares one scope, read off its first row, for all of them',
       ).toBeNull()
-      const heads = [...f.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
-      expect(heads, 'a family table has no Scope column').toContain('Scope')
+      // ON EVERY ROW, under the pool's name since #503 (the picked frame has
+      // no Scope column, and the column wrapped the names beside it).
+      for (const row of f.querySelectorAll('tbody tr')) {
+        expect(row.querySelector('th .cap-scope'), 'a pool row declares no scope').not.toBeNull()
+      }
     }
 
     expect(scopeCell('global')).toBe('platform')
@@ -113,8 +124,9 @@ describe('the capacity board as a whole', () => {
   })
 
   // The Cards view was the alternative set aside on 2026-10-01 (capacity.html);
-  // its scope test went with it. The Scope column above is the one place the
-  // scope is drawn, on every row, including the "Needs action" group's. The
+  // its scope test went with it. The scope under each pool's name is the one
+  // place the scope is drawn, on every row, including the "Needs action"
+  // group's. The
   // group holds the pools a person has to act on (owner decision 2026-10-01,
   // `poolGroup`), so the pool here is paused; a merely full pool stays in its
   // family.
@@ -160,14 +172,14 @@ function renderProfiles(data: Capacity) {
   return render(<ProfilesScreen />)
 }
 
-/** The Scope a Pools family table prints for one pool (CP-2). */
+/** The scope a Pools family table prints for one pool, under its name (CP-2). */
 function scopeCell(name: string): string {
   const th = [...document.querySelectorAll('.cap-families tbody th[title]')].find(
     (t) => t.getAttribute('title') === name,
   )
   expect(th, `Pools draws no row for ${name}`).toBeTruthy()
-  const cell = th!.closest('tr')!.querySelector('td[data-label="Scope"]')
-  expect(cell, `${name} has no Scope cell`).not.toBeNull()
+  const cell = th!.querySelector('.cap-scope')
+  expect(cell, `${name} declares no scope`).not.toBeNull()
   return (cell!.textContent ?? '').trim()
 }
 

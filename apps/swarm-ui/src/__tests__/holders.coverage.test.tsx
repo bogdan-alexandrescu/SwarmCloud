@@ -171,12 +171,9 @@ describe('Holders says whether its rows are every live lease', () => {
     expect(tableNote()).toContain('3 of 5 rows')
     expect(tableNote()).toContain('2 not shown')
     expect(summary()).toContain('3 of 5 unreleased leases')
-    // And the class mix, computed over the same rows, says so too.
-    const mix = [...document.querySelectorAll('.ctl-card')].find(
-      (c) => c.querySelector('.ctl-card-title')?.textContent === 'Class mix',
-    )
-    expect(mix, 'no class-mix card').toBeTruthy()
-    expect(mix!.querySelector('.ctl-card-note')?.textContent).toContain('3 of 5 leases')
+    // The Class mix card that said so too is gone (capacity.html frame 6,
+    // #503); the drift card's own note carries what the rows are out of.
+    expect(card.querySelector('.ctl-card-note')?.textContent).toContain('3 of 5 leases')
   })
 
   it('treats `truncated` without a count as cut, and invents no number for it', async () => {

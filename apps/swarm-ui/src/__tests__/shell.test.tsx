@@ -26,6 +26,7 @@
 // track axis) as longhands, with the reason beside them.
 
 import STYLES from '../styles.css?raw'
+import CAPACITY_CSS from '../styles/capacity.css?raw'
 import HELP_CSS from '../styles/help.css?raw'
 import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -2285,16 +2286,20 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   })
 
   it('CP-18: the family tables share one set of columns', () => {
-    // `table-layout: fixed` takes the widths from the head row, which is the
+    // `table-layout: fixed` takes the widths from the columns, which are the
     // same in every table of a screen, so the columns line up down the page.
-    // MUTATION: drop `table-layout: fixed`, or the head widths.
+    // Since #503 the widths are the tables' shared `<colgroup>`, in Pools' own
+    // sheet (styles/capacity.css), so they are asked of that sheet.
+    // MUTATION: drop `table-layout: fixed`, or the column widths.
     const pools = fragment(
-      '<div class="cap-families"><div class="ctl-card"><div class="ctl-card-body"><div class="ctl-table is-stacked"><table>' +
-        '<thead><tr><th>Pool</th><th class="is-num">In use (units)</th></tr></thead></table></div></div></div></div>',
+      '<div class="cap-families"><div class="ctl-card"><div class="ctl-card-body"><div class="ctl-table is-scroll cap-pools"><table>' +
+        '<colgroup><col class="cap-c-pool"><col class="cap-c-num"></colgroup>' +
+        '<thead><tr><th>Pool</th><th class="is-num">Leased</th></tr></thead></table></div></div></div></div>',
     )
     expect(won(pick(pools, 'table'), 'table-layout', WIDE), 'Pools').toBe('fixed')
-    expect(won(pick(pools, 'th'), 'width', WIDE), 'Pools: the name column').toMatch(/%$/)
-    expect(won(pick(pools, 'th.is-num'), 'width', WIDE), 'Pools: a figure column').toMatch(/%$/)
+    const colWidth = (sel: string) => cascade(CAPACITY_CSS, pick(pools, sel), ['width'], WIDE).winner?.value
+    expect(colWidth('col.cap-c-pool'), 'Pools: the name column').toMatch(/%$/)
+    expect(colWidth('col.cap-c-num'), 'Pools: a figure column').toMatch(/%$/)
   })
 
   it('CP-19: the fields in an open account take the panel\'s width', () => {

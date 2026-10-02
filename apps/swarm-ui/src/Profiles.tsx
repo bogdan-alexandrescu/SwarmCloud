@@ -1,4 +1,5 @@
 import { loadCapacity } from './api'
+import { CapSeg } from './Capacity'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { POOLS_POLL_MS } from './capacityPoll'
@@ -31,25 +32,20 @@ import type { Capacity } from './types'
 export function ProfilesScreen() {
   return (
     <Screen
-      /* "Profile headroom", NOT "Runner profiles", AND THE HEADING MOVED
-         BECAUSE THE TAB DID -- test_nav_headings_agree.py asserts the two are
-         one name and would have failed the build otherwise.
-         The rename is what pays for the three-section nav putting this screen
-         and `Runtimes.tsx` in one section. Those two were kept in SEPARATE
-         sections for exactly this reason: "Runtimes" and "Runner profiles" are
-         near-synonyms answering different questions, and two adjacent tabs
-         with near-synonymous labels is how a reader takes the per-tenant
-         figures on THIS screen for the platform-wide ones on that one. Every
-         count here is built from `pool_names_for(tenant_id=ctx.tenant_id)`
-         unconditionally, admin included (service.py:313-329); nothing on the
-         runtime topology reads a tenant document at all. "Headroom" is the
-         word this product already uses for a measurement of one tenant against
-         a ceiling, so the label now says which of the two questions this
-         screen answers instead of leaving it to be inferred from the section.
+      /* "POOLS", BECAUSE THIS IS POOLS' SECOND VIEW (capacity.html C1, frame
+         3, owner's pick 2026-10-01; the #503 audit). Ceilings and By runner
+         profile are one page, headed "Pools", with the in-page strip below
+         naming the view -- the panel lists By runner profile under Pools for
+         the same reason. It was headed "By runner profile", as a page of its
+         own. test_nav_headings_agree.py holds a nested view's heading to its
+         parent tab's label and its strip to its own label.
+         Every count here is still the CALLING tenant's: built from
+         `pool_names_for(tenant_id=ctx.tenant_id)` unconditionally, admin
+         included (service.py:313-329), which the summary says in words.
          The route is still `#capacity/profiles`: `runner_profile` is the
          contract's field name and invariant 10 is why this screen exists, so
          the address keeps the contract's noun. */
-      title="By runner profile"
+      title="Pools"
       /* THE SCREEN'S ONE `?` (CP-5's second half, #85): Pools' glyph, on the
          same topic. The banner it replaces said the conjunction once for
          every card, and the glyph does too -- after the title, AH-24's slot
@@ -73,7 +69,12 @@ export function ProfilesScreen() {
         body: 'The read succeeded and its pool list was empty. Pools are created at provisioning time, so profiles cannot be priced against anything yet — this is a real absence, not a failed lookup.',
       }}
     >
-      {(d) => <Catalogue capacity={d} />}
+      {(d) => (
+        <>
+          <CapSeg view="profiles" />
+          <Catalogue capacity={d} />
+        </>
+      )}
     </Screen>
   )
 }

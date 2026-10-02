@@ -17,13 +17,18 @@
 // mark `warn-text` and the second goes red; print the pool name as text and
 // the third does.
 
-import STYLES from '../styles.css?raw'
+import SHEET from '../styles.css?raw'
+import ADMIN from '../styles/admin.css?raw'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import type { Capacity, Pool, RunnerProfile } from '../types'
 import { cascade } from './cssgate'
+
+// The shell's sheet and the Admin section's own (styles/admin.css), in the
+// order the app loads them.
+const STYLES = `${SHEET}\n${ADMIN}`
 
 const api = vi.hoisted(() => ({
   loadCapacity: vi.fn(),

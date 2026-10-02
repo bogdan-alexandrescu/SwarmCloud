@@ -174,20 +174,20 @@ describe('the held first column keeps a readable width at 390 (#222)', () => {
     expect(expectFloored(await roster(), 'Tenants')).toBe(4)
   })
 
-  it('leaves the Tenants grouped head’s second row out of the held column', async () => {
-    // `Max active` is the first cell of the head's second row, a figure's head
-    // from the middle of the table: not held, and no floor -- at the held
-    // width it would widen the Configured group for nothing. THE PROPERTY, not the rule that
-    // gives it: the held rules name only the head's first row, so nothing here
-    // needs undoing. shell.test.tsx's WF-21 two-row case holds the same for
-    // every held rule, the corner's fill and CP-18's restatements included.
-    // MUTATION: widen the held rule's head branch in the CH-13 block back to
-    // every head row (`thead > tr > th:first-child`).
+  it('draws the Tenants head as one row, so no figure’s head sits in the held corner', async () => {
+    // The roster's head had a second row, `Max active` and `Units` under a
+    // Configured group, and that row's first cell -- a figure's head from the
+    // middle of the table -- was what the held rules had to be taught to skip.
+    // #503 fitted the roster to admin-help.html's Tenants frame: one head row,
+    // Configured one column. Only the Tenant head is held at 390.
+    // MUTATION: put the grouped two-row head back.
     const table = await roster()
-    const maxActive = table.querySelector(':scope > thead > tr:nth-child(2) > th:first-child')!
-    expect((maxActive.textContent ?? '').trim()).toBe('Max active')
-    expect(painted(maxActive, 'position', PHONE) ?? 'static', 'a Configured head is held at the left edge').not.toBe('sticky')
-    expect(painted(maxActive, 'min-width', PHONE) ?? '0', 'a Configured head carries the held column’s floor').not.toMatch(HELD)
+    expect(table.querySelectorAll(':scope > thead > tr')).toHaveLength(1)
+    const heads = [...table.querySelectorAll(':scope > thead > tr > th')]
+    expect(painted(heads[0]!, 'position', PHONE)).toBe('sticky')
+    for (const th of heads.slice(1)) {
+      expect(painted(th, 'position', PHONE) ?? 'static', `${th.textContent} is held at the left edge`).not.toBe('sticky')
+    }
   })
 
   it('floors the Timeline’s Table view, Reliability and Workflows that failed', () => {

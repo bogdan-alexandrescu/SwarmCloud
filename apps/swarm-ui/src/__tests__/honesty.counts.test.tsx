@@ -363,18 +363,18 @@ describe('the states that can never be written', () => {
 })
 
 /**
- * AH-25 (#86). THE THREE ADMIN TABS DREW TWO PAGE HEADS. Pool limits and
- * Tenants drew Screen's -- a title over one provenance line -- and Platform
- * counts drew its own `.ctl-page-head` with the control pinned right, then a
- * separate toolbar row holding the cost: the cost sat a row away from "Run the
- * count" although the code said "beside the control".
+ * AH-25 (#86), #503. THE HEAD IS A TITLE, THE RUN BUTTON BESIDE IT, AND ONE
+ * LINE UNDER IT. Platform counts once drew its own `.ctl-page-head` with the
+ * cost in a toolbar a row away from the press it priced; then AH-25 put the
+ * control and its cost inside the provenance line, where the shell's `.sub
+ * button` drew it as an underlined text control -- the billed action read as
+ * a link in prose (#503, measured against admin-help.html frames 4-5).
  *
- * It is Screen's head now, through the one `PageHead`, and its line reads like
- * every other screen's: what was read, how long ago, and the read-now control
- * -- with the cost printed ON the control that spends it (#138, which moved
- * it from immediately before the control onto it).
+ * Now the button is in the head beside the title, `Run the count · N reads`
+ * before the first run and `Run it again · N reads` after one, and the line
+ * under it says what was read and how long ago, as every Screen route's does.
  */
-describe('the page head (AH-25)', () => {
+describe('the page head (AH-25, #503)', () => {
   const PER_SCOPE = REAL_STATES.length + NEVER_WRITTEN.size
 
   function line(): HTMLElement {
@@ -383,36 +383,47 @@ describe('the page head (AH-25)', () => {
     return sub
   }
 
-  it('is the head Screen renders: a title over one line, no second head and no toolbar', async () => {
+  it('is a title with the run button beside it, over one provenance line, no second head and no toolbar', async () => {
     render(<PlatformCountsScreen />)
     await waitFor(() => expect(loadMe).toHaveBeenCalled())
     expect(document.querySelector('.head > h1')?.textContent).toBe('Platform counts')
     expect(document.querySelector('.ctl-page-head'), 'a head of its own shape').toBeNull()
     expect(document.querySelector('.ctl-toolbar'), 'the cost is still a row away from the control').toBeNull()
-    await waitFor(() => expect(line().textContent).toBe(`not counted yet · Run the count · ${PER_SCOPE} count()`))
+    // MUTATION: put the button back in the provenance line.
+    const button = screen.getByRole('button', { name: /^Run the count · / })
+    expect(button.parentElement, 'the run is not beside the title').toBe(document.querySelector('.head'))
+    expect(button.closest('p.sub'), 'the run is inside the provenance sentence').toBeNull()
+    expect(button.tagName).toBe('BUTTON')
+    await waitFor(() => expect(button.textContent).toBe(`Run the count · ${PER_SCOPE} reads`))
+    expect(line().textContent).toBe('not counted yet')
   })
 
   it('prints the cost on the control that spends it (#138), so the two cannot split', async () => {
     render(<PlatformCountsScreen />)
     const button = screen.getByRole('button', { name: /^Run the count · / })
-    const cost = document.querySelector('p.sub .counts-cost')
-    expect(cost, 'the cost is not in the head line').not.toBeNull()
-    expect(button.closest('p.sub'), 'the control is not in the head line').not.toBeNull()
+    const cost = document.querySelector('.head .counts-cost')
+    expect(cost, 'the cost is not in the head').not.toBeNull()
     expect(cost!.closest('button'), 'the cost is beside the control, not on it').toBe(button)
-    // The read-now control is `.sub button`, as Screen's `refresh` is.
+    // Primary before the first run: it is the page's one action.
+    expect(button.classList.contains('is-primary')).toBe(true)
     expect(button.className).not.toContain('retry')
   })
 
-  it('after a run: how many, how old, the cost, and the control again', async () => {
+  it('after a run: how many and how old under the title, and Run it again beside it', async () => {
     await run({ status: 'ok', data: stats(), fetchedAt: Date.now() })
-    await screen.findByRole('button', { name: /^Run it again · / })
-    expect(line().textContent).toMatch(new RegExp(`^1 run · read .+ · Run it again · ${PER_SCOPE} count\\(\\)$`))
+    const again = await screen.findByRole('button', { name: /^Run it again · / })
+    expect(again.textContent).toBe(`Run it again · ${PER_SCOPE} reads`)
+    expect(again.closest('.head')).not.toBeNull()
+    // A re-run is not the page's primary action any more.
+    expect(again.classList.contains('is-primary')).toBe(false)
+    expect(line().textContent).toMatch(/^1 run · read .+$/)
   })
 
   it('after a failed run: says so, and still prices the next press', async () => {
     await run({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } })
-    await screen.findByRole('button', { name: /^Run it again · / })
-    expect(line().textContent).toBe(`last run failed · Run it again · ${PER_SCOPE} count()`)
+    const again = await screen.findByRole('button', { name: /^Run it again · / })
+    expect(again.textContent).toBe(`Run it again · ${PER_SCOPE} reads`)
+    expect(line().textContent).toBe('last run failed')
   })
 
   it('while counting: the control says so and cannot be pressed twice', async () => {
@@ -421,7 +432,7 @@ describe('the page head (AH-25)', () => {
     screen.getByRole('button', { name: /^Run the count · / }).click()
     const busy = await screen.findByRole('button', { name: 'Counting…' })
     expect((busy as HTMLButtonElement).disabled).toBe(true)
-    expect(busy.closest('p.sub')).not.toBeNull()
+    expect(busy.closest('.head')).not.toBeNull()
   })
 })
 
@@ -444,22 +455,22 @@ describe('the cost shown before the first run', () => {
    * below the control, to immediately before the control.
    */
   function perRun(): string {
-    const cost = document.querySelector('.head + p.sub .counts-cost')
-    if (!cost) throw new Error('no cost in the head line')
+    const cost = document.querySelector('.head .counts-cost')
+    if (!cost) throw new Error('no cost on the head\'s run button')
     return cost.textContent ?? ''
   }
 
   it('is an admin’s cost for an admin, known from the session before any run', async () => {
     loadMe.mockResolvedValue(session(true))
     render(<PlatformCountsScreen />)
-    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE * 2} count()`))
+    await waitFor(() => expect(perRun()).toBe(`${PER_SCOPE * 2} reads`))
     expect(loadStats, 'the figure came from a run, not from the session').not.toHaveBeenCalled()
   })
 
   it('is a tenant’s cost for a non-admin', async () => {
     render(<PlatformCountsScreen />)
     await waitFor(() => expect(loadMe).toHaveBeenCalled())
-    await waitFor(() => expect(perRun()).toContain(`${PER_SCOPE} count()`))
+    await waitFor(() => expect(perRun()).toBe(`${PER_SCOPE} reads`))
     expect(perRun()).not.toContain(String(PER_SCOPE * 2))
   })
 

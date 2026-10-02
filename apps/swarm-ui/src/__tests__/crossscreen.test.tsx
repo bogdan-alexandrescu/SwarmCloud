@@ -371,7 +371,7 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
     // MUTATION: the cost beside the button again, or the button bare.
     window.history.replaceState(null, '', '/admin/counts')
     render(<App />)
-    const button = await screen.findByRole('button', { name: /^Run the count · \d+(–\d+)? count\(\)$/ })
+    const button = await screen.findByRole('button', { name: /^Run the count · \d+(–\d+)? reads$/ })
     expect(button.querySelector('.counts-cost'), 'the price is not inside the control').not.toBeNull()
   })
 })

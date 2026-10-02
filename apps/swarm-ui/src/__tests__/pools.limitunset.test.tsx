@@ -114,7 +114,13 @@ describe('Pool limits draws a pool with no limit set as that, not as 0 agents', 
       expect(el).not.toBeNull()
       return el as HTMLElement
     }, WAIT)
-    expect(row.querySelector('.adm-ceiling')!.textContent).toBe('no limit set')
+    // The figure's slot holds a dash with its reason, and the words follow
+    // `edit` so they cannot widen the slot and move it (#503). Never a 0.
+    const slot = row.querySelector('.adm-ceiling')!
+    expect(slot.textContent).toBe('—')
+    expect(slot.getAttribute('aria-label') ?? '').toMatch(/^No limit set/)
+    expect(row.querySelector('.adm-unset')!.textContent).toBe('no limit set')
+    expect(row.querySelector('td[data-label="Ceiling (units)"]')!.textContent ?? '').not.toMatch(/\d/)
     fireEvent.click(row.querySelector('button[aria-label^="Edit ceiling for tenant:eng"]') as HTMLElement)
     const field = (await screen.findByLabelText('Hard limit for tenant:eng', { exact: false })) as HTMLInputElement
     expect(field.value).toBe('')

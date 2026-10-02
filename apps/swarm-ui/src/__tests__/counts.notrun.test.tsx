@@ -1,6 +1,7 @@
 // PLATFORM COUNTS BEFORE THE FIRST RUN (#135, admin-help.html §B, decided
 // 2026-10-01): both cards are drawn with "not run", so the page has its shape
-// before the press, and the placeholder is gone once a run is asked for.
+// before the press, and the placeholder is gone once a run is asked for. The
+// mark is the neutral `not measured` one, never a task state's (#503).
 
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -44,8 +45,13 @@ describe('Platform counts before the first run (#135)', () => {
     for (const title of [/This tenant/, /Every tenant/]) {
       const card = screen.getByRole('heading', { name: title }).closest('section')!
       expect(card.classList.contains('counts-notrun')).toBe(true)
-      const mark = card.querySelector('[data-mark="queued"]')
-      expect(mark?.textContent, `${title} carries no not-run mark`).toBe('not run')
+      // NOT MEASURED, the neutral mark of the six kinds of nothing (#503) --
+      // never a task-state mark: the QUEUED ring here read as queued work.
+      // MUTATION: draw the queued ring again, or any `[data-mark]`.
+      expect(card.querySelector('[data-mark]'), `${title} wears a task-state mark`).toBeNull()
+      const mark = card.querySelector('.ctl-mark.is-absent')
+      expect(mark?.textContent, `${title} carries no not-measured mark`).toBe('not measured')
+      expect(card.textContent ?? '').toContain('not run yet')
       // Nothing failed: not the dashed `not read` failure mark.
       expect(card.querySelector('.ctl-mark.is-unread')).toBeNull()
       // And no number pretending to be a count.
@@ -72,7 +78,7 @@ describe('Platform counts before the first run (#135)', () => {
     fireEvent.click(screen.getByRole('button', { name: /^Run the count · / }))
     await waitFor(() => expect(document.querySelectorAll('.split-row').length).toBeGreaterThan(0))
     expect(document.querySelector('.counts-notrun')).toBeNull()
-    expect(screen.queryByText('not run')).toBeNull()
+    expect(document.body.textContent ?? '').not.toContain('not run yet')
     expect(screen.getAllByRole('heading', { name: /This tenant/ })).toHaveLength(1)
   })
 })
