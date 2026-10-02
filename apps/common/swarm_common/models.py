@@ -183,7 +183,8 @@ class EndCause(str, Enum):
 
       * the worker (`agent_worker.control`): TIMEOUT, OUTPUTS_MISSING,
         INPUTS_UNAVAILABLE, CANNOT_START, RUNNER_ERROR, CANCEL_REQUESTED,
-        SPEC_SIGNATURE_INVALID;
+        SPEC_SIGNATURE_INVALID, MERGE_REFUSED, MERGE_FAILED, VERDICT_REFUSED,
+        VERDICT_FAILED;
       * the reconciler (`repair_task_state`): LOST_WORKER, CANNOT_START,
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
@@ -221,6 +222,15 @@ class EndCause(str, Enum):
     shape this cause uses for its own failures. Never retried: another
     attempt reads the same document. Every occurrence is either a tenant's
     agent rewriting a step or a platform bug, and both causes are alerted on.
+
+    MERGE_REFUSED/MERGE_FAILED (contract request 33) and VERDICT_REFUSED/
+    VERDICT_FAILED (contract request 35), ACCEPTED by the owner on 2026-10-01
+    for #295, are written only by the worker, for a `worker_action` profile's
+    own end: no runner ran, so RUNNER_ERROR would be false. REFUSED means a
+    condition for acting was not met and nothing changed on the forge; FAILED
+    means the action was allowed and the forge did not do it. The specific
+    reason is a worker vocabulary, not a frozen one: `result_summary.merge.
+    refusal` and `result_summary.verdict.refusal` (docs/merge-step.md §6, §6a).
     """
 
     TIMEOUT = "timeout"
@@ -235,6 +245,10 @@ class EndCause(str, Enum):
     CANCELLED_PARENT = "cancelled_parent"
     WORKFLOW_SWEEP = "workflow_sweep"
     SPEC_SIGNATURE_INVALID = "spec_signature_invalid"
+    MERGE_REFUSED = "merge_refused"   # a condition for merging was not met; nothing changed on the forge
+    MERGE_FAILED = "merge_failed"     # the merge was allowed, and the forge did not do it
+    VERDICT_REFUSED = "verdict_refused"   # a condition for posting the review was not met; nothing changed on the forge
+    VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
 
 
 @dataclass

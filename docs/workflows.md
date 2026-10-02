@@ -142,6 +142,16 @@ What `claude-code` and `codex` declare (contract request 28, #265):
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:codex -->
 
+`claude-code-review` is `claude-code` under its own Job and service account,
+for the merge chain's review step (contract request 36, #295). It is
+disabled until #295 is enabled, and declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-review generated from RUNNER_PROFILES["claude-code-review"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-review runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code-review -->
+
 `issue` points a step at a GitHub issue, so its prompt need not restate one.
 It names an issue in the task's own `repository_url` (a workflow's, for a
 step), and a submission that sends it without a repository is refused with

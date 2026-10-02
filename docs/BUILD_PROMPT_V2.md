@@ -42,15 +42,19 @@ six months is usually that its cost was never recorded.
 **Amended 2026-10-01 by owner decision; the spec moved to match the code, not
 the other way round.** This section originally made GKE Autopilot the sole
 execution substrate, with every task a pod, and retired Cloud Run Jobs. That was
-never built. What runs is:
+never built. What runs is (the last three are #295's, accepted 2026-10-01 and
+disabled for every tenant; no Job exists for them yet):
 
 | profile | backend | where the catalogue says so |
 |---|---|---|
-| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1078` |
-| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:992` |
-| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1094` |
-| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1111` |
-| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1140` |
+| `mock` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1125` |
+| `generic` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1032` |
+| `claude-code` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1141` |
+| `codex` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1158` |
+| `browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py:1187` |
+| `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1209` |
+| `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1228` |
+| `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py:1253` |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
@@ -58,7 +62,7 @@ never built. What runs is:
 `GkeJobDispatcher` (`apps/scheduler/scheduler/dispatch.py:1334`); the module
 header (`apps/scheduler/scheduler/dispatch.py:8`) states the same split. No
 profile is `AUTO`, so `resolve_backend`
-(`apps/common/swarm_common/profiles.py:1150`) only passes the declared backend
+(`apps/common/swarm_common/profiles.py:1267`) only passes the declared backend
 through. `tests/unit/scripts/test_docs_spec_amendments.py` reads the catalogue
 and fails when this table stops matching it.
 
