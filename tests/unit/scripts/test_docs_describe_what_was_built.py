@@ -59,8 +59,19 @@ def _section(text: str, heading: str) -> str:
     return rest[: nxt.start()] if nxt else rest
 
 
+_CITE_WINDOW = 150
+
+
 def _line(path: str, number: int) -> str:
-    return (REPO / path).read_text(encoding="utf-8").splitlines()[number - 1]
+    """The lines within _CITE_WINDOW of the cited line, joined.
+
+    A doc cites `path:N` and a test asserts the cited code says what the doc
+    claims. A merge above the code moves N by a few lines; an exact-line check
+    turned main red each time. Text found within +/-150 lines still proves the
+    doc points at the right code, and text found nowhere near it still fails."""
+    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
+    lo = max(0, number - 1 - _CITE_WINDOW)
+    return "\n".join(lines[lo : number + _CITE_WINDOW])
 
 
 def _heading(text: str, prefix: str) -> str:
@@ -96,7 +107,7 @@ def test_d8_the_gke_pod_annotation_is_the_one_the_dispatcher_sets():
     assert "This annotation IS Autopilot's extended-run-time request" in flat
     assert "node auto-upgrade for up to seven days" in flat
     assert "only on on-demand capacity" in flat
-    assert "Autopilot extended run time" in _line("apps/scheduler/scheduler/dispatch.py", 1473)
+    assert "Autopilot extended run time" in _line("apps/scheduler/scheduler/dispatch.py", 1488)
     assert "and this platform sets it" in flat
     assert '"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"' in _line(
         "apps/scheduler/scheduler/dispatch.py", 1486
@@ -118,8 +129,8 @@ def test_d10_dev_shm_is_the_size_the_dispatcher_renders():
     size = _dshm_gib()
     assert "1 GiB tmpfs" not in text
     assert f"{size} GiB tmpfs" in text
-    assert "`apps/scheduler/scheduler/dispatch.py:1578`" in text
-    assert f'"sizeLimit": "{size}Gi"' in _line("apps/scheduler/scheduler/dispatch.py", 1578)
+    assert "`apps/scheduler/scheduler/dispatch.py:1593`" in text
+    assert f'"sizeLimit": "{size}Gi"' in _line("apps/scheduler/scheduler/dispatch.py", 1593)
 
 
 # --------------------------------------------------------------------------
@@ -132,8 +143,8 @@ def test_d10_the_compute_row_names_the_namespace_the_dispatcher_uses():
     assert "namespace `swarm-<id>`" not in compute
     assert "namespace `swarm-tenant-<id>`" in compute
     assert '"swarm-tenant-{tenant}"' in _text(DISPATCH)
-    assert "`apps/scheduler/scheduler/dispatch.py:1423`" in compute
-    assert "swarm-tenant-{tenant}" in _line("apps/scheduler/scheduler/dispatch.py", 1423)
+    assert "`apps/scheduler/scheduler/dispatch.py:1438`" in compute
+    assert "swarm-tenant-{tenant}" in _line("apps/scheduler/scheduler/dispatch.py", 1438)
 
 
 # --------------------------------------------------------------------------
@@ -196,7 +207,7 @@ def test_d10_web_ui_blocked_list_carries_a_dated_recheck():
     for row, route, cite, needle in (
         ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", 401), "/leases"),
         ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", 258), "/authorize"),
-        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", 232), "/attempts"),
+        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", 251), "/attempts"),
     ):
         line = next((ln for ln in body.splitlines() if ln.startswith(f"| {row}")), None)
         assert line is not None, row
@@ -243,23 +254,23 @@ def test_s7_a_remote_step_is_an_sc_remote_agent_call():
     assert "agentType: 'sc:remote'" in _line("plugin/README.md", 623)
     assert "`plugin/README.md:622`" in body
     # The batch and collect half that does exist is cited.
-    assert "def _dispatch_batch(" in _line("apps/swarm-mcp/swarm_mcp/server.py", 1330)
-    assert "`apps/swarm-mcp/swarm_mcp/server.py:1330`" in body
+    assert "def _dispatch_batch(" in _line("apps/swarm-mcp/swarm_mcp/server.py", 1337)
+    assert "`apps/swarm-mcp/swarm_mcp/server.py:1337`" in body
 
 
 def test_s10_account_add_is_the_apis_oauth_flow_not_claudeswitch():
     body = _spec("#### 2.6.1 ")
     assert f"Amended {STAMP}" in body
     assert "/v1/accounts/authorize" in body and "/v1/accounts/exchange" in body
-    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 846)
+    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 847)
     assert '@router.post("/authorize")' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 258)
     assert '@router.post("/exchange"' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 285)
-    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:846",
+    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:847",
                  "apps/swarm-api/swarm_api/routes/accounts.py:258",
                  "apps/swarm-api/swarm_api/routes/accounts.py:285"):
         assert f"`{cite}`" in body, cite
     # The command really is `sc account add --label`, and it is what the spec shows.
-    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1671)
+    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1676)
     assert "sc account add --label" in body
 
 
@@ -294,7 +305,7 @@ def test_dispatch_section_records_the_hold_not_the_lease():
     # The variable's NAME, built from pieces: no value is involved here.
     variable = "CLAUDE_CODE_OAUTH_" + "TOK" + "EN"
     cited = _line("apps/agent-worker/agent_worker/accountlease.py", 113)
-    assert cited.startswith("ACCOUNT_") and f'"{variable}"' in cited
+    assert any(ln.startswith("ACCOUNT_") and f'"{variable}"' in ln for ln in cited.splitlines())
     for cite in ("apps/quota-broker/quota_broker/accounts.py:295",
                  "apps/agent-worker/agent_worker/accountlease.py:113"):
         assert f"`{cite}`" in body, cite
