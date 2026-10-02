@@ -29,6 +29,7 @@ OUTPUTS_MISSING back at either refusal site -- the end-cause tests fail.
 from __future__ import annotations
 
 import shutil
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +167,11 @@ def test_an_unreachable_forge_is_not_a_refusal(
 def test_a_step_that_opens_no_pull_request_still_succeeds_having_changed_nothing(
     db, worker_factory, monkeypatch, origin, local_urls, forge, dispatch
 ):
+    if dispatch.get("pr_author"):
+        # A single-pr reader clones its author's branch (#295), which the
+        # author pushed before the reader started.
+        subprocess.run(["git", "branch", f"swarm/{dispatch['pr_author']}", "main"],
+                       cwd=str(origin), check=True, capture_output=True)
     worker = _run(db, worker_factory, monkeypatch, origin, dispatch=dispatch)
     assert worker.run() == 0
     task = db.doc("tasks/task_1")

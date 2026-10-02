@@ -259,10 +259,13 @@ def test_a_builds_on_step_is_unchanged(
 
 
 def test_a_single_pr_step_is_unchanged(db, worker_factory, monkeypatch, origin, local_urls, forge):
+    """A `single-pr` reader clones its author's branch (#295, merge-step.md §3),
+    never a pinned base: its `pr_role` decides what it clones."""
     monkeypatch.setattr(
         lifecycle.inputs_mod, "fetch_upstream_task",
         lambda *_a, **_k: pytest.fail("a single-pr step read its parents for a pin"),
     )
+    _git(origin, "branch", "swarm/t-impl", "main")
     worker, _, cloned = _clone(
         worker_factory, monkeypatch, origin, task_id="t-read",
         dispatch={"strategy": "single-pr", "pr_role": "reader", "pr_author": "t-impl"},
@@ -270,6 +273,7 @@ def test_a_single_pr_step_is_unchanged(db, worker_factory, monkeypatch, origin, 
     )
     assert worker._base_pin is None
     assert "base_pin" not in cloned
+    assert cloned["ref"] == "swarm/t-impl"
 
 
 def test_a_server_that_refuses_a_fetch_by_sha_is_served_from_the_branch_history(
