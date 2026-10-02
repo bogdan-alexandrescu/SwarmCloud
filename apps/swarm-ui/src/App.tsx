@@ -28,7 +28,7 @@ import {
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
-import { Icon, SkyShell, readPref, writePref, type SpineSection } from './Spine'
+import { Icon, SkyShell, type SpineSection } from './Spine'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
