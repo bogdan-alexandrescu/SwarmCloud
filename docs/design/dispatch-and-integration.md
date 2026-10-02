@@ -189,10 +189,20 @@ In dependency order, smallest first:
 The owner also asked for a view of **cluster topology: which runtime
 environments exist, what each is specialised for, and how they are sized.**
 That is a UI surface over the frozen runner-profile catalogue
-(`swarm_common.profiles`) plus `RESOURCE_CLASSES`, neither of which any route
-returns today. It belongs with the control-plane redesign rather than here, and
-is listed so it is not lost: a person choosing a `runner_profile` by name
-currently has no way to see what the names mean.
+(`swarm_common.profiles`) plus `RESOURCE_CLASSES`.
+
+**Mapped since, re-checked 2026-10-02.** This section said no route returned
+either. Two do now: `GET /v1/runtimes`
+(`apps/swarm-api/swarm_api/routes/platform.py:90`) serves every runner profile
+with its image, declared and resolved backend, resource class, timeout and
+availability, read from the catalogue rather than copied; and
+`GET /v1/resource-classes` (`apps/swarm-api/swarm_api/routes/platform.py:42`)
+serves the classes' sizes and units. The console renders the first as
+Capacity ▸ Runtimes (`apps/swarm-ui/src/Runtimes.tsx`). Publishing the
+catalogue does not weaken invariant 10: a caller still sends only a profile
+name, and the route's docstring says why reading what an admin defined is not
+supplying one. So a person choosing a `runner_profile` by name can now see what
+the names mean, and nothing is left to map here.
 
 ## 7. What each decision costs, stated once
 
