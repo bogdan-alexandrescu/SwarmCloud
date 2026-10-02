@@ -14,6 +14,7 @@ immediately -- an index with any other field in between does NOT satisfy it:
     tasks-tenant-state-created      tenant_id ASC, state ASC, created_at DESC
     tasks-tenant-workflow-created   tenant_id ASC, workflow_id ASC, created_at DESC
     tasks-tenant-runner-created     tenant_id ASC, runner_profile ASC, created_at DESC
+    tasks-tenant-parent-created     tenant_id ASC, parent_task_id ASC, created_at DESC
     workflows-tenant-created        tenant_id ASC, created_at DESC
 
 Only the first exists in terraform/modules/firestore/indexes.tf today. See the
@@ -809,6 +810,7 @@ class Store:
         limit: int = 50,
         page_token: str | None = None,
         submitted_by: str | None,
+        parent_task_id: str | None = None,
     ) -> Page:
         """One page of this tenant's tasks, newest first.
 
@@ -827,6 +829,10 @@ class Store:
             query = query.where(filter=FieldFilter("workflow_id", "==", workflow_id))
         if runner_profile is not None:
             query = query.where(filter=FieldFilter("runner_profile", "==", runner_profile))
+        if parent_task_id is not None:
+            # A parent's children (contract request 14), served by the
+            # `tasks-tenant-parent-created` composite index.
+            query = query.where(filter=FieldFilter("parent_task_id", "==", parent_task_id))
         before = decode_cursor(page_token)
         if before is not None:
             query = query.where(filter=FieldFilter("created_at", "<", before))

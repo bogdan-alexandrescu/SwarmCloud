@@ -228,7 +228,8 @@ fi
 # 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
 # --------------------------------------------------------------------------
 # `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
-# states, the eight park reasons, the six provider states and the pool families.
+# states, the nine park reasons, the six provider states and the pool families,
+# and the child-task fields and cancel class (requests 14, 40, 41, item 9).
 # It has to: the browser cannot import Python, and the alternative to a bundled
 # copy of a three-entry frozen catalogue is a request per render to learn
 # something that cannot change without a contract change.
@@ -615,6 +616,38 @@ else:
                 "terraform quota_refresh_schedule %s is %ss  //  types.ts %ss"
                 % (tf_block.group(1), seconds, ts_interval.group(1)),
             )
+
+# -- 9. the child-task restatements (contract requests 14, 40 and 41) ------
+# The two Task fields the API serves on every task, and the end cause the
+# outcome ledger counts as its own cancel class. The park reason is in the
+# ParkReason comparison above. Read as text, like everything in this section.
+from swarm_common.models import EndCause, Task             # noqa: E402
+
+frozen_fields = set(f.name for f in dataclasses.fields(Task))
+iface = re.search(r"export interface Task \{(.*?)\n\}", SRC, re.S)
+wanted = ["parent_attempt_id", "parent_task_id"]
+if iface is None:
+    emit("MISSING", "Task.parent_*", "no export interface Task block")
+elif not set(wanted) <= frozen_fields:
+    emit("DRIFT", "Task.parent_*", "the frozen Task lacks %s" % " ".join(sorted(set(wanted) - frozen_fields)))
+else:
+    declared = [w for w in wanted if re.search(r"\n\s*%s\??\s*:" % w, iface.group(1))]
+    if declared == wanted:
+        emit("OK", "Task.parent_*", "types.ts declares %s" % " ".join(wanted))
+    else:
+        emit("DRIFT", "Task.parent_*", "types.ts declares %s of %s" % (" ".join(declared) or "none", " ".join(wanted)))
+
+outcomes_ts = Path(types_path).with_name("outcomes.ts")
+cause_union = None
+if outcomes_ts.is_file():
+    m = re.search(r"export type CancelCauseKey\s*=([^\n]*(?:\n\s*\|[^\n]*)*)", outcomes_ts.read_text())
+    cause_union = None if m is None else re.findall(r"'([^']+)'", m.group(1))
+if cause_union is None:
+    emit("MISSING", "CancelCauseKey", "no CancelCauseKey union in outcomes.ts")
+elif EndCause.CHILD_CASCADE.value in cause_union:
+    emit("OK", "CancelCauseKey", "outcomes.ts counts %s" % EndCause.CHILD_CASCADE.value)
+else:
+    emit("DRIFT", "CancelCauseKey", "outcomes.ts has no %s class" % EndCause.CHILD_CASCADE.value)
 
 print("\n".join(REPORT))
 PY
@@ -1204,6 +1237,16 @@ verdict("worker GSA prefix", GSA,
               (r"(?<![_A-Za-z])prefix\s*:\s*str\s*=\s*\"(swarm-[^\"]*)\"",
                "python default"))),
         5, GSA_COST, normalise=lambda value: value.rstrip("-"))
+
+# Contract request 43: the PUBLIC home of the rule, which swarm-api derives a
+# child route caller from, spells exactly the prefix every restatement above
+# is held to. One assertion, so the two cannot part.
+public_id = frozen_identity.worker_service_account_id("parity")
+if public_id == frozen_identity._GSA_PREFIX + "parity":
+    emit("OK", "worker_service_account_id", "derives %s, the prefix above" % public_id)
+else:
+    emit("DRIFT", "worker_service_account_id",
+         "derives %s, not %sparity" % (public_id, frozen_identity._GSA_PREFIX))
 
 # The broker's allow-list must be EXACTLY the frozen module's prefix. It is an
 # authentication list, so an extra entry is not harmless slack: it is a

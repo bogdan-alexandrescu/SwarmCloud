@@ -49,6 +49,12 @@ export interface CancelSplit {
    */
   after_cancel: number
   workflow_sweep: number
+  /**
+   * Contract request 41: a child task cancelled because its parent was
+   * cancelled, ended, or out-waited its await. OPTIONAL: an API before
+   * DERIVE_VERSION 5 does not send it, and absent is not zero.
+   */
+  child_cascade?: number
   other: number
 }
 
@@ -75,7 +81,13 @@ export type FailureClassKey =
   | 'other'
   | 'no_reason'
 
-export type CancelCauseKey = 'requested' | 'after_failure' | 'after_cancel' | 'workflow_sweep' | 'other'
+export type CancelCauseKey =
+  | 'requested'
+  | 'after_failure'
+  | 'after_cancel'
+  | 'workflow_sweep'
+  | 'child_cascade'
+  | 'other'
 
 export type BucketState = 'sealed' | 'open' | 'unread'
 

@@ -198,6 +198,29 @@ class WorkerConfig:
     #: what an unswitched deployment gets.
     pr_console_links: bool = False
 
+    # --- child tasks (docs/design/child-tasks.md) ---------------------------
+    #: The one-use registration nonce the scheduler minted for THIS attempt
+    #: (SWARM_CHILD_NONCE, §3.2 step 1). Spent registering the attempt key
+    #: before the agent exists; worthless after. Never in the repr, a log line
+    #: or the agent's environment. None means no child path for this attempt.
+    child_nonce: str | None = field(default=None, repr=False, compare=False, hash=False)
+    #: swarm-api's address and ID-token audience (SWARM_API_URL,
+    #: SWARM_API_AUDIENCE), from the scheduler's own settings.
+    swarm_api_url: str | None = None
+    swarm_api_audience: str | None = None
+    #: The design's limits (§7). Requests answered per control poll: four per
+    #: 10 s keeps one worker far below the API's per-caller rate.
+    max_child_requests_per_tick: int = 4
+    #: How long answering one request may retry: below
+    #: max_in_worker_retry_delay_seconds (45), so it is never the long
+    #: in-worker wait invariant 4 forbids.
+    child_submit_retry_seconds: int = 30
+    #: Equal to max_input_bytes: the worker never reads an unbounded file an
+    #: agent wrote into its own memory.
+    max_child_request_bytes: int = 256 * 1024
+    #: Awaits whose attempt is refunded; the fifth counts like any attempt.
+    max_child_await_resumes: int = 4
+
     # --- misc ----------------------------------------------------------------
     provider: str | None = None
     #: The model the agent CLI runs, from the Job's `MODEL` (#226). Set per
@@ -393,6 +416,9 @@ class WorkerConfig:
             ),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip() or None,
             pr_console_links=_bool_env("SWARM_PR_CONSOLE_LINKS", False),
+            child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,
+            swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
+            swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
             spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),

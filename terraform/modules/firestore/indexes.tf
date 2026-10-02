@@ -79,6 +79,32 @@ locals {
       ]
     }
 
+    # GET /v1/tasks?parent_task_id=... -- a parent's children, tenant-scoped
+    # (contract request 14, docs/design/child-tasks.md §6.3). The same equality
+    # pair also serves the children route's dedupe and fan-out count, the API's
+    # cancel cascade and the scheduler's await sweep.
+    "tasks-tenant-parent-created" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "parent_task_id", order = "ASCENDING" },
+        { field_path = "created_at", order = "DESCENDING" },
+      ]
+    }
+
+    # The scheduler's child-cascade sweep: every live child, `state in [...]`
+    # and `parent_task_id > ""`, ordered by parent then document id so the
+    # sweep pages through them (docs/design/child-tasks.md §3.4 step 2).
+    "tasks-state-parent" = {
+      collection  = "tasks"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "parent_task_id", order = "ASCENDING" },
+      ]
+    }
+
     # GET /v1/tasks?runner_profile=...
     "tasks-tenant-runner-created" = {
       collection  = "tasks"

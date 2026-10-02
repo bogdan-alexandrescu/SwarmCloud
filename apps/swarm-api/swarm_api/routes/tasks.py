@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 from swarm_common.states import TaskState
 
 from ..agent_output import AgentOutputService
+from ..children import PARENT_CANCELLED, cascade_children
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
 from ..deps import (
@@ -113,6 +114,8 @@ def list_tasks(
     state: str | None = Query(default=None),
     workflow_id: str | None = Query(default=None),
     runner_profile: str | None = Query(default=None),
+    # A parent's children (docs/design/child-tasks.md §6.3), in this tenant.
+    parent_task_id: str | None = Query(default=None, min_length=1, max_length=128),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
@@ -136,6 +139,7 @@ def list_tasks(
         limit=paged_limit(ctx, limit),
         page_token=page_token,
         submitted_by=submitted_by,
+        parent_task_id=parent_task_id,
     )
     # One read of the page's READY tasks' pools, de-duplicated (#362).
     waiting = waiting_for_page(ctx.db, page.items, as_of=ctx.now())
@@ -194,6 +198,9 @@ def cancel_task(
     task = ctx.store.request_cancel(
         tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
     )
+    # OD-B15-4: cancelling a parent cancels its children, at once; the
+    # scheduler's sweep makes it certain (docs/design/child-tasks.md §3.4).
+    cascaded = cascade_children(ctx, task, why=PARENT_CANCELLED, by=auth.email)
     accounts = accounts_for(ctx.db, tenant_id, [task])
     return {
         "task": task_to_api(
@@ -203,6 +210,7 @@ def cancel_task(
         # reconciler releases the lease; decrementing the pool from here would
         # free a slot that a live container still occupies.
         "released_immediately": task.state.value == "CANCELLED",
+        "children_cancelled": cascaded,
     }
 
 

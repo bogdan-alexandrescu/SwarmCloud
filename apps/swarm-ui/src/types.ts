@@ -522,6 +522,15 @@ export interface Task {
   workflow_id: string | null
   step_id: string | null
   depends_on: string[] | null
+  /**
+   * Contract request 14 (docs/design/child-tasks.md §6.3). The task whose
+   * agent submitted this one, and that parent's attempt; set by swarm-api from
+   * the submitting attempt, null for everything else. OPTIONAL: an API older
+   * than the change does not send them. Not `depends_on`: a parent can cancel
+   * its children and awaits them, a dependency does neither.
+   */
+  parent_task_id?: string | null
+  parent_attempt_id?: string | null
   cancel_requested: boolean
   repository_url: string | null
 
@@ -2133,14 +2142,18 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
   return s === 'paused' || s === 'zero' || s === 'below_units'
 }
 
-/** `ParkReason`, states.py:125-137. All eight are really written. */
+/**
+ * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a
+ * parent whose agent awaits the child tasks it submitted
+ * (docs/design/child-tasks.md).
+ */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
-  | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING'
+  | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
 
 /**
- * The same eight as a value, so a test can compare the list against
+ * The same nine as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2160,6 +2173,7 @@ export const PARK_REASONS = [
   'MANUAL_PAUSE',
   'BUDGET_EXHAUSTED',
   'CREDENTIAL_MISSING',
+  'CHILDREN_INCOMPLETE',
 ] as const
 
 /**
@@ -2201,6 +2215,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   'PROVIDER_COOLDOWN',
   'PROVIDER_OUTAGE',
   'SCHEDULED_RETRY',
+  // A parent awaiting the child tasks its agent submitted (contract request
+  // 40). It ends on its own: the scheduler promotes it when they end, and
+  // past `child_await_max_seconds` (a day) it cancels the outstanding ones and
+  // promotes it anyway (docs/design/child-tasks.md §5 F7).
+  'CHILDREN_INCOMPLETE',
 ])
 
 /**
@@ -2220,7 +2239,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the eight ParkReasons.
+ * admission plus the nine ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2245,6 +2264,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   PROVIDER_OUTAGE: 'The provider is unavailable.',
   SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
+  CHILDREN_INCOMPLETE: 'Waiting for the child tasks its agent submitted. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',

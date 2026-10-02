@@ -24,7 +24,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 11 | `profiles.py`: a runner profile had no way to be turned off | applied |
 | 12 | `models.py`: the retry cap had no shared home, so one path forgot it | applied |
 | 13 | `models.py`: `Attempt` does not record which pool account it ran on | open |
-| 14 | `models.py`: a sub-agent has nowhere to name its parent | ACCEPTED 2026-10-02 (owner decision OD-B15-1, with the cancel and capacity rules of its amendment), not applied |
+| 14 | `models.py`: a sub-agent has nowhere to name its parent | APPLIED 2026-10-02 (accepted by the owner 2026-10-02, decision OD-B15-1, with the cancel and capacity rules of its amendment; built as docs/design/child-tasks.md phase 2) |
 | 15 | `models.py`: `Attempt` records memory, disk and spend, but not CPU | ACCEPTED 2026-09-25 (owner, on #184), applied in PR #210 |
 | 16 | `identity.py`: the tenant namespace name, `sanitize_name` included, has two copies | open |
 | 17 | `states.py`: a cancel that is only requested is recorded as `cancelled` (incident CR-1) | ACCEPTED 2026-09-24 (the owner's "#13"), applied in PR #44 |
@@ -47,10 +47,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
-| 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | open |
-| 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | open |
-| 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | open |
-| 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | open |
+| 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
+| 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
+| 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
+| 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 
 ---
 
@@ -1414,7 +1414,7 @@ rule.
 
 ## 14. `models.py`: a sub-agent has nowhere to name its parent
 
-**Status:** ACCEPTED 2026-10-02 (owner decision OD-B15-1), not applied, WITH the rules in its amendment.
+**Status:** APPLIED 2026-10-02. ACCEPTED 2026-10-02 (owner decision OD-B15-1), WITH the rules in its amendment: accepted by the owner 2026-10-02, when they chose to build child tasks (D15). `Task.parent_task_id` and `Task.parent_attempt_id` are in `apps/common/swarm_common/models.py`, set only by swarm-api's children route (`apps/swarm-api/swarm_api/children.py`).
 
 Filed 2026-09-24 as a request. The cancellation and capacity rules it asked to
 be decided with the field are in the amendment at the end of this entry. Raised as S1 / B31
@@ -8230,7 +8230,7 @@ reach, which costs nothing but a misleading line in a list.
 
 ## 40. `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once
 
-**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `ParkReason.CHILDREN_INCOMPLETE` is in `apps/common/swarm_common/states.py`; the worker's await park writes it and the scheduler's await sweep promotes it (`apps/scheduler/scheduler/loop.py`, `_promote_child_awaits`).
 
 ### What is true today
 
@@ -8269,7 +8269,7 @@ document any tenant identity can rewrite.
 
 ## 41. `models.py`: a child cancelled because of its parent has no end cause
 
-**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `EndCause.CHILD_CASCADE` is in `apps/common/swarm_common/models.py`, written by the API's cascade, the scheduler's sweeps and the worker ending a flagged child; the outcome ledger counts it as its own cancel class, `child_cascade` (DERIVE_VERSION 5). The reconciler's repair of a flagged child whose worker died still writes CANCEL_REQUESTED: `apps/reconciler/` was outside the applying lane's territory.
 
 ### What is true today
 
@@ -8305,7 +8305,7 @@ request 23 was accepted to end.
 
 ## 42. `specsign.py`: the signed step spec does not cover a child's parent
 
-**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `SPEC_FORMAT = 2` and `SPEC_FORMATS = (1, 2)` in `apps/common/swarm_common/specsign.py`; `canonical_step_spec` takes `spec_format`, and the worker verifies each document under the projection its own `spec_format` names.
 
 ### What is true today
 
@@ -8338,7 +8338,7 @@ tree the console draws is a claim rather than a fact.
 
 ## 43. `identity.py`: the tenant worker service account's name has no public home
 
-**Status:** open, filed 2026-10-02 with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15). A request, not a change.
+**Status:** APPLIED 2026-10-02, accepted by the owner 2026-10-02 with request 14 (filed with [request 14's amendment](#amendment-2026-10-02-accepted-with-the-cancellation-and-capacity-rules-b15)). `worker_service_account_id` is in `apps/common/swarm_common/identity.py`; `scripts/lib/check-contract-parity.sh` section 8 holds it to the prefix every restatement is checked against.
 
 ### What is true today
 

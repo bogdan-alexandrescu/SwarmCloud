@@ -26,6 +26,7 @@ from .routes import (
     admin,
     attempts,
     checkpoints,
+    children,
     health,
     outcomes,
     platform,
@@ -94,6 +95,10 @@ def create_app(ctx: AppContext | None = None) -> FastAPI:
     app.include_router(accounts.router)
     app.include_router(platform.router)
     app.include_router(admin.router)
+    # Child tasks (docs/design/child-tasks.md): worker-only routes, which
+    # authenticate the tenant's worker service account and an attempt proof
+    # rather than a person.
+    app.include_router(children.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):

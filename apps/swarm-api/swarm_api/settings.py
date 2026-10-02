@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
@@ -365,6 +365,26 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    # --- child tasks (docs/design/child-tasks.md) --------------------------
+    #: `swarm-child-key`, the HMAC key that verifies a registration nonce,
+    #: derives a registration id and attests a registration (§3.2). Held by
+    #: swarm-scheduler and swarm-api only, from Secret Manager; never a
+    #: Terraform secret version. EMPTY MEANS NO CHILD PATH: both worker routes
+    #: answer 503 `child_submit_unavailable` and nothing is created. Excluded
+    #: from the repr so a logged settings object cannot carry it.
+    child_key: str = field(default="", repr=False)
+    #: The previous version, accepted beside the current one during a rotation
+    #: (§5 F13). Empty outside one.
+    child_key_previous: str = field(default="", repr=False)
+    #: Children one task may have across all its attempts (§7): sixteen plus
+    #: the parent fit inside a new tenant's `default_tenant_max_active` of 20,
+    #: so a fresh tenant can run one full fan-out without an admin.
+    max_children_per_task: int = 16
+    #: How far an attempt proof's timestamp may be from this clock (§7). Wide
+    #: enough for ordinary skew; a replay inside it is answered by the request
+    #: id dedupe with the child already made.
+    child_proof_skew_seconds: int = 120
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -436,4 +456,8 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
+            child_key_previous=os.environ.get("SWARM_CHILD_KEY_PREVIOUS", "").strip(),
+            max_children_per_task=_int("MAX_CHILDREN_PER_TASK", 16),
+            child_proof_skew_seconds=_int("CHILD_PROOF_SKEW_SECONDS", 120),
         )

@@ -22,9 +22,12 @@ is the half of the owner's decision the write exists to satisfy.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from ..auth import AuthContext
+from ..children import PARENT_CANCELLED, ChildService
 from ..codec import task_to_api, workflow_dispatch, workflow_to_api
 from ..task_accounts import accounts_for
 from ..deps import (
@@ -36,6 +39,8 @@ from ..deps import (
     tenant_scope,
 )
 from ..schemas import WorkflowCreate
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/workflows", tags=["workflows"])
 
@@ -177,6 +182,18 @@ def cancel_workflow(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return ctx.store.cancel_workflow(
+    result = ctx.store.cancel_workflow(
         tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member
     )
+    # A cancelled step's children are cancelled with it (OD-B15-4,
+    # docs/design/child-tasks.md §3.4); the scheduler's sweep makes it certain.
+    service = ChildService(
+        settings=ctx.settings, db=ctx.db, store=ctx.store, submissions=ctx.submissions,
+        verifier=None, now=ctx.now,
+    )
+    for task_id in result.get("tasks_cancelled") or []:
+        try:
+            service.cascade(tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email)
+        except Exception:
+            log.exception("child cascade of step %s failed; the scheduler sweep retries it", task_id)
+    return result

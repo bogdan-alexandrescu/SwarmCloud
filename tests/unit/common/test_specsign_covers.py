@@ -98,7 +98,12 @@ def test_the_scan_sees_the_keys_the_worker_is_known_to_read():
 
 
 def test_every_metadata_key_the_worker_reads_is_signed():
-    unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS)
+    # The two child counters/markers the worker reads are written after
+    # submission by design, so they are named here and nowhere else.
+    unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS) - {
+        "child_await_resumes",
+        "child_cascade",
+    }
     assert not unsigned, (
         f"agent_worker reads metadata keys {sorted(unsigned)} that the step-spec signature "
         "does not cover. Add them to swarm_common.specsign.SIGNED_METADATA_KEYS with a "
@@ -106,10 +111,32 @@ def test_every_metadata_key_the_worker_reads_is_signed():
     )
 
 
-def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_refund_counter():
-    from swarm_api.validation import RESERVED_METADATA_KEYS, STARTUP_REFUNDS_METADATA_KEY
+#: The platform's metadata keys that change AFTER submission, or that no
+#: worker acts on, and so cannot be inside a signature made at submission:
+#: the reconciler's refund counter, the worker's await-refund counter and the
+#: cascade marker (written on a running child), and the child's request id,
+#: which only swarm-api's dedupe reads (docs/design/child-tasks.md §6.4).
+UNSIGNED_PLATFORM_KEYS = {
+    "startup_refunds",
+    "child_await_resumes",
+    "child_cascade",
+    "child_request_id",
+}
 
-    assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - {
-        STARTUP_REFUNDS_METADATA_KEY
-    }
-    assert STARTUP_REFUNDS_METADATA_KEY == "startup_refunds"
+
+def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
+    from swarm_api.validation import (
+        CHILD_AWAIT_RESUMES_METADATA_KEY,
+        CHILD_CASCADE_METADATA_KEY,
+        CHILD_REQUEST_ID_METADATA_KEY,
+        RESERVED_METADATA_KEYS,
+        STARTUP_REFUNDS_METADATA_KEY,
+    )
+
+    assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS
+    assert {
+        STARTUP_REFUNDS_METADATA_KEY,
+        CHILD_AWAIT_RESUMES_METADATA_KEY,
+        CHILD_CASCADE_METADATA_KEY,
+        CHILD_REQUEST_ID_METADATA_KEY,
+    } == UNSIGNED_PLATFORM_KEYS

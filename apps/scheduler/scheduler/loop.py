@@ -37,6 +37,7 @@ from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, u
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
 from swarm_common.states import PENDING_STATES, BlockedReason, EventType, ParkReason, TaskState
 
+from . import children as children_mod
 from .codec import POOL_LIMIT_UNSET, hard_limit_known
 from .credentials import AccountPool, CredentialSource, credential_for
 from .dispatch import BackendRouter, DispatchError
@@ -216,6 +217,13 @@ class DrainReport:
     #: SCHEDULED_RETRY parks on a task that had used its last attempt, ended
     #: DEAD_LETTERED instead of retried (`_promote_scheduled_retries`).
     dead_lettered: int = 0
+    #: CHILDREN_INCOMPLETE parks returned to READY: every child terminal with
+    #: its outputs staged, or the await deadline passed (child tasks, §3.3).
+    promoted_child_awaits: int = 0
+    #: Children this drain cancelled or flagged because of their parent: its
+    #: cancel, its end, or its await deadline (child tasks, §3.4). The ones
+    #: that became CANCELLED here are also in `cancelled`.
+    children_cascaded: int = 0
     #: Workflows this drain found failed under `on_step_failure: fail_workflow`
     #: and swept. Their cancels are in `cancelled` like every other cancel.
     #: This field says how many workflows those cancels came from.
@@ -281,6 +289,8 @@ class Scheduler:
         # drains on purpose: that is what moves the window.
         self._park_cursors: dict[ParkReason, str | None] = {}
         self._swept_workflows: set[tuple[str, str]] = set()
+        # Where the child-cascade sweep resumes: (parent_task_id, child id).
+        self._child_cursor: tuple[str, str] | None = None
         cutoff = settings.on_step_failure_enforced_since
         log.info(
             "on_step_failure: fail_workflow applies to %s",
@@ -334,6 +344,13 @@ class Scheduler:
         report.promoted_credentials = self._promote_credentials(report)
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
+        # Guarded: a child sweep that cannot query (its index still building
+        # after a release, say) must not stop admission for every tenant.
+        try:
+            report.promoted_child_awaits = self._promote_child_awaits(report)
+            report.children_cascaded += self._sweep_child_cascade(report)
+        except Exception:
+            log.exception("child-task sweeps failed this drain; admission continues")
         if self._settings.enable_prewarm:
             report.promoted_prewarm = self._prewarm(report)
 
@@ -1142,6 +1159,112 @@ class Scheduler:
             report.dead_lettered += 1
         else:
             self._count_stale(outcome, report)
+
+    # -- child tasks (docs/design/child-tasks.md) ---------------------------
+
+    def _promote_child_awaits(self, report: DrainReport) -> int:
+        """Return CHILDREN_INCOMPLETE parks to READY once their children are done.
+
+        §3.3 step 6, beside `_promote_dependencies` for the reason that sweep
+        gives: nothing waits for a child to announce itself, so a worker that
+        dies right after its last child's success cannot strand the parent.
+        "Done" is every child terminal and every SUCCEEDED child's manifest
+        written. Past `child_await_max_seconds` the outstanding children are
+        cancelled with `why: await_expired` (§5 F7); the parent is promoted on
+        the drain that finds them terminal.
+
+        A parent that has used its last attempt -- its await counted, past
+        `max_child_await_resumes` (§5 F14) -- is dead-lettered instead, as
+        `_end_exhausted_retry` does for a SCHEDULED_RETRY park: admission does
+        not check the cap. Promotion writes READY only (invariant 1).
+        """
+        promoted = 0
+        now = self._now()
+        db = self._store.db
+        for task in self._parked_window(ParkReason.CHILDREN_INCOMPLETE):
+            decision = children_mod.decide_await(
+                children_mod.children_of(db, task.tenant_id, task.id)
+            )
+            expired = now >= children_mod.await_deadline(
+                task, self._settings.child_await_max_seconds
+            )
+            if decision.outstanding and expired:
+                for child_id in decision.outstanding:
+                    report.children_cascaded += self._cascade_one(
+                        child_id, task, why=children_mod.AWAIT_EXPIRED, report=report
+                    )
+                continue
+            if not decision.settled and not expired:
+                continue
+            if task.retries_exhausted():
+                text = (
+                    f"awaited its children on its last attempt ({task.attempt_count} of "
+                    f"{task.max_attempts}); retries exhausted"
+                )
+                outcome = self._store.dead_letter_parked(
+                    task, text, detail={"park_reason": ParkReason.CHILDREN_INCOMPLETE.value}
+                )
+                if outcome.applied:
+                    report.dead_lettered += 1
+                else:
+                    self._count_stale(outcome, report)
+                continue
+            if self._promote(
+                task,
+                kind="child_await",
+                detail={
+                    "reason": "children_done" if decision.settled else "await_expired",
+                    "park_reason": ParkReason.CHILDREN_INCOMPLETE.value,
+                    "unstaged": list(decision.unstaged),
+                },
+                report=report,
+            ):
+                promoted += 1
+        return promoted
+
+    def _sweep_child_cascade(self, report: DrainReport) -> int:
+        """Cancel every live child whose parent is terminal or cancel-requested.
+
+        §3.4 step 2: the API's cascade is for responsiveness, this is what
+        guarantees it -- an API that died between the parent and its third
+        child strands nothing, within one safety tick. One page per drain,
+        resuming where the last stopped, so every live child is looked at
+        within ceil(children / sweep size) drains. Each parent is read once per
+        page; a child in another tenant than its parent is left alone (§5 F11).
+        """
+        size = self._settings.dependency_sweep_size
+        page = children_mod.live_children_page(
+            self._store.db, limit=size, after=self._child_cursor
+        )
+        self._child_cursor = (
+            (page[-1].parent_task_id or "", page[-1].id) if len(page) >= size else None
+        )
+        parents: dict[str, Task | None] = {}
+        changed = 0
+        for child in page:
+            parent_id = child.parent_task_id or ""
+            if parent_id not in parents:
+                parents[parent_id] = self._store.get_task(parent_id)
+            parent = parents[parent_id]
+            if parent is None or parent.tenant_id != child.tenant_id:
+                continue
+            why = children_mod.cascade_reason(parent)
+            if why is not None:
+                changed += self._cascade_one(child.id, parent, why=why, report=report)
+        return changed
+
+    def _cascade_one(self, child_id: str, parent: Task, *, why: str, report: DrainReport) -> int:
+        result = children_mod.cancel_child(
+            self._store.db,
+            child_id,
+            tenant_id=parent.tenant_id,
+            parent_task_id=parent.id,
+            why=why,
+            now=self._now(),
+        )
+        if result == "cancelled":
+            self._count_cancel(report, reason="child_cascade")
+        return 1 if result is not None else 0
 
     def _promote_manual_pauses(self, report: DrainReport) -> int:
         """Return MANUAL_PAUSE parks to READY once what paused them has cleared.

@@ -309,6 +309,11 @@ def test_every_service_written_key_is_reserved_in_one_place():
         INPUT_FROM_METADATA_KEY,
         EXPECTED_OUTPUTS_METADATA_KEY,
         STARTUP_REFUNDS_METADATA_KEY,
+        # Child tasks (contract request 14): the request id, the await-refund
+        # counter and the cascade marker.
+        "child_request_id",
+        "child_await_resumes",
+        "child_cascade",
     )
 
 

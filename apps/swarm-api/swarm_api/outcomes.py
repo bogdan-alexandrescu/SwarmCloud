@@ -155,7 +155,12 @@ _CACHE_MAX_ENTRIES = 256
 #: end is its own class -- `verdict_refused`, `verdict_failed`,
 #: `merge_refused`, `merge_failed`. One bump for both requests, which land
 #: together; a stored day counted under 3 has none of the four keys.
-DERIVE_VERSION = 4
+#:
+#: 5 (2026-10-02, contract requests 14 and 41): a child task cancelled
+#: because of its parent (`EndCause.CHILD_CASCADE`) is its own cancel cause,
+#: `child_cascade` -- not `requested`, which is a cancel somebody pressed. A
+#: stored day counted under 4 has no such key.
+DERIVE_VERSION = 5
 CLASSIFIER_VERSION = 2
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -259,6 +264,9 @@ CANCEL_CAUSES: tuple[tuple[str, str], ...] = (
     ("after_failure", "after a failure"),
     ("after_cancel", "after a cancel"),
     ("workflow_sweep", "workflow sweep"),
+    # Contract request 41: a child task ended because its parent was
+    # cancelled, ended, or out-waited its await (docs/design/child-tasks.md).
+    ("child_cascade", "parent task ended"),
     ("other", "other"),
 )
 FAILURE_KEYS: tuple[str, ...] = tuple(key for key, _ in FAILURE_CLASSES)
@@ -330,6 +338,7 @@ _CANCEL_OF_CAUSE: dict[str, str] = {
     EndCause.FAILED_PARENT.value: "after_failure",
     EndCause.CANCELLED_PARENT.value: "after_cancel",
     EndCause.WORKFLOW_SWEEP.value: "workflow_sweep",
+    EndCause.CHILD_CASCADE.value: "child_cascade",
 }
 
 
@@ -525,6 +534,9 @@ _SENT_BY_CANCEL_CAUSE: dict[str, str] = {
     "after_cancel": SENT_CANCEL,
     "after_failure": SENT_FAILURE,
     "workflow_sweep": SENT_FAILURE,
+    # A child is never a workflow step, so nothing depends on it. Unknown, as
+    # the scheduler's `_parent_cause` reads a cause it does not class.
+    "child_cascade": SENT_UNKNOWN,
     "other": SENT_UNKNOWN,
 }
 

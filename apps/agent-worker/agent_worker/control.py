@@ -113,6 +113,23 @@ from .startup import StartupInterrupted
 #: in the bucket, which every agent of the tenant can write.
 CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
 
+#: Child tasks (docs/design/child-tasks.md §6.4), restated from
+#: `swarm_api.validation`, which this image does not carry;
+#: tests/unit/worker/test_child_tasks_worker.py holds them equal. The awaits a
+#: parent has had refunded, and the marker on a child cancelled because of
+#: its parent.
+CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
+CHILD_CASCADE_METADATA_KEY = "child_cascade"
+
+
+def cancel_end_cause(task: Mapping[str, Any]) -> EndCause:
+    """Why a cancelled task ended: CHILD_CASCADE when its parent's cancel, end
+    or await deadline flagged it (contract request 41), else CANCEL_REQUESTED."""
+    metadata = task.get("metadata")
+    if isinstance(metadata, Mapping) and metadata.get(CHILD_CASCADE_METADATA_KEY):
+        return EndCause.CHILD_CASCADE
+    return EndCause.CANCEL_REQUESTED
+
 # ---------------------------------------------------------------------------
 # Signals
 # ---------------------------------------------------------------------------
@@ -979,6 +996,29 @@ class ControlPlane:
         for _, document in announced:
             self._log.info("event", event_type=document["type"], detail=document["detail"])
 
+    def advance_to_starting(self) -> None:
+        """Walk LEASED -> DISPATCHED -> STARTING, stopping there.
+
+        The window in which the worker registers its child-task attempt key
+        (docs/design/child-tasks.md §3.2 step 3): swarm-api accepts a
+        registration only while the task is STARTING, and the agent is spawned
+        only after RUNNING. `advance_to_running` finishes the walk from here.
+        """
+        state = self._current_state()
+        if state is TaskState.LEASED:
+            self.transition(TaskState.DISPATCHED)
+            state = TaskState.DISPATCHED
+        if state is TaskState.DISPATCHED:
+            self.transition(TaskState.STARTING, fields={"started_at": utcnow()})
+            self.emit(EventType.STARTING)
+
+    def cancel_cause(self) -> EndCause:
+        """`cancel_end_cause` of the task as it is now. One read, on a cancel only."""
+        try:
+            return cancel_end_cause(self.fetch_task())
+        except Exception:  # the cause must never stop the cancel itself
+            return EndCause.CANCEL_REQUESTED
+
     def advance_to_running(self) -> None:
         """Walk LEASED -> DISPATCHED -> STARTING -> RUNNING legally.
 
@@ -1381,6 +1421,70 @@ class ControlPlane:
         )
         self.release_lease(f"parked:{reason.value}")
 
+    def park_awaiting_children(
+        self,
+        *,
+        max_resumes: int,
+        detail: dict[str, Any] | None = None,
+    ) -> bool:
+        """The await park (docs/design/child-tasks.md §3.3): checkpointed and
+        uploaded already; now PARKED on CHILDREN_INCOMPLETE, slot given back.
+
+        ONE FENCED TRANSACTION, as every park: a superseded attempt gets
+        `FencedWriteRefused` with nothing written, so it can neither park the
+        task nor refund an attempt (invariant 5). Inside it, the attempt
+        admission counted is refunded -- `attempt_count` down by one,
+        `metadata.child_await_resumes` up by one -- while fewer than
+        `max_resumes` have been, so waiting is not failing; past the bound the
+        park counts like any attempt and a parent that awaits for ever still
+        ends at `max_attempts` (§5 F14). `next_eligible_at` is the instant of
+        the park, which the scheduler's await deadline is measured from; the
+        scheduler's sweep, not a clock, promotes it.
+
+        Returns whether the attempt was refunded.
+        """
+        write = "await park"
+        reason = ParkReason.CHILDREN_INCOMPLETE
+        now = utcnow()
+
+        def _apply(txn: Any) -> tuple[bool, int]:
+            task = self._fenced_task(txn, write=write)
+            current = _as_state(task.get("state"))
+            assert_transition(current, TaskState.PARKED)
+            metadata = dict(task.get("metadata") or {})
+            used = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
+            used = used if isinstance(used, int) and not isinstance(used, bool) and used >= 0 else 0
+            attempt_count = int(task.get("attempt_count", 0))
+            refund = used < max_resumes and attempt_count > 0
+            payload: dict[str, Any] = {
+                "state": TaskState.PARKED.value,
+                "park_reason": reason.value,
+                "next_eligible_at": now,
+                "current_lease_id": None,
+                "blocked_by": [{"reason": reason.value, **(detail or {})}],
+                "updated_at": now,
+            }
+            if refund:
+                metadata[CHILD_AWAIT_RESUMES_METADATA_KEY] = used + 1
+                payload["metadata"] = metadata
+                payload["attempt_count"] = attempt_count - 1
+            txn.update(self._task_ref(), payload)
+            return refund, used + (1 if refund else 0)
+
+        refunded, resumes = self._run_transaction(_apply)
+        self.emit(
+            EventType.PARKED,
+            {
+                "reason": reason.value,
+                "next_eligible_at": now,
+                "attempt_refunded": refunded,
+                CHILD_AWAIT_RESUMES_METADATA_KEY: resumes,
+                **(detail or {}),
+            },
+        )
+        self.release_lease(f"parked:{reason.value}")
+        return refunded
+
     def finish(
         self,
         *,
@@ -1501,7 +1605,7 @@ class ControlPlane:
                 payload["completed_at"] = now
                 payload["next_eligible_at"] = None
                 ended_as = (
-                    EndCause.CANCEL_REQUESTED if target is TaskState.CANCELLED else end_cause
+                    cancel_end_cause(task) if target is TaskState.CANCELLED else end_cause
                 )
                 payload["end_cause"] = ended_as.value if ended_as is not None else None
             txn.update(self._task_ref(), payload)

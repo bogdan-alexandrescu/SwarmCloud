@@ -189,7 +189,12 @@ class EndCause(str, Enum):
         CANCEL_REQUESTED;
       * the scheduler: DISPATCH_FAILED, FAILED_PARENT, CANCELLED_PARENT,
         WORKFLOW_SWEEP, CANCEL_REQUESTED;
-      * the API's cancel: CANCEL_REQUESTED.
+      * the API's cancel: CANCEL_REQUESTED, and CHILD_CASCADE for the
+        children of the task it cancelled;
+      * CHILD_CASCADE is also written by the scheduler's child-cascade and
+        await sweeps, and by the worker ending a child that either of them
+        flagged (request 41 names the reconciler's repair as a writer too; it
+        still writes CANCEL_REQUESTED for a flagged child whose worker died).
 
     SUCCEEDED carries None: nothing about a success needs a cause. So does a
     task that ended before this field existed, and one a writer ended for a
@@ -231,6 +236,15 @@ class EndCause(str, Enum):
     means the action was allowed and the forge did not do it. The specific
     reason is a worker vocabulary, not a frozen one: `result_summary.merge.
     refusal` and `result_summary.verdict.refusal` (docs/merge-step.md §6, §6a).
+
+    CHILD_CASCADE is contract request 41, applied with request 14 (owner
+    decision OD-B15-4, 2026-10-02): a CHILD task (`Task.parent_task_id` set)
+    ended because of its parent -- the parent was cancelled, ended FAILED or
+    DEAD_LETTERED, or its await outlived `child_await_max_seconds`. It is not
+    CANCELLED_PARENT, which names an UPSTREAM workflow step, and not
+    CANCEL_REQUESTED, which the outcome ledger reads as a cancel somebody
+    pressed. The specific reason (`parent_cancelled`, `parent_ended`,
+    `await_expired`) is event detail, not a frozen vocabulary.
     """
 
     TIMEOUT = "timeout"
@@ -249,6 +263,7 @@ class EndCause(str, Enum):
     MERGE_FAILED = "merge_failed"     # the merge was allowed, and the forge did not do it
     VERDICT_REFUSED = "verdict_refused"   # a condition for posting the review was not met; nothing changed on the forge
     VERDICT_FAILED = "verdict_failed"     # the post was allowed, and the forge did not do it
+    CHILD_CASCADE = "child_cascade"   # the parent task was cancelled or ended, or its await expired
 
 
 @dataclass
@@ -305,6 +320,15 @@ class Task:
     #: `specsign.SPEC_FORMAT` at signing. Read to choose the projection; it is
     #: also inside the signed bytes, so a rewrite to another format fails.
     spec_format: int | None = None
+    #: The task whose agent submitted this one from inside a running attempt.
+    #: None for work a person, a client or a workflow submitted. Contract
+    #: request 14, applied 2026-10-02 (docs/design/child-tasks.md): SET BY
+    #: swarm-api from the submitting attempt's attested registration, never
+    #: supplied by a caller.
+    parent_task_id: str | None = None
+    #: The parent's ATTEMPT. A parent can be retried, and the children of attempt 1
+    #: and attempt 2 are different work -- the second may re-create the first's.
+    parent_attempt_id: str | None = None
 
     def retries_exhausted(self) -> bool:
         """This task has used its last attempt. See `retries_exhausted`."""

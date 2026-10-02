@@ -88,7 +88,7 @@ def test_a_submitted_task_is_signed_over_its_stored_form(signed_client, db, sign
     assert len(tasks) == 1
     (task_id, doc), = tasks.items()
     assert doc["spec_key_version"] == KEY_VERSION
-    assert doc["spec_format"] == 1
+    assert doc["spec_format"] == 2  # contract request 42: the parent fields are signed
     assert isinstance(doc["spec_signature"], str) and doc["spec_signature"]
     assert signer.verifies(doc, task_id), "the stored document does not verify"
     assert len(signer.signed) == 1

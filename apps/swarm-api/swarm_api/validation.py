@@ -589,6 +589,18 @@ EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 #: holds for `INPUT_FROM_METADATA_KEY`.
 STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 
+#: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
+#: agent's `request_id` on a child, written once by the children route and read
+#: by its dedupe; the awaits refunded so far on a parent, written by the
+#: worker's await park; and the cascade marker on a child the API or the
+#: scheduler cancelled because of its parent, which tells whichever writer
+#: finishes a flagged child to end it CHILD_CASCADE. The worker and the
+#: scheduler restate the last two; tests/unit/control_plane/test_child_tasks*.py
+#: holds the strings equal.
+CHILD_REQUEST_ID_METADATA_KEY = "child_request_id"
+CHILD_AWAIT_RESUMES_METADATA_KEY = "child_await_resumes"
+CHILD_CASCADE_METADATA_KEY = "child_cascade"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -599,6 +611,9 @@ RESERVED_METADATA_KEYS = (
     INPUT_FROM_METADATA_KEY,
     EXPECTED_OUTPUTS_METADATA_KEY,
     STARTUP_REFUNDS_METADATA_KEY,
+    CHILD_REQUEST_ID_METADATA_KEY,
+    CHILD_AWAIT_RESUMES_METADATA_KEY,
+    CHILD_CASCADE_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -884,6 +899,20 @@ _RESERVED_BECAUSE = {
         "the reconciler, to count attempts refunded because they ended before "
         "their runner started (#67). There is no caller-facing equivalent to "
         "set; drop the key from metadata."
+    ),
+    CHILD_REQUEST_ID_METADATA_KEY: (
+        f"metadata.{CHILD_REQUEST_ID_METADATA_KEY} is reserved: it is set only on a "
+        "child task, from the request id its parent's agent chose, by the route "
+        "its parent's worker calls. Drop the key from metadata."
+    ),
+    CHILD_AWAIT_RESUMES_METADATA_KEY: (
+        f"metadata.{CHILD_AWAIT_RESUMES_METADATA_KEY} is reserved: it is set only by "
+        "the worker, to count the awaits of a parent's children whose attempt "
+        "was refunded. Drop the key from metadata."
+    ),
+    CHILD_CASCADE_METADATA_KEY: (
+        f"metadata.{CHILD_CASCADE_METADATA_KEY} is reserved: it is set only on a "
+        "child task cancelled because of its parent. Drop the key from metadata."
     ),
 }
 

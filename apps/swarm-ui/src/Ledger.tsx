@@ -1176,7 +1176,9 @@ export function OpenWorkCard({
 
 export function CancelCausesCard({ data, picked }: { data: Outcomes; picked: string | null }) {
   const t = data.totals.cancelled
-  const max = Math.max(0, ...data.vocab.cancel_causes.map((c) => t[c.key]))
+  // `?? 0`: `child_cascade` (contract request 41) is optional on the wire, so an
+  // API older than DERIVE_VERSION 5 can omit it.
+  const max = Math.max(0, ...data.vocab.cancel_causes.map((c) => t[c.key] ?? 0))
   const strips = data.buckets.length <= STRIP_MAX_BUCKETS
   const at = pickedIndex(data, picked)
   const cov = spanCoverage(data)
@@ -1192,7 +1194,7 @@ export function CancelCausesCard({ data, picked }: { data: Outcomes; picked: str
         <Row
           key={c.key}
           name={c.label}
-          count={t[c.key]}
+          count={t[c.key] ?? 0}
           of={max}
           strip={
             strips ? (

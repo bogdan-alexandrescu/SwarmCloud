@@ -132,6 +132,7 @@ from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
+from . import children as children_mod
 from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
@@ -163,7 +164,12 @@ from .checkpoint import (
     checkpoint_prefix,
 )
 from .config import WorkerConfig
-from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
+from .control import (
+    CHECKPOINT_DIGESTS_FIELD,
+    CHILD_AWAIT_RESUMES_METADATA_KEY,
+    ControlPlane,
+    ControlSignals,
+)
 from .errors import (
     CheckpointError,
     ConfigError,
@@ -415,6 +421,9 @@ class WorkerDeps:
     #: None means nothing established it, and is treated as FAILED: a worker
     #: built some other way holds no token rather than an unprotected one.
     memory: MemoryProtection | None = None
+    #: The client for swarm-api's worker-only child routes. None builds one
+    #: from SWARM_API_URL when the attempt has a child path; injected in tests.
+    child_api: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -576,6 +585,11 @@ class Worker:
         # #15), so the periodic readings and each runner's end write once per
         # change rather than once per heartbeat.
         self._cpu_recorded: dict[str, float | str] | None = None
+        # The child-task path (docs/design/child-tasks.md): the attempt key,
+        # the spool and the await. Inert unless the scheduler passed a nonce.
+        self.children = children_mod.ChildPath(
+            config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -630,7 +644,7 @@ class Worker:
                     state=TaskState.CANCELLED,
                     exit_code=None,
                     error="cancelled before execution started",
-                    end_cause=EndCause.CANCEL_REQUESTED,
+                    end_cause=self.control.cancel_cause(),
                 )
             except FencedWriteRefused as exc:
                 # Fenced between the gate above and this write.
@@ -837,8 +851,66 @@ class Worker:
             self._sleep_with_heartbeat(decision.wait_seconds)
             ws.quota_path.unlink(missing_ok=True)
 
+        # ---- STEP 9b: the children's await (child tasks, §3.3) ----------
+        awaited = self._await_children(result)
+        if awaited is not None:
+            return awaited
+
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
+
+    def _await_children(self, result: ChildResult) -> Outcome | None:
+        """Park on CHILDREN_INCOMPLETE when this parent's children still run.
+
+        §3.3: every outstanding request is answered first (F3), in at most
+        twice `child_submit_retry_seconds` (`ChildPath.drain`); then, for an
+        agent that exited 0 --
+        having asked to `await`, or not (step 8: a parent never succeeds over
+        running children) -- a live child means checkpoint, upload, park,
+        release, exit, exactly as the quota park does. No live child, no park:
+        the await is ignored (F15). An agent that failed fails its attempt in
+        the ordinary way; its children are kept (F4). None means "finalise".
+
+        Fences propagate as `FencedWriteRefused`, which `run` stands down on.
+        """
+        ws = self.ws
+        assert ws is not None
+        if not self.children.offered:
+            return None
+        try:
+            with self._heartbeat_meanwhile("child requests"):
+                self.children.drain(ws.work)
+        except children_mod.ChildSubmitFenced as exc:
+            raise FencedWriteRefused(
+                self.cfg.generation, -1, f"child submission: {exc.code}", write="child submission"
+            ) from None
+        requested = self.children.await_requested(ws.work)
+        # Cleared BEFORE the checkpoint, so a resumed attempt starts clean.
+        self.children.clear_await(ws.work)
+        if result.exit_code != 0 or result.timed_out or result.killed:
+            return None
+        live = self.children.live_children(ws.work)
+        if live == []:
+            if requested:
+                self.log.info("await asked with no live child; ignored")
+            return None
+        self.log.warning(
+            "children still running; parking until they end",
+            live_children=len(live) if live is not None else None,
+            asked=requested,
+        )
+        self._checkpoint("child-await")
+        self._upload_outputs()
+        self._export_metrics()
+        self.control.park_awaiting_children(
+            max_resumes=self.cfg.max_child_await_resumes,
+            detail={
+                "park_phase": "child_await",
+                "asked": requested,
+                "live_children": sorted(live) if live is not None else None,
+            },
+        )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
@@ -942,6 +1014,12 @@ class Worker:
             backend=cfg.backend, execution_name=_execution_name()
         )
         self.phases.enter("advance_to_running")
+        # STEP 2a, inside STEP 2: the child-task attempt key is registered
+        # while the task is STARTING, before the agent exists (child tasks,
+        # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
+        if self.cfg.child_nonce:
+            self.control.advance_to_starting()
+            self.children.register(lambda detail: self.control.emit(EventType.STARTING, detail))
         self.control.advance_to_running()
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
@@ -1060,6 +1138,13 @@ class Worker:
         if staged_inputs:
             # Downloading an upstream artifact is unbounded in the same way a
             # clone is; prove liveness after it for the same reason.
+            self._heartbeat()
+        # A resumed parent's children, staged before its agent starts again
+        # (child tasks, §3.3 step 7). Nothing for a task that has none.
+        self.children.clear_await(ws.work)
+        if self.children.stage_results(
+            ws.work, store=self.store, max_total_bytes=self.cfg.max_artifact_bytes
+        ) is not None:
             self._heartbeat()
 
         # ---- STEP 5c: ./artifacts is the artifacts directory ----------------
@@ -1323,6 +1408,14 @@ class Worker:
                 diverted = self._apply_control_signals(child)
                 if diverted is not None:
                     return diverted
+                try:
+                    if self.children.has_requests(ws.work):
+                        with self._heartbeat_meanwhile("child requests"):
+                            self.children.tick(ws.work)
+                except children_mod.ChildSubmitFenced as exc:
+                    return self._exit_fenced_mid_run(
+                        child, observed_generation=-1, reason=f"child submission: {exc.code}"
+                    )
 
             if now >= self._deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
@@ -1371,7 +1464,7 @@ class Worker:
                 exit_code=None,
                 error="cancelled by request",
                 result_summary=summary,
-                end_cause=EndCause.CANCEL_REQUESTED,
+                end_cause=self.control.cancel_cause(),
             )
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
@@ -2087,7 +2180,18 @@ class Worker:
             self.log.info, "no checkpoint is restored; starting from an empty workspace"
         )
         count = task.get("attempt_count")
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
+        # A refunded child await (child tasks, §3.3 step 5) takes one off
+        # `attempt_count`, so the attempt after it can read 1 and still be a
+        # resume. Counted back here; a tenant that can write the counter can
+        # write `attempt_count` itself, so this adds no reach (see below).
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
+        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count + max(0, resumes) <= 1
+        ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
         pointer = task.get("latest_checkpoint")
@@ -3282,6 +3386,10 @@ class Worker:
                     logger=self.log,
                 )
                 base.update(resolved.env)
+        # The child-task spool, when this attempt has a child path: the one
+        # variable an agent needs to submit and await helpers (child tasks,
+        # §3.1). A path, never a credential: the attempt key stays here.
+        base.update(self.children.prepare(ws.work))
         return ws.child_env(base)
 
     # -- the account pool --------------------------------------------------

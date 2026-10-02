@@ -152,6 +152,9 @@ _WAITING = {
 #: Why a PARKED or READY task is held, per `park_reason`.
 _PARKED_BECAUSE = {
     "DEPENDENCY_INCOMPLETE": "a step it depends on has not finished yet",
+    # Contract request 40 (docs/design/child-tasks.md): the agent awaits the
+    # child tasks it submitted, holding no capacity.
+    "CHILDREN_INCOMPLETE": "it is waiting for the child tasks its agent submitted",
     "PROVIDER_QUOTA_EXHAUSTED": "the provider's quota window is exhausted; it resumes on its own",
     "PROVIDER_COOLDOWN": "the provider is cooling down; it resumes on its own",
     "PROVIDER_OUTAGE": "the provider is failing; it resumes on its own",

@@ -307,7 +307,7 @@ def test_the_vocabulary_order_is_fixed():
         "other", "no_reason",
     ]
     assert [c["key"] for c in VOCAB["cancel_causes"]] == [
-        "requested", "after_failure", "after_cancel", "workflow_sweep", "other",
+        "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",
     ]
     assert VOCAB["classifier_version"] == 2
 
