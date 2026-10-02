@@ -25,7 +25,7 @@ const loadStats = vi.hoisted(() => vi.fn<() => Promise<Result<Stats>>>())
 const loadMe = vi.hoisted(() => vi.fn<() => Promise<Result<Me>>>())
 vi.mock('../api', () => ({ loadStats, loadMe }))
 
-const { PlatformCountsScreen } = await import('../PlatformCounts')
+const { PlatformCountsScreen, forgetLastRun } = await import('../PlatformCounts')
 
 function session(isAdmin: boolean): Result<Me> {
   return {
@@ -43,6 +43,8 @@ function session(isAdmin: boolean): Result<Me> {
 // Every test below that does not care who is asking is asked by a non-admin,
 // which is the cost the screen drew for everyone before AH-9.
 beforeEach(() => {
+  // Each case is a new session: the last run is kept per tab (#135).
+  forgetLastRun()
   loadMe.mockResolvedValue(session(false))
 })
 

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type Ref } from 'react'
-import { HELP, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { HELP, HELP_GROUPS, HELP_PLACES, HELP_ROUTE, TOPIC_IDS, topicFor, type TopicId } from './help'
+import { addressToPath } from './paths'
 import { Absent } from './primitives'
 import { PageHead } from './Shell'
 
@@ -36,9 +37,9 @@ export function HelpScreen({ topic }: { topic: string }) {
   // H1 (admin-help.html, the owner's pick 2026-10-01): ONE PAGE PER GROUP, at
   // `/help/<group>`, with a topic at `/help/<group>#<topic>`. `topic` is the
   // route's tail: a group id, a topic id (whose group is then the page), or
-  // empty for `/help`, which keeps every group on one page. The topic prose
-  // is unchanged; rewriting it as You see / It means / What to do is not
-  // part of this change.
+  // empty for `/help`, which keeps every group on one page. Every topic ends
+  // in What to do (#131, help.ts `GUIDE`): the claim is what you are seeing,
+  // the paragraphs what it means, and the action what to do or where to look.
   const groupId = HELP_GROUPS.some((g) => g.id === topic) ? topic : null
   const wanted = groupId === null ? topicFor(topic) : null
   const page = groupId ?? (wanted === null ? null : wanted.group)
@@ -101,6 +102,13 @@ export function HelpScreen({ topic }: { topic: string }) {
   // every screen uses, facts joined by `·`, and each fact is true of the
   // whole page. A group with no topic is not drawn below, so it is not
   // counted here.
+  // A search reaches every group; otherwise a group page draws its own.
+  const shown: Shown = HELP_GROUPS.flatMap((g) => {
+    if (q === '' && page !== null && g.id !== page) return []
+    const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id && matches(id))
+    return ids.length === 0 ? [] : [{ group: g, ids }]
+  })
+
   const groups = HELP_GROUPS.filter((g) => TOPIC_IDS.some((id) => HELP[id].group === g.id)).length
   const line =
     `${TOPIC_IDS.length} topics in ${groups} groups` + (wanted === null ? '' : ` · showing ${wanted.title}`)
@@ -139,28 +147,95 @@ export function HelpScreen({ topic }: { topic: string }) {
 
       {q !== '' && !TOPIC_IDS.some(matches) && <p className="ctl-em">No topic mentions {query.trim()}.</p>}
 
-      {HELP_GROUPS.map((g) => {
-        // A search reaches every group; otherwise a group page draws its own.
-        if (q === '' && page !== null && g.id !== page) return null
-        const ids = TOPIC_IDS.filter((id) => HELP[id].group === g.id && matches(id))
-        if (ids.length === 0) return null
-        return (
-          // `help-group`: the hook for the heading that sticks while its group
-          // is in view (AH-16; styles.css `.help-group > h2`), so a deep link
-          // to any topic in the group lands under it. Only Help's groups stick.
-          <section className="section help-group" key={g.id}>
-            <h2>{g.title}</h2>
-            {ids.map((id) => (
-              <Topic
-                key={id}
-                id={id}
-                highlighted={id === topic}
-                innerRef={id === topic ? target : null}
-              />
-            ))}
-          </section>
-        )
-      })}
+      {/* WHAT THIS PAGE DRAWS, worked out once and read by both the index and
+          the column, so the index can never name a topic that is not here. */}
+      {/* FIRST IN THE DOCUMENT, so the select is the first thing under the
+          search on a phone and the index is reached before the column by
+          keyboard; the sheet places the list beside the column when there is
+          room. */}
+      <div className="help-layout">
+        {shown.length > 0 && <TopicIndex shown={shown} current={wanted === null ? null : (topic as TopicId)} />}
+        <div className="help-body">
+          {shown.map(({ group, ids }) => (
+            // `help-group`: the hook for the heading that sticks while its group
+            // is in view (AH-16; styles.css `.help-group > h2`), so a deep link
+            // to any topic in the group lands under it. Only Help's groups stick.
+            <section className="section help-group" key={group.id}>
+              <h2>{group.title}</h2>
+              {ids.map((id) => (
+                <Topic
+                  key={id}
+                  id={id}
+                  highlighted={id === topic}
+                  innerRef={id === topic ? target : null}
+                />
+              ))}
+            </section>
+          ))}
+        </div>
+      </div>
+    </>
+  )
+}
+
+type Shown = readonly { group: (typeof HELP_GROUPS)[number]; ids: readonly TopicId[] }[]
+
+/**
+ * THE TOPIC INDEX (#130): every topic this page draws, by its subject, so any
+ * topic is two interactions from the top of Help -- one on a desktop, where
+ * the list sticks beside the column, two on a phone, where the same list is a
+ * select. Both are drawn and the sheet shows one (styles.css `.help-index`):
+ * the width decides, not a script.
+ *
+ * Each entry is the topic's `#help/<id>` link, the spelling every card and
+ * See-also link already uses, so it routes to the topic's group page and lands
+ * on the topic whichever page it is followed from.
+ */
+function TopicIndex({ shown, current }: { shown: Shown; current: TopicId | null }) {
+  return (
+    <>
+      <label className="help-index-pick">
+        <span className="ctl-em">Go to a topic</span>
+        <select
+          value={current === null ? '' : HELP[current].anchor}
+          onChange={(e) => {
+            // The router follows a `#help/<id>` hash (App.tsx `onHash`).
+            if (e.target.value !== '') window.location.hash = e.target.value
+          }}
+        >
+          <option value="">Choose a topic…</option>
+          {shown.map(({ group, ids }) => (
+            <optgroup key={group.id} label={group.title}>
+              {ids.map((id) => (
+                <option key={id} value={HELP[id].anchor}>
+                  {HELP[id].subject}
+                </option>
+              ))}
+            </optgroup>
+          ))}
+        </select>
+      </label>
+      <nav className="help-index" aria-label="Topics on this page">
+        {shown.map(({ group, ids }) => (
+          <div key={group.id}>
+            <span className="help-index-group">{group.title}</span>
+            <ul>
+              {ids.map((id) => (
+                <li key={id}>
+                  {/* `aria-current`, NOT `.is-current`: that class is the one
+                      deep-linked topic's, and exactly one element wears it. */}
+                  <a
+                    aria-current={id === current ? 'location' : undefined}
+                    href={`#${HELP[id].anchor}`}
+                  >
+                    {HELP[id].subject}
+                  </a>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </nav>
     </>
   )
 }
@@ -246,7 +321,52 @@ function Topic({
         </p>
       )}
 
-      <p className="help-topic-anchor">#{t.anchor}</p>
+      {/* WHAT TO DO, OR WHERE TO LOOK (#131): the last thing the topic says,
+          with the screen that answers it as a link. */}
+      <p className="help-topic-act">
+        <b>What to do</b> {t.act.say}
+        {t.act.at !== undefined && (
+          <>
+            {' '}
+            <a className="ctl-link" href={`#${t.act.at}`}>
+              Open {HELP_PLACES[t.act.at]}
+            </a>
+          </>
+        )}
+      </p>
+
+      <TopicAnchor id={id} />
     </div>
+  )
+}
+
+/**
+ * THE ANCHOR, AS A LINK AND A COPY CONTROL (#130). It was faint text nobody
+ * could click. The link is the topic's own `#help/<id>`; the copy control
+ * writes the address the router settles on (`/help/<group>#<id>`), which is
+ * what a reader pasting it to somebody else needs. A refused clipboard says
+ * so and leaves the link on screen to be copied by hand
+ * (`clipboard-secure-context`).
+ */
+function TopicAnchor({ id }: { id: TopicId }) {
+  const t = HELP[id]
+  const [said, setSaid] = useState('')
+  const copy = () => {
+    const url = `${window.location.origin}${addressToPath(t.anchor)}`
+    const c = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (c === undefined) return setSaid('copy refused; select the link instead')
+    c.writeText(url).then(
+      () => setSaid('link copied'),
+      () => setSaid('copy refused; select the link instead'),
+    )
+  }
+  return (
+    <p className="help-topic-anchor">
+      <a href={`#${t.anchor}`}>#{t.anchor}</a>{' '}
+      <button type="button" onClick={copy} aria-label={`Copy a link to ${t.subject}`}>
+        copy link
+      </button>{' '}
+      <span role="status">{said}</span>
+    </p>
   )
 }
