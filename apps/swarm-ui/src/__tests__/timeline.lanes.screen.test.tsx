@@ -123,7 +123,8 @@ const lane = (id: string) => document.querySelector(`[data-lane="${id}"]`) as HT
 describe('Lanes: the drawing', () => {
   it('reads /v1/attempts for the span and draws one lane per agent, grouped under its workflow, standalone last', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+    // The never-ran step comes from the workflow read, which lands after the attempts.
+    await waitFor(() => expect(lane('task_publish')).not.toBeNull())
     const args = api.loadAttemptsPage.mock.calls[0]![0] as { since: string; until: string }
     expect(Date.parse(args.until) - Date.parse(args.since)).toBe(24 * 3_600_000)
     const groups = [...document.querySelectorAll('[data-group]')].map((g) => g.getAttribute('data-group'))
