@@ -104,15 +104,17 @@ def test_files_dropped_at_the_size_cap_are_named(client, db) -> None:
     _finish(db, "task_a", FINISHED_SUMMARY)
 
     body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
-    assert body["artifacts_skipped"] == ["core.dump"]
+    # A bare stored name predates causes: served with `cause: None`.
+    assert body["artifacts_skipped"] == [{"name": "core.dump", "cause": None}]
 
 
 def test_skipped_entries_with_a_cause_are_named_and_their_cause_reported(client, db) -> None:
     """The worker stores `artifacts_skipped` entries as `{name, cause}` (#165).
 
-    The route keeps `artifacts_skipped` a list of names, so no client changes
-    shape, and reports each cause beside it. A bare name (a summary written
-    before causes were recorded) is still named, with no cause invented for it.
+    The route serves them in that shape, each name carrying its own cause
+    (owner decision, 2026-10-02), with no side table of causes by name. A bare
+    name (a summary written before causes were recorded) is still named, with
+    `cause: None` rather than a cause invented for it.
     """
     seed_tenant(db, "eng")
     seed_task(db, task_id="task_a", tenant_id="eng")
@@ -130,8 +132,12 @@ def test_skipped_entries_with_a_cause_are_named_and_their_cause_reported(client,
     )
 
     body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
-    assert body["artifacts_skipped"] == ["core.dump", "notes.md", "old.bin"]
-    assert body["artifacts_skipped_causes"] == {"core.dump": "cap", "notes.md": "upload_error"}
+    assert body["artifacts_skipped"] == [
+        {"name": "core.dump", "cause": "cap"},
+        {"name": "notes.md", "cause": "upload_error"},
+        {"name": "old.bin", "cause": None},
+    ]
+    assert "artifacts_skipped_causes" not in body, "the causes ride on the entries, not beside them"
 
 
 def test_another_tenants_task_is_a_404_not_an_empty_list(client, db) -> None:
@@ -222,7 +228,9 @@ def test_files_past_the_file_cap_are_counted_not_hidden(client, db) -> None:
     body = client.get("/v1/tasks/task_a/artifacts", headers=auth_header("alice")).json()
     assert body["complete"] is True
     assert body["artifacts_over_cap"] == 200
-    assert body["artifacts_skipped"] == ["core.dump"], "over-cap files are counted, not named"
+    assert body["artifacts_skipped"] == [{"name": "core.dump", "cause": None}], (
+        "over-cap files are counted, not named"
+    )
 
 
 def test_a_run_under_the_file_cap_reports_zero_over_it(client, db) -> None:
