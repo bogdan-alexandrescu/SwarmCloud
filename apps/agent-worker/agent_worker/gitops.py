@@ -42,6 +42,7 @@ from __future__ import annotations
 import os
 import re
 import shlex
+import shutil
 import stat
 import tempfile
 import threading
@@ -220,6 +221,93 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     return cred_file
 
 
+def _clone_env(
+    url: str, token: str | None, private_dir: Path, logger: Any
+) -> tuple[dict[str, str], list[str], Path | None]:
+    """The environment, the `-c` options and the credential file a clone runs with.
+
+    Shared by `shallow_clone` and `clone_at_commit`, so the pinned clone holds
+    the token exactly as the ordinary one does. The caller removes the file
+    (`_remove_credentials`) on every path, including a failure.
+    """
+    env = {
+        "PATH": "/usr/local/bin:/usr/bin:/bin",
+        "HOME": str(private_dir),
+        "GIT_TERMINAL_PROMPT": "0",            # never block waiting for a password
+        "GIT_ASKPASS": "/bin/true",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        # /dev/null, not just HOME: `GIT_CONFIG_NOSYSTEM` disables /etc/gitconfig
+        # but NOT `~/.gitconfig`, and pointing the global file at /dev/null is
+        # what stops an inherited user config from carrying an `insteadOf`, a
+        # proxy or a credential helper into a command that holds the token.
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
+        "LC_ALL": "C",
+    }
+    config_args: list[str] = ["-c", "protocol.version=2", "-c", "advice.detachedHead=false"]
+    cred_file: Path | None = None
+    if token:
+        cred_file = _write_credentials(url, token, private_dir)
+        if cred_file is None:
+            logger.info(
+                "git credential withheld: the host is not the forge the token was issued for",
+                host=urlparse(url).hostname,
+            )
+        else:
+            config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+    return env, config_args, cred_file
+
+
+def _remove_credentials(cred_file: Path | None, logger: Any) -> None:
+    # The clone is the only thing that ever needs this file. Leaving it on
+    # disk for the length of the attempt is what turns a prompt injection in
+    # the cloned repository into a stolen token.
+    if cred_file is not None:
+        try:
+            cred_file.unlink(missing_ok=True)
+        except OSError as exc:
+            logger.error("could not remove the git credential file", error=str(exc))
+
+
+def _run_git_steps(
+    steps: Sequence[Sequence[str]],
+    *,
+    url: str,
+    token: str | None,
+    private_dir: Path,
+    env: dict[str, str],
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    label: str = "git",
+) -> float:
+    """Run each argv in turn; raise `GitError` naming the first that fails. Returns seconds."""
+    total = 0.0
+    for index, argv in enumerate(steps):
+        result = run_child(
+            list(argv),
+            cwd=private_dir,
+            env=env,
+            stdout_path=logs_dir / f"{label}-{index}.out.log",
+            stderr_path=logs_dir / f"{label}-{index}.err.log",
+            timeout_seconds=timeout_seconds,
+            grace_seconds=10,
+            max_stdout_bytes=1 * 1024 * 1024,
+            max_stderr_bytes=1 * 1024 * 1024,
+            logger=logger,
+        )
+        total += result.duration_seconds
+        if result.timed_out:
+            raise GitError(f"{label} step {index} timed out after {timeout_seconds}s")
+        if result.exit_code != 0:
+            tail = (logs_dir / f"{label}-{index}.err.log").read_text(errors="replace")[-2000:]
+            raise GitError(
+                f"{label} step {index} failed with exit {result.exit_code}"
+                f"{_withheld_note(url, token)}: {tail.strip()}"
+            )
+    return total
+
+
 def shallow_clone(
     *,
     url: str,
@@ -246,31 +334,7 @@ def shallow_clone(
     private_dir = Path(private_dir)
     private_dir.mkdir(parents=True, exist_ok=True)
 
-    env = {
-        "PATH": "/usr/local/bin:/usr/bin:/bin",
-        "HOME": str(private_dir),
-        "GIT_TERMINAL_PROMPT": "0",            # never block waiting for a password
-        "GIT_ASKPASS": "/bin/true",
-        "GIT_CONFIG_NOSYSTEM": "1",
-        # /dev/null, not just HOME: `GIT_CONFIG_NOSYSTEM` disables /etc/gitconfig
-        # but NOT `~/.gitconfig`, and pointing the global file at /dev/null is
-        # what stops an inherited user config from carrying an `insteadOf`, a
-        # proxy or a credential helper into a command that holds the token.
-        "GIT_CONFIG_GLOBAL": "/dev/null",
-        "GIT_SSH_COMMAND": "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
-        "LC_ALL": "C",
-    }
-    config_args: list[str] = ["-c", "protocol.version=2", "-c", "advice.detachedHead=false"]
-    cred_file: Path | None = None
-    if token:
-        cred_file = _write_credentials(url, token, private_dir)
-        if cred_file is None:
-            logger.info(
-                "git credential withheld: the host is not the forge the token was issued for",
-                host=urlparse(url).hostname,
-            )
-        else:
-            config_args += ["-c", f"credential.helper=store --file={cred_file}"]
+    env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
 
     is_sha = bool(ref and _SHA_RE.match(ref))
     if is_sha:
@@ -291,39 +355,13 @@ def shallow_clone(
         clone += ["--", url, str(destination)]
         steps = [clone]
 
-    total = 0.0
     try:
-        for index, argv in enumerate(steps):
-            result = run_child(
-                argv,
-                cwd=private_dir,
-                env=env,
-                stdout_path=logs_dir / f"git-{index}.out.log",
-                stderr_path=logs_dir / f"git-{index}.err.log",
-                timeout_seconds=timeout_seconds,
-                grace_seconds=10,
-                max_stdout_bytes=1 * 1024 * 1024,
-                max_stderr_bytes=1 * 1024 * 1024,
-                logger=logger,
-            )
-            total += result.duration_seconds
-            if result.timed_out:
-                raise GitError(f"git step {index} timed out after {timeout_seconds}s")
-            if result.exit_code != 0:
-                tail = (logs_dir / f"git-{index}.err.log").read_text(errors="replace")[-2000:]
-                raise GitError(
-                    f"git step {index} failed with exit {result.exit_code}"
-                    f"{_withheld_note(url, token)}: {tail.strip()}"
-                )
+        total = _run_git_steps(
+            steps, url=url, token=token, private_dir=private_dir, env=env,
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        )
     finally:
-        # The clone is the only thing that ever needs this file. Leaving it on
-        # disk for the length of the attempt is what turns a prompt injection in
-        # the cloned repository into a stolen token.
-        if cred_file is not None:
-            try:
-                cred_file.unlink(missing_ok=True)
-            except OSError as exc:
-                logger.error("could not remove the git credential file", error=str(exc))
+        _remove_credentials(cred_file, logger)
 
     commit = _read_head(destination, private_dir, logs_dir, logger, git_binary)
     empty = commit is None and _holds_no_objects(
@@ -336,6 +374,107 @@ def shallow_clone(
     return CloneResult(
         path=destination, url=url, ref=ref, commit=commit, duration_seconds=total, empty=empty
     )
+
+
+def clone_at_commit(
+    *,
+    url: str,
+    branch: str | None,
+    commit: str,
+    destination: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    token: str | None = None,
+    git_binary: str = "git",
+) -> CloneResult:
+    """Check out exactly `commit` of `url` into `destination` (the workflow base pin).
+
+    A downstream workflow step starts from the commit its upstream steps
+    started from, not from wherever `branch` has moved since (docs/workflows.md,
+    "The base pin"). First a shallow fetch of the sha itself, which GitHub
+    serves; if the server refuses a fetch by sha, a full fetch of `branch`
+    followed by a checkout of the sha, which works whenever the commit is
+    still in that branch's history.
+
+    Raises `GitError` when neither lands the commit, after emptying
+    `destination` again, so the caller can clone the branch tip into it as
+    it always did. `commit` must be a full 40-character sha: an abbreviation
+    is not a pin.
+    """
+    url = validate_repository_url(url)
+    branch = validate_ref(branch)
+    if not _FULL_SHA_RE.match(commit or ""):
+        raise GitError(f"refusing to pin to {str(commit)[:60]!r}: not a full commit sha")
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+
+    env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
+    g = [git_binary, *config_args, "-C", str(destination)]
+    setup = [
+        [git_binary, *config_args, "init", "--quiet", str(destination)],
+        [*g, "remote", "add", "origin", url],
+    ]
+    by_sha = [
+        [*g, "fetch", "--depth", "1", "--no-tags", "origin", commit],
+        [*g, "checkout", "--quiet", commit],
+    ]
+    total = 0.0
+    try:
+        total += _run_git_steps(
+            setup, url=url, token=token, private_dir=private_dir, env=env,
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            label="git-pin",
+        )
+        try:
+            total += _run_git_steps(
+                by_sha, url=url, token=token, private_dir=private_dir, env=env,
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+                label="git-pin-sha",
+            )
+        except GitError as exc:
+            logger.info(
+                "the forge refused a fetch by sha; fetching the branch's history instead",
+                branch=branch, commit=commit, error=str(exc)[:300],
+            )
+            # Not shallow: the pinned commit is somewhere in the branch's past,
+            # and a depth would have to guess how far.
+            by_branch = [
+                [*g, "fetch", "--no-tags", "origin", f"refs/heads/{branch}" if branch else "HEAD"],
+                [*g, "checkout", "--quiet", commit],
+            ]
+            total += _run_git_steps(
+                by_branch, url=url, token=token, private_dir=private_dir, env=env,
+                logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+                label="git-pin-branch",
+            )
+    except GitError:
+        _empty_directory(destination)
+        raise
+    finally:
+        _remove_credentials(cred_file, logger)
+
+    head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
+    if head != commit:
+        _empty_directory(destination)
+        raise GitError(f"the pinned checkout landed on {head!r}, not {commit}")
+    logger.info(
+        "repository cloned at the pinned commit", url=url, ref=branch, commit=head,
+        seconds=round(total, 2),
+    )
+    return CloneResult(path=destination, url=url, ref=branch, commit=head, duration_seconds=total)
+
+
+def _empty_directory(path: Path) -> None:
+    """Remove everything inside `path`, keeping `path`: a clone needs it empty."""
+    for child in list(path.iterdir()) if path.is_dir() else []:
+        if child.is_dir() and not child.is_symlink():
+            shutil.rmtree(child, ignore_errors=True)
+        else:
+            child.unlink(missing_ok=True)
 
 
 def _read_head(

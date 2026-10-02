@@ -412,6 +412,66 @@ would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, 
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
 
+## The base pin: a downstream step starts where its parents started
+
+**Why it exists.** On 2026-10-02 workflow `wf_b9b337e107494c10a416`
+(implement, review, fix under `integrate`) lost a whole implementation. The
+implement step cloned `main` at `b2c1094` and staged a 246 KB patch. The fix
+step started later and cloned the tip `main` had moved to (`1402814`). The
+patch did not apply, so the agent changed nothing, and the forge answered "No
+commits between". The step and the workflow both read SUCCEEDED. Every step
+was handed `repository_ref` as a branch name, and each worker cloned whatever
+that branch pointed at when the worker started.
+
+**What the worker does now.** A workflow step that has upstream dependencies
+and does not start from an upstream branch clones the commit its parents
+cloned, not the branch tip. Not starting from an upstream branch means no
+`builds_on`, no `continues`, no parent branch carried under
+`carrier: branches`, and no `single-pr` `pr_role`. The worker reads each
+parent's `result_summary.git.base`, through the same tenant-checked read
+staging uses.
+
+| the parents' recorded bases | the clone | `result_summary.git.base_pin` |
+|---|---|---|
+| every parent that recorded one names the same commit | that commit | `{"pinned": true, "sha": ..., "from": [parent task ids]}` |
+| they name different commits | the branch tip, as before | `{"pinned": false, "reason": "parents_disagree"}` |
+| none recorded one | the branch tip, as before | `{"pinned": false, "reason": "no_upstream_base"}` |
+| the commit cannot be fetched (a force-push removed it) | the branch tip, as before | `{"pinned": false, "reason": "fetch_failed"}` |
+
+Each fallback also logs a line naming the parents and their bases. A root
+step and a task outside a workflow read nothing and record no `base_pin`. A
+step that starts from an upstream branch already has its upstream's work and
+records none either. Neither does an attempt resumed from a checkpoint,
+because its clone is not made again. The commit is fetched by sha, which
+GitHub serves. If a server refuses a fetch by sha, the worker fetches the
+branch's full history and checks the commit out of it.
+
+**What it does not change.** The pin changes only the commit a step starts
+from. The integrator still opens its pull request against `repository_ref`,
+and it still merges its contributors' branches exactly as before. Under
+`integrate`, those branches are what reach the pull request. The pin is what
+keeps a staged *patch* applicable to the tree the fix step starts from. Any
+step whose prompt says "apply the implementer's patch" depends on it.
+`builds_on` is still the recommended way for a review or fix step to
+receive an implementation (see the next section). It starts the step from
+the implementer's branch, so there is no patch to apply in the first place.
+
+**A pull-request step that published nothing is FAILED.** The second guard
+from the same incident. A step whose job is to open a pull request is a
+`direct-pr` step, the `integrate` integrator, or a `single-pr` author. If
+such a step ends with no commit beyond its base, it ends FAILED. It ends
+FAILED too if the forge refuses its pull request, for example "No commits
+between". Its `last_error` begins `published_nothing:` and quotes the
+refusal, masked. It is not retried, because another attempt would clone the
+same base, run the same prompt and meet the same forge. The workflow then
+reads FAILED through the ordinary rollup, and `on_step_failure` acts on it
+as on any failed step. A step that opens no pull request still SUCCEEDS when
+it changes nothing, because for a contributor, a review or a `collect` step
+that is a correct result. The guard also exempts a step whose verdict gate
+kept its agent from running. A forge that cannot be reached at all is not a
+refusal, and that step reads as it did before. Until contract request 46 is
+decided, the end cause is `outputs_missing`, the closest existing one.
+
 ## Review before publishing: implement, review, fix-if-needed
 
 **A step's patch can be reviewed inside the workflow, and fixed, before

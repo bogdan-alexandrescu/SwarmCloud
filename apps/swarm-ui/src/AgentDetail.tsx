@@ -102,7 +102,20 @@ import {
  *     -- only id, size and uri -- so this screen says that instead of drawing a
  *     file tree.
  */
-export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose: () => void }) {
+export function AgentDetailScreen({
+  taskId,
+  onClose,
+  headed = false,
+}: {
+  taskId: string
+  onClose: () => void
+  /**
+   * Drawn under the split's header row (AgentSplit.tsx), which carries the
+   * state pill, the name and Stop for every tab: this pane then draws no
+   * stop control of its own, so there is one Stop on screen, in the header.
+   */
+  headed?: boolean
+}) {
   // THE HEADING IS THE AGENT'S NAME ONCE THE TASK IS READ (#94): its step in
   // a workflow, its id when it stands alone. Before the read only the id is
   // known, so the heading starts there. The name is set from inside the load
@@ -173,7 +186,7 @@ export function AgentDetailScreen({ taskId, onClose }: { taskId: string; onClose
         {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
             poll past it, and the checkpoint and log panels re-read when it
             moves, so every part of the drawer is as of the same read. */}
-        {(r, reading) => <Run run={r} reload={reload} reading={reading} />}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} />}
       </Screen>
     </div>
   )
@@ -267,9 +280,12 @@ export function Run({
   run,
   reload,
   reading,
+  headed = false,
 }: {
   run: AgentRun
   reload?: () => void
+  /** Under the split's header row, which holds Stop; see `AgentDetailScreen`. */
+  headed?: boolean
   /**
    * When this run was read and how often the drawer re-reads it, from
    * `Screen`. OPTIONAL for the reason `reload` is: the acceptance test renders
@@ -325,7 +341,7 @@ export function Run({
           scope to, and it is one element rather than a class change on the
           twenty-eight `.section`s this file renders. */
     <div className="run-stack">
-      <Headline run={run} now={now} reload={reload} />
+      <Headline run={run} now={now} reload={headed ? undefined : reload} />
       <Alerts task={task} />
       <Why task={task} events={events} now={now} classes={run.classes} />
       <ErrorBanner run={run} />
@@ -2819,7 +2835,8 @@ function Output({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   // opened on two titles for one subject. When the summary carries a git
   // outcome the panel IS the code, and says so once; otherwise it is Output.
   const git = summary?.git
-  const hasCode = terminal && typeof git === 'object' && git !== null && !Array.isArray(git)
+  const refusals = publishRefusals(task, attempts)
+  const hasCode = (terminal || refusals.length > 0) && typeof git === 'object' && git !== null && !Array.isArray(git)
 
   return (
     <section className="section panel run-output">
@@ -2850,7 +2867,15 @@ function Output({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         )}
       </div>
 
-      {!terminal ? (
+      {!terminal && refusals.length > 0 ? (
+        // REFUSED AND RETRYING (PUBLISH_REFUSED, request 29): each refusal
+        // failed its attempt retryably, so the task is not terminal -- and
+        // the refusals are the one thing about its code a reader needs now.
+        <div className="git-outcome">
+          <AgCodeLead git={typeof git === 'object' && git !== null && !Array.isArray(git) ? git : {}} task={task} refusals={refusals} />
+          {typeof git === 'object' && git !== null && !Array.isArray(git) && <AgBasePin git={git} />}
+        </div>
+      ) : !terminal ? (
         <Absent
           kind="zero"
           heading={`nothing written yet · ${stateWord(task.state)}`}
@@ -2879,7 +2904,7 @@ function Output({ run, readAt }: { run: AgentRun; readAt: number | null }) {
         />
       ) : (
         <>
-          <GitOutcome git={summary.git} artifacts={artifacts} task={task} readAt={readAt} />
+          <GitOutcome git={summary.git} artifacts={artifacts} task={task} readAt={readAt} attempts={attempts} />
           <SummaryUsage task={task} attempts={attempts} />
         </>
       )}
@@ -3024,11 +3049,14 @@ function GitOutcome({
   artifacts,
   task,
   readAt,
+  attempts = null,
 }: {
   git: GitSummary | undefined
   artifacts: ArtifactRef[]
   task: Task
   readAt: number | null
+  /** The attempt documents, for the refusals each one recorded; null when unread. */
+  attempts?: AttemptRow[] | null
 }) {
   // Same untyped-dict caution as the artifact list: `GitSummary` describes what
   // `_harvest_git` writes, and the field is whatever is in Firestore.
@@ -3051,9 +3079,20 @@ function GitOutcome({
       ? artifacts.filter((a) => artifactKind(a.name) === 'diff')
       : []
 
+  const refusals = publishRefusals(task, attempts)
+  // A CREDENTIAL REFUSAL WITHHOLDS THE DIFF: the refused file's lines are
+  // never drawn, redacted or not (agent-detail-2.html A4), so the patch that
+  // carries them is not offered here at all.
+  const withhold = refusals.some((r) => r.kind === 'credential')
+
   return (
     // NO HEADING OF ITS OWN (#102): the panel around it says `Code`.
+    // THE ORDER IS agent-detail-2.html A's: one sentence on what happened and
+    // what to do, the base-pin line, then the per-file diff, then the facts.
     <div className="git-outcome">
+      <AgCodeLead git={git} task={task} refusals={refusals} />
+      <AgBasePin git={git} />
+      {patch !== undefined && !withhold && <AgPatchDiff taskId={task.id} patch={patch} />}
 
       {git.error ? (
         <p className="warn-text">
@@ -3064,8 +3103,6 @@ function GitOutcome({
           {git.error}
         </p>
       ) : null}
-
-      <PublishOutcome git={git} task={task} />
 
       {handed.length > 0 && task.workflow_id !== null && task.step_id !== null && (
         <HandedOn task={task} workflowId={task.workflow_id} stepId={task.step_id} files={handed} readAt={readAt} />
@@ -3413,6 +3450,220 @@ function HandedFile({ task, file, to }: { task: Task; file: ArtifactRef; to: str
  * summary written before those fields existed. The prose patterns stay as a
  * third fallback for a task whose dispatch cannot be read at all.
  */
+// ---------------------------------------------------------------------------
+// The Code card's lead, its base pin and its diff (agent-detail-2.html, pick A)
+// ---------------------------------------------------------------------------
+
+/** One publish refusal an attempt recorded (PUBLISH_REFUSED, contract request 29). */
+export interface PublishRefusal {
+  /** 1-based, in generation order. */
+  attempt: number
+  generation: number | null
+  kind: 'credential' | 'title'
+  /** The file a credential refusal names. Never its content: the worker never records it. */
+  file: string | null
+}
+
+/**
+ * THE WORKER'S TWO REFUSALS, BY ITS OWN WORDS. Until request 29 lands the
+ * worker records them as `OUTPUTS_MISSING` and `RUNNER_ERROR` with these
+ * errors (agent_worker/lifecycle.py `_fail_for_final_tree_leak`,
+ * `_refused_title_reason`), so the error text is the only signal; the end
+ * cause `publish_refused` is read too, for the day it is written.
+ */
+const CREDENTIAL_REFUSAL = /the final tree adds a credential in (.+?) \(rule /
+const TITLE_REFUSAL = /pr-title\.txt refused: /
+
+function refusalOf(error: string | null | undefined): Omit<PublishRefusal, 'attempt' | 'generation'> | null {
+  if (typeof error !== 'string') return null
+  const cred = CREDENTIAL_REFUSAL.exec(error)
+  if (cred !== null) return { kind: 'credential', file: cred[1] ?? null }
+  if (TITLE_REFUSAL.test(error)) return { kind: 'title', file: null }
+  return null
+}
+
+export function publishRefusals(task: Task, attempts: readonly AttemptRow[] | null): PublishRefusal[] {
+  if (attempts !== null && attempts.length > 0) {
+    const ordered = [...attempts].sort((a, b) => a.generation - b.generation)
+    const out: PublishRefusal[] = []
+    ordered.forEach((a, i) => {
+      const r = refusalOf(a.error)
+      if (r !== null) out.push({ ...r, attempt: i + 1, generation: a.generation })
+    })
+    if (out.length > 0) return out
+  }
+  // No attempt documents, or none that says: the task's own last error.
+  const last = refusalOf(task.last_error)
+  if (last !== null) return [{ ...last, attempt: task.attempt_count, generation: task.current_generation ?? null }]
+  if (task.end_cause === 'publish_refused') {
+    return [{ kind: 'title', file: null, attempt: task.attempt_count, generation: task.current_generation ?? null }]
+  }
+  return []
+}
+
+/**
+ * FAILED `published_nothing`: a step meant to open a pull request whose branch
+ * has no commits beyond its base. NOT WRITTEN BY ANY WORKER ON MAIN; the shape
+ * is the mock-up's reading of the brief -- the end cause, or the publish
+ * reason's own word -- and a summary without either is never read as it.
+ */
+export function publishedNothing(task: Task, git: GitSummary): boolean {
+  if (task.state !== 'FAILED') return false
+  return task.end_cause === 'published_nothing' || (git.publish_reason ?? '').toLowerCase().startsWith('published_nothing')
+}
+
+/**
+ * THE CODE CARD'S ONE SENTENCE: what happened, and what to do. A pull request
+ * opened, a refusal, a step that published nothing -- or, for every other
+ * missing pull request, the six causes `PublishOutcome` tells apart, with an
+ * unrecognised reason printed as the worker wrote it.
+ */
+function AgCodeLead({ git, task, refusals }: { git: GitSummary; task: Task; refusals: PublishRefusal[] }) {
+  if (refusals.length > 0) {
+    const times = refusals.length === 1 ? '' : ` ${refusals.length} times`
+    return (
+      <div className="ag-code-lead is-bad" role="status">
+        <Absent
+          kind="failed"
+          heading={`Publish refused${times}. Nothing was pushed.`}
+          say="The worker refused to publish this attempt's work. Each refusal fails that attempt and retries it, and the next attempt starts from the last checkpoint with the agent's files in place."
+        >
+          Each refusal fails its attempt and retries it; fix what each one names below.
+        </Absent>
+        <ul className="ag-refusals">
+          {refusals.map((r) => (
+            <li key={`${r.attempt}:${r.kind}`} className="ag-refusal">
+              <b>
+                Attempt {r.attempt}
+                {r.generation !== null ? ` · gen ${r.generation}` : ''} ·{' '}
+                {r.kind === 'credential' ? 'a credential in the final tree' : 'an unusable pr-title.txt'}
+              </b>{' '}
+              {r.kind === 'credential' ? (
+                <>
+                  in <code>{r.file ?? 'a file the error does not name'}</code>; remove it. Only the file is named: its
+                  content is never shown here, redacted or not.
+                </>
+              ) : (
+                <>write one line with no task id and no attribution.</>
+              )}{' '}
+              <span className="ctl-sub">publish_refused</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    )
+  }
+  if (publishedNothing(task, git)) {
+    return (
+      <div className="ag-code-lead is-bad">
+        <Absent
+          kind="failed"
+          heading="Failed: nothing to publish"
+          say="This step opens a pull request, but its branch has no commits beyond its base and no files were left uncommitted, so nothing was pushed and there is nothing to review."
+        >
+          The branch has no commits beyond its base, so nothing was pushed; read the agent&apos;s log for why it stopped.
+        </Absent>
+      </div>
+    )
+  }
+  const pr = git.pull_request
+  if (pr) {
+    return (
+      <div className="ag-code-lead is-ok">
+        <p className="ag-code-sentence">
+          <b>
+            Pull request{' '}
+            <a href={pr.url} target="_blank" rel="noreferrer">
+              #{pr.number}
+            </a>{' '}
+            {pr.created === false ? 'reused' : 'opened'}
+          </b>
+          {git.branch ? ` from ${git.branch}` : ''}: review it on the forge.
+        </p>
+      </div>
+    )
+  }
+  return <PublishOutcome git={git} task={task} />
+}
+
+/**
+ * THE BASE-PIN LINE (`result_summary.git.base_pin`): the commit this run's
+ * clone was pinned to and where it came from, or that it was not pinned and
+ * why. No worker on main writes it, so a summary without it says "not
+ * recorded" -- never "not pinned", which would be a claim.
+ */
+function AgBasePin({ git }: { git: GitSummary }) {
+  const pin = git.base_pin
+  const cloned = typeof git.base === 'string' && git.base !== '' ? git.base.slice(0, 10) : null
+  if (pin === undefined || pin === null || typeof pin !== 'object') {
+    return (
+      <p className="ag-basepin is-absent">
+        <b>Base</b> <Em />{' '}
+        <Mark
+          kind="absent"
+          say="This worker does not record where the clone's base was pinned (result_summary.git.base_pin), so whether it was is not known."
+        />{' '}
+        pin not recorded
+        {cloned !== null && (
+          <>
+            {' · cloned at '}
+            <span className="mono">{cloned}</span>
+          </>
+        )}
+      </p>
+    )
+  }
+  if (pin.pinned === true) {
+    const from = pin.from ?? pin.upstream_task_id ?? null
+    return (
+      <p className="ag-basepin is-pinned">
+        <b>Base</b> pinned to <span className="mono">{String(pin.sha).slice(0, 10)}</span>
+        {from !== null ? (
+          <>
+            , from <span className="mono">{from}</span>
+          </>
+        ) : (
+          ', its source not recorded'
+        )}
+      </p>
+    )
+  }
+  return (
+    <p className="ag-basepin is-unpinned">
+      <b>Base</b> not pinned · {typeof pin.reason === 'string' && pin.reason !== '' ? pin.reason : 'no reason recorded'}
+      {cloned !== null && (
+        <>
+          {' · cloned at '}
+          <span className="mono">{cloned}</span>
+        </>
+      )}
+    </p>
+  )
+}
+
+/**
+ * THE PER-FILE DIFF, ON REQUEST: the approved DiffView (#310) through the
+ * artifact viewer, which reads the patch by its manifest name. Behind a button
+ * because it is one more read of a file that can be large, and Details
+ * re-reads every 10 s.
+ */
+function AgPatchDiff({ taskId, patch }: { taskId: string; patch: ArtifactRef }) {
+  const [open, setOpen] = useState(false)
+  if (!open) {
+    return (
+      <p className="ag-diff-open">
+        <button type="button" className="copy" onClick={() => setOpen(true)}>
+          Show the diff
+        </button>{' '}
+        <span className="ctl-sub">
+          {patch.name} · {num(patch.bytes)} bytes
+        </span>
+      </p>
+    )
+  }
+  return <ArtifactViewer taskId={taskId} artifact={patch} onClose={() => setOpen(false)} backLabel="Code" />
+}
+
 function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
   const reason = git.publish_reason ?? null
   const lower = (reason ?? '').toLowerCase()
