@@ -1243,9 +1243,12 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
 
     const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'stderr')
     fireEvent.click(stderr!)
+    // #172: a live stream's Age cell leads with how long ago the tail object
+    // changed, with `live` on the line under it.
     const cell = await waitFor(() => {
-      const c = row(logsSection, 'agent_stderr').querySelector<HTMLElement>('td[data-label="Age"] .ctl-sub')
-      expect(c?.textContent).toMatch(/published \d+s ago/)
+      const c = row(logsSection, 'agent_stderr').querySelector<HTMLElement>('td[data-label="Age"]')
+      expect(c?.textContent).toMatch(/^\d+s ago/)
+      expect(c?.querySelector('.ctl-sub')?.textContent).toBe('live')
       return c!
     }, WAIT)
     expect(shownAt(cell, { width: 390 }), 'a live stream’s age is hidden at 390').toBe(true)

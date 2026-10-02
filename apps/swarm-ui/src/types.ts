@@ -3740,6 +3740,13 @@ export interface CheckpointFile {
   name: string
   key: string
   bytes: number
+  /**
+   * The object's own GCS `updated`, from the same listing (#172). Null when
+   * the store reported no time -- never the checkpoint's `created_at`, which
+   * is the manifest's claim and not the bucket's. Absent from an API older
+   * than #172.
+   */
+  object_updated_at?: string | null
 }
 
 export interface CheckpointRecord {

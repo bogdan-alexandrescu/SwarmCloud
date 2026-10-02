@@ -229,6 +229,31 @@ describe('a listing', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The archive's own time (#172)
+// ---------------------------------------------------------------------------
+
+describe("the archive fact dates the archive by the bucket's own time (#172)", () => {
+  const archiveFact = () =>
+    [...region().querySelectorAll<HTMLElement>('.ctl-facts .ctl-fact')].find(
+      (f) => (f.querySelector('b')?.textContent ?? '') === 'archive',
+    )!
+
+  it('states how long ago the archive object was written, beside its size', async () => {
+    const at = new Date(Date.now() - 9 * 60_000).toISOString()
+    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: at } }))))
+    await screen.findByRole('tree')
+    expect(archiveFact().textContent).toMatch(/4(\.0)? KiB/)
+    expect(archiveFact().textContent).toContain('9m ago')
+  })
+
+  it('states no time, and invents none, when the store reported none', async () => {
+    mount(loaders(ok(listing({ archive: { key: `${PREFIX}/archive.tar.gz`, uri: `gs://bucket/${PREFIX}/archive.tar.gz`, bytes: 4096, object_updated_at: null } }))))
+    await screen.findByRole('tree')
+    expect(archiveFact().textContent).not.toMatch(/ago|just now/)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // The four answers
 // ---------------------------------------------------------------------------
 
