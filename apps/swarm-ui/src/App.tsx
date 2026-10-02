@@ -639,6 +639,13 @@ export interface Route {
   taskId: string | null
   taskPane: TaskPane
   /**
+   * The output open in the Artifacts pane, when the address names one:
+   * `#work/task/<id>/artifacts/<name>`, `/agents/<tab>/<id>/artifacts/<name>`
+   * (owner decision 2026-10-01). OPTIONAL like `list`. The name only -- which
+   * file of a patch is open is never in the address.
+   */
+  artifact?: string | null
+  /**
    * The agent list's tab and Recent state, when the address names them
    * (OV-10): `#work/running/recent/failed`. OPTIONAL, so every route built
    * without one is still a Route; absent and null both mean "the address names
@@ -745,7 +752,14 @@ export function fromAddress(full: string): Route {
   // accepted, after the tab names have had their chance to match. `head` is
   // already aliased, so `#work/task/<id>` reaches here too.
   if (head === WORK && tail[0] === 'task' && tail.length > 1) {
-    const rest = tail.slice(1)
+    let rest = tail.slice(1)
+    // ONE OUTPUT OF THE ARTIFACTS PANE: `<id>/artifacts/<name>`, the name one
+    // encoded segment. Read before the pane, so `artifacts` is still the pane.
+    let artifact: string | null = null
+    if (rest.length >= 3 && rest[rest.length - 2] === 'artifacts') {
+      artifact = decodeSegment(rest[rest.length - 1]!)
+      rest = rest.slice(0, -1)
+    }
     const last = rest[rest.length - 1]
     const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
     // Task ids are opaque and may contain characters that were encoded on the
@@ -758,6 +772,7 @@ export function fromAddress(full: string): Route {
         tab: 'running',
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
+        ...(artifact !== null && artifact !== '' ? { artifact } : {}),
       }
     }
   }
@@ -825,6 +840,7 @@ function poolQuery(pool: string): string {
 export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
+    if (r.taskPane === 'artifacts' && r.artifact) return `${base}/artifacts/${encodeURIComponent(r.artifact)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
@@ -868,7 +884,18 @@ function readsKey(r: Route): string {
   // The Timeline's view is a view of one screen too: a filter change re-reads
   // inside the same scope, with the last drawing dimmed, rather than
   // beginning an empty one (#185).
-  return canonical({ ...r, list: null, view: null })
+  // Opening an output in the Artifacts pane is not a new screen either: the
+  // pane's reads carry on under the viewer.
+  return canonical({ ...r, list: null, view: null, artifact: null })
+}
+
+/** One address segment, decoded; a malformed escape is kept as written rather than thrown. */
+function decodeSegment(seg: string): string {
+  try {
+    return decodeURIComponent(seg)
+  } catch {
+    return seg
+  }
 }
 
 export function App() {
@@ -1064,7 +1091,13 @@ export function App() {
             </main>
 
             {at.taskId !== null && (
-              <AgentDrawer taskId={at.taskId} pane={at.taskPane} closeTo={listAddress} go={go} />
+              <AgentDrawer
+                taskId={at.taskId}
+                pane={at.taskPane}
+                artifact={at.artifact ?? null}
+                closeTo={listAddress}
+                go={go}
+              />
             )}
           </div>
         </SkyShell>
@@ -1551,11 +1584,14 @@ export function nearestSnap(x: number, w: number): ListSnap {
 function AgentDrawer({
   taskId,
   pane,
+  artifact,
   closeTo,
   go,
 }: {
   taskId: string
   pane: TaskPane
+  /** The output the address names in the Artifacts pane, or null. */
+  artifact: string | null
   /**
    * The list address this drawer was opened from (OV-10), so closing it
    * restores the address the list behind it is showing -- not bare
@@ -1574,6 +1610,11 @@ function AgentDrawer({
   // update it either.
   const base = `${WORK}/task/${encodeURIComponent(taskId)}`
   const close = () => go(closeTo)
+  // Opening an output writes its name into the address; closing it takes it out.
+  const openArtifact = useCallback(
+    (name: string | null) => go(name === null ? `${base}/artifacts` : `${base}/artifacts/${encodeURIComponent(name)}`),
+    [base, go],
+  )
   // AGENTS V1 (agents.html, decided 2026-10-01): the divider snaps the LIST
   // to 64px (a strip of marks), 380px (the compact list) or half the width,
   // remembered per browser; `«` and `[` fold the list to the strip and back.
@@ -1820,7 +1861,7 @@ function AgentDrawer({
       ) : pane === 'checkpoints' ? (
         <CheckpointsPane taskId={taskId} />
       ) : (
-        <ArtifactsScreen taskId={taskId} />
+        <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
       )}
     </div>
   )
