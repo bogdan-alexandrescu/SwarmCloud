@@ -1,0 +1,536 @@
+/* ==========================================================================
+   AGENTS: the list, the split detail, the log dock (lane U1, 2026-10-02)
+   --------------------------------------------------------------------------
+   agents.html V1, agent-detail-2.html A and viewers.html A, styled to
+   components.html A as built: 32px rows and controls, radius 8 on controls
+   and 12 on cards, pill chips, 12px type floor, no all-caps, no letter
+   spacing. Every colour is a token from styles.css's :root (lane U0's), so
+   light and dark follow the theme toggle; nothing here declares a token.
+   The local pieces are named `ag-*` so a later pass can swap each for the
+   canonical component it stands in for.
+
+   RADII ARE THE SHEET'S TOKENS, NOT components.html's NUMBERS. A pick says
+   8px controls and 12px cards; the radius scale main holds today (and that
+   spacing.test.tsx enforces) is 0/2/6/10/14/999, and the scale is lane U0's
+   to move. `--ctl-radius-sm` and `--radius` are used, so these follow when
+   it does.
+   ========================================================================== */
+
+/* --- the list: the section's pages as a strip ---------------------------- */
+.ag-list-tabs {
+  display: flex;
+  gap: var(--ctl-s3);
+  border-bottom: 1px solid var(--line);
+  margin-bottom: var(--ctl-s2);
+  background: var(--bg);
+}
+.ag-list-tabs > button {
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+.ag-list-tabs > button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--sk-ac); font-weight: 600; }
+.ag-list-tabs > button:hover { color: var(--text); }
+.ag-list-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.ag-list-tabs .badge { color: var(--text-faint); font-variant-numeric: tabular-nums; margin-inline-start: 2px; }
+
+/* --- the list header: « [, find, profile -------------------------------- */
+.ag-list-head { flex-wrap: wrap; gap: var(--ctl-s2); }
+.ag-collapse,
+.ag-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-collapse:hover,
+.ag-sort:hover { background: var(--surface-2); }
+.ag-collapse:focus-visible,
+.ag-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-sort[aria-pressed='true'] { border-color: var(--sk-ac); }
+.ag-collapse kbd,
+.ag-logdock kbd {
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  border: 1px solid var(--line-soft);
+  border-radius: 2px;
+  padding: 0 4px;
+  color: var(--text-dim);
+}
+.ag-find { flex: 1 1 200px; min-width: 0; display: flex; }
+.ag-find > input {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--font);
+}
+.ag-find > input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.ag-filter-k { color: var(--text-dim); font-size: var(--t-meta); }
+
+/* --- the compact row, at every width ------------------------------------- */
+/* LINE ONE is the mark, the name and the elapsed time; LINE TWO profile ·
+   owner · try; then the reason. It was only drawn beside an open agent; it is
+   the list now (#503), so the template is unscoped. */
+.row.is-compact {
+  grid-template-columns: [state] auto [name] minmax(0, 1fr) [age] auto;
+  column-gap: var(--ctl-s2);
+  row-gap: 2px;
+  align-items: baseline;
+  min-height: 32px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.row.is-compact > .ctl-chip { font-size: 0; }
+.row.is-compact > .cr-name { grid-column: name; min-width: 0; }
+.row.is-compact > .cr-name b {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+  font-weight: 600;
+  color: var(--text);
+}
+.row.is-compact > .when { grid-column: age; white-space: nowrap; }
+.row.is-compact > .cr-sub,
+.row.is-compact > .why { grid-column: name / -1; }
+.cr-sub {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+.cr-sub .id { font-family: var(--mono); }
+.cr-sub .ctl-chip { font-size: var(--t-micro); }
+.cr-try.is-over { color: var(--bad); font-weight: 600; }
+
+/* --- the 64px strip: the list folded by «, [ or the divider --------------- */
+/* BY CLASS, NOT BY DOM SHAPE. The rule this replaces hid every child of
+   `.work` but `.rows`, and the list's rows sit inside the screen's body
+   wrapper, a child of `.work`; naming what goes is what keeps the marks and
+   the » that brings the list back. */
+@media (min-width: 1100px) {
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.ctl-chip) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact { grid-template-columns: 1fr; justify-items: center; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .ctl-chip { font-size: 0; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-tabs,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head > :not(.ag-collapse),
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-wait-group > h2,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .section.group > h2,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .group-why,
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-empty { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head { justify-content: center; padding: 0; }
+}
+
+/* THE DIVIDER HAS A HANDLE YOU CAN SEE (#503: a transparent 6px grip). The
+   grip keeps its 6px target and its z-index from styles.css; this draws the
+   pill on it, and the three stops while it is dragged. */
+.ag-divider::after {
+  content: '';
+  position: absolute;
+  left: 1px;
+  top: 50%;
+  width: 4px;
+  height: 40px;
+  margin-top: -20px;
+  border-radius: 999px;
+  background: var(--line);
+}
+.ag-divider:hover::after,
+.ag-divider.is-dragging::after,
+.ag-divider:focus-visible::after { background: var(--sk-ac); }
+.ag-snaps {
+  position: fixed;
+  left: 50%;
+  bottom: calc(var(--dock-h, 28px) + 16px);
+  transform: translateX(-50%);
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow-pop);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  color: var(--text-dim);
+}
+.ag-snap { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); }
+.ag-snap.is-on { border-color: var(--sk-ac); color: var(--text); background: var(--sk-acs); font-weight: 600; }
+.ag-snap-say { color: var(--text-faint); }
+
+/* --- the header row: state pill, name, Copy link, Stop ------------------- */
+.ag-head { display: flex; flex-direction: column; gap: 2px; padding: var(--ctl-s2) 0 0; }
+.ag-head-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); }
+.ag-head-title {
+  flex: 1 1 200px;
+  min-width: 0;
+  margin: 0;
+  font: 650 18px/1.3 var(--font);
+  overflow-wrap: anywhere;
+}
+.ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }
+.ag-head-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); margin-inline-start: auto; }
+.ag-head-sub { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
+.ag-btn,
+.ag-head-stop .stop-btn {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-head-stop .stop-btn { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
+.ag-btn:hover,
+.ag-head-stop .stop-btn:hover { background: var(--surface-2); }
+.ag-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-head-stop .stop-confirm { flex-basis: 100%; }
+.ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* ONE TITLE, IN THE HEADER ROW (#503: "the title is the task id", and a band
+   of empty space under the tabs). Each pane is a `Screen`, which heads itself
+   with an <h1> of the agent's name or id; under the split's header row that
+   is the same fact a second time. The pane keeps its sub-line -- when it was
+   read and how often -- which no header carries. */
+.ag-split-pane .head { display: none; }
+
+/* --- underline tabs with counts ------------------------------------------ */
+.ag-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ctl-s3);
+  border-bottom: 1px solid var(--line);
+  margin: var(--ctl-s2) 0 var(--ctl-s3);
+}
+.ag-tabs > button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 2px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--text-dim);
+  font: 500 var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+.ag-tabs > button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--sk-ac); font-weight: 600; }
+.ag-tabs > button:hover { color: var(--text); }
+.ag-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.ag-tab-count {
+  min-width: 20px;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--surface-2);
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: 18px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- the log dock --------------------------------------------------------- */
+/* STICKY TO THE BOTTOM OF THE DETAIL COLUMN, which is the drawer's scroller:
+   it stays put while the tab above it scrolls, and spans this column only. */
+.ag-logdock {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  margin-top: var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+  background: var(--surface);
+  box-shadow: var(--ctl-shadow-pop);
+}
+.ag-logdock.is-strip { height: auto; }
+.ag-logdock-grip {
+  height: 8px;
+  flex: none;
+  cursor: row-resize;
+  touch-action: none;
+  position: relative;
+}
+.ag-logdock-grip::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 2px;
+  width: 40px;
+  height: 4px;
+  margin-left: -20px;
+  border-radius: 999px;
+  background: var(--line);
+}
+.ag-logdock-grip:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.ag-logdock-line {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  width: 100%;
+  min-height: 32px;
+  padding: 0 var(--ctl-s3);
+  border: 0;
+  background: none;
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.ag-logdock-src { padding: 0 6px; border-radius: 999px; background: var(--s-liveb); color: var(--s-live); font-size: var(--t-micro); }
+.ag-logdock-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.ag-logdock-line .ag-logdock-facts { color: var(--text-faint); font-size: var(--t-micro); white-space: nowrap; }
+.ag-logdock-head,
+.ag-logdock-tools {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--ctl-s2);
+  padding: 4px var(--ctl-s3);
+}
+.ag-logdock-head h2 { margin: 0; font: 600 var(--t-body)/var(--lh-body) var(--font); }
+.ag-logdock-streams { display: inline-flex; gap: 2px; }
+.ag-logdock-streams > button,
+.ag-logdock-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-dim);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-logdock-streams > button[aria-pressed='true'],
+.ag-logdock-btn[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
+.ag-logdock-btn:disabled { opacity: .6; cursor: default; }
+.ag-logdock-streams > button:focus-visible,
+.ag-logdock-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-logdock-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
+.ag-logdock-attempt select {
+  min-height: 28px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+}
+.ag-logdock-search { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 180px; min-width: 0; }
+.ag-logdock-search > input {
+  flex: 1;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+.ag-logdock-count { font-size: var(--t-micro); color: var(--text-dim); }
+.ag-logdock > .ag-logdock-facts { padding: 0 var(--ctl-s3) 4px; margin: 0; }
+.ag-logdock-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 0 var(--ctl-s3) var(--ctl-s2);
+  border-top: 1px solid var(--line);
+}
+.ag-logdock-arrived {
+  align-self: center;
+  margin: 4px 0;
+  min-height: 28px;
+  padding: 0 12px;
+  border: 1px solid var(--sk-ac);
+  border-radius: 999px;
+  background: var(--sk-acs);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  cursor: pointer;
+}
+.ag-logdock-back {
+  border: 0;
+  background: none;
+  color: var(--info);
+  font: var(--t-body)/var(--lh-body) var(--font);
+  cursor: pointer;
+}
+/* OPEN FULL, and a phone's full-screen log: the whole viewport. */
+.ag-logdock.is-full {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  height: auto;
+  margin: 0;
+  border-radius: 0;
+}
+
+/* THE LINES. Numbered, the server's mask in amber, a search hit marked, an
+   error line tinted, the jump target outlined. No wrap unless asked. */
+.ag-logtext { white-space: pre; overflow-x: auto; }
+.ag-logtext.is-wrap,
+.ag-logdock-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ag-logline { display: block; }
+.ag-logno { display: inline-block; min-width: 4ch; margin-inline-end: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
+.ag-logline.is-err { background: var(--s-badb); }
+.ag-logline.is-current,
+.arts-step.is-current { outline: 2px solid var(--sk-ac); outline-offset: -1px; }
+.arts-step.is-err { border-inline-start: 3px solid var(--s-bad); }
+.arts-step.is-hit,
+.ag-logline mark { background: var(--sk-acs); color: inherit; }
+.ag-mask { color: var(--s-warn); background: var(--s-warnb); border-radius: 2px; }
+/* THE GAP: amber and dashed, never merged into the lines around it. */
+.ag-gap {
+  margin: var(--ctl-s2) 0;
+  padding: 6px 10px;
+  border: 1px dashed var(--s-warn);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--s-warnb);
+  color: var(--text);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+}
+.ag-gap.is-unknown { border-color: var(--line); background: none; color: var(--text-dim); }
+
+/* --- children ------------------------------------------------------------- */
+.ag-children-await {
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--s-park) 45%, var(--line));
+  border-radius: var(--radius);
+  background: var(--s-parkb);
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+}
+.ag-children-await > p { margin: 0 0 4px; }
+.ag-children-head { flex-wrap: wrap; }
+.ag-children-facts { color: var(--text-dim); font-size: var(--t-meta); }
+.ag-children-mix { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); font-size: var(--t-meta); }
+.ag-children-mixpart { display: inline-flex; align-items: center; gap: 4px; }
+
+/* --- the Code card: lead, base pin, diff (agent-detail-2.html A4) -------- */
+.ag-code-lead { margin: 0 0 var(--ctl-s2); }
+.ag-code-sentence { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+.ag-refusals { margin: var(--ctl-s2) 0 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: var(--ctl-s1); }
+.ag-refusal {
+  padding: 6px 10px;
+  border-inline-start: 3px solid var(--s-bad);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--s-badb);
+  font-size: var(--t-meta);
+  line-height: var(--lh-meta);
+  overflow-wrap: anywhere;
+}
+.ag-basepin { margin: 0 0 var(--ctl-s2); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.ag-basepin > b { color: var(--text); font-weight: 600; margin-inline-end: 4px; }
+.ag-diff-open { margin: 0 0 var(--ctl-s2); }
+
+/* --- moved from styles.css with the screen (lane U1) --------------------- */
+/* THE STRIP'S HOVER CARD: the agent a bare mark stands for, beside it. Fixed,
+   in a portal on <body>, because the list column clips; never a pointer
+   target, so it cannot steal the hover from the row that drew it. */
+.ag-hovcard {
+  position: fixed;
+  z-index: 40;
+  width: 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  box-shadow: var(--ctl-shadow-pop);
+  pointer-events: none;
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+}
+.ag-hovcard > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.ag-hovcard > small { color: var(--text-dim); }
+.ag-hovcard-head { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); }
+.ag-hovcard-when { font-family: var(--mono); color: var(--text-dim); }
+.ag-hovcard-hint { color: var(--text-faint); }
+
+/* THE AGENT PAGE'S BACK LINK (App.tsx `AgentDrawer`). Wherever the agent
+   covers the list -- below 1100px -- it is the way back; beside the list
+   there is nothing to go back to. */
+.ctl-agent-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--info);
+  cursor: pointer;
+  font-size: var(--t-body);
+  line-height: var(--lh-body);
+}
+.ctl-agent-back:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+@media (min-width: 1100px) {
+  .ctl-agent-back { display: none; }
+}
+/* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
+   agent open the list is not drawn behind it, and the back link replaces the
+   close cross. */
+@media (max-width: 560px) {
+  .app.has-inspector > .work { display: none; }
+  .app.has-inspector > .ctl-drawer > .drawer-close { display: none; }
+}
+
+/* --- the phone ------------------------------------------------------------ */
+@media (max-width: 560px) {
+  /* THE SECTION'S PAGES STICK UNDER THE PHONE HEADER (#503 at 390x844).
+     The header (`.sk-pbar`, styles.css) is itself sticky at top 0, 44px tall
+     and 36px once the page is scrolled, and it sits above this strip (z 15),
+     so a strip stuck at top 0 is hidden behind it. Stick it at the header's
+     foot: 44px, and 36px while `.sk-app.is-scrolled` compacts the header. */
+  .ag-list-tabs { position: sticky; top: 44px; z-index: 2; padding-top: 4px; }
+  .sk-app.is-scrolled .ag-list-tabs { top: 36px; }
+  /* THE LOG IS A BOTTOM SHEET: its newest line, and a tap for the full log. */
+  .ag-logdock.is-phone.is-strip {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: var(--dock-h, 28px);
+    z-index: 30;
+    margin: 0;
+  }
+  .ag-head-actions { margin-inline-start: 0; }
+}

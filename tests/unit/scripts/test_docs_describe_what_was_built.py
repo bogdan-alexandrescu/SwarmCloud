@@ -262,15 +262,15 @@ def test_s10_account_add_is_the_apis_oauth_flow_not_claudeswitch():
     body = _spec("#### 2.6.1 ")
     assert f"Amended {STAMP}" in body
     assert "/v1/accounts/authorize" in body and "/v1/accounts/exchange" in body
-    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 847)
+    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1105)
     assert '@router.post("/authorize")' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 258)
     assert '@router.post("/exchange"' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 285)
-    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:847",
+    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:1105",
                  "apps/swarm-api/swarm_api/routes/accounts.py:258",
                  "apps/swarm-api/swarm_api/routes/accounts.py:285"):
         assert f"`{cite}`" in body, cite
     # The command really is `sc account add --label`, and it is what the spec shows.
-    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1676)
+    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1944)
     assert "sc account add --label" in body
 
 

@@ -18,6 +18,9 @@ from fastapi import Depends, Header, Request
 from swarm_common.models import utcnow
 
 from .auth import (
+    TENANT_HEADER,
+    TENANT_QUERY,
+    TENANT_QUERY_ROUTES,
     AuthContext,
     Authenticator,
     GoogleTokenVerifier,
@@ -217,6 +220,11 @@ def current_auth(
     # single-page app can mint -- so for every web caller this is the only
     # credential that arrives.
     iap_assertion: str | None = Header(default=None, alias="X-Goog-IAP-JWT-Assertion"),
+    # The tenant switcher (`auth.TENANT_HEADER`). It SELECTS one of the
+    # caller's verified tenant memberships and never grants one: the
+    # authenticator refuses any value not among them, here, before the route
+    # body runs. Admin status does not read it.
+    requested_tenant: str | None = Header(default=None, alias=TENANT_HEADER),
     ctx: AppContext = Depends(get_context),
 ) -> AuthContext:
     """Authenticate, then rate-limit by principal.
@@ -238,8 +246,25 @@ def current_auth(
     impersonation of that caller's tenant.
     """
     presented = serverless_authorization or authorization
+    # The template, not the concrete path, exactly as `admin_auth` reads it.
+    path = getattr(request.scope.get("route"), "path", None)
+    route = (request.method.upper(), path) if path else None
+    # `?tenant=` is the header's stand-in on the routes a browser fetches by
+    # itself (`auth.TENANT_QUERY_ROUTES`), and on no other route. Both present
+    # and different is ambiguous, and refused rather than resolved by a rule
+    # the caller cannot see -- after the identity is verified, so an
+    # unauthenticated caller still sees only a 401. Otherwise the value goes
+    # through the same `_select_tenant` check as the header.
+    conflicting = False
+    if route in TENANT_QUERY_ROUTES:
+        queried = request.query_params.get(TENANT_QUERY) or None
+        if queried is not None:
+            conflicting = bool(requested_tenant) and requested_tenant != queried
+            requested_tenant = queried
     try:
-        auth = ctx.authenticator.authenticate(presented, iap_assertion)
+        auth = ctx.authenticator.authenticate(
+            presented, iap_assertion, tenant=None if conflicting else requested_tenant
+        )
     except Exception as exc:
         ctx.metrics.auth_failures.labels(kind=type(exc).__name__).inc()
         log.warning(
@@ -253,14 +278,15 @@ def current_auth(
             ) or "none",
         )
         raise
+    if conflicting:
+        raise ValidationFailed(
+            f"{TENANT_HEADER} and ?{TENANT_QUERY}= name different tenants; send one."
+        )
     # DEFAULT-DENY for a continuation-scoped account (contract request 30):
     # here, in the dependency every route reaches -- directly, or through
     # `tenant_scope`/`admin_auth` -- so a route added tomorrow is closed to that
     # scope until someone adds it to `auth.CONTINUATION_ROUTES`. Before the
     # limiter: a request that was never allowed costs the caller no budget.
-    # The template, not the concrete path, exactly as `admin_auth` reads it.
-    path = getattr(request.scope.get("route"), "path", None)
-    route = (request.method.upper(), path) if path else None
     require_continuation_route(auth, route)
     try:
         ctx.limiter.check(auth.principal.email)

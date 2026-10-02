@@ -10,7 +10,7 @@ import {
   verdictNeedsAPerson,
 } from './Blockers'
 import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
-import { isPaused, type ApiError } from './fetch'
+import { apiHeaders, chosenTenant, dropRefusedTenant, isPaused, TENANT_REFUSED, type ApiError } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
@@ -103,11 +103,14 @@ function fail(kind: ApiError['kind'], httpStatus: number | null, message: string
 }
 
 async function postTask(body: Record<string, unknown>): Promise<Outcome> {
+  const tenant = chosenTenant()
   let res: Response
   try {
     res = await fetch('/v1/tasks', {
       method: 'POST', body: JSON.stringify(body),
-      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      // apiHeaders: the chosen tenant (X-Swarm-Tenant) rides on this submit as
+      // on every read, so the task lands in the tenant the spine shows.
+      headers: apiHeaders({ 'content-type': 'application/json', accept: 'application/json' }),
       credentials: 'same-origin', // behind IAP the browser already holds the cookie
     })
   } catch (err) {
@@ -139,11 +142,16 @@ async function postTask(body: Record<string, unknown>): Promise<Outcome> {
   // screens disagreeing about what a 403 means would be worse than this.
   const lower = message.toLowerCase()
   const byStatus: Record<number, ApiError['kind']> = { 401: 'unauthenticated', 409: 'conflict', 429: 'rate_limited', 503: 'upstream_degraded' }
+  const code = typeof env.code === 'string' ? env.code : null
+  // A stored tenant the caller is no longer in: forgotten, as read()/write()
+  // do, and NOT resubmitted under the default -- the person picked that tenant
+  // for this task.
+  dropRefusedTenant(res.status, code, tenant)
   const kind: ApiError['kind'] = res.status !== 403 ? byStatus[res.status] ?? 'server_error'
+    : code === TENANT_REFUSED ? 'tenant_unresolved'
     : lower.includes('is disabled') ? 'tenant_disabled'
     : lower.includes('is not permitted') ? 'wrong_domain' : 'admin_required'
   const ra = Number(res.headers.get('retry-after'))
-  const code = typeof env.code === 'string' ? env.code : null
   return { kind: 'failed', error: { kind, httpStatus: res.status, code, message,
     detail: env.detail, retryAfterSeconds: Number.isFinite(ra) && ra > 0 ? ra : undefined } }
 }

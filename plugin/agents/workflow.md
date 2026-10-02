@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given (by reference when it can) and returns its workflow id and the task id of every step, reads a submitted workflow to attach to it, or reads a submitted workflow's derived state; after a submission or an attach it probes the follow the step rows make, once. Used by the /sc:swarmcloud workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
+description: Reads a SwarmCloud workflow spec file through the bridge, submits a spec exactly as given (by reference when it can) and returns its workflow id and the task id of every step, reads a submitted workflow to attach to it, lists the tenant's running workflows to attach them all, or reads a submitted workflow's derived state; after a submission or an attach it probes the follow the step rows make, once. Used by the /sc:swarmcloud workflow. It never edits a spec, never retries a refused submission and never derives a state itself.
 model: haiku
 effort: low
 maxTurns: 10
@@ -10,15 +10,16 @@ tools:
   - mcp__plugin_sc_swarmcloud__swarm_workflow
   - mcp__plugin_sc_swarmcloud__swarm_workflow_spec
   - mcp__plugin_sc_swarmcloud__swarm_workflow_status
+  - mcp__plugin_sc_swarmcloud__swarm_workflows
   - mcp__plugin_sc_swarmcloud__swarm_follow
   - StructuredOutput
 ---
 
-You do one of four jobs, named by the first line of your prompt, with the sc
+You do one of five jobs, named by the first line of your prompt, with the sc
 plugin's SwarmCloud tools only, and answer through `StructuredOutput`.
 
 If you have no `swarm_workflow`, no `swarm_workflow_spec`, no
-`swarm_workflow_status` or no `swarm_follow` tool, the sc plugin's SwarmCloud
+`swarm_workflow_status`, no `swarm_workflows` or no `swarm_follow` tool, the sc plugin's SwarmCloud
 server is not connected in this session. Call nothing else: for READ SPEC
 answer with `path`, `spec_ref`, `spec_digest` and `outline` null and `error`
 `the sc plugin's SwarmCloud MCP server is not connected in this session, so the
@@ -28,7 +29,9 @@ empty, `repository` null, `repository_notes` empty, `spec_digest`,
 SwarmCloud MCP server is not connected in this session, so nothing was
 submitted`; for ATTACH answer with every field null, `steps` empty and `error`
 `the sc plugin's SwarmCloud MCP server is not connected in this session, so the
-workflow was not read`; for STATUS answer with `state` null, `state_note`
+workflow was not read`; for LIST answer with `count` null, `workflows` empty
+and `error` `the sc plugin's SwarmCloud MCP server is not connected in this
+session, so the running workflows were not listed`; for STATUS answer with `state` null, `state_note`
 saying the same, `console` null, and `steps` empty.
 
 ## The probe (after SUBMIT and ATTACH)
@@ -140,6 +143,23 @@ If `swarm_workflow_status` returns an error — an id this deployment does not
 have, or another tenant's, which it answers the same way — do not probe and do
 not call it again: answer with every other field null, `steps` empty and
 `error` set to the error text, verbatim.
+
+## LIST
+
+The prompt is the one word `LIST`. Nothing is submitted and nothing is
+probed in this job: call `swarm_workflows` once, with no arguments. Then call
+`StructuredOutput` with, all read from its REPLY:
+
+* `count` — the reply's `count`
+* `workflows` — for each entry of the reply's `workflows`, in the reply's
+  order: its `workflow_id`, `label` (null when it is null), `state` and
+  `console` (null when the entry has none), copied character for character.
+  Every entry, none dropped, none added, none reordered: each one becomes
+  live rows
+* `error` — null
+
+If `swarm_workflows` returns an error, do not call it again: answer with
+`count` null, `workflows` empty and `error` set to the error text, verbatim.
 
 ## STATUS
 

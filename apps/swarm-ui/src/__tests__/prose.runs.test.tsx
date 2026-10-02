@@ -257,7 +257,7 @@ async function renderAgents(rows: TaskPage = page()): Promise<HTMLElement> {
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} />)
-  await waitFor(() => expect(container.querySelector('.tabs, .ctl-seg')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.tabs, .ctl-seg, .ag-list-tabs')).not.toBeNull())
   return container as HTMLElement
 }
 
@@ -425,7 +425,7 @@ describe('Agents, with every help card closed', () => {
       fetchedAt: Date.now(),
     })
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
-    await waitFor(() => expect(container.querySelector('.ctl-seg')).not.toBeNull())
+    await waitFor(() => expect(container.querySelector('.ag-list-tabs')).not.toBeNull())
     // A PARKED agent is in the `waiting` tab, not the `live` one -- parked
     // work holds no slot, which is the whole point of the split. (The screen
     // lands on Waiting here by itself; the click says which tab is meant.)

@@ -349,7 +349,7 @@ runs the mechanism.
 > `sc account add --label <label> [--lend-to <tenant>]`,
 > `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
 > asks for the label typed back. `sc accounts` is the read-only list. `add`
-> (`apps/swarm-mcp/swarm_mcp/sc.py:847`) runs four steps:
+> (`apps/swarm-mcp/swarm_mcp/sc.py:1105`) runs four steps:
 >
 > 1. It calls `POST /v1/accounts/authorize`
 >    (`apps/swarm-api/swarm_api/routes/accounts.py:258`), which returns the
