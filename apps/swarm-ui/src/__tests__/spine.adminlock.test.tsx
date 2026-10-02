@@ -48,7 +48,7 @@ async function liveShell() {
   )
 }
 
-const adminButton = () => document.querySelector<HTMLButtonElement>('.sk-spine button[data-sec="admin"]')!
+const adminButton = () => document.querySelector<HTMLAnchorElement>('.sk-spine a[data-sec="admin"]')!
 
 afterEach(() => {
   cleanup()

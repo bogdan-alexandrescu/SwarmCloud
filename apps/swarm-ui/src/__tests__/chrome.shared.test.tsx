@@ -417,7 +417,8 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
     for (const hash of ROUTES) {
       window.history.replaceState(null, '', `/${hash}`)
       const { container, unmount } = render(<App />)
-      const items = [...container.querySelectorAll('.sk-spine button')].map((b) => (b.textContent ?? '').trim())
+      // Links since #503 (`a.sk-ri`): Submit, the four sections, Help, API reads.
+      const items = [...container.querySelectorAll('.sk-spine .sk-ri')].map((b) => (b.textContent ?? '').trim())
       unmount()
       expect(items.length, `${hash}: the spine holds fewer than Submit, four sections and two utilities`).toBe(7)
       if (first === null) first = items
@@ -428,9 +429,13 @@ describe('CH-21: a position in the navigation means one thing, at every width', 
   it("lists the open section's pages in the panel, and lights the open one", () => {
     window.history.replaceState(null, '', '/capacity/accounts')
     const { container } = render(<App />)
-    const on = container.querySelector('.sk-panel .sk-pk.is-on')
-    expect(on?.textContent?.trim()).toBe('Accounts')
-    expect(container.querySelector('.sk-panel .sk-kid.is-on')?.textContent).toBe('Subscription accounts')
+    // THE PAGE ITSELF IS LIT (#503): Accounts is the open GROUP, and its page
+    // -- Subscription accounts -- is the one lit and `aria-current`.
+    expect(container.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent).toBe('Accounts')
+    expect(container.querySelector('.sk-panel .sk-pk.is-on'), 'the group is lit, not the page').toBeNull()
+    const kid = container.querySelector('.sk-panel .sk-kid.is-on')
+    expect(kid?.textContent).toBe('Subscription accounts')
+    expect(kid?.getAttribute('aria-current')).toBe('page')
   })
 
   // THE PHONE CASE OF THE SAME PROPERTY. The two-row strip's fragment tests

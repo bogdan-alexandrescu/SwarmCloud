@@ -503,15 +503,17 @@ def test_a_hatch_is_measured_stripe_by_stripe(theme: str) -> None:
     been shown to say "clean". This builds the exact pairing CH-4 found --
     `--text-dim` on `var(--ctl-hatch)` -- through the same `_backgrounds` the
     scan uses, and asserts it resolves to the hatch's two stripes and FAILS AA
-    on the `--line` one. If `_backgrounds` stopped expanding the token, it
+    on the `--ctl-bd` one. If `_backgrounds` stopped expanding the token, it
     would resolve to nothing and this would fail on the first assertion; if it
     measured only the first stop, it would pass the ratio and fail the second.
     """
     palette, raw = THEMES[theme], RAW[theme]
     painted = _backgrounds("var(--ctl-hatch)", palette, raw, palette["--surface"])
     assert painted is not None, "var(--ctl-hatch) did not resolve to its stripes"
-    assert palette["--line"] in painted and palette["--surface-2"] in painted, (
-        f"the hatch resolved to {painted}, not to its --surface-2 and --line stripes"
+    # The dark stripe is the control border since 2026-10-02 (components.html
+    # A): `--line` became the Open sky hairline, too faint to read as a stripe.
+    assert palette["--ctl-bd"] in painted and palette["--surface-2"] in painted, (
+        f"the hatch resolved to {painted}, not to its --surface-2 and --ctl-bd stripes"
     )
     worst = min(contrast(palette["--text-dim"], bg) for bg in painted)
     assert worst < AA, (

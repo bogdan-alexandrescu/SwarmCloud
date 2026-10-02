@@ -198,9 +198,22 @@ describe('a failed read is never representable as empty data', () => {
 })
 
 describe('the unrecognised cases are not guessed at', () => {
-  it('an unrecognised 403 is not forced into wrong_domain or tenant_disabled', async () => {
+  it('an unrecognised 403 is not forced into wrong_domain, tenant_disabled OR admin_required', async () => {
+    // states.html "Found while reading the code": the comment said "do NOT
+    // guess" and the code answered admin_required, which draws the "admin
+    // only, nothing failed" gate over a refusal nobody has explained. It stays
+    // a generic refusal now, with the server's own message.
     respond('{"code":"forbidden","message":"Something else entirely."}', { status: 403 })
     const r = await read(route('/v1/capacity'), never)
+    if (r.status !== 'error') throw new Error('expected an error')
+    expect(r.error.kind).toBe('forbidden')
+    expect(r.error.message).toBe('Something else entirely.')
+    expect(errorHeading(r.error)).toBe('The API refused this request')
+  })
+
+  it('a recognised admin 403 is still admin_required', async () => {
+    respond('{"code":"forbidden","message":"admin group membership is required for this operation"}', { status: 403 })
+    const r = await read(route('/v1/admin/tenants'), never)
     if (r.status !== 'error') throw new Error('expected an error')
     expect(r.error.kind).toBe('admin_required')
   })
@@ -475,6 +488,7 @@ const ALL_KINDS: readonly ApiErrorKind[] = [
   'session_expired', 'unauthenticated', 'admin_required', 'wrong_domain',
   'tenant_disabled', 'not_found', 'conflict', 'invalid', 'rate_limited',
   'tenant_unresolved', 'upstream_degraded', 'server_error', 'unreachable',
+  'forbidden',
 ]
 
 describe('every failure kind has copy', () => {

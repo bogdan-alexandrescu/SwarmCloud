@@ -1,10 +1,10 @@
 import { Fragment, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
-import { apiHeaders, chosenTenant, dropRefusedTenant, errorHeading, TENANT_REFUSED, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { RunnerPicker, useProviderKeys, type ProviderKeys } from './RunnerPicker'
-import { Screen, timeAgo } from './Shell'
+import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
   InputFields,
   Move,
@@ -142,10 +142,6 @@ type Envelope = {
   workflow?: unknown
   dispatch?: unknown
 }
-const KIND_BY_STATUS: Partial<Record<number, ApiErrorKind>> = {
-  401: 'unauthenticated', 403: 'admin_required', 409: 'conflict',
-  422: 'invalid', 429: 'rate_limited', 503: 'upstream_degraded',
-}
 const unsure = (kind: ApiErrorKind, httpStatus: number | null, message: string): Submission => ({ kind: 'uncertain', error: { kind, httpStatus, code: null, message } })
 
 /** POST /v1/workflows. fetch.ts owns reads and has no write half yet.
@@ -189,12 +185,15 @@ export async function postWorkflow(body: unknown): Promise<Submission> {
   // A stored tenant the caller is no longer in: forgotten, as read()/write()
   // do, and NOT resubmitted under the default.
   dropRefusedTenant(res.status, code, tenant)
-  const mapped = res.status === 403 && code === TENANT_REFUSED ? 'tenant_unresolved' : KIND_BY_STATUS[res.status]
-  const error: ApiError = {
-    kind: mapped === undefined ? 'server_error' : mapped, httpStatus: res.status, detail: env?.detail,
-    code,
-    message: typeof env?.message === 'string' ? env.message : `The API returned HTTP ${res.status}.`,
-  }
+  // THE ONE CLASSIFIER (fetch.ts `classifyFailure`). A status table here
+  // mapped every 503 to upstream_degraded, so a workflow refused because the
+  // tenant could not be resolved read as a degraded service.
+  const ra = Number(res.headers.get('retry-after'))
+  const error: ApiError = classifyFailure(
+    res.status,
+    { code, message: typeof env?.message === 'string' ? env.message : undefined, detail: env?.detail },
+    Number.isFinite(ra) && ra > 0 ? ra : undefined,
+  )
   // A 4xx carrying our own error envelope was decided by a handler, so nothing was
   // written. A 5xx was not: create_workflow writes the workflow and its tasks, and everything after can still throw.
   return res.status < 500 ? { kind: 'rejected', error } : { kind: 'uncertain', error }
@@ -357,6 +356,9 @@ export function SubmitWorkflowScreen() {
 }
 
 function Form({ sources }: { sources: FormSources }) {
+  // A tenant switch made with this form open keeps it, and its button then
+  // names the tenant it will submit as (intake-tenants.html 2A).
+  const submitAs = useSubmitAs()
   const byName = new Map<string, RunnerProfile>(sources.profiles)
   const [nextKey, setNextKey] = useState(2)
   // submit.html (decided 2026-10-01): what a failed step does to the rest,
@@ -642,7 +644,7 @@ function Form({ sources }: { sources: FormSources }) {
             <span className="ctl-em">{priorityOk ? 'an integer from −100 to 100; 0 is the default' : 'must be a whole number from −100 to 100'}</span>
           </label>
           <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
-            {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
+            {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
           </button>
         </div>
       </aside>

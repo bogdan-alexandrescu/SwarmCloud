@@ -1,5 +1,6 @@
 import { useId, type ReactNode } from 'react'
 
+import { Button } from './components'
 import { Mark } from './primitives'
 import { useReducedMotion } from './useInView'
 
@@ -123,9 +124,11 @@ export function CardFailed({
           </p>
         ))}
         <p className="ol-line">
-          <button type="button" className="sbf-mini" onClick={onRetry}>
-            try again
-          </button>
+          {/* The canonical small button (components.html A), not Submit's
+              private `.sbf-mini`. */}
+          <Button size="sm" onClick={onRetry}>
+            Try again
+          </Button>
         </p>
       </div>
     </Frame>

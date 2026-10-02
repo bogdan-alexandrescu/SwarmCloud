@@ -70,7 +70,7 @@ describe('the collapsed spine flyout', () => {
     const btn = sectionButton(c, 'work')
     act(() => btn.focus())
     act(() => void vi.advanceTimersByTime(100))
-    const inside = c.querySelector<HTMLElement>('.sk-flyout button')!
+    const inside = c.querySelector<HTMLElement>('.sk-flyout a')!
     act(() => inside.focus())
     fireEvent.keyDown(inside, { key: 'Escape' })
     expect(c.querySelector('.sk-flyout')).toBeNull()
@@ -93,7 +93,7 @@ describe('the collapsed spine flyout', () => {
     const btn = sectionButton(c, 'work')
     act(() => btn.focus())
     act(() => void vi.advanceTimersByTime(100))
-    const inside = c.querySelector<HTMLElement>('.sk-flyout button')!
+    const inside = c.querySelector<HTMLElement>('.sk-flyout a')!
     act(() => inside.focus())
     expect(c.querySelector('.sk-flyout')).not.toBeNull()
   })

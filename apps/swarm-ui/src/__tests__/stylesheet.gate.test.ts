@@ -23,6 +23,7 @@
 // being read quietly from disk.
 
 import STYLES from '../styles.css?raw'
+import { SHEETS } from './sheets'
 import { describe, expect, it } from 'vitest'
 
 import { cascade, conditionHolds, gate, specificity } from './cssgate'
@@ -221,7 +222,8 @@ describe('the cascade resolver, against fixtures', () => {
 // ---------------------------------------------------------------------------
 
 describe('the shipped stylesheets', () => {
-  const sheets: ReadonlyArray<readonly [string, () => string]> = [['styles.css', () => STYLES]]
+  // Every shipped sheet (sheets.ts): styles.css and each src/styles/*.css.
+  const sheets: ReadonlyArray<readonly [string, () => string]> = SHEETS.map(([name, text]) => [name, () => text] as const)
 
   for (const [label, read] of sheets) {
     describe(label, () => {

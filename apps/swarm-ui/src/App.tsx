@@ -1,12 +1,14 @@
 import {
   Fragment,
   useCallback,
+  useContext,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
 import { agentListPath, backLabel, parseAgentList, type AgentList } from './agentlist'
@@ -34,6 +36,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, readPref, writePref, type SpineSection } from './Spine'
+import { routedClick } from './components'
 import { HelpScreen } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -41,7 +44,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
+import { FrameAge, HeadAge, RoutedPage, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -1035,46 +1038,62 @@ export function App() {
           : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
 
   return (
-    // THE FRAME: everything that scrolls, then the dock as a ROW of its own
-    // (§3.4, §11.3) -- a bar that occupies its height rather than painting over
-    // whatever lands under it.
+    // THE FRAME: the spine and the panel, and beside them the content column
+    // -- the page that scrolls, then the dock as a ROW of its own under it
+    // (§3.4, §11.3). A bar that occupies its height rather than painting over
+    // whatever lands under it, and that runs under the content only: under
+    // the spine it cut the avatar off at 1440x900 (#503).
     <div className="ctl-frame">
-      <div className="ctl-scroll">
         <SkyShell
           section={spineOf(at.sectionId)}
           tab={at.tab}
+          agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
           go={go}
           helpGroup={at.sectionId === HELP ? (helpGroupOf(at.tab) ?? (at.tab === '' ? null : at.tab)) : null}
           apiFailuresOnly={apiFailuresOnly}
           onApiFilter={setApiFailuresOnly}
+          dock={<Dock />}
+          // AN UNSENT FORM IS KEPT ON A TENANT SWITCH (intake-tenants.html
+          // 2A): the two submit forms re-read under the new tenant in place.
+          keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
           foot={
-            // THE UTILITY CORNER: Help and API reads at the spine's foot.
-            // `ctl-nav-util` is load-bearing: test_nav_headings_agree.py reads
-            // this element to find the API reads button and its label.
+            // THE UTILITY CORNER: Help and API reads at the spine's foot,
+            // links like every spine item (#503). `ctl-nav-util` is
+            // load-bearing: test_nav_headings_agree.py reads this element to
+            // find the API reads link and its label.
             <div className="ctl-nav-util sk-foot">
-              <button
-                type="button"
+              <a
                 className={`sk-ri${at.sectionId === HELP ? ' is-on' : ''}`}
                 aria-current={at.sectionId === HELP ? 'page' : undefined}
-                onClick={() => go(HELP)}
+                href={addressToPath(HELP)}
+                onClick={(e) => {
+                  if (!routedClick(e)) return
+                  e.preventDefault()
+                  go(HELP)
+                }}
               >
                 <Icon name="help" />
                 <small>Help</small>
-              </button>
-              <button
-                type="button"
+              </a>
+              <a
                 className={`sk-ri${at.sectionId === REFERENCE ? ' is-on' : ''}`}
                 aria-current={at.sectionId === REFERENCE ? 'page' : undefined}
-                onClick={() => go(REFERENCE)}
+                href={addressToPath(REFERENCE)}
+                onClick={(e) => {
+                  if (!routedClick(e)) return
+                  e.preventDefault()
+                  go(REFERENCE)
+                }}
               >
-                <Icon name="api" />{REFERENCE_LABEL}</button>
+                <Icon name="api" />{REFERENCE_LABEL}</a>
             </div>
           }
         >
           {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
               inside it prints none of its own while its read is fresh. */}
           <FrameAge.Provider value={true}>
+          <HeadAgeProvider at={at}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
               <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
@@ -1121,11 +1140,9 @@ export function App() {
               />
             )}
           </div>
+          </HeadAgeProvider>
           </FrameAge.Provider>
         </SkyShell>
-      </div>
-
-      <Dock />
     </div>
   )
 }
@@ -1253,16 +1270,13 @@ function Head({
   closeTo: string
   go: (to: string) => void
 }) {
-  const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
-  // The age is the point, so it moves on its own rather than only when a
-  // fetch happens to land -- on the SHARED clock, the one every screen's
-  // sub-line and the dock read, so the head and the provenance line under a
-  // screen title can no longer disagree by up to a tick (CH-1).
-  const now = useNow(AGE_TICK_MS)
-
-  // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
-  // claimed it, and the head prints none: one age per screen.
-  const claimed = usePageAgeClaimed()
+  // THE AGE, computed once (`HeadAgeProvider`), and drawn on the screen's
+  // own title row when a screen's page head takes it (`useHeadRowClaimed`):
+  // the picked frames put the title, the meta chip and "read · poll ·
+  // refresh" on ONE row (#503, "Page head"). A screen with no page head --
+  // Overview, Help -- still has it here, beside the breadcrumb.
+  const age = useContext(HeadAge)
+  const onTitleRow = useHeadRowClaimed()
 
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
@@ -1302,15 +1316,33 @@ function Head({
         </nav>
       )}
 
-      {!claimed && (
-        <span className="ctl-head-age">
-          <ScreenAge at={at} reads={reads} now={now} />
-        </span>
-      )}
+      {age !== null && !onTitleRow && <span className="ctl-head-age">{age}</span>}
 
       {section !== null && <SectionQuestion section={section} />}
     </div>
   )
+}
+
+/**
+ * THE SCREEN'S READ AGE, FOR THE HEAD AND THE TITLE ROW (CH-2, #98, #503).
+ *
+ * Computed here once -- the screen's own reads, on the shared clock (CH-1) --
+ * and handed down as `HeadAge`. The page head of the screen the frame times
+ * (`PageHead` under `FrameAge`) draws it on its title row; when no screen
+ * draws a page head, `Head` draws it beside the breadcrumb. A screen that
+ * prints its own data's age (Platform counts, `useClaimPageAge`) gets none.
+ */
+function HeadAgeProvider({ at, children }: { at: Route; children: ReactNode }) {
+  const reads = useSyncExternalStore(subscribeScreenReads, screenReadsSnapshot, screenReadsSnapshot)
+  // The age is the point, so it moves on its own rather than only when a
+  // fetch happens to land -- on the SHARED clock, the one every screen's
+  // sub-line and the dock read, so the head and the provenance line under a
+  // screen title can no longer disagree by up to a tick (CH-1).
+  const now = useNow(AGE_TICK_MS)
+  // A SCREEN THAT PRINTS ITS OWN DATA'S AGE (#98) -- Platform counts -- has
+  // claimed it, and the head prints none: one age per screen.
+  const claimed = usePageAgeClaimed()
+  return <HeadAge.Provider value={claimed ? null : <ScreenAge at={at} reads={reads} now={now} />}>{children}</HeadAge.Provider>
 }
 
 /** One breadcrumb segment: a link to a place, or (`to: null`) the open object. */

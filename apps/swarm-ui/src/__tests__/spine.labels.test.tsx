@@ -38,7 +38,7 @@ describe('the rail names Help (#136)', () => {
     window.history.pushState(null, '', '/overview')
     render(<App />)
     const util = document.querySelector('.ctl-nav-util')!
-    const help = within(util as HTMLElement).getByRole('button', { name: 'Help' })
+    const help = within(util as HTMLElement).getByRole('link', { name: 'Help' })
     expect(help.querySelector('small')?.textContent).toBe('Help')
     expect(help.textContent?.trim()).toBe('Help')
   })

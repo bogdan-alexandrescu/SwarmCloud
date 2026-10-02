@@ -40,6 +40,7 @@
 // copy from disk -- and a scan whose input silently becomes empty is a scan
 // that passes hardest when it is most broken.
 import STYLES from '../styles.css?raw'
+import { ALL_CSS, SHEETS } from './sheets'
 import AGENT_DETAIL from '../AgentDetail.tsx?raw'
 import HELP_CARD from '../HelpCard.tsx?raw'
 import HELP_SECTION from '../HelpSection.tsx?raw'
@@ -95,7 +96,8 @@ const FLOOR_PX = 12
  * stays in the list so an inline size written there is still caught.
  */
 const SOURCES: ReadonlyArray<readonly [string, string]> = [
-  ['src/styles.css', STYLES],
+  // Every shipped sheet: styles.css and each src/styles/*.css (sheets.ts).
+  ...SHEETS,
   ['src/Overview.tsx', OVERVIEW],
   ['src/HelpCard.tsx', HELP_CARD],
   ['src/HelpSection.tsx', HELP_SECTION],
@@ -231,7 +233,7 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
    * the three legal values are still reaching real elements.
    */
   it('writes no text-transform: uppercase anywhere in the sheet', () => {
-    const clean = stripComments(STYLES, false)
+    const clean = stripComments(ALL_CSS, false)
     const shouting: string[] = []
     for (const m of clean.matchAll(/text-transform\s*:\s*uppercase/g)) {
       shouting.push(`src/styles.css:${clean.slice(0, m.index).split('\n').length}`)
@@ -255,7 +257,7 @@ describe('B5.2: casing is a rule, and the rule is that nothing shouts', () => {
    * spellings of "cancel an ancestor's") stay legal.
    */
   it('leaves no positive letter-spacing behind, which is the capitals' + "'" + ' tell', () => {
-    const clean = stripComments(STYLES, false)
+    const clean = stripComments(ALL_CSS, false)
     const loose = [...clean.matchAll(/letter-spacing\s*:\s*(0?\.\d+em|[1-9][\d.]*(?:em|px))/g)].map(
       (m) => `src/styles.css:${clean.slice(0, m.index).split('\n').length}  ${m[0]}`,
     )
@@ -351,7 +353,7 @@ describe('B4.1: the line-height travels with the size', () => {
   // was whatever each rule happened to omit. So the pairing is enforced, not
   // hoped for.
   it('every font: shorthand carrying a size token carries a line-height token', () => {
-    const clean = stripComments(STYLES, false)
+    const clean = stripComments(ALL_CSS, false)
     const bad: string[] = []
     for (const m of clean.matchAll(/(?<![-\w])font\s*:\s*[^;{}]*var\(--t-[a-z]+\)[^;{}]*/g)) {
       const decl = m[0]
@@ -373,7 +375,7 @@ describe('B4.1: the line-height travels with the size', () => {
   // them back -- which puts the size and its leading in two declarations that
   // nothing but this holds together.
   it('every longhand font-size sits with its own line-height, or with none', () => {
-    const clean = stripComments(STYLES, false)
+    const clean = stripComments(ALL_CSS, false)
     const bad: string[] = []
     // Innermost blocks only: the pattern excludes braces, so an @media
     // wrapper never matches as one rule -- the same trick test_ui_contrast.py
@@ -391,7 +393,7 @@ describe('B4.1: the line-height travels with the size', () => {
   })
 
   it('writes no raw line-height anywhere: leading is part of a step', () => {
-    const clean = stripComments(STYLES, false)
+    const clean = stripComments(ALL_CSS, false)
     const raw = [...clean.matchAll(/(?<![-\w])line-height\s*:\s*([^;}]+)/g)]
       .map((m) => (m[1] ?? '').trim())
       .filter((v) => !v.startsWith('var(--lh-'))

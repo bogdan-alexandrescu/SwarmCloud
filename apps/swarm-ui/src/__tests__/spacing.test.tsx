@@ -22,6 +22,7 @@
 // the value, rather than adding the element to a list of exceptions here.
 
 import STYLES from '../styles.css?raw'
+import { ALL_CSS } from './sheets'
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 import { act, render } from '@testing-library/react'
 
@@ -148,8 +149,11 @@ function merge(parts: Report[]): Report {
  */
 async function sweep(): Promise<Record<Theme, Report>> {
   const sheets: Record<Theme, string> = {
-    dark: resolveSheet(STYLES, 'dark'),
-    light: resolveSheet(STYLES, 'light'),
+    // Every shipped sheet (sheets.ts): the canonical components' rules are in
+    // src/styles/components.css, and a probe over styles.css alone would
+    // measure the shell's buttons with no border at all.
+    dark: resolveSheet(ALL_CSS, 'dark'),
+    light: resolveSheet(ALL_CSS, 'light'),
   }
   const tables = { dark: tokenTables(STYLES).dark, light: tokenTables(STYLES).light }
 

@@ -280,7 +280,8 @@ describe('the Sky spine shell', () => {
   it('draws the spine in one fixed order: Submit, the four sections, Help, API reads', () => {
     render(<App />)
     const spine = document.querySelector('.sk-spine')!
-    const labels = [...spine.querySelectorAll('button.sk-ri')].map((b) => b.textContent?.trim())
+    // Links since #503 (a section opens in a new tab and copies as a link).
+    const labels = [...spine.querySelectorAll('a.sk-ri')].map((b) => b.textContent?.trim())
     expect(labels).toEqual(['Submit', 'Overview', 'Work', 'Capacity', 'Admin', 'Help', 'API reads'])
   })
 
@@ -297,7 +298,7 @@ describe('the Sky spine shell', () => {
 
   it('navigates from the panel by path, and the Submit button opens the chooser', async () => {
     render(<App />)
-    fireEvent.click(screen.getByRole('button', { name: /^Work$/ }))
+    fireEvent.click(screen.getByRole('link', { name: /^Work$/ }))
     await waitFor(() => expect(window.location.pathname).toBe('/agents'))
     fireEvent.click(screen.getByTitle('Submit (N)'))
     await waitFor(() => expect(window.location.pathname).toBe('/submit'))
@@ -326,9 +327,13 @@ describe('the Sky spine shell', () => {
     window.history.replaceState(null, '', '/admin/tenants')
     render(<App />)
     await waitFor(() => expect(document.querySelector('.sk-pnote')).not.toBeNull())
-    const rows = [...document.querySelectorAll<HTMLButtonElement>('.sk-panel .sk-pk')]
+    const rows = [...document.querySelectorAll<HTMLElement>('.sk-panel .sk-pk')]
     expect(rows.map((r) => r.textContent?.trim())).toEqual(['Pool limits', 'Tenants', 'Platform counts'])
-    for (const r of rows) expect(r.disabled).toBe(true)
+    // Disabled, and not a link anywhere: no href to follow into a new tab.
+    for (const r of rows) {
+      expect(r.getAttribute('aria-disabled')).toBe('true')
+      expect(r.hasAttribute('href')).toBe(false)
+    }
     expect(document.querySelector('.sk-pnote')?.textContent).toMatch(/^Admins only\./)
     expect(document.querySelector('.sk-spine .sk-lkd')).not.toBeNull()
   })

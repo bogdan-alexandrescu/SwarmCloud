@@ -1,5 +1,6 @@
 import {
   createContext,
+  Fragment,
   useCallback,
   useContext,
   useEffect,
@@ -9,7 +10,9 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from 'react'
-import { errorHeading, errorReassurance, pageReads, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
+import { Banner, Button } from './components'
+import { chosenTenant, errorHeading, errorReassurance, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
@@ -75,6 +78,8 @@ export const MAX_BACKOFF_MS = 5 * 60_000
  */
 const NEEDS_A_PERSON: ReadonlySet<ApiErrorKind> = new Set<ApiErrorKind>([
   'admin_required',
+  // A refusal the client does not recognise: asking again gets the same 403.
+  'forbidden',
   'session_expired',
   'unauthenticated',
   'wrong_domain',
@@ -168,6 +173,55 @@ export function useClaimPageAge(on: boolean): void {
     setPageAgeClaims(pageAgeClaims + 1)
     return () => setPageAgeClaims(pageAgeClaims - 1)
   }, [on])
+}
+
+/**
+ * THE HEAD'S AGE OF THE CURRENT SCREEN'S READS (App.tsx `HeadAgeProvider`),
+ * for the page head to draw on its title row (#503). Null outside the frame,
+ * and when a screen prints its own data's age (`useClaimPageAge`).
+ */
+export const HeadAge = createContext<ReactNode>(null)
+
+let headRowClaims = 0
+const headRowListeners = new Set<() => void>()
+
+function subscribeHeadRow(fn: () => void): () => void {
+  headRowListeners.add(fn)
+  return () => {
+    headRowListeners.delete(fn)
+  }
+}
+
+/** Whether a mounted page head draws the head's age on its own title row. */
+export function useHeadRowClaimed(): boolean {
+  return useSyncExternalStore(
+    subscribeHeadRow,
+    () => headRowClaims > 0,
+    () => false,
+  )
+}
+
+function useClaimHeadRow(on: boolean): void {
+  useLayoutEffect(() => {
+    if (!on) return
+    headRowClaims += 1
+    for (const fn of headRowListeners) fn()
+    return () => {
+      headRowClaims -= 1
+      for (const fn of headRowListeners) fn()
+    }
+  }, [on])
+}
+
+/**
+ * THE TENANT A KEPT FORM WILL NOW SUBMIT AS (intake-tenants.html 2A), or null
+ * when nobody switched while it was open. A submit button names it ("Submit
+ * as platform"), so an unsent draft carried across a switch cannot be sent
+ * to the new tenant by a person who still thinks it is going to the old one.
+ */
+export function useSubmitAs(): string | null {
+  const s = useSyncExternalStore(subscribeTenantSwitch, tenantSwitchSnapshot, tenantSwitchSnapshot)
+  return s !== null && s.kept ? s.to.name : null
 }
 
 /** What the sub-line says about the cadence. */
@@ -271,6 +325,15 @@ export function Screen<T>({
    * `loading`.
    */
   const byPoll = useRef(false)
+  /**
+   * A read is in flight because the TENANT changed under a screen that was
+   * kept mounted (a kept Submit form, intake-tenants.html 2A). Its rows are
+   * the old tenant's until the answer lands, so they are dimmed meanwhile.
+   */
+  const [rereading, setRereading] = useState(false)
+  /** How long the tab was hidden, when it came back with a read due; null otherwise. */
+  const [awayMs, setAwayMs] = useState<number | null>(null)
+  const hiddenAt = useRef<number | null>(tabHidden() ? Date.now() : null)
 
   const disarm = useCallback(() => {
     if (timer.current !== null) {
@@ -334,6 +397,8 @@ export function Screen<T>({
     const reading = page ? pageReads(load) : load()
     reading.then((next) => {
       if (!live) return
+      setRereading(false)
+      setAwayMs(null)
 
       if (next.status === 'ok') {
         lastGood.current = { data: next.data, fetchedAt: next.fetchedAt }
@@ -386,10 +451,16 @@ export function Screen<T>({
     if (!polls || typeof document === 'undefined') return
     const onVisibility = () => {
       if (tabHidden()) {
+        hiddenAt.current = Date.now()
         disarm()
         return
       }
+      const away = hiddenAt.current === null ? 0 : Date.now() - hiddenAt.current
+      hiddenAt.current = null
       if (dueAt.current !== null && dueAt.current <= Date.now()) {
+        // THE TAB WAS AWAY AND STOPPED READING: say so until the read lands
+        // (states.html §13), rather than letting the ages grow in silence.
+        if (away >= HIDDEN_LINE_AFTER_MS) setAwayMs(away)
         dueAt.current = null
         byPoll.current = true
         setNonce((n) => n + 1)
@@ -400,6 +471,23 @@ export function Screen<T>({
     document.addEventListener('visibilitychange', onVisibility)
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [polls, arm, disarm])
+
+  // A TENANT SWITCH UNDER A SCREEN THAT STAYED MOUNTED re-reads it in place.
+  // The shell remounts every other page on a switch, so this fires only
+  // under a kept form (SkyShell `keepOnSwitch`): the form's draft is kept,
+  // and what it was drawn from -- runner profiles, pools -- is read again as
+  // the new tenant. As a poll, so the rows (and the draft) stay mounted.
+  const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
+  const seenTenant = useRef(tenant)
+  useEffect(() => {
+    if (seenTenant.current === tenant) return
+    seenTenant.current = tenant
+    disarm()
+    dueAt.current = null
+    byPoll.current = true
+    setRereading(true)
+    setNonce((n) => n + 1)
+  }, [tenant, disarm])
 
   // Nothing fires after the screen is gone.
   useEffect(() => disarm, [disarm])
@@ -434,7 +522,7 @@ export function Screen<T>({
           established. A per-screen copy would be a second opinion about the
           environment, and the second opinion is the one that gets believed
           because it is next to what you are reading. */}
-      <PageHead title={title} help={help}>
+      <PageHead title={title} help={help} meta={metaOf(state, summary)}>
         <SubLine
           state={state}
           summary={summary}
@@ -446,6 +534,8 @@ export function Screen<T>({
           frameAge={frameAge}
         />
       </PageHead>
+
+      <HiddenTabLine wasHiddenMs={awayMs} reading={awayMs !== null} />
 
       {state.status === 'stale' && (
         <StaleBanner error={state.error} fetchedAt={state.fetchedAt} now={now} />
@@ -482,7 +572,7 @@ export function Screen<T>({
       {/* Dimmed when stale or aged, and the dimming is the signal that the
           numbers below are from an earlier read. */}
       {data !== null && reading !== null && (
-        <div className={state.status === 'stale' || aged ? 'stale-body' : undefined}>
+        <div className={state.status === 'stale' || aged || rereading ? 'stale-body' : undefined}>
           {children(data, reading)}
         </div>
       )}
@@ -521,26 +611,75 @@ export function Screen<T>({
 export function PageHead({
   title,
   help,
+  meta,
   children,
 }: {
   title: string
   help?: TopicId
+  /** What was read, as a fact: a mono chip beside the title ("37 · none hold capacity"). */
+  meta?: ReactNode
+  /** The provenance: its age, its cadence and its read control, right-aligned. */
   children: ReactNode
 }) {
+  // ONE ROW (#503, "Page head"): the title, the meta chip, and right-aligned
+  // "read · poll · refresh", as the picked frames draw it. The head's age of
+  // this screen's reads (`HeadAge`) joins the row when the frame times this
+  // screen (`FrameAge`), and the head beside the breadcrumb then prints none.
+  const frame = useContext(FrameAge)
+  const headAge = useContext(HeadAge)
+  const takes = frame && headAge !== null
+  useClaimHeadRow(takes)
   return (
-    <>
+    <div className="c-phead">
       <div className="head">
         <h1>{title}</h1>
         {help !== undefined && <HelpCard topic={help} />}
       </div>
-      <p className="sub">{children}</p>
-    </>
+      <p className="sub">
+        {meta !== undefined && meta !== null && meta !== '' && (
+          <>
+            <span className="c-meta">{meta}</span>
+            {/* The chip and the age are two facts: said as two to a reader
+                of the text, drawn apart by the row's gap. */}
+            <span className="sk-vh"> · </span>
+          </>
+        )}
+        <span className="c-age">
+          {takes && <span className="ctl-head-age">{headAge}</span>}
+          {takes && hasContent(children) && <span aria-hidden> · </span>}
+          {children}
+        </span>
+      </p>
+    </div>
   )
+}
+
+/** Whether a node draws anything (a SubLine that has nothing to add returns null). */
+function hasContent(n: ReactNode): boolean {
+  return n !== null && n !== undefined && n !== false && n !== ''
+}
+
+/** The meta chip: what the read found, before the provenance. */
+function metaOf<T>(state: Result<T>, summary: ((data: T) => ReactNode) | undefined): ReactNode {
+  if (state.status === 'empty') return 'Nothing to show'
+  if ((state.status === 'ok' || state.status === 'stale') && summary !== undefined) return summary(state.data)
+  return null
+}
+
+/** `parts`, with ` · ` between those that draw something. */
+function dots(parts: readonly ReactNode[]): ReactNode {
+  const drawn = parts.filter(hasContent)
+  if (drawn.length === 0) return null
+  return drawn.map((p, i) => (
+    <Fragment key={i}>
+      {i > 0 && ' · '}
+      {p}
+    </Fragment>
+  ))
 }
 
 function SubLine<T>({
   state,
-  summary,
   pausedUntil,
   onRetry,
   now,
@@ -574,66 +713,30 @@ function SubLine<T>({
       : cadence.wait > cadence.base
         ? `every ${formatDuration(cadence.wait)}, backing off`
         : `every ${formatDuration(cadence.base)}`
-  const every = cadenceText === null ? null : <> · {cadenceText}</>
   // `not refreshed` is the stale wording, and an aged read earns it too: it is
   // true, and it is what a reader scanning for a frozen screen looks for.
-  const unrefreshed = aged ? (
-    <>
-      <strong>not refreshed</strong> ·{' '}
-    </>
-  ) : null
-  // THE AGE OF A FRESH READ IS THE HEAD'S (#98). Printed here only where no
-  // head carries it, or once it is no longer fresh -- the stale case below
-  // always prints its own. And whenever the DATA is older than the fetch: a
-  // cached payload's `generated_at` (`serverAt`) can be 40m old on a read
-  // that landed just now, and the head, which times the fetch, would say
-  // `just now` beside it. The data's own age is then the one that matters.
+  const unrefreshed = aged ? <strong>not refreshed</strong> : null
+  // THE AGE OF A FRESH READ IS THE HEAD'S (#98), on this row (`PageHead`).
+  // Printed here only where no head carries it, or once it is no longer
+  // fresh -- the stale case below always prints its own. And whenever the
+  // DATA is older than the fetch: a cached payload's `generated_at`
+  // (`serverAt`) can be 40m old on a read that landed just now, and the head,
+  // which times the fetch, would say `just now` beside it. The data's own age
+  // is then the one that matters.
   const served =
     (state.status === 'ok' || state.status === 'empty') &&
     state.serverAt !== undefined &&
     state.fetchedAt - Date.parse(state.serverAt) > AGE_TICK_MS
   const ownAge = aged || !frameAge || served
-  // A fresh in-frame read with no summary prints nothing before the cadence,
-  // which then leads the line without a dangling separator.
-  const everyAfter = (lead: boolean) => (lead ? every : cadenceText)
 
   switch (state.status) {
     case 'loading':
       return <>Reading…</>
     case 'ok':
-      return (
-        <>
-          {summary?.(state.data)}
-          {ownAge && (
-            <>
-              {' '}
-              · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
-            </>
-          )}
-          {everyAfter(ownAge || summary !== undefined)} {retryBtn}
-        </>
-      )
     case 'empty':
-      return (
-        <>
-          Nothing to show
-          {ownAge && (
-            <>
-              {' '}
-              · {unrefreshed}read {timeAgo(state.serverAt ?? state.fetchedAt, now)}
-            </>
-          )}
-          {every} {retryBtn}
-        </>
-      )
+      return <>{dots([unrefreshed, ownAge ? `read ${timeAgo(state.serverAt ?? state.fetchedAt, now)}` : null, cadenceText, retryBtn])}</>
     case 'stale':
-      return (
-        <>
-          {summary?.(state.data)} · <strong>not refreshed</strong> · showing{' '}
-          {timeAgo(state.fetchedAt, now)}
-          {every} {retryBtn}
-        </>
-      )
+      return <>{dots([<strong key="n">not refreshed</strong>, `showing ${timeAgo(state.fetchedAt, now)}`, cadenceText, retryBtn])}</>
     case 'error':
       return state.error.kind === 'admin_required' ? (
         <>Admin only.</>
@@ -661,19 +764,21 @@ function SubLine<T>({
  * number on the page whose whole job is to grow.
  */
 function StaleBanner({ error, fetchedAt, now }: { error: ApiError; fetchedAt: number; now: number }) {
+  // THE PAGE TIER (states.html C): ONE banner over the dimmed older data.
+  // The canonical `Banner`, amber, because the rows below are real and only
+  // old -- a failure with nothing to show is `FailedPanel`, in place.
   return (
-    <div className="state stale-note" role="status">
-      <h3>{errorHeading(error)} — showing older data</h3>
-      <ul className="ctl-facts">
-        <li className="ctl-fact">
-          <b>read</b>
-          {timeAgo(fetchedAt, now)}
-        </li>
-        <li className="ctl-fact">
-          <b>since</b>
-          {error.message}
-        </li>
-      </ul>
+    <div className="app-banner stale-note">
+      <Banner tone="warn" title={`${errorHeading(error)} — showing older data`}>
+        <span className="ctl-facts">
+          <span className="ctl-fact">
+            <b>read</b> {timeAgo(fetchedAt, now)}
+          </span>{' '}
+          <span className="ctl-fact">
+            <b>since</b> {error.message}
+          </span>
+        </span>
+      </Banner>
     </div>
   )
 }
@@ -733,9 +838,9 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
       )}
       {typeof error.detail === 'string' && <pre>{error.detail}</pre>}
       {reload ? (
-        <button className="retry" onClick={() => window.location.reload()}>
+        <Button kind="primary" onClick={() => window.location.reload()}>
           Reload to sign in
-        </button>
+        </Button>
       ) : error.kind === 'rate_limited' ? (
         // A COUNTDOWN, NEVER A RETRY BUTTON. The server has just told us how
         // long to wait; offering "Try again" invites someone to hammer the
@@ -745,9 +850,7 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
           paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
       ) : (
-        <button className="retry" onClick={onRetry}>
-          Try again
-        </button>
+        <Button onClick={onRetry}>Try again</Button>
       )}
     </div>
   )

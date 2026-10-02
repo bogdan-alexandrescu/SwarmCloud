@@ -1757,13 +1757,16 @@ function fixtureCpu(a: AttemptRow): AttemptRow {
   }
 }
 
-export async function loadStats(): Promise<Result<Stats>> {
-  if (USE_FIXTURES) return fixtureStats()
+export async function loadStats(options: { frame?: boolean } = {}): Promise<Result<Stats>> {
+  if (USE_FIXTURES) return fixtureStats(options)
   // A successful read always yields twelve numbers, because count_tasks_by_state
   // iterates the whole enum and writes a key for each. So there is no empty
   // state here -- and an error must never render as "0 RUNNING", because
   // "0 RUNNING" and "stats failed" are opposite facts.
-  return read<Stats>(route('/v1/stats'), () => false)
+  //
+  // `frame`: the shell's panel counts (Live, Waiting) read this as the FRAME's
+  // read (CH-2), so its age never stands in for the page's own.
+  return read<Stats>(route('/v1/stats'), () => false, { frame: options.frame === true })
 }
 
 export async function loadDispatchControl(): Promise<Result<DispatchControl>> {
@@ -1793,9 +1796,9 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
   )
 }
 
-async function fixtureStats(): Promise<Result<Stats>> {
+async function fixtureStats(options: { frame?: boolean } = {}): Promise<Result<Stats>> {
   await new Promise((r) => setTimeout(r, 220))
-  noteFixtureProbe(route('/v1/stats'), 220, true)
+  noteFixtureProbe(route('/v1/stats'), 220, true, undefined, { frame: options.frame === true })
   return {
     status: 'ok',
     fetchedAt: Date.now(),
