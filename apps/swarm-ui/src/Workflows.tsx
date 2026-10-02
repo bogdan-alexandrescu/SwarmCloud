@@ -1,4 +1,14 @@
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from 'react'
 
 import {
   cancelWorkflow,
@@ -93,6 +103,7 @@ import type { Result } from './fetch'
 import { MarkGlyph, STATE_MARK, StateMark } from './marks'
 import { rememberWorkflow } from './Spine'
 import { StopRun } from './StopRun'
+import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import {
   bytesLabel,
   consequenceOf,
@@ -139,11 +150,16 @@ import {
   parseWorkflowQuery,
   profilesOf,
   rowWhy,
+  SORT_LABEL,
+  sortWorkflows,
+  workflowDuration,
   workflowHref,
   workflowQueryString,
+  WORKFLOW_SORTS,
+  type BucketFilter,
   type RowWhy,
-  type WorkflowBucket,
   type WorkflowQuery,
+  type WorkflowSort,
 } from './workflowlist'
 
 /**
@@ -333,6 +349,9 @@ export function WorkflowsScreen({
       help="absent-vs-zero"
       load={loadWorkflowBoard}
       pollMs={workflowPoll}
+      // THE LIST'S OWN SKELETON (#113): its toolbar, disabled, and its table
+      // head, so the first row lands where the skeleton's first row was.
+      skeleton={<WorkflowListSkeleton query={query} />}
       summary={(d) => listSummary(d.workflows)}
       empty={{
         heading: 'No workflows',
@@ -995,6 +1014,7 @@ export function WorkflowCard({
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
+  const narrow = useNarrow()
 
   // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
   // always passes both, so on the real screen these are never read.
@@ -1014,9 +1034,9 @@ export function WorkflowCard({
   // at once.
   const closePanel = (stepId: string) => {
     pickStep(stepId)
-    const node = [...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node') ?? [])].find(
-      (b) => b.dataset.step === stepId,
-    )
+    const node = [
+      ...(sectionRef.current?.querySelectorAll<HTMLButtonElement>('button.node, button.wf-pick') ?? []),
+    ].find((b) => b.dataset.step === stepId)
     node?.focus()
   }
 
@@ -1116,23 +1136,60 @@ export function WorkflowCard({
             />
           </div>
         )}
+        {/* THE TABLE AND THE TIMELINE, WITH THE INSPECTOR NEXT TO THE PICKED
+            STEP (#110). It mounted under the whole view, about 650px below
+            row 10 at 1440. At 1100px and up it docks in the right-hand column
+            the Graph's panel uses; below that it opens directly under the
+            picked row or track. The split is drawn whether or not a step is
+            picked, so picking one never remounts the table and its sort. */}
         {view === 'graph' ? null : (
-          <>
-            <WorkflowSteps
-              workflow={workflow}
-              taskById={taskById}
-              classes={classes}
-              usage={usage}
-              view={view}
-              picked={picked}
-              onPick={pickStep}
-            />
-            {picked !== null && inspector(picked, () => pickStep(picked))}
-          </>
+          <div className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
+            <div className="wf-split-main">
+              <WorkflowSteps
+                workflow={workflow}
+                taskById={taskById}
+                classes={classes}
+                usage={usage}
+                view={view}
+                picked={picked}
+                onPick={pickStep}
+                detail={picked !== null && narrow ? inspector(picked, () => closePanel(picked)) : null}
+              />
+            </div>
+            {picked !== null && !narrow && (
+              <StepPanel key={`${workflow.workflow_id}/${picked}`} onClose={() => closePanel(picked)}>
+                {inspector(picked, () => closePanel(picked))}
+              </StepPanel>
+            )}
+          </div>
         )}
       </div>
     </section>
   )
+}
+
+/**
+ * BELOW THIS WIDTH THE TABLE'S AND THE TIMELINE'S INSPECTOR OPENS UNDER THE
+ * PICKED ROW rather than docking beside the view (#110). 1100px is where the
+ * view keeps a readable width beside the panel's 300-400px column; below it
+ * the docked panel would squeeze ten table columns into what is left.
+ */
+const DOCK_QUERY = '(max-width: 1099px)'
+
+function subscribeNarrow(onChange: () => void): () => void {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return () => {}
+  const query = window.matchMedia(DOCK_QUERY)
+  query.addEventListener('change', onChange)
+  return () => query.removeEventListener('change', onChange)
+}
+
+/** False where there is no `matchMedia` (jsdom), which is the desktop's answer. */
+function atNarrowWidth(): boolean {
+  return typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia(DOCK_QUERY).matches
+}
+
+function useNarrow(): boolean {
+  return useSyncExternalStore(subscribeNarrow, atNarrowWidth, () => false)
 }
 
 /**
@@ -1711,6 +1768,7 @@ function WorkflowSteps({
   view,
   picked,
   onPick,
+  detail = null,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -1719,6 +1777,8 @@ function WorkflowSteps({
   view: Exclude<WorkflowView, 'graph'>
   picked: string | null
   onPick: (stepId: string) => void
+  /** The inspector, drawn under the picked row or track (#110); null when it is docked or closed. */
+  detail?: ReactNode
 }) {
   const now = useNow()
   const rows = stepRows(workflow, taskById, usage, now, classes)
@@ -1733,7 +1793,7 @@ function WorkflowSteps({
     const spend = workflowSpend(workflow.steps, taskById, telemetryOf(usage))
     return (
       <>
-        <WorkflowTable rows={rows} picked={picked} onPick={onPick} />
+        <WorkflowTable rows={rows} picked={picked} onPick={onPick} detail={detail} />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
         </p>
@@ -1751,6 +1811,7 @@ function WorkflowSteps({
       )}
       picked={picked}
       onPick={onPick}
+      detail={detail}
     />
   )
 }
@@ -2413,16 +2474,21 @@ function WorkflowGraph({
           would leave the dropped fields unexplained on exactly the surface with
           no way to ask for them back. There is no such caller today; this is
           what stops one appearing silently. */}
-      {zoomable && (
+      {(zoomable || layout.edges.length > 0) && (
         <div className="wf-zoom">
-          <ZoomControl
-            workflowId={workflow.workflow_id}
-            choice={zoom}
-            auto={auto}
-            onChoose={onZoom ?? (() => {})}
-          />
-          <ZoomNotice tier={tier} choice={zoom} />
-          <Minimap layout={layout} taskById={taskById} view={view} onJump={jump} />
+          {zoomable && (
+            <>
+              <ZoomControl
+                workflowId={workflow.workflow_id}
+                choice={zoom}
+                auto={auto}
+                onChoose={onZoom ?? (() => {})}
+              />
+              <ZoomNotice tier={tier} choice={zoom} />
+              <Minimap layout={layout} taskById={taskById} view={view} onJump={jump} />
+            </>
+          )}
+          <EdgeKey />
         </div>
       )}
       <div className="wf-canvas-wrap" ref={wrapRef} onScroll={syncView}>
@@ -3155,6 +3221,49 @@ function StepNode({
   )
 }
 
+/** The key's three entries, in the order an edge gains weight: its word and its sentence. */
+const EDGE_KEY: readonly { kind: EdgeKind; word: string; title: string }[] = [
+  { kind: 'order', word: 'order', title: 'Thin: an order dependency. The lower step waits for the upper one; no file passes.' },
+  {
+    kind: 'staged',
+    word: 'staged',
+    title: "Heavy, solid: a file staged. The upper step's file was reported staged into the lower step's workspace.",
+  },
+  {
+    kind: 'declared',
+    word: 'declared',
+    title: 'Heavy, dashed: a file declared and not yet reported staged. The dash means not a measurement.',
+  },
+]
+
+/**
+ * THE GRAPH'S KEY (#108). The canvas draws three kinds of edge and its SVG is
+ * `aria-hidden`, so nothing on screen named them. Each entry is a short edge
+ * drawn with THE CANVAS'S OWN CLASSES -- `linkClass` and `.wf-edge` -- so the
+ * key cannot come to disagree with what it explains; the word is the label
+ * and the hover is the sentence. Weight and dash, not hue, as on the canvas.
+ *
+ * It sits at the end of the zoom strip, which is drawn whenever the graph has
+ * an edge even when there is nothing to zoom: a chain needs its key as much
+ * as a fan-out does. Chrome, not prose (§6.11): three words.
+ */
+function EdgeKey() {
+  return (
+    <ul className="wf-key" aria-label="Edge key">
+      {EDGE_KEY.map((k) => (
+        <li key={k.kind} className="wf-key-item" title={k.title}>
+          <svg className="wf-key-sample" width="24" height="8" viewBox="0 0 24 8" aria-hidden="true" focusable="false">
+            <g className={linkClass(k.kind)}>
+              <path className="wf-edge" d="M1 4 H23" />
+            </g>
+          </svg>
+          <span className="wf-key-word">{k.word}</span>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /** The edge group's classes: its kind, and for a data edge whether it arrived. */
 function linkClass(kind: EdgeKind): string {
   return kind === 'order' ? 'wf-link is-order' : `wf-link is-data is-${kind}`
@@ -3642,19 +3751,171 @@ function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
   )
 }
 
-/** The grouping order of the list: what needs a look first. */
-const BUCKET_ORDER: Readonly<Record<WorkflowBucket, number>> = { failed: 0, running: 1, finished: 2 }
+/**
+ * THE LIST'S COLUMNS, named once, so the loading skeleton draws the head the
+ * loaded table will (#113) and the first row lands where the skeleton's was.
+ */
+const LIST_COLUMNS: readonly { label: string; num?: boolean }[] = [
+  { label: 'State' },
+  { label: 'Workflow' },
+  { label: 'Shape' },
+  { label: 'Steps done' },
+  { label: 'Runners' },
+  { label: 'Cost', num: true },
+  { label: 'Owner' },
+  { label: 'Started' },
+  { label: 'Duration', num: true },
+]
 
-function newestFirst(a: Workflow, b: Workflow): number {
-  return (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0)
+function ListHead() {
+  return (
+    <thead>
+      <tr>
+        {LIST_COLUMNS.map((c) => (
+          <th key={c.label} className={c.num === true ? 'num' : undefined}>
+            {c.label}
+          </th>
+        ))}
+      </tr>
+    </thead>
+  )
+}
+
+/**
+ * THE LIST'S TOOLBAR, loaded or not (#113). While the read is in flight it is
+ * drawn DISABLED, with the address's choices already showing and no counts,
+ * so nothing above the table moves when the data lands -- it used to appear
+ * only then and push the rows down by its own height.
+ */
+function WorkflowListFilters({
+  query,
+  choose,
+  counts,
+  owners,
+  profiles,
+}: {
+  query: WorkflowQuery
+  choose: (q: WorkflowQuery) => void
+  /** Null while loading: no count is drawn rather than a zero nobody read. */
+  counts: Record<BucketFilter, number> | null
+  owners: readonly string[]
+  profiles: readonly string[]
+}) {
+  const off = counts === null
+  return (
+    <div className="wfl-filters">
+      <div className="ctl-seg wfl-seg" role="group" aria-label="Which workflows">
+        {BUCKET_FILTERS.map((b) => (
+          <button
+            key={b}
+            type="button"
+            disabled={off}
+            aria-pressed={query.state === b}
+            onClick={() => choose({ ...query, state: b })}
+          >
+            {BUCKET_LABEL[b]}
+            {counts !== null && <span className="wfl-n">{counts[b]}</span>}
+          </button>
+        ))}
+      </div>
+      <input
+        className="wfl-search"
+        type="search"
+        aria-label="Find a workflow or step"
+        placeholder="Find a workflow or step"
+        disabled={off}
+        value={query.q}
+        onChange={(e) => choose({ ...query, q: e.target.value })}
+      />
+      <label className="wfl-pick">
+        owner
+        <select disabled={off} value={query.owner} onChange={(e) => choose({ ...query, owner: e.target.value })}>
+          <option value="">anyone</option>
+          {owners.map((o) => (
+            <option key={o} value={o}>
+              {o}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="wfl-pick">
+        profile
+        <select disabled={off} value={query.profile} onChange={(e) => choose({ ...query, profile: e.target.value })}>
+          <option value="">any</option>
+          {profiles.map((p) => (
+            <option key={p} value={p}>
+              {p}
+            </option>
+          ))}
+        </select>
+      </label>
+      {/* THE ORDER (#111): by state as before, by age, or by how many steps
+          failed -- the triage order. In the address like every other choice. */}
+      <label className="wfl-pick">
+        sort
+        <select
+          disabled={off}
+          value={query.sort}
+          onChange={(e) => choose({ ...query, sort: e.target.value as WorkflowSort })}
+        >
+          {WORKFLOW_SORTS.map((o) => (
+            <option key={o} value={o}>
+              {o === 'state' ? 'by state' : SORT_LABEL[o]}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
+  )
+}
+
+/** How many rows the loading skeleton draws: about one laptop fold of the list. */
+const SKELETON_ROWS = 6
+/** Each skeleton cell's bar width, in em, per column; the name cell draws two lines as a row does. */
+const SKELETON_WIDTHS: readonly number[] = [5, 12, 4, 7, 6, 4, 6, 5, 4]
+
+/**
+ * THE LIST WHILE ITS READ IS IN FLIGHT (#113): the real toolbar, disabled, the
+ * real table head, and skeleton rows in the table's own cells -- the same
+ * `.wfl-row` and padding, the name cell two lines tall as a loaded row's is --
+ * so the first loaded row lands where the first skeleton row was. The bars are
+ * `.wfl-skel`, a step darker than the shared `.skeleton`, which sat at about
+ * 1.03:1 in light. They carry no text: a skeleton answers nothing.
+ */
+export function WorkflowListSkeleton({ query }: { query: WorkflowQuery }) {
+  const owners = query.owner === '' ? [] : [query.owner]
+  const profiles = query.profile === '' ? [] : [query.profile]
+  return (
+    <div className="wfl is-loading" aria-busy="true">
+      <WorkflowListFilters query={query} choose={() => {}} counts={null} owners={owners} profiles={profiles} />
+      <div className="table-wrap is-scroll wfl-scroll" aria-hidden="true">
+        <table className="wfl-table">
+          <ListHead />
+          <tbody>
+            {Array.from({ length: SKELETON_ROWS }, (_, r) => (
+              <tr key={r} className="wfl-row is-skel">
+                {SKELETON_WIDTHS.map((w, c) => (
+                  <td key={c} className={c === 1 ? 'wfl-name' : LIST_COLUMNS[c]?.num === true ? 'num' : undefined}>
+                    <span className="wfl-skel" style={{ width: `${w}em` }} />
+                    {c === 1 && <span className="wfl-skel is-sub" style={{ width: `${w - 4}em` }} />}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
 }
 
 /**
  * THE LIST, FULL WIDTH (workflows.html A). One row per workflow: the rollup
- * mark, the name, the shape, steps done, the runner mix, cost, owner and age.
- * A failed row's second line names the failing step and why; a parked one
- * what it waits on; an unread one says so. Everything chosen above the table
- * is in the address (`workflowlist.ts`).
+ * mark, the name, the shape, steps done, the runner mix, cost, owner, when it
+ * started and how long it ran (#111). A failed row's second line names the
+ * failing step and why; a parked one what it waits on; an unread one says so.
+ * Everything chosen above the table, the order included, is in the address
+ * (`workflowlist.ts`).
  */
 function WorkflowList({
   board,
@@ -3673,9 +3934,11 @@ function WorkflowList({
   // failed workflows of priya's, when owner is priya.
   const filtered = board.workflows.filter((w) => matchesFilters(w, labels.get(w.workflow_id) ?? null, query))
   const counts = bucketCounts(filtered)
-  const rows = (query.state === 'all' ? filtered : filtered.filter((w) => bucketOf(w) === query.state))
-    .slice()
-    .sort((a, b) => BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] || newestFirst(a, b))
+  const rows = sortWorkflows(
+    query.state === 'all' ? filtered : filtered.filter((w) => bucketOf(w) === query.state),
+    query.sort,
+    board.taskById,
+  )
   // A filter value the read no longer holds stays offered, so the control
   // never silently shows "anyone" while the list is still filtered by one.
   const owners = withChosen(ownersOf(board.workflows), query.owner)
@@ -3686,54 +3949,16 @@ function WorkflowList({
   // drawn, in their order, so the cap covers the top of the list; a step
   // outside the cap totals from its result and its row says how many did.
   const telemetry = telemetryOf(useWorkflowUsage(rows, null))
+  // One clock for every running row's `so far`, on the shared age tick: the
+  // started and duration columns move on the same beat as every other age on
+  // the screen, and a running row's duration advances between polls. The
+  // canvas's own 1Hz `useNow` above is scoped to an open card; holding it
+  // here would re-render every row once a second.
+  const now = useSharedClock(AGE_TICK_MS)
 
   return (
     <div className="wfl">
-      <div className="wfl-filters">
-        <div className="ctl-seg wfl-seg" role="group" aria-label="Which workflows">
-          {BUCKET_FILTERS.map((b) => (
-            <button
-              key={b}
-              type="button"
-              aria-pressed={query.state === b}
-              onClick={() => choose({ ...query, state: b })}
-            >
-              {BUCKET_LABEL[b]}
-              <span className="wfl-n">{counts[b]}</span>
-            </button>
-          ))}
-        </div>
-        <input
-          className="wfl-search"
-          type="search"
-          aria-label="Find a workflow or step"
-          placeholder="Find a workflow or step"
-          value={query.q}
-          onChange={(e) => choose({ ...query, q: e.target.value })}
-        />
-        <label className="wfl-pick">
-          owner
-          <select value={query.owner} onChange={(e) => choose({ ...query, owner: e.target.value })}>
-            <option value="">anyone</option>
-            {owners.map((o) => (
-              <option key={o} value={o}>
-                {o}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className="wfl-pick">
-          profile
-          <select value={query.profile} onChange={(e) => choose({ ...query, profile: e.target.value })}>
-            <option value="">any</option>
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
+      <WorkflowListFilters query={query} choose={choose} counts={counts} owners={owners} profiles={profiles} />
       {rows.length === 0 ? (
         <p className="wfl-none">
           No {query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow matches
@@ -3747,18 +3972,7 @@ function WorkflowList({
       ) : (
         <div className="table-wrap is-scroll wfl-scroll">
           <table className="wfl-table">
-            <thead>
-              <tr>
-                <th>State</th>
-                <th>Workflow</th>
-                <th>Shape</th>
-                <th>Steps done</th>
-                <th>Runners</th>
-                <th className="num">Cost</th>
-                <th>Owner</th>
-                <th>Age</th>
-              </tr>
-            </thead>
+            <ListHead />
             <tbody>
               {rows.map((w) => (
                 <WorkflowListRow
@@ -3768,6 +3982,7 @@ function WorkflowList({
                   taskById={board.taskById}
                   telemetry={telemetry}
                   query={query}
+                  now={now}
                 />
               ))}
             </tbody>
@@ -3775,7 +3990,7 @@ function WorkflowList({
         </div>
       )}
       <p className="wfl-foot">
-        {rows.length} of {board.workflows.length} read · grouped by state, newest first in each group · 100 per read
+        {rows.length} of {board.workflows.length} read · {SORT_LABEL[query.sort]} · 100 per read
       </p>
     </div>
   )
@@ -3791,6 +4006,7 @@ function WorkflowListRow({
   taskById,
   telemetry,
   query,
+  now,
 }: {
   workflow: Workflow
   label: string | null
@@ -3798,11 +4014,18 @@ function WorkflowListRow({
   /** The list's attempt read (`useWorkflowUsage`): the row totals by the table's rule (WF-5). */
   telemetry: ReadonlyMap<string, StepUsage> | null
   query: WorkflowQuery
+  now: number
 }) {
   const why = rowWhy(workflow, taskById)
   const roll = rollupLine(workflow, taskById)
   const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
+  // STARTED is the first step's start, with the submit time in its hover --
+  // the same words the open card's head uses (#376). DURATION is wall clock
+  // from submission (`workflowDuration`), so the two columns are not a pair
+  // that should subtract to anything.
+  const started = workflowStartText(workflow, taskById, now)
+  const dur = workflowDuration(workflow, taskById, now)
   return (
     <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
       <td className="wfl-state">
@@ -3827,8 +4050,11 @@ function WorkflowListRow({
         <Spend spend={spend} />
       </td>
       <td className="wfl-owner">{workflow.submitted_by ?? 'not recorded'}</td>
-      <td className="wfl-age" title={`Created ${workflow.created_at}`}>
-        {timeAgo(workflow.created_at)}
+      <td className="wfl-started" title={started.title}>
+        {started.text}
+      </td>
+      <td className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}`} title={dur.title}>
+        {dur.text}
       </td>
     </tr>
   )

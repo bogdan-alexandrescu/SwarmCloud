@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type Ref } from 'react'
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
 import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
@@ -278,11 +278,17 @@ export function WorkflowTimeline({
   axis,
   picked,
   onPick,
+  detail = null,
 }: {
   rows: readonly StepRowModel[]
   axis: TimelineAxis | null
   picked: string | null
   onPick: (stepId: string) => void
+  /**
+   * Drawn directly under the picked step's track, across the whole grid: the
+   * inspector, below the width where it docks beside the view (#110).
+   */
+  detail?: ReactNode
 }) {
   return (
     <div className="wf-timeline" role="group" aria-label="When each step waited and ran">
@@ -305,6 +311,7 @@ export function WorkflowTimeline({
               <i className="wf-tl-now" style={{ left: `${pctOf(axis, axis.now)}%` }} />
             )}
           </div>
+          {detail !== null && picked === r.step.step_id && <div className="wf-tl-inline">{detail}</div>}
         </Fragment>
       ))}
     </div>
@@ -642,10 +649,16 @@ export function WorkflowTable({
   rows,
   picked,
   onPick,
+  detail = null,
 }: {
   rows: readonly StepRowModel[]
   picked: string | null
   onPick: (stepId: string) => void
+  /**
+   * Drawn in a full-width row directly under the picked step's row: the
+   * inspector, below the width where it docks beside the view (#110).
+   */
+  detail?: ReactNode
 }) {
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
@@ -680,8 +693,8 @@ export function WorkflowTable({
         </thead>
         <tbody>
           {sorted.map((r) => (
+            <Fragment key={r.step.step_id}>
             <tr
-              key={r.step.step_id}
               data-step={r.step.step_id}
               className={r.look.tone === 'bad' ? 'is-bad' : r.look.tone === 'unknown' ? 'is-warn' : undefined}
             >
@@ -717,6 +730,14 @@ export function WorkflowTable({
                 <InputsCell inputs={r.inputs} />
               </td>
             </tr>
+            {detail !== null && picked === r.step.step_id && (
+              <tr className="wf-inline-row">
+                <td colSpan={COLUMNS.length}>
+                  <div className="wf-inline">{detail}</div>
+                </td>
+              </tr>
+            )}
+            </Fragment>
           ))}
         </tbody>
       </table>
@@ -857,8 +878,10 @@ function scrubKeys(prev: (() => void) | null, next: (() => void) | null) {
  * THE INSPECTOR, AND THE TWO SCRUBBERS redesign-v2 §2.3 ASKS FOR: "next attempt
  * of this task" and "the same step across the last ten workflows".
  *
- * WHERE IT LIVES. Under the view, inside the card of the workflow the picked
- * step belongs to. When the second scrubber moves the selection to the same step
+ * WHERE IT LIVES. Next to the picked step, inside the card of the workflow
+ * the step belongs to: docked in the right-hand column beside the view at
+ * 1100px and up, and directly under the picked row or track below that (#110;
+ * it used to mount under the whole view, a screen away from row 10). When the second scrubber moves the selection to the same step
  * in another workflow, the inspector moves WITH it -- into that workflow's card
  * -- because the thing being inspected is that workflow's step, and an
  * inspector for workflow B drawn under workflow A's timeline would put two

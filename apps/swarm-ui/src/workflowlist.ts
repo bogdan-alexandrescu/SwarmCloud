@@ -18,7 +18,15 @@
  * -- because paths.ts round-trips an address only when the order is its own.
  */
 import { failureCause, WORKFLOW_VIEWS, type WorkflowView } from './stepviews'
-import { reasonCopy, stepState, TERMINAL_STATES, type Task, type TaskState, type Workflow } from './types'
+import {
+  formatDuration,
+  reasonCopy,
+  stepState,
+  TERMINAL_STATES,
+  type Task,
+  type TaskState,
+  type Workflow,
+} from './types'
 
 /** The three buckets every workflow is in exactly one of. */
 export type WorkflowBucket = 'running' | 'finished' | 'failed'
@@ -34,6 +42,24 @@ export const BUCKET_LABEL: Readonly<Record<BucketFilter, string>> = {
   all: 'All',
 }
 
+/**
+ * THE LIST'S ORDER (#111). `state` is the default the list has always had --
+ * grouped failed, running, finished, newest first in each group -- so it is
+ * never written. `failed` puts the workflows with the most failed steps first,
+ * which is the triage order; `newest` and `oldest` are by submission.
+ */
+export type WorkflowSort = 'state' | 'newest' | 'oldest' | 'failed'
+
+export const WORKFLOW_SORTS: readonly WorkflowSort[] = ['state', 'newest', 'oldest', 'failed']
+
+/** The sort control's words, and the list foot's description of the order. */
+export const SORT_LABEL: Readonly<Record<WorkflowSort, string>> = {
+  state: 'grouped by state, newest first in each group',
+  newest: 'newest first',
+  oldest: 'oldest first',
+  failed: 'most failed steps first',
+}
+
 export interface WorkflowQuery {
   /** The open workflow, or null on the list. */
   readonly wf: string | null
@@ -46,9 +72,19 @@ export interface WorkflowQuery {
   readonly owner: string
   /** A runner profile any step uses; '' for any. */
   readonly profile: string
+  /** The list's order; `state` is the default and is never written. */
+  readonly sort: WorkflowSort
 }
 
-export const EMPTY_QUERY: WorkflowQuery = { wf: null, tab: 'graph', state: 'all', q: '', owner: '', profile: '' }
+export const EMPTY_QUERY: WorkflowQuery = {
+  wf: null,
+  tab: 'graph',
+  state: 'all',
+  q: '',
+  owner: '',
+  profile: '',
+  sort: 'state',
+}
 
 /** The query a route's `view` carries, with anything unrecognised dropped to its default. */
 export function parseWorkflowQuery(view: string | null | undefined): WorkflowQuery {
@@ -56,6 +92,7 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
   const wf = p.get('wf')
   const tab = p.get('tab')
   const state = p.get('state')
+  const sort = p.get('sort')
   return {
     wf: wf === null || wf === '' ? null : wf,
     tab: tab !== null && (WORKFLOW_VIEWS as readonly string[]).includes(tab) ? (tab as WorkflowView) : 'graph',
@@ -63,6 +100,7 @@ export function parseWorkflowQuery(view: string | null | undefined): WorkflowQue
     q: p.get('q') ?? '',
     owner: p.get('owner') ?? '',
     profile: p.get('profile') ?? '',
+    sort: sort !== null && (WORKFLOW_SORTS as readonly string[]).includes(sort) ? (sort as WorkflowSort) : 'state',
   }
 }
 
@@ -91,6 +129,7 @@ function appendFilters(p: URLSearchParams, q: WorkflowQuery): void {
   if (q.q !== '') p.set('q', q.q)
   if (q.owner !== '') p.set('owner', q.owner)
   if (q.profile !== '') p.set('profile', q.profile)
+  if (q.sort !== 'state') p.set('sort', q.sort)
 }
 
 /** The list's path with its filters: the back link's `href`. */
@@ -172,6 +211,113 @@ export function ownersOf(rows: readonly Workflow[]): string[] {
 
 export function profilesOf(rows: readonly Workflow[]): string[] {
   return [...new Set(rows.flatMap((w) => w.steps.map((s) => s.runner_profile)))].sort()
+}
+
+/** How many of the workflow's steps the task read shows FAILED or DEAD_LETTERED. */
+export function failedSteps(w: Workflow, taskById: ReadonlyMap<string, Task> | null): number {
+  let n = 0
+  for (const s of w.steps) {
+    const st = stepState(s, taskById)
+    if (st.kind === 'state' && (st.state === 'FAILED' || st.state === 'DEAD_LETTERED')) n += 1
+  }
+  return n
+}
+
+const BUCKET_ORDER: Readonly<Record<WorkflowBucket, number>> = { failed: 0, running: 1, finished: 2 }
+
+function submittedMs(w: Workflow): number {
+  return Date.parse(w.created_at) || 0
+}
+
+/**
+ * THE ROWS IN THE CHOSEN ORDER (#111). Every order breaks its ties newest
+ * first, so two workflows that tie never swap places between two reads.
+ */
+export function sortWorkflows(
+  rows: readonly Workflow[],
+  sort: WorkflowSort,
+  taskById: ReadonlyMap<string, Task> | null,
+): Workflow[] {
+  const newest = (a: Workflow, b: Workflow) => submittedMs(b) - submittedMs(a)
+  const out = rows.slice()
+  switch (sort) {
+    case 'state':
+      return out.sort((a, b) => BUCKET_ORDER[bucketOf(a)] - BUCKET_ORDER[bucketOf(b)] || newest(a, b))
+    case 'newest':
+      return out.sort(newest)
+    case 'oldest':
+      return out.sort((a, b) => submittedMs(a) - submittedMs(b))
+    case 'failed': {
+      const failed = new Map(out.map((w) => [w.workflow_id, failedSteps(w, taskById)] as const))
+      return out.sort((a, b) => (failed.get(b.workflow_id) ?? 0) - (failed.get(a.workflow_id) ?? 0) || newest(a, b))
+    }
+  }
+}
+
+/** A workflow's wall-clock run, as the list's Duration column prints it. */
+export interface WorkflowDuration {
+  /** Null when the read cannot say. */
+  readonly ms: number | null
+  /** Still running: the span runs to now and keeps growing. */
+  readonly live: boolean
+  readonly text: string
+  readonly title: string
+}
+
+/**
+ * WALL CLOCK, FROM SUBMISSION TO THE LAST STEP'S END (#111). Submission, not
+ * the first step's start, because the wait for capacity is part of how long a
+ * workflow took -- and the Started column beside it says when the first step
+ * actually began. A workflow still in the Running bucket runs to `now` and
+ * says `so far`.
+ *
+ * AN END IS NEVER GUESSED. A finished workflow is measured to the latest
+ * `completed_at` among its step tasks; if a step task was not in the read, or
+ * a finished task recorded no end, the column says so rather than measuring to
+ * whichever end it happened to find -- that would be a shorter run than the
+ * real one, printed as if it were the real one. A step with no task never ran
+ * and has no end to wait for.
+ */
+export function workflowDuration(
+  w: Workflow,
+  taskById: ReadonlyMap<string, Task> | null,
+  now: number,
+): WorkflowDuration {
+  const from = Date.parse(w.created_at)
+  if (!Number.isFinite(from)) {
+    return { ms: null, live: false, text: 'not recorded', title: 'no submit time was recorded' }
+  }
+  if (bucketOf(w) === 'running') {
+    const ms = Math.max(0, now - from)
+    return { ms, live: true, text: `${formatDuration(ms)} so far`, title: `submitted ${w.created_at}; still running` }
+  }
+  if (taskById === null) {
+    return { ms: null, live: false, text: 'not read', title: 'the step tasks were not read, so the end is unknown' }
+  }
+  let end = -Infinity
+  for (const s of w.steps) {
+    if (!s.task_id) continue
+    const t = taskById.get(s.task_id)
+    if (t === undefined) {
+      return { ms: null, live: false, text: 'not read', title: `step ${s.step_id}'s task was not in the read` }
+    }
+    const done = t.completed_at ? Date.parse(t.completed_at) : NaN
+    if (!Number.isFinite(done)) {
+      if (!TERMINAL_STATES.has(t.state)) continue
+      return { ms: null, live: false, text: 'not recorded', title: `step ${s.step_id} ended without recording when` }
+    }
+    end = Math.max(end, done)
+  }
+  if (end === -Infinity) {
+    return { ms: null, live: false, text: 'not recorded', title: 'no step recorded an end' }
+  }
+  const ms = Math.max(0, end - from)
+  return {
+    ms,
+    live: false,
+    text: formatDuration(ms),
+    title: `submitted ${w.created_at}; last step ended ${new Date(end).toISOString()}`,
+  }
 }
 
 /** What a row's second line says, when it has one. */
