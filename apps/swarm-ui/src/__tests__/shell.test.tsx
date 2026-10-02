@@ -26,6 +26,7 @@
 // track axis) as longhands, with the reason beside them.
 
 import STYLES from '../styles.css?raw'
+import HELP_CSS from '../styles/help.css?raw'
 import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
@@ -90,10 +91,8 @@ function probe(over: Partial<ProbeRecord> = {}): ProbeRecord {
   }
 }
 
-// ===========================================================================
-// §B2 -- the information architecture
-// ===========================================================================
-
+// ====================================================================// §B2 -- the information architecture
+// ====================================================================
 describe('B2: the section question is printed once, not on every pane', () => {
   it('no longer renders the question under the tab strip', () => {
     render(<App />)
@@ -163,10 +162,8 @@ describe('B2: provenance is context, not a destination', () => {
   })
 })
 
-// ===========================================================================
-// §B3 -- layout: regions, with widths
-// ===========================================================================
-
+// ====================================================================// §B3 -- layout: regions, with widths
+// ====================================================================
 describe('B3: the work area, now beside the Sky spine', () => {
   it('is one grid column with the agent as a second, and keeps its gutter tokens', () => {
     // The rail column went with the rebrand (2026-10-01): the spine and the
@@ -265,10 +262,8 @@ describe('B3: the inspector is a column, not an overlay, where two panes fit', (
   })
 })
 
-// ===========================================================================
-// §B4.3 -- density and spacing
-// ===========================================================================
-
+// ====================================================================// §B4.3 -- density and spacing
+// ====================================================================
 describe('B4.3: the six moves', () => {
   it('move 1: regions are separated by a hairline, not by 28px of nothing', () => {
     const style = withStyles()
@@ -453,10 +448,8 @@ describe('D2: compact data inside generous chrome', () => {
   })
 })
 
-// ===========================================================================
-// §B18 -- telemetry behind a disclosure
-// ===========================================================================
-
+// ====================================================================// §B18 -- telemetry behind a disclosure
+// ====================================================================
 describe('B18: the strip collapses to one line and expands on click', () => {
   it('summarises routes, p95, failures and the admin gate -- separately', () => {
     const s = summariseProbes([
@@ -596,10 +589,8 @@ describe('B18: the strip collapses to one line and expands on click', () => {
   })
 })
 
-// ===========================================================================
-// §B20 -- a zero bar must look measured
-// ===========================================================================
-
+// ====================================================================// §B20 -- a zero bar must look measured
+// ====================================================================
 describe('B20: a measured zero and an unrendered track are different marks', () => {
   it('draws an axis on a measured track and none on an unmeasured one', () => {
     const style = withStyles()
@@ -1596,10 +1587,8 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
   })
 })
 
-// ===========================================================================
-// THE 2026-09-25 VISUAL QA PASS, AS RULES THE CASCADE HAS TO PICK
-// ===========================================================================
-//
+// ====================================================================// THE 2026-09-25 VISUAL QA PASS, AS RULES THE CASCADE HAS TO PICK
+// ====================================================================//
 // Each `it` is one box from the QA epics (#81-#87), named by its id, and each
 // states the mutation that turns it red. They are asked of `cascade` (in
 // `cssgate.ts`), NOT of `getComputedStyle`, and that choice is the point: jsdom
@@ -1617,42 +1606,6 @@ describe('the overflow inventory, as rules that cannot be quietly dropped', () =
 
 const WIDE: CascadeEnv = { width: 1440 }
 const PHONE: CascadeEnv = { width: 390 }
-
-/** The sheet's own tokens. Every length token is the same in both themes. */
-const TOKENS = tokenTables(STYLES).dark
-
-/**
- * A declared length in px: each `var()` substituted from the sheet's tokens,
- * then a `calc()` of terms added up, each term one px length times plain
- * numbers. Anything else throws by name, so a value this cannot read is a
- * failure and never a zero (AH-16's margin is the caller).
- */
-function lengthPx(value: string, what: string): number {
-  const flat = resolveVars(value, TOKENS).trim()
-  const body = /^calc\((.*)\)$/.exec(flat)?.[1] ?? flat
-  let total = 0
-  for (const term of body.split(/\s+\+\s+/)) {
-    let product = 1
-    let lengths = 0
-    for (const factor of term.split(/\s*\*\s*/)) {
-      const m = /^(-?[\d.]+)(px)?$/.exec(factor.trim())
-      if (m === null) throw new Error(`${what}: cannot evaluate ${JSON.stringify(factor)} in ${JSON.stringify(flat)}`)
-      product *= Number(m[1])
-      if (m[2] === 'px' || Number(m[1]) === 0) lengths += 1
-    }
-    if (lengths !== 1 && product !== 0) throw new Error(`${what}: ${JSON.stringify(term)} is not one length`)
-    total += product
-  }
-  return total
-}
-
-/** The bottom edge of whichever margin declaration won. */
-function bottomOf(property: string, value: string): string {
-  const parts = splitTop(value.trim(), ' ')
-  if (property === 'margin') return parts.length >= 3 ? parts[2]! : parts[0]!
-  if (property === 'margin-block') return parts[1] ?? parts[0]!
-  return parts[0]!
-}
 
 /**
  * Every form `elapsed()` prints, in every state, started or not, at the edges
@@ -1906,205 +1859,76 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     expect(basis?.value, 'the message has to wrap under the field, not widen the cell').toMatch(/(^|\s)100%$/)
   })
 
-  it('AH-18: a Help topic is a row of its region, and the deep-linked one takes the selection treatment', () => {
-    // §13.3: a region is `.section`, and what repeats inside it draws nothing.
-    // Every topic was a bordered, filled, rounded panel written inline.
+  it('H1 (was AH-18): a Help topic is a card, and the deep-linked one takes the selection treatment', () => {
+    // admin-help.html H1, the owner's pick 2026-10-01: one page per group,
+    // every topic a card with You see / It means / What to do rows. AH-18 had
+    // made topics unboxed rows of a group region; H1 supersedes it, and the
+    // 2026-10-02 audit (#503) measured topics drawn as prose paragraphs.
     const f = fragment(
-      '<section class="section"><h2>Reading a figure</h2>' +
-        '<div class="help-topic"><h3>Absent is not zero</h3><p>A digit is a measurement.</p>' +
-        '<dl><div><dt>LEASED</dt><dd>reserves capacity</dd></div></dl>' +
-        '<p class="help-topic-anchor">#help/absent-vs-zero</p></div>' +
-        '<div class="help-topic is-current"><h3>A failed read is not an empty result</h3><p>Two answers.</p></div>' +
+      '<section class="help-group">' +
+        '<div class="help-topic"><div class="help-topic-head"><h3>Absent, zero, unread and stale</h3></div>' +
+        '<dl class="help-rows"><div><dt>You see</dt><dd>Absent is not zero</dd></div>' +
+        '<div><dt>It means</dt><dd><p>A digit is a measurement.</p>' +
+        '<dl class="help-values"><div><dt>LEASED</dt><dd>reserves capacity</dd></div></dl></dd></div>' +
+        '<div class="help-topic-act"><dt>What to do</dt><dd>Read the mark.</dd></div></dl></div>' +
+        '<div class="help-topic is-current"><div class="help-topic-head"><h3>A failed read</h3></div></div>' +
         '</section>',
     )
+    const sheet = `${STYLES}\n${HELP_CSS}`
+    const at = (el: Element, prop: string | readonly string[]) => {
+      const r = cascade(sheet, el, prop, WIDE)
+      expect(r.unsupported, 'selectors the resolver could not evaluate').toEqual([])
+      return r.winner?.value ?? null
+    }
     const [plain, current] = [...f.querySelectorAll('.help-topic')] as [Element, Element]
-    const nothingOrZero = (v: string | null) => v === null || /^0(px)?$/.test(v) || v === 'none'
 
-    // NO BOX. MUTATION: give `.help-topic` a border or a background.
-    for (const [side, props] of [
-      ['top', ['border-top-width', 'border-top', 'border-width', 'border', 'border-block-start-width', 'border-block-start', 'border-block-width', 'border-block']],
-      ['right', ['border-right-width', 'border-right', 'border-width', 'border', 'border-inline-end-width', 'border-inline-end', 'border-inline-width', 'border-inline']],
-      ['bottom', ['border-bottom-width', 'border-bottom', 'border-width', 'border', 'border-block-end-width', 'border-block-end', 'border-block-width', 'border-block']],
-    ] as const) {
-      expect(nothingOrZero(won(plain, props, WIDE)), `a topic draws a ${side} border`).toBe(true)
-    }
-    expect(won(plain, ['background', 'background-color'], WIDE), 'a topic draws a fill').toBeNull()
-    expect(won(plain, ['border-radius'], WIDE), 'a topic rounds a box it no longer has').toBeNull()
+    // A CARD. MUTATION: take the border or the fill off `.help-topic`.
+    expect(at(plain, ['border', 'border-top-width'])).toBe('1px solid var(--line)')
+    expect(at(plain, ['background-color', 'background'])).toBe('var(--surface)')
+    expect(at(plain, 'border-radius')).toBe('var(--radius)')
 
-    // THE RULE IS DECLARED ON EVERY TOPIC, TRANSPARENT, so marking one current
-    // changes a colour and a fill and moves nothing (§13.5's declared border).
-    // MUTATION: declare the rule only on `.is-current`.
-    for (const t of [plain, current]) {
-      expect(won(t, ['border-inline-start-width', 'border-inline-start', 'border-left-width', 'border-left'], WIDE)).toBe('2px')
-      expect(won(t, ['border-inline-start-style', 'border-inline-start', 'border-left-style', 'border-left'], WIDE)).toBe('solid')
-      expect(won(t, ['padding-inline-start', 'padding-left', 'padding-inline', 'padding'], WIDE)).toBe('var(--ctl-s3)')
-      expect(won(t, ['padding-block', 'padding-top', 'padding-block-start', 'padding'], WIDE)).toBe('var(--ctl-s2)')
-    }
-    expect(won(plain, ['border-inline-start-color', 'border-inline-start', 'border-left-color', 'border-left'], WIDE)).toBe('transparent')
+    // §1.3's SELECTION, on the border every card already has: an ink edge and
+    // a surface step, so marking one current moves nothing.
+    // MUTATION: drop either, or give the current card a border of its own width.
+    expect(at(current, ['border-color', 'border'])).toBe('var(--text)')
+    expect(at(current, ['background-color', 'background'])).toBe('var(--surface-2)')
 
-    // §1.3's SELECTION: a surface step and a 2px ink rule. The 3px `--text-dim`
-    // rule this replaces is the track axis's measured-zero mark.
-    // MUTATION: `--text-dim` back, or drop the fill.
-    expect(won(current, ['border-inline-start-color', 'border-inline-start', 'border-left-color', 'border-left'], WIDE)).toBe('var(--text)')
-    expect(won(current, ['background-color', 'background'], WIDE)).toBe('var(--surface-2)')
-
-    // Separated by the large break and nothing else.
-    expect(won(current, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], WIDE)).toBe('var(--ctl-s5)')
-    // THE SCROLL MARGIN IS AH-16'S NOW, not a pinned `--ctl-s5`. This pinned
-    // AH-18's "scroll-margin-top stays at --ctl-s5", and at --ctl-s5 a topic
-    // that opens its group landed with the group heading clipped off the top.
-    // The owner settled the two boxes on #86 (2026-09-25): AH-18's spacing
-    // stays, and the scroll margin clears the group heading. The AH-16 case
-    // below asks the property -- what the margin has to clear -- rather than
-    // pinning a value.
-
-    // THE TOPIC TITLE IS THE CARD-TITLE STEP (AH-10), so h1, group h2 and
-    // topic h3 stop all rendering at 18px. MUTATION: `--t-title` on the h3.
+    // THE TOPIC NAME IS THE CARD-TITLE STEP (AH-10), under the page's h1.
     const h3 = plain.querySelector('h3')!
-    expect(won(h3, ['font-size', 'font'], WIDE)).toBe('var(--t-lead)')
-    expect(won(h3, ['line-height', 'font'], WIDE)).toBe('var(--lh-lead)')
-    expect(won(h3, ['font-weight', 'font'], WIDE)).toBe('600')
+    expect(at(h3, ['font-size', 'font'])).toBe('var(--t-lead)')
+    expect(at(h3, ['font-weight', 'font'])).toBe('600')
 
-    // THE MEASURE IS THE TOKEN, on paragraphs AND on the notes beside a term,
-    // which were uncapped and ran to x≈1222. MUTATION: `68ch`, or drop `dd`.
-    expect(won(plain.querySelector('p')!, 'max-width', WIDE)).toBe('var(--measure)')
-    expect(won(plain.querySelector('dd')!, 'max-width', WIDE)).toBe('var(--measure)')
+    // THE MEASURE IS THE TOKEN on the rows' answers and on a value's note.
+    expect(at(plain.querySelector('.help-rows > div > dd')!, 'max-width')).toBe('var(--measure)')
+    expect(at(plain.querySelector('.help-values dd')!, 'max-width')).toBe('var(--measure)')
 
-    // CH-3, moved off the inline style with everything else.
-    expect(won(plain.querySelector('dt')!, 'text-transform', WIDE)).toBe('lowercase')
+    // CH-3: an enum term is lowercased by style -- and only an enum term: the
+    // row terms are already sentence case and stay as written.
+    expect(at(plain.querySelector('.help-values dt')!, 'text-transform')).toBe('lowercase')
+    expect(at(plain.querySelector('.help-rows > div > dt')!, 'text-transform')).toBeNull()
   })
 
   /**
-   * AH-16, AS SETTLED AGAINST AH-18 ON #86 (2026-09-25). A deep-linked topic
-   * lands with its group heading in view: the scroll margin clears the sticky
-   * head plus the group heading, and AH-18's spacing stays otherwise.
+   * AH-16 UNDER H1: a deep link lands with the card's own head in view. A
+   * page is one group now, titled by the page head, so there is no group
+   * heading to stick and clear; nothing sticks over the Help column, and the
+   * card's scroll margin is the breathing room above it.
    *
-   * FOR EVERY TOPIC, NOT ONLY THE ONE THAT OPENS ITS GROUP (review of #183).
-   * A scroll margin alone clears the heading only for the topic directly
-   * under it -- six of about eighty-four. A topic further down its group
-   * landed with the previous topic above it and its group heading scrolled
-   * away. So the group heading is the sticky head the settlement names: it
-   * sticks to the top of the scroller while its group is in view, and every
-   * topic's scroll margin clears it.
-   *
-   * ASKED AS THE PROPERTY, NOT A VALUE, on the DOM the Help page renders. The
-   * margin is resolved to px through the sheet's own tokens and compared with
-   * what it has to clear: in flow, over the topic that opens the group, the
-   * heading's line box, its padding and the margin under it; stuck, over any
-   * later topic, the line box and padding, which is what sticks. And the
-   * heading can only stick if nothing between it and `.ctl-scroll` clips or
-   * scrolls, and it only covers what passes under it if it paints the ground
-   * behind it.
-   *
-   * NOTHING ELSE STICKS OVER THE COLUMN, AND THAT IS ASSERTED TOO: the
-   * breadcrumb head and the page head scroll with the page. If one of them
-   * starts to stick over the column, this fails and asks for its height.
-   *
-   * MUTATION: drop `position: sticky` from the group heading, or its ground.
-   * A later topic lands with its group heading gone. MUTATION:
-   * `scroll-margin-top: var(--ctl-s5)` back. 28 < 34.8.
+   * MUTATION: make anything over the column sticky, or drop the scroll margin.
    */
-  it('AH-16: a deep link to any Help topic lands with its group heading in view', () => {
-    const page = render(<HelpScreen topic="" />)
-    const groups = [...page.container.querySelectorAll('section')].filter(
-      (s) => s.querySelectorAll(':scope > .help-topic').length >= 2,
-    )
-    expect(groups.length, 'no Help group holds two topics; the later-topic case would be vacuous').toBeGreaterThan(0)
-    const section = groups[0]!
-    const h2 = pick(section, ':scope > h2')
-    const [first, later] = [...section.querySelectorAll(':scope > .help-topic')] as [Element, Element]
-    // What stands between the heading and the scroller in the app: `.ctl-scroll >
-    // .app > main.work > section` (App.tsx). The section is the rendered one.
-    const frame = fragment('<div class="ctl-scroll"><div class="app"><main class="work"></main></div></div>')
-    const between = [pick(frame, 'main.work'), pick(frame, '.app'), section]
-    const SCROLL_MARGIN = ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin-block', 'scroll-margin']
-    const PAD_TOP = ['padding-top', 'padding-block-start', 'padding-block', 'padding']
-    const PAD_BOTTOM = ['padding-bottom', 'padding-block-end', 'padding-block', 'padding']
-    const edge = (w: { property: string; value: string } | null, side: 'top' | 'bottom', what: string): number => {
-      if (w === null) return 0
-      const parts = splitTop(w.value.trim(), ' ')
-      const shorthand = w.property === 'padding' || w.property === 'margin'
-      const block = w.property.endsWith('-block')
-      const v = shorthand
-        ? side === 'top'
-          ? parts[0]!
-          : (parts[2] ?? parts[0]!)
-        : block
-          ? side === 'top'
-            ? parts[0]!
-            : (parts[1] ?? parts[0]!)
-          : parts[0]!
-      return lengthPx(v, what)
-    }
+  it('AH-16: a deep link to any Help topic lands with the card head in view', () => {
+    const page = render(<HelpScreen topic="paused-vs-full" />)
+    const sheet = `${STYLES}\n${HELP_CSS}`
+    const cards = [...page.container.querySelectorAll('.help-topic')]
+    expect(cards.length, 'the group page drew no cards').toBeGreaterThan(1)
     for (const env of [WIDE, PHONE]) {
-      const at = `${env.width}px`
-      const margin = cascade(STYLES, first, SCROLL_MARGIN, env).winner
-      expect(margin, `${at}: a Help topic declares no scroll margin`).not.toBeNull()
-      const marginPx = lengthPx(splitTop(margin!.value, ' ')[0]!, `${at} scroll margin`)
-
-      // THE HEADING THE MARGIN HAS TO CLEAR.
-      const size = cascade(STYLES, h2, ['font-size', 'font'], env).winner
-      expect(size?.property, `${at}: the group heading's size is not a longhand this can read`).toBe('font-size')
-      const fontPx = lengthPx(size!.value, `${at} group heading font-size`)
-      const lh = cascade(STYLES, h2, ['line-height', 'font'], env).winner
-      expect(lh?.property, `${at}: the group heading's line-height is not a longhand this can read`).toBe('line-height')
-      const leading = resolveVars(lh!.value, TOKENS).trim()
-      const lineBox = /^[\d.]+$/.test(leading) ? Number(leading) * fontPx : lengthPx(lh!.value, `${at} line-height`)
-      const pads =
-        edge(cascade(STYLES, h2, PAD_TOP, env).winner, 'top', `${at} heading padding`) +
-        edge(cascade(STYLES, h2, PAD_BOTTOM, env).winner, 'bottom', `${at} heading padding`)
-      const below = cascade(STYLES, h2, ['margin-bottom', 'margin-block-end', 'margin-block', 'margin'], env).winner
-      const belowPx = below === null ? 0 : lengthPx(bottomOf(below.property, below.value), `${at} heading margin`)
-      const stuck = lineBox + pads
-      const inFlow = stuck + belowPx
-      expect(stuck, `${at}: the heading measured nothing; this check would be vacuous`).toBeGreaterThan(20)
-
-      // IT STICKS, AT THE TOP EDGE, while its group is in view.
-      expect(won(h2, 'position', env), `${at}: the group heading scrolls away above a later topic`).toBe('sticky')
-      const top = won(h2, ['top', 'inset-block-start', 'inset-block', 'inset'], env)
-      expect(top, `${at}: a sticky heading with no inset never sticks`).not.toBeNull()
-      expect(lengthPx(splitTop(top!, ' ')[0]!, `${at} heading inset`), `${at}: the heading sticks below the top edge`).toBe(0)
-      // IT COVERS WHAT PASSES UNDER IT, in the ground the scroller shows.
-      const ground = won(document.body, ['background-color', 'background'], env)
-      expect(ground, `${at}: the page has no ground for the heading to match`).not.toBeNull()
-      expect(won(h2, ['background-color', 'background'], env), `${at}: topics scrolling under the heading show through it`).toBe(
-        ground,
-      )
-      for (const el of [pick(frame, '.ctl-scroll'), ...between]) {
-        const fill = won(el, ['background-color', 'background'], env)
-        expect(fill === null || fill === ground, `${at}: .${el.className} paints ${fill} behind the heading, not the page ground`).toBe(true)
+      const margins = cards.map((c) => cascade(sheet, c, ['scroll-margin-top', 'scroll-margin-block-start', 'scroll-margin'], env).winner?.value ?? null)
+      expect(margins[0], `${env.width}px: a Help card declares no scroll margin`).not.toBeNull()
+      expect(new Set(margins).size, `${env.width}px: the cards land differently`).toBe(1)
+      for (const el of [...page.container.querySelectorAll('.help-group, .help-search, .help-group-pick, .head')]) {
+        const pos = cascade(sheet, el, ['position'], env).winner?.value ?? 'static'
+        expect(/sticky|fixed/.test(pos), `${env.width}px: .${el.className} sticks over the Help column`).toBe(false)
       }
-      // NOTHING BETWEEN IT AND THE SCROLLER CLIPS OR SCROLLS, or the heading
-      // would stick to that box instead, or not at all.
-      for (const el of between) {
-        const o = won(el, ['overflow', 'overflow-y', 'overflow-block'], env)
-        expect(o === null || o === 'visible', `${at}: .${el.className} is overflow ${o}; the heading cannot stick past it`).toBe(true)
-      }
-
-      // Nothing ELSE sticks over the column, so there is no second head to clear.
-      // (The product header and the rail's phone strip were on this list until
-      // the Sky spine replaced both, rebrand 2026-10-01.)
-      const heads = fragment('<div class="ctl-head"></div><div class="head"></div>')
-      for (const el of [...heads.children]) {
-        const pos = cascade(STYLES, el, ['position'], env).winner?.value ?? 'static'
-        expect(
-          /sticky|fixed/.test(pos),
-          `${at}: .${el.className} is ${pos} over the Help column; add its height to .help-topic's scroll margin`,
-        ).toBe(false)
-      }
-
-      expect(
-        marginPx,
-        `${at}: the opening topic lands ${marginPx}px under the top edge and its heading needs ${inFlow.toFixed(1)}px`,
-      ).toBeGreaterThanOrEqual(inFlow)
-      // EVERY TOPIC LANDS THE SAME WAY, under the stuck heading, and AH-18's
-      // spacing between topics stays.
-      expect(cascade(STYLES, later, SCROLL_MARGIN, env).winner?.value).toBe(margin!.value)
-      expect(
-        marginPx,
-        `${at}: a later topic lands ${marginPx}px under the top edge, under a ${stuck.toFixed(1)}px stuck heading`,
-      ).toBeGreaterThanOrEqual(stuck)
-      expect(won(later, ['margin-top', 'margin-block-start', 'margin-block', 'margin'], env)).toBe('var(--ctl-s5)')
     }
   })
 
@@ -2359,18 +2183,18 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         splitTop(r.selector).some((b) => /\.ctl-util\s*$/.test(b)) &&
         declarations(r.body).some((d) => d.property === 'grid-template-columns' || d.property === 'grid-template-areas'),
     )
-    expect(templated.length, 'fewer templated `.ctl-util` rules than the drawer and Overview').toBeGreaterThanOrEqual(2)
+    // Overview's override left with its account rows (O1 draws Headroom as
+    // tiles and pool rows, styles/overview.css); the drawer's remains.
+    expect(templated.length, 'no templated `.ctl-util` rule: the drawer\'s is gone').toBeGreaterThanOrEqual(1)
     for (const r of templated) {
       const display = declarations(r.body).find((d) => d.property === 'display')?.value
       expect(display, `\`${r.selector}\` ${r.conditions.join(' ')} declares a template and no grid`).toBe('grid')
     }
     // "five-hour · 2m ago" and its kin are up to 19 characters. MUTATION: the
-    // override's last track or the primitive's basis back under 19ch.
+    // primitive's basis back under 19ch.
     const f = fragment(
-      '<div class="ov-group"><div class="ctl-card-body"><div class="ctl-util"><span class="ctl-util-name">x</span><span class="ctl-util-by">five-hour · 2m ago</span></div></div></div>',
+      '<div class="ctl-card-body"><div class="ctl-util"><span class="ctl-util-name">x</span><span class="ctl-util-by">five-hour · 2m ago</span></div></div>',
     )
-    const last = splitTop(won(pick(f, '.ctl-util'), 'grid-template-columns', WIDE) ?? '', ' ').at(-1) ?? ''
-    expect(ch(minmax(last)[0]), `Overview's last track is ${last}`).toBeGreaterThanOrEqual(19)
     const basis = splitTop(won(pick(f, '.ctl-util-by'), ['flex', 'flex-basis'], { width: 800 }) ?? '', ' ').at(-1)
     expect(ch(basis), `the primitive's provenance basis is ${basis}`).toBeGreaterThanOrEqual(19)
   })

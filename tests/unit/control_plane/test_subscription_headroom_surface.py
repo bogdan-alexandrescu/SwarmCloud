@@ -196,23 +196,23 @@ def test_the_tile_no_longer_asserts_that_every_account_has_a_reading():
 # ---------------------------------------------------------------------------
 
 def test_a_stale_reading_is_labelled_with_its_age():
-    """Stale, cleared AND current. The third was the one missing.
+    """A stale or cleared reading is never headroom, and the figure has an age.
 
-    `stale ... ago` has been on the pool panel for as long as it has existed.
-    The `live` row printed only the window name, so the one row carrying a
-    confident figure was the one row that did not say when it was measured --
-    and "live" spans anything up to the broker's 30-minute staleness window.
+    The per-account rows -- `stale ... ago`, `cleared`, a current reading's
+    window and age -- are the Accounts screen's since O1 (2026-10-02) drew the
+    Overview's account pool as one line. What that line must still do is
+    keep a stale or cleared reading OUT of the usable count (`projected`,
+    never `best`) and print the age of the one figure it does show.
     """
-    body = uncommented(body_of(src("Overview.tsx"), "function AccountsBody("))
-    assert "`stale ${timeAgo(r.observedAt)}`" in body, (
-        "a stale reading must carry its age; the bare word 'stale' does not "
-        "distinguish 31 minutes from four days"
+    fn = uncommented(body_of(src("Overview.tsx"), "function accountHeadroom("))
+    assert "projected.push(a.label)" in fn, (
+        "a stale or cleared reading must be set apart as projected, not "
+        "counted as headroom"
     )
-    assert "`${windowName} · ${timeAgo(r.observedAt)}`" in body, (
-        "a CURRENT reading must carry its age too -- it is the row with a "
-        "figure on it"
+    line = uncommented(body_of(src("Overview.tsx"), "function AccountLine("))
+    assert "read {timeAgo(pool.best.observedAt)}" in line, (
+        "the account line's figure must carry the age of the reading behind it"
     )
-    assert "timeAgo(r.resetsAt)" in body, "a cleared window must say when it cleared"
 
 
 def test_the_headroom_figure_carries_the_age_of_the_reading_behind_it():
@@ -286,7 +286,7 @@ def test_no_sentence_on_this_screen_counts_one_account_as_plural():
     for signature in (
         "function accountHeadroom(",
         "function accountCheck(",
-        "function AccountsBody(",
+        "function AccountLine(",
     ):
         # accountCheck lives in checks.ts now; the rest are still in Overview.
         source = src("checks.ts") if "accountCheck(" in signature else text
