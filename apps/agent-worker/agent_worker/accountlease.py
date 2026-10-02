@@ -27,6 +27,22 @@ opposite responses: park versus carry on with the per-tenant secret.
 So `assign()` returns an `Assignment` or a `reason`, and raises only when the
 broker could not be reached or did not answer in this shape.
 
+THREE MORE CALLS, EACH ONLY FOR THE HOLDER (S13-S15)
+----------------------------------------------------
+
+    POST /v1/accounts/{id}/readings     {assignment, task, attempt, windows}
+    POST /v1/accounts/{id}/hold-status  {assignment, task, attempt} -> {move}
+    POST /v1/accounts/swap              {account_id, assignment, task, attempt,
+                                         reason, provider, exclude}
+                                        -> the assign route's shape
+
+The broker answers each only for a LIVE hold with that assignment id, issued
+to this worker's tenant and stamped with this task and attempt; a fenced
+attempt holds nothing and is refused. A reading carries figures and instants
+and never a token. A swap is one broker transaction -- the hold moves, it is
+never two and never none -- and "no other account" is a 200 with a reason,
+exactly as for an assign, with the current hold untouched.
+
 A REFUSAL IS NOT AN OUTAGE
 --------------------------
 `BrokerUnavailable` and `BrokerRefused` are deliberately different types
@@ -82,9 +98,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -405,6 +423,88 @@ class AccountBroker:
         payload = self._post(path, body)
         return payload.get("assigned")
 
+    # -- the holder's calls (S13-S15) --------------------------------------
+
+    def _proof(self, assignment: Assignment) -> dict[str, Any]:
+        """What every holder route checks: the hold, and the work it is stamped with."""
+        return {
+            "assignment_id": assignment.assignment_id,
+            "task_id": self._task_id,
+            "attempt_id": self._attempt_id,
+        }
+
+    def report_reading(
+        self, assignment: Assignment, windows: dict[str, dict[str, Any]]
+    ) -> Any:
+        """Forward the latest reading of some windows of the held account.
+
+        `windows` maps a window name to `{utilization, resets_at}` and nothing
+        else: the body is built here from those two fields, so nothing the
+        stream carried beside them can reach the broker.
+        """
+        body = {
+            **self._proof(assignment),
+            "windows": {
+                str(name): {
+                    "utilization": float(w["utilization"]),
+                    "resets_at": str(w["resets_at"]),
+                }
+                for name, w in windows.items()
+            },
+        }
+        path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/readings"
+        return self._post(path, body).get("recorded")
+
+    def hold_status(self, assignment: Assignment) -> dict[str, Any]:
+        """`{held, move, state}` for this worker's hold: one cheap read."""
+        path = f"/v1/accounts/{quote(assignment.account_id, safe='')}/hold-status"
+        return self._post(path, self._proof(assignment))
+
+    def swap(
+        self,
+        assignment: Assignment,
+        *,
+        provider: str,
+        reason: str,
+        exclude: Any = (),
+    ) -> Assignment | NoAccount:
+        """Move this attempt's hold to another account, or say why not.
+
+        `Assignment` when the broker moved it; `NoAccount` when no other
+        account can take it, in which case the broker left the current hold
+        exactly as it was. Raises as `assign` does for an outage or a refusal
+        -- a 403 here is what a fenced or stale attempt meets.
+        """
+        body: dict[str, Any] = {
+            **self._proof(assignment),
+            "account_id": assignment.account_id,
+            "reason": reason,
+            "provider": provider,
+        }
+        excluded = sorted({str(a) for a in exclude if a})
+        if excluded:
+            body["exclude"] = excluded
+        payload = self._post("/v1/accounts/swap", body)
+        if not payload.get("swapped"):
+            return NoAccount(
+                reason=str(payload.get("reason") or NO_ACCOUNT_AVAILABLE),
+                next_reset_at=payload.get("next_reset_at") or None,
+            )
+        account_id = payload.get("account_id")
+        secret = payload.get("secret")
+        new_id = payload.get("assignment_id")
+        if not all(isinstance(v, str) and v for v in (account_id, secret, new_id)):
+            # The hold has moved and this answer cannot say where to: the new
+            # hold expires on its own, and the caller parks as for an outage.
+            raise BrokerUnavailable("the broker swapped without naming the account, secret or hold")
+        account = payload.get("account")
+        return Assignment(
+            account_id=str(account_id),
+            secret=str(secret),
+            assignment_id=str(new_id),
+            account=account if isinstance(account, dict) else {},
+        )
+
     # -- transport --------------------------------------------------------
 
     def _post(self, path: str, payload: dict[str, Any] | None) -> dict[str, Any]:
@@ -440,6 +540,111 @@ class AccountBroker:
         if not isinstance(parsed, dict):
             raise BrokerUnavailable(f"the quota broker answered {path} with {type(parsed).__name__}")
         return parsed
+
+
+#: At most one forward of each window per this many seconds (S15). The
+#: broker's usage poller budgets about five calls per five minutes, shared with
+#: humans and laptops; a worker reporting every stream line would be the
+#: opposite problem. A minute keeps a reading fresh well inside
+#: `DEFAULT_STALE_AFTER` (thirty minutes) at a cost of one call per minute.
+READING_INTERVAL_SECONDS = 60.0
+
+
+class ReadingForwarder:
+    """The latest reading of each window, forwarded at most once per window per minute.
+
+    `offer` is given the runner's latest readings as often as the caller likes;
+    it sends a window when its value has changed AND it has not been sent in
+    the last `interval` seconds, all due windows in one call. `offer(...,
+    final=True)` -- the end of a run -- sends every window whose latest value
+    has not been sent, once, whatever the interval, because a reading held
+    back then would never be sent at all.
+
+    A FAILED FORWARD IS LOGGED AND NOTHING ELSE. It never raises, never fails
+    or parks the attempt: the readings are an optimisation of `choose()`, and
+    the broker's own poller still reads every account. A window whose send
+    failed waits out the interval before it is tried again, so a broker
+    answering 5xx is asked once a minute, not once a slice.
+
+    A window whose reset has already passed is not sent: the broker refuses
+    it, rightly, and it says nothing about the account any more.
+    """
+
+    def __init__(
+        self,
+        send: Any,
+        *,
+        logger: Any,
+        interval: float = READING_INTERVAL_SECONDS,
+        clock: Any = None,
+        now: Any = None,
+    ) -> None:
+        self._send = send
+        self._log = logger
+        self._interval = interval
+        self._clock = clock or time.monotonic
+        self._now = now or (lambda: datetime.now(timezone.utc))
+        self._latest: dict[str, dict[str, Any]] = {}
+        self._sent: dict[str, dict[str, Any]] = {}
+        self._sent_at: dict[str, float] = {}
+
+    def offer(self, readings: Any, *, final: bool = False) -> list[str]:
+        """Send what is due. Returns the window names it sent (empty on failure)."""
+        if isinstance(readings, dict):
+            for name, reading in readings.items():
+                if _is_reading(reading):
+                    self._latest[str(name)] = {
+                        "utilization": float(reading["utilization"]),
+                        "resets_at": str(reading["resets_at"]),
+                    }
+        tick = self._clock()
+        wall = self._now()
+        due: dict[str, dict[str, Any]] = {}
+        for name, reading in self._latest.items():
+            if self._sent.get(name) == reading or _has_reset(reading, wall):
+                continue
+            last = self._sent_at.get(name)
+            if final or last is None or tick - last >= self._interval:
+                due[name] = reading
+        if not due:
+            return []
+        for name in due:
+            self._sent_at[name] = tick
+        try:
+            self._send(due)
+        except Exception as exc:
+            self._log.warning(
+                "could not forward the account's rate-limit readings; the broker's "
+                "own usage poll still reads it, and the attempt carries on",
+                windows=sorted(due),
+                error_type=type(exc).__name__,
+            )
+            return []
+        for name, reading in due.items():
+            self._sent[name] = reading
+        return sorted(due)
+
+
+def _is_reading(raw: Any) -> bool:
+    if not isinstance(raw, dict):
+        return False
+    u = raw.get("utilization")
+    return (
+        isinstance(u, (int, float))
+        and not isinstance(u, bool)
+        and 0.0 <= float(u) <= 1.0
+        and isinstance(raw.get("resets_at"), str)
+    )
+
+
+def _has_reset(reading: dict[str, Any], now: datetime) -> bool:
+    try:
+        at = datetime.fromisoformat(str(reading["resets_at"]).replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at <= now
 
 
 def credential_env_from_account(
@@ -494,6 +699,8 @@ __all__ = [
     "BrokerUnavailable",
     "NoAccount",
     "NoAccountAvailable",
+    "READING_INTERVAL_SECONDS",
+    "ReadingForwarder",
     "credential_env_from_account",
     "fetch_identity_token",
 ]
