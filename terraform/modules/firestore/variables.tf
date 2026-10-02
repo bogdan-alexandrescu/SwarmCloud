@@ -119,3 +119,19 @@ variable "tenant_documents" {
   }))
   default = {}
 }
+
+variable "bench_database_id" {
+  description = <<-EOT
+    Name of the disposable admission-contention bench database
+    (scripts/bench-contention.sh). Empty, the default, creates none. Must match
+    the harness's own pattern, swarm-bench or swarm-bench-<suffix>, so nothing
+    created here is a name the harness would refuse, or a live one.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = var.bench_database_id == "" || can(regex("^swarm-bench(-[a-z0-9]+)*$", var.bench_database_id))
+    error_message = "bench_database_id must be empty, swarm-bench, or swarm-bench-<suffix>."
+  }
+}

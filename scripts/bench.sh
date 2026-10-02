@@ -19,10 +19,16 @@
 #                      real provider tokens.
 #   admission   ~3m    SUBMITS a 150-task backlog on mock, cancels on exit.
 #                      Cents. On claude-code it spends real provider tokens.
+#   coldstart   ~1m    read-only: cold start from task history (#363). Cents.
+#   cache-ttl   ~1m    read-only: 5m vs 1h prompt-cache cost table (#323). Cents.
+#   contention  ~3.5m  WRITES to the dedicated swarm-bench database only, and
+#                      refuses every other one (S32). Under a dollar.
 #
 # `--suites api,reconcile,cost` is the read-only set: nothing submitted,
 # nothing created, safe to run against production. That is the default for
-# `--read-only`.
+# `--read-only`. `contention` is NEVER in it: it writes, if only to its bench
+# database. `coldstart` and `cache-ttl` are read-only but stay out of the
+# default too, so a default run does not change what it gates on.
 #
 # A BASELINE IS PART OF THE BENCHMARK
 # -----------------------------------
@@ -43,7 +49,7 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-ALL_SUITES="api reconcile cost ui dispatch admission"
+ALL_SUITES="api reconcile cost ui dispatch admission coldstart cache-ttl contention"
 READ_ONLY_SUITES="api reconcile cost"
 SUITES=""
 RECORD=0

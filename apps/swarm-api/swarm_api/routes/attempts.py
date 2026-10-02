@@ -48,7 +48,7 @@ def _utc(moment: datetime | None) -> datetime | None:
 #: is on the claude-code runner -- owes a cost the moment the catalogue has it.
 #: The catalogue itself does not say which runners report a cost; a
 #: `RunnerProfile` flag for it would be a frozen-contract change, filed as
-#: request 44 in docs/contract-change-requests.md. Until then a unit test holds
+#: request 45 in docs/contract-change-requests.md. Until then a unit test holds
 #: every module named here to a file under `agent_worker/runners`.
 COST_REPORTING_RUNNERS: frozenset[str] = frozenset(
     {"agent_worker.runners.claude_code", "agent_worker.runners.codex"}

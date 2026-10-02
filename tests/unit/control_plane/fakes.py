@@ -322,7 +322,10 @@ class FakeDocumentRef:
             reference=self,
         )
 
-    def set(self, data: dict[str, Any], merge: bool = False) -> None:
+    def set(self, data: dict[str, Any], merge: bool = False, **_call: Any) -> None:
+        # `**_call`: the `retry` and `timeout` a real DocumentReference takes,
+        # which the worker passes on its mid-run writes (#70). An in-memory
+        # write neither retries nor times out, so they are accepted and unused.
         if merge and self.path in self._db.docs:
             merged = copy.deepcopy(self._db.docs[self.path])
             merged.update(copy.deepcopy(data))
@@ -330,7 +333,7 @@ class FakeDocumentRef:
         else:
             self._db.docs[self.path] = copy.deepcopy(data)
 
-    def update(self, data: dict[str, Any]) -> None:
+    def update(self, data: dict[str, Any], **_call: Any) -> None:
         if self.path not in self._db.docs:
             # Real Firestore refuses to update a document that does not exist;
             # silently creating one here would hide a genuine bug.
@@ -339,7 +342,7 @@ class FakeDocumentRef:
         for key, value in copy.deepcopy(data).items():
             current[key] = value
 
-    def delete(self) -> None:
+    def delete(self, **_call: Any) -> None:
         self._db.docs.pop(self.path, None)
 
 

@@ -943,6 +943,12 @@ def resolve_dispatch_options(
     dependencies between them -- has nothing to integrate. That is a refusal
     rather than a quiet downgrade to `collect`, because a caller who asked for
     one pull request and silently got three has been lied to.
+
+    Whether the tenant's token can push for `carrier: branches` is not asked
+    here, nor anywhere in swarm-api: answering it reads the tenant's git
+    secret, and exactly one identity -- the tenant's worker GSA -- may read
+    that secret (terraform/modules/secret_manager). The worker asks the forge
+    before the agent runs and fails the attempt `forge_read_only` (D13).
     """
     options = DispatchOptions(
         strategy=_accepted_value("strategy", strategy, DISPATCH_STRATEGIES,

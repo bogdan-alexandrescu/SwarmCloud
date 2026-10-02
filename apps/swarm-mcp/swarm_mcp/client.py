@@ -659,7 +659,19 @@ def outputs_of(
         complete = listing.get("complete") if listing is not None else bool(summary)
         out["artifacts_complete"] = bool(complete)
         skipped = source.get("artifacts_skipped") if isinstance(source, dict) else None
-        out["artifacts_skipped"] = [str(name) for name in skipped or []]
+        # `{name, cause}` per entry (#165), from the listing route and from a
+        # task's own summary alike. A bare name -- a summary that predates
+        # causes -- is `cause: None`: unknown, never assumed to be the cap.
+        entries: list[dict[str, Any]] = []
+        for entry in skipped if isinstance(skipped, list) else []:
+            if isinstance(entry, dict):
+                if not isinstance(entry.get("name"), str):
+                    continue
+                cause = entry.get("cause")
+                entries.append({"name": entry["name"], "cause": cause if isinstance(cause, str) and cause else None})
+            elif isinstance(entry, str):
+                entries.append({"name": entry, "cause": None})
+        out["artifacts_skipped"] = entries
     runner = summary.get("runner") if isinstance(summary.get("runner"), dict) else {}
     out["runner_status"] = runner.get("status")
     out["runner_summary"] = runner.get("summary") or None

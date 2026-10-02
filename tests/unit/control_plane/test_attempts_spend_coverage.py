@@ -296,7 +296,7 @@ def test_a_row_whose_task_is_gone_has_ended_even_without_completed_at(client, db
 
 def test_every_cost_reporting_runner_is_a_real_runner_module():
     """`COST_REPORTING_RUNNERS` restates the worker outside the frozen
-    catalogue (contract request 44); a renamed module must fail here, not
+    catalogue (contract request 45); a renamed module must fail here, not
     quietly turn every claude-code row into "by design"."""
     root = Path(__file__).resolve().parents[3] / "apps" / "agent-worker"
     for module in sorted(COST_REPORTING_RUNNERS):

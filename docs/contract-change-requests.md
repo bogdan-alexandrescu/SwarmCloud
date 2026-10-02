@@ -51,7 +51,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | open |
 | 42 | `specsign.py`: the signed step spec does not cover a child's parent (filed in request 14's amendment) | open |
 | 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | open |
-| 44 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
+| 44 | `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED` (functionality wave 1, lane B4) | open |
+| 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
 
 ---
 
@@ -8369,7 +8370,59 @@ one more copy of a name request 16 already counts two of.
 
 ---
 
-## 44. `profiles.py`: the catalogue does not say which runner profiles report a cost
+## 44. `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED`
+
+**Status: open (functionality wave 1, lane B4, 2026-10-01).** Recorded as a
+request, per CLAUDE.md rule 1; nothing under `apps/common/swarm_common/` was
+edited. Numbered 40 on the assumption that 38 and 39 land first; renumber if
+another branch has taken it.
+
+### What is true today
+
+The worker records a subscription account's lifecycle on the task's events
+with a `cause` on an event type the frozen `EventType`
+(`apps/common/swarm_common/states.py:161`) already has:
+
+* `account_assigned` is `EventType.RUNNING` with `cause: "account_assigned"`
+  (`Worker` in `apps/agent-worker/agent_worker/lifecycle.py`).
+* `account_released` (#380) is `EventType.LEASE_RELEASED` with
+  `cause: "account_released"` (`Worker._emit_account_released`).
+
+The API reads both through one range query on the `cause`
+(`swarm_api.task_accounts`), so the account view is right. A reader that
+renders events by type alone is not: a timeline draws the account's release as
+a lease release, and the assignment as a second `running`.
+
+### The requested change
+
+Add `EventType.ACCOUNT_ASSIGNED = "account_assigned"` and
+`EventType.ACCOUNT_RELEASED = "account_released"`, and have the worker emit
+them, keeping the `cause` for one release so readers of either shape work.
+
+### What it would break if accepted
+
+* Every reader that enumerates `EventType` (the UI's event lists in
+  `apps/swarm-ui/src/types.ts`, the MCP renderers) gains two members; their
+  tests that enumerate the enum follow.
+* `swarm_api.task_accounts` would read both shapes for as long as events
+  written before the change are retained.
+
+### If it is declined
+
+The `cause` stays the discriminator, and the docstring on
+`_emit_account_released` says why the type is `LEASE_RELEASED`. A generic
+timeline keeps drawing the release as a lease release.
+
+### Invariants
+
+5. Fencing: unaffected. `control.emit` stamps the attempt, lease and
+   generation either way, and a fenced exit emits neither event.
+9. Tenant isolation: unaffected; the event carries the account id, the
+   provider and a bool, never a secret's name or payload.
+
+---
+
+## 45. `profiles.py`: the catalogue does not say which runner profiles report a cost
 
 **Status:** open, filed 2026-10-02 with #72. A request, not a change.
 

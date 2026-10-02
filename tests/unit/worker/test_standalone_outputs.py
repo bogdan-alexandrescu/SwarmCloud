@@ -45,6 +45,7 @@ from typing import Any
 
 import pytest
 
+from agent_worker.expected_outputs import skipped_names
 from agent_worker import gitops
 from agent_worker import workspace as workspace_mod
 from agent_worker.checkpoint import CheckpointManager
@@ -581,7 +582,7 @@ def test_past_the_file_cap_the_rest_are_listed_as_not_uploaded_over_cap(
     # "dropped at the size cap", a dependant's "exceeded its artifact size
     # cap" -- and these were dropped at the working folder's FILE cap. The
     # tab reads them, with their reasons, from `workdir_outputs`.
-    skipped = _summary(db).get("artifacts_skipped") or []
+    skipped = skipped_names(_summary(db).get("artifacts_skipped"))
     assert not [name for name in skipped if name.startswith("workdir/")], skipped
 
 
@@ -597,7 +598,7 @@ def test_past_the_byte_cap_a_file_is_listed_and_smaller_ones_still_fit(
     block = _summary(db)[WORKDIR_KEY]
     assert block["not_uploaded"] == [{"name": "workdir/big.bin", "bytes": 2000, "reason": OVER_CAP}]
     assert block["uploaded_bytes"] == 20
-    assert "workdir/big.bin" not in (_summary(db).get("artifacts_skipped") or [])
+    assert "workdir/big.bin" not in skipped_names(_summary(db).get("artifacts_skipped"))
 
 
 def _logged(log_stream: Any, message: str) -> list[dict[str, Any]]:
@@ -808,7 +809,8 @@ def test_a_name_that_is_not_utf8_is_listed_escaped_and_the_result_is_still_writt
         "reason": NOT_UTF8,
     }, listed
     assert "workdir/answer.md" in _names(db)
-    assert "caf\\xe9.txt" in (summary.get("artifacts_skipped") or []), summary.get("artifacts_skipped")
+    skipped = skipped_names(summary.get("artifacts_skipped"))
+    assert "caf\\xe9.txt" in skipped, summary.get("artifacts_skipped")
     assert not [name for name in _names(db) if name.endswith(".txt") and "caf" in name], _names(db)
 
 

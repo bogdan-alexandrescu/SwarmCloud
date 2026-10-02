@@ -2435,7 +2435,10 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // gap and not a spacing step.
     // `.ol-toolbar` where `.window-bar` was: the row window's bar went with it
     // (#185, decision 7), and the ledger's toolbar is the one the page draws.
-    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.wfb-stage + .wfb-stage']) {
+    // `.sbf-flow` where `.wfb-stage + .wfb-stage` was: the break between two
+    // stages is the arrow drawn between them now (#118), and the adjacency
+    // rule that drew the old tick is deleted.
+    for (const sel of ['.sub', '.ol-toolbar', '.ctl-metrics', '.dsp', '.dsp-options', '.sbf-flow']) {
       const rules = flatRules(STYLES).filter((r) => r.conditions.length === 0 && r.selector === sel)
       expect(rules.length, `no top-level rule for ${sel}`).toBeGreaterThan(0)
       for (const r of rules) {

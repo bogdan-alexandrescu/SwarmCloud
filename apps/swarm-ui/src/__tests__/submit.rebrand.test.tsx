@@ -16,6 +16,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 
 import { SubmitScreen } from '../Submit'
 import { SubmitWorkflowScreen } from '../SubmitWorkflow'
+import STYLES from '../styles.css?raw'
 
 const WAIT = { timeout: 4000 }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
@@ -169,5 +170,19 @@ describe('stages run top to bottom, with arrows, and a tile adds a step to its o
     expect(counts()).toEqual([2, 2])
     expect(visible(stages()[0]!.querySelector('.wfb-stage-say'))).toBe('2 steps start together')
     expect(visible(container.querySelector('.sbf-send'))).toContain('2 · 2 steps, then 2 steps')
+  })
+})
+
+describe('the old stage connector is gone from the stylesheet, not merely unreachable', () => {
+  // The arrow replaced `.wfb-stage + .wfb-stage::before`. A rule left behind
+  // for an adjacency nothing renders is how the tick comes back the day a
+  // stage is drawn without its arrow.
+  const rules = STYLES.replace(/\/\*[\s\S]*?\*\//g, '')
+  it('carries no rule for one stage directly after another', () => {
+    expect(rules).not.toMatch(/\.wfb-stage\s*\+\s*\.wfb-stage/)
+  })
+  it('styles the arrow and the add-a-step tile it put in their place', () => {
+    expect(rules).toMatch(/\.sbf-flow\s*\{/)
+    expect(rules).toMatch(/\.sbf-addstep\s*\{/)
   })
 })
