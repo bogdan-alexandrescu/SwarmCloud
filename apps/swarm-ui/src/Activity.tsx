@@ -25,6 +25,7 @@ import {
   RetriesCard,
   WorkflowsFailedCard,
   type OpenWork,
+  type RowLink,
 } from './Ledger'
 import {
   MAX_BUCKETS,
@@ -175,6 +176,20 @@ export function ActivityScreen({
       onView?.(q)
     },
     [onView],
+  )
+
+  // A Reliability row opens the rows behind it (#116): this page, narrowed to
+  // that profile, tenant or person, keeping the span and the grouping. It is
+  // the Timeline and not the Agents list because only the ledger reads the
+  // same span; the Agents list reads its newest page, whatever the span.
+  const rowLink = useCallback(
+    (by: GroupBy, key: string): RowLink | null => {
+      const next = narrowedTo(view, by, key)
+      if (next === null) return null
+      const q = serializeView(next)
+      return { href: q === '' ? '#work/timeline' : `#work/timeline?${q}`, open: () => setView(next) }
+    },
+    [view, setView],
   )
 
   // ---- the ledger read ---------------------------------------------------
@@ -433,6 +448,7 @@ export function ActivityScreen({
                   group={view.group}
                   platform={view.platform}
                   onGroup={(g: GroupBy) => setView({ ...view, group: g })}
+                  rowLink={rowLink}
                 />
               )}
             </LedgerPart>
@@ -482,6 +498,25 @@ export function ActivityScreen({
  * The loaded "Not finished yet" card's lines -- counts, the parks that need a
  * person, the ones that clear themselves, the link -- as skeleton widths.
  */
+/**
+ * The view narrowed to one Reliability row, or null when the address cannot
+ * carry that key (a name `parseView` would drop): a link that silently lands
+ * on the unfiltered page is worse than no link. A zoom's way back is kept.
+ */
+export function narrowedTo(view: LedgerView, by: GroupBy, key: string): LedgerView | null {
+  const next: LedgerView =
+    by === 'runner_profile'
+      ? { ...view, profile: [key] }
+      : by === 'tenant_id'
+        ? { ...view, platform: true, tenant: [key], exclude_tenant: [] }
+        : // The address carries a submitter in lower case (`parseView`), so the link does too.
+          { ...view, submitted_by: [key.trim().toLowerCase()] }
+  const back = parseView(serializeView(next))
+  const kept = by === 'runner_profile' ? back.profile : by === 'tenant_id' ? back.tenant : back.submitted_by
+  const want = by === 'submitted_by' ? key.trim().toLowerCase() : key
+  return kept.length === 1 && kept[0] === want ? next : null
+}
+
 const OPEN_SKELETON = [78, 56, 64, 30] as const
 
 /**
