@@ -3,7 +3,7 @@ import { loadCapacity, loadStats } from './api'
 import { DispatchChoice, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, dropRefusedTenant, errorHeading, TENANT_REFUSED, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
-import { RunnerPicker, useProviderKeys, type ProviderKeys } from './RunnerPicker'
+import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo } from './Shell'
 import {
   InputFields,
@@ -23,6 +23,7 @@ import {
   type RunnerProfile,
   type Workflow,
 } from './types'
+import './styles/submit.css'
 
 /**
  * Build a multi-step workflow -- the only WRITE screen in this UI besides
@@ -252,6 +253,8 @@ function dependsOf(step: StepDraft, steps: StepDraft[]): string[] {
 
 /** The id a step's name box carries, so the send panel can take a reader to it. */
 const stepNameId = (key: number) => `wfb-${key}-name`
+/** The step's runner select, which a "no runner" problem focuses. */
+const stepRunnerId = (key: number) => `wfb-${key}-runner`
 
 /** The field-id prefix of a step's input editor; see `inputFieldId`. */
 const stepFields = (key: number) => `wf${key}`
@@ -356,6 +359,15 @@ export function SubmitWorkflowScreen() {
   )
 }
 
+/** `on_step_failure`'s two values (schemas.WorkflowCreate), as step 2 offers
+ *  them and the summary lists them. The default is the API's. */
+const ON_FAILURE: ReadonlyArray<{ value: 'fail_workflow' | 'continue'; label: string; say: string; fact: string }> = [
+  { value: 'fail_workflow', label: 'Fail the workflow', fact: 'fail the workflow',
+    say: 'Steps not started are cancelled; running steps finish. Default.' },
+  { value: 'continue', label: 'Continue', fact: 'continue',
+    say: "Only the failed step's dependents are cancelled; other branches keep starting." },
+]
+
 function Form({ sources }: { sources: FormSources }) {
   const byName = new Map<string, RunnerProfile>(sources.profiles)
   const [nextKey, setNextKey] = useState(2)
@@ -433,11 +445,11 @@ function Form({ sources }: { sources: FormSources }) {
   // that key's field rather than to the step's name (TS-15); a name problem,
   // or input that will not build, goes to the name as before.
   const toProblem = (p: StepProblem) => {
-    // A step with no runner goes to its picker's first runner that can be chosen.
+    // A step with no runner goes to its runner select.
     if (p.kind === 'runner') {
-      const radio = document.querySelector<HTMLInputElement>(`input[name="runner-profile-${p.key}"]:not(:disabled)`)
-      if (radio !== null) {
-        radio.focus()
+      const select = document.getElementById(stepRunnerId(p.key))
+      if (select !== null) {
+        select.focus()
         return
       }
     }
@@ -571,6 +583,32 @@ function Form({ sources }: { sources: FormSources }) {
             scale="workflow"
             terminals={terminals}
           />
+          {/* WHAT A FAILED STEP DOES TO THE REST, AND THE PLAN'S PRIORITY, in
+              the step that decides what happens to the work (G1, picked
+              2026-10-01) rather than beside the button. Both are
+              schemas.WorkflowCreate fields, sent only when they differ from
+              the API's own defaults. */}
+          <h3 className="sb-sub" id="wf-on-failure">If a step fails</h3>
+          <div className="sb-options" role="radiogroup" aria-labelledby="wf-on-failure">
+            {ON_FAILURE.map((o) => (
+              <label key={o.value} className={`sb-option${onFailure === o.value ? ' is-on' : ''}`}>
+                <input type="radio" name="on-step-failure" value={o.value} checked={onFailure === o.value}
+                  onChange={() => setOnFailure(o.value)} />
+                <span><b>{o.label}</b><small>{o.say}</small></span>
+              </label>
+            ))}
+          </div>
+          <label className="sb-sub" htmlFor="wf-priority">Priority</label>
+          <div className="sb-prio">
+            <input id="wf-priority" type="number" min={-100} max={100} step={1} value={priority}
+              aria-invalid={!priorityOk || undefined} aria-describedby="wf-priority-say"
+              onChange={(e) => setPriority(e.target.value)} />
+            <small id="wf-priority-say" className={priorityOk ? 'sb-note' : 'sb-note sbf-bad'}>
+              {priorityOk
+                ? 'A whole number from −100 to 100; 0 is the default. Higher starts first among your tenant\'s own work; it never wins your tenant more turns than another.'
+                : 'Must be a whole number from −100 to 100.'}
+            </small>
+          </div>
         </Move>
       </div>
 
@@ -597,6 +635,15 @@ function Form({ sources }: { sources: FormSources }) {
               <b>result</b>
               {dispatch.strategy}
             </li>
+            <li className="ctl-fact">
+              <b>on failure</b>
+              {ON_FAILURE.find((o) => o.value === onFailure)!.fact}
+            </li>
+            <li className="ctl-fact">
+              <b>priority</b>
+              {!priorityOk ? <i className="sbf-bad">not a whole number</i>
+                : priorityN === 0 ? '0 (default)' : String(priorityN)}
+            </li>
           </ul>
           {/* THE COUNT, BESIDE THE BUTTON IT DISABLES, AND A WAY TO EACH STEP.
               The step's own card says what is wrong with it; this says which
@@ -617,31 +664,7 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
-          <fieldset className="sbf-wf-opts">
-            <legend>If a step fails</legend>
-            <label>
-              <input type="radio" name="on-step-failure" checked={onFailure === 'fail_workflow'} onChange={() => setOnFailure('fail_workflow')} />
-              Fail the workflow <span className="ctl-em">(default: steps not yet started are cancelled)</span>
-            </label>
-            <label>
-              <input type="radio" name="on-step-failure" checked={onFailure === 'continue'} onChange={() => setOnFailure('continue')} />
-              Continue <span className="ctl-em">(steps that do not depend on it still run)</span>
-            </label>
-          </fieldset>
-          <label className="sbf-wf-opts">
-            <span>Priority</span>
-            <input
-              type="number"
-              min={-100}
-              max={100}
-              step={1}
-              value={priority}
-              aria-invalid={!priorityOk}
-              onChange={(e) => setPriority(e.target.value)}
-            />
-            <span className="ctl-em">{priorityOk ? 'an integer from −100 to 100; 0 is the default' : 'must be a whole number from −100 to 100'}</span>
-          </label>
-          <button type="button" className="sbf-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
+          <button type="button" className="sbf-go sb-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
             {sub.kind === 'sending' ? 'Submitting…' : 'Submit this workflow'}
           </button>
         </div>
@@ -688,7 +711,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
   })
 
   return (
-    <div className="wfb-step">
+    <div className={`wfb-step${step.profile === '' ? ' is-bad' : ''}`}>
       <div className="wfb-step-h">
         {/* The id is SHOWN because the API's refusals name it, and editable
             because someone may want a word that means something. It is never
@@ -700,26 +723,15 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           <button type="button" className="sbf-mini wfb-drop" onClick={onRemove}>remove</button>
         )}
       </div>
-      {/* THE TASK FORM'S PICKER, NOT A BARE `<select>` (#114): each runner's
-          room and key, and a disabled runner drawn refused with its reason
-          rather than left out -- it cannot be picked, so nothing the API would
-          refuse is on offer. The step's key makes the radio group its own. */}
-      <RunnerPicker group={`runner-profile-${step.key}`} label={`${step.id} runner profile`} compact
-        profiles={profiles} chosen={step.profile} keys={keys} onPick={retitle} />
-      {/* UNITS, never "agents": admission increments every pool this step needs
-          by its resource class's weight, so one large step costs four. */}
-      {/* AND NO `?` (B7.4). The line below prints the class, then the weight
-          with the word `unit` on it, then the backend -- all three read from
-          the response. The word on the figure is the whole of what
-          `units-not-agents` was here to say about a step's cost, so the glyph
-          repeated the line it sat under. No example is spelled out in this
-          comment: the class names are the frozen catalogue's and this screen
-          restates none of them. */}
-      {chosen && (
-        <p className="wfb-cost">
-          {chosen[1].resource_class} · {chosen[1].units} unit{chosen[1].units === 1 ? '' : 's'} · {chosen[1].backend}
-        </p>
-      )}
+      {/* A SELECT, NOT THE CARD LIST (G1, #503): the full list in every
+          step made one step ~680px tall. It is not the bare `<select>` #114
+          replaced either: each option carries the runner's room, a disabled
+          runner stays offered-and-refused, and the chosen runner's size, room
+          and key are drawn under it. UNITS, never "agents": admission
+          increments every pool this step needs by its class's weight. */}
+      <RunnerSelect id={stepRunnerId(step.key)} label={`${step.id} runner`}
+        profiles={profiles} chosen={step.profile} onPick={retitle} />
+      {chosen && <StepRunnerFacts profile={chosen[1]} keys={keys} />}
 
       {/* A MISSING REQUIRED KEY IS SAID AT ITS FIELD, by `InputFields`, once
           the field has been left (TS-15). This card's own copy of it -- "Not

@@ -6,10 +6,12 @@
 // workflow step picked its runner from a bare `<select>` that printed nothing
 // at all. So the two facts that decide whether a submission moves -- is there
 // room for it, and does this tenant hold the key it needs -- were on screen
-// for one runner at a time, or for none. `RunnerPicker` is the one control
-// both forms draw now: every row carries its room (`headroomFor(p).agents`)
-// and whether the key is present or missing (`credential_registered` from
-// `/v1/providers`), and a disabled runner stays in the list with its reason.
+// for one runner at a time, or for none. Both forms now read the same facts
+// from RunnerPicker.tsx: the task form's cards (`RunnerPicker`, submit.html
+// F1) and a workflow step's select (`RunnerSelect` with `StepRunnerFacts`,
+// G1) carry the room (`headroomFor(p).agents`) and whether the key is present
+// or missing (`credential_registered` from `/v1/providers`), and a disabled
+// runner stays offered with its reason.
 //
 // THE DEFECT, #115. The task panel listed runner, input and result; the
 // workflow panel steps, stages and result. What the click spends -- the units,
@@ -73,9 +75,10 @@ describe('RunnerPicker: every row says its room and its key', () => {
       ['a', profile({ admission: admission({ headroom: 4 }) })],
       ['b', profile({ admission: admission({ headroom: 0 }) })],
     ])
-    expect(visible(row(el, 'a', 't').querySelector('.sbf-runner-room'))).toBe('room for 4 more')
+    // In F1's words (submit.html, picked 2026-10-01): how many can start now.
+    expect(visible(row(el, 'a', 't').querySelector('.sbf-runner-room'))).toBe('4 more can start now')
     // A measured zero is a digit: it is the answer, not an absence.
-    expect(visible(row(el, 'b', 't').querySelector('.sbf-runner-room'))).toBe('room for 0 more')
+    expect(visible(row(el, 'b', 't').querySelector('.sbf-runner-room'))).toBe('0 can start now')
   })
 
   it('draws an unread room as the unread mark and a pool count, with no room figure (TS-23)', () => {
@@ -112,7 +115,9 @@ describe('RunnerPicker: every row says its room and its key', () => {
     const el = picker([['a', profile({ available: false, disabled_reason: 'switched off. Use b.' })]])
     const r = row(el, 'a', 't')
     expect(r.querySelector('input')!.disabled).toBe(true)
-    expect(visible(r.querySelector('.sbf-runner-off'))).toBe('switched off. Use b.')
+    expect(visible(r.querySelector('.sbf-runner-off'))).toBe('disabled: switched off. Use b.')
+    // The reason takes the room line's place: a refused runner can start none.
+    expect(r.querySelector('.sbf-runner-room')).toBeNull()
   })
 })
 
@@ -125,8 +130,8 @@ describe('both Submit forms pick a runner from the same picker', () => {
     const { container } = render(<SubmitScreen />)
     await screen.findByRole('button', { name: 'Submit one task' }, WAIT)
     await waitFor(() => expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-key'))).toBe('anthropic key present'), WAIT)
-    expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-room'))).toBe('room for 0 more')
-    expect(visible(row(container, 'mock').querySelector('.sbf-runner-room'))).toBe('room for 15 more')
+    expect(visible(row(container, 'claude-code').querySelector('.sbf-runner-room'))).toMatch(/^0 can start now/)
+    expect(visible(row(container, 'mock').querySelector('.sbf-runner-room'))).toBe('15 more can start now')
     expect(visible(row(container, 'mock').querySelector('.sbf-runner-key'))).toBe('no key needed')
     const codex = row(container, 'codex')
     expect(visible(codex.querySelector('.sbf-runner-key'))).toBe('openai key missing')
@@ -134,38 +139,37 @@ describe('both Submit forms pick a runner from the same picker', () => {
     expect(visible(codex.querySelector('.sbf-runner-off'))).toMatch(/Use claude-code/)
   })
 
-  it('a workflow step picks from the picker, not a bare select, and offers the disabled runner with its reason', async () => {
+  // G1 (submit.html, picked 2026-10-01; #503): a step picks from a select,
+  // because the card list in every step made one step ~680px tall. It is not
+  // the bare `<select>` #114 replaced: each option carries the runner's room,
+  // the disabled runner stays offered-and-refused, and the chosen runner's
+  // size, room and key are drawn under it.
+  it('a workflow step picks from a select that carries room, keeps the disabled runner, and draws the chosen runner\'s facts', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     const step = container.querySelector<HTMLElement>('.wfb-step')!
-    expect(step.querySelector('select'), 'the step still picks its runner from a bare <select>').toBeNull()
-    const group = step.querySelector<HTMLInputElement>('input[type="radio"]')!.name
-    await waitFor(() => expect(visible(row(step, 'claude-code', group).querySelector('.sbf-runner-key'))).toBe('anthropic key present'), WAIT)
-    expect(visible(row(step, 'mock', group).querySelector('.sbf-runner-room'))).toBe('room for 15 more')
-    const codex = row(step, 'codex', group)
-    expect(codex.querySelector('input')!.disabled).toBe(true)
-    expect(visible(codex.querySelector('.sbf-runner-off'))).toMatch(/Use claude-code/)
-    // Picking changes the step's runner, as the select did.
-    fireEvent.click(row(step, 'claude-code', group).querySelector('input')!)
+    const select = within(step).getByRole('combobox', { name: 'step-1 runner' }) as HTMLSelectElement
+    const option = (n: string) => [...select.options].find((o) => o.value === n)!
+    expect(option('mock').textContent).toBe('mock · 15 more can start now')
+    expect(option('claude-code').textContent).toBe('claude-code · 0 can start now')
+    expect(option('codex').disabled).toBe(true)
+    fireEvent.change(select, { target: { value: 'claude-code' } })
     expect(visible(step.querySelector('.wfb-cost'))).toMatch(/^standard · 1 unit/)
+    await waitFor(() => expect(visible(step.querySelector('.wfb-cost .sbf-runner-key'))).toBe('anthropic key present'), WAIT)
     expect(within(container.querySelector<HTMLElement>('.sbf-send')!).getByRole('button', { name: 'claude-code-1' })).toBeTruthy()
   })
 
-  it('two steps are two radio groups, so picking in one leaves the other alone', async () => {
+  it('two steps are two selects, so picking in one leaves the other alone', async () => {
     const { container } = render(<SubmitWorkflowScreen />)
     await screen.findByRole('button', { name: 'Submit this workflow' }, WAIT)
     fireEvent.click(container.querySelector<HTMLButtonElement>('button.wfb-add.is-stage')!)
-    const [a, b] = [...container.querySelectorAll<HTMLElement>('.wfb-step')]
-    const ga = a!.querySelector<HTMLInputElement>('input[type="radio"]')!.name
-    const gb = b!.querySelector<HTMLInputElement>('input[type="radio"]')!.name
-    expect(ga).not.toBe(gb)
+    const [a, b] = [...container.querySelectorAll<HTMLElement>('.wfb-step')].map((s) => s.querySelector<HTMLSelectElement>('select.sb-runner-select')!)
+    expect(a!.id).not.toBe(b!.id)
     // #118: neither step starts with a runner.
-    fireEvent.click(row(a!, 'browser', ga).querySelector('input')!)
-    fireEvent.click(row(b!, 'mock', gb).querySelector('input')!)
-    expect(row(a!, 'mock', ga).querySelector('input')!.checked).toBe(false)
-    expect(row(a!, 'browser', ga).querySelector('input')!.checked).toBe(true)
-    expect(row(b!, 'mock', gb).querySelector('input')!.checked).toBe(true)
-    expect(row(b!, 'browser', gb).querySelector('input')!.checked).toBe(false)
+    expect([a!.value, b!.value]).toEqual(['', ''])
+    fireEvent.change(a!, { target: { value: 'browser' } })
+    fireEvent.change(b!, { target: { value: 'mock' } })
+    expect([a!.value, b!.value]).toEqual(['browser', 'mock'])
   })
 })
 
@@ -239,10 +243,8 @@ describe('the workflow send panel lists what the click commits to', () => {
     expect(fact(container, 'units')!.classList.contains('is-absent')).toBe(true)
     expect(valueOf(fact(container, 'units'))).not.toMatch(/\d/)
     expect(valueOf(fact(container, 'stages'))).toBe('1 · 1 step')
-    const pickIn = (step: HTMLElement, name: string) => {
-      const group = step.querySelector<HTMLInputElement>('input[type="radio"]')!.name
-      fireEvent.click(row(step, name, group).querySelector('input')!)
-    }
+    const pickIn = (step: HTMLElement, name: string) =>
+      fireEvent.change(step.querySelector<HTMLSelectElement>('select.sb-runner-select')!, { target: { value: name } })
     // One browser step: two units.
     pickIn(container.querySelector<HTMLElement>('.wfb-step')!, 'browser')
     expect(valueOf(fact(container, 'units'))).toBe('2 units in total')
@@ -253,8 +255,7 @@ describe('the workflow send panel lists what the click commits to', () => {
     expect(valueOf(fact(container, 'units'))).toBe('6 units in total')
     // A mock step weighs one: the sum follows the runner, not the step count.
     const last = [...container.querySelectorAll<HTMLElement>('.wfb-step')].at(-1)!
-    const group = last.querySelector<HTMLInputElement>('input[type="radio"]')!.name
-    fireEvent.click(row(last, 'mock', group).querySelector('input')!)
+    pickIn(last, 'mock')
     expect(valueOf(fact(container, 'units'))).toBe('5 units in total')
     expect(valueOf(fact(container, 'stages'))).toBe('2 · 1 step, then 2 steps')
   })
