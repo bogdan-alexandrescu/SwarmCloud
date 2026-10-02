@@ -30,8 +30,8 @@ describe('the publish refused outcome class (contract request 29)', () => {
 })
 
 describe('the end cause mirror', () => {
-  it('carries publish_refused, last, as the frozen enum does', () => {
-    expect(END_CAUSES[END_CAUSES.length - 1]).toBe('publish_refused')
+  it('carries publish_refused then child_cascade, the frozen enum\'s order (requests 29, 41)', () => {
+    expect(END_CAUSES.slice(-2)).toEqual(['publish_refused', 'child_cascade'])
     expect(new Set(END_CAUSES).size).toBe(END_CAUSES.length)
   })
 })
