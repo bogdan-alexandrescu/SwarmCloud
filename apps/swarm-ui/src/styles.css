@@ -11433,7 +11433,11 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ol-pending { height: 420px; margin-top: var(--ctl-s3); }
 
 /* ---- the cards ---- */
-.ol-cards { margin-top: var(--ctl-s5); }
+/* DENSE (#503): "Reliability" and "Workflows that failed" span the row, so in
+   two columns "Time to result, by profile" was left alone on its row with
+   half the column empty. Dense packing lets the next half-width card ("Reported
+   cost") sit beside it; at one and three columns nothing moves. */
+.ol-cards { margin-top: var(--ctl-s5); grid-auto-flow: row dense; }
 .ol-card.is-wide { grid-column: 1 / -1; }
 /* A COVERAGE NOTE IS LONGER THAN A QUALIFIER. `· partial 13 of 14 days` on
    `by task end · 209 of 612 attempts` is ~400px of mono in a ~329px card,

@@ -1257,7 +1257,7 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const root = await timeline(ledgerFixture(), { view: '', onView })
     const link = card(root, /^Reliability/).querySelector<HTMLAnchorElement>('tbody tr[data-key="claude-code"] th a')
     expect(link, 'the profile row is static').not.toBeNull()
-    expect(link!.getAttribute('href')).toBe('#work/timeline?profile=claude-code')
+    expect(link!.getAttribute('href')).toBe('#work/timeline/outcomes?profile=claude-code')
     fireEvent.click(link!)
     expect(onView).toHaveBeenLastCalledWith('profile=claude-code')
   })
@@ -1273,7 +1273,7 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     const root = await timeline(d, { view: 'group=submitted_by' })
     const c = card(root, /^Reliability/)
     const href = c.querySelector('tbody tr[data-key="a@saga.xyz"] th a')!.getAttribute('href')!
-    const q = new URLSearchParams(href.replace(/^#work\/timeline\?/, ''))
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\/outcomes\?/, ''))
     expect(q.getAll('submitted_by')).toEqual(['a@saga.xyz'])
     expect(q.get('group')).toBe('submitted_by')
     expect(c.querySelector('tbody tr[data-key=""] th a'), 'a filter on "nobody" is offered').toBeNull()
@@ -1284,7 +1284,7 @@ describe('timeline figures open the rows behind them (#116) and add up (#123)', 
     d.groups = { ...d.groups, by: 'tenant_id', rows_total: 1, rows: [{ ...d.groups.rows[0]!, key: 'personal' }] }
     const root = await timeline(d, { view: 'scope=platform&group=tenant_id' }, { admin: true })
     const href = card(root, /^Reliability/).querySelector('tbody tr[data-key="personal"] th a')!.getAttribute('href')!
-    const q = new URLSearchParams(href.replace(/^#work\/timeline\?/, ''))
+    const q = new URLSearchParams(href.replace(/^#work\/timeline\/outcomes\?/, ''))
     expect(q.getAll('tenant')).toEqual(['personal'])
     expect(q.get('group')).toBe('tenant_id')
   })
