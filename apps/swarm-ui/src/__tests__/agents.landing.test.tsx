@@ -86,7 +86,7 @@ async function land(tasks: Task[], taskId?: string | null): Promise<HTMLElement>
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
-  await waitFor(() => expect(container.querySelector('.ctl-seg [role="tab"]')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
   return container as HTMLElement
 }
 
@@ -161,43 +161,27 @@ describe('the row id is one a person can use', () => {
 // The QA wave's findings on this list (AG-1, AG-15, AG-16, AG-17, AG-32)
 // ---------------------------------------------------------------------------
 
-describe('the list says what its columns are', () => {
+describe('the list is the compact list, and its figures say what they are', () => {
   /**
-   * AG-16. `1/3`, `1u` and `4m 12s` had no heading, so three columns were read
-   * off their values. The heads are a `.row` whose cells carry the SAME
-   * classes, in the same order, as an agent row -- which is what makes every
-   * breakpoint that drops a column drop its head too. Asserted as that
-   * property, cell by cell, rather than as a list of words.
+   * AG-16 asked that `1/3`, `1u` and `4m 12s` not be read off their values.
+   * The ten-column table it headed is gone (agents.html V1, #503: its Agent
+   * column measured 26px at 1440), so the list carries no column heads; each
+   * figure carries its own word instead -- `try 1/3`, and the elapsed time
+   * beside the name it belongs to.
    *
-   * BREAK IT: remove `<RowHead />`, or give a head cell a class the row's cell
-   * in that position does not carry.
+   * BREAK IT: draw `RowHead` again, or print the try without its word.
    */
-  it('heads each list with a row on the same cells as an agent row', async () => {
+  it('draws no head row, and names the try in its own words', async () => {
     const container = await land([task('task_ffffffff00000000000f', 'RUNNING')])
     const rows = container.querySelector('.rows')!
-    const head = rows.firstElementChild as HTMLElement
-    expect(head.classList.contains('is-head'), 'the list has no heading row').toBe(true)
-    expect(head.classList.contains('row'), 'the heads are not on the row grid').toBe(true)
+    expect(rows.querySelector('.row.is-head'), 'the compact list grew a head row').toBeNull()
     const agent = rows.querySelector('.row.clickable')!
-    const cellClass = (el: Element) => el.className.split(/\s+/)[0]
-    const headCells = [...head.children].map(cellClass)
-    const rowCells = [...agent.children].map(cellClass)
-    // The state cell is a `.ctl-chip` on a row and a word in the head; from
-    // the name onwards every head sits over the cell it names.
-    for (let i = 1; i < headCells.length; i++) {
-      expect(headCells[i], `head ${i} is not over the cell it names`).toBe(rowCells[i])
-    }
-    // The three the finding named are labelled.
-    const text = (cls: string) => head.querySelector(`.${cls}`)?.textContent ?? ''
-    expect(text('try')).not.toBe('')
-    expect(text('class')).not.toBe('')
-    expect(text('when')).not.toBe('')
-    // A heading is not an agent: it opens nothing.
-    expect(head.getAttribute('role')).toBeNull()
-    expect(head.hasAttribute('tabindex')).toBe(false)
+    expect(agent.classList.contains('is-compact')).toBe(true)
+    expect(agent.querySelector('.cr-try')?.textContent).toBe('try 1/3')
+    expect(agent.querySelector('.cr-try')?.getAttribute('aria-label')).toBe('1 of 3 attempts used')
   })
 
-  it('heads each workflow group as well', async () => {
+  it('draws no head in a workflow group either', async () => {
     const container = await land([
       task('task_dddddddd00000000000d', 'SUCCEEDED', { workflow_id: 'wf_one', step_id: 'a' }),
       task('task_eeeeeeee00000000000e', 'FAILED', { workflow_id: 'wf_two', step_id: 'b' }),
@@ -205,7 +189,8 @@ describe('the list says what its columns are', () => {
     fireEvent.click(screen.getByLabelText(/group by workflow/i))
     await waitFor(() => expect(container.querySelectorAll('.section.group').length).toBe(2))
     for (const group of container.querySelectorAll('.section.group .rows')) {
-      expect(group.firstElementChild?.classList.contains('is-head'), 'a workflow group has no heads').toBe(true)
+      expect(group.querySelector('.row.is-head'), 'a workflow group has heads').toBeNull()
+      expect(group.firstElementChild?.classList.contains('is-compact')).toBe(true)
     }
   })
 })
@@ -223,14 +208,17 @@ describe('an attempt count over its cap looks like one', () => {
       task('task_aaaaaaaa00000000000a', 'FAILED', { attempt_count: 4, max_attempts: 3 }),
       task('task_bbbbbbbb00000000000b', 'FAILED', { attempt_count: 3, max_attempts: 3 }),
     ])
-    const cells = [...container.querySelectorAll('.row.clickable .try')]
-    expect(cells).toHaveLength(2)
-    const over = cells.find((c) => c.textContent === '4/3')!
-    const spent = cells.find((c) => c.textContent === '3/3')!
+    // A FINISHED ROW SAYS ITS TRY ONLY WHEN IT IS OVER (agents.html V1 keeps
+    // the try on a live row); an overage is the one count a finished row
+    // still has to show, because it is the platform's fault, not the run's.
+    const cells = [...container.querySelectorAll('.row.clickable .cr-try')]
+    expect(cells).toHaveLength(1)
+    const over = cells[0]!
+    expect(over.textContent).toBe('try 4/3')
     expect(over.classList.contains('is-over'), '4/3 is drawn like any other count').toBe(true)
     expect(over.getAttribute('aria-label') ?? '').toMatch(/1 over the ceiling/)
-    expect(spent.classList.contains('is-over'), '3/3 is drawn as over its cap').toBe(false)
-    expect(spent.getAttribute('aria-label') ?? '').not.toMatch(/over/)
+    const spent = [...container.querySelectorAll<HTMLElement>('.row.clickable')].find((r) => r.dataset.taskId === 'task_bbbbbbbb00000000000b')!
+    expect(spent.querySelector('.is-over'), '3/3 is drawn as over its cap').toBeNull()
   })
 
   it('computes over from the two numbers, strictly', () => {
@@ -444,7 +432,7 @@ describe('the tab and the Recent state are addresses (OV-10)', () => {
       fetchedAt: Date.now(),
     } satisfies Result<TaskPage>)
     const { container } = render(<AgentsScreen onOpen={() => {}} {...props} />)
-    await waitFor(() => expect(container.querySelector('.ctl-seg [role="tab"]')).not.toBeNull())
+    await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
     return container as HTMLElement
   }
 
@@ -527,19 +515,42 @@ describe('Recent can be searched and put failures first (#99)', () => {
   }
 
   const ids = (c: HTMLElement) =>
-    [...c.querySelectorAll('.rows .row.clickable .agent .id')].map((n) => n.getAttribute('title'))
+    [...c.querySelectorAll<HTMLElement>('.rows .row.clickable')].map((n) => n.dataset.taskId ?? null)
 
-  it('offers a search box labelled like the other toolbar filters', async () => {
+  it('offers one "Find by name or task id" box above the list, on every tab (agents.html V1)', async () => {
     const c = await landRecent()
-    const box = screen.getByRole('searchbox', { name: /search/i })
-    expect(box.closest('label.ag-filter'), 'the search box is not an `.ag-filter`').not.toBeNull()
-    expect(box.closest('label')!.querySelector('.ctl-eyebrow')).not.toBeNull()
+    const box = screen.getByRole('searchbox', { name: /find by name or task id/i })
+    expect(box.getAttribute('placeholder')).toBe('Find by name or task id')
+    expect(box.closest('.ag-list-head'), 'the box is not in the list header').not.toBeNull()
     expect(ids(c)).toHaveLength(4)
+    // #503: the LIVE list had no search box. It is the same box on every tab.
+    for (const tab of ['Live', 'Waiting']) {
+      fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }))
+      expect(screen.getByRole('searchbox', { name: /find by name or task id/i })).toBe(box)
+    }
+  })
+
+  it('narrows the Live tab by name too', async () => {
+    api.loadTasks.mockResolvedValue({
+      status: 'ok',
+      data: {
+        tasks: [
+          task('task_eeeeeeee00000000000e', 'RUNNING', { step_id: 'fix-heartbeat', workflow_id: 'wf_a' }),
+          task('task_ffffffff00000000000f', 'RUNNING'),
+        ],
+        tenant_id: 'acme',
+      },
+      fetchedAt: Date.now(),
+    } satisfies Result<TaskPage>)
+    const { container } = render(<AgentsScreen onOpen={() => {}} list={{ tab: 'live', state: null }} />)
+    await waitFor(() => expect(container.querySelectorAll('.rows .row.clickable')).toHaveLength(2))
+    fireEvent.change(screen.getByRole('searchbox', { name: /find by name or task id/i }), { target: { value: 'HEARTBEAT' } })
+    await waitFor(() => expect(ids(container as HTMLElement)).toEqual(['task_eeeeeeee00000000000e']))
   })
 
   it('leaves only the row a pasted full task id names', async () => {
     const c = await landRecent()
-    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), {
+    fireEvent.change(screen.getByRole('searchbox', { name: /find by name or task id/i }), {
       target: { value: '  task_cccccccc00000000000c ' },
     })
     await waitFor(() => expect(ids(c)).toEqual(['task_cccccccc00000000000c']))
@@ -547,7 +558,7 @@ describe('Recent can be searched and put failures first (#99)', () => {
 
   it('matches a step name and a workflow id case-insensitively', async () => {
     const c = await landRecent()
-    const box = screen.getByRole('searchbox', { name: /search/i })
+    const box = screen.getByRole('searchbox', { name: /find by name or task id/i })
     fireEvent.change(box, { target: { value: 'scan-terraform' } })
     await waitFor(() => expect(ids(c)).toEqual(['task_aaaaaaaa00000000000a']))
     fireEvent.change(box, { target: { value: 'WF_BUILD' } })
@@ -559,7 +570,7 @@ describe('Recent can be searched and put failures first (#99)', () => {
   it('applies after the state filter, and says so when nothing is left', async () => {
     const c = await landRecent({ list: { tab: 'recent', state: 'failed' } })
     expect(ids(c)).toEqual(['task_dddddddd00000000000d', 'task_bbbbbbbb00000000000b'])
-    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), { target: { value: 'scan' } })
+    fireEvent.change(screen.getByRole('searchbox', { name: /find by name or task id/i }), { target: { value: 'scan' } })
     await waitFor(() => expect(c.querySelector('.ctl-empty')).not.toBeNull())
     expect(c.querySelector('.ctl-empty')!.textContent).toMatch(/scan/)
   })
@@ -568,7 +579,7 @@ describe('Recent can be searched and put failures first (#99)', () => {
     const seen: unknown[] = []
     await landRecent({ onList: (l: unknown) => seen.push(l) })
     const before = window.location.href
-    fireEvent.change(screen.getByRole('searchbox', { name: /search/i }), { target: { value: 'lint' } })
+    fireEvent.change(screen.getByRole('searchbox', { name: /find by name or task id/i }), { target: { value: 'lint' } })
     expect(seen).toEqual([])
     expect(window.location.href).toBe(before)
   })

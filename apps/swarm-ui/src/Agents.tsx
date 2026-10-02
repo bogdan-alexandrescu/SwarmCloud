@@ -11,20 +11,18 @@ import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
-import { DispatchChip } from './Dispatch'
 import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
+import { toggleListSnap, useListSnap } from './listSnap'
+import './styles/agents.css'
 import { Id, Screen } from './Shell'
 import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
-  RESOURCE_UNITS,
   TERMINAL_STATES,
-  accountText,
   compareStarted,
   elapsed,
   rollupState,
-  startedOf,
   stateTone,
   taskGroup,
   whyAgent,
@@ -398,12 +396,13 @@ function AgentsBody({
   // newest `PHONE_PAGE_LIMIT`, the scope qualifier says so, and the Overview
   // counts over that same phone page there -- `loadListPage`.)
   const stateFilter = shown === 'recent' ? recentState : null
-  // THE SEARCH AND THE SORT (#99) are Recent's too, for the same reason and
-  // over the same rows: applied after the state and the profile, so a pasted
-  // task id or step name narrows what those two already chose, and the
-  // qualifier below names both. Off Recent they do nothing, as the state does,
-  // so a query typed there cannot silently empty another tab.
-  const needle = shown === 'recent' ? query.trim().toLowerCase() : ''
+  // THE SEARCH IS EVERY TAB'S (agents.html V1: "Find by name or task id"
+  // above the list; #503 found the live list had none). Applied after the
+  // state and the profile, over the same loaded rows, so a pasted task id or
+  // step name narrows what those two already chose, and the qualifier below
+  // names it. The tab's empty state says when the search is why it is empty.
+  // "Failed first" (#99) stays Recent's, the one tab that holds failures.
+  const needle = query.trim().toLowerCase()
   const failFirst = shown === 'recent' && failedFirst
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
@@ -479,26 +478,58 @@ function AgentsBody({
 
   return (
     <>
-      <div className="ctl-toolbar">
-        <div className="ctl-seg" role="tablist">
-          {TABS.map((t) => (
-            <button
-              key={t.id}
-              role="tab"
-              aria-selected={shown === t.id}
-              aria-label={t.say}
-              onClick={() => chooseTab(t.id)}
-            >
-              {t.label} <span className="badge">{counts[t.id]}</span>
-            </button>
-          ))}
-        </div>
+      {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
+          Waiting and Recent with their counts, underlined rather than boxed.
+          On a phone it sticks under the header, so the reader can change tab
+          from anywhere down the list. */}
+      <div className="ag-list-tabs" role="tablist" aria-label="Agents">
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={shown === t.id}
+            aria-label={t.say}
+            onClick={() => chooseTab(t.id)}
+          >
+            {t.label} <span className="badge">{counts[t.id]}</span>
+          </button>
+        ))}
+      </div>
 
-        {/* RECENT, BY STATE (OV-10). The same `.ctl-seg` as the tabs, but
-            pressed buttons rather than tabs: it filters the tab it sits
-            beside, it is not a fourth tab. Counts are from the loaded rows,
-            like the tab badges, and DEAD_LETTERED is never offered --
-            nothing writes it (`agentlist.ts`). */}
+      <div className="ctl-toolbar ag-list-head">
+        {/* THE COLLAPSE TOGGLE IS THE LIST'S (#503): it sat as a boxed button
+            at the top of the detail. « folds the list to its 64px strip of
+            state marks and » brings it back, as `[` does; only beside an
+            open agent, where there is a detail to give the room to. */}
+        {openTaskId !== null && <AgCollapse />}
+
+        <label className="ag-find">
+          <input
+            type="search"
+            value={query}
+            placeholder="Find by name or task id"
+            aria-label="Find by name or task id"
+            onChange={(e) => setQuery(e.target.value)}
+          />
+        </label>
+
+        <label className="ag-filter">
+          <span className="ag-filter-k">profile:</span>
+          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
+            <option value="">all</option>
+            {profiles.map((p) => (
+              <option key={p} value={p}>
+                {p}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* RECENT, BY STATE (OV-10): pressed buttons rather than tabs -- it
+            filters the tab it sits beside, it is not a fourth tab. Counts are
+            from the loaded rows, like the tab badges, and DEAD_LETTERED is
+            never offered: nothing writes it (`agentlist.ts`). */}
         {shown === 'recent' && (
           <div className="ctl-seg" role="group" aria-label="Recent, by state">
             {([null, ...RECENT_STATES] as const).map((s) => (
@@ -512,33 +543,6 @@ function AgentsBody({
               </button>
             ))}
           </div>
-        )}
-
-        <label className="ag-filter">
-          <span className="ctl-eyebrow">profile</span>
-          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
-            <option value="">all</option>
-            {profiles.map((p) => (
-              <option key={p} value={p}>
-                {p}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {/* RECENT, SEARCHED (#99). A pasted full task id, a step name or a
-            workflow id, matched case-insensitively over the loaded rows. It
-            is a reader's scratch, so it is not written to the address. */}
-        {shown === 'recent' && (
-          <label className="ag-filter">
-            <span className="ctl-eyebrow">search</span>
-            <input
-              type="search"
-              value={query}
-              placeholder="task, step or workflow id"
-              onChange={(e) => setQuery(e.target.value)}
-            />
-          </label>
         )}
 
         {shown === 'recent' && (
@@ -563,6 +567,25 @@ function AgentsBody({
           </label>
         )}
 
+        {/* SORTED BY START (#376): newest start, oldest start, then the
+            list's own order. It was the Started column's head; the compact
+            list has no columns, so it is a control of the list. */}
+        <button
+          type="button"
+          className="ag-sort"
+          aria-pressed={sort.started !== null}
+          aria-label={
+            sort.started === null
+              ? 'Sort by start time'
+              : sort.started === 'desc'
+                ? 'Sorted by start, newest first'
+                : 'Sorted by start, oldest first'
+          }
+          onClick={sort.onStarted}
+        >
+          Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
+        </button>
+
         <span className="is-end ag-scope" aria-label={scopeSay}>
           {phonePage
             ? `showing the ${page.tasks.length} most recent`
@@ -580,12 +603,12 @@ function AgentsBody({
             <Mark
               kind="zero"
               say={
-                shown === 'live'
+                needle !== ''
+                  ? `No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent in the loaded page of ${shown} matches “${query.trim()}”.`
+                  : shown === 'live'
                   ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
                   : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
-                    : needle !== ''
-                      ? `No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent in the loaded page matches “${query.trim()}”.`
                       : stateFilter !== null
                         ? `No ${RECENT_STATE_OF[stateFilter]} agent is in the loaded page.`
                         : 'Nothing has finished in the loaded page.'
@@ -603,15 +626,15 @@ function AgentsBody({
                 nobody there was asking. `prose.runs.test.tsx` pins it. */}
             {stateFilter !== null ? `nothing ${stateFilter} in ${shown}` : `nothing in ${shown}`}
             {needle !== '' && ` matching “${query.trim()}”`}
-            {shown === 'live' && <HelpCard topic="capacity" />}
+            {shown === 'live' && needle === '' && <HelpCard topic="capacity" />}
           </h3>
         </div>
       ) : shown === 'waiting' ? (
-        <WaitingGroups rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} grouped={grouped} />
+        <WaitingGroups rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} grouped={grouped} />
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
       ) : (
-        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
       )}
     </>
   )
@@ -627,22 +650,16 @@ function FlatRows({
   onOpen,
   openTaskId,
   classes,
-  sort,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
-  sort?: SortControl
 }) {
   const shared = flatShared(rows.map((t) => rowReason(t, classes)))
-  // BESIDE AN OPEN AGENT THE LIST IS THE COMPACT COLUMN (agents.html V1):
-  // two-line rows and no column heads, which name columns it no longer has.
-  const compact = openTaskId !== null
   return (
     <div className="rows">
-      {!compact && <RowHead sort={sort} />}
       {rows.map((t, i) => (
         <TaskRow
           key={t.id}
@@ -652,7 +669,6 @@ function FlatRows({
           open={t.id === openTaskId}
           classes={classes}
           whyShared={shared[i]}
-          compact={compact}
         />
       ))}
     </div>
@@ -676,7 +692,6 @@ function WaitingGroups({
   onOpen,
   openTaskId,
   classes,
-  sort,
   grouped,
 }: {
   rows: Task[]
@@ -684,7 +699,6 @@ function WaitingGroups({
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
-  sort?: SortControl
   grouped: boolean
 }) {
   const split = { needs_action: [] as Task[], no_room: [] as Task[] }
@@ -702,9 +716,9 @@ function WaitingGroups({
               {g.title} <span className="ag-scope">{g.rows.length}</span>
             </h2>
             {grouped ? (
-              <GroupedRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+              <GroupedRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
             ) : (
-              <FlatRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} sort={sort} />
+              <FlatRows rows={g.rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
             )}
           </section>
         ),
@@ -787,14 +801,12 @@ function GroupedRows({
   onOpen,
   openTaskId,
   classes,
-  sort,
 }: {
   rows: Task[]
   now: number
   onOpen: (taskId: string) => void
   openTaskId: string | null
   classes: ResourceClasses | null
-  sort?: SortControl
 }) {
   const groups = useMemo(() => {
     const m = new Map<string, Task[]>()
@@ -863,7 +875,6 @@ function GroupedRows({
               </p>
             ))}
             <div className="rows">
-              {openTaskId === null && <RowHead sort={sort} />}
               {tasks.map((t, i) => (
                 <TaskRow
                   key={t.id}
@@ -873,7 +884,6 @@ function GroupedRows({
                   open={t.id === openTaskId}
                   classes={classes}
                   whyShared={said.shared[i]}
-                  compact={openTaskId !== null}
                 />
               ))}
             </div>
@@ -881,54 +891,6 @@ function GroupedRows({
         )
       })}
     </>
-  )
-}
-
-/**
- * THE COLUMN HEADS (AG-16), on the row's own grid.
- *
- * A list of forty rows reading `1/3`, `1u` and `4m 12s` with nothing saying
- * which is attempts, which is weight and which is elapsed left a reader to
- * infer three columns from their values. This is a `.row` with the SAME cell
- * classes in the SAME order as `TaskRow`, so it sits on the same named-line
- * template and every breakpoint that drops a column -- the inspector's two
- * stages, the phone card -- drops its head with it, by construction rather
- * than by a second list of widths. `is-head` is the one hook the sheet needs
- * to set it in the label treatment and to hide it where rows become cards.
- *
- * The flags column has no head: it is empty on most rows, and the chip in it
- * names itself.
- */
-function RowHead({ sort }: { sort?: SortControl }) {
-  const started = sort?.started ?? null
-  return (
-    <div className="row is-head">
-      <span className="st">State</span>
-      <span className="agent">Agent</span>
-      <span className="owner">Owner</span>
-      <span className="wf">Step</span>
-      {/* SORTABLE (#376). A button inside the head cell, so the head stays a
-          `.row` on the rows' own template; `aria-sort` names the order, and
-          the arrow is the visible half of it. Without a control (a caller
-          that passes none) it is the plain label. */}
-      <span
-        className="started"
-        aria-sort={started === null ? 'none' : started === 'asc' ? 'ascending' : 'descending'}
-      >
-        {sort ? (
-          <button type="button" className="ag-sort" onClick={sort.onStarted}>
-            Started{started === 'desc' ? ' ↓' : started === 'asc' ? ' ↑' : ''}
-          </button>
-        ) : (
-          'Started'
-        )}
-      </span>
-      <span className="when">Elapsed</span>
-      <span className="acct">Account</span>
-      <span className="try">Try</span>
-      <span className="class">Class</span>
-      <span className="badges" />
-    </div>
   )
 }
 
@@ -958,6 +920,18 @@ export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>)
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
 export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
 
+/**
+ * ONE ROW OF THE LIST, AND IT IS ALWAYS THE COMPACT ROW (agents.html V1).
+ *
+ * THE TEN-COLUMN TABLE IS GONE (#503). With no agent open the list was a
+ * full-width table -- state, agent, owner, step, started, elapsed, account,
+ * try, class, badges -- and at 1440 its Agent column measured 26px: the name
+ * was one character and an ellipsis, the head read "Agen", and the dispatch
+ * badge sat clipped in a 15px cell. V1 is one list at every width: the mark,
+ * the name and the elapsed time, then profile · owner · try, then the reason.
+ * The rest -- when it started, the account, the class, the dispatch -- is the
+ * detail's, one click away, where it has room.
+ */
 function TaskRow({
   task,
   now,
@@ -965,7 +939,6 @@ function TaskRow({
   open = false,
   classes,
   whyShared = false,
-  compact = false,
 }: {
   task: Task
   now: number
@@ -976,205 +949,36 @@ function TaskRow({
   classes: ResourceClasses | null
   /** The reason is said once for this row and its neighbours (#100); keep it for a screen reader only. */
   whyShared?: boolean
-  /** The list sits beside an open agent: draw the two-line compact row (agents.html V1). */
-  compact?: boolean
 }) {
   const why = rowReason(task, classes)
-  // Said once by a neighbour or the group header (#100), and never a warn line.
   const whyHidden = whyShared && !why.warn
-  if (compact) {
-    return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
-  }
-  const el = elapsed(task, now)
-  // `ran` is the phase with a start AND an end, so an em dash never carries it.
-  const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
-  const start = startedOf(task, now)
-  const account = accountText(task.account)
-  const tries = attemptsUsed(task)
-  const units = RESOURCE_UNITS[task.resource_class]
-  // Driven by the flag, not by an optimistic state flip. A cancel on a LEASED
-  // or RUNNING task writes only cancel_requested -- the state does not change
-  // until the worker or reconciler releases the lease, because releasing it
-  // from the API would decrement a pool a live container still occupies.
-  const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
+  return <CompactRow task={task} now={now} onOpen={onOpen} open={open} why={why} whyHidden={whyHidden} />
+}
 
+/**
+ * « AND », IN THE LIST'S HEADER (agents.html V1). One store with the divider
+ * (listSnap.ts), so the toggle, the divider and `[` move one value.
+ */
+function AgCollapse() {
+  const snap = useListSnap()
+  const folded = snap === 'strip'
   return (
-    // `holding` IS GONE FROM THE MARKUP AS WELL AS FROM THE SHEET. It tinted
-    // the row's border in the accent to say "this agent holds a pool slot",
-    // which is precisely what the Live tab selects for -- true of every row in
-    // one tab and of no row in the other two. The state chip's `is-live` mark
-    // says it per row; see `.row.holding` in styles.css for the argument.
-    <div
-      className="row clickable"
-      role="button"
-      tabIndex={0}
-      data-task-id={task.id}
-      // WHICH ROW IS OPEN (AG-17). With the inspector open no row said which
-      // agent it was showing; the one it is gets `aria-current`, which a
-      // screen reader announces and the sheet draws (a surface step and an
-      // ink rule, design-system.md §1.3). `undefined` rather than `false`,
-      // so the attribute is absent on every other row.
-      aria-current={open ? 'true' : undefined}
-      onClick={() => onOpen(task.id)}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault()
-          onOpen(task.id)
-        }
-      }}
+    <button
+      type="button"
+      className="ag-collapse"
+      aria-pressed={folded}
+      aria-label={folded ? 'Open the list again ([)' : 'Fold the list to a strip ([)'}
+      title={folded ? 'Open the list again ([)' : 'Fold the list to a strip ([)'}
+      onClick={toggleListSnap}
     >
-      {/* ONE MARK AND ONE WORD, WHICH IS THE WHOLE CHIP DECISION (§6.6).
-          This column drew the state THREE TIMES: a `.ctl-dot` silhouette, then
-          `stateGlyph`'s bullet, then the word in 13px uppercase tracked mono in
-          a saturated hue. Forty rows of that is the owner's "decorative double
-          dot" and "status chips are heavy" in one column.
-
-          `.ctl-chip` is the primitive that replaced all three: a 10px mark
-          carrying the silhouette, and the word in the sans face at --t-body in
-          FULL INK -- which is a stronger reading of the state than the coloured
-          uppercase was, because the word no longer competes with the hue for
-          the same channel. The mark is `aria-hidden` inside the primitive, so
-          a screen reader gets the word once. */}
-      <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
-
-      {/* ONE LINE, NOT THREE. This was a flex COLUMN -- profile over model over
-          id -- which is what made a 30px row 72px tall and the list read as
-          stacked cards rather than as a list. The one screen the owner named as
-          already right (`#work/workflows`) puts ten facts on one 37px line;
-          three facts get one line here for the same reason. */}
-      <span className="agent">
-        {/* THE STEP IS THE NAME WHERE THE STEP COLUMN IS GONE (#94, #109). At
-            390px the Step column drops and five live rows read `claude-code
-            <hex>` five times; there `.agent-step` takes the profile's place.
-            Wide, the Step column says it and this copy is not drawn. */}
-        <b className={task.step_id ? 'agent-profile' : undefined}>{task.runner_profile}</b>
-        {task.step_id && <b className="agent-step">{task.step_id}</b>}
-        {task.model && <span className="model">{task.model}</span>}
-        <span className="id" title={task.id}>
-          {shortTaskId(task.id)}
-        </span>
-        {/* A SHARED REASON LIVES IN THIS CELL, NOT IN THE ROW'S GRID (#100).
-            As its own grid item it had to be placed somewhere: pinned to the
-            first cell, it pushed every auto-placed cell one column right and
-            wrapped the last onto a new line; in flow it cost a line of
-            row-gap. Here it is absolutely positioned inside `.agent`, which
-            is `position: relative` and clips, so it takes no cell, no gap and
-            no line, and stays in the row's accessible name. */}
-        {whyHidden && <span className="why is-shared">{why.text}</span>}
-      </span>
-
-      <span className="owner" title={task.submitted_by ?? undefined}>
-        {task.submitted_by?.split('@')[0] ?? <Em />}
-      </span>
-
-      <span className="wf">
-        {/* THE BOX CAME OFF THE STEP ID, and it is the one cell that was
-            measurably broken: `.tag` draws a bordered box that does not shrink,
-            so `scan-terraform` in a 110px column overlapped the elapsed time
-            beside it at 1440px -- twice on the shipped list, three times with
-            the drawer open. An id is not a status and does not get a status's
-            chrome; `<Id>` is the one rule for every identifier on every screen
-            (B17) and the column position is what says which id this is. */}
-        {task.step_id ? (
-          // The accessible name carries BOTH ids. It used to carry only the
-          // workflow's, which meant a screen reader was told the workflow and
-          // never the step -- the visible string. Naming both is what the
-          // sighted reader gets from the column plus the cell.
-          <span
-            className="wf-step"
-            aria-label={`workflow ${task.workflow_id}, step ${task.step_id}`}
-          >
-            <Id>{task.step_id}</Id>
-          </span>
-        ) : (
-          <span className="ctl-em">—</span>
-        )}
-      </span>
-
-      {/* STARTED, WITH THE SUBMIT TIME UNDER IT (#376). Local wall-clock
-          time from `clockTime`, the full UTC instant and its age in the
-          hover. A task with no start reads `never started` -- whatever its
-          state -- with its submit time still beside it. */}
-      <span className={`started${start.never ? ' is-never' : ''}`} title={start.title}>
-        <span className="started-at">{start.text}</span>
-        <span className="started-sub" title={start.submittedTitle}>
-          sub {start.submitted}
-        </span>
-      </span>
-
-      {/* A CANCELLED RUN'S FIGURE SAYS WHAT IT SPANS (#163). It is last start
-          to cancel, and a task cancelled while PARKED after an earlier start
-          has nothing on its document that says it sat parked in between --
-          `elapsed()` cannot subtract time the task does not record. The
-          qualifier rides with the figure, as `units` does in the class cell,
-          and is the cell's `title` too, so a truncated cell still says it. */}
-      <span className={`when${el.ticking ? ' ticking' : ''}`} title={cancelSpan ? `${el.text} ${CANCEL_SPAN}` : undefined}>
-        {el.text}
-        {cancelSpan && <span className="when-note"> {CANCEL_SPAN}</span>}
-      </span>
-
-      {/* THE ACCOUNT THIS AGENT RUNS ON (#379), from its own events. The
-          words for "none" are the API's answer: no model call, not assigned
-          yet, not read -- never a guess. */}
-      <span className={`acct${account.known ? '' : ' is-none'}`} title={account.title}>
-        {account.text}
-      </span>
-
-      {/* OVER THE CAP IS A PROBLEM, AND IT LOOKS LIKE ONE (AG-15). `83/3`
-          rendered exactly like `1/3`. `is-over` is the design system's word
-          for more held than a ceiling allows (the pool bars' `.is-over`);
-          the overage is in the accessible name, not only in the arithmetic. */}
-      <span className={`try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
-        {task.attempt_count}/{task.max_attempts}
-      </span>
-
-      <span className="class">
-        {task.resource_class}
-        {units !== undefined && <span className="units"> · {units}u</span>}
-      </span>
-
-      {/* The dispatch chip renders NOTHING for a plain `collect` task, which is
-          most of them, and something for every task that will push or open a
-          pull request. That asymmetry is the point: the rows worth spotting in
-          a list of forty are the ones that are going to write to a repository. */}
-      <span className="badges">
-        <DispatchChip task={task} />
-        {/* A STATE, SO IT IS A CHIP. `cancelling` is the one thing on this row
-            that contradicts the state word beside it -- the task still reads
-            RUNNING because the lease is still held (invariant 3) and only
-            `cancel_requested` is set. It was a bordered uppercase `.tag` in
-            --bad, which drew it louder than the state it qualifies; as a chip
-            it is a caution mark and the word, in the same vocabulary as every
-            other state on the screen. */}
-        {cancelling && <Chip tone="wait">cancelling</Chip>}
-      </span>
-
-      {/* The reason this screen exists on a phone: someone is checking why
-          their agent has not moved. It outranks every identifier and is never
-          the thing that gets dropped.
-
-          ITS INK SAYS WHETHER SOMEONE HAS TO ACT (AG-14). Every line was
-          `--warn`, so a step waiting on the step before it was the same yellow
-          as a failure. `whyNeedsAction` (types.ts) is the rule: a failure,
-          work that can never be admitted (a pool paused or set to zero, a
-          spent budget), a missing credential. Routine waits and cancellations
-          are plain ink. A silent worker gets no line HERE: a row is a task
-          document and the heartbeat is on the lease (#179); the inspector,
-          which reads events, draws one.
-
-          SAID ONCE WHEN THE NEIGHBOURS SHARE IT (#100). Then this line is
-          not drawn: the row above or the group header already says it, and
-          the `.agent` cell carries it visually hidden, so every row still
-          answers "why" when read on its own. Never a warn line, and never
-          hover-only: `flatShared`/`groupReasons` decide it. */}
-      {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
-    </div>
+      {folded ? '»' : '«'} <kbd>[</kbd>
+    </button>
   )
 }
 
 /**
- * WHETHER THE LIST IS FOLDED TO THE 64px STRIP. `AgentDrawer` (App.tsx) owns
- * the snap and writes it on the root as `data-agent-list`, which is also what
+ * WHETHER THE LIST IS FOLDED TO THE 64px STRIP. `AgentSplit` writes the snap
+ * (listSnap.ts) on the root as `data-agent-list`, which is also what
  * the sheet folds the list by; reading the same attribute here keeps the row
  * and the sheet on one answer rather than two copies of the snap.
  */
@@ -1233,6 +1037,9 @@ function CompactRow({
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
   const live = tabOf(task) === 'live'
+  // THE ONE FACT THAT CONTRADICTS THE STATE WORD: a stop is requested and the
+  // lease is still held (invariant 3), so the row still reads RUNNING.
+  const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -1297,7 +1104,10 @@ function CompactRow({
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
           {owner ?? <Em />}
         </span>
-        {live && (
+        {/* THE TRY ON A LIVE ROW, as V1 draws it -- and on any row whose
+            count is over its cap (AG-15), which a finished row must still
+            show: that is the platform running past its own ceiling. */}
+        {(live || tries.over) && (
           <>
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
@@ -1311,6 +1121,20 @@ function CompactRow({
             <span className="id" title={task.id}>
               {shortTaskId(task.id)}
             </span>
+          </>
+        )}
+        {cancelling && (
+          <>
+            {' · '}
+            <Chip tone="wait">cancelling</Chip>
+          </>
+        )}
+        {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), in words on line two:
+            line one has room for the figure only. */}
+        {cancelSpan && (
+          <>
+            {' · '}
+            <span className="when-note">{CANCEL_SPAN}</span>
           </>
         )}
       </span>

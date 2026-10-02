@@ -304,6 +304,7 @@ def test_the_vocabulary_order_is_fixed():
         "spec_signature_invalid",  # contract request 34
         "verdict_refused", "verdict_failed",  # contract request 35
         "merge_refused", "merge_failed",  # contract request 33
+        "publish_refused",  # contract request 29
         "other", "no_reason",
     ]
     assert [c["key"] for c in VOCAB["cancel_causes"]] == [

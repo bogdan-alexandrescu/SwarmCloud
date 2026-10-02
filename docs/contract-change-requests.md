@@ -38,6 +38,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 25 | `profiles.py`: a runner profile cannot declare the inputs a caller may send it, so the bridge names the mock's by profile | ACCEPTED 2026-09-25 (owner, on #142), applied in PR #213; both amendments confirmed by the owner 2026-09-26: `inputs=None` for `browser` and `generic` (#218), and the bounded park counted by the task's `attempt_count` rather than the state file |
 | 26 | `models.py`: the attempt's CPU figures carry no time and their limit no source | ACCEPTED 2026-09-26 (owner, on #184), applied in PR #229 |
 | 27 | `identity.py`: `_slug`'s docstring still sizes tenant ids for the `swarm-t-` prefix that no longer exists | ACCEPTED 2026-09-28 by the owner on #245, applied in PR #245 |
+| 29 | `models.py`: `EndCause` gains `PUBLISH_REFUSED` (#259) | APPLIED 2026-10-02 (accepted by the owner 2026-09-29 on #259), functionality wave 3, lane B46 |
 | 30 | `identity.py`: a tenant may list service accounts that resolve to it by exact email (#273) | ACCEPTED 2026-09-29 by the owner after three security reviews |
 | 31 | `models.py`: `WorkflowStep` cannot record a step's verdict gate or its `builds_on` | open |
 | 32 | `profiles.py`: `browser` and `generic` declare no inputs, so the API bounds them by size alone and the plugin can send them none (#218) | ACCEPTED 2026-09-29 by the owner after three security reviews, applied by #345 |
@@ -53,6 +54,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 43 | `identity.py`: the tenant worker service account's name has no public home (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 44 | `states.py`: `account_assigned` and `account_released` ride on `RUNNING` and `LEASE_RELEASED` (functionality wave 1, lane B4) | open |
 | 45 | `profiles.py`: the catalogue does not say which runner profiles report a cost (filed with #72) | open |
+| 46 | `models.py`: a pull-request step that published nothing has no end cause (functionality wave 3, lane B46) | open |
 
 ---
 
@@ -3086,9 +3088,25 @@ profile changed.
 
 ## 29. `models.py`: `EndCause` gains `PUBLISH_REFUSED`
 
-**Status: ACCEPTED, accepted by the owner 2026-09-29** (recorded on #259),
-not yet applied. Recorded 2026-09-29 from #259. If another branch has taken
-29 by the time this merges, renumber this one.
+**Status: APPLIED 2026-10-02** (accepted by the owner 2026-09-29, recorded
+on #259; applied by functionality wave 3, lane B46, exactly as requested
+below). Recorded 2026-09-29 from #259.
+
+**As applied.** `EndCause.PUBLISH_REFUSED = "publish_refused"`, appended
+after `VERDICT_FAILED` so no existing value moved. The worker writes it from
+both call sites, `_fail_for_final_tree_leak` and `_fail_for_refused_title`;
+both stay retryable, so the cause is the task's once its attempts are spent.
+`swarm_api/outcomes.py` gains the failure class `publish_refused` ("publish
+refused"), and `DERIVE_VERSION` moves to 5 so stored days are derived again.
+The UI's `FailureClassKey`, its ledger fixture and a new `END_CAUSES` mirror
+in `types.ts` gain it too. Section 5 of `scripts/lib/check-contract-parity.sh`
+now holds that mirror to the enum.
+
+**Not covered by this cause: the forge refusing a pull request.** The
+definition below is "the worker refused to publish", and a pull request the
+forge refuses (GitHub's "No commits between") is not the worker refusing.
+That case, and a pull-request step that changed nothing, are written as
+`OUTPUTS_MISSING` meanwhile. Their own cause is request 46.
 
 ### What is true today
 
@@ -8458,3 +8476,57 @@ the profiles route serves it.
 
 The restatement stays, held by its test; a new cost-reporting runner module
 counts as "never reports" until someone adds it to the set.
+
+---
+
+## 46. `models.py`: a pull-request step that published nothing has no end cause
+
+**Status:** open, filed 2026-10-02 by functionality wave 3, lane B46. A
+request, not a change.
+
+### What is true today
+
+Since lane B46 (GUARD 2, owner decision 2026-10-02), the worker ends a step
+FAILED, and does not retry it, when the step's job was to open a pull
+request and it did not. That covers a `direct-pr` step, the `integrate`
+integrator and a `single-pr` author. Either the step ended with no commit
+beyond its base, or the forge refused its pull request ("No commits between
+main and swarm/..."). `last_error` begins `published_nothing:`
+(`agent_worker.lifecycle._published_nothing`). No `EndCause` names this
+case, so `_fail_for_published_nothing` writes `OUTPUTS_MISSING`, the closest
+existing value: the step's promised deliverable, its pull request, does not
+exist. `PUBLISH_REFUSED` (request 29) does not fit, because the worker did
+not refuse anything. The outcome ledger therefore counts a lost
+implementation (workflow `wf_b9b337e107494c10a416`) together with an
+expected file nobody wrote.
+
+### The requested change
+
+```python
+    PUBLISHED_NOTHING = "published_nothing"   # a pull-request step ended with nothing beyond its base, or the forge refused its pull request
+```
+
+The worker writes it from `_fail_for_published_nothing`. `swarm_api/outcomes.py`
+gains the failure class `published_nothing` ("published nothing"), the UI's
+`FailureClassKey`, fixture and `END_CAUSES` follow it, and
+`DERIVE_VERSION` moves.
+
+### What it would break if accepted
+
+Nothing that exists: a new enum value. A reader that does not know it falls
+back to its text classifier, as for any task written before `end_cause`
+existed. The parity script's section 5 and
+`test_every_end_cause_has_exactly_one_class` turn red until every mirror
+follows, which is what they are for.
+
+### If it is declined
+
+These steps stay `outputs_missing`, and `last_error`'s `published_nothing:`
+prefix is the only way to count them apart.
+
+### Invariants
+
+- **Secrets.** The refusal is quoted after the worker's scrub; the cause
+  names the case, never a value.
+- **Invariant 1.** A FAILED step holds no capacity; the lease is released on
+  the same finish as any other failure.

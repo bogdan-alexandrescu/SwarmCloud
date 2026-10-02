@@ -1,10 +1,10 @@
 export const meta = {
   name: 'swarmcloud',
   description: 'SwarmCloud: run a SwarmCloud workflow spec with every step executing in SwarmCloud and shown here as a [SwarmCloud] row per step, by stage, with a short progress line when its state changes',
-  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one.',
+  whenToUse: 'You have a SwarmCloud workflow spec, the JSON that swarm workflow reads, and want each step visible in /workflows while it runs remotely: pass the spec object, the spec object with its file as {spec, spec_path}, its JSON text, or the path of the spec file as args. Or a workflow already running in SwarmCloud lost its rows when this session restarted: pass {attach: "<workflow_id>"} to submit nothing, report its finished steps once and start a row for every unfinished one. Or show every workflow of your tenant still running in SwarmCloud: pass {attach: "all"} to list them once and attach up to 10 the same way, listing the rest.',
   phases: [
     { title: 'Submit', detail: 'given a path, one sc:workflow agent reads the file with swarm_workflow_spec; one sc:workflow agent submits the spec with swarm_workflow by reference when it can, checked against the digest, and probes the follow every row makes' },
-    { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; nothing is submitted' },
+    { title: 'Attach', detail: 'given {attach: workflow_id}, one sc:workflow agent reads the workflow with swarm_workflow_status and probes the follow every row makes; given {attach: "all"}, one sc:workflow agent first lists the running workflows with swarm_workflows and each of up to 10 is attached that way; nothing is submitted' },
     { title: 'Result', detail: 'one sc:workflow agent reads the workflow state SwarmCloud derived' },
   ],
 }
@@ -46,6 +46,16 @@ export const meta = {
 // read. It is how a session that restarted re-joins a workflow still running
 // in SwarmCloud. An id the API does not know -- or another tenant's, which it
 // answers as unknown -- ends the run NOT_ATTACHED with the API's own error.
+//
+// ATTACH ALL (owner decision, 2026-10-02). Given {attach: "all"} this script
+// submits nothing: one sc:workflow row lists the caller's tenant's running
+// workflows (swarm_workflows), and each of the first MAX_ATTACHED_WORKFLOWS is
+// attached exactly as {attach: "<workflow_id>"} attaches one, all at once, so
+// every unfinished step of every one of them is a live row. The rest are
+// logged and returned as not_followed, each with the /sc attach that follows
+// it. One workflow that cannot be attached ends as NOT_ATTACHED on its own and
+// does not stop the others. This is what the plugin's SessionStart hook tells
+// a new session to run first (plugin/hooks/session-start.sh).
 //
 // Steps are grouped under 'Level N' -- their depth in the DAG -- or under the
 // `stage` the spec gives a step. Neither is known before the spec is read, so
@@ -170,6 +180,39 @@ const ATTACHED = {
   required: ['workflow_id', 'console', 'state', 'state_note', 'bridge_version', 'follow_error', 'steps', 'error'],
 }
 
+// What the LIST row answers: swarm_workflows' `count` and, for each workflow
+// it listed, the four fields this script uses. Never the steps: each workflow
+// is read again by its own ATTACH row, which checks it against the API.
+const LISTED = {
+  type: 'object',
+  properties: {
+    count: { type: ['integer', 'null'] },
+    workflows: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          workflow_id: { type: 'string' },
+          label: { type: ['string', 'null'] },
+          state: { type: ['string', 'null'] },
+          console: CONSOLE,
+        },
+        required: ['workflow_id', 'label', 'state', 'console'],
+      },
+    },
+    error: { type: ['string', 'null'] },
+  },
+  required: ['count', 'workflows', 'error'],
+}
+
+// THE CAP on {attach: "all"}: the newest 10 running workflows are followed.
+// Every unfinished step of a followed workflow is one live sc:step row -- an
+// agent of its own, holding a turn in this session for as long as its task
+// runs -- so 10 workflows of three to five steps is already 30-50 rows at once.
+// Past that, /workflows stops being readable and watching costs more than the
+// work it watches. The rest are listed with the command that follows each.
+const MAX_ATTACHED_WORKFLOWS = 10
+
 const READ = {
   type: 'object',
   properties: {
@@ -240,7 +283,8 @@ const WORKFLOW_STATE = {
   required: ['state', 'state_note', 'console', 'steps'],
 }
 
-// What /sc:swarmcloud was given: { attach } for {attach: "<workflow_id>"};
+// What /sc:swarmcloud was given: { attachAll } for {attach: "all"}; { attach }
+// for {attach: "<workflow_id>"};
 // { spec, specPath } for a spec object with the file it came from; { spec }
 // for a spec object or its JSON text; or { path } for anything else -- the
 // path of a spec file, which the bridge reads (the READ SPEC row below). Text
@@ -262,6 +306,8 @@ function readSpec(given) {
   const isObject = value !== null && typeof value === 'object' && !Array.isArray(value)
   if (isObject && Object.prototype.hasOwnProperty.call(value, 'attach')) {
     const id = typeof value.attach === 'string' ? value.attach.trim() : ''
+    // `all` is never a workflow id: the API's ids begin wf_.
+    if (id === 'all' || id === '--all') return { attachAll: true }
     if (!id) {
       throw new Error('/sc:swarmcloud {attach: "<workflow_id>"} needs the id of a workflow already submitted to SwarmCloud; it was given ' + JSON.stringify(value.attach === undefined ? null : value.attach))
     }
@@ -541,9 +587,12 @@ async function followSteps(workflowId, workflowName, steps, stages, parentTasksO
 
 // The final status read, the same after a submission and after an attach.
 // The rows are returned whatever happens here: a Result row that fails must
-// not take every step's result down with it.
-async function finish(workflowId, workflowName, rows, knownConsole) {
-  phase('Result')
+// not take every step's result down with it. `together` is set by attach
+// --all, whose workflows finish while others are still attaching: the global
+// phase is set once there, after all of them, instead of flipping per workflow
+// (each Result row still carries its own phase).
+async function finish(workflowId, workflowName, rows, knownConsole, together) {
+  if (!together) phase('Result')
   let final = null
   let finalFailure = null
   try {
@@ -604,17 +653,16 @@ async function finish(workflowId, workflowName, rows, knownConsole) {
   return finished
 }
 
-const given = readSpec(args)
-
-if (given.attach) {
-  // ATTACH: nothing is submitted. One read, one probe, a row per unfinished step.
-  phase('Attach')
-  const workflowId = given.attach
+// ATTACH one workflow: nothing is submitted. One read, one probe, a row per
+// unfinished step. `name` labels the rows: the workflow id for a single
+// attach, the spec's label when {attach: "all"} listed one. `together` is
+// set by attach --all (see finish()).
+async function attachOne(workflowId, name, together) {
   let attached = null
   let attachFailure = null
   try {
     attached = await agent('ATTACH\nworkflow_id: ' + workflowId, {
-      label: rowLabel(workflowId, 'attach'),
+      label: rowLabel(name, 'attach'),
       phase: 'Attach',
       agentType: 'sc:workflow',
       schema: ATTACHED,
@@ -629,7 +677,7 @@ if (given.attach) {
       : attachFailure
         ? 'the row reading workflow ' + workflowId + ' failed: ' + attachFailure
         : 'the row reading workflow ' + workflowId + ' stopped before it answered'
-    log('not attached · ' + clip(error, 200))
+    log((name === workflowId ? '' : workflowId + ' ') + 'not attached · ' + clip(error, 200))
     return { workflow_id: workflowId, state: 'NOT_ATTACHED', error: error, steps: [] }
   }
   if (attached.follow_error) return followRefused(workflowId, attached.bridge_version, attached.follow_error)
@@ -651,7 +699,7 @@ if (given.attach) {
   }
   log(workflowId + ' attached · ' + attached.steps.length + ' step(s) · ' + open.length + ' unfinished' + consoleSuffix(attached.console))
 
-  const followed = await followSteps(workflowId, workflowId, open, {}, (step) =>
+  const followed = await followSteps(workflowId, name, open, {}, (step) =>
     (step.depends_on || [])
       .filter((parent) => known[parent] && !finished(known[parent]) && known[parent].task_id)
       .map((parent) => known[parent].task_id),
@@ -659,7 +707,98 @@ if (given.attach) {
   const byStep = {}
   for (const row of followed) if (row) byStep[row.step_id] = row
   const rows = attached.steps.map((step) => doneRows[step.step_id] || byStep[step.step_id]).filter(Boolean)
-  return await finish(workflowId, workflowId, rows, attached.console)
+  return await finish(workflowId, name, rows, attached.console, together)
+}
+
+// The name attach --all gives a workflow's rows: its spec label, else its id.
+// Two running workflows can share a label, so a repeated label carries the
+// end of the workflow id, kept short enough that rowLabel never cuts it off.
+const REPEATED_LABEL_CHARS = 32
+const ID_TAIL_CHARS = 8
+
+function attachNames(entries) {
+  const labelOf = (entry) => typeof entry.label === 'string' && entry.label.trim() ? entry.label.trim() : null
+  const uses = {}
+  for (const entry of entries) {
+    const label = labelOf(entry)
+    if (label) uses[label] = (uses[label] || 0) + 1
+  }
+  return entries.map((entry) => {
+    const label = labelOf(entry)
+    if (!label) return entry.workflow_id
+    if (uses[label] === 1) return label
+    return clip(label, REPEATED_LABEL_CHARS) + ' ' + entry.workflow_id.slice(-ID_TAIL_CHARS)
+  })
+}
+
+// ATTACH ALL: one list, then every listed workflow up to the cap, at once.
+async function attachAll() {
+  let listed = null
+  let listFailure = null
+  try {
+    listed = await agent('LIST', {
+      label: rowLabel('running workflows', 'list'),
+      phase: 'Attach',
+      agentType: 'sc:workflow',
+      schema: LISTED,
+    })
+  } catch (error) {
+    listFailure = failureText(error)
+  }
+  if (!listed || listed.error || !Array.isArray(listed.workflows)) {
+    const error = listed && listed.error
+      ? listed.error
+      : listFailure
+        ? 'the row listing the running workflows failed: ' + listFailure
+        : 'the row listing the running workflows stopped before it answered'
+    log('not attached · ' + clip(error, 200))
+    return { attach: 'all', state: 'NOT_ATTACHED', error: error, workflows: [], not_followed: [] }
+  }
+  const seen = {}
+  const running = listed.workflows.filter((entry) => {
+    if (!entry || typeof entry.workflow_id !== 'string' || !entry.workflow_id || seen[entry.workflow_id]) return false
+    seen[entry.workflow_id] = true
+    return true
+  })
+  if (typeof listed.count === 'number' && listed.count !== running.length) {
+    // The relay dropped or repeated an entry: said, not repaired.
+    log('the bridge listed ' + listed.count + ' running workflow(s) and the relay passed on ' + running.length)
+  }
+  if (running.length === 0) {
+    log('no SwarmCloud workflow of this tenant is running · nothing to attach')
+    return { attach: 'all', state: 'NOTHING_RUNNING', error: null, workflows: [], not_followed: [] }
+  }
+  const follow = running.slice(0, MAX_ATTACHED_WORKFLOWS)
+  const rest = running.slice(MAX_ATTACHED_WORKFLOWS)
+  log(running.length + ' running workflow(s) · following ' + follow.length + (rest.length ? ' · ' + rest.length + ' listed, not followed (at most ' + MAX_ATTACHED_WORKFLOWS + ')' : ''))
+  for (const entry of rest) {
+    const label = typeof entry.label === 'string' && entry.label.trim() ? ' ' + entry.label.trim() : ''
+    log(entry.workflow_id + label + ' ' + (entry.state || 'state not read') + ' · not followed · /sc attach ' + entry.workflow_id + consoleSuffix(entry.console))
+  }
+  const names = attachNames(follow)
+  const results = await parallel(follow.map((entry, index) => () => attachOne(entry.workflow_id, names[index], true)))
+  phase('Result')
+  const workflows = follow.map((entry, index) => results[index] || {
+    workflow_id: entry.workflow_id, state: 'NOT_ATTACHED', error: 'the attach stopped before it answered', steps: [],
+  })
+  const notFollowed = rest.map((entry) => {
+    const out = { workflow_id: entry.workflow_id, label: entry.label || null, state: entry.state || null }
+    if (consoleSuffix(entry.console)) out.console = entry.console.trim()
+    return out
+  })
+  return { attach: 'all', state: 'ATTACHED', error: null, workflows: workflows, not_followed: notFollowed }
+}
+
+const given = readSpec(args)
+
+if (given.attachAll) {
+  phase('Attach')
+  return await attachAll()
+}
+
+if (given.attach) {
+  phase('Attach')
+  return await attachOne(given.attach, given.attach)
 }
 
 phase('Submit')

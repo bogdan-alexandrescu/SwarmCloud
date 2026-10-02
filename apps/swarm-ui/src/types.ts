@@ -595,7 +595,8 @@ export interface Task {
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
-   * field existed.
+   * field existed. One of `END_CAUSES` from this build's contract; typed as a
+   * string because a newer API may send a value this build does not know.
    */
   end_cause?: string | null
   /**
@@ -1192,6 +1193,14 @@ export interface GitSummary {
   auto_committed?: boolean
   published?: boolean
   publish_reason?: string
+  /**
+   * WHERE THE CLONE'S BASE WAS PINNED (agent-detail-2.html A4). Not written by
+   * any worker on main: the shape is the mock-up's reading of the brief --
+   * `{pinned: true, sha, from}` (from: the upstream step or task the commit was
+   * taken from) or `{pinned: false, reason}`. Absent is "not recorded", which
+   * the Code card says as that and never as "not pinned".
+   */
+  base_pin?: GitBasePin | null
   pull_request?: { number: number; url: string; state: string; created: boolean }
 
   /**
@@ -1219,6 +1228,11 @@ export interface GitSummary {
     complete?: boolean
   }
 }
+
+/** `result_summary.git.base_pin`; see `GitSummary.base_pin`. */
+export type GitBasePin =
+  | { pinned: true; sha: string; from?: string | null; upstream_task_id?: string | null }
+  | { pinned: false; reason?: string | null }
 
 export interface ArtifactRef {
   name: string
@@ -2227,6 +2241,28 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
   const s = w?.lead?.state
   return s === 'paused' || s === 'zero' || s === 'below_units'
 }
+
+/**
+ * `swarm_common.models.EndCause`, in the frozen order: why a task ended
+ * FAILED or CANCELLED. Held to the enum by section 5 of
+ * scripts/lib/check-contract-parity.sh, so a value added there (contract
+ * request 29 added `publish_refused` and request 41 `child_cascade`,
+ * 2026-10-02) is added here too.
+ */
+export type EndCause =
+  | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
+  | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
+  | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
+  | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
+  | 'publish_refused' | 'child_cascade'
+
+export const END_CAUSES: readonly EndCause[] = [
+  'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
+  'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
+  'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
+  'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
+  'publish_refused', 'child_cascade',
+]
 
 /**
  * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a

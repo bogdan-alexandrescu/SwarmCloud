@@ -156,11 +156,14 @@ _CACHE_MAX_ENTRIES = 256
 #: `merge_refused`, `merge_failed`. One bump for both requests, which land
 #: together; a stored day counted under 3 has none of the four keys.
 #:
-#: 5 (2026-10-02, contract requests 14 and 41): a child task cancelled
+#: 5 (2026-10-02, contract request 29): PUBLISH_REFUSED is its own failure
+#: class, `publish_refused`. A stored day counted under 4 has no such key, and
+#: counted those refusals under `runner_error` and `outputs_missing`.
+#: 6 (2026-10-02, contract requests 14 and 41): a child task cancelled
 #: because of its parent (`EndCause.CHILD_CASCADE`) is its own cancel cause,
 #: `child_cascade` -- not `requested`, which is a cancel somebody pressed. A
-#: stored day counted under 4 has no such key.
-DERIVE_VERSION = 5
+#: stored day counted under 5 has no such key.
+DERIVE_VERSION = 6
 CLASSIFIER_VERSION = 2
 
 #: Firestore caps a document at 1 MiB. A day whose tuples pass this many bytes
@@ -254,6 +257,10 @@ FAILURE_CLASSES: tuple[tuple[str, str], ...] = (
     ("verdict_failed", "verdict failed"),
     ("merge_refused", "merge refused"),
     ("merge_failed", "merge failed"),
+    # Contract request 29: the worker refused to publish -- a credential in
+    # the final tree, or an unusable pr-title.txt. A platform refusal, which
+    # neither "runner error" nor "outputs missing" described.
+    ("publish_refused", "publish refused"),
     ("other", "other"),
     ("no_reason", "no reason recorded"),
 )
@@ -331,6 +338,7 @@ _FAILURE_OF_CAUSE: dict[str, str] = {
     EndCause.MERGE_FAILED.value: "merge_failed",
     EndCause.VERDICT_REFUSED.value: "verdict_refused",
     EndCause.VERDICT_FAILED.value: "verdict_failed",
+    EndCause.PUBLISH_REFUSED.value: "publish_refused",
 }
 #: ... and as a cancel cause. The two maps partition `EndCause`.
 _CANCEL_OF_CAUSE: dict[str, str] = {

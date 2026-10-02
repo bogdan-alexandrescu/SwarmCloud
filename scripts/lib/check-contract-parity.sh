@@ -228,8 +228,9 @@ fi
 # 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
 # --------------------------------------------------------------------------
 # `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
-# states, the nine park reasons, the six provider states and the pool families,
-# and the child-task fields and cancel class (requests 14, 40, 41, item 9).
+# states, the nine park reasons, the six provider states, the end causes and
+# the pool families, and the child-task fields and cancel class (requests 14,
+# 40, 41, item 9).
 # It has to: the browser cannot import Python, and the alternative to a bundled
 # copy of a three-entry frozen catalogue is a request per render to learn
 # something that cannot change without a contract change.
@@ -278,7 +279,7 @@ repo_root, types_path = sys.argv[1], sys.argv[2]
 sys.path.insert(0, str(Path(repo_root) / "apps" / "common"))
 
 from swarm_common import states as S                      # noqa: E402
-from swarm_common.models import ProviderState, WorkflowStep, pool_names_for  # noqa: E402
+from swarm_common.models import EndCause, ProviderState, WorkflowStep, pool_names_for  # noqa: E402
 from swarm_common.profiles import RESOURCE_CLASSES        # noqa: E402
 
 SRC = Path(types_path).read_text()
@@ -426,6 +427,20 @@ compare_set(
     [p.value for p in ProviderState],
     "union",
 )
+# EndCause: the union and the ordered list. Contract request 29 added
+# publish_refused on 2026-10-02; a value the frozen enum gains and these do
+# not is a task end the UI has no word for. The list is compared in ORDER as
+# well, because the frozen order is the order a reader is shown.
+compare_set("EndCause", ts_union("EndCause"), [c.value for c in EndCause], "union")
+compare_set("END_CAUSES", ts_array("END_CAUSES"), [c.value for c in EndCause], "array literal")
+end_causes_ts = ts_array("END_CAUSES")
+if end_causes_ts is not None and end_causes_ts != [c.value for c in EndCause]:
+    emit(
+        "DRIFT",
+        "END_CAUSES order",
+        "frozen %s  //  types.ts %s"
+        % (" ".join(c.value for c in EndCause), " ".join(end_causes_ts)),
+    )
 
 # -- 4. the pool naming rules ----------------------------------------------
 # Derived from `pool_names_for` rather than written down: it is the function

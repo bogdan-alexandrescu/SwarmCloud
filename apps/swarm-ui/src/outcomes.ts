@@ -52,7 +52,7 @@ export interface CancelSplit {
   /**
    * Contract request 41: a child task cancelled because its parent was
    * cancelled, ended, or out-waited its await. OPTIONAL: an API before
-   * DERIVE_VERSION 5 does not send it, and absent is not zero.
+   * DERIVE_VERSION 6 does not send it, and absent is not zero.
    */
   child_cascade?: number
   other: number
@@ -78,6 +78,7 @@ export type FailureClassKey =
   | 'verdict_failed'
   | 'merge_refused'
   | 'merge_failed'
+  | 'publish_refused'
   | 'other'
   | 'no_reason'
 

@@ -1,4 +1,15 @@
-import { createContext, Fragment, useCallback, useContext, useMemo, useRef, useState, type ReactNode } from 'react'
+import {
+  cloneElement,
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useMemo,
+  useRef,
+  useState,
+  type ReactElement,
+  type ReactNode,
+} from 'react'
 import { Chip, DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
 import {
   ARTIFACT_PAGE_LIMIT,
@@ -16,7 +27,8 @@ import { ArtifactViewer, Markdown } from './ArtifactViewer'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
-import { attemptLine, servedAge, Stream, useRead } from './RunFiles'
+import { GapNotice, LogText, stepMarks, useLogMarks } from './logMarks'
+import { servedAge, Stream, useRead } from './RunFiles'
 import { Id, Screen, type ScreenReading } from './Shell'
 import {
   ageSpan,
@@ -38,7 +50,6 @@ import {
   type TranscriptStep,
   workdirNotUploadedOf,
 } from './types'
-import { AGE_TICK_MS, useNow } from './useNow'
 
 /**
  * THE ARTIFACTS PANE (#184): WHAT AN AGENT TOOK IN AND WHAT IT PRODUCED.
@@ -163,15 +174,16 @@ interface ArtifactsView {
    */
   listing: Result<ArtifactListing> | null
   answer: Result<TaskAnswer>
-  transcript: Result<TaskTranscript>
-  /** The agent's stderr and the runner's stdout and stderr, in one read. */
-  logs: Result<TaskLogs>
   /** NULL: the task is not a workflow step, so there is no workflow to read. */
   workflow: Result<WorkflowRead> | null
 }
 
-/** The streams the poll reads in one `/logs` call. The agent's stdout is read only while its view is open. */
-const POLLED_STREAMS: readonly LogStreamName[] = ['agent_stderr', 'stdout', 'stderr']
+/**
+ * The streams the log dock reads in one `/logs` call. The agent's stdout is
+ * read only while its view is open: it is the one stream that can be large,
+ * and the transcript already serves it parsed.
+ */
+export const POLLED_STREAMS: readonly LogStreamName[] = ['agent_stderr', 'stdout', 'stderr']
 
 /** A 404 with no error envelope: FastAPI's own, for a path this deployment does not serve. */
 function routeMissing(e: ApiError): boolean {
@@ -192,14 +204,14 @@ function answerSettled(v: ArtifactsView): boolean {
 }
 
 /** A terminal task's transcript read from an object that no longer changes. */
-function transcriptSettled(v: ArtifactsView): boolean {
+export function transcriptSettled(v: LogFeed): boolean {
   if (!TERMINAL_STATES.has(v.task.state) || !ok(v.transcript)) return false
   const s = v.transcript.data.stream
   return s.status === 'not_applicable' || (s.status === 'ok' && (s.source === 'final' || s.source === 'artifact'))
 }
 
 /** A terminal task's logs read from objects that no longer change. */
-function logsSettled(v: ArtifactsView): boolean {
+export function logsSettled(v: LogFeed): boolean {
   if (!TERMINAL_STATES.has(v.task.state) || !ok(v.logs)) return false
   if (v.logs.data.attempt.completed_at === null) return false
   return v.logs.data.streams.every((s) => s.source !== 'live')
@@ -232,23 +244,22 @@ async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Res
         ? Promise.resolve(prevListing)
         : loadArtifactListing(taskId)
 
-  // THE ANSWER: read at open; while running, again only once the transcript
-  // has shown a result event, or while the last read failed; after the end,
-  // until it is settled.
+  // THE ANSWER: read at open; while running, again on each poll until one is
+  // in, or while the last read failed; after the end, until it is settled.
+  //
+  // IT USED TO WAIT FOR THE TRANSCRIPT. This pane read the transcript every
+  // poll and asked for the answer only once a `result` step had shown up in
+  // it. The transcript and the logs live in the log dock under the detail now
+  // (viewers.html A, picked 2026-10-02), which reads them for the attempt the
+  // reader picked; reading them here as well was the same two requests twice
+  // per poll. So the answer is asked for in the transcript's place -- one
+  // request per poll either way -- and stops once it is in.
   const prevAnswer = prev?.answer ?? null
   const answerIn = prevAnswer !== null && ok(prevAnswer) && prevAnswer.data.status === 'ok'
   const retry = prevAnswer !== null && prevAnswer.status === 'error' && !routeMissing(prevAnswer.error)
-  const resultSeen =
-    prev !== null && ok(prev.transcript) && (prev.transcript.data.steps ?? []).some((s) => s.kind === 'result')
-  const askAnswer =
-    prev === null || prevAnswer === null || retry || (terminal ? !answerSettled(prev) : resultSeen && !answerIn)
+  const askAnswer = prev === null || prevAnswer === null || retry || (terminal ? !answerSettled(prev) : !answerIn)
   const answer: Promise<Result<TaskAnswer>> =
     askAnswer || prevAnswer === null ? loadAnswer(taskId) : Promise.resolve(prevAnswer)
-
-  const transcript: Promise<Result<TaskTranscript>> =
-    prev !== null && transcriptSettled(prev) ? Promise.resolve(prev.transcript) : loadTranscript(taskId, { source: 'auto' })
-  const logs: Promise<Result<TaskLogs>> =
-    prev !== null && logsSettled(prev) ? Promise.resolve(prev.logs) : loadTaskLogs(taskId, { stream: POLLED_STREAMS, source: 'auto' })
 
   // THE WORKFLOW, once: it names the step behind each staged file and says
   // whether that run still lists it, and neither changes while this is open.
@@ -260,10 +271,10 @@ async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Res
         ? Promise.resolve(prevWorkflow)
         : loadWorkflow(t.workflow_id)
 
-  const [l, a, tr, lg, w] = await Promise.all([listing, answer, transcript, logs, workflow])
+  const [l, a, w] = await Promise.all([listing, answer, workflow])
   return {
     status: 'ok',
-    data: { task: t, listing: l, answer: a, transcript: tr, logs: lg, workflow: w },
+    data: { task: t, listing: l, answer: a, workflow: w },
     fetchedAt: task.fetchedAt,
   }
 }
@@ -277,20 +288,20 @@ async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Res
  */
 export function artifactsPoll(v: ArtifactsView | null, now: number = Date.now()): number | null {
   if (v === null || !TERMINAL_STATES.has(v.task.state)) return ARTIFACTS_POLL_MS
-  if (answerSettled(v) && transcriptSettled(v) && logsSettled(v)) return null
+  if (answerSettled(v)) return null
   const done = v.task.completed_at === null ? Number.NaN : Date.parse(v.task.completed_at)
   return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS ? ARTIFACTS_POLL_MS : null
 }
 
 function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
-  // THE SHARED AGE CLOCK. Every served age on this pane ticks on it, as every
-  // age in the frame does, so two ages side by side cannot disagree.
-  const now = useNow(AGE_TICK_MS)
+  // NO LOGS SECTION (viewers.html A, picked 2026-10-02). The transcript and
+  // the agent's and runner's streams are the log dock under the detail
+  // (LogDock.tsx), which stays open across every tab and reads the attempt
+  // the reader picks; a second copy here read the latest attempt only.
   return (
     <div className="run-stack arts">
       <Inputs v={v} reading={reading} />
       <Outputs v={v} />
-      <Logs v={v} reading={reading} now={now} />
     </div>
   )
 }
@@ -1238,7 +1249,10 @@ function ImageFigure({ task, entry }: { task: string; entry: ArtifactEntry }) {
         <span className="mono">{entry.name}</span>{' '}
         <a className="copy" href={src} target="_blank" rel="noreferrer">
           open full
-        </a>
+        </a>{' '}
+        {/* THE RAW ROUTE'S OWN WORDS (viewers.html A): an image is served as
+            stored, and no redaction rule can scan one. */}
+        <span className="ctl-sub">served as stored · not redacted (an image cannot be scanned)</span>
       </figcaption>
     </figure>
   )
@@ -1284,58 +1298,51 @@ function ReadFailed({ error, what }: { error: ApiError | null; what: string }) {
 // Logs
 // ---------------------------------------------------------------------------
 
-type LogView = 'transcript' | 'stdout' | 'stderr' | 'runner'
+export type LogView = 'transcript' | 'stdout' | 'stderr' | 'runner'
 
-const LOG_VIEWS: readonly { id: LogView; label: string }[] = [
-  { id: 'transcript', label: 'transcript' },
-  { id: 'stdout', label: 'stdout' },
-  { id: 'stderr', label: 'stderr' },
-  { id: 'runner', label: 'runner (platform)' },
+/** The dock's streams, in the frames' words and order (viewers.html A). */
+export const LOG_VIEWS: readonly { id: LogView; label: string }[] = [
+  { id: 'transcript', label: 'Transcript' },
+  { id: 'stdout', label: 'Agent stdout' },
+  { id: 'stderr', label: 'Agent stderr' },
+  { id: 'runner', label: 'Runner' },
 ]
+
+/**
+ * ONE ATTEMPT'S LOGS, AS THE LOG DOCK READ THEM: the transcript and the
+ * polled streams, each with its own answer, never another's. `attemptId` is
+ * the attempt the reader picked, or null for the latest -- the API takes
+ * `attempt_id` on every log read, and each read below passes it, so a picked
+ * attempt's stdout and records are that attempt's and not the newest one's.
+ */
+export interface LogFeed {
+  task: Task
+  attemptId: string | null
+  transcript: Result<TaskTranscript>
+  /** The agent's stderr and the runner's stdout and stderr, in one read. */
+  logs: Result<TaskLogs>
+}
 
 /**
  * THE AGENT'S LOGS: its transcript as steps, its own stdout and stderr, and
  * -- behind the last choice, because it is the platform's and not the agent's
  * -- the runner process's streams, which the Details pane used to present as
- * the agent's output.
+ * the agent's output. The log dock (LogDock.tsx) picks the view; this draws it.
  *
  * EACH LOG'S OBJECT LOCATION IS HERE, beside its view (owner decision,
  * 2026-09-26, on #184): every stream row carries its object's `gs://` uri and
  * `copy gsutil`, and the transcript's facts carry the agent stdout object it
- * is parsed from. Details' Output listed the same locations from
- * `result_summary.logs`, away from the logs, and lists none now.
+ * is parsed from.
  */
-function Logs({ v, reading, now }: { v: ArtifactsView; reading: ScreenReading; now: number }) {
-  const [view, setView] = useState<LogView>('transcript')
+export function LogBody({ v, view, reading, now }: { v: LogFeed; view: LogView; reading: ScreenReading; now: number }) {
   const logs = v.logs
   return (
-    <section className="section arts-logs">
-      <h2>Logs</h2>
-      <div className="ctl-toolbar att-sub-head">
-        <div className="ctl-seg arts-view-seg" role="group" aria-label="Which log">
-          {LOG_VIEWS.map((o) => (
-            <button key={o.id} type="button" aria-pressed={view === o.id} onClick={() => setView(o.id)}>
-              {o.label}
-            </button>
-          ))}
-        </div>
-        {ok(logs) && (
-          <span className="is-end ctl-card-note">
-            {logs.data.attempt.status === 'latest' || logs.data.attempt.status === 'requested'
-              ? `${attemptLine(logs.data).toLowerCase()} · `
-              : ''}
-            masking{' '}
-            <span className={`art-masked${logs.data.redaction.applied_at_read_time ? '' : ' is-warn'}`}>
-              {logs.data.redaction.applied_at_read_time ? 'at read time' : 'not applied at read time'}
-            </span>
-          </span>
-        )}
-      </div>
+    <>
       {view === 'transcript' && <TranscriptView v={v} reading={reading} now={now} />}
       {view === 'stdout' && <AgentStdout v={v} reading={reading} now={now} />}
       {view === 'stderr' && <StreamsFrom logs={logs} names={['agent_stderr']} task={v.task} now={now} />}
       {view === 'runner' && <StreamsFrom logs={logs} names={['stdout', 'stderr']} task={v.task} now={now} />}
-    </section>
+    </>
   )
 }
 
@@ -1345,11 +1352,12 @@ function Logs({ v, reading, now }: { v: ArtifactsView; reading: ScreenReading; n
  * transcript view already serves it parsed, so the pane's poll leaves it out
  * and this view reads it itself, again with every poll while it is open.
  */
-function AgentStdout({ v, reading, now }: { v: ArtifactsView; reading: ScreenReading; now: number }) {
+function AgentStdout({ v, reading, now }: { v: LogFeed; reading: ScreenReading; now: number }) {
+  const attempt = v.attemptId === null ? {} : { attemptId: v.attemptId }
   const held = useRead<TaskLogs>(
-    () => loadTaskLogs(v.task.id, { stream: 'agent_stdout', source: 'auto' }),
+    () => loadTaskLogs(v.task.id, { ...attempt, stream: 'agent_stdout', source: 'auto' }),
     v.task.id,
-    `${reading.fetchedAt}`,
+    `${v.attemptId ?? 'latest'}:${reading.fetchedAt}`,
     null,
   )
   return <StreamsFrom logs={held.state} names={['agent_stdout']} task={v.task} now={now} />
@@ -1446,7 +1454,12 @@ export function StreamsFrom({
         r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== '' ? (
           <div key={r.name} className="rf-window">
             <span className="ctl-eyebrow">{r.name}</span>
-            <pre className="logwin-body">{r.stream.content}</pre>
+            {/* THE DOCK'S MARKS (logMarks.tsx): numbered lines, search hits,
+                error lines and the server's mask, and a gap in the tail at
+                the top of the window it precedes. Outside the dock nothing
+                is marked and this is the window as written. */}
+            <GapNotice name={r.name} />
+            <LogText name={r.name} content={r.stream.content} />
           </div>
         ) : null,
       )}
@@ -1470,7 +1483,7 @@ export function StreamsFrom({
  * that is one step, and it is labelled as that rather than drawn as a short
  * transcript.
  */
-function TranscriptView({ v, reading, now }: { v: ArtifactsView; reading: ScreenReading; now: number }) {
+function TranscriptView({ v, reading, now }: { v: LogFeed; reading: ScreenReading; now: number }) {
   const [records, setRecords] = useState(false)
   return records ? (
     <WithRecords v={v} reading={reading} now={now} onHide={() => setRecords(false)} />
@@ -1493,15 +1506,16 @@ function WithRecords({
   now,
   onHide,
 }: {
-  v: ArtifactsView
+  v: LogFeed
   reading: ScreenReading
   now: number
   onHide: () => void
 }) {
+  const attempt = v.attemptId === null ? {} : { attemptId: v.attemptId }
   const held = useRead<TaskTranscript>(
-    () => loadTranscript(v.task.id, { source: 'auto', includeRaw: true }),
+    () => loadTranscript(v.task.id, { ...attempt, source: 'auto', includeRaw: true }),
     v.task.id,
-    `${reading.fetchedAt}`,
+    `${v.attemptId ?? 'latest'}:${reading.fetchedAt}`,
     null,
   )
   if (held.state.status === 'loading') {
@@ -1524,7 +1538,7 @@ function TranscriptBody({
   onRecords,
 }: {
   read: Result<TaskTranscript>
-  v: ArtifactsView
+  v: LogFeed
   reading: ScreenReading
   now: number
   records: boolean
@@ -1558,6 +1572,7 @@ function TranscriptBody({
     if (next === null) return
     setReading2(true)
     const got = await loadTranscript(v.task.id, {
+      ...(v.attemptId === null ? {} : { attemptId: v.attemptId }),
       source: t.stream.source === 'artifact' ? 'auto' : 'final',
       offset: next,
       includeRaw: records,
@@ -1697,7 +1712,7 @@ function TranscriptSteps({
 }: {
   t: TaskTranscript
   steps: TranscriptStep[]
-  v: ArtifactsView
+  v: LogFeed
   reading: ScreenReading
   now: number
 }) {
@@ -1846,7 +1861,30 @@ function StepList({
   )
 }
 
-function StepRow({
+/**
+ * ONE STEP, MARKED FOR THE LOG DOCK (logMarks.tsx): a search hit, an error --
+ * a tool result's own `is_error`, or the console-side pattern -- and the step
+ * the reader jumped to. A call and its paired result are one row, so they are
+ * one mark and one jump target.
+ */
+function StepRow(props: {
+  step: TranscriptStep
+  results: Map<string, TranscriptStep>
+  nested: Map<string, TranscriptStep[]>
+  seen: Set<string>
+}) {
+  const marks = useLogMarks()
+  const el = StepRowBody(props)
+  const { step, results } = props
+  const paired = step.kind === 'tool_call' && step.tool?.id ? (results.get(step.tool.id) ?? null) : null
+  const mk = stepMarks(marks, step, paired)
+  return cloneElement(el, {
+    className: [el.props.className, mk.className].filter(Boolean).join(' '),
+    'data-log-key': mk['data-log-key'],
+  })
+}
+
+function StepRowBody({
   step,
   results,
   nested,
@@ -1856,7 +1894,7 @@ function StepRow({
   results: Map<string, TranscriptStep>
   nested: Map<string, TranscriptStep[]>
   seen: Set<string>
-}) {
+}): ReactElement<{ className?: string; 'data-log-key'?: string }> {
   const m: Record<string, unknown> = step.meta ?? {}
   const capped = step.truncated_fields.length > 0 && (
     <Mark

@@ -1,0 +1,644 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud Agent Detail</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Tokens, shell, pills and the icon sprite are copied from the approved batch-1/2 mock-ups (swarmcloud-agents.html).
+   TYPE RULE (owner, 2026-10-01): 12px floor, no all-caps, no letter-spacing. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--accent-2:#1a96d4;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--hive:url(#g-hive-l);--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--accent-2:#38bdf8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;--hive:url(#g-hive-d);color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--accent-2:#38bdf8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;--hive:url(#g-hive-d);color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:.86em;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;letter-spacing:-.02em;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;letter-spacing:-.01em;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+h3.sub{font-size:18px;margin:36px 0 6px}
+.lede{font-size:17px;color:var(--mute);max-width:760px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.variant{margin-top:28px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.frames2{display:grid;grid-template-columns:minmax(0,1fr);gap:20px}
+.frames3{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:16px;margin-top:16px}
+.fr{margin:0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,260px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.pass{font:600 12px var(--f-mono);color:var(--rec)}
+.part{font:600 12px var(--f-mono);color:#8a5a00}
+:root[data-theme="dark"] .part{color:#f5c451}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .part{color:#f5c451}}
+.fail{font:600 12px var(--f-mono);color:var(--bad)}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute);background:var(--code);padding:1px 6px;border-radius:4px}
+.qlist{margin:8px 0 0;padding-left:20px;font-size:14.5px}.qlist li{margin:6px 0}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ---- frame tokens (fixed light / fixed dark), from the Agents mock-up ---- */
+.fl{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--d-add:#e6f6ee;--d-addw:#c4ebd5;--d-del:#fdeeec;--d-delw:#f7cfc9;--d-hunk:#eef4fa;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+.fd{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--d-add:#0d2a20;--d-addw:#14513a;--d-del:#2e1414;--d-delw:#5c2420;--d-hunk:#11233b;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);min-width:1440px;min-height:760px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45}
+.app.narrow{min-width:1180px}
+.app a{color:inherit;text-decoration:none;cursor:default}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.pill.prod{background:#c81e1e;color:#fff;border:1px solid #c81e1e}
+.prodbar{position:absolute;left:0;right:0;top:0;height:3px;background:#c81e1e;z-index:3}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:5px;border-radius:6px;display:inline-flex}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee!important;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff!important}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e!important;width:56px;border-radius:12px;font-weight:600}
+.ri .sd{position:absolute;top:4px;right:12px;width:7px;height:7px;border-radius:50%;box-shadow:0 0 0 2px #0b3a7a;background:#f5c451}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;letter-spacing:-.015em;white-space:nowrap}.wm span{color:var(--f-ac)}
+.tenant{display:flex;align-items:center;gap:9px;margin:0 10px 8px;padding:8px 10px;border:1px solid var(--f-ln);border-radius:10px;background:var(--f-sf)}
+.tenant .tg{width:24px;height:24px;border-radius:7px;background:var(--f-acs);color:var(--f-ac);font:650 12px/24px var(--f-display);text-align:center;flex:none}
+.tenant .tt{display:flex;flex-direction:column;line-height:1.2;flex:1;min-width:0}
+.tenant .tt b{font-size:13px;font-weight:600}.tenant .tt small{font:12px var(--f-mono);color:var(--f-mu)}
+.car{width:13px;height:13px;opacity:.7}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.kids{margin:2px 0 6px 38px;border-left:1px solid var(--f-ln);padding-left:8px}
+.kid{display:flex;justify-content:space-between;gap:8px;padding:5px 10px;border-radius:7px;color:var(--f-mu);white-space:nowrap}
+.kid.on{color:var(--f-ac);background:var(--f-acs);font-weight:600}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.meter{margin:8px 10px 4px;padding:9px 10px;border-radius:10px;background:var(--f-hv);display:flex;flex-direction:column;gap:6px}
+.meter .mh{display:flex;justify-content:space-between;font-size:12px;color:var(--f-mu)}
+.meter .mh b{color:var(--f-ink);font-weight:600;font-variant-numeric:tabular-nums}
+.bar{height:6px;border-radius:3px;background:var(--f-ln);overflow:hidden;display:flex}
+.bar i{display:block;height:100%;background:var(--f-ac)}
+.bar i.w{background:var(--s-warn)}.bar i.l{background:var(--s-live)}.bar i.p{background:var(--s-park)}.bar i.n{background:var(--s-neu)}.bar i.b{background:var(--s-bad)}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:6px}.pfoot .pfrow .ibtn:first-of-type{margin-left:auto}
+.adm{font:600 12px var(--f-mono);color:var(--f-mu);border:1px solid var(--f-ln);border-radius:4px;padding:0 4px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+/* content */
+.ct{flex:1;min-width:0;padding:20px 24px;display:flex;flex-direction:column;gap:12px}
+.ct h3{margin:0;font-size:21px;letter-spacing:-.015em}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.phead .age{margin-left:auto;font:12px var(--f-mono);color:var(--f-mu);display:flex;gap:10px;align-items:center}
+.phead .age a{color:var(--f-ac)!important;border-bottom:1px solid var(--f-acl)}
+.chip{font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ac{background:var(--f-acs);color:var(--f-ac)}
+.chip.warn{background:var(--s-warnb);color:var(--s-warn)}
+.chip.bad{background:var(--s-badb);color:var(--s-bad)}
+.chip.live{background:var(--s-liveb);color:var(--s-live)}
+.chip.park{background:var(--s-parkb);color:var(--s-park)}
+.st{display:inline-flex;align-items:center;gap:7px}
+.st svg{width:12px;height:12px;flex:none}
+.st.live{color:var(--s-live)}.st.park{color:var(--s-park)}.st.bad{color:var(--s-bad)}.st.warn{color:var(--s-warn)}.st.neu{color:var(--s-neu)}
+.st span{color:var(--f-ink);font-size:13px}
+.sk{height:14px;border-radius:6px;background:var(--f-ln);width:80%}.sk.s{width:50%}.sk.t{width:30%}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:6px;align-items:center}
+.more{color:var(--f-ac)!important;font-size:12.5px;white-space:nowrap}
+.tbl{border:1px solid var(--f-ln);border-radius:10px;background:var(--f-sf);overflow-x:auto}
+.tbl table{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13px;font-variant-numeric:tabular-nums}
+.tbl th{font:500 12px var(--f-mono);color:var(--f-mu);text-align:left;padding:8px 12px;background:var(--f-hv);border-bottom:1px solid var(--f-ln);white-space:nowrap}
+.tbl td{padding:8px 12px;border-bottom:1px solid var(--f-ln);white-space:nowrap;vertical-align:top}
+.tbl tr:last-child td{border-bottom:0}
+.tbl .sub{display:block;font-size:12px;color:var(--f-mu);white-space:normal}
+.tbl .idc{font:12px var(--f-mono);color:var(--f-mu)}
+.tbl td.wrapc{white-space:normal}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;margin:0;font-size:13px}.kv dt{color:var(--f-mu)}.kv dd{margin:0;font-variant-numeric:tabular-nums}
+.foot{margin:0;font-size:12px;color:var(--f-mu);border-top:1px solid var(--f-ln);padding-top:8px}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px}.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.facts{display:flex;flex-wrap:wrap;gap:4px 16px;font-size:12.5px;color:var(--f-mu)}
+.facts b{color:var(--f-ink);font-weight:500;font-variant-numeric:tabular-nums}
+.facts .k{font:500 12px var(--f-mono);margin-right:5px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
+.tile{background:var(--f-hv);border-radius:9px;padding:8px 10px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tile b{font:650 17px var(--f-display);font-variant-numeric:tabular-nums}.tile small,.tile i{font-size:12px;color:var(--f-mu);font-style:normal}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln);flex-wrap:nowrap;overflow:hidden}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-ln);background:var(--f-sf);border-radius:8px;padding:6px 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);color:var(--f-sf);border-color:var(--f-ac)}
+.fd .btn.pri{color:#06101e}
+.btn.danger{color:var(--s-bad);border-color:color-mix(in srgb,var(--s-bad) 45%,transparent)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.dis{opacity:.45}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.split{display:grid;grid-template-columns:minmax(0,380px) minmax(0,1fr);border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf);overflow:hidden;min-height:620px}
+.split.strip{grid-template-columns:64px minmax(0,1fr)}
+.lp{border-right:1px solid var(--f-ln);display:flex;flex-direction:column;min-width:0}
+.lph{display:flex;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid var(--f-ln)}
+.lph .inp{flex:1}
+.inp{border:1px solid var(--f-ln);background:var(--f-sf);border-radius:8px;padding:6px 10px;font-size:13px;display:flex;align-items:center;gap:8px;color:var(--f-mu)}
+.li{display:grid;grid-template-columns:16px 1fr auto;gap:2px 8px;padding:9px 12px;border-bottom:1px solid var(--f-ln);align-items:start;position:relative}
+.li .st svg{margin-top:3px}
+.li b{font-weight:550;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li small{grid-column:2/4;font-size:12px;color:var(--f-mu);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.li small.why{color:var(--s-warn)}.li small.pk2{color:var(--s-park)}
+.li em{font:normal 12px var(--f-mono);color:var(--f-mu);white-space:nowrap}
+.li.sel{background:var(--f-acs)}
+.li.sel::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--f-ac)}
+.li.ind{padding-left:34px;grid-template-columns:16px 1fr auto}
+.li.ind::after{content:"";position:absolute;left:19px;top:0;bottom:0;border-left:1px solid var(--f-ln)}
+.disc{font:12px var(--f-mono);color:var(--f-mu)}
+.lstrip{display:flex;flex-direction:column;align-items:center;gap:2px;padding:8px 0;border-right:1px solid var(--f-ln);position:relative}
+.lstrip>span{width:40px;height:34px;display:flex;align-items:center;justify-content:center;border-radius:8px}
+.lstrip>span.sel{background:var(--f-acs)}
+.lstrip .kidm{width:28px;height:24px;margin-left:12px}
+.dp{display:flex;flex-direction:column;gap:12px;padding:14px 16px;min-width:0}
+.dph{display:flex;gap:10px;align-items:flex-start}
+.dph h4{margin:0;font-size:17px;letter-spacing:-.01em}
+.dph .r{margin-left:auto;display:flex;gap:6px;flex:none}
+.idt{font:12px var(--f-mono);color:var(--f-mu)}
+.parentl{display:inline-flex;align-items:center;gap:6px;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis;font-size:12.5px;color:var(--f-ac)!important;border:1px solid var(--f-acl);background:var(--f-acs);border-radius:99px;padding:2px 10px 2px 8px;align-self:flex-start}
+.parentl .idt{color:inherit;opacity:.85}
+.note2{font-size:12.5px;color:var(--f-mu);margin:0}
+.callout{display:flex;gap:10px;padding:10px 12px;border-radius:10px;border:1px solid var(--f-ln);background:var(--f-hv);font-size:13px;align-items:flex-start}
+.callout>svg{width:13px;height:13px;flex:none;margin-top:3px}
+.callout.warn{background:var(--s-warnb);border-color:color-mix(in srgb,var(--s-warn) 35%,transparent)}
+.callout.park{background:var(--s-parkb);border-color:color-mix(in srgb,var(--s-park) 35%,transparent)}
+.callout.bad{background:var(--s-badb);border-color:color-mix(in srgb,var(--s-bad) 35%,transparent)}
+.callout.live{background:var(--s-liveb);border-color:color-mix(in srgb,var(--s-live) 35%,transparent)}
+.callout b{font-weight:600}
+.callout .cbody{display:flex;flex-direction:column;gap:4px;min-width:0}
+.callout .cbody small{font-size:12px;color:var(--f-mu)}
+.ev{display:grid;grid-template-columns:190px 50px 1fr;gap:8px;font-size:12.5px;padding:3px 0;border-top:1px dashed var(--f-ln)}
+.ev span:first-child{font-family:var(--f-mono)}.ev span:nth-child(2){color:var(--f-mu)}
+.exd{font:500 12px var(--f-mono);color:var(--f-mu)}
+.app .exd,.phone .exd{background:none;padding:0;color:var(--f-mu)}
+code.f,.app code,.phone code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+/* children */
+.fan{display:flex;flex-direction:column;gap:6px}
+.fan .bar{height:8px}
+.legend{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:12px;color:var(--f-mu)}
+.legend i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;vertical-align:0}
+.cap{display:flex;gap:6px;align-items:center;font:12px var(--f-mono);color:var(--f-mu)}
+.cap .slots{display:inline-flex;gap:2px}.cap .slots i{width:7px;height:10px;border-radius:2px;background:var(--f-ln)}.cap .slots i.u{background:var(--f-ac)}
+/* verdict */
+.verd{display:inline-flex;align-items:center;gap:6px;font:600 13px var(--f-mono);padding:3px 10px;border-radius:8px}
+.verd.merge{background:var(--s-liveb);color:var(--s-live)}
+.verd.notyet{background:var(--s-warnb);color:var(--s-warn)}
+.sevg{display:flex;flex-direction:column;gap:6px}
+.sevh{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600}
+.sevh .cnt{font-weight:500}
+.sevd{width:9px;height:9px;border-radius:2px;flex:none}
+.sevd.b{background:var(--s-bad)}.sevd.m{background:var(--s-warn)}.sevd.n{background:var(--s-neu)}.sevd.u{background:transparent;border:1.5px dashed var(--f-mu)}
+.fnd{font:12.5px/1.5 var(--f-mono);background:var(--f-hv);border-radius:7px;padding:7px 10px;white-space:pre-wrap;margin:0;border-left:3px solid var(--f-ln)}
+.fnd.b{border-left-color:var(--s-bad)}.fnd.m{border-left-color:var(--s-warn)}.fnd.n{border-left-color:var(--s-neu)}
+.checks{display:flex;flex-direction:column;gap:0;border:1px solid var(--f-ln);border-radius:10px;overflow:hidden}
+.ck{display:grid;grid-template-columns:18px minmax(0,1fr) auto;gap:8px;padding:7px 10px;border-bottom:1px solid var(--f-ln);font-size:12.5px;align-items:start}
+.ck:last-child{border-bottom:0}
+.ck .m{font:600 13px var(--f-mono);text-align:center}
+.ck.ok .m{color:var(--s-live)}.ck.no .m{color:var(--s-bad)}.ck.na .m{color:var(--f-mu)}.ck.wait .m{color:var(--s-warn)}
+.ck.no{background:var(--s-badb)}
+.ck small{display:block;color:var(--f-mu);font-size:12px}
+.ck code{font-size:12px}
+.ck .r2{white-space:normal;text-align:right;max-width:230px}
+.lbl{display:inline-flex;align-items:center;gap:6px;font:500 12px var(--f-mono);padding:2px 9px;border-radius:99px;border:1px solid}
+.lbl.ready{color:#0a7a55;border-color:#0a7a55;background:#e3f5ee}
+.fd .lbl.ready{color:#4cd9a0;border-color:#2c8a66;background:#0d2e25}
+.lbl.off{color:var(--f-mu);border-color:var(--f-ln);border-style:dashed}
+/* workflow page */
+.stages{display:grid;grid-auto-flow:column;grid-auto-columns:minmax(150px,1fr);gap:22px;position:relative;padding:8px 4px 4px;overflow-x:auto;min-width:0}
+.stg{display:flex;flex-direction:column;gap:8px;position:relative}
+.stg>.sl{font:500 12px var(--f-mono);color:var(--f-mu)}
+.stg+.stg::before{content:"";position:absolute;left:-22px;top:56px;width:22px;border-top:1.5px solid var(--f-mu);opacity:.55}
+.node{border-radius:9px;background:var(--nb);border:1px solid color-mix(in srgb,var(--ne) 40%,transparent);box-shadow:inset 4px 0 0 var(--ne);padding:8px 10px 8px 13px;display:flex;flex-direction:column;gap:2px;font-size:12.5px;position:relative;min-height:84px}
+.node b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node small{color:var(--f-mu);font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.node .nst{display:flex;gap:6px;align-items:center}
+.node .nst .st{color:var(--ne)!important}
+.node.sel{outline:2px solid var(--f-ac);outline-offset:2px}
+.node.dim{opacity:.6}
+.node .tag{margin-left:auto;font:500 12px var(--f-mono);color:var(--f-mu);white-space:nowrap}
+.n-live{--ne:var(--s-live);--nb:var(--s-liveb)}.n-park{--ne:var(--s-park);--nb:var(--s-parkb)}.n-bad{--ne:var(--s-bad);--nb:var(--s-badb)}.n-warn{--ne:var(--s-warn);--nb:var(--s-warnb)}.n-neu{--ne:var(--s-neu);--nb:var(--f-sf)}
+.kidbadge{display:inline-flex;gap:4px;align-items:center;font:500 12px var(--f-mono);color:var(--f-ac);margin-top:2px}
+.kiddots{display:flex;gap:3px;margin-top:4px}.kiddots i{width:8px;height:8px;border-radius:50%;background:var(--f-ln)}
+.kiddots i.l{background:var(--s-live)}.kiddots i.b{background:var(--s-bad)}.kiddots i.r{background:var(--s-live);opacity:.5}.kiddots i.q{background:transparent;border:1.5px solid var(--s-neu)}
+.wfpage{display:grid;grid-template-columns:minmax(0,1fr) 420px;gap:14px;align-items:start}
+.wfpage.one{grid-template-columns:minmax(0,1fr)}
+.path{display:flex;flex-direction:column;gap:0}
+.pstep{display:grid;grid-template-columns:22px minmax(0,1fr);gap:8px;position:relative;padding-bottom:12px}
+.pstep::before{content:"";position:absolute;left:10px;top:20px;bottom:0;border-left:1.5px solid var(--f-ln)}
+.pstep:last-child::before{display:none}
+.pstep .dot{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--f-hv);border:1.5px solid var(--f-ln);font:600 12px var(--f-mono);color:var(--f-mu);z-index:1}
+.pstep.ok .dot{border-color:var(--s-live);color:var(--s-live);background:var(--s-liveb)}
+.pstep.no .dot{border-color:var(--s-bad);color:var(--s-bad);background:var(--s-badb)}
+.pstep.wait .dot{border-color:var(--s-warn);color:var(--s-warn);background:var(--s-warnb)}
+.pstep b{font-size:13px}.pstep small{display:block;font-size:12px;color:var(--f-mu)}
+/* code card + diff (from the approved agent-diff mock-up) */
+.dpane{border:1px solid var(--f-ln);border-radius:10px;overflow:hidden;display:flex;flex-direction:column}
+.dbar{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--f-ln);font-size:12.5px;flex-wrap:wrap}
+.dbar .nm{font:500 12.5px var(--f-mono)}.dbar .mu{color:var(--f-mu);font:12px var(--f-mono)}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:8px;overflow:hidden;margin-left:auto}
+.seg span{padding:4px 10px;font-size:12px;color:var(--f-mu);border-right:1px solid var(--f-ln)}
+.seg span:last-child{border-right:0}
+.seg span.on{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.dbody{display:flex;min-height:0}
+.files{width:250px;flex:none;border-right:1px solid var(--f-ln);display:flex;flex-direction:column}
+.fsum{padding:9px 12px 5px;font:12px var(--f-mono);color:var(--f-mu);display:flex;gap:8px;flex-wrap:wrap}
+.fsum b{color:var(--f-ink);font-weight:500}
+.add{color:var(--s-live)}.del{color:var(--s-bad)}
+.dir{font:12px var(--f-mono);color:var(--f-mu);padding:7px 10px 3px}
+.fi{display:grid;grid-template-columns:16px minmax(0,1fr) auto;gap:8px;align-items:center;padding:5px 8px;margin:0 4px;border-radius:7px;position:relative}
+.fi.on{background:var(--f-acs)}
+.fi.on::before{content:"";position:absolute;left:-4px;top:6px;bottom:6px;width:3px;border-radius:2px;background:var(--f-ac)}
+.fi .k{font:600 12px var(--f-mono);text-align:center}
+.k.M{color:var(--s-warn)}.k.A{color:var(--s-live)}.k.D{color:var(--s-bad)}.k.R{color:var(--f-ac)}.k.X{color:var(--s-bad)}
+.fi .p{font:12.5px var(--f-mono);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fi.on .p{color:var(--f-ac);font-weight:500}
+.fi .n{font:12px var(--f-mono);display:flex;gap:6px;align-items:center}
+.fi.ref .p{color:var(--s-bad)}
+.view{flex:1;min-width:0;display:flex;flex-direction:column}
+.fh{display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid var(--f-ln);background:var(--f-hv);flex-wrap:wrap}
+.fh .p{font:500 12.5px var(--f-mono)}
+.badge{font:500 12px var(--f-mono);padding:1px 7px;border-radius:99px;background:var(--s-neub);color:var(--s-neu)}
+.code{overflow:auto;font:12.5px/20px var(--f-mono);max-height:260px}
+.ln{display:grid;grid-template-columns:40px 40px 18px minmax(0,1fr);white-space:pre}
+.ln .g{color:var(--f-mu);text-align:right;padding-right:8px;opacity:.85}
+.ln .s{text-align:center;color:var(--f-mu)}
+.ln.a{background:var(--d-add)}.ln.a .s{color:var(--s-live)}.ln.a .g{background:var(--d-addw)}
+.ln.d{background:var(--d-del)}.ln.d .s{color:var(--s-bad)}.ln.d .g{background:var(--d-delw)}
+.ln.h{background:var(--d-hunk);color:var(--f-mu)}
+.withheld{padding:18px 16px;font-size:13px;color:var(--f-mu);display:flex;flex-direction:column;gap:4px}
+.withheld b{color:var(--s-bad)}
+.pin{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
+.pin .pi{font:600 12px var(--f-mono);padding:2px 8px;border-radius:99px}
+.pin .pi.y{background:var(--s-liveb);color:var(--s-live)}
+.pin .pi.n{background:var(--s-warnb);color:var(--s-warn)}
+.pin .pi.u{background:var(--f-hv);color:var(--f-mu)}
+.ohead{display:flex;gap:10px;align-items:flex-start}
+.ohead .oi{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex:none;font:600 13px var(--f-mono)}
+.oi.live{background:var(--s-liveb);color:var(--s-live)}.oi.bad{background:var(--s-badb);color:var(--s-bad)}.oi.warn{background:var(--s-warnb);color:var(--s-warn)}.oi.park{background:var(--s-parkb);color:var(--s-park)}.oi.neu{background:var(--s-neub);color:var(--s-neu)}
+.ohead b{font-size:14px}.ohead p{margin:2px 0 0;font-size:12.5px;color:var(--f-mu)}
+.causes{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}
+.cause{border:1px solid var(--f-ln);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px;background:var(--f-sf)}
+.cause .do{font-size:12.5px;border-top:1px dashed var(--f-ln);padding-top:6px}
+.cause .do b{font-weight:600}
+.cause .sig{font:12px var(--f-mono);color:var(--f-mu)}
+.states4{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+/* phone */
+.phone{width:390px;max-width:100%;height:760px;margin:0 auto;border-radius:30px;border:6px solid #0d1724;background:var(--f-bg);color:var(--f-ink);position:relative;overflow:hidden;font-size:13px;font-family:var(--f-display);line-height:1.45;display:flex;flex-direction:column}
+.pbar{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#0b3a7a;color:#eef4fa;--hive:url(#g-hive-b)}
+.pbar b{font-size:15px;flex:1;font-weight:650}
+.pbar .pill.dev{background:rgba(124,200,248,.18);color:#cfe9fb;border:1px solid rgba(124,200,248,.45)}
+.pbar .ic{color:#eef4fa}
+.pbody{padding:12px 16px;display:flex;flex-direction:column;gap:10px;overflow:auto;flex:1}
+.phone .tabs span{padding:6px 8px;font-size:12.5px}
+.phone .tiles{grid-template-columns:repeat(2,1fr)}
+.phone .card{padding:10px 12px}
+.phone .dph h4{font-size:16px}
+.prow{display:grid;grid-template-columns:16px 1fr auto;gap:2px 8px;padding:9px 0;border-bottom:1px solid var(--f-ln)}
+.prow small{grid-column:2/4;font-size:12px;color:var(--f-mu)}
+.prow b{font-weight:550;font-size:13px}
+.prow em{font:normal 12px var(--f-mono);color:var(--f-mu)}
+.phone .checks .ck{grid-template-columns:18px minmax(0,1fr)}
+.phone .ck .r2{display:none}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol></defs></svg>
+
+<div class="wrap">
+<p class="kicker">SwarmCloud · Agents and Workflows · batch 3 · 2026-10-02</p>
+<h1>The agent detail and the workflow page, part 2</h1>
+<p class="lede">Three things decided after the batch-2 mock-ups, drawn into the approved split detail and the page per workflow: <b>child tasks</b> (D15), <b>the review verdict and the merge step</b> (#295), and <b>publish outcomes</b>, including the new FAILED forms and where the base was pinned. Tasks, people, commits and times are <span class="exd">example data</span>.</p>
+<ul class="toc"><li><a href="#inv">1 · Today, measured</a></li><li><a href="#va">2 · Variant A</a></li><li><a href="#vb">Variant B</a></li><li><a href="#vc">Variant C</a></li><li><a href="#states">Empty, loading, error</a></li><li><a href="#rec">3 · Recommendation</a></li><li><a href="#ungrounded">What the code does not say yet</a></li></ul>
+
+<h2 id="inv"><span class="n">1</span>What exists today, measured from the code</h2>
+<p>Read on 2026-10-02 from <code>origin/main</code> at <code>d88ca507</code> and the lane branch <code>origin/lane/b15b-child-tasks</code>. <span class="pass">on main</span> means it ships today, <span class="part">lane / design</span> means it is written but not merged or not built, and <span class="fail">not found</span> means I could not find it anywhere.</p>
+<div class="tw"><table class="doc">
+<thead><tr><th>Item</th><th>Where</th><th>Status</th><th>What this page needs from it</th></tr></thead>
+<tbody>
+<tr><td colspan="4"><b>Child tasks (D15)</b></td></tr>
+<tr><td><code>Task.parent_task_id</code>, <code>parent_attempt_id</code></td><td class="src">lane <code>apps/swarm-ui/src/types.ts</code> (after <code>depends_on</code>, main :537); design <code>docs/design/child-tasks.md</code> §6.4; contract request 14</td><td><span class="part">lane</span></td><td>The parent link on a child, and the children list. Optional on the wire: an older API omits them, which reads as "unknown", never "no parent".</td></tr>
+<tr><td><code>ParkReason.CHILDREN_INCOMPLETE</code></td><td class="src">main <code>types.ts:2223</code> lists 8 reasons; lane adds the 9th and puts it in <code>PARK_CLEARS_ITSELF</code>; <code>states.py:125</code>; request 40</td><td><span class="part">lane</span></td><td>The parked parent's callout: it clears itself, nobody has to act.</td></tr>
+<tr><td><code>EndCause.CHILD_CASCADE</code> and its <code>why</code></td><td class="src">lane <code>outcomes.ts</code> <code>CancelCauseKey</code> adds <code>child_cascade</code>; <code>Ledger.tsx</code> <code>CancelCausesCard</code>; design §3.4; request 41. Main's <code>CANCELLED_PARENT</code> (<code>models.py:245</code>) means an upstream step and cannot be reused</td><td><span class="part">lane</span></td><td>The cancelled child's headline: <code>parent_cancelled</code>, <code>parent_ended</code> or <code>await_expired</code>.</td></tr>
+<tr><td>Fan-out cap and depth</td><td class="src">lane <code>swarm_api/settings.py:382</code> <code>max_children_per_task = 16</code>; depth is the constant 1 (design §7); <code>max_child_await_resumes = 4</code>, <code>child_await_max_seconds = 86400</code></td><td><span class="part">lane</span></td><td>"5 of 16", the await refunds and the await deadline. The UI must read them from the API, not restate them.</td></tr>
+<tr><td><code>GET /v1/tasks?parent_task_id=</code></td><td class="src">lane <code>routes/tasks.py:118</code>; design §6.3 says it is the only source a tree may be drawn from</td><td><span class="part">lane</span></td><td>The Children tab's data.</td></tr>
+<tr><td>Any screen that shows children</td><td class="src">none on main; the lane touches only <code>Ledger.tsx</code>, <code>outcomes.ts</code>, <code>types.ts</code></td><td><span class="fail">not found</span></td><td>Everything in section A1 and A2 is new.</td></tr>
+<tr><td colspan="4"><b>Review verdict and merge step (#295)</b></td></tr>
+<tr><td>Review verdict <code>MERGE</code> / <code>NOT_YET</code></td><td class="src"><code>agent_worker/verdict.py:44</code>, <code>swarm_api/validation.py:654</code>, <code>docs/workflows.md:466</code></td><td><span class="pass">on main</span></td><td>The verdict pill.</td></tr>
+<tr><td>Findings</td><td class="src"><code>verdict.py:54</code> keeps up to 50 findings of up to 1000 characters each, as <b>text only</b> (a string, or <code>summary</code>/<code>title</code>/<code>message</code>)</td><td><span class="part">no severity</span></td><td>"Findings by severity" needs a <code>severity</code> per finding, which nothing writes today. The frames group by it and put ungraded findings under "Not graded".</td></tr>
+<tr><td><code>result_summary.verdict_gate</code> (<code>agent_ran: false</code>)</td><td class="src"><code>docs/workflows.md:477</code>; no match in <code>apps/swarm-ui/src</code></td><td><span class="part">not shown</span></td><td>"The fix step ran no agent because the verdict was MERGE".</td></tr>
+<tr><td><code>post-verdict</code> and <code>merge</code> steps, <code>single-pr</code></td><td class="src"><code>docs/merge-step.md</code> (accepted 2026-09-29; build gated on #342); chain §3 :613</td><td><span class="part">design</span></td><td>The six-step workflow page.</td></tr>
+<tr><td><code>MERGE_REFUSED</code> / <code>MERGE_FAILED</code> and the refusal codes</td><td class="src"><code>merge-step.md:1318-1373</code> (rows 6-42, <code>result_summary.merge.refusal</code>); <code>VERDICT_REFUSED</code>/<code>VERDICT_FAILED</code> §6a :1405</td><td><span class="part">design</span></td><td>The merge step's refusal card. Row 34 gives <code>merged_by_this_task</code>.</td></tr>
+<tr><td><code>merge_human_gate</code>, <code>awaiting_human</code></td><td class="src">no match on main, on the 80 most recent remote branches, or in issues</td><td><span class="fail">not found</span></td><td>Drawn from the owner's B13r decision as given in the brief (Terraform, default on). The shape is assumed.</td></tr>
+<tr><td colspan="4"><b>Publish outcomes</b></td></tr>
+<tr><td><code>result_summary.git</code> (<code>GitSummary</code>)</td><td class="src"><code>types.ts:1154-1186</code>; the reason note <code>types.ts:929-937</code></td><td><span class="pass">on main</span></td><td>Base, head, commits, dirty files, patch, <code>publish_reason</code>, <code>pull_request</code>.</td></tr>
+<tr><td>Six "no pull request" causes</td><td class="src"><code>AgentDetail.tsx:2989-3020</code> (comment), <code>GitOutcome</code> :3022, <code>PublishOutcome</code> :3416; worker texts in <code>lifecycle.py</code> :5609, :5728, :5786, :5799, :6113, :6230</td><td><span class="pass">on main</span></td><td>The cause gallery (A4). An unrecognised reason is printed as it is, never put in a bucket.</td></tr>
+<tr><td>Per-file diff</td><td class="src">approved mock-up <code>agent-diff.html</code>; <code>src/diff/DiffView.tsx</code> (#310)</td><td><span class="pass">approved</span></td><td>Reused as it is inside the Code card.</td></tr>
+<tr><td><code>PUBLISH_REFUSED</code></td><td class="src">contract request 29 (<code>contract-change-requests.md:3087</code>, accepted, not applied). Today <code>lifecycle.py:3423</code> writes <code>OUTPUTS_MISSING</code> for a refused title (:3445) and <code>:3450</code> writes <code>RUNNER_ERROR</code> for a credential in the final tree (:3476). Both retry.</td><td><span class="part">being built</span></td><td>The refused attempt's headline. It names the file, never the value.</td></tr>
+<tr><td><code>published_nothing</code></td><td class="src">no match anywhere. The nearest thing today: <code>lifecycle.py:5609</code> "the agent changed nothing in the repository", which ends SUCCEEDED</td><td><span class="fail">not found</span></td><td>The new FAILED form for a step that should open a PR but has no commits beyond its base.</td></tr>
+<tr><td><code>result_summary.git.base_pin</code></td><td class="src">no match anywhere. Nearest: <code>GitSummary.base</code> (<code>types.ts:1156</code>, "null when a resumed attempt lost its marker"); <code>clone_commit</code> proposed in <code>merge-step.md</code> §3</td><td><span class="fail">not found</span></td><td>"Pinned to the upstream's base commit", or "not pinned" with a reason. Shape assumed: <code>{pinned, sha, upstream_task_id}</code> or <code>{pinned: false, reason}</code>.</td></tr>
+<tr><td>Workflow page</td><td class="src"><code>Workflows.tsx</code> <code>WorkflowCard</code> :932, <code>StepPanel</code> :1202, <code>PullRequestLink</code> :1231</td><td><span class="pass">on main</span></td><td>The page these frames add a verdict and a merge step to.</td></tr>
+</tbody></table></div>
+<p style="font-size:14px;color:var(--mute)">A mismatch worth knowing: <code>merge-step.md</code> §4.1 still writes the review's verdict as <code>"MERGE" | "CHANGES"</code>, while the review gate that ships (<code>verdict.py</code>) and this brief use <code>MERGE</code> / <code>NOT_YET</code>. These frames use <code>NOT_YET</code>.</p>
+
+<h2 id="va"><span class="n">2</span>Variant A: tabs and cards in the split detail</h2>
+<section class="variant">
+<div class="vh"><span class="vn">Variant A</span><h3>Children get a tab, the verdict and merge get cards, and the Code card starts with what happened</h3><span class="rec">Recommended</span></div>
+<p>The agent detail gets one new tab, <b>Children</b>, shown only when the agent has submitted any or the API cannot say. A child carries a link back to its parent above its title. On the workflow page the review step shows its verdict as a card, and the merge step shows a list of its checks. The Code card always opens with one sentence about the outcome and what to do, then the base pin, then the approved per-file diff.</p>
+
+<h3 class="sub">A1 · A parent waiting on its children</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a1" data-t="l"></div><figcaption>Light · <code>/agents/children/01JC4M9Z</code>. Parked with <code>children_incomplete</code>: no lease and no capacity, so the pool meter does not count it. Five of a possible 16 children, at depth 1. The failed child is shown and left to the parent to handle. Nothing cascades upward.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a1" data-t="d" data-prod="1"></div><figcaption>Dark, production · the same screen. The bar shows the children by state. "Waiting on 2" counts the children that have not ended, and the failed one counts as ended.</figcaption></figure>
+</div>
+
+<h3 class="sub">A2 · A child cancelled by its parent</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a2" data-t="l"></div><figcaption>Light · the link above the title goes back to the parent and names the attempt that submitted the child. The headline gives the cause (<code>child_cascade</code>), the reason (<code>parent_cancelled</code>) and who cancelled the parent. Tokens show a dash, because a child cancelled while running writes no result summary.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a2" data-t="d"></div><figcaption>Dark · in the list, a child's second line reads "child of …", so you can spot it without a tree.</figcaption></figure>
+</div>
+
+<h3 class="sub">A3 · The review verdict, post-verdict, and a refused merge</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a3" data-t="l"></div><figcaption>Light · <code>/workflows/wf_01JC5R2T</code>, review step selected. The verdict is NOT_YET, with findings grouped Blocker, Major, Minor and Not graded. The findings are the agent's untrusted text, shown as plain text. post-verdict posted CHANGES_REQUESTED, and the fix agent ran.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a3m" data-t="d"></div><figcaption>Dark · merge step selected in the same workflow. The step ended <code>MERGE_REFUSED</code> / <code>review_not_at_head</code>, because the fix pushed after the review. Nothing changed on GitHub. Checks after the first refusal show a dash ("not read").</figcaption></figure>
+</div>
+
+<h3 class="sub">A3b · Every check passes, and the human gate holds the merge</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a3h" data-t="l"></div><figcaption>Light · the verdict was MERGE, so the fix step ran no agent (<code>verdict_gate.agent_ran: false</code>). The merge step passed every check, then stopped: <code>merge_human_gate</code> is on, so it ended SUCCEEDED · awaiting a person. The <code>ready</code> label has not been added yet.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a3h2" data-t="d"></div><figcaption>Dark · a person has added <code>ready</code>. GitHub's auto-merge will squash the PR once the required checks are green at head. The step still says it did not merge (<code>merged_by_this_task</code> is false), and the console only reports the label: it does not set it.</figcaption></figure>
+</div>
+
+<h3 class="sub">A4 · Publish outcomes in the Code card</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a4ok" data-t="l"></div><figcaption>Light · a PR was opened. The base is pinned to the commit the upstream step cloned. Below that is the approved per-file diff: files on the left, the selected file on the right.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a4none" data-t="d"></div><figcaption>Dark · FAILED <code>published_nothing</code>. This step opens a PR, but its branch has no commits beyond its base. The base was not pinned, and the reason is given. "Changed nothing" is still not a failure for a step that opens no PR (see the gallery).</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a4ref" data-t="l"></div><figcaption>Light · <code>PUBLISH_REFUSED</code> on two attempts. Attempt 1 had a credential in the final tree: the file is named, its content is withheld, and nothing was pushed. Attempt 2 had an unusable <code>pr-title.txt</code>. Each failure is retryable, so the task is READY for attempt 3 of 3.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="a4gal" data-t="d"></div><figcaption>Dark · six ways to get no pull request. Each one is a Code-card headline with its own next step. Below them: three outcomes that are not failures, and an unrecognised reason, printed as it is.</figcaption></figure>
+</div>
+
+<h3 class="sub">Collapsed list and phone</h3>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="a1strip" data-t="l"></div><figcaption>Light · the list collapsed to the 64px strip (the <kbd>[</kbd> key). Children sit as smaller marks under their parent's mark, so the family stays visible.</figcaption></figure>
+</div>
+<div class="frames3">
+<figure class="fr"><div class="phone fl" data-p="kids"></div><figcaption>Phone, light · parent: Children opens as its own tab, and each child is one row. The header takes the spine colour.</figcaption></figure>
+<figure class="fr"><div class="phone fd" data-p="child"></div><figcaption>Phone, dark · the child: the parent link sits above the title, and the cascade headline comes before everything else.</figcaption></figure>
+<figure class="fr"><div class="phone fl" data-p="merge"></div><figcaption>Phone, light · the merge step: the checks stack, and the human-gate headline and label state come first.</figcaption></figure>
+</div>
+
+<div class="idea">
+<div><h4>Idea</h4><p>Keep the approved split detail and add to it: one tab (Children), one link (back to the parent), two cards on the workflow page (verdict, merge checks), and an outcome sentence at the top of the Code card. No new screens and no new routes beyond <code>/agents/children/&lt;id&gt;</code>.</p></div>
+<div><h4>Pros</h4><ul><li>Each fact sits next to the object it describes, as on the rest of the console.</li><li>Children never appear as DAG nodes, which matches the design: children are not steps, and the workflow rollup does not count them.</li><li>The six causes and the new FAILED forms share one headline pattern: what happened, then what to do.</li></ul></div>
+<div><h4>Risks</h4><ul><li>A tab is easy to miss. The parked callout links to it, and the tab only shows when there are children.</li><li>"Findings by severity" depends on a field nothing writes yet (see section 1).</li><li>The human-gate shape is assumed until B13r lands.</li></ul></div>
+</div>
+</section>
+
+<details open id="alts" style="margin-top:56px;border-top:1px solid var(--line);padding-top:16px"><summary style="cursor:pointer;font-size:20px;font-weight:600">Alternatives</summary>
+<section class="variant" id="vb">
+<div class="vh"><span class="vn">Variant B</span><h3>The family lives in the list, as a tree</h3></div>
+<p>The agent list nests each parent's children under it as indented rows that open and close. The workflow page shows a row of small dots under any step that has children. Verdict and merge are the same as in A.</p>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="b" data-t="l"></div><figcaption>Light · the parent opened in the list, with its five children indented under it. The detail shows a compact family line, not a tab.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="b" data-t="d"></div><figcaption>Dark · same screen.</figcaption></figure>
+</div>
+<div class="idea">
+<div><h4>Idea</h4><p>You see the family at a glance in the list. Opening a child is one click away from its siblings.</p></div>
+<div><h4>Pros</h4><ul><li>Easy to see which children are still running, without opening the parent.</li><li>On the workflow page the dots show that a step fanned out.</li></ul></div>
+<div><h4>Risks</h4><ul><li>The list is sorted and paged by state and time. A child can sort apart from its parent, or land on another page, so the tree needs a second query per parent.</li><li>An opened parent with 16 children pushes the rest of the list off screen.</li><li>The workflow dots come close to the "tree from depends_on" the design forbids.</li></ul></div>
+</div>
+</section>
+
+<section class="variant" id="vc">
+<div class="vh"><span class="vn">Variant C</span><h3>The workflow page becomes the hub: a "path to merge" rail</h3></div>
+<p>The workflow page gets a rail on the right: review verdict, posted review, fix, proof, merge checks, and the human gate, as one vertical path that ends at "ready". The agent detail keeps only the outcome sentence and links to the rail. Children get a "Helpers" section on the workflow page under the step that submitted them.</p>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="c" data-t="l"></div><figcaption>Light · the workflow page with the path to merge on the right. Each stop links to its step.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="c" data-t="d"></div><figcaption>Dark · same screen.</figcaption></figure>
+</div>
+<div class="idea">
+<div><h4>Idea</h4><p>Merging is about the workflow, not one step, so put the whole path in one place.</p></div>
+<div><h4>Pros</h4><ul><li>"Why hasn't it merged?" is answered in one place.</li><li>Good fit for the single-pr chain, which always has the same six steps.</li></ul></div>
+<div><h4>Risks</h4><ul><li>Useless for a workflow that is not single-pr, or a lone agent. Those would need a second design.</li><li>Children only exist on workflow steps here, but most parents will be lone agents.</li><li>It shows the merge checks twice: on the rail and in the step.</li></ul></div>
+</div>
+</section>
+</details>
+
+<h2 id="states"><span class="n">·</span>Empty, loading and error forms</h2>
+<p>Every region above in its other forms. An unknown figure is a dash with a reason, never a zero.</p>
+<div class="frames2">
+<figure class="fr"><div class="scroller" data-f="st" data-t="l"></div><figcaption>Light · Children tab, verdict card, merge checks and Code card, each shown loading, empty, as an error, and with an older API that does not send the field.</figcaption></figure>
+<figure class="fr"><div class="scroller" data-f="st" data-t="d"></div><figcaption>Dark · same forms.</figcaption></figure>
+</div>
+
+<h2 id="rec"><span class="n">3</span>Recommendation</h2>
+<div class="recbox">
+<h3>Variant A, with C's merge checklist kept as the merge step's own card</h3>
+<p>A adds to the screens already approved and draws nothing the design rules out. Children appear only through <code>parent_task_id</code> and never as DAG edges. B's tree fights the list's sorting and paging. C works only for single-pr workflows, and parents are usually lone agents. The one good thing in C, a single ordered list of what stands between a PR and its merge, is kept in A as the merge step's checklist.</p>
+</div>
+<h3 class="sub">Small choices made in the frames</h3>
+<ol class="qlist">
+<li><b>Children tab visibility:</b> shown when the agent has children, or when the API cannot say (with a dash). Hidden when it reports zero.</li>
+<li><b>Children order:</b> unfinished first (running, then queued), then failed, then succeeded. Each group is in submission order.</li>
+<li><b>"Waiting on N":</b> counts the children that have not ended. A failed or cancelled child counts as ended, because the scheduler promotes on terminal states, not on success.</li>
+<li><b>Fan-out slots:</b> drawn as 16 small blocks. The cap comes from the API, so a tenant with another cap draws another number.</li>
+<li><b>Await deadline:</b> shown as a time and as "in 23h". Await refunds are shown as "1 of 4 used".</li>
+<li><b>Severity:</b> Blocker, Major, Minor, then Not graded. A finding without a severity is never treated as a blocker.</li>
+<li><b>Merge checklist:</b> listed in the design's row order. Checks after the first refusal show a dash ("not read"), not a cross.</li>
+<li><b>Human gate:</b> worded "awaiting a person: add <code>ready</code>". The console never adds the label.</li>
+<li><b>Credential refusals:</b> the file is listed in red with its content withheld. The value is never shown, not even redacted.</li>
+<li><b>Base pin:</b> one line under the outcome. "Pinned" names the upstream step and its commit, and "not pinned" gives the reason. Steps that build on nothing say "does not apply".</li>
+</ol>
+
+<h2 id="ungrounded"><span class="n">·</span>What the code does not say yet</h2>
+<ul class="qlist">
+<li><code>published_nothing</code>, <code>base_pin</code>, <code>merge_human_gate</code> and <code>awaiting_human</code> are not on main, on the recent branches, or in issues. Their shapes here are my reading of the brief.</li>
+<li>The verdict schema has no severity. Grouping by severity needs a field nothing writes today.</li>
+<li>The human gate is drawn as "the step checks everything and does not merge, and a person adds <code>ready</code>". If B13r means the step adds the label itself, A3b's two frames merge into one.</li>
+<li>The merge step and post-verdict are an accepted design, not built. Their build waits on #342.</li>
+</ul>
+</div>
+
+<script>
+/* ---------- primitives ---------- */
+const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+const S={QUEUED:['s-queued','neu','queued'],LEASED:['s-starting','live','leased'],STARTING:['s-starting','live','starting'],RUNNING:['s-running','live','running'],PARKED:['s-parked','park','parked'],READY:['s-ready','neu','ready'],SUCCEEDED:['s-succeeded','live','succeeded'],FAILED:['s-failed','bad','failed'],CANCELLED:['s-cancelled','neu','cancelled'],DEAD_LETTERED:['s-dead','bad','dead-lettered']};
+const st=(s,l)=>{const [y,c,t]=S[s];return `<span class="st ${c}"><svg viewBox="0 0 12 12" aria-hidden="true"><use href="#${y}"/></svg><span>${l||t}</span></span>`};
+const mk=s=>{const [y,c]=S[s];return `<span class="st ${c}"><svg viewBox="0 0 12 12" width="13" height="13" aria-hidden="true"><use href="#${y}"/></svg></span>`};
+const NC={SUCCEEDED:'n-live',RUNNING:'n-live',PARKED:'n-park',FAILED:'n-bad',QUEUED:'n-neu',READY:'n-neu',CANCELLED:'n-neu'};
+const HIVE=(w=44)=>`<svg width="${w}" height="${w}" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+
+/* ---------- shell: Sky spine + panel ---------- */
+function rail(){return `<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE()}</div><a class="ri rcta">${I('i-submit')}<small>Submit</small></a><div class="rsep"></div><a class="ri">${I('i-overview')}<small>Overview</small></a><a class="ri on">${I('i-agents')}<small>Work</small></a><a class="ri">${I('i-pools')}<small>Capacity</small><i class="sd"></i></a><a class="ri">${I('i-limits')}<small>Admin</small></a><div class="rgrow"></div><a class="ri">${I('i-help')}<small>Help</small></a><a class="ri">${I('i-api')}<small>API reads</small></a><span class="av">OP</span></nav>`}
+function panel(page,kid,prod){
+ const k=(n,c)=>`<a class="kid${kid===n?' on':''}"><span>${n}</span>${c?`<span class="cnt">${c}</span>`:''}</a>`;
+ return `<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span>${prod?'<span class="pill prod">Production</span>':'<span class="pill dev">dev</span>'}</div><div class="tenant"><span class="tg">E</span><span class="tt"><b>eng</b><small>tenant · 1 of 3</small></span><svg class="ic car" viewBox="0 0 24 24" aria-hidden="true"><use href="#i-swap"/></svg></div><div class="pscroll"><div class="pt">Work</div><a class="pk${page==='agents'?' on':''}">${I('i-agents')}<span class="pl1">Agents</span></a>${page==='agents'?`<div class="kids">${k('Live',12)}${k('Waiting',37)}${k('Recent')}</div>`:''}<a class="pk${page==='workflows'?' on':''}">${I('i-workflows')}<span class="pl1">Workflows</span><span class="cnt">3</span></a><a class="pk">${I('i-timeline')}<span class="pl1">Timeline</span></a></div><div class="meter"><div class="mh"><span>Global pool</span><b>31 / 40</b></div><div class="bar"><i style="width:77.5%"></i></div><div class="mh"><span>parked parents hold</span><b>0</b></div></div><div class="pfoot"><span class="pfrow"><b>Operator</b> <span class="adm">admin</span><button class="ibtn" title="Theme">${I('i-moon')}</button><button class="ibtn" title="Sign out">${I('i-out')}</button></span><small>operator@example.com</small><span class="stamp">ui d88ca50 · api d88ca50</span></div></nav>`}
+function app(t,o){return `<div class="app ${t==='d'?'fd':'fl'}${o.cls?' '+o.cls:''}">${o.prod?'<div class="prodbar"></div>':''}<div class="side">${rail()}${panel(o.page||'agents',o.kid,o.prod)}</div><main class="ct">${o.main}</main></div>`}
+
+/* ---------- agent list ---------- */
+const LIST=[
+ {s:'PARKED',t:'Split the flaky e2e suite and fix each shard',a:'26m',sm:'claude-code · awaiting 2 of 5 children',c:'pk2',id:'p'},
+ {s:'RUNNING',t:'Shard 3: tests/e2e/agents',a:'6m',sm:'codex · child of Split the flaky e2e…'},
+ {s:'QUEUED',t:'Shard 4: tests/e2e/capacity',a:'3m',sm:'child of Split the flaky e2e… · class:standard full',c:'why'},
+ {s:'CANCELLED',t:'Shard 5: tests/e2e/submit',a:'31m',sm:'child of Split the flaky e2e… · child_cascade',id:'c'},
+ {s:'RUNNING',t:'Refactor quota broker AIMD',a:'18m',sm:'claude-code · sam'},
+ {s:'SUCCEEDED',t:'Fix flaky lease heartbeat test (#248)',a:'1h',sm:'claude-code · PR #452'},
+ {s:'FAILED',t:'Docs pass on quota-management.md',a:'2h',sm:'claude-code · published_nothing'},
+ {s:'READY',t:'Rename pool labels in the console',a:'9m',sm:'claude-code · publish refused · attempt 3 of 3 next',c:'why'},
+];
+function list(sel,rows=LIST){return `<div class="lp"><div class="lph"><span class="inp">${I('i-search')}Filter agents</span><span class="btn ghost" title="Collapse the list ( [ )">«</span></div>${rows.map(r=>`<div class="li${r.id===sel?' sel':''}">${mk(r.s)}<b>${r.t}</b><em>${r.a}</em><small class="${r.c||''}">${r.sm}</small></div>`).join('')}<div class="cnt" style="padding:8px 12px">8 of 49 · <span class="exd">example data</span></div></div>`}
+function head(crumb,title,chip){return `<div class="crumb">${crumb}</div><div class="phead"><h3>${title}</h3><span class="chip">${chip}</span><span class="age">read 4s ago · poll 5s <a>refresh</a></span></div>`}
+function dph(o){return `<div class="dph"><div style="display:flex;flex-direction:column;gap:5px;min-width:0">${o.parent||''}<div class="row">${o.st}${o.extra||''}</div><h4>${o.title}</h4><span class="idt">${o.id}</span></div><span class="r">${o.actions||'<span class="btn">Copy link</span>'}</span></div>`}
+function tabs(on,kids){const T=[['Details'],['Children',kids],['Attempts',o_att],['Artifacts',7],['Checkpoints',3]];return `<div class="tabs">${T.filter(x=>x[0]!=='Children'||kids!==null).map(([n,c])=>`<span class="${n===on?'on':''}">${n}${c!==undefined&&c!==null?`<em>${c}</em>`:''}</span>`).join('')}</div>`}
+let o_att=2;
+
+/* ---------- A1: parent with children ---------- */
+const KIDS=[
+ {s:'RUNNING',t:'Shard 3: tests/e2e/agents',id:'task_01JC4N8V2W',rq:'split-tests-3',rp:'codex · small',at:2,w:'running 6m',out:'— running'},
+ {s:'QUEUED',t:'Shard 4: tests/e2e/capacity',id:'task_01JC4N9B5E',rq:'split-tests-4',rp:'claude-code · small',at:2,w:'waiting 3m · class:standard full',out:'—'},
+ {s:'FAILED',t:'Lint pass over the shards',id:'task_01JC4N3H8K',rq:'lint-pass',rp:'claude-code · small',at:1,w:'runner_error · 3 of 3 attempts',out:'none: failed',bad:1},
+ {s:'SUCCEEDED',t:'Shard 1: tests/e2e/overview',id:'task_01JC4N2K7Q',rq:'split-tests-1',rp:'claude-code · small',at:1,w:'ended 14:09 · ran 11m',out:'3 files written'},
+ {s:'SUCCEEDED',t:'Shard 2: tests/e2e/workflows',id:'task_01JC4N2P4R',rq:'split-tests-2',rp:'claude-code · small',at:1,w:'ended 14:12 · ran 14m',out:'2 files written'},
+];
+function slots(u,n){let s='';for(let i=0;i<n;i++)s+=`<i class="${i<u?'u':''}"></i>`;return `<span class="slots">${s}</span>`}
+function parkCallout(){return `<div class="callout park"><svg viewBox="0 0 12 12" style="color:var(--s-park)"><use href="#s-parked"/></svg><div class="cbody"><span><b>Awaiting its children.</b> Attempt 2 asked to wait at 14:22 and parked with <code>children_incomplete</code>. It holds <b>no lease and no capacity</b>, so 0 units count against class:standard.</span><small>The scheduler moves it to ready once every child has ended and each succeeded child's outputs are written. Deadline 14:22 tomorrow (in 23h 12m): then the unfinished children are cancelled (<code>await_expired</code>) and it moves to ready anyway. Nobody needs to act.</small></div></div>`}
+function fanCard(){return `<div class="card"><div class="ch"><b>Children</b><span class="chip park">waiting on 2</span><span class="r"><span class="cap">5 of 16 ${slots(5,16)}</span><span class="chip">depth 1: a child cannot have children</span></span></div><div class="fan"><div class="bar"><i class="l" style="width:40%"></i><i class="l" style="width:20%;opacity:.5"></i><i class="n" style="width:20%;opacity:.45"></i><i class="b" style="width:20%"></i></div><div class="legend"><span><i style="background:var(--s-live)"></i>succeeded 2</span><span><i style="background:var(--s-live);opacity:.5"></i>running 1</span><span><i style="background:var(--s-neu);opacity:.45"></i>queued 1</span><span><i style="background:var(--s-bad)"></i>failed 1</span><span>· await refunds 1 of 4 used · submitted by attempt 1 (4) and attempt 2 (1)</span></div></div>
+<div class="tbl"><table><thead><tr><th>State</th><th>Child</th><th>Request id</th><th>Runner</th><th>From</th><th>Now</th><th>Outputs</th></tr></thead><tbody>${KIDS.map(k=>`<tr><td>${st(k.s)}</td><td><b style="font-weight:550">${k.t}</b><span class="sub idc">${k.id}</span></td><td><code>${k.rq}</code></td><td>${k.rp}</td><td>attempt ${k.at}</td><td class="${k.bad?'':''}">${k.w}</td><td>${k.out}</td></tr>`).join('')}</tbody></table></div>
+<p class="foot">The parent sees each end in <code>children.json</code> when it resumes and decides for itself. A failed child does not fail the parent. Children are not workflow steps, so they never appear as DAG nodes. Source: <code>GET /v1/tasks?parent_task_id=</code> · <span class="exd">example data</span></p></div>`}
+function A1(t,prod){o_att=2;return app(t,{prod,kid:'Waiting',main:head('Work / Agents / <b>Waiting</b>','Agents','12 live · 37 waiting · tenant eng')+`<div class="split">${list('p')}<div class="dp">${dph({st:st('PARKED','parked · awaiting children'),extra:'<span class="chip">clears itself</span>',title:'Split the flaky e2e suite and fix each shard',id:'task_01JC4M9Z2D · claude-code · standard · 2u · gen 2',actions:'<span class="btn">Copy link</span><span class="btn danger">Stop and cancel children</span>'})}${tabs('Children',5)}${parkCallout()}${fanCard()}</div></div>`})}
+
+/* ---------- A1 strip ---------- */
+function A1strip(t){o_att=2;const m=(s,c,ttl,sel)=>`<span class="${c||''}${sel?' sel':''}" title="${ttl}">${mk(s)}</span>`;
+ return app(t,{kid:'Waiting',cls:'narrow',main:head('Work / Agents / <b>Waiting</b>','Agents','12 live · 37 waiting · tenant eng')+`<div class="split strip"><div class="lstrip"><span class="btn ghost" title="Expand the list ( [ )">»</span>${m('PARKED','','Split the flaky e2e suite',1)}${m('RUNNING','kidm','Shard 3')}${m('QUEUED','kidm','Shard 4')}${m('CANCELLED','kidm','Shard 5')}${m('RUNNING','','Refactor quota broker')}${m('SUCCEEDED','','Fix flaky lease heartbeat')}${m('FAILED','','Docs pass')}${m('READY','','Rename pool labels')}</div><div class="dp">${dph({st:st('PARKED','parked · awaiting children'),title:'Split the flaky e2e suite and fix each shard',id:'task_01JC4M9Z2D · claude-code · standard · 2u · gen 2'})}${tabs('Children',5)}${parkCallout()}${fanCard()}</div></div>`})}
+
+/* ---------- A2: cancelled child ---------- */
+function A2(t){o_att=1;return app(t,{kid:'Recent',main:head('Work / Agents / <b>Recent</b>','Agents','12 live · 37 waiting · tenant eng')+`<div class="split">${list('c')}<div class="dp">${dph({parent:`<a class="parentl">${I('i-up')}child of <b>Split the flaky e2e suite and fix each shard</b> <span class="idt">task_01JC4M9Z2D · attempt 2</span></a>`,st:st('CANCELLED'),extra:'<span class="chip">child_cascade</span>',title:'Shard 5: tests/e2e/submit',id:'task_01JC4NC6T1 · claude-code · small · 1u · gen 1',actions:'<span class="btn">Copy link</span><span class="btn">Open parent</span>'})}${tabs('Details',null)}
+<div class="callout"><svg viewBox="0 0 12 12" style="color:var(--s-neu)"><use href="#s-cancelled"/></svg><div class="cbody"><span><b>Cancelled because its parent was cancelled.</b> alex cancelled the parent at 14:31:00. The cancel then cascaded to this child (<code>why: parent_cancelled</code>, by <code>cascade:task_01JC4M9Z2D</code>).</span><small>It held a lease, so it stopped the ordinary way: flagged at 14:31:00, released by its worker at 14:31:09. Other reasons a child can be cancelled: <code>parent_ended</code> (the parent failed or was dead-lettered) and <code>await_expired</code> (the parent waited a full day).</small></div></div>
+<div class="facts"><span><span class="k">parent</span><b>task_01JC4M9Z2D</b></span><span><span class="k">request id</span><b>split-tests-5</b></span><span><span class="k">by</span><b>alex (the parent's)</b></span><span><span class="k">via</span><b>worker</b></span><span><span class="k">wf</span><b>— not a step</b></span><span><span class="k">siblings</span><b>4</b></span></div>
+<div class="tiles"><div class="tile"><small>Ran</small><b>4m 12s</b><i>until cancelled</i></div><div class="tile"><small>Attempts</small><b>1 / 3</b><i></i></div><div class="tile"><small>Tokens</small><b>—</b><i>no summary for a cancelled run</i></div><div class="tile"><small>Checkpoints</small><b>1</b><i>14:29</i></div></div>
+<div class="card"><div class="ch"><b>Latest events</b><a class="more">Attempts →</a></div><div class="ev"><span>14:31:09 cancelled</span><span>gen 1</span><span>end cause child_cascade · why parent_cancelled</span></div><div class="ev"><span>14:31:09 lease released</span><span>gen 1</span><span>by its worker</span></div><div class="ev"><span>14:31:00 cancel requested</span><span>gen 1</span><span>by cascade:task_01JC4M9Z2D</span></div><div class="ev"><span>14:26:57 started</span><span>gen 1</span><span>Cloud Run job swarm-cc-01jc4nc6</span></div><div class="ev"><span>14:22:41 submitted</span><span>—</span><span>via worker · parent attempt 2 · request split-tests-5</span></div></div><span class="exd">example data</span></div></div>`})}
+
+/* ---------- workflow page ---------- */
+function node(s,name,sub,o={}){return `<div class="node ${NC[s]}${o.sel?' sel':''}${o.dim?' dim':''}"><span class="nst">${st(s,o.lab)}${o.tag?`<span class="tag">${o.tag}</span>`:''}</span><b>${name}</b><small>${sub}</small>${o.more||''}</div>`}
+function stages(v,sel){const N=v==='merge';const H=v==='human'||v==='human2';
+ const col=(l,n)=>`<div class="stg"><span class="sl">${l}</span>${n}</div>`;
+ return `<div class="card"><div class="ch"><b>Steps</b><span class="chip">single-pr · 6 steps · 1 pull request</span><span class="r"><span class="cnt">post-verdict and merge run no agent</span></span></div><div class="stages">
+ ${col('implement',node('SUCCEEDED','implement','claude-code · opened PR #512',{tag:'author'}))}
+ ${col('review',node('SUCCEEDED','review',H?'verdict MERGE':'verdict NOT_YET · 4 findings',{sel:sel==='review',tag:'reader',more:`<span class="verd ${H?'merge':'notyet'}" style="font-size:12px;padding:1px 7px;align-self:flex-start;margin-top:2px">${H?'MERGE':'NOT_YET'}</span>`}))}
+ ${col('post-verdict',node('SUCCEEDED','post-verdict',H?'posted APPROVED':'posted CHANGES_REQUESTED',{tag:'no agent'}))}
+ ${col('fix',node('SUCCEEDED','fix',H?'no agent ran: verdict MERGE':'agent fixed 4 findings',{tag:'amender'}))}
+ ${col('proof',node('SUCCEEDED','proof','PROVED at '+(H?'3f9a2c1':'7d01e44'),{tag:'reader'}))}
+ ${col('merge',N?node('FAILED','merge','MERGE_REFUSED · review_not_at_head',{sel:sel==='merge',tag:'no agent'}):node('SUCCEEDED','merge','awaiting a person',{sel:sel==='merge',lab:'succeeded',tag:'no agent',more:'<span class="kidbadge">'+(v==='human2'?'ready added':'ready not added')+'</span>'}))}
+ </div><p class="foot">Edges are <code>depends_on</code>. fix and merge depend on post-verdict for ordering only · <span class="exd">example data</span></p></div>`}
+const FIND=[['b','Blocker',1,['reconciler/model.py: missing_execution is fenced on a 404 from the executions list, which is also what an unfinished list page returns. That is not proof of absence.']],['m','Major',2,['tests/unit/reconciler/test_fence.py asserts the call count, not that the generation stayed the same.','No-progress threshold: the per-profile value is read from the catalogue, but the codex entry has none, and the fallback is 0.']],['n','Minor',1,['docs/reconciler.md still describes the old rule in its second paragraph.']],['u','Not graded',0,[]]];
+function verdictCard(full=true){return `<div class="card"><div class="ch"><b>Review verdict</b><span class="verd notyet">NOT_YET</span><span class="r"><span class="idt">at 3f9a2c1 · verdict.json</span></span></div><div class="facts"><span><span class="k">title reviewed</span><b>The reconciler fences missing_execution only on proof of absence</b></span></div>
+${FIND.map(([c,n,k,xs])=>`<div class="sevg"><span class="sevh"><i class="sevd ${c}"></i>${n}<span class="cnt">${k}</span></span>${xs.map(x=>`<pre class="fnd ${c}">${esc(x)}</pre>`).join('')}</div>`).join('')}
+<p class="foot">These findings are the review agent's own words, shown as plain text. Severity comes from each finding's <code>severity</code> field. A finding without one goes under "Not graded", never Blocker. 4 of 4 shown · <span class="exd">example data</span></p></div>`}
+function nextCard(){return `<div class="card"><div class="ch"><b>After the verdict</b></div><div class="checks"><div class="ck ok"><span class="m">✓</span><span>post-verdict posted <b>CHANGES_REQUESTED</b> on PR #512 as swarm-review<small>at 3f9a2c1 · review id recorded · its own step, no agent</small></span><span class="r2 cnt">14:40</span></div><div class="ck ok"><span class="m">✓</span><span>fix ran its agent, because the verdict is in <code>verdict_in: [NOT_YET]</code><small>pushed 7d01e44 to swarm/task_01JC5R2V8A</small></span><span class="r2 cnt">14:58</span></div><div class="ck no"><span class="m">✕</span><span>merge refused: the review no longer describes the head<small>run the review again on 7d01e44</small></span><span class="r2 cnt">15:06</span></div></div></div>`}
+const CK_REF=[['ok','Signed specs of author, review, post-verdict, fix and proof verify','spec_unverified'],['ok','Worker is non-dumpable, and no agent process survived','worker_unprotected · processes_alive'],['ok','PR #512 is this workflow\'s: head swarm/task_01JC5R2V8A, base main, not a draft','pull_request_not_this_workflows · base_not_default · draft'],['ok','verdict.json and proof.json read','verdict_unreadable'],['no','The review was at the head','review_not_at_head','The fix pushed 7d01e44 after the review saw 3f9a2c1.'],['na','APPROVED review from swarm-review at the pinned head','verdict_not_approved'],['na','proof.json is PROVED','not_proved'],['na','Every required check green at the pinned head (each pinned to an app)','checks_pending · checks_failed · required_check_unpinned'],['na','No protected paths touched (.github, scripts, terraform, …)','touches_protected_paths'],['na','Mergeable, title as reviewed','conflict · mergeability_unknown · title_changed']];
+const CK_OK=[['ok','Signed specs of author, review, post-verdict, fix and proof verify'],['ok','Worker is non-dumpable, and no agent process survived'],['ok','PR #512 is this workflow\'s: head swarm/task_01JC5R2V8A, base main, not a draft'],['ok','The review was at the head: 3f9a2c1 everywhere'],['ok','APPROVED review from swarm-review at 3f9a2c1'],['ok','proof.json is PROVED'],['ok','7 of 7 required checks green at 3f9a2c1, each pinned to an app'],['ok','No protected paths touched'],['ok','Mergeable, title as reviewed'],['wait','merge_human_gate is on: the step does not merge']];
+function checks(rows){return `<div class="checks">${rows.map(r=>`<div class="ck ${r[0]}"><span class="m">${r[0]==='ok'?'✓':r[0]==='no'?'✕':r[0]==='wait'?'⏸':'—'}</span><span>${r[1]}${r[3]?`<small>${r[3]}</small>`:''}${r[0]==='na'?'<small>not read: stopped at the first refusal</small>':''}</span><span class="r2 cnt">${r[0]==='no'||r[0]==='na'?(r[2]||''):''}</span></div>`).join('')}</div>`}
+function mergeRefused(){return `<div class="card"><div class="ch"><b>Merge</b>${st('FAILED')}<span class="chip bad">MERGE_REFUSED</span><span class="r"><span class="idt">refusal review_not_at_head</span></span></div><div class="ohead"><span class="oi bad">✕</span><div><b>Not merged. Nothing changed on GitHub.</b><p>The fix step pushed 7d01e44 after the review saw 3f9a2c1, so the verdict no longer describes the head. Running the merge again won't help. Run the review again.</p></div></div>${checks(CK_REF)}<p class="foot">Not retryable: a new attempt would read the same facts. Codes from <code>result_summary.merge.refusal</code> · <span class="exd">example data</span></p></div>`}
+function mergeHuman(added){return `<div class="card"><div class="ch"><b>Merge</b>${st('SUCCEEDED')}<span class="chip warn">awaiting a person</span><span class="r">${added?'<span class="lbl ready">ready · added by a person 15:02</span>':'<span class="lbl off">ready · not added</span>'}</span></div><div class="ohead"><span class="oi warn">⏸</span><div><b>${added?'Ready. GitHub will merge it when its checks are green.':'Every check passed. Awaiting a person.'}</b><p>${added?'A person added the <code>ready</code> label to PR #512. GitHub\'s auto-merge squashes it once the required checks are green at head. This step did not merge (<code>merged_by_this_task: false</code>).':'<code>merge_human_gate</code> is on (the Terraform default), so the step checked everything and stopped before merging. Next step: a person reviews PR #512 and adds the <code>ready</code> label. GitHub\'s auto-merge then squashes it at green.'}</p></div></div>${checks(CK_OK)}<dl class="kv"><dt>pinned head</dt><dd><code>3f9a2c1</code></dd><dt>method</dt><dd>squash, with the PR's title as the subject</dd><dt>PR</dt><dd>#512 · open${added?' · auto-merge on':''}</dd><dt>merged by this task</dt><dd>no: the human gate</dd></dl><p class="foot">The console shows the gate and the label. It changes neither · <span class="exd">example data</span></p></div>`}
+function wfHead(){return head('Work / Workflows / <b>wf_01JC5R2T9M</b>','Fix #372: reconciler fencing, reviewed and merged','single-pr · tenant eng · alex')}
+function A3(t){return app(t,{page:'workflows',main:wfHead()+stages('notyet','review')+`<div class="g2">${verdictCard()}${nextCard()}</div>`})}
+function A3m(t){return app(t,{page:'workflows',prod:false,main:wfHead()+stages('merge','merge')+`<div class="wfpage">${mergeRefused()}<div class="card"><div class="ch"><b>Pull request</b></div><dl class="kv"><dt>PR</dt><dd>#512 · open · not merged</dd><dt>head</dt><dd><code>7d01e44</code> (review saw <code>3f9a2c1</code>)</dd><dt>review on GitHub</dt><dd>CHANGES_REQUESTED by swarm-review at 3f9a2c1</dd><dt>label</dt><dd><span class="lbl off">ready · not added</span></dd></dl><p class="foot">Next: run the workflow's review again. The merge step can't re-check until a review describes 7d01e44.</p></div></div>`})}
+function A3h(t,added){return app(t,{page:'workflows',main:wfHead()+stages(added?'human2':'human','merge')+`<div class="wfpage">${mergeHuman(added)}<div class="card"><div class="ch"><b>Review verdict</b><span class="verd merge">MERGE</span><span class="r"><span class="idt">at 3f9a2c1</span></span></div><div class="sevg"><span class="sevh"><i class="sevd n"></i>Minor<span class="cnt">1</span></span><pre class="fnd n">${esc('docs/reconciler.md: the example uses a 30s threshold; the catalogue default is 45s.')}</pre></div><div class="checks"><div class="ck ok"><span class="m">✓</span><span>post-verdict posted APPROVED<small>at 3f9a2c1 as swarm-review</small></span><span></span></div><div class="ck ok"><span class="m">✓</span><span>fix ran no agent<small><code>verdict_gate.agent_ran: false</code>, published only</small></span><span></span></div></div></div></div>`})}
+
+/* ---------- A4: Code card ---------- */
+const FILES=[{d:'apps/reconciler/reconciler/',f:'model.py',k:'M',a:21,r:6},{d:'tests/unit/reconciler/',f:'test_fence.py',k:'M',a:15,r:4,on:1},{d:'tests/unit/reconciler/',f:'test_no_progress.py',k:'A',a:40,r:0},{d:'docs/',f:'reconciler.md',k:'M',a:2,r:2}];
+function flist(fs){let h='',cur='';for(const x of fs){if(x.d!==cur){h+=`<div class="dir">${x.d}</div>`;cur=x.d}h+=`<div class="fi${x.on?' on':''}${x.ref?' ref':''}"><span class="k ${x.k}">${x.k==='X'?'!':x.k}</span><span class="p">${x.f}</span><span class="n">${x.ref?'<span class="del">refused</span>':`<span class="add">+${x.a}</span>${x.r?`<span class="del">−${x.r}</span>`:''}`}</span></div>`}return h}
+const U=[['h','','','@@ -38,9 +38,16 @@ def test_missing_execution_is_fenced(fake_runs):'],['c',38,38,'    runs = fake_runs(pages=[["e1"], []])'],['d',39,'','    assert fence(runs, "e2") is True'],['a','',39,'    runs.fail_page(1, status=404)'],['a','',40,'    assert fence(runs, "e2") is False, "an unfinished page is not absence"'],['a','',41,'    assert runs.generation("t1") == 3'],['c',40,42,''],['c',41,43,'def test_absent_after_every_page(fake_runs):'],['d',42,'','    runs = fake_runs(pages=[["e1"]])'],['a','',44,'    runs = fake_runs(pages=[["e1"], ["e3"]], complete=True)'],['c',43,45,'    assert fence(runs, "e2") is True']];
+function code(){return `<div class="code">${U.map(([k,o,n,t])=>k==='h'?`<div class="ln h"><span class="g"></span><span class="g"></span><span class="s"></span><span>${esc(t)}</span></div>`:`<div class="ln ${k==='a'?'a':k==='d'?'d':''}"><span class="g">${o}</span><span class="g">${n}</span><span class="s">${k==='a'?'+':k==='d'?'−':''}</span><span>${esc(t)}</span></div>`).join('')}</div>`}
+function diffPane(fs,view,meta){return `<div class="dpane"><div class="dbar"><span class="nm">swarm-work.patch</span><span class="mu">${meta}</span><span class="seg"><span class="on">Unified</span><span>Split</span></span><span class="btn">Copy patch</span></div><div class="dbody"><div class="files"><div class="fsum">${fsum(fs)}</div>${flist(fs)}</div><div class="view">${view}</div></div></div>`}
+function fsum(fs){const a=fs.reduce((s,x)=>s+(x.a||0),0),r=fs.reduce((s,x)=>s+(x.r||0),0);return `<b>${fs.length} files</b><span class="add">+${a}</span><span class="del">−${r}</span>`}
+function pin(kind,txt){return `<div class="pin">${I('i-branch')}<span>base</span><span class="pi ${kind}">${kind==='y'?'pinned':kind==='n'?'not pinned':'does not apply'}</span><span>${txt}</span></div>`}
+function codeCard(o){return `<div class="card"><div class="ch"><b>Code</b>${o.chip||''}<span class="r">${o.r||''}</span></div><div class="ohead"><span class="oi ${o.tone}">${o.ic}</span><div><b>${o.h}</b><p>${o.p}</p></div></div>${o.pin||''}${o.body||''}<p class="foot">${o.foot||''} <span class="exd">example data</span></p></div>`}
+function detailShell(t,o){o_att=o.att||1;return app(t,{kid:'Recent',prod:o.prod,main:head('Work / Agents / <b>Recent</b>','Agents','12 live · 37 waiting · tenant eng')+`<div class="split">${list(o.sel,o.rows)}<div class="dp">${dph(o.d)}${tabs('Details',null)}${o.body}</div></div>`})}
+const ROWS4=[{s:'SUCCEEDED',t:'implement · Fix #372 reconciler fencing',a:'40m',sm:'claude-code · PR #512 opened',id:'ok'},{s:'FAILED',t:'Docs pass on quota-management.md',a:'2h',sm:'claude-code · published_nothing',id:'none'},{s:'READY',t:'Rename pool labels in the console',a:'9m',sm:'publish refused · attempt 3 of 3 next',c:'why',id:'ref'},{s:'SUCCEEDED',t:'Summarise incident 2026-09-29',a:'3h',sm:'collect · patch only'},{s:'RUNNING',t:'Refactor quota broker AIMD',a:'18m',sm:'claude-code · sam'}];
+function A4ok(t){return detailShell(t,{sel:'ok',rows:ROWS4,d:{st:st('SUCCEEDED'),title:'implement · Fix #372 reconciler fencing',id:'task_01JC5R2V8A · claude-code · standard · 2u · wf_01JC5R2T9M'},body:codeCard({tone:'live',ic:'✓',h:'Pull request #512 opened',p:'Branch swarm/task_01JC5R2V8A pushed with 2 commits, head 3f9a2c1. Title from pr-title.txt.',r:'<span class="btn">Open PR #512</span>',pin:pin('y','to <code>9c4e0b2</code>, the commit the upstream step <b>plan</b> (task_01JC5R1Q3Z) cloned, so this diff is against the same base'),body:diffPane(FILES,`<div class="fh"><span class="p">tests/unit/reconciler/test_fence.py</span><span class="add">+15</span><span class="del">−4</span><span class="badge">modified</span></div>${code()}`,'diff · 9.4 KiB · attempt 1'),foot:'Source: <code>result_summary.git</code>: publish_reason "opened", base_pin.'})})}
+function A4none(t){return detailShell(t,{sel:'none',rows:ROWS4,d:{st:st('FAILED'),extra:'<span class="chip bad">published_nothing</span>',title:'Docs pass on quota-management.md',id:'task_01JC3X7K2B · claude-code · small · 1u · direct-pr'},body:codeCard({tone:'bad',ic:'∅',h:'Failed: nothing to publish',p:'This step opens a pull request, but its branch has no commits beyond its base 9c4e0b2, and no files were left uncommitted. Nothing was pushed, so there is nothing to review. Read the agent\'s log for why it stopped. The prompt may not match the repository.',chip:'<span class="chip bad">FAILED</span>',pin:pin('n','cloned <code>main</code> at <code>9c4e0b2</code>. The upstream step recorded no base (its resumed attempt lost the clone marker)'),body:`<div class="tiles"><div class="tile"><small>Commits beyond base</small><b>0</b><i>counted by the worker</i></div><div class="tile"><small>Uncommitted files</small><b>0</b><i>none left over</i></div><div class="tile"><small>Patch</small><b>—</b><i>no change to write</i></div><div class="tile"><small>Handed on</small><b>—</b><i>not a workflow step</i></div></div>`,foot:'This is a failure only for a step meant to open a PR. A collect step that changes nothing still succeeds.'})})}
+const FREF=[{d:'apps/swarm-ui/src/',f:'Capacity.tsx',k:'M',a:12,r:9},{d:'apps/swarm-ui/src/',f:'labels.ts',k:'M',a:6,r:6},{d:'config/',f:'test.env',k:'X',ref:1}];
+function A4ref(t){return detailShell(t,{sel:'ref',rows:ROWS4,att:3,d:{st:st('READY','ready · attempt 3 of 3 next'),extra:'<span class="chip bad">PUBLISH_REFUSED ×2</span>',title:'Rename pool labels in the console',id:'task_01JC4Q1D6F · claude-code · small · 1u · direct-pr'},body:codeCard({tone:'bad',ic:'!',h:'Publish refused twice. Nothing was pushed.',p:'Each refusal fails that attempt and retries it. Attempt 3 starts from the last checkpoint with the agent\'s files in place.',chip:'<span class="chip">retryable</span>',pin:pin('u','this step builds on nothing: it cloned <code>main</code> at <code>9c4e0b2</code>'),body:`<div class="checks"><div class="ck no"><span class="m">✕</span><span><b>Attempt 1 · a credential in the final tree</b><small>the final tree adds a credential in <code>config/test.env</code>; remove it. Only the file is named, never the value.</small></span><span class="r2 cnt">publish_refused</span></div><div class="ck no"><span class="m">✕</span><span><b>Attempt 2 · unusable pr-title.txt</b><small>the title carries a task id. Write one line with no task id and no attribution.</small></span><span class="r2 cnt">publish_refused</span></div></div>`+diffPane(FREF,`<div class="fh"><span class="p">config/test.env</span><span class="badge" style="background:var(--s-badb);color:var(--s-bad)">refused</span></div><div class="withheld"><b>Content not shown.</b><span>The worker refused this file because it adds a credential. The console never shows its lines, redacted or not. Open the run's checkpoint to fix it.</span></div>`,'diff · attempt 2 · not pushed'),foot:'Today the worker writes <code>RUNNER_ERROR</code> and <code>OUTPUTS_MISSING</code> for these, until contract request 29 lands.'})})}
+const CAUSES=[
+ ['warn','🔒','No push permission','the forge refused write access to the tenant\'s token','Grant the tenant\'s credential write scope. The patch is the deliverable for now.','can_push: false'],
+ ['park','⏸','The attempt parked','publishing waits until the run finishes','Wait. It resumes by itself.','published: false · parked'],
+ ['neu','∅','The agent changed nothing','no commits, no uncommitted files, no patch','Read the log. If the step should open a PR, this is now FAILED published_nothing.','reason text'],
+ ['warn','?','Not a forge we can publish to','the host is unknown, or not one this worker publishes to','Apply the patch by hand.','reason text'],
+ ['bad','↯','The push was rejected','something else moved the branch','Look at what moved swarm/&lt;task&gt;, then retry.','published: false · branch'],
+ ['warn','⇡','The pull-request call failed','the branch IS pushed; only the PR call failed','Open the PR from the existing branch. Do not rerun the agent.','published: true · no pull_request'],
+];
+function A4gal(t){return app(t,{kid:'Recent',main:head('Work / Agents / <b>Recent</b> · Code card headlines','No pull request: six causes','one headline each, a different next step')+`<div class="causes">${CAUSES.map(([tone,ic,h,p,d,sig])=>`<div class="cause"><div class="ohead"><span class="oi ${tone}">${ic}</span><div><b>${h}</b><p>${p}</p></div></div><span class="do"><b>Next:</b> ${d}</span><span class="sig">read from ${sig}</span></div>`).join('')}</div>
+<div class="card"><div class="ch"><b>Not failures</b><span class="r"><span class="cnt">published, or by design</span></span></div><div class="g3"><div class="ohead"><span class="oi neu">≡</span><div><b>Collect: a patch, not a push</b><p>strategy collect: the work is harvested and the repository is never written to.</p></div></div><div class="ohead"><span class="oi neu">⇢</span><div><b>Contributor in an integrate workflow</b><p>branch pushed. The integrating step opens the one PR.</p></div></div><div class="ohead"><span class="oi warn">T</span><div><b>Branch pushed, no usable title</b><p>no PR opened: write one line to pr-title.txt and retry.</p></div></div></div></div>
+<div class="card"><div class="ch"><b>An unrecognised reason</b></div><div class="ohead"><span class="oi neu">“</span><div><b>The worker said something this screen can't advise on</b><p>Printed as it is: <code>publishing is disabled for this worker</code>. Never put in a bucket.</p></div></div><span class="exd">example data</span></div>`})}
+
+/* ---------- Variant B ---------- */
+function B(t){o_att=2;const rows=[{s:'PARKED',t:'▾ Split the flaky e2e suite and fix each shard',a:'26m',sm:'claude-code · awaiting 2 of 5 children',c:'pk2',id:'p'}];
+ const kids=[['RUNNING','Shard 3: tests/e2e/agents','6m','codex · running'],['QUEUED','Shard 4: tests/e2e/capacity','3m','class:standard full'],['FAILED','Lint pass over the shards','40m','runner_error · 3 of 3'],['SUCCEEDED','Shard 1: tests/e2e/overview','14:09','3 files written'],['SUCCEEDED','Shard 2: tests/e2e/workflows','14:12','2 files written']];
+ const lp=`<div class="lp"><div class="lph"><span class="inp">${I('i-search')}Filter agents</span><span class="btn ghost">«</span></div><div class="li sel">${mk('PARKED')}<b>▾ Split the flaky e2e suite and fix each shard</b><em>26m</em><small class="pk2">claude-code · awaiting 2 of 5 children</small></div>${kids.map(k=>`<div class="li ind">${mk(k[0])}<b>${k[1]}</b><em>${k[2]}</em><small>${k[3]}</small></div>`).join('')}<div class="li">${mk('RUNNING')}<b>▸ Refactor quota broker AIMD</b><em>18m</em><small>claude-code · 0 children</small></div><div class="li">${mk('SUCCEEDED')}<b>Fix flaky lease heartbeat test (#248)</b><em>1h</em><small>claude-code · PR #452</small></div><div class="cnt" style="padding:8px 12px">family rows need a second query per parent · <span class="exd">example data</span></div></div>`;
+ return app(t,{kid:'Waiting',main:head('Work / Agents / <b>Waiting</b>','Agents','12 live · 37 waiting · tenant eng')+`<div class="split">${lp}<div class="dp">${dph({st:st('PARKED','parked · awaiting children'),title:'Split the flaky e2e suite and fix each shard',id:'task_01JC4M9Z2D · claude-code · standard · 2u · gen 2'})}${tabs('Details',null)}${parkCallout()}<div class="card"><div class="ch"><b>Family</b><span class="r"><span class="cap">5 of 16 ${slots(5,16)}</span></span></div><div class="facts"><span><span class="k">children</span><b>5, listed under it on the left</b></span><span><span class="k">waiting on</span><b>2</b></span><span><span class="k">refunds</span><b>1 of 4</b></span><span><span class="k">deadline</span><b>in 23h 12m</b></span></div><div class="kiddots"><i class="l"></i><i class="l"></i><i class="r"></i><i class="q"></i><i class="b"></i></div></div><div class="card"><div class="ch"><b>Workflow page, step with children</b></div><div style="max-width:220px">${node('PARKED','implement','awaiting children',{more:'<span class="kidbadge">5 children</span><div class="kiddots"><i class="l"></i><i class="l"></i><i class="r"></i><i class="q"></i><i class="b"></i></div>'})}</div></div></div></div>`})}
+
+/* ---------- Variant C ---------- */
+function C(t){const ps=(c,d,h,s)=>`<div class="pstep ${c}"><span class="dot">${d}</span><div><b>${h}</b><small>${s}</small></div></div>`;
+ return app(t,{page:'workflows',main:wfHead()+`<div class="wfpage"><div style="display:flex;flex-direction:column;gap:12px">${stages('human','review')}<div class="card"><div class="ch"><b>Helpers</b><span class="cnt">children submitted by a step's agent</span></div><div class="facts"><span><span class="k">implement</span><b>3 children · all succeeded · ran before the review</b></span></div><div class="kiddots"><i class="l"></i><i class="l"></i><i class="l"></i></div></div><div class="card"><div class="ch"><b>review</b><span class="verd merge">MERGE</span></div><p class="note2">Step detail: just the outcome sentence. The path to merge is on the right.</p></div></div>
+<div class="card"><div class="ch"><b>Path to merge</b><span class="r"><span class="chip warn">awaiting a person</span></span></div><div class="path">${ps('ok','1','Review: MERGE','at 3f9a2c1 · 1 minor finding')}${ps('ok','2','Posted APPROVED','post-verdict · swarm-review')}${ps('ok','3','Fix: no agent ran','verdict_gate.agent_ran: false')}${ps('ok','4','Proof: PROVED','at 3f9a2c1')}${ps('ok','5','Merge checks: 9 of 9','required checks 7/7 green · mergeable')}${ps('wait','6','Human gate','merge_human_gate on · add ready on PR #512')}${ps('','7','Merged','by GitHub auto-merge, at green')}</div><p class="foot"><span class="exd">example data</span></p></div></div>`})}
+
+/* ---------- empty / loading / error ---------- */
+function ST(t){const box=(h,b)=>`<div class="card"><div class="ch"><b>${h}</b></div>${b}</div>`;
+ const sk='<div class="sk"></div><div class="sk s"></div><div class="sk t"></div>';
+ return app(t,{cls:'narrow',main:head('Forms','Empty, loading, error','every region, its other forms')+`
+<div class="pt" style="padding-left:0">Children tab</div><div class="states4">${box('Loading',sk)}${box('Empty','<p class="note2">This agent has submitted no children. The tab hides when the API reports zero.</p>')}${box('Error','<div class="callout bad"><svg viewBox="0 0 12 12" style="color:var(--s-bad)"><use href="#s-failed"/></svg><span>Could not read the children: 503 from swarm-api. Retrying in 10s. The parent\'s own state above is current.</span></div>')}${box('Older API','<p class="note2">Children: <b>—</b>. This API does not send <code>parent_task_id</code>, so it cannot say whether this agent has children. Unknown, not zero.</p>')}</div>
+<div class="pt" style="padding-left:0">Review verdict</div><div class="states4">${box('Loading',sk)}${box('No verdict yet','<p class="note2">review is running. The verdict appears when it writes <code>verdict.json</code>.</p>')}${box('Unreadable','<div class="callout bad"><svg viewBox="0 0 12 12" style="color:var(--s-bad)"><use href="#s-failed"/></svg><span>verdict.json is not a verdict (no <code>verdict</code> key). Treated as neither MERGE nor NOT_YET. The gated step failed with INPUTS_UNAVAILABLE.</span></div>')}${box('No findings','<p class="note2"><span class="verd merge">MERGE</span> with 0 findings. Severity groups are hidden.</p>')}</div>
+<div class="pt" style="padding-left:0">Merge checks</div><div class="states4">${box('Loading',sk)}${box('Not started','<p class="note2">merge waits for post-verdict and proof. No checks read yet: each shows a dash.</p>')}${box('Forge unreachable','<div class="callout warn"><svg viewBox="0 0 12 12" style="color:var(--s-warn)"><use href="#s-warn"/></svg><span>forge_unavailable: GitHub answered 503. Retryable. Next attempt at 15:12. It does not sleep in the worker.</span></div>')}${box('Gate unknown','<p class="note2">Human gate: <b>—</b>. This API does not report <code>merge_human_gate</code>.</p>')}</div>
+<div class="pt" style="padding-left:0">Code card</div><div class="states4">${box('Loading',sk)}${box('No repository','<p class="note2">This task cloned nothing, so there is no Code card.</p>')}${box('No reason','<p class="note2">Publish outcome: <b>—</b>. The summary has no <code>publish_reason</code>, so something other than the publish step wrote it.</p>')}${box('Patch omitted','<p class="note2">A patch existed and was dropped at the size cap, so no partial patch is shown. Not the same as "no patch".</p>')}</div>
+<span class="exd">example data</span>`})}
+
+/* ---------- phones ---------- */
+const pbar=t=>`<div class="pbar"><svg class="ic" viewBox="0 0 24 24"><use href="#i-menu"/></svg>${HIVE(22)}<b>${t}</b><span class="pill dev">dev</span></div>`;
+const PH={
+ kids:()=>pbar('Agent')+`<div class="pbody">${dph({st:st('PARKED','parked · awaiting children'),title:'Split the flaky e2e suite and fix each shard',id:'task_01JC4M9Z2D · claude-code',actions:''})}<div class="tabs"><span>Details</span><span class="on">Children<em>5</em></span><span>Attempts<em>2</em></span></div><div class="callout park"><svg viewBox="0 0 12 12" style="color:var(--s-park)"><use href="#s-parked"/></svg><span><b>Holds no capacity.</b> Moves to ready when every child has ended. Deadline in 23h.</span></div><div class="cap">5 of 16 ${slots(5,16)}</div>${KIDS.map(k=>`<div class="prow">${mk(k.s)}<b>${k.t}</b><em>${k.rq}</em><small>${k.w}</small></div>`).join('')}<span class="exd">example data</span></div>`,
+ child:()=>pbar('Agent')+`<div class="pbody"><a class="parentl">${I('i-up')}child of <b>Split the flaky e2e…</b></a>${dph({st:st('CANCELLED'),extra:'<span class="chip">child_cascade</span>',title:'Shard 5: tests/e2e/submit',id:'task_01JC4NC6T1 · claude-code',actions:''})}<div class="callout"><svg viewBox="0 0 12 12" style="color:var(--s-neu)"><use href="#s-cancelled"/></svg><span><b>Cancelled because its parent was cancelled.</b> alex cancelled the parent at 14:31. Why: parent_cancelled.</span></div><div class="tiles"><div class="tile"><small>Ran</small><b>4m 12s</b></div><div class="tile"><small>Tokens</small><b>—</b><i>cancelled run</i></div></div><span class="exd">example data</span></div>`,
+ merge:()=>pbar('Workflow')+`<div class="pbody"><div class="crumb">wf_01JC5R2T9M · step merge</div><div class="row">${st('SUCCEEDED')}<span class="chip warn">awaiting a person</span></div><span class="lbl off">ready · not added</span><div class="ohead"><span class="oi warn">⏸</span><div><b>Every check passed.</b><p>The human gate is on. A person adds <code>ready</code> to PR #512, and GitHub merges it at green.</p></div></div>${checks(CK_OK.slice(3))}<span class="exd">example data</span></div>`,
+};
+
+/* ---------- mount ---------- */
+const F={a1:(t,p)=>A1(t,p),a1strip:t=>A1strip(t),a2:t=>A2(t),a3:t=>A3(t),a3m:t=>A3m(t),a3h:t=>A3h(t,false),a3h2:t=>A3h(t,true),a4ok:t=>A4ok(t),a4none:t=>A4none(t),a4ref:t=>A4ref(t),a4gal:t=>A4gal(t),b:t=>B(t),c:t=>C(t),st:t=>ST(t)};
+document.querySelectorAll('[data-f]').forEach(el=>{el.innerHTML=F[el.dataset.f](el.dataset.t,!!el.dataset.prod)});
+document.querySelectorAll('[data-p]').forEach(el=>{el.innerHTML=PH[el.dataset.p]()});
+</script>
+</body>
+</html>

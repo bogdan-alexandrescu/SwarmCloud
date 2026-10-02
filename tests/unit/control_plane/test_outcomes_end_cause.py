@@ -76,6 +76,8 @@ END_CAUSES = [
     # Contract request 35 (#295): the post-verdict worker action, the same pair.
     "verdict_refused",
     "verdict_failed",
+    # Contract request 29 (#259), applied 2026-10-02: the worker refused to publish.
+    "publish_refused",
     # Contract request 41: a child cancelled because of its parent.
     "child_cascade",
 ]
@@ -132,6 +134,7 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
         "runner_error", "timeout", "lost_worker", "could_not_start", "inputs_unavailable",
         "outputs_missing", "dispatch_failed", "spec_signature_invalid",
         "verdict_refused", "verdict_failed", "merge_refused", "merge_failed",
+        "publish_refused",
         "other", "no_reason",
     ]
     # Its own class, never "other" or "runner error": every one is a tenant's
@@ -149,6 +152,11 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     ):
         assert dict(outcomes.FAILURE_CLASSES)[key] == label
         assert outcomes._FAILURE_OF_CAUSE[key] == key
+    # Contract request 29: a publish the worker refused is its own class,
+    # never "runner error" (the credential scan) or "outputs missing" (the
+    # refused title), which is what each was counted as before.
+    assert dict(outcomes.FAILURE_CLASSES)["publish_refused"] == "publish refused"
+    assert outcomes._FAILURE_OF_CAUSE["publish_refused"] == "publish_refused"
     assert dict(outcomes.FAILURE_CLASSES)["inputs_unavailable"] == "inputs unavailable"
     assert [k for k, _ in outcomes.CANCEL_CAUSES] == [
         "requested", "after_failure", "after_cancel", "workflow_sweep", "child_cascade", "other",
@@ -156,8 +164,8 @@ def test_the_fixed_orders_carry_the_new_classes_where_an_attempt_meets_them():
     assert dict(outcomes.CANCEL_CAUSES)["after_cancel"] == "after a cancel"
     # Both versions moved, so every stored day is re-derived under the new rules.
     # Bumped for contract request 34's class, and again for 33 and 35's four,
-    # so stored days are derived again.
-    assert outcomes.DERIVE_VERSION >= 4
+    # so stored days are derived again; and for request 29's.
+    assert outcomes.DERIVE_VERSION >= 5
     assert outcomes.CLASSIFIER_VERSION >= 2
     assert outcomes.VOCAB["classifier_version"] == outcomes.CLASSIFIER_VERSION
 
@@ -180,6 +188,16 @@ def test_a_typed_end_cause_is_read_before_any_text():
     # Without a cause, the text rules are unchanged.
     assert classify("FAILED", "runner exited 1", 1) == "runner_error"
     assert classify("FAILED", None, None) == "no_reason"
+
+
+def test_a_publish_the_worker_refused_is_counted_as_one():
+    """Contract request 29: both refusals read as what they are. Before it, the
+    credential scan's was counted a runner error and the title's a missing output."""
+    classify = outcomes.classify_failure
+    leak = "the final tree adds a credential in .env (rule aws_access_key_id, line 1); remove it"
+    title = "pr-title.txt refused: names a task id; write a fact-style title"
+    assert classify("FAILED", leak, 0, end_cause="publish_refused") == "publish_refused"
+    assert classify("FAILED", title, 0, end_cause="publish_refused") == "publish_refused"
 
 
 @pytest.mark.parametrize(
