@@ -260,6 +260,10 @@ module "secret_manager" {
   # Never refreshed, and the worker account never their reader.
   action_providers = module.tenancy.action_providers
 
+  # swarm-api reads each tenant's -git secret for the issue preview (#454,
+  # mock-up 1A), by a per-secret binding on that secret alone.
+  forge_readers = [module.iam.service_account_members["swarm-api"]]
+
   # One writer, and this is it. See the variable's own description, and
   # quota_broker.credentials, for why a second one corrupts a rotating
   # credential rather than merely duplicating work.
@@ -307,6 +311,15 @@ module "cloud_run" {
       vpc_egress  = "ALL_TRAFFIC"
       concurrency = 80
       env         = local.service_env["swarm-api"]
+      # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
+      # Secret Manager reference, only once enable_child_tasks is on
+      # (child_tasks.tf).
+      secret_env = local.child_key_secret_env
+      # The audience a worker mints its ID token for when it calls the child
+      # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
+      # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
+      # in addition to the URL; people's clients are unaffected.
+      custom_audiences = [local.push_audiences["swarm-api"]]
       # THE IAP SERVICE AGENT, EXPLICITLY.
       #
       # IAP invokes Cloud Run AS THIS IDENTITY, and without it the load balancer
@@ -328,9 +341,13 @@ module "cloud_run" {
       #
       #   gcloud beta services identity create \
       #     --service=iap.googleapis.com --project=<project>
+      #
+      # And each tenant's WORKER, once child tasks are on: the worker-only
+      # child routes are the one thing a worker calls here (child_tasks.tf).
       invokers = merge(
         { for member in var.api_invokers : member => member },
         { iap = "serviceAccount:service-${data.google_project.this.number}@gcp-sa-iap.iam.gserviceaccount.com" },
+        local.child_route_invokers,
       )
     }
     "swarm-scheduler" = {
@@ -345,6 +362,7 @@ module "cloud_run" {
       concurrency      = 1
       request_timeout  = "540s"
       env              = local.service_env["swarm-scheduler"]
+      secret_env       = local.scheduler_child_key_secret_env
       custom_audiences = [local.push_audiences["swarm-scheduler"]]
       invokers         = { tick = module.iam.tick_member }
     }
@@ -476,6 +494,12 @@ module "scheduler" {
   tick_service_account = module.iam.tick_service_account
   kms_key_name         = var.pubsub_kms_key_name
 
+  # D17: one workflow-rollup job per registered tenant, calling swarm-api as
+  # the module's rollup-sweeper account. The audience is the service URL, the
+  # same value verify.tf gives its own direct caller of swarm-api.
+  api_endpoint      = module.cloud_run.service_urls["swarm-api"]
+  rollup_tenant_ids = toset(keys(var.tenants))
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {
@@ -502,6 +526,24 @@ module "scheduler" {
   # became unknown with it, and two IAM bindings went from "no change" to
   # "must be replaced". 1 add / 18 change / 0 destroy became 3 / 18 / 2.
   depends_on = [module.project_services]
+}
+
+# The workflow-rollup jobs (D17) call swarm-api directly, so Cloud Run's edge
+# must let their identity through before the app's ROLLUP_SWEEPER_ROUTES check
+# is ever reached. `api_invokers` is not that grant: dev sets it to allUsers,
+# prod to the tenant groups, and the sweeper is in neither -- so without this
+# every prod job is a 403 and stored Workflow.state stays stale. Modelled on
+# verify.tf's verify_invokes_api, the only other direct caller, and granted in
+# every environment for the same reason. run.invoker on this one service is
+# the account's only grant; the route allow-list narrows it from there.
+resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
+  project  = var.project_id
+  location = var.region
+  # `service_names` is a sorted list; take the name from the map-shaped output,
+  # as verify_invokes_api does.
+  name   = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  role   = "roles/run.invoker"
+  member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
 }
 
 # The external front door: an ALB with IAP in front of swarm-api.

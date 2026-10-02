@@ -1,0 +1,402 @@
+/* ========================================================================
+   WORKFLOWS: the list, one workflow's page, wide stages, and the review and
+   merge cards (workflows.html V2, wide-workflows.html A, agent-detail-2.html
+   A; wave 4 lane U2, 2026-10-02).
+
+   THE SECTION'S OWN SHEET, imported by Workflows.tsx. The shared components
+   and tokens are U0's; the `wf-` pieces here are drawn to components.html A
+   (32px rows, pill chips, the brand state marks) so a later pass can swap them
+   for the canonical set. RADII ARE THE SHEET'S TOKENS -- `--radius` for a
+   card, `--ctl-radius-sm` for a control, 999px for a pill, 2px for a bar --
+   not components.html's 8 / 12 literals: spacing.test.tsx still holds the
+   live scale (0 / 2 / 6 / 10 / 14 / 999), and through the tokens these rules
+   move with U0's when the scale does.
+
+   EVERY RULE WINS ON SPECIFICITY, NOT ON ORDER. `main.tsx` imports App (and
+   so this sheet) before `styles.css`, so this file comes FIRST in the bundle
+   and loses every tie. Rules that restyle something `styles.css` also styles
+   are scoped one class deeper than the rule they replace.
+   ======================================================================== */
+
+/* ---- The list, full width, with no sideways scroll at 1440 (#503) ------- */
+
+/* AT 900 AND UP THE TABLE IS LAID OUT FIXED AT ITS WRAPPER'S WIDTH, every
+   column a share of it. It was 1448px of content in a 1054px wrapper: most of
+   Owner, and all of Started and Duration, behind a horizontal scroll, and the
+   whole owner address made Owner alone 369px. Below 900 the phone form keeps
+   the sideways scroll and the one-line summary (`.wfl-phone`). */
+@media (min-width: 900px) {
+  .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
+  .wfl .wfl-table { table-layout: fixed; width: 100%; }
+  .wfl .wfl-table th[data-col="state"] { width: 9%; }
+  .wfl .wfl-table th[data-col="workflow"] { width: 21%; }
+  .wfl .wfl-table th[data-col="shape"] { width: 13%; }
+  .wfl .wfl-table th[data-col="done"] { width: 9%; }
+  .wfl .wfl-table th[data-col="runners"] { width: 14%; }
+  .wfl .wfl-table th[data-col="cost"] { width: 7%; }
+  .wfl .wfl-table th[data-col="owner"] { width: 9%; }
+  .wfl .wfl-table th[data-col="started"] { width: 9%; }
+  .wfl .wfl-table th[data-col="duration"] { width: 9%; }
+  .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
+  .wfl .wfl-name { min-width: 0; }
+  .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+.wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
+.wfl-shape { white-space: nowrap; }
+/* "partial": some step depends on part of the level above (§6), which the
+   text shape cannot say. A fact chip, not a state. */
+.wf-pchip {
+  display: inline-flex; margin-left: 6px; padding: 1px 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+}
+
+/* THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one 7px column per stage,
+   its height log-scaled from the stage's width (`stageGlyph`), filled bottom
+   up with the stage's state mix. Beside the text shape, never instead of it. */
+.wf-sgl {
+  display: inline-flex; align-items: flex-end; gap: 2px;
+  height: 22px; margin-right: 8px;
+  vertical-align: middle;
+}
+.wf-sgl > i {
+  display: flex; flex-direction: column-reverse;
+  width: 7px; border-radius: 2px; overflow: hidden;
+  background: var(--line-soft);
+}
+.wf-sgl > i > b { display: block; width: 100%; }
+
+/* THE MIX PARTS, one vocabulary for the band's bar and the list's glyph, in
+   the brand state hues. Hatching means only "not measured" (components.html
+   A): the unread part is hatched amber; skipped and cancelled are drawn
+   apart from succeeded so a clean finish and a skipped one never read alike. */
+.mx-bad { background: var(--s-bad); }
+.mx-live { background: var(--s-live); }
+.mx-park { background: var(--s-park); }
+.mx-wait { background: color-mix(in srgb, var(--s-neu) 30%, var(--surface)); }
+.mx-done { background: var(--s-neu); }
+.mx-skip { background: color-mix(in srgb, var(--s-neu) 55%, var(--surface)); }
+.mx-can { background: color-mix(in srgb, var(--s-neu) 75%, var(--surface)); }
+.mx-unk { background: repeating-linear-gradient(135deg, var(--s-warn) 0 3px, var(--surface) 3px 6px); }
+
+/* ---- One workflow's page (workflows.html B; #503) ------------------------ */
+
+/* ONE ROW: the chips left, Copy link and Cancel workflow right, centred on
+   the row. It was a column of breadcrumb, id, provenance and a second heading
+   with the actions top-aligned beside it and ~100px blank under them. */
+.wfp > .wfp-head {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: var(--ctl-s2) var(--ctl-s3);
+}
+.wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.wfp-head .wfp-cost .wf-spend { display: inline; }
+
+/* THE TABS, UNDERLINED (components.html A `.c-tabs`), under the title. */
+.wf-tabs {
+  display: flex; gap: 2px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+}
+.wf-tabs > button {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: 32px; margin: 0 0 -1px; padding: 0 12px;
+  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
+  background: none;
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  color: var(--text-dim);
+  white-space: nowrap; cursor: pointer;
+}
+.wf-tabs > button:hover { color: var(--text); }
+.wf-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+.wf-tabs > button.is-on { color: var(--sk-ac); border-bottom-color: var(--sk-ac); font-weight: 600; }
+.wf-tab-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+/* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
+   border away (`.wf-card.is-page`), which left a card with no top edge under
+   the tabs (#503). */
+.wfp .wf-card.is-page {
+  border: 1px solid var(--line); border-radius: var(--radius);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  background: var(--surface);
+}
+
+/* THE PICKED STEP'S CARD UNDER THE GRAPH (workflows.html B). Beside it, the
+   card's same-step strip ran past its right edge and the graph lost a third
+   of its width; stacked, both have the column. */
+.wf-card .wf-split.is-stack.has-panel { display: block; }
+.wf-split.is-stack > .wf-panel {
+  position: static; max-height: none; overflow: visible;
+  margin-top: var(--ctl-s3);
+}
+.wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-scrub-strip > li > .wf-mk { display: inline-flex; }
+
+/* THE STEP TABLE FITS ITS COLUMN (#503): 1465px of content in a 618px
+   wrapper beside the inspector, six of ten columns behind a scroll, and the
+   last column clipped under the graph. Fixed layout at the column's width,
+   cells that wrap; below 900 the phone form keeps its sideways scroll. */
+@media (min-width: 900px) {
+  .wf-card .ctl-table.wf-table { overflow-x: visible; }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; }
+  .wf-card .ctl-table.wf-table th,
+  .wf-card .ctl-table.wf-table td { white-space: normal; overflow-wrap: anywhere; }
+  .wf-card .ctl-table.wf-table [data-col="step"] { width: 15%; }
+  .wf-card .ctl-table.wf-table [data-col="state"] { width: 12%; }
+  .wf-card .ctl-table.wf-table [data-col="why"] { width: 15%; }
+  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 9%; }
+  .wf-card .ctl-table.wf-table [data-col="waited"],
+  .wf-card .ctl-table.wf-table [data-col="ran"],
+  .wf-card .ctl-table.wf-table [data-col="cost"],
+  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 8%; }
+  .wf-card .ctl-table.wf-table [data-col="attempts"] { width: 7%; }
+  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 10%; }
+}
+.wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
+
+/* THE STAGE FILTER A BAND COUNT OPENED, as a removable filter chip. */
+.wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
+.wf-filter-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 4px 2px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--sk-ac) 12%, var(--surface));
+  color: var(--sk-ac);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-filter-x {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 999px;
+  background: none; color: inherit; font: inherit; cursor: pointer;
+}
+.wf-filter-x:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+/* ---- The typed confirm on Cancel workflow (states.html §12) -------------- */
+
+.wf-typed { display: flex; flex-direction: column; gap: 4px; }
+.wf-typed-l { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-typed input {
+  height: 32px; padding: 0 10px;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+}
+.wf-typed input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+
+/* ---- A wide stage's band (wide-workflows.html A) ------------------------- */
+
+/* THREE ROWS IN A BOX `dag.ts` SIZED (`BAND_H`, 100): the toggle (count,
+   range, mix bar, slots held, caret) at 32px, the counts at 20, the named
+   chips at 22, 4px between, 8px of padding and a 1px border. No row wraps,
+   so the height never depends on how many states or names a stage has.
+   ABOVE THE EDGES, opaque, as the band always was: an edge crossing it reads
+   as passing behind it. */
+.wf-canvas .wf-band {
+  position: absolute; z-index: 1;
+  box-sizing: border-box;
+  display: flex; flex-direction: column; gap: 4px;
+  margin: 0; padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--text-faint);
+  border-radius: var(--radius);
+  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  color: var(--text);
+  cursor: default;
+  overflow: hidden;
+}
+/* A STAGE WHOSE CENSUS IS INCOMPLETE MUST NOT LOOK CLEAN: dashed amber, as
+   `.node.unknown`. Declared before `.has-failure` so a band that is both keeps
+   the dashed edge and takes the bad colour. */
+.wf-canvas .wf-band.has-unread { border-left-color: var(--warn); border-left-style: dashed; }
+.wf-canvas .wf-band.has-failure {
+  border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 6%, var(--surface));
+}
+/* The stage holding the picked step (WF-10): three sides in `--text`; a
+   selection is not a state, so the left accent keeps its tone. */
+.wf-canvas .wf-band.holds-picked { border-top-color: var(--text); border-right-color: var(--text); border-bottom-color: var(--text); }
+
+/* THE DISCLOSURE ROW. A plain row that is a control: no centring, casing or
+   tracking inherited from a button. */
+.wf-band-toggle {
+  display: flex; align-items: center; gap: var(--ctl-s3);
+  height: 32px; min-width: 0; margin: 0; padding: 0;
+  border: 0; border-radius: var(--ctl-radius-sm); background: none;
+  text-align: left; text-transform: none; letter-spacing: normal;
+  font: inherit; color: inherit; white-space: nowrap;
+  cursor: pointer;
+}
+.wf-band-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.wf-band-toggle .wf-band-n { flex: none; font-weight: 600; }
+.wf-band-range { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-band-mix {
+  display: flex; flex: none; gap: 1px;
+  width: 150px; height: 6px; border-radius: 2px; overflow: hidden;
+  background: var(--line-soft);
+}
+.wf-band-mix > i { display: block; height: 100%; flex-basis: 0; }
+.wf-band-hold { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-band-toggle .wf-caret { margin-left: auto; flex: none; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
+.wf-band-toggle:hover .wf-caret { color: var(--text); }
+
+/* THE COUNTS, NOWRAP AND CLIPPED, and that is only safe because of the order:
+   `stageCensus` puts failures and cancellations first. On a page each count
+   is a button that opens the Table at those steps. */
+.wf-canvas .wf-band-counts {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s3);
+  height: 20px; min-width: 0; overflow: hidden;
+}
+.wf-canvas .wf-band-count {
+  display: inline-flex; align-items: center; gap: 4px; flex: none;
+  margin: 0; padding: 0 4px; border: 0; border-radius: 2px; background: none;
+  white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--text-dim);
+}
+.wf-canvas button.wf-band-count { cursor: pointer; text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px; }
+.wf-canvas button.wf-band-count:hover { color: var(--text); text-decoration-color: currentColor; }
+.wf-canvas button.wf-band-count:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-canvas .wf-band-count.is-bad { color: var(--bad-ink); font-weight: 600; }
+.wf-canvas .wf-band-count.is-unknown { color: var(--text-faint); }
+.wf-canvas .wf-band-cause {
+  flex: 0 1 auto; min-width: 8ch;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  color: var(--bad-ink);
+}
+
+/* THE NAMED STEPS: failed, then holding capacity, then parked, as pill chips
+   in their state's tint and edge, each picking its step. */
+.wf-band-chips {
+  display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
+  height: 22px; min-width: 0; overflow: hidden;
+}
+.wf-band-chip {
+  display: inline-flex; align-items: center; gap: 5px; flex: none;
+  height: 20px; margin: 0; padding: 0 8px;
+  border: 1px solid var(--line); border-radius: 999px;
+  background: var(--s-neub); color: var(--text);
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  white-space: nowrap; cursor: pointer;
+}
+.wf-band-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
+.wf-band-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); }
+.wf-band-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
+.wf-band-chip.is-picked { border-color: var(--text); }
+.wf-band-chip.is-more { background: none; color: var(--text-dim); cursor: default; }
+.wf-band-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-band-chip > .wf-mk,
+.wf-canvas .wf-band-count > .wf-mk { display: inline-flex; }
+.wf-canvas .wf-band-pick { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); white-space: nowrap; }
+
+/* ---- Edges: lit on hover and select, the rest faded ---------------------- */
+
+.wf-edges .wf-link.is-lit .wf-edge { stroke: var(--sk-ac); stroke-width: 2.4px; }
+.wf-edges .wf-link.is-lit .wf-arrowhead { fill: var(--sk-ac); }
+.wf-edges .wf-link.is-faded { opacity: .35; }
+
+/* ---- A step its verdict gate kept from running --------------------------- */
+
+/* STRIPED, WITH A DASHED EDGE (wide-workflows.html A): it ended SUCCEEDED and
+   its agent never ran, so it may not wear the solid card of work done. */
+.wf-canvas .node.is-skipped {
+  background: repeating-linear-gradient(135deg, var(--s-neub) 0 7px, var(--surface) 7px 13px);
+  border-left: 4px dashed var(--s-neu);
+}
+.node-dur.is-skip { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+
+/* ---- The review verdict and the merge checklist (agent-detail-2.html A) --- */
+
+.wf-verdict,
+.wf-merge {
+  display: flex; flex-direction: column; gap: var(--ctl-s2);
+  margin: var(--ctl-s3) 0 0; padding: var(--ctl-s3) 14px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+}
+.wf-verdict.is-pending { color: var(--text-dim); }
+.wf-card-h { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.wf-card-r { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-card-foot { margin: 0; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-verdict-pill {
+  display: inline-flex; align-items: center; padding: 1px 8px;
+  border-radius: 999px; border: 1px solid var(--line);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-verdict-pill.is-merge { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
+.wf-verdict-pill.is-notyet { background: var(--s-warnb); border-color: color-mix(in srgb, var(--s-warn) 45%, transparent); }
+.wf-sev { display: flex; flex-direction: column; gap: 4px; }
+.wf-sev-h { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; }
+.wf-sev-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-finding {
+  margin: 0; padding: 4px 8px;
+  border-left: 3px solid var(--line); border-radius: 2px;
+  background: var(--surface-2);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+  font: var(--t-micro)/var(--lh-micro) var(--mono);
+}
+.wf-sev.is-blocker .wf-finding { border-left-color: var(--s-bad); }
+.wf-sev.is-major .wf-finding { border-left-color: var(--s-warn); }
+.wf-merge-out { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-merge-out.is-bad { color: var(--bad-ink); }
+.wf-merge-label {
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--line);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+}
+.wf-merge-head { margin: 0; }
+.wf-checks { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.wf-check {
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: start; gap: var(--ctl-s2);
+  min-height: 32px; padding: 6px 0; border-bottom: 1px solid var(--line-soft);
+}
+.wf-check-m { text-align: center; font-weight: 600; }
+.wf-check.is-passed .wf-check-m { color: var(--s-live); }
+.wf-check.is-failed .wf-check-m { color: var(--s-bad); }
+.wf-check.is-waiting .wf-check-m { color: var(--s-warn); }
+.wf-check.is-not_read { color: var(--text-dim); }
+.wf-check-t small { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-check-c { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+
+/* ---- The graph at phone width (workflows.html B, phone frame) ------------ */
+
+/* STACKED STAGE CARDS below 561px, where the canvas is hidden: a 390px
+   column shows one card of a fan-out and a sideways scroll, and the cards say
+   where the run is without one. Above it they are not drawn. */
+.wf-ph-stages { display: none; }
+@media (max-width: 560px) {
+  .wf-card .wf-ph-stages {
+    display: flex; flex-direction: column; gap: 6px;
+    margin: 0; padding: 0; list-style: none;
+  }
+  .wf-card.is-page .wf-canvas-wrap,
+  .wf-card.is-page .wf-zoom { display: none; }
+}
+.wf-ph-stage {
+  display: flex; flex-direction: column; gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: var(--radius);
+  background: var(--surface);
+}
+.wf-ph-stage + .wf-ph-stage::before {
+  content: "↓"; align-self: center; margin: -4px 0 2px;
+  color: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--font);
+}
+.wf-ph-h { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.wf-ph-step {
+  display: flex; align-items: center; gap: 8px;
+  min-height: 32px; margin: 0; padding: 4px 8px;
+  border: 1px solid var(--line); border-left-width: 4px; border-radius: var(--ctl-radius-sm);
+  background: var(--s-neub); color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; cursor: pointer;
+}
+.wf-ph-step.t-live { background: var(--s-liveb); border-left-color: var(--s-live); }
+.wf-ph-step.t-park { background: var(--s-parkb); border-left-color: var(--s-park); }
+.wf-ph-step.t-bad { background: var(--s-badb); border-left-color: var(--s-bad); }
+.wf-ph-step.t-unk { background: var(--surface); border-left-style: dashed; border-left-color: var(--s-warn); }
+.wf-ph-step.is-picked { border-color: var(--text); }
+.wf-ph-step:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
+.wf-ph-name { font-weight: 600; overflow-wrap: anywhere; }
+.wf-ph-state { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-ph-more { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); }

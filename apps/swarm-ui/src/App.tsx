@@ -13,6 +13,7 @@ import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
 import { AgentsScreen } from './Agents'
+import { TimelineLanesScreen } from './TimelineLanes'
 import { AgentSplit } from './AgentSplit'
 import { CapacityScreen } from './Capacity'
 import { Dock } from './Dock'
@@ -27,9 +28,9 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
-import { SUBMIT_ADDRESS, addressToPath, helpGroupOf, isLegacyHash, pathToAddress } from './paths'
+import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, type SpineSection } from './Spine'
-import { HelpScreen } from './HelpSection'
+import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { PlatformCountsScreen } from './PlatformCounts'
@@ -38,6 +39,7 @@ import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
 import { FrameAge, RoutedPage, timeAgo, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
+import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -656,6 +658,8 @@ export interface Route {
    * (`#admin/limits?pool=tenant%3Aeng`, #134).
    */
   view?: string | null
+  /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
+  page?: 'outcomes' | null
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -790,6 +794,9 @@ export function fromAddress(full: string): Route {
   if (section) {
     const wanted = tail.join('/')
     const tab = section.tabs.find((t) => t.id === wanted)
+    if (section.id === WORK && wanted === 'timeline/outcomes') {
+      return { sectionId: WORK, tab: 'timeline', ...blank, page: 'outcomes', ...(query !== '' ? { view: query } : {}) }
+    }
     if (tab && section.id === WORK && tab.id === 'timeline' && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
@@ -859,8 +866,9 @@ export function canonical(r: Route): string {
   }
   // The Timeline's view rides on its address, so a copied link reproduces the
   // page (#185). Written only for that route: no other screen reads a query.
-  if (r.sectionId === WORK && r.tab === 'timeline' && r.view) {
-    return `${WORK}/timeline?${r.view}`
+  if (r.sectionId === WORK && r.tab === 'timeline' && (r.view || r.page === 'outcomes')) {
+    const at = r.page === 'outcomes' ? `${WORK}/timeline/outcomes` : `${WORK}/timeline`
+    return r.view ? `${at}?${r.view}` : at
   }
   if (r.sectionId === WORK && r.tab === 'workflows' && r.view) {
     return `${WORK}/workflows?${r.view}`
@@ -1040,7 +1048,7 @@ export function App() {
           tab={at.tab}
           title={title}
           go={go}
-          helpGroup={at.sectionId === HELP ? (helpGroupOf(at.tab) ?? (at.tab === '' ? null : at.tab)) : null}
+          helpGroup={at.sectionId === HELP ? helpPageOf(at.tab) : null}
           apiFailuresOnly={apiFailuresOnly}
           onApiFilter={setApiFailuresOnly}
           foot={
@@ -1098,6 +1106,7 @@ export function App() {
                     list={at.list ?? null}
                     onList={onList}
                     view={at.view ?? null}
+                    page={at.page ?? null}
                     onView={onView}
                     go={go}
                   />
@@ -1131,12 +1140,14 @@ function here(): string {
   return window.location.pathname + window.location.search + window.location.hash
 }
 
-/** The spine section a route belongs to. Submit belongs to none of them. */
+/** The spine section a route belongs to. Submit lights Work, as its two
+ *  forms do (submit.html M2: every frame lights Work). */
 function spineOf(sectionId: string): SpineSection {
   switch (sectionId) {
     case 'overview':
       return 'overview'
     case WORK:
+    case SUBMIT:
       return 'work'
     case CAPACITY:
       return 'capacity'
@@ -1149,42 +1160,6 @@ function spineOf(sectionId: string): SpineSection {
     default:
       return null
   }
-}
-
-/**
- * THE SUBMIT CHOOSER (/submit; submit.html, the owner's pick). Two large
- * choices, opened by the spine's Submit button and by N. Recent submissions
- * are NOT listed: no route serves "what did I submit", so the empty state
- * says so rather than inventing a list from the task feed.
- */
-function SubmitChooser({ go }: { go: (to: string) => void }) {
-  return (
-    <section className="sk-chooser" aria-labelledby="submit-h">
-      <h1 id="submit-h">Submit</h1>
-      <div className="sk-choices">
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new`)}>
-          <b>A task</b>
-          <span>
-            One agent, one runner profile, one prompt. It is created READY or PARKED and holds no capacity until it
-            is leased.
-          </span>
-          <em>/submit/task</em>
-        </button>
-        <button type="button" className="sk-choice" onClick={() => go(`${WORK}/new-workflow`)}>
-          <b>A workflow</b>
-          <span>Stages of steps, top to bottom, each step an agent; a step starts when the steps it names have finished.</span>
-          <em>/submit/workflow</em>
-        </button>
-      </div>
-      <div className="sk-recent-empty">
-        <b>Recent submissions</b>
-        <p>
-          Not listed. No route serves what you submitted, so this page does not guess it from the task feed; the
-          Agents list&rsquo;s Waiting and Recent tabs show every task in your tenant.
-        </p>
-      </div>
-    </section>
-  )
 }
 
 /**
@@ -1261,8 +1236,12 @@ function Head({
   const claimed = usePageAgeClaimed()
 
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
-  const head = section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
-  const home = section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
+  // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
+  // of its own, not API reads (#503), and the two forms lead back to it.
+  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')
+  const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+  const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
 
   return (
@@ -1360,8 +1339,9 @@ export function crumbsOf({
  * the screen you just left, not a success from another route of the tab.
  */
 function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: number }) {
-  // Help and API reads draw from nothing they fetch, so there is no age.
-  if (at.sectionId === HELP || at.sectionId === REFERENCE) {
+  // Help, API reads and the Submit chooser draw from nothing they fetch, so
+  // there is no age -- and no "reading…" that never resolves (#503).
+  if (at.sectionId === HELP || at.sectionId === REFERENCE || at.sectionId === SUBMIT) {
     return <span className="ctl-em">reads nothing</span>
   }
   // `reads` is about ANOTHER screen until this one's scope has begun (the
@@ -1504,6 +1484,7 @@ function SectionBody({
   list,
   onList,
   view,
+  page,
   onView,
   go,
 }: {
@@ -1517,6 +1498,8 @@ function SectionBody({
   onList: (list: AgentList) => void
   /** The Timeline's view, from the hash's query (#185), or null. */
   view: string | null
+  /** The Timeline's page: Outcomes, or null for Lanes. */
+  page: 'outcomes' | null
   /** Where the Timeline writes a new view; App turns it into the route. */
   onView: (view: string) => void
   go: (to: string) => void
@@ -1565,6 +1548,8 @@ function SectionBody({
   // holds it together: `nav.links.test.tsx` binds WORK/CAPACITY to SECTIONS,
   // SECTIONS declares its ids as literals, and the Python gate binds SECTIONS
   // to these cases. Nothing in it can move alone.
+  // Timeline's second page, Outcomes (`/timeline/outcomes`): today's ledger, unchanged.
+  if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
       return <OverviewScreen />
@@ -1574,7 +1559,7 @@ function SectionBody({
     case 'work/workflows':
       return <WorkflowsScreen view={view} onView={onView} />
     case 'work/timeline':
-      return <ActivityScreen view={view} onView={onView} />
+      return <TimelineLanesScreen view={view} onView={onView} />
     case 'work/new':
       return <SubmitScreen />
     case 'work/new-workflow':

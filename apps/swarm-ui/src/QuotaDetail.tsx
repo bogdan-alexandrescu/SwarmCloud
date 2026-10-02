@@ -2,7 +2,9 @@ import { loadAdminQuota } from './api'
 import { poolHref } from './capacityPoll'
 import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
+import { WarnMark } from './marks'
 import { Screen, timeAgo } from './Shell'
+import './styles/capacity.css'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
   ageSpan,
@@ -111,8 +113,22 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
               <h2 className="ctl-card-title">{provider}</h2>
               <span className="ctl-card-note is-end">{pluralise(list.length, 'tenant')}</span>
             </div>
-            <div className="ctl-table is-scroll">
+            {/* EIGHT COLUMNS THAT FIT (#503): "Reported" was clipped at the
+                card's right edge at 1440, because every column sized itself
+                to its content and the pool name is long. Fixed widths, and
+                the pool name ellipsizes with its whole name in its title. */}
+            <div className="ctl-table is-scroll quota-table">
               <table role="table">
+                <colgroup>
+                  <col className="quota-c-tenant" />
+                  <col className="quota-c-state" />
+                  <col className="quota-c-cap" />
+                  <col className="quota-c-feeds" />
+                  <col className="quota-c-left" />
+                  <col className="quota-c-429s" />
+                  <col className="quota-c-last" />
+                  <col className="quota-c-rep" />
+                </colgroup>
                 <thead role="rowgroup">
                   <tr role="row">
                     <th role="columnheader" scope="col">Tenant</th>
@@ -145,15 +161,41 @@ function Grouped({ rows }: { rows: QuotaState[] }) {
   )
 }
 
-/** `providerTone`'s vocabulary, in the chip's. */
-function chipTone(state: string): string {
-  switch (providerTone(state)) {
-    case 'ok': return 'is-ok'
-    case 'bad': return 'is-bad'
-    case 'wait': return 'is-warn'
-    case 'live': return 'is-live'
-    default: return 'is-unknown'
+/**
+ * A provider state, drawn ONE WAY whatever the reading's age (#503).
+ *
+ * `available` was a filled grey dot on a fresh row and a hollow ring on a
+ * stale one -- the same word in two pictures, and the ring is QUEUED's mark.
+ * Now the word is the document's, lowercased, and the mark is the brand's
+ * condition vocabulary (brand §3): `available` is neutral grey with no mark at
+ * all; throttled, cooldown, exhausted and disabled are the amber warning
+ * triangle, because each is a standing condition that lowers the cap, not a
+ * task state. How OLD the reading is, is the stale mark beside it -- the one
+ * place age is drawn -- so a stale `available` is never drawn as current and
+ * never drawn as something else.
+ */
+function QuotaStateMark({ state }: { state: string }) {
+  const tone = providerTone(state)
+  const word = state.toLowerCase()
+  if (tone === 'ok') {
+    return (
+      <span className="quota-state" data-tone="neu">
+        {word}
+      </span>
+    )
   }
+  if (tone === 'unknown') {
+    return (
+      <span className="quota-state" data-tone="unknown" title="A state this console does not know. It is shown as the document wrote it.">
+        {word}
+      </span>
+    )
+  }
+  return (
+    <span className="quota-state" data-tone={tone}>
+      <WarnMark label={word} />
+    </span>
+  )
 }
 
 function Row({ q, now }: { q: QuotaState; now: number }) {
@@ -174,22 +216,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           differs from the real one is unusable. */}
       <th role="rowheader" scope="row" className="mono">{q.tenant_id}</th>
       <td role="cell" data-label="State">
-        {/* The chip carries the state WORD and repeats it as a silhouette, so
-            the six provider states stay apart in a greyscale screenshot --
-            which is where this screen is actually read.
-
-            A STALE READING KEEPS ITS WORD AND LOSES THE OK VERDICT. The word
-            is what the document last said and is still true of that moment;
-            the ok mark would claim it is true NOW, so a stale `available`
-            takes the unknown ring -- an absence of current information, drawn
-            as one -- and the stale mark with its age beside it. A stale
-            throttled, spent or disabled reading keeps its own mark: those are
-            verdicts nothing later has contradicted, and the age says how old
-            they are. */}
-        <span className={`ctl-chip ${age.stale && chipTone(q.state) === 'is-ok' ? 'is-unknown' : chipTone(q.state)}`}>
-          <i aria-hidden="true" />
-          {q.state}
-        </span>
+        <QuotaStateMark state={q.state} />
         {age.stale && (
           <span
             className="ctl-stale-mark"
@@ -214,7 +241,7 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           Mono,
           because it is an identifier; the full name is in `title` for the
           width at which it ellipsizes. */}
-      <td role="cell" data-label={FEEDS_POOL}>
+      <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
         <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool}>
           {pool}
         </a>

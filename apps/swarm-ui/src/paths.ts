@@ -31,6 +31,8 @@ const FIXED: Readonly<Record<string, string>> = {
   'work/running': '/agents',
   'work/workflows': '/workflows',
   'work/timeline': '/timeline',
+  // Timeline's second page, today's outcome ledger (timeline.html pick A).
+  'work/timeline/outcomes': '/timeline/outcomes',
   'work/new': '/submit/task',
   'work/new-workflow': '/submit/workflow',
   submit: '/submit',

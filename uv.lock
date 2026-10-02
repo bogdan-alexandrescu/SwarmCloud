@@ -1870,6 +1870,7 @@ name = "swarm-api"
 version = "0.1.0"
 source = { editable = "apps/swarm-api" }
 dependencies = [
+    { name = "cryptography" },
     { name = "fastapi" },
     { name = "google-auth" },
     { name = "google-cloud-firestore" },
@@ -1887,6 +1888,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=42" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "google-auth", specifier = ">=2.30" },
     { name = "google-cloud-firestore", specifier = ">=2.16" },

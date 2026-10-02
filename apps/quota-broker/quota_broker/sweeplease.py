@@ -34,6 +34,12 @@ HOW IT HOLDS.
   * `release` gives it back only if it is still ours, so a sweep that lost its
     lease cannot free the one somebody else now holds.
 
+IT ALSO SAYS WHETHER THE SWEEP IS ALIVE (U27). `release` records
+`last_completed_at` and `last_outcome` on the document, and `acquire` carries
+both forward, so the Accounts screen can say "the refresh sweep last completed
+at 14:05, ok" -- and, when that instant stops moving, that the sweep has
+stopped. Nothing else records it: Cloud Scheduler discards the response.
+
 It FAILS CLOSED: a sweep that cannot read or write the lease does not exchange.
 Skipping one tick costs five minutes on a token that is refreshed hours before
 it expires; an exchange with no exclusion can cost the token.
@@ -120,6 +126,36 @@ def _int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
+#: Outcomes a completed sweep records. `ok`: every phase ran; `error`: a phase
+#: reported an error (its block in the sweep response says which).
+SWEEP_OK = "ok"
+SWEEP_ERROR = "error"
+
+
+def _carried(data: dict[str, Any]) -> dict[str, Any]:
+    """The completion record, carried across an `acquire` that rewrites the lease."""
+    return {
+        "last_completed_at": data.get("last_completed_at"),
+        "last_outcome": data.get("last_outcome"),
+    }
+
+
+def liveness(data: dict[str, Any] | None) -> dict[str, Any]:
+    """When the sweep last completed and how, from the lease document.
+
+    Both null when the document was never written, or no sweep has completed
+    since the field existed -- which is not "the sweep is healthy" and must not
+    be rendered as it.
+    """
+    data = data or {}
+    completed = _aware(data.get("last_completed_at"))
+    outcome = data.get("last_outcome")
+    return {
+        "last_completed_at": completed.isoformat() if completed else None,
+        "last_outcome": outcome if isinstance(outcome, str) and outcome else None,
+    }
+
+
 def _is_live(data: dict[str, Any], now: datetime) -> bool:
     expires = _aware(data.get("expires_at"))
     return (
@@ -181,6 +217,9 @@ class FirestoreSweepLease:
                     # Counts takeovers. A generation that climbs by more than
                     # one per tick is sweeps dying mid-flight, or overlapping.
                     "generation": generation,
+                    # The last completion, carried: this `set` replaces the
+                    # document, and liveness must survive the next acquire.
+                    **_carried(data),
                 },
             )
             return LeaseState(
@@ -213,8 +252,13 @@ class FirestoreSweepLease:
 
         return _apply(self._db.transaction())
 
-    def release(self, holder: str) -> bool:
-        """Give it back, if it is still ours. Never frees somebody else's."""
+    def release(self, holder: str, outcome: str | None = None) -> bool:
+        """Give it back, if it is still ours. Never frees somebody else's.
+
+        `outcome` set means the sweep COMPLETED, and it is recorded with the
+        instant. A lease that is no longer ours records nothing: the sweep that
+        took it over is the one that will say how it went.
+        """
         from google.cloud import firestore
 
         ref = self._ref()
@@ -226,10 +270,20 @@ class FirestoreSweepLease:
             data = (snap.to_dict() or {}) if getattr(snap, "exists", False) else {}
             if data.get("holder") != holder or data.get("released_at") is not None:
                 return False
-            txn.update(ref, {"released_at": now, "expires_at": now})
+            update: dict[str, Any] = {"released_at": now, "expires_at": now}
+            if outcome:
+                update.update({"last_completed_at": now, "last_outcome": outcome})
+            txn.update(ref, update)
             return True
 
         return _apply(self._db.transaction())
+
+    def read(self) -> dict[str, Any] | None:
+        """The lease document as stored, or None when it was never written."""
+        snap = self._ref().get()
+        if not getattr(snap, "exists", False):
+            return None
+        return snap.to_dict() or {}
 
 
 class InProcessSweepLease:
@@ -270,6 +324,7 @@ class InProcessSweepLease:
                 "expires_at": now + self._ttl,
                 "released_at": None,
                 "generation": generation,
+                **_carried(self._data),
             }
             return LeaseState(True, holder, self._data["expires_at"], generation)
 
@@ -280,14 +335,21 @@ class InProcessSweepLease:
             self._data["expires_at"] = self._now() + self._ttl
             return True
 
-    def release(self, holder: str) -> bool:
+    def release(self, holder: str, outcome: str | None = None) -> bool:
         with self._lock:
             if self._data.get("holder") != holder or self._data.get("released_at") is not None:
                 return False
             now = self._now()
             self._data["released_at"] = now
             self._data["expires_at"] = now
+            if outcome:
+                self._data["last_completed_at"] = now
+                self._data["last_outcome"] = outcome
             return True
+
+    def read(self) -> dict[str, Any] | None:
+        with self._lock:
+            return dict(self._data) if self._data else None
 
 
 def build_sweep_lease(db: Any | None) -> FirestoreSweepLease | InProcessSweepLease:
@@ -334,11 +396,16 @@ class LeaseFence:
         self.renewals += 1
         return True
 
-    def release(self) -> bool:
-        """Release at the end of the sweep. A lost lease is not ours to release."""
+    def release(self, outcome: str | None = None) -> bool:
+        """Release at the end of the sweep. A lost lease is not ours to release.
+
+        `outcome` is recorded as the sweep's completion (see `liveness`).
+        """
         if self.lost:
             return False
         try:
+            if outcome:
+                return bool(self._lease.release(self._holder, outcome))
             return bool(self._lease.release(self._holder))
         except Exception as exc:
             # Not fatal: an unreleased lease expires on its own within DEFAULT_TTL.
@@ -357,7 +424,10 @@ __all__ = [
     "InProcessSweepLease",
     "LeaseFence",
     "LeaseState",
+    "SWEEP_ERROR",
+    "SWEEP_OK",
     "build_sweep_lease",
+    "liveness",
     "new_holder",
     "txn_snapshot",
 ]

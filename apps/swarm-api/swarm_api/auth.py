@@ -119,6 +119,16 @@ class AuthContext:
     #: is non-empty its first entry IS the default tenant. Empty for a
     #: personal tenant and for a listed service account.
     tenant_choices: tuple[tuple[str, str], ...] = ()
+    #: On `ApiSettings.rollup_sweeper_users`: the identity the per-tenant
+    #: Cloud Scheduler rollup jobs present (D17). May call the routes in
+    #: `ROLLUP_SWEEPER_ROUTES` and nothing else -- refused on every other
+    #: authenticated route by `require_continuation_route`, the per-route
+    #: default-deny `current_auth` applies to every request, and let through
+    #: `require_admin` on those routes alone. NOT an admin (`is_admin` and
+    #: `is_pool_admin` stay False) and NOT a tenant member: `tenant_id` is the
+    #: personal fallback the frozen `resolve_tenant` derives, which no route
+    #: it can reach reads -- the rollup route takes its tenant as a parameter.
+    is_rollup_sweeper: bool = False
 
     @property
     def email(self) -> str:
@@ -433,6 +443,35 @@ class Authenticator:
         # `principal.subject` is the bare id either way.
         subject = subject.removeprefix("accounts.google.com:")
 
+        # THE ROLLUP SWEEPER (D17), before anything else is asked, for the
+        # reasons the listed path below gives: a service-account address is in
+        # no Workspace domain and no group, and a failed Cloud Identity lookup
+        # must not 503 a scheduled job. settings.py refuses an address that is
+        # both this and anything else, so nothing below is skipped for a
+        # caller that would otherwise have reached it.
+        sweepers = {
+            u.lower() for u in getattr(self._settings, "rollup_sweeper_users", ())
+        }
+        if email and email in sweepers:
+            # An explicit True, as on the listed path: with the domain check
+            # and both directory passes skipped, this claim is the only
+            # outside confirmation of the identity left.
+            if claims.get("email_verified") is not True:
+                raise AuthError("the rollup sweeper requires a verified email claim")
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(principal, ()),
+                is_admin=False,
+                tenant_principal=email,
+                is_rollup_sweeper=True,
+            )
+
         # A SERVICE ACCOUNT THE TENANT LISTS (contract request 30), resolved by
         # an exact email AND unique-id match before anything else is asked --
         # before ALLOWED_USERS and the domain check (a service-account address
@@ -695,6 +734,25 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
 )
 
 
+#: Every route the ROLLUP SWEEPER (`ApiSettings.rollup_sweeper_users`) may
+#: call, as (HTTP method, route template) under the same rule as
+#: POOL_ADMIN_ROUTES -- the declaring router's path -- and for the same reason
+#: an ALLOW-LIST: a route added later is closed to the sweeper until named here.
+#:
+#: The one route terraform/modules/scheduler/jobs.tf (`workflow_rollup`) calls,
+#: once per registered tenant: it converges the STORED Workflow.state of
+#: workflows nobody reads (docs/workflows.md, "Workflow state"). Admin would
+#: open every /v1/admin route to a scheduled job's identity, including
+#: `PUT /v1/admin/tenants/{tenant_id}/limits`, which disables a tenant.
+#: tests/unit/control_plane/test_rollup_sweeper_is_narrow.py holds this set
+#: equal to the decided one and sweeps every authenticated route against it.
+ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/v1/admin/workflows/rollup"),
+    }
+)
+
+
 #: Every route a CONTINUATION-SCOPED account (member_scope="continuation") may
 #: call, as (HTTP method, route template) -- an ALLOW-LIST, same reasoning as
 #: POOL_ADMIN_ROUTES: a route defaults to CLOSED for this scope until named
@@ -735,11 +793,23 @@ CONTINUATION_ROUTES: frozenset[tuple[str, str]] = frozenset({
 def require_continuation_route(
     ctx: AuthContext, route: tuple[str, str] | None
 ) -> AuthContext:
-    """A continuation-scoped caller may reach only CONTINUATION_ROUTES.
+    """A continuation-scoped caller may reach only CONTINUATION_ROUTES, and
+    the rollup sweeper only ROLLUP_SWEEPER_ROUTES.
 
-    An ordinary member (`member_scope == ""`) returns immediately. `route=None`
-    (no route matched) fails closed, same as `require_admin`.
+    The per-route default-deny `deps.current_auth` applies to EVERY
+    authenticated request, which is why the sweeper's is here too: a route
+    that is not admin-gated never reaches `require_admin`, so that gate alone
+    would leave the sweeper an ordinary member everywhere else.
+
+    An ordinary member (`member_scope == ""`, not the sweeper) returns
+    immediately. `route=None` (no route matched) fails closed, same as
+    `require_admin`.
     """
+    if ctx.is_rollup_sweeper:
+        if route is not None and route in ROLLUP_SWEEPER_ROUTES:
+            return ctx
+        method, path = route if route else ("?", "unmatched")
+        raise Forbidden(f"the rollup sweeper may not call {method} {path}")
     if not ctx.member_scope:
         return ctx
     if route is not None and route in CONTINUATION_ROUTES:
@@ -780,6 +850,11 @@ def require_admin(
     # test_a_pool_admin_whose_admin_lookup_failed_can_still_narrow_the_pool.
     if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
         return ctx
+    if ctx.is_rollup_sweeper:
+        if route is not None and route in ROLLUP_SWEEPER_ROUTES:
+            return ctx
+        method, path = route if route else ("?", "unmatched")
+        raise Forbidden(f"the rollup sweeper may not call {method} {path}")
     if ctx.admin_unresolved:
         raise UpstreamUnavailable(
             "admin group membership could not be resolved; retry shortly. This is "

@@ -307,17 +307,35 @@ def _shared_bucket_policy(*groups: str) -> str:
     bindings: list[dict[str, object]] = [
         {"role": metadata_role, "members": [_gsa(g) for g in groups]},
     ]
+    # The tenant prefix is SPLIT (#295; terraform/modules/tenancy
+    # worker_objects_read and worker_objects_write): read and list, and write
+    # except verdicts/. The single objectUser binding this used to build is the
+    # pre-#295 shape the script now REPLACES, so it no longer reads as done;
+    # tests/unit/scripts/test_register_tenant_merge_step.py covers that.
     for group in groups:
         tenant = tenant_id_for_group(group)
+        objects = f'resource.name.startsWith("projects/_/buckets/{BUCKET}/objects/tenants/{tenant}/")'
+        listing = (
+            'api.getAttribute("storage.googleapis.com/objectListPrefix", "")'
+            f'.startsWith("tenants/{tenant}/")'
+        )
+        verdicts = (
+            f'resource.name.startsWith("projects/_/buckets/{BUCKET}/objects/tenants/{tenant}/verdicts/")'
+        )
+        bindings.append({
+            "role": "roles/storage.objectViewer",
+            "members": [_gsa(group)],
+            "condition": {
+                "title": f"swarm-tenant-prefix-read-{tenant}",
+                "expression": f"{objects} || {listing}",
+            },
+        })
         bindings.append({
             "role": "roles/storage.objectUser",
             "members": [_gsa(group)],
             "condition": {
-                "title": "tenant_prefix_only",
-                "expression": (
-                    f"resource.name.startsWith('projects/_/buckets/{BUCKET}"
-                    f"/objects/tenants/{tenant}/')"
-                ),
+                "title": f"swarm-tenant-prefix-write-{tenant}",
+                "expression": f"{objects} && !{verdicts}",
             },
         })
     return json.dumps(
@@ -384,7 +402,7 @@ def test_this_tenants_own_bindings_are_still_recognised(tmp_path) -> None:
         line for line in _would_run(transcript, "add-iam-policy-binding")
         if "gs://" in line and f"--member {member}" in line
     ], "a binding this tenant already holds was added again:\n" + transcript
-    assert "storage access already granted" in transcript, transcript
+    assert "storage access already split" in transcript, transcript
     assert "swarmBucketMetadataReader already granted" in transcript, transcript
 
 

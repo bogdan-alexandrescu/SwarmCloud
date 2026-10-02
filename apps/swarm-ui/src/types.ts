@@ -536,11 +536,11 @@ export interface Task {
   step_id: string | null
   depends_on: string[] | null
   /**
-   * CHILD TASKS (D15, docs/design/child-tasks.md §6.4, contract request 14).
-   * The task whose agent submitted this one, and that parent's attempt.
-   * OPTIONAL AND NOT ON MAIN'S API YET: a document without the key is "the
-   * API cannot say", never "no parent" -- `childrenServed` (AgentChildren.tsx)
-   * tells the two apart by the key's presence, not its value.
+   * Contract request 14 (docs/design/child-tasks.md §6.3). The task whose
+   * agent submitted this one, and that parent's attempt; set by swarm-api from
+   * the submitting attempt, null for everything else. OPTIONAL: an API older
+   * than the change does not send them. Not `depends_on`: a parent can cancel
+   * its children and awaits them, a dependency does neither.
    */
   parent_task_id?: string | null
   parent_attempt_id?: string | null
@@ -1585,6 +1585,32 @@ export interface AttemptRow {
   account?: TaskAccount | null
 }
 
+/**
+ * One page of `GET /v1/attempts` (routes/attempts.py): the tenant's attempts,
+ * newest first, `since` inclusive and `until` exclusive on `created_at`.
+ * `next_page_token` says older rows exist, NEVER how many -- so a count of
+ * the pages left is unknown, not zero. `coverage` counts this page's rows
+ * only (`scope: "page"`); the Lanes page does not sum cost, so it is typed
+ * loosely.
+ */
+export interface AttemptsPage {
+  tenant_id: string
+  read_at: string
+  attempts: AttemptRow[]
+  next_page_token: string | null
+  coverage: { scope: 'page' } & Record<string, unknown>
+}
+
+/**
+ * One page of `GET /v1/tasks/{id}/events` asked for with `order` and
+ * `page_token` (routes/tasks.py, redesign-v2 S1). A null token is the last
+ * page in that order.
+ */
+export interface TaskEventsPage {
+  events: TaskEvent[]
+  next_page_token: string | null
+}
+
 // --------------------------------------------------------------------------
 // Requested vs utilised
 // --------------------------------------------------------------------------
@@ -2242,35 +2268,40 @@ function waitingNeedsAPerson(w: WaitingFor | null | undefined): boolean {
   return s === 'paused' || s === 'zero' || s === 'below_units'
 }
 
-/** `ParkReason`, states.py:125-137. All eight are really written. */
 /**
  * `swarm_common.models.EndCause`, in the frozen order: why a task ended
  * FAILED or CANCELLED. Held to the enum by section 5 of
  * scripts/lib/check-contract-parity.sh, so a value added there (contract
- * request 29 added `publish_refused`, 2026-10-02) is added here too.
+ * request 29 added `publish_refused` and request 41 `child_cascade`,
+ * 2026-10-02) is added here too.
  */
 export type EndCause =
   | 'timeout' | 'cannot_start' | 'lost_worker' | 'outputs_missing'
   | 'inputs_unavailable' | 'dispatch_failed' | 'runner_error' | 'cancel_requested'
   | 'failed_parent' | 'cancelled_parent' | 'workflow_sweep' | 'spec_signature_invalid'
   | 'merge_refused' | 'merge_failed' | 'verdict_refused' | 'verdict_failed'
-  | 'publish_refused'
+  | 'publish_refused' | 'child_cascade'
 
 export const END_CAUSES: readonly EndCause[] = [
   'timeout', 'cannot_start', 'lost_worker', 'outputs_missing',
   'inputs_unavailable', 'dispatch_failed', 'runner_error', 'cancel_requested',
   'failed_parent', 'cancelled_parent', 'workflow_sweep', 'spec_signature_invalid',
   'merge_refused', 'merge_failed', 'verdict_refused', 'verdict_failed',
-  'publish_refused',
+  'publish_refused', 'child_cascade',
 ]
 
+/**
+ * `ParkReason`, states.py. CHILDREN_INCOMPLETE is contract request 40: a
+ * parent whose agent awaits the child tasks it submitted
+ * (docs/design/child-tasks.md).
+ */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
-  | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING'
+  | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
 
 /**
- * The same eight as a value, so a test can compare the list against
+ * The same nine as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2290,6 +2321,7 @@ export const PARK_REASONS = [
   'MANUAL_PAUSE',
   'BUDGET_EXHAUSTED',
   'CREDENTIAL_MISSING',
+  'CHILDREN_INCOMPLETE',
 ] as const
 
 /**
@@ -2331,6 +2363,11 @@ export const PARK_CLEARS_ITSELF: ReadonlySet<string> = new Set<ParkReason>([
   'PROVIDER_COOLDOWN',
   'PROVIDER_OUTAGE',
   'SCHEDULED_RETRY',
+  // A parent awaiting the child tasks its agent submitted (contract request
+  // 40). It ends on its own: the scheduler promotes it when they end, and
+  // past `child_await_max_seconds` (a day) it cancels the outstanding ones and
+  // promotes it anyway (docs/design/child-tasks.md §5 F7).
+  'CHILDREN_INCOMPLETE',
 ])
 
 /**
@@ -2350,7 +2387,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the eight ParkReasons.
+ * admission plus the nine ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2375,6 +2412,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   PROVIDER_OUTAGE: 'The provider is unavailable.',
   SCHEDULED_RETRY: 'Waiting for a scheduled retry.',
   DEPENDENCY_INCOMPLETE: 'Waiting on an earlier step in its workflow.',
+  CHILDREN_INCOMPLETE: 'Waiting for the child tasks its agent submitted. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',

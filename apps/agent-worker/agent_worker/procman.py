@@ -32,7 +32,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 #: The first bytes of every line a capture writes where it cut a stream.
 #: `swarm_api.agent_streams.TRUNCATION_MARK` restates it, so the transcript
@@ -78,6 +78,16 @@ class StreamCapture:
     #: notice. OFF by default: git's captures judge a patch by the file's size,
     #: and a patch with its middle removed must never read as one that fitted.
     keep_tail: bool = False
+    #: Called with every chunk read from the pipe, BEFORE the cap is applied.
+    #:
+    #: WHY (the B11 review). The account watcher (`cliagent.AccountStreamWatcher`)
+    #: must see every turn boundary and every `rate_limit_event` of a run, and
+    #: a `keep_tail` file stops growing at its head: past it, the end is held in
+    #: memory until the stream closes. A watcher reading the FILE went blind for
+    #: the rest of exactly the long sessions most likely to exhaust or outlive an
+    #: account. The tap sees the live pipe; the file keeps its head+tail shape.
+    #: A tap that raises is dropped, never the stream: the capture is the record.
+    on_chunk: Callable[[bytes], None] | None = None
     #: Bytes of the stream in the file: the head, plus the kept end.
     written: int = 0
     truncated: bool = False
@@ -123,6 +133,11 @@ class StreamCapture:
                         break  # the pipe was closed under the reader: the stream is over
                     if not chunk:
                         break
+                    if self.on_chunk is not None:
+                        try:
+                            self.on_chunk(chunk)
+                        except Exception:
+                            self.on_chunk = None
                     room = head_limit - self.written
                     if room > 0:
                         head = chunk[:room]
@@ -261,6 +276,7 @@ class ChildProcess:
         logger: Any,
         keep_tail: bool = False,
         log_argv: Sequence[str] | None = None,
+        stdout_tap: Callable[[bytes], None] | None = None,
     ) -> None:
         self.argv = validate_argv(argv)
         # WHAT THE `child started` LINE SAYS THE ARGV WAS (the PR #229 review).
@@ -274,7 +290,9 @@ class ChildProcess:
         self._cwd = Path(cwd)
         self._env = dict(env)
         self._log = logger
-        self._stdout = StreamCapture(Path(stdout_path), max_stdout_bytes, keep_tail=keep_tail)
+        self._stdout = StreamCapture(
+            Path(stdout_path), max_stdout_bytes, keep_tail=keep_tail, on_chunk=stdout_tap
+        )
         self._stderr = StreamCapture(Path(stderr_path), max_stderr_bytes, keep_tail=keep_tail)
         self._proc: subprocess.Popen[bytes] | None = None
         self._threads: list[threading.Thread] = []

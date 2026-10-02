@@ -28,15 +28,13 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { AgentRun, HoldersBoard, SpendRollup } from '../api'
+import type { AgentRun, SpendRollup } from '../api'
 import type { Result } from '../fetch'
 import {
   GIB,
   type Account,
   type AccountsPage,
   type Capacity,
-  type LeasePage,
-  type LeaseRow,
   type Pool,
   type ProfileAdmission,
   type RunnerProfile,
@@ -67,7 +65,6 @@ vi.mock('../api', async (importOriginal) => {
 const { OverviewScreen } = await import('../Overview')
 const { Run } = await import('../AgentDetail')
 const { CapacityScreen } = await import('../Capacity')
-const { HoldersScreen } = await import('../Holders')
 
 const WAIT = { timeout: 5000 } as const
 
@@ -146,6 +143,8 @@ const CAPACITY: Capacity = {
     pool({ name: 'pool:some', active: 1 }),
     pool({ name: 'pool:over', active: 6 }),
     pool({ name: 'pool:paused', active: 2, enabled: false }),
+    // No limit set (#374): no ceiling, so no ratio to draw.
+    pool({ name: 'pool:unset', active: 1, effective_limit: null }),
   ],
   runner_profiles: {
     // A required pool nobody could read: no binding pool, so no ceiling.
@@ -241,6 +240,13 @@ function row(name: string): Element {
   return found!
 }
 
+/** Overview's Headroom pool row for `name`. */
+function poolRow(name: string): Element {
+  const found = [...document.querySelectorAll('.ov-pl')].find((r) => (r.querySelector('.ov-idc')?.textContent ?? '').trim() === name)
+  expect(found, `no pool row is named ${name}`).toBeTruthy()
+  return found!
+}
+
 function track(r: Element): Element {
   const t = r.querySelector('.ctl-util-track')
   expect(t, 'the row drew no track').not.toBeNull()
@@ -256,25 +262,33 @@ function tile(label: string): Element {
   return found!
 }
 
+/** The lifecycle band's cell headed `label`. */
+function cell(label: string): Element {
+  const found = [...document.querySelectorAll('#ov-band .ov-lc')].find((c) => (c.querySelector('.ov-lc-h span')?.textContent ?? '').trim() === label)
+  expect(found, `the band has no cell headed ${label}`).toBeTruthy()
+  return found!
+}
+
 // ---------------------------------------------------------------------------
 // Overview
 // ---------------------------------------------------------------------------
 
 describe('Overview draws the four track states, through the shared track', () => {
-  it('hatches an unreadable ceiling, ticks a measured zero, fills a reading', async () => {
+  it('hatches a pool with no ceiling, ticks a measured zero, fills a reading', async () => {
     renderOverview()
-    await screen.findByText('p-zero', undefined, WAIT)
+    await waitFor(() => expect(document.querySelector('.ov-pl')).not.toBeNull(), WAIT)
 
-    const unread = track(row('p-unread'))
-    expect(unread.classList.contains('is-unknown'), 'an unreadable ceiling is not hatched').toBe(true)
-    expect(unread.querySelector('.ctl-util-fill'), 'a hatched track carries a fill').toBeNull()
+    const unset = track(poolRow('pool:unset'))
+    expect(unset.classList.contains('is-unknown'), 'a pool with no ceiling is not hatched').toBe(true)
+    expect(unset.querySelector('.ctl-util-fill'), 'a hatched track carries a fill').toBeNull()
+    expect(poolRow('pool:unset').querySelector('b .ctl-em'), 'no ceiling was drawn as a number').not.toBeNull()
 
-    const zero = track(row('p-zero'))
+    const zero = track(poolRow('pool:zero'))
     expect(zero.classList.contains('is-zero'), 'a measured zero lost its baseline').toBe(true)
     expect(zero.querySelector('.ctl-util-zero'), 'a measured zero draws no tick').not.toBeNull()
     expect(zero.querySelector('.ctl-util-fill'), 'a measured zero drew a fill').toBeNull()
 
-    const some = track(row('p-some'))
+    const some = track(poolRow('pool:some'))
     expect(some.classList.contains('is-unknown') || some.classList.contains('is-zero')).toBe(false)
     const fill = some.querySelector<HTMLElement>('.ctl-util-fill')
     expect(fill, 'a reading drew no fill').not.toBeNull()
@@ -285,94 +299,64 @@ describe('Overview draws the four track states, through the shared track', () =>
 
   it('draws over-ceiling as a bad fill plus a hatched excess, and a paused pool as paused', async () => {
     renderOverview()
-    await screen.findByText('p-over', undefined, WAIT)
+    await waitFor(() => expect(document.querySelector('.ov-pl')).not.toBeNull(), WAIT)
 
-    const over = track(row('p-over'))
+    const over = track(poolRow('pool:over'))
     expect(over.querySelector('.ctl-util-fill.is-bad'), 'an over-ceiling pool is not a verdict').not.toBeNull()
     expect(over.querySelector('.ctl-util-over'), 'the excess is clipped instead of drawn').not.toBeNull()
 
-    const paused = track(row('p-paused'))
+    const paused = track(poolRow('pool:paused'))
     expect(paused.querySelector('.ctl-util-fill.is-paused'), 'a paused pool is not drawn as held').not.toBeNull()
     expect(paused.querySelector('.ctl-util-over')).toBeNull()
   })
 
-  it('keeps an unpolled account hatched, a zero account ticked, and a stale one grey', async () => {
+  it('draws a profile nobody could measure as a dash, never a 0', async () => {
     renderOverview()
-    await screen.findByText('never', undefined, WAIT)
+    await waitFor(() => expect(document.querySelector('.ov-hp')).not.toBeNull(), WAIT)
+    const tile = [...document.querySelectorAll('.ov-hp')].find((t) => t.querySelector('.ov-idc')?.textContent === 'p-unread')!
+    expect(tile.querySelector('b')?.textContent).toBe('—')
+    expect(tile.querySelector('small')?.textContent).toBe('1 pool unread')
+    expect(tile.getAttribute('title') ?? '').toMatch(/not measured/)
+  })
 
-    expect(track(row('never')).classList.contains('is-unknown')).toBe(true)
-    expect(row('never').querySelector('.ctl-util-figure')?.textContent).toBe('—')
-
-    // OV-1: EVERY % CARRIES ITS WORD. The rows printed a bare `%` under a
-    // headline printing `% left`, so the same glyph meant two opposite things
-    // one line apart. They are % used, and say so.
-    const zero = track(row('zero'))
-    expect(zero.classList.contains('is-zero')).toBe(true)
-    expect(row('zero').querySelector('.ctl-util-figure')?.textContent).toBe('0% used')
-
-    // PROJECTED: real, not current. The documented grey, never a verdict hue.
-    const stale = track(row('stale'))
-    const fill = stale.querySelector('.ctl-util-fill')
-    expect(fill?.classList.contains('ov-projected'), 'a stale reading lost its projected grey').toBe(true)
-    expect(fill?.classList.contains('is-warn') || fill?.classList.contains('is-bad')).toBe(false)
-    expect(row('stale').querySelector('.ctl-util-figure')?.textContent).toBe('~50% used')
+  it('leaves an unpolled and a stale account out of the usable figure', async () => {
+    renderOverview()
+    await waitFor(() => expect(document.querySelector('.ov-acc')).not.toBeNull(), WAIT)
+    const usable = document.querySelector('.ov-acc > span')!
+    expect(usable.textContent).toBe('1 of 3 usable')
+    expect(usable.getAttribute('aria-label') ?? '').toMatch(/never has no reading/)
+    expect(usable.getAttribute('aria-label') ?? '').toMatch(/stale is stale or cleared/)
   })
 })
 
-describe('Overview draws the four tile states, through the shared tile', () => {
+describe('Overview draws the band’s three states, never a zero for an unread count', () => {
   /**
-   * TWO TILES CARRY THE FOUR PICTURES NOW (OV-12). `Token spend` and `Account
-   * headroom` left the strip -- each drew a figure its own panel draws -- so
-   * the four renderings are asked of the two facts that remain: Running
-   * (unread, then pending in a second render) and Units held (absent, then a
-   * figure that is the doorway to Pools).
+   * The fact strip and its shared tile are gone (#503). The band's two
+   * /v1/stats figures carry the pictures instead: a failed read is an em dash
+   * whose title says the count could not be read, a read in flight is the
+   * word `reading…`, and a figure is a digit. No figure is ever a 0 it did
+   * not count.
+   *
+   * MUTATION: fall back to 0 when the counts are unread.
    */
-  it('a failed read, a read in flight, an absence and a figure stay four pictures', async () => {
+  it('a failed read, a read in flight and a figure stay three pictures', async () => {
     const first = renderOverview({
       loadStats: { status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } },
     })
-    await screen.findByText('p-zero', undefined, WAIT)
-    await screen.findByText('never', undefined, WAIT)
-    await waitFor(() => expect(tile('Running').classList.contains('is-unread')).toBe(true), WAIT)
-
-    // Three facts, and none is a figure a panel below draws again: Waiting
-    // (#91) is the /v1/stats backlog, the panels count the task page.
-    const labels = [...document.querySelectorAll('.ctl-metrics .ctl-metric-label')].map((l) =>
-      (l.childNodes[0]?.textContent ?? '').trim(),
-    )
-    expect(labels).toEqual(['Running', 'Waiting', 'Units held'])
-
-    // UNREAD: the read failed. A mark, no digit.
-    const running = tile('Running')
-    expect(running.querySelector('.ctl-metric-value .ctl-mark.is-unread')).not.toBeNull()
-    expect(running.querySelector('.ctl-metric-value')?.textContent).not.toMatch(/\d/)
-
-    // ABSENT: no global pool is configured, so nothing reports the figure.
-    const units = tile('Units held')
-    expect(units.classList.contains('is-absent')).toBe(true)
-    expect(units.querySelector('.ctl-metric-value .ctl-mark.is-absent')).not.toBeNull()
-    expect(units.querySelector('.ctl-metric-value')?.textContent).not.toMatch(/\d/)
+    await waitFor(() => expect(cell('Waiting').querySelector('.ov-lc-n')?.textContent).toBe('—'), WAIT)
+    expect(cell('Waiting').querySelector('.ov-lc-n')?.getAttribute('title')).toMatch(/could not be read: boom/)
+    expect(cell('Holding capacity').querySelector('.ov-lc-n')?.textContent).toBe('—')
+    expect(document.querySelector('.ctl-metrics'), 'the fact strip is back').toBeNull()
     first.unmount()
 
-    // SECOND RENDER: the count still in flight, and a global pool to count.
-    renderOverview({
-      loadStats: never(),
-      loadCapacity: ok({ ...CAPACITY, pools: [...CAPACITY.pools, pool({ name: 'global', active: 2 })] }),
-    })
-    await screen.findByText('p-zero', undefined, WAIT)
+    const second = renderOverview({ loadStats: never() })
+    await waitFor(() => expect(document.querySelector('.ov-acc')).not.toBeNull(), WAIT)
+    expect(cell('Waiting').querySelector('.ov-lc-n')?.textContent).toBe('reading…')
+    expect(cell('Waiting').querySelector('.ov-lc-n')?.textContent).not.toMatch(/\d/)
+    second.unmount()
 
-    // READING: still in flight. Neither of the two absences, and no word.
-    const pending = tile('Running')
-    expect(pending.querySelector('.ctl-metric-value .ctl-pending')).not.toBeNull()
-    expect(pending.classList.contains('is-absent') || pending.classList.contains('is-unread')).toBe(false)
-    expect(pending.querySelector('.ctl-mark')).toBeNull()
-
-    // A FIGURE, and the doorway it is: the whole tile is the link.
-    const held = tile('Units held')
-    expect(held.tagName).toBe('A')
-    expect(held.getAttribute('href')).toBe('#capacity/pools')
-    expect(held.querySelector('.ctl-metric-value')?.textContent).toMatch(/\d/)
-    expect(held.getAttribute('aria-label')).toMatch(/^Units held\. /)
+    renderOverview({ loadStats: ok({ ...STATS, tasks_by_state: { QUEUED: 2, READY: 0, PARKED: 1 } }) })
+    await waitFor(() => expect(cell('Waiting').querySelector('.ov-lc-n')?.textContent).toBe('3'), WAIT)
   })
 })
 
@@ -509,6 +493,8 @@ describe('Capacity draws each pool row through the shared track', () => {
         generated_at: '2026-09-24T10:00:00Z',
       }),
     )
+    // Pools reads the lease list beside the capacity read, for its holder counts.
+    api.loadLeases.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
     render(<CapacityScreen />)
     // The Cards view was set aside on 2026-10-01 (capacity.html); the track
     // it drew is now the Ceilings table's Use column, one per row.
@@ -558,62 +544,10 @@ describe('Capacity draws each pool row through the shared track', () => {
   })
 })
 
-function lease(over: Partial<LeaseRow>): LeaseRow {
-  return {
-    lease_id: 'lease-aaaaaaaaaa',
-    task_id: 'task-bbbbbbbbbb',
-    attempt_id: 'att-1',
-    tenant_id: 'eng',
-    generation: 1,
-    pools: ['global', 'resource:standard'],
-    units: 1,
-    dispatch_state: 'DISPATCHED',
-    created_at: '2026-09-24T09:00:00Z',
-    dispatch_deadline: '2026-09-24T09:05:00Z',
-    expires_at: '2026-09-24T11:00:00Z',
-    heartbeat_at: '2026-09-24T09:59:00Z',
-    released_at: null,
-    release_reason: null,
-    released: false,
-    expired: false,
-    dispatch_overdue: false,
-    silent_seconds: 30,
-    heartbeat_ever: true,
-    last_error: null,
-    ...over,
-  }
-}
 
-describe('Holders draws its class mix through the shared row', () => {
-  it('draws each class as a fill proportional to the largest', async () => {
-    const board: HoldersBoard = {
-      page: {
-        leases: [
-          lease({}),
-          lease({ lease_id: 'lease-cccccccccc', units: 4, pools: ['global', 'resource:large'] }),
-        ],
-        units_held: 5,
-        tenant_id: null,
-        active_only: true,
-        active_beyond_window: 0,
-        truncated: false,
-        examined: 2,
-      } as unknown as LeasePage,
-      pools: [pool({ name: 'global', active: 5 })],
-      poolsDetail: null,
-    }
-    api.loadHolders.mockResolvedValue(ok(board))
-    render(<HoldersScreen />)
-    await screen.findByText('Class mix', undefined, WAIT)
-
-    const large = row('large').querySelector<HTMLElement>('.ctl-util-fill')
-    const standard = row('standard').querySelector<HTMLElement>('.ctl-util-fill')
-    expect(large?.style.width).toBe('100%')
-    expect(standard?.style.width).toBe('25%')
-    expect(row('large').querySelector('.ctl-util-figure')?.textContent).toBe('4u')
-    expect(row('standard').querySelector('.ctl-util-by')?.textContent).toBe('1 lease')
-  })
-})
+// `Holders draws its class mix through the shared row` WENT WITH THE CARD: the
+// picked frame (capacity.html frame 6, the #503 audit) has no Class mix, and
+// the lease table's Units column carries what it summarised.
 
 // ---------------------------------------------------------------------------
 // One definition of each primitive

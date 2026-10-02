@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from swarm_common.config import Settings
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, TenantMember
@@ -75,9 +75,9 @@ def _tenant_members(
     PROJECT -- the frozen regex cannot pin the project, it has no project id,
     so the `endswith` below is that pin; the same email listed twice, under the
     same tenant or another (checked explicitly, never left to a dict or set to
-    collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS or
-    SECRET_ADMIN_PRINCIPALS, since a listing grants one tenant's rights and an
-    admin entry would add every tenant's.
+    collapse); an email also named by ADMIN_USERS, ADMIN_POOL_USERS,
+    ROLLUP_SWEEPER_USERS or SECRET_ADMIN_PRINCIPALS, since a listing grants one
+    tenant's rights and an admin entry would add every tenant's.
     """
     raw = os.environ.get("TENANT_SERVICE_ACCOUNTS", "").strip()
     if not raw:
@@ -194,6 +194,18 @@ class ApiSettings:
     #: Same comparison as `admin_users`: the bare email from the verified
     #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
     admin_pool_users: tuple[str, ...] = ()
+    #: The identity the per-tenant Cloud Scheduler rollup jobs present
+    #: (terraform/modules/scheduler/jobs.tf, `workflow_rollup`): may call
+    #: `POST /v1/admin/workflows/rollup` (`auth.ROLLUP_SWEEPER_ROUTES`) and no
+    #: other route, admin or not. NOT an admin and NOT a tenant member -- see
+    #: `AuthContext.is_rollup_sweeper`. Admitted before the domain check, as a
+    #: service account must be, and only with an explicit `email_verified`.
+    #:
+    #: Same comparison as `admin_pool_users`: the bare email from the verified
+    #: token, case-insensitive. An address here may not also be on ADMIN_USERS,
+    #: ADMIN_POOL_USERS, ALLOWED_USERS or TENANT_SERVICE_ACCOUNTS: two roles on
+    #: one address make which applies depend on the order auth.py asks.
+    rollup_sweeper_users: tuple[str, ...] = ()
     #: Authorise these exact addresses, regardless of their domain.
     #:
     #: WHY THIS EXISTS, and it is not the same idea as `admin_users` above.
@@ -365,6 +377,32 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    # --- child tasks (docs/design/child-tasks.md) --------------------------
+    #: `swarm-child-key`, the HMAC key that verifies a registration nonce,
+    #: derives a registration id and attests a registration (§3.2). Held by
+    #: swarm-scheduler and swarm-api only, from Secret Manager; never a
+    #: Terraform secret version. EMPTY MEANS NO CHILD PATH: both worker routes
+    #: answer 503 `child_submit_unavailable` and nothing is created. Excluded
+    #: from the repr so a logged settings object cannot carry it.
+    child_key: str = field(default="", repr=False)
+    #: The previous version, accepted beside the current one during a rotation
+    #: (§5 F13). Empty outside one.
+    child_key_previous: str = field(default="", repr=False)
+    #: The audience a WORKER mints its ID token for when it calls the child
+    #: routes (SWARM_API_AUDIENCE): the constant custom audience terraform
+    #: gives this service, the same value the scheduler hands each worker. The
+    #: child routes pin `aud` to it (routes/children.py). Empty in local
+    #: development, where the app's own verifier is used.
+    child_audience: str = ""
+    #: Children one task may have across all its attempts (§7): sixteen plus
+    #: the parent fit inside a new tenant's `default_tenant_max_active` of 20,
+    #: so a fresh tenant can run one full fan-out without an admin.
+    max_children_per_task: int = 16
+    #: How far an attempt proof's timestamp may be from this clock (§7). Wide
+    #: enough for ordinary skew; a replay inside it is answered by the request
+    #: id dedupe with the child already made.
+    child_proof_skew_seconds: int = 120
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -389,6 +427,20 @@ class ApiSettings:
         admin_users = _csv("ADMIN_USERS")
         admin_pool_users = _csv("ADMIN_POOL_USERS")
         secret_admin_principals = _csv("SECRET_ADMIN_PRINCIPALS")
+        allowed_users = _csv("ALLOWED_USERS")
+        rollup_sweeper_users = _csv("ROLLUP_SWEEPER_USERS")
+        sweepers = {u.lower() for u in rollup_sweeper_users}
+        for name, values in (
+            ("ADMIN_USERS", admin_users),
+            ("ADMIN_POOL_USERS", admin_pool_users),
+            ("ALLOWED_USERS", allowed_users),
+        ):
+            overlap = sorted(sweepers & {v.lower() for v in values})
+            if overlap:
+                raise ValueError(
+                    f"ROLLUP_SWEEPER_USERS and {name} both name {', '.join(overlap)}; "
+                    "the rollup sweeper may call one route and is no other kind of caller"
+                )
         return cls(
             core=core,
             tenant_service_accounts=_tenant_members(
@@ -396,6 +448,7 @@ class ApiSettings:
                 admin_lists={
                     "ADMIN_USERS": admin_users,
                     "ADMIN_POOL_USERS": admin_pool_users,
+                    "ROLLUP_SWEEPER_USERS": rollup_sweeper_users,
                     "SECRET_ADMIN_PRINCIPALS": secret_admin_principals,
                 },
             ),
@@ -408,7 +461,8 @@ class ApiSettings:
             admin_groups=_csv("ADMIN_GROUPS"),
             admin_users=admin_users,
             admin_pool_users=admin_pool_users,
-            allowed_users=_csv("ALLOWED_USERS"),
+            rollup_sweeper_users=rollup_sweeper_users,
+            allowed_users=allowed_users,
             secret_admin_principals=secret_admin_principals,
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
@@ -436,4 +490,9 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
+            child_key_previous=os.environ.get("SWARM_CHILD_KEY_PREVIOUS", "").strip(),
+            child_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
+            max_children_per_task=_int("MAX_CHILDREN_PER_TASK", 16),
+            child_proof_skew_seconds=_int("CHILD_PROOF_SKEW_SECONDS", 120),
         )

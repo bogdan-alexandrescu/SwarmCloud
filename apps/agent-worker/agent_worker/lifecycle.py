@@ -138,6 +138,7 @@ from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
 from swarm_redaction import RULES as CREDENTIAL_RULES
 
 from . import artifact_manifest as manifest_mod
+from . import children as children_mod
 from . import continuation as continuation_mod
 from . import expected_outputs as expected_mod
 from . import inputs as inputs_mod
@@ -159,6 +160,7 @@ from .accountlease import (
     BrokerUnavailable,
     NoAccount,
     NoAccountAvailable,
+    ReadingForwarder,
     credential_env_from_account,
 )
 from .checkpoint import (
@@ -169,7 +171,12 @@ from .checkpoint import (
     checkpoint_prefix,
 )
 from .config import WorkerConfig
-from .control import CHECKPOINT_DIGESTS_FIELD, ControlPlane, ControlSignals
+from .control import (
+    CHECKPOINT_DIGESTS_FIELD,
+    CHILD_AWAIT_RESUMES_METADATA_KEY,
+    ControlPlane,
+    ControlSignals,
+)
 from .errors import (
     CheckpointError,
     ConfigError,
@@ -230,6 +237,13 @@ from .objectstore import ObjectStore
 from .procman import ChildProcess, ChildResult, reap_foreign_processes
 from .quota import QuotaDecision, decide, read_runner_signal, signal_from_control
 from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
+from .runners.cliagent import (
+    ACCOUNT_MOVE_ENV,
+    ACCOUNT_STREAM_ENV,
+    RESUME_SESSION_ENV,
+    STOP_DRAIN,
+    STOP_EXHAUSTED,
+)
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
@@ -334,6 +348,18 @@ _FORGE_TRANSIENT_ANSWER = re.compile(r"^the forge answered (?:429|5\d\d)\b")
 #: three different accounts in a row cannot be read, the pool needs a person,
 #: not a fourth try.
 MAX_ACCOUNT_TRIES = 3
+
+#: How many times one attempt may move to another account mid-run (S13/S14).
+#: Each move is a stop at a turn boundary and a `--resume`, so the cap is
+#: about a pool that keeps handing out accounts that run out at once -- every
+#: account spent, or a drain racing another drain. Past it the attempt
+#: checkpoints and parks as it would have without the swap.
+MAX_ACCOUNT_SWAPS = 6
+
+#: Why an attempt moves, as the broker spells it (`quota_broker.accounts`).
+SWAP_EXHAUSTED = "exhausted"
+SWAP_DRAIN = "drain"
+SWAP_UNUSABLE = "unusable"
 
 #: One heartbeat event per this many lease heartbeats. The lease is refreshed
 #: every interval; the event stream would be unreadable at that rate.
@@ -461,6 +487,9 @@ class WorkerDeps:
     #: None means nothing established it, and is treated as FAILED: a worker
     #: built some other way holds no token rather than an unprotected one.
     memory: MemoryProtection | None = None
+    #: The client for swarm-api's worker-only child routes. None builds one
+    #: from SWARM_API_URL when the attempt has a child path; injected in tests.
+    child_api: Any | None = None
 
 
 @dataclass(frozen=True)
@@ -632,6 +661,20 @@ class Worker:
         # Accounts this attempt was given and could not read. Sent back to the
         # broker as `exclude` so the next ask does not return the same one.
         self._account_rejected: list[str] = []
+        # THE ACCOUNT MID-RUN (S13-S15), for an attempt that holds one. The
+        # session id the runner's stream named, kept to `--resume` it under
+        # another account and NEVER logged (it is registered as a secret);
+        # the session the next runner start continues, once a swap set it;
+        # the forwarder for the held account's readings; the last turn count
+        # the hold's move mark was asked at, so it is asked once per turn;
+        # the moves so far; and whether the last start followed a swap.
+        self._session_id: str | None = None
+        self._resume_session: str | None = None
+        self._readings: ReadingForwarder | None = None
+        self._turns_checked = 0
+        self._channel_seen: int | None = None
+        self._swaps = 0
+        self._just_swapped = False
         # WHAT THIS ATTEMPT SPENT, summed over every runner it started. An
         # attempt can start several -- a short rate limit and a reloaded
         # credential both restart in place -- and each one's result.json is
@@ -680,6 +723,11 @@ class Worker:
         # #15), so the periodic readings and each runner's end write once per
         # change rather than once per heartbeat.
         self._cpu_recorded: dict[str, float | str] | None = None
+        # The child-task path (docs/design/child-tasks.md): the attempt key,
+        # the spool and the await. Inert unless the scheduler passed a nonce.
+        self.children = children_mod.ChildPath(
+            config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
             self._account_broker = AccountBroker(
@@ -734,7 +782,7 @@ class Worker:
                     state=TaskState.CANCELLED,
                     exit_code=None,
                     error="cancelled before execution started",
-                    end_cause=EndCause.CANCEL_REQUESTED,
+                    end_cause=self.control.cancel_cause(),
                 )
             except FencedWriteRefused as exc:
                 # Fenced between the gate above and this write.
@@ -861,6 +909,17 @@ class Worker:
             result = self._run_child_supervised(child_env)
             if isinstance(result, Outcome):
                 return result                      # cancelled / fenced / parked
+            # ON A POOL ACCOUNT, A STOP MAY BE A MOVE (S13/S14): the account
+            # ran out or is draining, and the attempt continues on another one
+            # in this same lease, attempt and workspace with `--resume`.
+            moved = self._move_account_after(result)
+            if isinstance(moved, Outcome):
+                return moved
+            if moved is not None:
+                child_env = moved
+                # A move is not one of the in-place quota retries.
+                attempt_number -= 1
+                continue
             quota = self._quota_from_child(result)
             if quota is None:
                 # A REFUSED credential, which is not a failed attempt. The
@@ -940,6 +999,11 @@ class Worker:
             )
             self._sleep_with_heartbeat(decision.wait_seconds)
             ws.quota_path.unlink(missing_ok=True)
+
+        # ---- STEP 9b: the children's await (child tasks, §3.3) ----------
+        awaited = self._await_children(result)
+        if awaited is not None:
+            return awaited
 
         # ---- STEPS 10-12: artifacts, checkpoint, terminal state, lease --
         return self._finalise(result)
@@ -1078,6 +1142,91 @@ class Worker:
                            end_cause=outcome.end_cause.value if outcome.end_cause else None)
         return Outcome(exit_code=outcome.exit_code, state=outcome.state)
 
+    def _await_children(self, result: ChildResult) -> Outcome | None:
+        """Park on CHILDREN_INCOMPLETE when this parent's children still run.
+
+        §3.3: every outstanding request is answered first (F3), in at most
+        one `child_submit_retry_seconds` (`ChildPath.drain`); then, for an
+        agent that exited 0 --
+        having asked to `await`, or not (step 8: a parent never succeeds over
+        running children) -- a live child means checkpoint, upload, park,
+        release, exit, exactly as the quota park does. No live child, no park:
+        the await is ignored (F15). An agent that failed fails its attempt in
+        the ordinary way; its children are kept (F4). None means "finalise".
+
+        WITHOUT A CHILD PATH this attempt can neither submit nor list, but
+        an earlier attempt of this task may have made children: the spool,
+        restored from the checkpoint, records the ids it was answered with.
+        Then the implicit await is NOT skipped -- whether they still run is
+        unknown, and a parent must never succeed over running children
+        (step 8) -- so it parks conservatively, as for a listing that failed;
+        the scheduler's await sweep reads the children itself and promotes
+        it once they are done. Bounded like every await: past
+        `max_child_await_resumes` the park counts as an attempt.
+
+        Fences propagate as `FencedWriteRefused`, which `run` stands down on.
+        """
+        ws = self.ws
+        assert ws is not None
+        if not self.children.offered:
+            if result.exit_code != 0 or result.timed_out or result.killed:
+                return None
+            known = self.children.known_children(ws.work)
+            if not known:
+                return None
+            self.children.clear_await(ws.work)
+            self.log.warning(
+                "no child path this attempt, and the spool records children; "
+                "parking until the scheduler finds them done",
+                known_children=len(known),
+                child_path=self.children.unavailable,
+            )
+            return self._park_awaiting(
+                requested=False, live=None, child_path=self.children.unavailable
+            )
+        try:
+            with self._heartbeat_meanwhile("child requests"):
+                self.children.drain(ws.work)
+        except children_mod.ChildSubmitFenced as exc:
+            raise FencedWriteRefused(
+                self.cfg.generation, -1, f"child submission: {exc.code}", write="child submission"
+            ) from None
+        requested = self.children.await_requested(ws.work)
+        # Cleared BEFORE the checkpoint, so a resumed attempt starts clean.
+        self.children.clear_await(ws.work)
+        if result.exit_code != 0 or result.timed_out or result.killed:
+            return None
+        live = self.children.live_children(ws.work)
+        if live == []:
+            if requested:
+                self.log.info("await asked with no live child; ignored")
+            return None
+        self.log.warning(
+            "children still running; parking until they end",
+            live_children=len(live) if live is not None else None,
+            asked=requested,
+        )
+        return self._park_awaiting(requested=requested, live=live)
+
+    def _park_awaiting(
+        self, *, requested: bool, live: list[str] | None, child_path: str | None = None
+    ) -> Outcome:
+        """Checkpoint, upload, park on CHILDREN_INCOMPLETE, release, exit (§3.3 step 3)."""
+        self._checkpoint("child-await")
+        self._upload_outputs()
+        self._export_metrics()
+        detail: dict[str, Any] = {
+            "park_phase": "child_await",
+            "asked": requested,
+            "live_children": sorted(live) if live is not None else None,
+        }
+        if child_path is not None:
+            detail["child_path"] = child_path
+        self.control.park_awaiting_children(
+            max_resumes=self.cfg.max_child_await_resumes, detail=detail
+        )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
     def _verify_spec(self, task: dict[str, Any], create_time: Any) -> None:
         """Contract request 34's check, with its log line and its legacy note.
 
@@ -1180,6 +1329,17 @@ class Worker:
             backend=cfg.backend, execution_name=_execution_name()
         )
         self.phases.enter("advance_to_running")
+        # STEP 2a, inside STEP 2: the child-task attempt key is registered
+        # while the task is STARTING, before the agent exists (child tasks,
+        # §3.2 step 3). swarm-api refuses a registration once it is RUNNING.
+        # ONE STARTING event: the walk to STARTING writes none, and the
+        # registration's note (no child path, and why) is its detail.
+        if self.cfg.child_nonce:
+            moved = self.control.advance_to_starting()
+            notes: list[dict[str, Any]] = []
+            self.children.register(notes.append)
+            if moved or notes:
+                self.control.emit(EventType.STARTING, notes[-1] if notes else None)
         self.control.advance_to_running()
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
@@ -1330,6 +1490,13 @@ class Worker:
         if staged_inputs:
             # Downloading an upstream artifact is unbounded in the same way a
             # clone is; prove liveness after it for the same reason.
+            self._heartbeat()
+        # A resumed parent's children, staged before its agent starts again
+        # (child tasks, §3.3 step 7). Nothing for a task that has none.
+        self.children.clear_await(ws.work)
+        if self.children.stage_results(
+            ws.work, store=self.store, max_total_bytes=self.cfg.max_artifact_bytes
+        ) is not None:
             self._heartbeat()
 
         # ---- STEP 5c: ./artifacts is the artifacts directory ----------------
@@ -1597,6 +1764,11 @@ class Worker:
                 self._publish_live_logs()
                 next_live_log = now + cfg.live_log_interval_seconds
 
+            if self._account is not None:
+                # A file stat when nothing changed; a forward at most once per
+                # window per minute; a hold read at most once per turn.
+                self._watch_account()
+
             if now >= next_poll:
                 next_poll = now + cfg.control_poll_seconds
                 try:
@@ -1609,6 +1781,14 @@ class Worker:
                 diverted = self._apply_control_signals(child, signals)
                 if diverted is not None:
                     return diverted
+                try:
+                    if self.children.has_requests(ws.work):
+                        with self._heartbeat_meanwhile("child requests"):
+                            self.children.tick(ws.work)
+                except children_mod.ChildSubmitFenced as exc:
+                    return self._exit_fenced_mid_run(
+                        child, observed_generation=-1, reason=f"child submission: {exc.code}"
+                    )
 
             if now >= self._deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
@@ -1758,7 +1938,7 @@ class Worker:
                 exit_code=None,
                 error="cancelled by request",
                 result_summary=summary,
-                end_cause=EndCause.CANCEL_REQUESTED,
+                end_cause=self.control.cancel_cause(),
             )
             return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
@@ -2679,7 +2859,18 @@ class Worker:
             self.log.info, "no checkpoint is restored; starting from an empty workspace"
         )
         count = task.get("attempt_count")
-        if isinstance(count, bool) or not isinstance(count, int) or count <= 1:
+        # A refunded child await (child tasks, §3.3 step 5) takes one off
+        # `attempt_count`, so the attempt after it can read 1 and still be a
+        # resume. Counted back here; a tenant that can write the counter can
+        # write `attempt_count` itself, so this adds no reach (see below).
+        metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
+        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
+        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count + max(0, resumes) <= 1
+        ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
         pointer = task.get("latest_checkpoint")
@@ -4191,6 +4382,9 @@ class Worker:
             account_env = self._pool_credential_env(profile)
             if account_env is not None:
                 base.update(account_env)
+                # Only an attempt holding an account talks to its runner
+                # about it; every other profile and attempt is unchanged.
+                base.update(self._account_channel_env())
             else:
                 # Under the startup budget before the runner. The credential
                 # reload calls this again mid-run, outside the window, and gets
@@ -4207,6 +4401,10 @@ class Worker:
                     logger=self.log,
                 )
                 base.update(resolved.env)
+        # The child-task spool, when this attempt has a child path: the one
+        # variable an agent needs to submit and await helpers (child tasks,
+        # §3.1). A path, never a credential: the attempt key stays here.
+        base.update(self.children.prepare(ws.work))
         return ws.child_env(base)
 
     # -- the account pool --------------------------------------------------
@@ -4349,6 +4547,269 @@ class Worker:
             },
         )
         return outcome
+
+    # -- the account mid-run (S13-S15) ---------------------------------------
+    def _account_channel_paths(self) -> tuple[Path, Path]:
+        """(stream, move): the runner's channel, in the worker's own `private/`.
+
+        Not in `work/`, which a checkpoint archives and the agent can read.
+        """
+        assert self.ws is not None
+        return (
+            self.ws.private / "account-stream.json",
+            self.ws.private / "account-move.json",
+        )
+
+    def _account_channel_env(self) -> dict[str, str]:
+        """What a runner on a held account is told: where its channel is, and
+        the session to continue when the last move set one."""
+        if self._account is None:
+            return {}
+        stream, move = self._account_channel_paths()
+        env = {ACCOUNT_STREAM_ENV: str(stream), ACCOUNT_MOVE_ENV: str(move)}
+        if self._resume_session:
+            env[RESUME_SESSION_ENV] = self._resume_session
+        return env
+
+    def _read_account_channel(self) -> dict[str, Any]:
+        stream, _move = self._account_channel_paths()
+        try:
+            data = json.loads(stream.read_text())
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def _note_session(self, session_id: Any) -> None:
+        """Remember the run's session id, as a secret: never in a log or event."""
+        if isinstance(session_id, str) and session_id and session_id != self._session_id:
+            self.log.register_secret(session_id)
+            self._session_id = session_id
+
+    def _forward_readings(self, readings: Any, *, final: bool = False) -> None:
+        account = self._account
+        if account is None or self._account_broker is None or not readings:
+            return
+        if self._readings is None:
+            broker = self._account_broker
+            self._readings = ReadingForwarder(
+                lambda windows: broker.report_reading(account, windows), logger=self.log
+            )
+        self._readings.offer(readings, final=final)
+
+    def _watch_account(self) -> None:
+        """One look at the runner's channel while it runs. Never raises.
+
+        Forwards each window's latest reading (S15) and, once per new turn,
+        asks the broker whether this hold is marked to move (S14) -- a drain.
+        If it is, the move file asks the runner to stop the CLI at its next
+        turn boundary; the swap itself happens when the runner has exited.
+        """
+        try:
+            stream, move = self._account_channel_paths()
+            try:
+                seen = stream.stat().st_mtime_ns
+            except OSError:
+                return
+            if seen == self._channel_seen:
+                return
+            self._channel_seen = seen
+            data = self._read_account_channel()
+            self._note_session(data.get("session_id"))
+            self._forward_readings(data.get("readings"))
+            turns = data.get("turns")
+            if not isinstance(turns, int) or turns <= self._turns_checked:
+                return
+            self._turns_checked = turns
+            if self._account_broker is None or self._account is None or move.exists():
+                return
+            status = self._account_broker.hold_status(self._account)
+            if status.get("move"):
+                move.write_text(json.dumps({"reason": str(status["move"])}))
+                self.log.warning(
+                    "this attempt's account is draining; the agent moves to another "
+                    "account at its next turn boundary",
+                    account_id=self._account.account_id,
+                    move=str(status["move"]),
+                )
+        except Exception as exc:
+            self.log.warning(
+                "could not read the account channel or the hold's status; the run "
+                "carries on as it is",
+                error_type=type(exc).__name__,
+            )
+
+    def _move_account_after(self, result: ChildResult) -> dict[str, str] | Outcome | None:
+        """After a runner on a held account exits: move the attempt, or None.
+
+        None is "nothing to move": not on an account, or the run ended for a
+        reason a move does not answer -- and the caller carries on exactly as
+        before. A dict is the child environment to restart with `--resume`
+        under the new account. An Outcome is a park.
+        """
+        if self._account is None or self._account_broker is None:
+            return None
+        data = self._read_account_channel()
+        # CONSUMED: what this run said is never read again as the next run's.
+        # The session id is kept in memory; the next runner writes its own.
+        stream, _move = self._account_channel_paths()
+        stream.unlink(missing_ok=True)
+        self._channel_seen = None
+        self._note_session(data.get("session_id"))
+        # AT THE LATEST AT THE END OF THE RUN, every window not yet sent.
+        self._forward_readings(data.get("readings"), final=True)
+        stopped_for = data.get("stopped_for")
+        just_swapped, self._just_swapped = self._just_swapped, False
+        reason: str | None = None
+        if stopped_for == STOP_DRAIN:
+            reason = SWAP_DRAIN
+        elif stopped_for == STOP_EXHAUSTED or result.exit_code == EXIT_QUOTA_EXHAUSTED:
+            reason = SWAP_EXHAUSTED
+        elif just_swapped and self._credential_refusal() is not None:
+            # The account this attempt just moved to could not start the CLI.
+            reason = SWAP_UNUSABLE
+            assert self.ws is not None
+            self.ws.credential_path.unlink(missing_ok=True)
+        if reason is None:
+            return None
+        if self._session_id is None:
+            # Nothing to resume. A rate limit goes the way it always went; a
+            # drain stop with no session cannot be continued, so it parks.
+            self.log.warning(
+                "the run named no session to continue; not moving it",
+                reason=reason,
+            )
+            if reason == SWAP_DRAIN:
+                return self._park_no_account(
+                    NoAccountAvailable(NoAccount(reason=POOL_PAUSED), self.cfg.provider or "unknown")
+                )
+            return None
+        return self._swap_account(reason)
+
+    def _swap_account(self, reason: str) -> dict[str, str] | Outcome | None:
+        """Move the hold through the broker and rebuild the child's environment.
+
+        ONE BROKER CALL PER MOVE (`AccountBroker.swap`), which releases this
+        hold and takes another in one transaction. If the new account cannot
+        be read, it moves again with reason `unusable` -- the broker marks the
+        unreadable one for this tenant -- up to MAX_ACCOUNT_TRIES; then the
+        account is given back unusable (`_give_back`) and the attempt parks.
+
+        Re-checks the fence first: nothing continues under a stale generation
+        (invariant 5), and the broker refuses a fenced attempt's swap anyway.
+        """
+        profile = self.cfg.profile
+        provider = profile.provider or "unknown"
+        current = self._account
+        assert current is not None and self._account_broker is not None
+        if self._swaps >= MAX_ACCOUNT_SWAPS:
+            self.log.warning(
+                "this attempt has moved accounts as often as it may; not moving again",
+                swaps=self._swaps,
+            )
+            return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+        self.control.validate_generation()
+        for _ in range(MAX_ACCOUNT_TRIES):
+            try:
+                outcome = self._account_broker.swap(
+                    current,
+                    provider=provider,
+                    reason=reason,
+                    exclude=tuple(self._account_rejected),
+                )
+            except (BrokerRefused, BrokerUnavailable) as exc:
+                self.log.warning(
+                    "the quota broker did not move this attempt to another account",
+                    reason=reason,
+                    refused=isinstance(exc, BrokerRefused),
+                    error_type=type(exc).__name__,
+                )
+                if isinstance(exc, BrokerRefused):
+                    # A refused swap is what a fenced attempt meets; the fence
+                    # check says so and ends the attempt the fenced way.
+                    self.control.validate_generation()
+                return self._cannot_swap(reason, current, NoAccount(reason="no_account_available"))
+            if isinstance(outcome, NoAccount):
+                return self._cannot_swap(reason, current, outcome)
+            self._swaps += 1
+            self._account = outcome
+            self._account_released = False
+            self._emit_swapped(current, outcome, reason)
+            try:
+                self._account_credential_env(profile, outcome)
+            except AccountUnreadable as exc:
+                self.log.error(
+                    "the account this attempt moved to cannot be read; moving again",
+                    account_id=outcome.account_id,
+                    error=exc.detail,
+                )
+                self._account_rejected.append(outcome.account_id)
+                current, reason = outcome, SWAP_UNUSABLE
+                continue
+            self._resume_session = self._session_id
+            self._just_swapped = True
+            self._readings = None
+            self._turns_checked = 0
+            self._channel_seen = None
+            _stream, move = self._account_channel_paths()
+            move.unlink(missing_ok=True)
+            return self._build_child_env()
+        # Every account it moved to was unreadable: give the last one back as
+        # such and park, as a fresh attempt does (`_pool_credential_env`).
+        return self._cannot_swap(SWAP_UNUSABLE, current, NoAccount(reason=ACCOUNT_UNREADABLE))
+
+    def _cannot_swap(
+        self, reason: str, current: Assignment, outcome: NoAccount
+    ) -> Outcome | None:
+        """No other account took this attempt. Fall back to what happens today.
+
+        An exhausted account: None, and the caller's quota path checkpoints
+        and parks exactly as `_park_for_quota` always has. A drain: park on
+        the pool, holding the hold until the exit path gives it back. An
+        account that could not be read: give it back unusable, then park.
+        """
+        self.log.warning(
+            "no other account can take this attempt; falling back to a checkpoint and park",
+            reason=reason,
+            pool_reason=outcome.reason,
+        )
+        if reason == SWAP_EXHAUSTED:
+            return None
+        if reason == SWAP_UNUSABLE:
+            self._account = None
+            self._account_released = False
+            self._give_back(current, unusable="the agent could not start on this account")
+            outcome = NoAccount(reason=ACCOUNT_UNREADABLE)
+        return self._park_no_account(NoAccountAvailable(outcome, self.cfg.provider or "unknown"))
+
+    def _emit_swapped(self, left: Assignment, taken: Assignment, reason: str) -> None:
+        """The move, on the task's events and in the log. Never a token or a session id.
+
+        `account_assigned` for the account taken -- the cause swarm-api's task
+        account read already follows, so the task shows the account it is on
+        now -- carrying where it came from and why.
+        """
+        self.log.info(
+            "moved this attempt to another account",
+            from_account_id=left.account_id,
+            account_id=taken.account_id,
+            reason=reason,
+        )
+        try:
+            self.control.emit(
+                EventType.RUNNING,
+                {
+                    "cause": "account_assigned",
+                    "account_id": taken.account_id,
+                    "provider": self.cfg.provider,
+                    "swapped_from": left.account_id,
+                    "swap_reason": reason,
+                },
+            )
+        except Exception as exc:
+            self.log.warning(
+                "could not record the account move on the task's events",
+                error_type=type(exc).__name__,
+            )
 
     def _decline_pool(self, cause: str) -> None:
         """Record that this attempt is NOT on the pool, once and for good.

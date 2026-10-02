@@ -16,7 +16,17 @@
 // sheet today; an attribute or a pseudo-class is a loud failure here rather
 // than an element that quietly matches nothing.
 
-import STYLES from '../styles.css?raw'
+import SHEET from '../styles.css?raw'
+
+/**
+ * EVERY SHEET THE APP LOADS: styles.css and each screen's own sheet under
+ * src/styles/ (imported by its screen), in that order, so a rule a screen
+ * moved into its own file is still in the cascade these helpers resolve.
+ */
+const STYLES = [
+  SHEET,
+  ...Object.values(import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })),
+].join('\n')
 import { cascade, type CascadeEnv } from './cssgate'
 import { colour, resolveVars, tokenTables, type RGBA } from './spaceprobe'
 

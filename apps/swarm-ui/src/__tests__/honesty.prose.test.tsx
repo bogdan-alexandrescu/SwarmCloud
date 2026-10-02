@@ -24,7 +24,7 @@
 
 import STYLES from '../styles.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { act, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { cascade } from './cssgate'
 import type { Result } from '../fetch'
@@ -332,34 +332,34 @@ function renderOverview(
   return render(<OverviewScreen />)
 }
 
+/** The Headroom card's account line, which lands from its own read. */
+async function accountLine(): Promise<void> {
+  await waitFor(() => expect(document.querySelector('.ov-acc')).not.toBeNull(), WAIT)
+}
+
 describe('Overview, with every help card closed', () => {
-  it('draws an unpolled account as an em dash on a hatched track and a measured 0% as a digit', async () => {
+  /**
+   * O1 DRAWS THE ACCOUNT POOL AS ONE LINE, and the rule moves with it: an
+   * account nobody polled is NOT usable room -- it is left out of `N of M
+   * usable` and named in that figure's accessible name -- while an account
+   * measured at 0% is a reading, printed as a digit beside its name.
+   *
+   * MUTATION: count the never-polled account as usable, or print its
+   * headroom as a percentage.
+   */
+  it('leaves an unpolled account out of the usable figure, and prints a measured 0% as a digit', async () => {
     renderOverview()
-    // The rows arrive from a promise, so wait for the one that must be there.
-    expect(await screen.findByText('never', undefined, WAIT)).toBeTruthy()
+    await accountLine()
     expectAllCardsClosed()
 
-    const rows = [...document.querySelectorAll('.ctl-util')]
-    const unpolled = rows.find((r) => textOf(r.querySelector('.ctl-util-name')).startsWith('never'))
-    const measured = rows.find((r) => textOf(r.querySelector('.ctl-util-name')).startsWith('fresh'))
-    expect(unpolled, 'the never-polled account is not on the panel').toBeTruthy()
-    expect(measured, 'the measured-zero account is not on the panel').toBeTruthy()
-
-    // THE ABSENT ONE. A phrase, not a quantity, and NO fill on the track.
-    const unpolledFigure = textOf(unpolled!.querySelector('.ctl-util-figure'))
-    expect(unpolledFigure).toBe('—')
-    expect(unpolledFigure).not.toMatch(/\d/)
-    expect(unpolled!.querySelector('.ctl-util-track')?.className).toContain('is-unknown')
-    expect(unpolled!.querySelector('.ctl-util-fill')).toBeNull()
-
-    // THE MEASURED ONE. A digit, on a track that is drawn -- and, since OV-1,
-    // the word that says which way the percentage points.
-    expect(textOf(measured!.querySelector('.ctl-util-figure'))).toBe('0% used')
-    expect(measured!.querySelector('.ctl-util-track')?.className).not.toContain('is-unknown')
-
-    // AND THE TWO ARE NOT THE SAME PICTURE. This is the assertion the whole
-    // migration is answerable to: exactly one of the two tracks is hatched.
-    expect(document.querySelectorAll('.ctl-util-track.is-unknown').length).toBe(1)
+    const line = document.querySelector('.ov-acc')!
+    const usable = line.querySelector(':scope > span')!
+    expect(textOf(usable)).toBe('1 of 2 usable')
+    expect(usable.getAttribute('aria-label') ?? '').toMatch(/never has no reading, so its headroom is unknown rather than full/)
+    // THE MEASURED ONE. A digit, and the word that says which account it is.
+    expect(visibleText()).toMatch(/best fresh at 0% of its five-hour window/)
+    // AND THE UNMEASURED ONE NEVER WEARS A FIGURE.
+    expect(visibleText()).not.toMatch(/never at \d/)
   })
 
   // RE-POINTED, NOT WEAKENED. The two sentences this used to read off the
@@ -471,19 +471,18 @@ describe('Overview, with every help card closed', () => {
         cacheCreationTokens: 0,
       },
     })
-    await waitFor(() => expect(document.querySelector('.ov-mix-facts')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('.ov-spend .ov-kv')).not.toBeNull(), WAIT)
     expectAllCardsClosed()
 
-    const facts = [...document.querySelectorAll('.ov-mix-facts .ctl-fact')]
-    const keyOf = (f: Element) => textOf(f.querySelector('b'))
-    expect(facts.map(keyOf)).toEqual(['input', 'output', 'cache read', 'cache write'])
+    const facts = [...document.querySelectorAll('.ov-spend .ov-kv-row')]
+    const keyOf = (f: Element) => textOf(f.querySelector('dt'))
+    expect(facts.map(keyOf)).toEqual(['input tokens', 'output tokens', 'cache read tokens', 'cache write tokens'])
 
-    const crd = facts.find((f) => keyOf(f) === 'cache read')!
-    expect(crd.className).toContain('is-absent')
-    expect(crd.querySelector('.ctl-em'), 'an unreported count drew no em dash').not.toBeNull()
-    expect(textOf(crd), 'an unreported count rendered a digit').not.toMatch(/\d/)
-    const cwr = facts.find((f) => keyOf(f) === 'cache write')!
-    expect(textOf(cwr.querySelector('.ov-num')), 'a measured zero is not a digit').toBe('0')
+    const crd = facts.find((f) => keyOf(f) === 'cache read tokens')!
+    expect(crd.querySelector('dd .ctl-em'), 'an unreported count drew no em dash').not.toBeNull()
+    expect(textOf(crd.querySelector('dd')), 'an unreported count rendered a digit').not.toMatch(/\d/)
+    const cwr = facts.find((f) => keyOf(f) === 'cache write tokens')!
+    expect(textOf(cwr.querySelector('dd')), 'a measured zero is not a digit').toBe('0')
 
     const card = document.querySelector('.ov-spend')!
     expect(card.querySelector('.ov-mix'), 'the token-mix bar is back').toBeNull()
@@ -531,7 +530,7 @@ describe('Overview, with every help card closed', () => {
   // sentence hard-coded in the other is exactly the shape being prevented.
   it('states the cadence from the timer constant rather than in words', async () => {
     renderOverview()
-    await screen.findByText('never', undefined, WAIT)
+    await accountLine()
     expect(document.querySelector('.sub'), 'the screen grew a subtitle again').toBeNull()
 
     const poll = screen.getByLabelText(/re-read every 20 seconds/i)
@@ -549,7 +548,7 @@ describe('Overview, with every help card closed', () => {
   // the accessible name.
   it('counts what landed as a fraction and a shape, never as a claim', async () => {
     renderOverview()
-    await screen.findByText('never', undefined, WAIT)
+    await accountLine()
     expectAllCardsClosed()
 
     const tally = document.querySelector('.ov-tally')
@@ -581,7 +580,7 @@ describe('Overview, with every help card closed', () => {
         },
       },
     })
-    await screen.findByText('never', undefined, WAIT)
+    await accountLine()
     expectAllCardsClosed()
 
     const tally = document.querySelector('.ov-tally')
@@ -598,23 +597,18 @@ describe('Overview, with every help card closed', () => {
     expect(tally!.getAttribute('aria-label')).toContain('1 of 8 reads failed')
   })
 
-  // THE PARTIAL ALL-CLEAR, WHICH IS THE CASE THE WHOLE CARD EXISTS FOR.
+  // THE PARTIAL ALL-CLEAR, WHICH IS THE CASE THE WHOLE LEAD EXISTS FOR.
   //
-  // WHAT MOVED: two paragraphs -- "Nothing wrong in the N checks that ran" and
-  // "N of M could not run — a partial all-clear, and what it did not look at
-  // is listed below" -- plus `checks.map(c => c.note).join(' · ')`, which was
-  // eight full sentences on the healthy path.
+  // A short row of check cards over blind checks and a short row over clear
+  // ones must be different pictures before either is read. O1's lead draws
+  // the blind share as a digit on its head line (`1 blind`) with the kit's
+  // partial mark beside it, and the all-clear under it is the `partial`
+  // absence -- or the `admin` one when every blind check was an admin gate --
+  // never the `zero` that a real all-clear wears.
   //
-  // WHERE THE WORDS LIVE NOW: the ring's filled arc is the checks that RAN and
-  // its hatched arc is the ones that could not, so a short problem list over
-  // blind checks and a short list over clear ones are different pictures
-  // before either is read. The sentences are the dial's accessible name, the
-  // `N blind` figure's accessible name, and the `all-clear-basis` topic.
-  //
-  // A MUTATION GOT PAST THE FIRST DRAFT OF THIS FILE by pinning `dialKind` to
-  // 'measured' unconditionally -- a full ring over checks that never ran, the
-  // absence-as-measurement lie in its purest form. That is what this kills.
-  it('draws a partial all-clear as a partial ring, never as a full one', async () => {
+  // MUTATION: draw the all-clear as `zero` whatever ran, or drop the partial
+  // mark from the head.
+  it('draws a partial all-clear as partial, never as a whole one', async () => {
     // A non-admin genuinely cannot read /v1/leases, so one check goes blind.
     renderOverview({
       reads: {
@@ -624,17 +618,14 @@ describe('Overview, with every help card closed', () => {
         },
       },
     })
-    await screen.findByText('never', undefined, WAIT)
+    await accountLine()
     expectAllCardsClosed()
 
-    const dial = document.querySelector('.ov-dial')
-    expect(dial, 'the attention card drew no coverage dial').not.toBeNull()
-    // THE HOLE IN THE TOTAL IS DRAWN AS A HOLE.
-    expect(dial!.getAttribute('data-partial'), 'a partial coverage drew a full ring').toBe('yes')
-    expect(dial!.className).toContain('is-partial')
-    // The ring is filled to the checks that RAN, not to 100%.
-    expect(dial!.getAttribute('style')).not.toContain('--pct: 100')
-    expect(dial!.getAttribute('aria-label')).toMatch(/could not run/i)
+    const lead = document.querySelector('#ov-needs')!
+    const mark = lead.querySelector('.ov-lh .ctl-mark.is-partial')
+    expect(mark, 'a lead over a blind check drew no partial mark').not.toBeNull()
+    expect(mark!.getAttribute('aria-label')).toMatch(/could not run/i)
+    expect(lead.querySelector('.ctl-empty .ctl-mark.is-zero'), 'a partial all-clear drew the real-zero mark').toBeNull()
 
     // AND IT IS NOT PAINTED AS BREAKAGE. A non-admin's platform is not down.
     const marks = [...document.querySelectorAll('.ctl-mark')].map((m) => textOf(m))
@@ -660,39 +651,42 @@ describe('Accounts, with every help card closed', () => {
     expect(await screen.findByText('eng:never', undefined, WAIT)).toBeTruthy()
     expectAllCardsClosed()
 
-    // The 5H and 7D columns of the row nobody has polled.
-    const unmeasured = [...document.querySelectorAll('td.acct-window.acct-unmeasured')]
-    expect(unmeasured.length, 'the never-polled row drew no unmeasured window').toBe(2)
+    // A1 RE-POINT (#503): the table became a list beside the chosen account.
+    // The list item carries the 5h figure; the pane's tiles carry 5h, 7d and
+    // Clears for the account it shows. The claims are unchanged.
+    const item = chooseAccount('eng:never')
+    const onItem = item.querySelector('.acct-window')!
+    expect(onItem.classList.contains('acct-unmeasured')).toBe(true)
+    expect(textOf(onItem)).toBe('—')
+
+    // The 5h and 7d tiles of the account nobody has polled.
+    const unmeasured = [...document.querySelectorAll('.acct-tiles > .acct-window.acct-unmeasured')]
+    expect(unmeasured.length, 'the never-polled account drew no unmeasured window').toBe(2)
     for (const cell of unmeasured) {
       expect(textOf(cell.querySelector('.acct-pct'))).toBe('—')
-      expect(textOf(cell)).not.toMatch(/\d/)
+      expect(textOf(cell.querySelector('.acct-pct'))).not.toMatch(/\d/)
       // THE BAR IS THE MARKER. An empty bar and a measured 0% are the same
-      // picture, so an unmeasured cell draws no bar at all.
-      // CP-25 (#85) RE-POINT: the five-cell `.acct-bar` is gone and the cell
-      // draws the shared §6.4 track, so the absence is asked of the track.
-      // The claim did not move: no proportion of any kind is drawn here.
-      expect(cell.querySelector('.ctl-util-track'), 'an unmeasured cell drew a bar').toBeNull()
-      expect(cell.querySelector('.acct-bar'), 'an unmeasured cell drew the old bar').toBeNull()
+      // picture, so an unmeasured window draws no bar at all.
+      expect(cell.querySelector('.ctl-util-track'), 'an unmeasured window drew a bar').toBeNull()
+      expect(cell.querySelector('.acct-bar'), 'an unmeasured window drew the old bar').toBeNull()
     }
 
-    // ...and its CLEARS cell, which has no window to count down to, is an em
-    // dash rather than a zero or a "now".
-    const clears = [...document.querySelectorAll('td.acct-unmeasured')].filter(
-      (td) => !td.classList.contains('acct-window'),
-    )
-    expect(clears.length, 'the never-polled row drew a countdown').toBe(1)
-    expect(textOf(clears[0])).toBe('—')
+    // ...and its Clears, which has no window to count down to, is an em dash
+    // rather than a zero or a "now" -- on the tile and on the item.
+    const clears = document.querySelector('.acct-tiles > [data-label="Clears"]')!
+    expect(clears.classList.contains('acct-unmeasured'), 'the never-polled account drew a countdown').toBe(true)
+    expect(textOf(clears.querySelector('b'))).toBe('—')
+    expect(textOf(item.querySelector('[data-label="Clears"]'))).toBe('clears —')
 
-    const measured = [...document.querySelectorAll('td.acct-window')].filter(
+    chooseAccount('eng:fresh')
+    const measured = [...document.querySelectorAll('.acct-tiles > .acct-window')].filter(
       (td) => !td.classList.contains('acct-unmeasured'),
     )
-    expect(measured.length, 'the measured-zero row drew no window cell').toBeGreaterThan(0)
+    expect(measured.length, 'the measured-zero account drew no window tile').toBeGreaterThan(0)
     expect(textOf(measured[0]!.querySelector('.acct-pct'))).toBe('0%')
-    // CP-25 RE-POINT, and the claim got STRONGER. The five-cell bar drew a
-    // measured 0% as five empty cells -- the same picture as a bar that failed
-    // to paint. The shared track draws it with its baseline tick (§8.7.2).
+    // The shared track draws a measured 0% with its baseline tick (§8.7.2).
     const track = measured[0]!.querySelector('.ctl-util-track')
-    expect(track, 'a measured cell drew no bar').not.toBeNull()
+    expect(track, 'a measured window drew no bar').not.toBeNull()
     expect(track!.classList.contains('is-zero'), 'a measured 0% drew no baseline tick').toBe(true)
     expect(track!.querySelector('.ctl-util-zero')).not.toBeNull()
   })
@@ -750,19 +744,19 @@ describe('Accounts, with every help card closed', () => {
    * said `% left` over rows of % used; the owner set % used everywhere
    * (Overview, Accounts, sc). This table already printed used, under column
    * heads that said only `5h` and `7d` -- so the word goes on the head, and on
-   * the phone key that stands in for it.
+   * the phone key that stands in for it. A1 (#503) took the heads away; the
+   * word is now the tile's own label and every figure's `data-label`.
    *
-   * MUTATION: head the columns `5h` and `7d` again.
+   * MUTATION: label the tiles `5h` and `7d` again.
    */
-  it('says which way every window percentage points, in its column head', async () => {
+  it('says which way every window percentage points, on every figure', async () => {
     renderAccounts([MEASURED_ZERO])
     await screen.findByText('eng:fresh', undefined, WAIT)
-    const heads = [...document.querySelectorAll('table.accounts thead th')].map((th) => textOf(th))
-    expect(heads).toContain('5h used')
-    expect(heads).toContain('7d used')
-    const keys = [...document.querySelectorAll('td.acct-window')].map((td) => td.getAttribute('data-label'))
-    expect(keys.length, 'no window cell was drawn').toBeGreaterThan(0)
-    for (const key of keys) expect(key, 'a phone key drops the polarity').toMatch(/ used$/)
+    const labels = [...document.querySelectorAll('.acct-tiles > .acct-window > small')].map((t) => textOf(t))
+    expect(labels).toEqual(['5h used', '7d used'])
+    const keys = [...document.querySelectorAll('.acct-window')].map((td) => td.getAttribute('data-label'))
+    expect(keys.length, 'no window figure was drawn').toBeGreaterThan(0)
+    for (const key of keys) expect(key, 'a figure drops the polarity').toMatch(/ used$/)
   })
 })
 
@@ -775,15 +769,27 @@ describe('Accounts, with every help card closed', () => {
 const FAR = '2099-01-01T00:00:00Z'
 
 /**
- * The `data-label` cell of one account's row, by the id printed under it. A
- * window's label is its phone key, which carries OV-1's polarity (`5h used`,
- * `7d used`), so the callers below name it that way.
+ * Choose an account in the list by the id printed under it, and return its
+ * list item. The pane then shows that account.
+ */
+function chooseAccount(id: string): HTMLElement {
+  const raw = [...document.querySelectorAll('.acct-li span.raw')].find((s) => s.textContent === id)
+  expect(raw, `no list item for ${id}`).toBeTruthy()
+  const li = raw!.closest('li') as HTMLElement
+  fireEvent.click(li.querySelector('button.acct-open')!)
+  return li
+}
+
+/**
+ * One account's window tile, by its label -- the label carries OV-1's
+ * polarity (`5h used`, `7d used`). A1 RE-POINT (#503): the figure lived in a
+ * table cell per row; it is now a tile in the pane, so the account is chosen
+ * first.
  */
 function accountCell(id: string, label: string): HTMLElement {
-  const raw = [...document.querySelectorAll('span.raw')].find((s) => s.textContent === id)
-  expect(raw, `no row for ${id}`).toBeTruthy()
-  const cell = raw!.closest('tr')!.querySelector(`td[data-label="${label}"]`)
-  expect(cell, `${id} has no ${label} cell`).not.toBeNull()
+  chooseAccount(id)
+  const cell = document.querySelector(`.acct-tiles > [data-label="${label}"]`)
+  expect(cell, `${id} has no ${label} tile`).not.toBeNull()
   return cell as HTMLElement
 }
 

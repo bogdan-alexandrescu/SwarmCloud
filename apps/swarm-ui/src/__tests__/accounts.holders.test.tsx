@@ -100,8 +100,11 @@ function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
 async function openRow(a: Account, tenant = 'eng') {
   api.loadAccountsBoard.mockResolvedValue(ok(board(a, tenant)))
   render(<AccountsScreen />)
-  const open = await screen.findByRole('button', { name: /laptop/ }, WAIT)
-  if (open.getAttribute('aria-expanded') !== 'true') fireEvent.click(open)
+  // The list item, not any button naming the account: the pane opens the
+  // first account on its own now (#503), and its controls name it too.
+  await screen.findByText('Subscription accounts', undefined, WAIT)
+  const open = document.querySelector<HTMLButtonElement>('.acct-li > button.acct-open')!
+  if (open.getAttribute('aria-current') !== 'true') fireEvent.click(open)
 }
 
 beforeEach(() => {

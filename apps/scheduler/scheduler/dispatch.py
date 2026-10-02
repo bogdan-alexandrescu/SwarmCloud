@@ -513,6 +513,31 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
+    # THE CHILD PATH (docs/design/child-tasks.md §3.2). A one-use registration
+    # nonce bound to this exact attempt, which its worker spends registering
+    # the attempt key it generates BEFORE its agent exists; the agent can read
+    # it later from /proc/1/environ, by which time it is worthless. Only for a
+    # task that is not itself a child (depth 1), and only when this deployment
+    # has the key -- omitted otherwise, so the worker offers no child path.
+    # The nonce and the API's address travel together: a nonce the worker
+    # had nowhere to spend would sit unspent in an environment its agent reads.
+    child_key = str(getattr(settings, "child_key", "") or "")
+    api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
+    if child_key and api_url and not task.parent_task_id:
+        from .children import registration_nonce
+
+        env["SWARM_CHILD_NONCE"] = registration_nonce(
+            child_key,
+            tenant_id=task.tenant_id,
+            task_id=task.id,
+            attempt_id=lease.attempt_id,
+            lease_id=lease.lease_id,
+            generation=lease.generation,
+        )
+        env["SWARM_API_URL"] = api_url
+        api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
+        if api_audience:
+            env["SWARM_API_AUDIENCE"] = api_audience
     return env
 
 

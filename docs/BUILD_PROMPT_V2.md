@@ -403,11 +403,11 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:3987`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py:4480`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:4094`,
-> `apps/agent-worker/agent_worker/accountlease.py:445`). That is the same on a
+> (`apps/agent-worker/agent_worker/lifecycle.py:4850`,
+> `apps/agent-worker/agent_worker/accountlease.py:650`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
 > writer (§7.3); the worker never refreshes.
@@ -418,11 +418,11 @@ refresh disabled, and let the broker own it.
 > (`apps/quota-broker/quota_broker/accounts.py:295`). A hold carries its own
 > id, which the release must name, and it expires on its own, so a SIGKILLed
 > worker costs a few stale minutes rather than a count that stays inflated for
-> good (`apps/agent-worker/agent_worker/accountlease.py:44`). It is not on the
+> good (`apps/agent-worker/agent_worker/accountlease.py:66`). It is not on the
 > LEASE because `Lease` is frozen and has no account field. Recording which
 > account an attempt ran on is contract change request 13, still open. The
 > token reaches the agent as one environment variable, `CLAUDE_CODE_OAUTH_TOKEN`
-> (`apps/agent-worker/agent_worker/accountlease.py:113`), and is never written
+> (`apps/agent-worker/agent_worker/accountlease.py:131`), and is never written
 > to a credentials file. So the `CLAUDE_CONFIG_DIR` and `MergeForSwap` paragraphs
 > below have nothing to act on today.
 
@@ -775,7 +775,7 @@ v1 built these and they are correct. They are not rewritten:
 >
 > * **Item 5: there is no sidecar** in either backend's pod. The worker process
 >   itself leases the account (§2.6.3) and runs the checkpoint timer
->   (`apps/agent-worker/agent_worker/lifecycle.py:1364`). The reason is §2.6.3's:
+>   (`apps/agent-worker/agent_worker/lifecycle.py:1486`). The reason is §2.6.3's:
 >   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
 >   How events are published is §2.7's question.
 > * **Item 12 is not configuration.** The catalogue is the frozen

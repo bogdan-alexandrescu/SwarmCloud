@@ -27,6 +27,10 @@ dependencies = [
     # other service signs, and no worker holds any role on the key.
     "google-cloud-kms>=2.21",
     "google-crc32c>=1.5",
+    # Verifies the Ed25519 attempt proof on the worker-only child routes
+    # (docs/design/child-tasks.md §3.2, swarm_api.childkey). Imported lazily;
+    # declared because images/swarm-api/Dockerfile installs only this package.
+    "cryptography>=42",
 ]
 
 [tool.uv.sources]

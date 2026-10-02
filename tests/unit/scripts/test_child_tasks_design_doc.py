@@ -211,14 +211,16 @@ def test_every_cited_file_exists(doc: Path):
 # --------------------------------------------------------------------------
 
 
-def test_cr14_records_the_acceptance_and_that_nothing_is_applied():
+def test_cr14_records_the_acceptance_and_that_it_is_applied():
+    """Phase 2 (2026-10-02) applied it: the status says so, with the acceptance
+    still on the record, and the index row agrees."""
     body = _cr14()
     status = next(line for line in body.splitlines() if line.startswith("**Status:"))
     assert "ACCEPTED 2026-10-02" in status
     assert "OD-B15-1" in status
-    assert "not applied" in status
+    assert "APPLIED 2026-10-02" in status
     index = re.search(r"^\| 14 \| .*$", _text(REQUESTS), flags=re.M).group(0)
-    assert "ACCEPTED 2026-10-02" in index and "not applied" in index
+    assert "APPLIED 2026-10-02" in index and "OD-B15-1" in index
 
 
 def test_cr14_amendment_adds_the_cancel_and_capacity_rules():
@@ -235,7 +237,10 @@ def test_each_new_request_is_filed_once_with_its_parts_and_an_index_row(number):
     headings = re.findall(rf"^#+ {number}\. .*$", text, flags=re.M)
     assert len(headings) == 1, f"request {number} filed {len(headings)} times"
     body = _section(text, headings[0])
-    assert re.search(r"^\*\*Status:\*\* open", body, flags=re.M), f"request {number} status"
+    # Applied with request 14 in phase 2 (2026-10-02).
+    assert re.search(r"^\*\*Status:\*\* APPLIED 2026-10-02", body, flags=re.M), (
+        f"request {number} status"
+    )
     for part in (
         "What is true today",
         "The requested change",
@@ -243,7 +248,9 @@ def test_each_new_request_is_filed_once_with_its_parts_and_an_index_row(number):
         "If it is declined",
     ):
         assert part in body, f"request {number} lacks {part!r}"
-    assert re.search(rf"^\| {number} \| .* \| open", text, flags=re.M), f"no index row for {number}"
+    assert re.search(rf"^\| {number} \| .* \| APPLIED 2026-10-02", text, flags=re.M), (
+        f"no index row for {number}"
+    )
 
 
 def test_each_new_request_points_back_to_cr14s_amendment():

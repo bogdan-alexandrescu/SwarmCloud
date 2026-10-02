@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import Body, FastAPI, Header, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from prometheus_client import CollectorRegistry, Counter, Gauge, generate_latest
 from prometheus_client.exposition import CONTENT_TYPE_LATEST
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,12 +52,18 @@ from .accounts import (
     DEFAULT_STALE_AFTER,
     HOLD_END_EXPIRED,
     HOLD_END_RELEASED,
+    HOLD_END_SWAPPED,
     HOLD_END_UNUSABLE,
+    HOLD_ENDS,
     HOLD_LOG_COLLECTION,
     HOLD_LOG_RETENTION,
+    SWAP_DRAIN,
+    SWAP_REASONS,
+    SWAP_UNUSABLE,
     AccountState,
     Hold,
     Unavailable,
+    WindowReading,
     accounts_serving,
     choose,
     due_for_refresh,
@@ -76,7 +83,15 @@ from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
 from .settings import BrokerSettings
-from .sweeplease import LeaseFence, build_sweep_lease, new_holder, txn_snapshot
+from .sweeplease import (
+    SWEEP_ERROR,
+    SWEEP_OK,
+    LeaseFence,
+    build_sweep_lease,
+    liveness,
+    new_holder,
+    txn_snapshot,
+)
 
 log = logging.getLogger(__name__)
 
@@ -259,6 +274,58 @@ class AttemptHoldsRelease(StrictModel):
 
     task_id: str = Field(min_length=1, max_length=128)
     attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class _AttemptHold(StrictModel):
+    """Which hold the calling worker says it has: the proof every worker route checks.
+
+    All three are REQUIRED. The broker answers a reading, a swap or a status
+    read only for a LIVE hold with this assignment id, issued to the caller's
+    tenant and stamped with this task and attempt. A fenced attempt's holds
+    are released by the reconciler (#380), so a stale worker holds nothing and
+    is refused -- invariant 5 at the pool's door.
+    """
+
+    assignment_id: str = Field(min_length=1, max_length=128)
+    task_id: str = Field(min_length=1, max_length=128)
+    attempt_id: str = Field(min_length=1, max_length=128)
+
+
+class WindowIn(StrictModel):
+    #: The provider's 0-1 fraction. NaN and infinities are refused with the
+    #: rest: a non-finite headroom sorts unpredictably in `choose()`.
+    utilization: float = Field(ge=0.0, le=1.0, allow_inf_nan=False)
+    resets_at: datetime
+
+
+#: A window name as the provider spells it (`five_hour`, `seven_day`,
+#: `seven_day_opus`). Keyed rather than enumerated -- see `Account.windows` --
+#: but bounded, because the name becomes a Firestore map key.
+_WINDOW_NAME = re.compile(r"^[a-z0-9_]{1,40}$")
+
+
+class AccountReadingIn(_AttemptHold):
+    """One worker's reading of the account it holds (S15).
+
+    Figures and instants and nothing else: `extra="forbid"` refuses any other
+    field, so a reading cannot carry a token, a header or a session id.
+    """
+
+    windows: dict[str, WindowIn] = Field(min_length=1, max_length=8)
+
+
+class AccountSwap(_AttemptHold):
+    """Move the calling attempt from the account it holds to another (S13/S14).
+
+    `account_id` is the account being LEFT; the broker picks the one moved to,
+    by the same `choose()` an assign uses, and never the one being left.
+    `exclude` narrows the choice the way it narrows an assign.
+    """
+
+    account_id: str = Field(min_length=1, max_length=128)
+    reason: str = Field(min_length=1, max_length=32)
+    provider: str = Field(default="anthropic", max_length=64)
+    exclude: list[str] = Field(default_factory=list, max_length=20)
 
 
 class RateLimitReport(StrictModel):
@@ -524,6 +591,13 @@ def account_to_api(account: Any, *, now: datetime | None = None) -> dict[str, An
         #: healthy one with full headroom and zero agents, and every task for
         #: that tenant quietly failing.
         "unreadable_now": unreadable_now,
+        #: What the refresh sweep last did with this credential (U27,
+        #: docs/web-ui/06-accounts.md P2): when, why, and when the token it
+        #: holds expires. Null until a sweep has written them. An instant and
+        #: a reason -- never the token, its length or its secret's name.
+        "last_refresh_at": _iso(getattr(account, "last_refresh_at", None)),
+        "token_expires_at": _iso(getattr(account, "token_expires_at", None)),
+        "last_refresh_reason": getattr(account, "last_refresh_reason", "") or None,
         #: Null means NEVER assigned, which is the shape of "this account is
         #: registered and no worker can reach the broker at all".
         "last_assigned_at": (
@@ -890,6 +964,197 @@ def release_attempt_holds(
     return _apply(transaction)
 
 
+def _attempt_hold(
+    data: dict[str, Any],
+    now: datetime,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+) -> Hold | None:
+    """The caller's LIVE hold on this account document, or None.
+
+    Matched on all four: the assignment id the broker issued, the tenant the
+    caller's identity token names, and the task and attempt the hold was
+    stamped with. A hold with no stamps (an older worker) never matches, so a
+    worker route is never answered on proof of an id alone.
+    """
+    for hold in _live_holds(data, now):
+        if (
+            hold.assignment_id == assignment_id
+            and hold.tenant_id == tenant_id
+            and hold.task_id == task_id
+            and hold.attempt_id == attempt_id
+        ):
+            return hold
+    return None
+
+
+def _raw_assignable(data: dict[str, Any], tenant_id: str) -> bool:
+    """Whether a raw document may take a NEW agent for this tenant right now."""
+    return data.get("state", AccountState.AVAILABLE.value) == AccountState.AVAILABLE.value and (
+        _raw_may_serve(data, tenant_id)
+    )
+
+
+class HoldNotHeld(Exception):
+    """The caller holds no live hold matching what it named. Answered 403."""
+
+
+def swap_hold(
+    db: Any,
+    from_account: str,
+    to_account: str,
+    *,
+    assignment_id: str,
+    tenant_id: str,
+    task_id: str,
+    attempt_id: str,
+    reason: str,
+    now: datetime,
+    ttl: timedelta = DEFAULT_HOLD_TTL,
+) -> tuple[str, int] | None:
+    """Move one attempt's hold from one account to another, in ONE transaction.
+
+    Returns (new assignment id, holders now on `to_account`), or None when
+    `to_account` cannot take it -- removed, no longer AVAILABLE, or no longer
+    serving this tenant since the listing -- in which case NOTHING was
+    written and the caller still holds exactly what it held. Raises
+    `HoldNotHeld` when the caller's hold on `from_account` is not live.
+
+    ONE TRANSACTION IS THE WHOLE POINT. Both documents are read, then both are
+    written: the left hold removed, the new one added, the left record closed
+    `swapped` naming where it went, the new record opened naming where it came
+    from. So an attempt NEVER holds two accounts at once -- the counter would
+    count it twice and `choose()` would spread the next agents wrongly -- and
+    never holds NONE while the swap succeeds, which would let a release race
+    leave a running agent on an account the pool thinks is free.
+
+    A swap for `unusable` also records, against this tenant only, that the
+    account being left could not be read -- what `release_hold` records for
+    the same cause -- so the next ask is not sent at the same wall.
+    """
+    from google.cloud import firestore
+
+    if from_account == to_account:
+        raise ValueError("a swap must move to a different account")
+    from_ref = db.collection(ACCOUNTS_COLLECTION).document(from_account)
+    to_ref = db.collection(ACCOUNTS_COLLECTION).document(to_account)
+    transaction = db.transaction()
+    new_id = uuid.uuid4().hex
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int | None:
+        # Every read before any write: Firestore requires it of a transaction.
+        from_snap = _txn_snapshot(txn.get(from_ref))
+        to_snap = _txn_snapshot(txn.get(to_ref))
+        if not getattr(from_snap, "exists", False):
+            raise HoldNotHeld(from_account)
+        from_data = from_snap.to_dict() or {}
+        live, expired = _split_holds(from_data, now)
+        held = _attempt_hold(
+            from_data,
+            now,
+            assignment_id=assignment_id,
+            tenant_id=tenant_id,
+            task_id=task_id,
+            attempt_id=attempt_id,
+        )
+        if held is None:
+            raise HoldNotHeld(from_account)
+        if not getattr(to_snap, "exists", False):
+            return None
+        to_data = to_snap.to_dict() or {}
+        if not _raw_assignable(to_data, tenant_id):
+            return None
+        to_live, to_expired = _split_holds(to_data, now)
+        taken = Hold(
+            assignment_id=new_id,
+            tenant_id=tenant_id,
+            expires_at=now + ttl,
+            task_id=task_id,
+            attempt_id=attempt_id,
+            assigned_at=now,
+            swapped_from=from_account,
+            swap_reason=reason,
+        )
+        left = _hold_payload([h for h in live if h.assignment_id != held.assignment_id])
+        if reason == SWAP_UNUSABLE:
+            reports = _unreadable_reports(from_data)
+            reports[tenant_id] = now
+            left["unreadable_by"] = reports
+        txn.update(from_ref, left)
+        txn.update(to_ref, {**_hold_payload([*to_live, taken]), "last_assigned_at": now})
+        txn.set(
+            _log_ref(db, held.assignment_id),
+            hold_log_entry(
+                held,
+                from_account,
+                end=HOLD_END_SWAPPED,
+                released_at=now,
+                swapped_to=to_account,
+                swap_reason=reason,
+            ),
+        )
+        txn.set(_log_ref(db, new_id), hold_log_entry(taken, to_account))
+        _close_expired(txn, db, from_account, expired)
+        _close_expired(txn, db, to_account, to_expired)
+        return len(to_live) + 1
+
+    assigned = _apply(transaction)
+    return None if assigned is None else (new_id, assigned)
+
+
+def set_state_and_moves(
+    db: Any, account_id: str, state: AccountState, reason: str, *, now: datetime
+) -> int:
+    """An operator's state change, and the holds it moves, in ONE write. Returns how many.
+
+    DRAINING is defined as "running agents are being moved off"
+    (`AccountState.DRAINING`), and until now nothing moved: the state was
+    stored and every agent on the account stayed. So setting DRAINING marks
+    every live hold `move: drain` IN THE SAME TRANSACTION as the state. Why
+    here and not in the sweep: a sweep runs minutes apart, and in between the
+    account would be DRAINING with nobody told to leave -- the window in which
+    an operator reads "draining" and starts the removal. Leaving DRAINING
+    clears the marks the same way, so an agent is not moved off an account an
+    operator has just put back in service.
+
+    Writes what `AccountStore.set_state` writes (state, reason, and clearing
+    `state_before_reauth` because a person decided), plus the holds.
+    """
+    from google.cloud import firestore
+
+    ref = db.collection(ACCOUNTS_COLLECTION).document(account_id)
+    transaction = db.transaction()
+
+    @firestore.transactional
+    def _apply(txn: Any) -> int:
+        snap = _txn_snapshot(txn.get(ref))
+        if not getattr(snap, "exists", False):
+            raise BrokerValidationError(f"no account {account_id!r}")
+        live, expired = _split_holds(snap.to_dict() or {}, now)
+        draining = state is AccountState.DRAINING
+        marked = [
+            replace(h, move=SWAP_DRAIN if draining else (None if h.move == SWAP_DRAIN else h.move))
+            for h in live
+        ]
+        txn.update(
+            ref,
+            {
+                "state": state.value,
+                "reason": reason,
+                "state_before_reauth": "",
+                **_hold_payload(marked),
+            },
+        )
+        _close_expired(txn, db, account_id, expired)
+        return sum(1 for h in marked if h.move == SWAP_DRAIN)
+
+    return _apply(transaction)
+
+
 def _release_attempt_holds_everywhere(
     db: Any, *, task_id: str, attempt_id: str, now: datetime
 ) -> dict[str, Any]:
@@ -939,7 +1204,21 @@ def _hold_to_api(hold: Hold) -> dict[str, Any]:
         "attempt_id": hold.attempt_id,
         "assigned_at": _iso(hold.assigned_at),
         "expires_at": _iso(hold.expires_at),
+        # Set when this hold was taken by a swap: the account the attempt
+        # came from, and why it moved. swarm-api decides who may see the id.
+        "swapped_from": hold.swapped_from,
+        "swapped_from_reason": hold.swap_reason if hold.swapped_from else None,
+        # Set while the hold is marked to move off a draining account.
+        "move": hold.move,
     }
+
+
+def _optional_reason(raw: Any) -> str | None:
+    return raw if raw in SWAP_REASONS else None
+
+
+def _optional_id(raw: Any) -> str | None:
+    return raw if isinstance(raw, str) and raw else None
 
 
 def _span_to_api(record: dict[str, Any]) -> dict[str, Any]:
@@ -958,8 +1237,20 @@ def _span_to_api(record: dict[str, Any]) -> dict[str, Any]:
         ),
         "assigned_at": _iso(record.get("assigned_at")),
         "released_at": _iso(record.get("released_at")),
-        "end": end if end in (HOLD_END_RELEASED, HOLD_END_UNUSABLE, HOLD_END_EXPIRED) else None,
+        "end": end if end in HOLD_ENDS else None,
         "hold_expires_at": _iso(record.get("hold_expires_at")),
+        # A swap, from each side (S13/S14): this span began by moving here
+        # from `swapped_from`, and/or ended by moving to `swapped_to`.
+        "swapped_from": _optional_id(record.get("swapped_from")),
+        "swapped_from_reason": _optional_reason(record.get("swapped_from_reason")),
+        "swapped_to": (
+            _optional_id(record.get("swapped_to")) if end == HOLD_END_SWAPPED else None
+        ),
+        "swapped_to_reason": (
+            _optional_reason(record.get("swapped_to_reason"))
+            if end == HOLD_END_SWAPPED
+            else None
+        ),
     }
 
 
@@ -1169,6 +1460,14 @@ def _sweep_account_pool(
         )
         return {"error": type(exc).__name__}
 
+    # WRITTEN BACK, EVERY ACCOUNT, EVERY SWEEP (U27, docs/web-ui/06-accounts.md
+    # P2). The outcome's expiry used to be thrown away with the rest of the
+    # response, so the Accounts screen could show when a token expires only
+    # after someone pressed Refresh. Keyed by the outcome's `tenant_id`, which
+    # is the ACCOUNT ID because that is what the sweep hands the refresher
+    # above -- never the label, which two tenants may share.
+    recorded = _record_refreshes(store, outcomes, now)
+
     needs_human = [
         (o.tenant_id, o.reason)
         for o in outcomes
@@ -1214,6 +1513,10 @@ def _sweep_account_pool(
             second = refresher.refresh_secret(
                 store.secret_for(account), label=account_id
             )
+            if second.reason != reason:
+                # The confirmation is the latest thing known about this
+                # credential, so it is what the account says last happened.
+                recorded += _record_refreshes(store, [replace(second, tenant_id=account_id)], now)
             if second.reason not in CREDENTIAL_NEEDS_A_HUMAN:
                 log.info(
                     "an account's refresh failed and then worked on a second "
@@ -1246,6 +1549,8 @@ def _sweep_account_pool(
     return {
         "examined": len(outcomes),
         "refreshed": sum(1 for o in outcomes if o.refreshed),
+        #: How many refresh outcomes were written onto their account document.
+        "recorded": recorded,
         #: ACCOUNT IDS -- every account this tick's first pass found dead. Ids
         #: rather than labels because a label is unique only within a tenant.
         "reauth_required": [account_id for account_id, _ in needs_human],
@@ -1264,6 +1569,30 @@ def _sweep_account_pool(
             o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
         ],
     }
+
+
+def _record_refreshes(store: Any, outcomes: Any, now: datetime) -> int:
+    """`AccountStore.record_refresh` for each outcome, never raising. Returns how many.
+
+    A failure to write one account is logged and the rest are still written:
+    this runs inside the tick that un-parks throttled tenants.
+    """
+    written = 0
+    for outcome in outcomes:
+        try:
+            if store.record_refresh(
+                outcome.tenant_id,
+                at=now,
+                reason=outcome.reason,
+                expires_at=outcome.expires_at,
+            ):
+                written += 1
+        except Exception as exc:
+            log.error(
+                "could not record an account's refresh outcome",
+                extra={"account_id": outcome.tenant_id, "error": type(exc).__name__},
+            )
+    return written
 
 
 def _sweep_block(run: Any, failure_message: str) -> dict[str, Any]:
@@ -1551,6 +1880,32 @@ def create_app(
             content={"code": "validation_failed", "message": str(exc)},
         )
 
+    @app.exception_handler(RequestValidationError)
+    async def request_validation_handler(
+        request: Request, exc: RequestValidationError
+    ) -> Response:
+        """FastAPI's 422, WITHOUT the values it refused.
+
+        The default handler echoes each refused value back as `input`. Two
+        things wrong with that here: a worker route's body is refused BECAUSE
+        it carried something it must not (a field `extra="forbid"` rejects, a
+        token among them), and echoing it puts that value in a response; and
+        a refused NaN cannot be encoded at all, so the refusal became a 500.
+        Same `detail` list, same locations and messages, no `input`, no `ctx`.
+        """
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": [
+                    {"loc": list(e.get("loc", ())), "msg": str(e.get("msg", "")),
+                     "type": str(e.get("type", ""))}
+                    for e in exc.errors()
+                ]
+            },
+        )
+
     @app.exception_handler(MalformedAccountError)
     async def malformed_account_handler(
         request: Request, exc: MalformedAccountError
@@ -1759,7 +2114,27 @@ def create_app(
             #: reading is incomplete, because otherwise it reads a short list as
             #: the whole pool.
             "unreadable_document_count": len(listing.unreadable),
+            #: WHETHER THE REFRESH SWEEP IS STILL RUNNING (U27): when it last
+            #: completed and how, from the sweep lease document. Both null
+            #: when no sweep has ever completed -- which the screen must not
+            #: read as healthy. When the instant stops moving, the sweep has
+            #: stopped, and every token in the pool is ageing towards expiry.
+            "refresh_sweep": _sweep_liveness(request),
         }
+
+    def _sweep_liveness(request: Request) -> dict[str, Any]:
+        lease = getattr(request.app.state, "sweep_lease", None)
+        try:
+            data = lease.read() if lease is not None else None
+        except Exception as exc:
+            # A listing must not fail over a liveness read. Unknown is said
+            # as unknown, never as "never ran".
+            log.warning(
+                "could not read the sweep lease for the account listing",
+                extra={"error": type(exc).__name__},
+            )
+            return {"last_completed_at": None, "last_outcome": None, "readable": False}
+        return {**liveness(data), "readable": True}
 
     def _provision_and_register(
         request: Request,
@@ -2164,8 +2539,22 @@ def create_app(
                 f"unknown account state {body.state!r}; "
                 f"known: {', '.join(s.value for s in AccountState)}"
             ) from None
-        store.set_state(account_id, state, body.reason)
-        return {"account": account_to_api(store.get(account_id))}
+        # The state AND the holds it moves, in one transaction -- see
+        # `set_state_and_moves` for why DRAINING marks every live hold here
+        # rather than leaving it to a sweep.
+        moving = set_state_and_moves(
+            request.app.state.broker.db,
+            account_id,
+            state,
+            body.reason,
+            now=datetime.now(timezone.utc),
+        )
+        if moving:
+            log.info(
+                "an account is draining; its holders move at their next turn boundary",
+                extra={"account_id": account_id, "holders": moving},
+            )
+        return {"account": account_to_api(store.get(account_id)), "moving": moving}
 
     @app.post("/v1/accounts/{account_id}/refresh")
     def refresh_account(
@@ -2198,8 +2587,24 @@ def create_app(
             raise BrokerValidationError(
                 "this deployment has no credential refresher configured"
             )
-        outcome = refresher.refresh_secret(store.secret_for(account), label=account.label)
+        # THE ACCOUNT ID, not the label: the outcome's `tenant_id` is whatever
+        # is passed here, and a label is unique only within a tenant (P2).
+        outcome = refresher.refresh_secret(store.secret_for(account), label=account_id)
         result = outcome.as_dict()
+        # Written back like a sweep's outcome (U27), under the id this route
+        # was asked about. Never fails the refresh the caller just made.
+        try:
+            store.record_refresh(
+                account_id,
+                at=datetime.now(timezone.utc),
+                reason=str(result.get("reason") or ""),
+                expires_at=getattr(outcome, "expires_at", None),
+            )
+        except Exception as exc:
+            log.error(
+                "could not record an account's refresh outcome",
+                extra={"account_id": account_id, "error": type(exc).__name__},
+            )
 
         # A refresh that fails because the refresh token is gone is not a
         # transient error and must not be retried by the sweep every five
@@ -2511,6 +2916,194 @@ def create_app(
             "reason": "" if was_held else "not_held",
         }
 
+    # -- what a holding worker may do with its own hold (S13-S15) ----------
+    #
+    # Three routes, each answered ONLY for the worker that holds the account:
+    # authenticated as a tenant's worker service account, and checked against
+    # a live hold with the assignment id, task and attempt it names. A fenced
+    # attempt's holds are released by the reconciler (#380), so a stale worker
+    # holds nothing and is refused (invariant 5).
+
+    def _holder(
+        request: Request, authorization: str | None, account_id: str, body: _AttemptHold
+    ) -> tuple[str, dict[str, Any], Hold]:
+        """(tenant, raw account, the caller's hold), or 403."""
+        tenant_id = _assignment_tenant(request, authorization)
+        _accounts(request)
+        data = _raw_account(request.app.state.broker.db, account_id)
+        hold = (
+            _attempt_hold(
+                data,
+                datetime.now(timezone.utc),
+                assignment_id=body.assignment_id,
+                tenant_id=tenant_id,
+                task_id=body.task_id,
+                attempt_id=body.attempt_id,
+            )
+            if data is not None
+            else None
+        )
+        if hold is None:
+            request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+            raise BrokerAuthError(
+                "this caller holds no live hold on that account for that task and attempt"
+            )
+        return tenant_id, data, hold
+
+    @app.post("/v1/accounts/{account_id}/readings")
+    def record_account_reading(
+        request: Request,
+        account_id: str,
+        body: AccountReadingIn,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """A holding worker's reading of the account it runs on (S15).
+
+        Every claude-code run streams `rate_limit_event` readings and they
+        were thrown away, while the only other writer of `Account.windows` --
+        the usage poller -- shares about five calls per five minutes with every
+        human and laptop on the same accounts. This is where they land.
+
+        ONLY FROM THE HOLDER: a reading moves `choose()`, so a tenant able to
+        report on an account it does not hold could steer every other tenant's
+        agents onto or off it. Merged per window (`Account.with_reading`): a
+        reading of `seven_day` alone keeps the stored `five_hour`.
+
+        REFUSED, 422: a utilization outside 0..1 (the model), a window name
+        that is not one, and a window whose reset is in the past -- a reading
+        that has already expired would be stored as a fresh one.
+        """
+        _holder(request, authorization, account_id, body)
+        now = datetime.now(timezone.utc)
+        windows: dict[str, WindowReading] = {}
+        for name, window in body.windows.items():
+            if not _WINDOW_NAME.match(name):
+                raise BrokerValidationError(f"{name!r} is not a rate-limit window name")
+            if window.resets_at.tzinfo is None:
+                raise BrokerValidationError(f"window {name!r}: resets_at must carry an offset")
+            resets = window.resets_at.astimezone(timezone.utc)
+            if resets <= now:
+                raise BrokerValidationError(
+                    f"window {name!r} reset at {resets.isoformat()}, which has passed; "
+                    "a reading of an expired window is not a reading"
+                )
+            windows[name] = WindowReading(utilization=window.utilization, resets_at=resets)
+        updated = _accounts(request).record_reading(account_id, windows, now)
+        return {
+            "account_id": account_id,
+            "recorded": updated is not None,
+            "windows": sorted(windows),
+        }
+
+    @app.post("/v1/accounts/{account_id}/hold-status")
+    def account_hold_status(
+        request: Request,
+        account_id: str,
+        body: _AttemptHold,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Whether the caller's hold must move (S14). One cheap read.
+
+        A worker asks at most once per turn, never per stream line. `move` is
+        the mark a drain wrote on the hold, or `drain` for an account that is
+        DRAINING whatever its holds say. A POST, so the assignment id is in a
+        body rather than in a URL an access log keeps.
+        """
+        _tenant, data, hold = _holder(request, authorization, account_id, body)
+        state = data.get("state")
+        move = hold.move or (SWAP_DRAIN if state == AccountState.DRAINING.value else None)
+        return {"account_id": account_id, "held": True, "move": move, "state": state}
+
+    @app.post("/v1/accounts/swap")
+    def swap_account(
+        request: Request,
+        body: AccountSwap,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Move the caller's attempt to another account, in one transaction (S13).
+
+        The answer has the assign route's shape. Swapped: the new account, the
+        new assignment id and the secret NAME. Not swapped -- no other account
+        can take it -- a 200 with the reason and the reset instant, exactly as
+        an assign that found nothing, AND THE CURRENT HOLD UNTOUCHED: the
+        worker falls back to its checkpoint and park and gives it back then.
+
+        A fenced or stale attempt holds nothing and is refused (403) before it
+        learns anything about the pool.
+        """
+        if body.reason not in SWAP_REASONS:
+            raise BrokerValidationError(
+                f"unknown swap reason {body.reason!r}; known: {', '.join(SWAP_REASONS)}"
+            )
+        tenant_id, _data, _hold = _holder(request, authorization, body.account_id, body)
+        provider = _known_provider(body.provider)
+        store = _accounts(request)
+        db = request.app.state.broker.db
+        now = datetime.now(timezone.utc)
+        exclude = {body.account_id, *(a for a in body.exclude if a)}
+        candidates = accounts_serving(store.list(), tenant_id, provider)
+        # Twice at most: an account chosen from the listing may stop being
+        # assignable before the transaction reads it, and is then skipped.
+        for _ in range(2):
+            chosen = choose(candidates, tenant_id, now, exclude=exclude)
+            if chosen is None:
+                break
+            try:
+                moved = swap_hold(
+                    db,
+                    body.account_id,
+                    chosen.account_id,
+                    assignment_id=body.assignment_id,
+                    tenant_id=tenant_id,
+                    task_id=body.task_id,
+                    attempt_id=body.attempt_id,
+                    reason=body.reason,
+                    now=now,
+                )
+            except HoldNotHeld:
+                request.app.state.metrics.auth_failures.labels(kind="not_holder").inc()
+                raise BrokerAuthError(
+                    "this caller holds no live hold on that account for that task and attempt"
+                ) from None
+            if moved is None:
+                exclude.add(chosen.account_id)
+                continue
+            assignment_id, assigned = moved
+            log.info(
+                "moved an attempt to another account",
+                extra={
+                    "from_account_id": body.account_id,
+                    "account_id": chosen.account_id,
+                    "reason": body.reason,
+                    "tenant_id": tenant_id,
+                    "task_id": body.task_id,
+                    "attempt_id": body.attempt_id,
+                    "assigned": assigned,
+                },
+            )
+            current = replace(chosen, assigned=assigned, last_assigned_at=now)
+            return {
+                "swapped": True,
+                "from_account_id": body.account_id,
+                "account_id": chosen.account_id,
+                "assignment_id": assignment_id,
+                "secret": store.secret_for(chosen),
+                "account": account_to_api(current, now=now),
+                "reason": "",
+                "next_reset_at": None,
+            }
+        why, next_reset = eligibility(candidates, tenant_id, now, exclude=exclude)
+        return {
+            "swapped": False,
+            "from_account_id": body.account_id,
+            "account_id": None,
+            "assignment_id": None,
+            "secret": None,
+            "account": None,
+            "reason": why.value,
+            "next_reset_at": next_reset.isoformat() if next_reset else None,
+        }
+
     # -- who holds an account, and who held it (#379) ----------------------
     #
     # PLATFORM-ONLY, both of them. They name every tenant's tasks on the
@@ -2784,10 +3377,18 @@ def create_app(
                 return result
 
             fence = LeaseFence(lease, holder)
+            outcome = SWEEP_ERROR
             try:
                 _credential_phase(request, refresher, fence, result)
+                # Recorded on the lease as the sweep's completion (U27), which
+                # is what the Accounts screen reads to say the sweep is alive.
+                failed = any(
+                    isinstance(result.get(block), dict) and "error" in result[block]
+                    for block in ("credentials", "accounts", "usage")
+                )
+                outcome = SWEEP_ERROR if failed else SWEEP_OK
             finally:
-                released = fence.release()
+                released = fence.release(outcome)
             result["sweep_lease"] = {
                 "acquired": True,
                 "holder": holder,
@@ -2884,5 +3485,7 @@ __all__ = [
     "build_broker",
     "prune_holds",
     "release_hold",
+    "set_state_and_moves",
+    "swap_hold",
     "create_app",
 ]

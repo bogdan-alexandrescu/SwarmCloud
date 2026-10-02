@@ -19,6 +19,7 @@
 // an empty string.
 
 import STYLES from '../styles.css?raw'
+import OVERVIEW_CSS from '../styles/overview.css?raw'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { cascade, declarations, flatRules, parseSheet, splitTop, type GateNode } from './cssgate'
@@ -152,13 +153,14 @@ describe('the token-mix bar left no rules behind (#227)', () => {
   // the segment and the swatch stayed in the sheet with nothing to draw. A
   // rule no element carries is a rule the next reader has to reason about, and
   // this block's old claims (four tones separable in greyscale) were holding a
-  // bar that no longer exists. `.ov-mix-facts` is the facts list that replaced
-  // it and is still rendered, so it stays.
+  // bar that no longer exists. `.ov-kv` is the token list that replaced it
+  // (O1's Cost so far card, styles/overview.css), so it is what proves the
+  // Overview sheet was read.
   // MUTATION: put back any of `.ov-mix`, `.ov-mix-seg`, `.ov-s1..4`, `.ov-swatch`.
-  const CSS = stripComments(STYLES)
+  const CSS = stripComments(`${STYLES}\n${OVERVIEW_CSS}`)
 
-  it('reads the Overview block of the sheet', () => {
-    expect(CSS).toContain('.ov-mix-facts')
+  it('reads the Overview sheet', () => {
+    expect(CSS).toContain('.ov-kv {')
   })
 
   for (const sel of ['.ov-mix', '.ov-mix-seg', '.ov-s1', '.ov-s2', '.ov-s3', '.ov-s4', '.ov-swatch']) {

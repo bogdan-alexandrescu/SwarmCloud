@@ -189,7 +189,7 @@
   flex: 1 1 200px;
   min-width: 0;
   margin: 0;
-  font: 650 18px/1.3 var(--font);
+  font: 650 var(--t-title)/var(--lh-title) var(--font);
   overflow-wrap: anywhere;
 }
 .ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }

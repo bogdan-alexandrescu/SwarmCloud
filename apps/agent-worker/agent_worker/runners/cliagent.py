@@ -40,14 +40,17 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
 from ..logs import StructuredLogger
-from ..procman import TRUNCATION_MARK, run_child
+from ..procman import TRUNCATION_MARK, ChildProcess, ChildResult, run_child
 from ..redact import collect_secrets, scrub_file, scrub_text
 from .base import (
     SPEND_KEYS,
@@ -163,6 +166,310 @@ class CliAgentSpec:
     #: Flag used to select a model, if the CLI supports one.
     model_flag: str | None = "--model"
     transcript_name: str = "transcript.json"
+    #: The flag that continues an earlier session by id, when the CLI has one
+    #: (claude-code: `--resume`). Set, it is what lets an attempt move to
+    #: another account mid-run and carry on where it stopped (S13/S14); None,
+    #: the runner never watches its stream for that and behaves as before.
+    resume_flag: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# The account channel: what a runner on a pool account tells its worker
+# ---------------------------------------------------------------------------
+#
+# An attempt holding a pool account can move to another account mid-run
+# (S13/S14) and forwards its rate-limit readings to the broker (S15). The
+# worker owns the hold and the broker; THIS process owns the CLI and its
+# stream. They talk through two small files in the attempt's private directory
+# (`ws.private`, never the agent's working tree), named by the worker in the
+# environment, and only when the attempt holds an account (the worker sets the
+# variables then and never otherwise):
+#
+#   ACCOUNT_STREAM_ENV  written here, read by the worker: the session id, the
+#                       latest reading of each window, how many turns have
+#                       ended, and -- when this runner stopped the CLI for a
+#                       swap -- why. Rewritten atomically, mode 0600.
+#   ACCOUNT_MOVE_ENV    written by the worker when its hold is marked to move
+#                       (a drain); its presence asks this runner to stop the
+#                       CLI at the next turn boundary.
+#
+# And one variable the worker sets on the restart that follows a swap:
+#
+#   RESUME_SESSION_ENV  the session to continue with `spec.resume_flag`.
+#
+# THE SESSION ID IS NEVER LOGGED. It is in the channel file and the restarted
+# CLI's argv and nowhere else: the `child started` line prints the argv with
+# it masked, and the runner's logger is told it is a secret.
+ACCOUNT_STREAM_ENV = "SWARM_ACCOUNT_STREAM"
+ACCOUNT_MOVE_ENV = "SWARM_ACCOUNT_MOVE"
+RESUME_SESSION_ENV = "SWARM_RESUME_SESSION"
+
+#: What a resumed CLI is told. The conversation, the tool results and the
+#: workspace are all as they were; this is the one new user message.
+RESUME_PROMPT = (
+    "Your session was moved to another account at a turn boundary. Continue "
+    "the task exactly where you left off; nothing in the workspace changed."
+)
+
+#: Why this runner stopped the CLI at a turn boundary.
+STOP_EXHAUSTED = "exhausted"
+STOP_DRAIN = "drain"
+
+#: What a session id looks like. Anything else is not passed to `--resume`.
+_SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$")
+_WINDOW_NAME = re.compile(r"^[a-z0-9_]{1,40}$")
+
+#: How often the watched loop looks at the stream. The turn boundary it waits
+#: for is seconds apart at the fastest, so a quarter of a second loses nothing.
+_WATCH_SECONDS = 0.25
+
+
+def _reading_of(event: dict[str, Any]) -> tuple[str, dict[str, Any]] | None:
+    """(window, {utilization, resets_at}) from one `rate_limit_event`, or None.
+
+    `rateLimitType` names the window, `resetsAt` is epoch seconds, and
+    `utilization` the 0-1 fraction. A REJECTED reading with no utilization is
+    a full window: the provider refused the request on it. Anything that does
+    not say all of that is not a reading and is dropped rather than guessed at.
+    """
+    info = event.get("rate_limit_info")
+    if not isinstance(info, dict):
+        return None
+    name = info.get("rateLimitType")
+    resets = info.get("resetsAt")
+    if not isinstance(name, str) or not _WINDOW_NAME.match(name):
+        return None
+    if isinstance(resets, bool) or not isinstance(resets, (int, float)):
+        return None
+    utilization = info.get("utilization")
+    if utilization is None and info.get("status") == "rejected":
+        utilization = 1.0
+    if isinstance(utilization, bool) or not isinstance(utilization, (int, float)):
+        return None
+    if not 0.0 <= float(utilization) <= 1.0:
+        return None
+    try:
+        at = datetime.fromtimestamp(float(resets), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return name, {"utilization": float(utilization), "resets_at": at.isoformat()}
+
+
+class AccountStreamWatcher:
+    """Reads the CLI's stream as it is written, for the account channel.
+
+    `poll()` reads the complete lines appended since the last call -- never
+    per line on a timer, and never the whole file again -- and answers with a
+    stop reason at a TURN BOUNDARY when the CLI must stop there:
+
+      * a TURN BOUNDARY is a top-level `user` event: the tool results of one
+        turn are complete and the next model request has not been answered.
+        Resuming from there loses nothing the session did not record.
+        (`parent_tool_use_id` set means a subagent's turn, not the session's.)
+      * stop for `exhausted` when a `rate_limit_event` was REJECTED since the
+        last boundary: the account has no quota left and the next request
+        will fail;
+      * stop for `drain` when the worker has written the move file.
+
+    It never raises on what the stream contains; a line that is not JSON is
+    not an event.
+
+    THE STREAM COMES FROM THE PIPE, NOT THE FILE, once `tap()` is called (the
+    B11 review). The capture file of a `keep_tail` run stops growing at its
+    head and holds the end in memory until the CLI exits, so a watcher reading
+    the file saw nothing of a long session past the cap: no turn boundary, no
+    reading, no drain. `_run_watched` hands `tap()`'s callable to the child's
+    stdout capture, which calls it with every chunk before the cap applies.
+    Without a tap (a test driving the watcher by hand) it reads the file.
+    """
+
+    def __init__(self, stdout_path: Path, channel: Path, move: Path | None) -> None:
+        self._stdout = stdout_path
+        self._channel = channel
+        self._move = move
+        self._offset = 0
+        self._partial = b""
+        self._fed: list[bytes] | None = None
+        self._fed_lock = threading.Lock()
+        self.session_id: str | None = None
+        self.readings: dict[str, dict[str, Any]] = {}
+        self.turns = 0
+        self.exhausted = False
+        self.stopped_for: str | None = None
+        self._dirty = False
+
+    def poll(self) -> str | None:
+        stop: str | None = None
+        for event in self._new_events():
+            kind = event.get("type")
+            sid = event.get("session_id")
+            if isinstance(sid, str) and _SESSION_ID.match(sid) and sid != self.session_id:
+                self.session_id = sid
+                self._dirty = True
+            if kind == "rate_limit_event":
+                reading = _reading_of(event)
+                if reading is not None and self.readings.get(reading[0]) != reading[1]:
+                    self.readings[reading[0]] = reading[1]
+                    self._dirty = True
+                info = event.get("rate_limit_info")
+                status = info.get("status") if isinstance(info, dict) else None
+                if (status or event.get("status")) == "rejected":
+                    self.exhausted = True
+            elif kind == "user" and not event.get("parent_tool_use_id"):
+                self.turns += 1
+                self._dirty = True
+                if stop is None and self.stopped_for is None:
+                    if self.exhausted:
+                        stop = STOP_EXHAUSTED
+                    elif self._move is not None and self._move.exists():
+                        stop = STOP_DRAIN
+                    if stop is not None:
+                        self.stopped_for = stop
+                        # Nothing after this boundary is read: the CLI is
+                        # being stopped here.
+                        break
+        if self._dirty:
+            self.write()
+        return stop
+
+    def tap(self) -> Callable[[bytes], None]:
+        """The callable the stdout capture feeds; from now on the file is not read."""
+        self._fed = []
+        return self._feed
+
+    def _feed(self, chunk: bytes) -> None:
+        # The capture's pump thread. Drained every `_WATCH_SECONDS` by `poll`,
+        # so what is held here is a quarter second of output at most.
+        with self._fed_lock:
+            if self._fed is not None:
+                self._fed.append(chunk)
+
+    def _read_new(self) -> bytes:
+        if self._fed is not None:
+            with self._fed_lock:
+                chunk = b"".join(self._fed)
+                self._fed = []
+            return chunk
+        try:
+            with self._stdout.open("rb") as stream:
+                stream.seek(self._offset)
+                chunk = stream.read()
+        except OSError:
+            return b""
+        self._offset += len(chunk)
+        return chunk
+
+    def _new_events(self) -> list[dict[str, Any]]:
+        chunk = self._read_new()
+        if not chunk:
+            return []
+        data = self._partial + chunk
+        lines = data.split(b"\n")
+        self._partial = lines.pop()
+        events: list[dict[str, Any]] = []
+        for raw in lines:
+            raw = raw.strip()
+            if not raw.startswith(b"{"):
+                continue
+            try:
+                event = json.loads(raw)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if isinstance(event, dict):
+                events.append(event)
+        return events
+
+    def write(self) -> None:
+        """The channel file, replaced atomically so the worker never reads half."""
+        self._dirty = False
+        body = json.dumps(
+            {
+                "session_id": self.session_id,
+                "turns": self.turns,
+                "readings": self.readings,
+                "stopped_for": self.stopped_for,
+            }
+        )
+        tmp = self._channel.with_name(f".{self._channel.name}.tmp")
+        try:
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w") as handle:
+                handle.write(body)
+            os.replace(tmp, self._channel)
+        except OSError:
+            # The channel is advisory: a run whose channel cannot be written
+            # behaves exactly as a run on no account, and parks as today.
+            pass
+
+
+def _account_watcher(spec: CliAgentSpec, stdout_path: Path) -> AccountStreamWatcher | None:
+    """The watcher, when this run holds a pool account and the CLI can resume."""
+    channel = os.environ.get(ACCOUNT_STREAM_ENV, "").strip()
+    if not spec.resume_flag or not channel:
+        return None
+    move = os.environ.get(ACCOUNT_MOVE_ENV, "").strip()
+    return AccountStreamWatcher(stdout_path, Path(channel), Path(move) if move else None)
+
+
+def _run_watched(
+    argv: list[str],
+    *,
+    ctx: RunnerContext,
+    cwd: Path,
+    env: dict[str, str],
+    stdout_path: Path,
+    stderr_path: Path,
+    limits: Any,
+    log: Any,
+    log_argv: list[str],
+    watcher: AccountStreamWatcher,
+) -> ChildResult:
+    """`run_child`, with the stream read as it is produced.
+
+    The same `ChildProcess`, caps and deadline as `run_child`; the difference
+    is the loop, which asks the watcher after every slice and stops the CLI at
+    a turn boundary when it says so -- and stops it on a SIGTERM to this
+    runner, which `run_child` leaves to the worker's SIGKILL.
+    """
+    child = ChildProcess(
+        argv,
+        cwd=cwd,
+        env=env,
+        stdout_path=stdout_path,
+        stderr_path=stderr_path,
+        max_stdout_bytes=limits.max_stdout_bytes,
+        max_stderr_bytes=limits.max_stderr_bytes,
+        logger=log,
+        keep_tail=True,
+        log_argv=log_argv,
+        stdout_tap=watcher.tap(),
+    )
+    child.start()
+    deadline = time.monotonic() + limits.timeout_seconds
+    while True:
+        exited = child.wait(_WATCH_SECONDS) is not None
+        stop = watcher.poll()
+        if exited:
+            break
+        if stop is not None:
+            log.info(
+                "stopping the agent at a turn boundary to move it to another account",
+                reason=stop,
+                turns=watcher.turns,
+            )
+            child.terminate(limits.grace_seconds, reason=f"account swap ({stop})")
+            break
+        if ctx.stop_requested:
+            child.terminate(limits.grace_seconds, reason="runner asked to stop")
+            break
+        if time.monotonic() >= deadline:
+            child.mark_timed_out()
+            child.terminate(limits.grace_seconds, reason="timeout")
+            break
+    result = child.finish()
+    watcher.poll()
+    watcher.write()
+    return result
 
 
 def cli_stream_files(spec: CliAgentSpec) -> AgentStreamFiles:
@@ -393,14 +700,38 @@ def run_cli_agent(
                 "directory; the agent is not started without the issue it was pointed at"
             )
         prompt = f"{prompt}\n\n{issue_mod.prompt_line(issue_file)}"
-    # The prompt is the only caller-controlled value that reaches argv, and it
-    # is passed as a single trailing argument with no shell in the picture.
-    argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
+    # CHILD TASKS (docs/design/child-tasks.md). The worker sets SWARM_CHILDREN
+    # only for an attempt with a child path, and writes the guide into it; the
+    # prompt names where the guide is, and the guide says the rest. No
+    # variable, no line: a child, or an attempt without the path, reads nothing
+    # about a feature it cannot use.
+    spool = os.environ.get("SWARM_CHILDREN", "").strip()
+    if spool:
+        from .. import children as children_mod  # lazy: the runner rarely needs it
+
+        prompt = f"{prompt}\n\n{children_mod.prompt_line(spool)}"
+    # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
+    # account at a turn boundary and restarted this runner to continue the
+    # session it stopped: `--resume <id>` and one short user message, in the
+    # same workspace. The original prompt is already in the session.
+    resume = os.environ.get(RESUME_SESSION_ENV, "").strip()
+    if resume and not (spec.resume_flag and _SESSION_ID.match(resume)):
+        raise RunnerFailure(f"{spec.name} was asked to resume a session it cannot resume")
+    if resume:
+        argv += [spec.resume_flag, resume]
+        argv.append(RESUME_PROMPT)
+    else:
+        # The prompt is the only caller-controlled value that reaches argv,
+        # and it is passed as a single trailing argument with no shell.
+        argv.append(expected_mod.with_instructions(prompt, told, ctx.artifacts_dir, staged))
     # ...and it is the one argument `run_child`'s `child started` line must not
     # print (the PR #229 review): this process's stderr is served by `/logs`,
     # and the task routes serve the prompt masked. Its length says what the
-    # line needs to say -- that a prompt was passed, and how big.
+    # line needs to say -- that a prompt was passed, and how big. A resumed
+    # session's id is masked the same way: it never reaches a log line.
     log_argv = [*argv[:-1], f"<prompt: {len(argv[-1])} characters>"]
+    if resume:
+        log_argv = [("<session>" if arg == resume else arg) for arg in log_argv]
 
     limits = resolve_limits(payload, platform_ceilings())
     log = StructuredLogger(stream=sys.stderr, component=f"{spec.name}-runner")
@@ -442,6 +773,8 @@ def run_cli_agent(
     log.register_secret(os.environ.get(credential_env))
     for passthrough in _SENSITIVE_PASSTHROUGH:
         log.register_secret(os.environ.get(passthrough))
+    if resume:
+        log.register_secret(resume)
     if limits.clamped:
         log.warning(
             "requested limits exceed the platform ceiling and were clamped",
@@ -493,25 +826,43 @@ def run_cli_agent(
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]
 
-    result = run_child(
-        argv,
-        cwd=cwd,
-        env=env,
-        stdout_path=stdout_path,
-        stderr_path=stderr_path,
-        timeout_seconds=limits.timeout_seconds,
-        grace_seconds=limits.grace_seconds,
-        max_stdout_bytes=limits.max_stdout_bytes,
-        max_stderr_bytes=limits.max_stderr_bytes,
-        logger=log,
-        log_argv=log_argv,
-        # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under stream-json
-        # the stdout is the whole conversation, and its LAST line is the
-        # `result` event: the answer, the spend, the evidence the rate-limit
-        # decision below reads. A capture that kept only the first
-        # `max_stdout_bytes` lost exactly that line on every long session.
-        keep_tail=True,
-    )
+    watcher = _account_watcher(spec, stdout_path)
+    if watcher is None:
+        result = run_child(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            timeout_seconds=limits.timeout_seconds,
+            grace_seconds=limits.grace_seconds,
+            max_stdout_bytes=limits.max_stdout_bytes,
+            max_stderr_bytes=limits.max_stderr_bytes,
+            logger=log,
+            log_argv=log_argv,
+            # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under stream-json
+            # the stdout is the whole conversation, and its LAST line is the
+            # `result` event: the answer, the spend, the evidence the rate-limit
+            # decision below reads. A capture that kept only the first
+            # `max_stdout_bytes` lost exactly that line on every long session.
+            keep_tail=True,
+        )
+    else:
+        # On a pool account: the same child, the stream read as it is written
+        # (see `AccountStreamWatcher`), so the readings reach the worker while
+        # the agent runs and a swap can happen at a turn boundary.
+        result = _run_watched(
+            argv,
+            ctx=ctx,
+            cwd=cwd,
+            env=env,
+            stdout_path=stdout_path,
+            stderr_path=stderr_path,
+            limits=limits,
+            log=log,
+            log_argv=log_argv,
+            watcher=watcher,
+        )
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -554,6 +905,23 @@ def run_cli_agent(
         + "\n"
         + _without_capture_notices(_tail(stderr_path))
     )
+
+    if watcher is not None and watcher.stopped_for is not None and not result.timed_out:
+        # STOPPED HERE, AT A TURN BOUNDARY, FOR A SWAP. Not a failure of the
+        # task: the worker reads the channel, moves the hold and resumes the
+        # session. If it cannot -- no other account -- it checkpoints and
+        # parks exactly as for a rate limit, which this is the cheap form of.
+        if watcher.stopped_for == STOP_EXHAUSTED:
+            raise QuotaExhaustedSignal(
+                provider=spec.provider,
+                detail=f"{spec.name} stopped at a turn boundary: the account's quota is spent",
+                spend=spend,
+            )
+        raise RunnerFailure(
+            f"{spec.name} stopped at a turn boundary to move to another account "
+            f"({watcher.stopped_for})",
+            spend=spend,
+        )
 
     if result.exit_code != 0 or result.timed_out:
         hit, retry_after, reset_at = detect_rate_limit(combined)
@@ -752,8 +1120,28 @@ def _detection_text(raw_stdout: str, parsed: Any) -> str:
         previous_unparsed = False
         if isinstance(event, dict) and _not_evidence(event):
             continue
-        kept.append(stripped)
+        kept.append(json.dumps(_without_identifiers(event)) if isinstance(event, dict) else stripped)
     return "\n".join(kept)[-8000:]
+
+
+#: Keys whose values are random identifiers. `429` is a marker matched
+#: anywhere, and a uuid contains it about one time in 115 -- so a FAILED run
+#: whose `init` or `result` event carried such a `session_id` was parked as
+#: rate-limited, and on a pool account moved to another account as exhausted.
+#: An identifier is never the provider saying no.
+_IDENTIFIER_KEYS = frozenset(
+    {"session_id", "uuid", "id", "parent_tool_use_id", "tool_use_id", "request_id"}
+)
+
+
+def _without_identifiers(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            k: _without_identifiers(v) for k, v in value.items() if k not in _IDENTIFIER_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_identifiers(v) for v in value]
+    return value
 
 
 _CAPTURE_MARK = TRUNCATION_MARK.decode("ascii")

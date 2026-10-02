@@ -376,3 +376,23 @@ run "the_owner_filter_and_the_failures_listing_have_their_indexes" {
     error_message = "GET /v1/admin/failures needs (state, created_at DESC) at collection scope"
   }
 }
+
+# GET /v1/runs (#454) lists the caller's tenant's issue runs newest first
+# (swarm_api.issueruns.IssueRuns.list). Without this index the query fails.
+run "issue_runs_have_a_tenant_leading_index" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[1].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-created"].fields[1].order == "DESCENDING"
+    )
+    error_message = "issue runs are listed by tenant_id ASC, created_at DESC"
+  }
+}
