@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { MarkGlyph } from './marks'
+import { PageHead } from './Shell'
 import './styles/submit.css'
 
 /**
@@ -82,7 +83,11 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
 
   return (
     <section className="sb-chooser" aria-labelledby="submit-h">
-      <h1 id="submit-h">Submit</h1>
+      {/* The page head every page draws (Q2): the title, its `?` and the
+          head's "reads nothing" on one row. */}
+      <PageHead title="Submit" headingId="submit-h">
+        {null}
+      </PageHead>
       <div className="sb-choices">
         <div className="sb-card sb-choice">
           <h2><TaskGlyph />Submit a task</h2>

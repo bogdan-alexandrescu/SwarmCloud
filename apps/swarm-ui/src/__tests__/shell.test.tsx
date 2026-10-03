@@ -106,8 +106,10 @@ describe('B2: the section question is printed once, not on every pane', () => {
 
   it('carries the question behind the head glyph, and opens it on FOCUS', async () => {
     render(<App />)
-    const glyph = document.querySelector<HTMLButtonElement>('.ctl-head .ctl-q-glyph')
-    expect(glyph, 'the head has no section `?`').not.toBeNull()
+    // By the page's title now (visual QA Q2): the row it sat on is gone.
+    const glyph = document.querySelector<HTMLButtonElement>('main.work h1 ~ .ctl-q .ctl-q-glyph')
+    expect(glyph, 'the title has no section `?`').not.toBeNull()
+    expect(document.querySelectorAll('.ctl-q-glyph'), 'the section `?` is drawn twice').toHaveLength(1)
 
     // Nothing is on screen until it is asked for: that is the whole move.
     expect(document.querySelector('.ctl-q-card')).toBeNull()
@@ -195,11 +197,21 @@ describe('B3: the head', () => {
     // THE CRUMB IS THE TRAIL TO THE PAGE (#138): on Overview, a one-page
     // section, the trail is empty -- the `<h1>` names the page -- and on a
     // page inside a section it is the section, as a link.
+    //
+    // THE CRUMB ROW IS GONE FROM SECTION PAGES (visual QA Q2, 2026-10-02):
+    // the panel lights the page and the title names it, and the age sits on
+    // the title row. The trail is drawn inside an open object (crossscreen
+    // #138), so this asks the open agent for it.
     window.history.replaceState(null, '', '/capacity/accounts')
+    const page = render(<App />)
+    expect(document.querySelector('.ctl-head'), 'a section page draws the crumb row').toBeNull()
+    expect(document.querySelectorAll('.ctl-head-age'), 'the age is drawn twice').toHaveLength(1)
+    page.unmount()
+    window.location.hash = '#work/task/t-1'
     render(<App />)
     const head = document.querySelector('.ctl-head')
-    expect(head, 'no head region').not.toBeNull()
-    expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Capacity')
+    expect(head, 'no head region inside an open agent').not.toBeNull()
+    expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Work')
 
     // READING is a different sentence from "0s ago", and on the first render
     // nothing this screen asked for has landed, so it is the true one here. A

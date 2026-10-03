@@ -351,21 +351,30 @@ describe('#138: the breadcrumb is the trail to the page, in links, and never the
 
   it('renders the segments as links that navigate, and no segment repeats the h1', async () => {
     // MUTATION: render the segments as spans again, or add the page back.
+    // A SECTION PAGE DRAWS NO TRAIL (visual QA Q2, 2026-10-02): the panel
+    // lights the page and the title names it. The trail is drawn inside an
+    // open object, where it is the way back -- and there it is still links.
     window.history.replaceState(null, '', '/capacity/accounts')
+    const page = render(<App />)
+    expect(document.querySelector('.ctl-crumb'), 'a section page draws a breadcrumb row').toBeNull()
+    page.unmount()
+    window.location.hash = '#work/task/t-1'
     render(<App />)
     const crumb = document.querySelector('.ctl-crumb')!
-    expect(crumb, 'no breadcrumb under a section with several pages').not.toBeNull()
+    expect(crumb, 'no breadcrumb inside an open agent').not.toBeNull()
     const links = [...crumb.querySelectorAll('a')]
-    expect(links.map((a) => a.textContent)).toEqual(['Capacity'])
-    expect(crumb.textContent).not.toContain('Accounts')
+    expect(links.map((a) => a.textContent)).toEqual(['Work', 'Agents'])
+    // The object is the last segment, and the one that is not a link.
+    expect(crumb.querySelector('[aria-current="page"]')?.textContent).toBe('t-1')
     await act(async () => {
       fireEvent.click(links[0]!)
     })
-    const capacity = SECTIONS.find((s) => s.id === 'capacity')!
+    const work = SECTIONS.find((s) => s.id === 'work')!
     await waitFor(() =>
       // The open group (#503: the page itself, its first child, is the lit one).
-      expect(document.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent?.trim()).toBe(capacity.tabs[0]!.label),
+      expect(document.querySelector('.sk-panel .sk-pk.is-group .sk-pl')?.textContent?.trim()).toBe(work.tabs[0]!.label),
     )
+    expect(document.querySelector('.ctl-crumb'), 'the object closed and its trail stayed').toBeNull()
   })
 
   it('puts the cost of a count on the button that spends it', async () => {

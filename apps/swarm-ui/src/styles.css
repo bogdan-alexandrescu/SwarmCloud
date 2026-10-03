@@ -963,7 +963,7 @@ body {
 
 .tags { display: flex; gap: 6px; flex-wrap: wrap; min-height: 17px; }
 .tag {
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   padding: 0 6px; border-radius: var(--ctl-radius-sm);
   border: 1px solid currentColor;
 }
@@ -1678,7 +1678,7 @@ body {
    mono at the micro step, no border, no dash, no hue. Its sentence is its
    accessible name and its title. The partial mark stays where a read IS
    partial, on the sample note. */
-.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
 
 /* THE MAP.
    ---------------------------------------------------------------------------
@@ -1846,7 +1846,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    and it is deliberately NOT underlined on hover -- one affordance per target,
    and the target is the card, which brightens its own border. */
 .node-name { color: var(--text); }
-.node-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.node-state { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 /* FIVE KINDS OF TIME, FIVE TREATMENTS -- and the first one has no number at
    all. A step that has not started HAS NO DURATION; `0s` would be a claim that
    it ran instantly. Waiting (queued or parked) is not working, so it is drawn
@@ -1918,7 +1918,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    against a 4px floor. The absent treatment is the one thing on this node
    that may not be traded for height, so the height is what gives. */
 .node-num dt {
-  font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); align-self: baseline;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); align-self: baseline;
 }
 /* THE DASHED RULE IS DECLARED HERE AND ONLY RECOLOURED BELOW, which is §13.5's
    named pattern ("`.ctl-metric` keeps its transparent declared border ... a
@@ -1974,7 +1974,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    on focus. Plain ink unless it asks a person to act (`whyNeedsAction`, the
    Agents list's rule for its own why line). */
 .node-note {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .node-note.is-warn { color: var(--warn-ink); }
@@ -2283,7 +2283,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   margin-left: 10px;
   padding: 2px 8px;
   border-radius: 999px;
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   vertical-align: middle;
 }
 .scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
@@ -2349,7 +2349,7 @@ table.pools thead {
 }
 table.pools thead th {
   border-bottom: 1px solid var(--line-soft);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 table.pools .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -3272,7 +3272,7 @@ ol.timeline li::before {
    text colour" and §6.6's "the hue never touches the word", which is how the
    API reads table already draws the same records. The mark and the edge
    carry the tone. */
-.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
 .source.warn .s-status,
 .source.bad .s-status { color: var(--text); }
 /* `grid-column: 1 / -1` IS GONE, which is the other half of F5's regrouping.
@@ -3466,7 +3466,7 @@ a.copy { display: inline-block; text-decoration: none; }
    is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
    `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
    fields with it. */
-.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
+.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
    middle stretched the bar to whatever was left, which on a wide screen is a
@@ -4450,7 +4450,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .ctl-eyebrow {
   display: block;
   margin: 0 0 var(--ctl-s2);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 
@@ -4651,7 +4651,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-fact > b {
   flex: none;
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  font: 500 var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 /* A fact whose value was not read keeps its slot and its key. It does not
@@ -4700,7 +4700,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   padding: 0 6px;
   border: 1px solid currentColor;
   border-radius: var(--ctl-radius-sm);
-  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
   white-space: nowrap;
   vertical-align: middle;
   /* No background: an accent on a tint of itself is the one pairing this sheet
@@ -5421,7 +5421,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-metric-label {
   display: block;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-metric-value {
@@ -6181,14 +6181,16 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-table thead th {
   border-bottom: 1px solid var(--line-soft);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-table .is-num {
   text-align: right;
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
+/* The FIGURE is a value and keeps the mono face; its head is a label and
+   stays sans (visual QA Q1, 2026-10-02: "Leased (units)" was mono). */
+.ctl-table td.is-num { font-family: var(--mono); }
 /* Row tones are a wash, never a text colour: the cells still have to be read
    and a red row of red text is not legible at 3am. */
 .ctl-table tbody tr.is-bad    { background: color-mix(in srgb, var(--bad) 8%, transparent); }
@@ -6371,7 +6373,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   padding: 0 6px 0 0;
   border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-dim);
   vertical-align: middle;
 }
@@ -6544,7 +6546,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-q-title {
   display: block;
   margin: 0 0 4px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-q-body {
@@ -6663,7 +6665,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    the triangle for failures, the diamond for an expired session. */
 .ctl-dock-label {
   flex: none;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 /* F10 OF THE 2026-09-23 OVERFLOW INVENTORY: THE STRIP WRAPS, IT DOES NOT
@@ -7030,7 +7032,7 @@ table.pools tbody tr.unmeasured {
   /* --lh-flush: the box is the `--row-h` row this control sits in on every
      non-terminal agent. It was 10.5px, under the floor; --t-meta plus flush
      leading is the largest it can be without making the row taller. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-flush) var(--font);
   padding: 4px 8px; border-radius: var(--ctl-radius-sm);
   border: 1px solid var(--ctl-bd); background: transparent; color: var(--text-dim);
   cursor: pointer;
@@ -7122,7 +7124,7 @@ table.pools tbody tr.unmeasured {
 .stop-pending {
   /* --lh-flush: same box as `.stop-btn`, which this replaces in place -- the
      row must not jump when a stop is requested. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-flush) var(--font);
   color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));
   border-radius: var(--ctl-radius-sm); padding: 3px 7px; white-space: nowrap;
 }
@@ -8062,7 +8064,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .sbf-send > h2 {
   margin: 0;
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
   font-weight: 600; color: var(--text-faint);
 }
 /* A COLUMN, BECAUSE THE PANEL IS 300px. `.ctl-facts` is a wrapping flex ROW,
@@ -9365,7 +9367,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-inspect-wf.has-label > .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 /* #376: the workflow's start and submit, under its id, in the same register. */
 .wf-inspect-times { flex-basis: 100%; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wf-inspect-run { margin-left: auto; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .wf-inspect-close {
   min-width: 28px;
@@ -10678,7 +10680,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-ph { display: flex; align-items: center; gap: 8px; padding: 2px 10px 12px 16px; }
 .sk-wm { font-weight: 650; font-size: var(--t-lead); white-space: nowrap; }
 .sk-wm span { color: var(--sk-ac); }
-.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
+.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--font); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
 .sk-pill.is-prod { background: var(--sk-prod); color: #fff; border-color: var(--sk-prod); }
 .sk-pill.is-mini { font-size: var(--t-micro); padding: 3px 4px; margin-left: 0; }
 .sk-ibtn { border: 0; background: none; color: var(--text-dim); padding: 5px; border-radius: 6px; display: inline-flex; cursor: pointer; }
@@ -10687,11 +10689,11 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
-.sk-cp, .sk-tretry { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
+.sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
+.sk-cp, .sk-tretry { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
 .sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sk-pscroll { flex: 1; overflow-y: auto; min-height: 0; }
-.sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
+.sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
 .sk-pk { display: flex; align-items: center; gap: 9px; padding: 7px 9px; margin: 0 10px; width: calc(100% - 20px); border: 0; border-radius: 6px; background: none; color: var(--text-dim); white-space: nowrap; position: relative; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; }
 .sk-pk .sk-pl { color: var(--text); opacity: .86; flex: 1; }
 .sk-pk > .sk-ic { width: 16px; height: 16px; }
@@ -10726,7 +10728,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-theme button:hover { background: var(--sk-hv); }
 .sk-theme button.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
-.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
+.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
 
 /* --- the tenant switcher (intake-tenants.html 2A, picked 2026-10-02) ----- */
 .sk-tenant.is-sw { flex-direction: column; align-items: stretch; gap: 4px; padding: 0; }
@@ -10744,7 +10746,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-to .sk-tg { background: var(--sk-hv); }
 .sk-to.is-on .sk-tg { background: var(--sk-ac); color: var(--ctl-onac); }
 .sk-to b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-to small { grid-column: 2 / 4; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.sk-to small { grid-column: 2 / 4; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .sk-ck { color: var(--sk-ac); font-size: var(--t-micro); font-weight: 600; }
 .sk-tf { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); padding: 6px 8px; border-top: 1px solid var(--line); margin-top: 4px; }
 /* The collapsed spine's tile, under the Hive. */
@@ -10769,7 +10771,7 @@ span.sk-ttile { cursor: default; }
 .app-takeover h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); }
 .app-takeover p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 .app-takeover .app-takeover-inv { color: var(--text); }
-.app-takeover .app-takeover-foot { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.app-takeover .app-takeover-foot { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 /* PAGE: one banner over the page (offline, a kept form's switch, the stale rule). */
 .app-banner, .sk-kept { margin: 0 0 var(--ctl-s3); }
 .sk-main > .ctl-scroll > .app-banner, .sk-main > .ctl-scroll > .sk-kept { margin: var(--ctl-s3) var(--ctl-gutter) 0; }
@@ -10780,13 +10782,29 @@ span.sk-ttile { cursor: default; }
 /* The title, a mono meta chip, and right-aligned "read · poll · refresh", as
    the picked frames draw it. `.head` and `.sub` keep their names (and their
    order: `.head + .sub`) inside the row. */
-.c-phead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); }
-.c-phead > .head { margin: 0; }
-.c-phead > .sub { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
-/* The provenance group never splits: "refresh" stays with its age. */
-.c-age { margin-left: auto; display: inline-flex; flex-wrap: nowrap; align-items: baseline; gap: 0; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
-.c-age > .ctl-head-age { margin: 0; }
+/* ONE ROW AT DESKTOP WIDTH (visual QA Q2, 2026-10-02): the meta chip gives
+   way (ellipsis, its full text in its title) before the freshness leaves the
+   title's row. Below 760px the row may wrap the freshness under the title. */
+.c-phead { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); min-width: 0; }
+.c-phead > .head { margin: 0; flex: none; align-items: center; gap: var(--ctl-s2); flex-wrap: nowrap; }
+.c-phead > .sub { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-phead .c-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A PLACEHOLDER IS AN INSTRUCTION, NOT A VALUE: sans even in a field whose
+   typed value is an id and therefore mono (visual QA Q1, 2026-10-02). */
+.sk-app input::placeholder,
+.sk-app textarea::placeholder { font-family: var(--font); }
+@media (max-width: 759px) {
+  .c-phead { flex-wrap: wrap; }
+  .c-phead > .sub { flex-wrap: wrap; }
+}
+.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
+/* The provenance group never splits: "refresh" stays with its age. INLINE
+   TEXT, not a flex box: as `inline-flex` each text run was an anonymous flex
+   item and lost its edge spaces, which drew "just now·refresh" and
+   "nowrefresh" (visual QA Q2, 2026-10-02). Sans: a relative age is words,
+   not a timestamp (Q1). */
+.c-age { margin-left: auto; display: inline-block; font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); white-space: nowrap; }
+.c-age > .ctl-head-age { margin: 0; min-width: 0; font: inherit; color: inherit; }
 
 /* --- collapsed: the spine alone, a flyout per section -------------------- */
 /* Each flyout sits beside its section, which the collapsed spine's tenant tile
@@ -10794,7 +10812,7 @@ span.sk-ttile { cursor: default; }
 .sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
 .sk-flyout.is-capacity { top: 262px; }
 .sk-flyout.is-admin { top: 322px; }
-.sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px 4px; color: var(--text-dim); }
+.sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px 4px; color: var(--text-dim); }
 .sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-flyout a:hover { background: var(--sk-hv); }
 .sk-flyout a.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
@@ -10919,7 +10937,7 @@ span.sk-ttile { cursor: default; }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
 .wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wfl-bar { display: inline-flex; width: 96px; height: 6px; border-radius: 2px; overflow: hidden; background: var(--line-soft); }
 .wfl-bar > i { display: block; height: 100%; background: var(--s-neu); }
 .wfl-bar.t-live > i { background: var(--s-live); }

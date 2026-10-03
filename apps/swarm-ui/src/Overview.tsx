@@ -1,6 +1,6 @@
 import './styles/overview.css'
 import { LifecycleBand, RecentFailures, WaitingWhy, failuresOf, waitGroups } from './OverviewRegions'
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -20,7 +20,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { MarkGlyph, StateMark, WarnMark } from './marks'
 import { Absent, Mark, UtilTrack, type TrackTone } from './primitives'
-import { timeAgo } from './Shell'
+import { SectionHelp, timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
@@ -147,6 +147,7 @@ export function OverviewScreen() {
       ),
     [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
+  const sectionHelp = useContext(SectionHelp)
   const tenant = dataOf(tasks)?.tenant_id ?? null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
@@ -160,6 +161,8 @@ export function OverviewScreen() {
           (OV-9): the dash is for a read that landed without a tenant. */}
       <div className="ov-head">
         <h1>Overview</h1>
+        {/* The section's `?`, by the title (Q2): there is no row above it now. */}
+        {sectionHelp}
         <span className="ov-chip">
           {tasks.status === 'loading' ? (
             <span className="ov-reading">tenant reading…</span>

@@ -45,7 +45,8 @@ describe('/submit is a page of its own in the frame', () => {
     window.history.replaceState(null, '', '/submit')
     render(<App />)
     await screen.findByRole('heading', { name: 'Submit' }, WAIT)
-    const head = document.querySelector<HTMLElement>('.ctl-head')!
+    // The page head (visual QA Q2): the title and the head's age on one row.
+    const head = document.querySelector<HTMLElement>('main.work .c-phead')!
     expect(visible(head), 'the head fell through to the API reads label').not.toContain('API reads')
     // MUTATION: drop SUBMIT from ScreenAge's "reads nothing" branch.
     expect(visible(head.querySelector('.ctl-head-age'))).toBe('reads nothing')
@@ -58,9 +59,12 @@ describe('/submit is a page of its own in the frame', () => {
       window.history.replaceState(null, '', path)
       const { unmount } = render(<App />)
       await screen.findByRole('heading', { name: h1, level: 1 }, WAIT)
-      const crumb = document.querySelector<HTMLAnchorElement>('.ctl-crumb a')
-      expect(visible(crumb), `${path} has no "Submit" crumb`).toBe('Submit')
-      fireEvent.click(crumb!)
+      // THE WAY BACK IS THE SPINE'S SUBMIT, not a crumb row (visual QA Q2,
+      // 2026-10-02: no breadcrumb on a section page). It is on every form.
+      expect(document.querySelector('.ctl-crumb'), `${path} draws a breadcrumb row`).toBeNull()
+      const back = document.querySelector<HTMLAnchorElement>('.sk-spine a.sk-cta')
+      expect(back?.getAttribute('href'), `${path} has no way back to the chooser`).toBe('/submit')
+      fireEvent.click(back!)
       await waitFor(() => expect(window.location.pathname).toBe('/submit'))
       unmount()
     }

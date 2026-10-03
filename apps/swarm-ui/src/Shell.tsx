@@ -182,6 +182,14 @@ export function useClaimPageAge(on: boolean): void {
  */
 export const HeadAge = createContext<ReactNode>(null)
 
+/**
+ * THE SECTION'S `?` (App.tsx `SectionQuestion`), for the page head to draw by
+ * its title when the screen has no topic of its own (visual QA Q2,
+ * 2026-10-02). It sat alone on a breadcrumb row above the title ("Work ?");
+ * the picked head has one row, and its `?` is a small button by the title.
+ */
+export const SectionHelp = createContext<ReactNode>(null)
+
 let headRowClaims = 0
 const headRowListeners = new Set<() => void>()
 
@@ -612,10 +620,13 @@ export function PageHead({
   title,
   help,
   meta,
+  headingId,
   children,
 }: {
   title: string
   help?: TopicId
+  /** The `<h1>`'s id, for a region that is labelled by it. */
+  headingId?: string
   /** What was read, as a fact: a mono chip beside the title ("37 · none hold capacity"). */
   meta?: ReactNode
   /** The provenance: its age, its cadence and its read control, right-aligned. */
@@ -628,12 +639,15 @@ export function PageHead({
   const frame = useContext(FrameAge)
   const headAge = useContext(HeadAge)
   const takes = frame && headAge !== null
+  const sectionHelp = useContext(SectionHelp)
   useClaimHeadRow(takes)
   return (
     <div className="c-phead">
       <div className="head">
-        <h1>{title}</h1>
-        {help !== undefined && <HelpCard topic={help} />}
+        <h1 id={headingId}>{title}</h1>
+        {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
+            otherwise its section's question (Q2). */}
+        {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}
       </div>
       <p className="sub">
         {meta !== undefined && meta !== null && meta !== '' && (

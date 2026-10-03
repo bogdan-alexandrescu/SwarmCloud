@@ -40,7 +40,7 @@ import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
 import { RuntimesScreen } from './Runtimes'
-import { FrameAge, HeadAge, RoutedPage, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
+import { FrameAge, HeadAge, PageHead, RoutedPage, SectionHelp, timeAgo, useHeadRowClaimed, usePageAgeClaimed } from './Shell'
 import { SubmitScreen } from './Submit'
 import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
@@ -1027,6 +1027,9 @@ export function App() {
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
   const section = sectionOf(at.sectionId)
+  // The `?` by the title asks the section's question; the Submit chooser is
+  // Work's (its forms are Work tabs), so it asks Work's.
+  const helpSection = section ?? (at.sectionId === SUBMIT ? sectionOf(WORK) : null)
   const inspector = at.taskId !== null
   const listAddress = canonical({
     sectionId: WORK,
@@ -1101,6 +1104,7 @@ export function App() {
           {/* THE FRAME'S HEAD CARRIES THE SCREEN'S AGE (#98), so a `Screen`
               inside it prints none of its own while its read is fresh. */}
           <FrameAge.Provider value={true}>
+          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
           <HeadAgeProvider at={at}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
@@ -1151,6 +1155,7 @@ export function App() {
             )}
           </div>
           </HeadAgeProvider>
+          </SectionHelp.Provider>
           </FrameAge.Provider>
         </SkyShell>
     </div>
@@ -1263,6 +1268,12 @@ function Head({
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
 
+  // A SECTION PAGE HAS NO ROW HERE (visual QA Q2/Q10, 2026-10-02): its title,
+  // meta, freshness and `?` are one row (`PageHead`), and a breadcrumb above
+  // a page the panel already lights was a second, underlined copy of the nav.
+  // The trail is drawn only inside an open object, where it is the way back.
+  if (at.taskId === null) return null
+
   return (
     <div className="ctl-head">
       {crumbs.length > 0 && (
@@ -1297,8 +1308,6 @@ function Head({
       )}
 
       {age !== null && !onTitleRow && <span className="ctl-head-age">{age}</span>}
-
-      {section !== null && <SectionQuestion section={section} />}
     </div>
   )
 }
@@ -1685,13 +1694,11 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
           `ctl-link` (CH-5): this anchor carried no class, so it fell back to
           the browser's own blue -- visited purple once followed -- in a
           product whose links are ink plus an underline. */}
-      <div className="ctl-page-head">
-        <h1>{REFERENCE_LABEL}</h1>
-        <span className="ctl-card-note">this tab only · not the API surface</span>
-        <a className="ctl-link is-end" href={`#${HELP}/api-reads`}>
+      <PageHead title={REFERENCE_LABEL} meta="this tab only · not the API surface">
+        <a className="ctl-link" href={`#${HELP}/api-reads`}>
           What these mean &rarr;
         </a>
-      </div>
+      </PageHead>
 
       {probes.length === 0 ? (
         // A REAL ZERO, and the one screen in the product where that is true by

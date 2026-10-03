@@ -198,7 +198,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {
       window.location.hash = '#work/running'
     })
-    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).not.toContain('tsk_done'))
+    // No crumb at all on the list once the object closes (visual QA Q2).
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent ?? '').not.toContain('tsk_done'))
     await act(async () => {})
     expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
     expect(headAge(), 'the head says "reading…" with nothing being read').not.toMatch(/reading…/)
@@ -273,7 +274,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {
       window.location.hash = '#work/running/recent/succeeded'
     })
-    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).not.toContain('tsk_done'))
+    // No crumb at all on the list once the object closes (visual QA Q2).
+    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent ?? '').not.toContain('tsk_done'))
     await act(async () => {})
     expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
     expect(headAge(), 'closing to a list address began an empty scope').not.toMatch(/reading…/)
