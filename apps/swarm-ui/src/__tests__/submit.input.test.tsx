@@ -228,7 +228,7 @@ describe('a required key is not editable chrome', () => {
     const row = container.querySelector('.sbf-field.is-required')
     expect(row).not.toBeNull()
     expect(row?.querySelector('.sbf-rename'), 'a required key must not be renameable').toBeNull()
-    expect(row?.querySelector('.sbf-mini'), 'a required key must not be removable').toBeNull()
+    expect(row?.querySelector('.c-link.is-sm'), 'a required key must not be removable').toBeNull()
     expect(row?.textContent).toContain('required')
   })
 })
@@ -472,7 +472,7 @@ describe('TS-15: a required key is named at its field, in the words the API used
     fireEvent.click(container.querySelector<HTMLInputElement>('input[name="runner-profile"][value="claude-code"]')!)
     const panel = container.querySelector<HTMLElement>('.sbf-send')!
     const gap = within(panel).getByRole('button', { name: 'prompt missing' })
-    expect(gap.classList.contains('sbf-mini')).toBe(true)
+    expect(gap.classList.contains('c-link')).toBe(true)
     expect(gap.classList.contains('sbf-bad')).toBe(true)
     fireEvent.click(gap)
     expect(document.activeElement).toBe(container.querySelector('.sbf-field.is-required textarea'))

@@ -7637,10 +7637,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    just picked is not painted red; until then the `required` tag carries it. */
 .sbf-miss { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
 .sbf-miss code { font-size: var(--t-micro); color: var(--warn-ink); }
-/* The send panel names the same gap as a `.sbf-mini` button to the field.
-   `.sbf-mini`'s own grey comes later in the sheet at equal specificity, so the
-   warn ink is restated on the pair rather than left to lose. */
-.sbf-mini.sbf-bad { color: var(--warn-ink); }
+/* The send panel names the same gap as a small canonical link button to the
+   field. `.c-link`'s own sky would win at equal specificity, so the warn ink
+   is restated on the pair rather than left to lose. */
+.c-link.sbf-bad { color: var(--warn-ink); text-decoration-color: currentColor; }
 .sbf-gaps { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s1) var(--ctl-s2); }
 
 .sbf-flag { display: inline-flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); color: var(--text-dim); }
@@ -7648,16 +7648,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-list > input { width: 100%; }
 .sbf-listact { display: flex; gap: var(--ctl-s3); }
 
-/* A TEXT BUTTON, NOT A PILL. `:where(.app button)` puts a 1px box around every
-   unstyled button; a field with a remove, a kind and two list controls would
-   be four boxes inside one row. The sheet already draws several buttons as
-   plain text (`.ctl-nav-link`, `.art-open`) and this is the same case. */
-.sbf-mini {
-  border: 0; background: transparent; padding: 0; min-height: 0;
-  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
-  text-decoration: underline; text-underline-offset: 3px;
-}
-.sbf-mini:not(:disabled):hover { color: var(--text); }
+/* A TEXT BUTTON, NOT A PILL: a field with a remove, a kind and two list
+   controls would be four boxes inside one row. It is the canonical small
+   link button (`.c-link.is-sm`) since the #503 swap; it was `.sbf-mini`. */
 
 /* ---- browser actions, built rather than typed ---- */
 .sbf-acts { display: grid; gap: var(--ctl-s1); }
@@ -9421,13 +9414,13 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .ctl-q-glyph,
   .sub button,
   .ov-link,
-  .sbf-mini {
+  .c-link.is-sm {
     position: relative;
   }
   .ctl-q-glyph::after,
   .sub button::after,
   .ov-link::after,
-  .sbf-mini::after {
+  .c-link.is-sm::after {
     content: '';
     position: absolute;
     left: 50%;

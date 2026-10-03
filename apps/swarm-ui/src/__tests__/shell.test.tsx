@@ -2091,7 +2091,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="c-btn is-primary is-full">Send</button>' +
         '<button class="ctl-q-glyph">?</button><p class="sub"><button>refresh</button></p>' +
-        '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
+        '<a class="ov-link" href="#x">open</a><button class="c-link is-sm">remove</button>' +
         '</div>',
     )
     // MUTATION: move any of these phone rules above the base rule it has to
@@ -2115,7 +2115,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // The segment keeps its desktop size: the target is a phone rule.
     expect(px(painted(pick(f, '.c-seg > button'), 'min-height', WIDE) ?? '0px')).toBeLessThan(44)
     // A word or a disc that must not grow gets an empty, centred hit area.
-    for (const sel of ['.ctl-q-glyph', '.sub button', '.ov-link', '.sbf-mini']) {
+    for (const sel of ['.ctl-q-glyph', '.sub button', '.ov-link', '.c-link.is-sm']) {
       const el = pick(f, sel)
       expect(won(el, 'position', PHONE), `${sel} is not the hit area's containing block`).toBe('relative')
       expect(won(el, 'content', PHONE, 'after'), `${sel} has no hit area`).toBe("''")

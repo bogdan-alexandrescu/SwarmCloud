@@ -125,7 +125,7 @@ export function CardFailed({
         ))}
         <p className="ol-line">
           {/* The canonical small button (components.html A), not Submit's
-              private `.sbf-mini`. */}
+              private `.sbf-mini` (gone since the #503 swap). */}
           <Button size="sm" onClick={onRetry}>
             Try again
           </Button>

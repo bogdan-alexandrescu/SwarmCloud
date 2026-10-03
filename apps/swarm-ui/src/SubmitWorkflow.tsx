@@ -660,7 +660,7 @@ function Form({ sources }: { sources: FormSources }) {
               {plan.problems.map((p, i) => (
                 <Fragment key={p.key}>
                   {i > 0 ? ', ' : ''}
-                  <button type="button" className="sbf-mini" title={p.message} onClick={() => toProblem(p)}>
+                  <button type="button" className="c-link is-sm" title={p.message} onClick={() => toProblem(p)}>
                     {p.stepId === '' ? '(unnamed step)' : p.stepId}
                   </button>
                 </Fragment>
@@ -723,7 +723,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           aria-invalid={nameProblem !== null || undefined}
           onChange={(e) => onChange({ ...step, id: e.target.value })} />
         {removable && (
-          <button type="button" className="sbf-mini wfb-drop" onClick={onRemove}>remove</button>
+          <button type="button" className="c-link is-sm wfb-drop" onClick={onRemove}>remove</button>
         )}
       </div>
       {/* A SELECT, NOT THE CARD LIST (G1, #503): the full list in every

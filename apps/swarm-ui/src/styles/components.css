@@ -107,6 +107,10 @@
   font-size: inherit;
 }
 .c-link:hover { text-decoration-color: currentColor; }
+/* The small text control beside a field or a list ("remove", "one more"):
+   Submit's `.sbf-mini` and the ledger's zoom controls since the #503 swap. */
+.c-link.is-sm { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-link:disabled { opacity: .45; cursor: not-allowed; }
 .c-link.is-card { text-decoration: none; font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .c-link.is-card:hover { text-decoration: underline; }
 .c-idl { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); text-decoration: underline dotted; text-underline-offset: 3px; }

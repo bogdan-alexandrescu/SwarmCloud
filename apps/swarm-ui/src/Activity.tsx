@@ -58,7 +58,7 @@ import {
   type Outcomes,
   type Span,
 } from './outcomes'
-import { NamedMark, Segmented, StateMark, WarnMark } from './components'
+import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { TimelinePages } from './TimelineLanes'
@@ -921,7 +921,7 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
         say="The platform-wide ledger is served to administrators only. Nothing failed, and your own tenant's ledger is readable."
       >
         Your own tenant’s ledger is one click away:{' '}
-        <button type="button" className="sbf-mini" onClick={onMine}>
+        <button type="button" className="c-link is-sm" onClick={onMine}>
           my tenant
         </button>
       </Absent>
@@ -934,7 +934,7 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
       say={`The outcome ledger could not be read: ${error.message}. No figure is drawn, because none was read.`}
     >
       {error.message}{' '}
-      <button type="button" className="sbf-mini" onClick={onRetry}>
+      <button type="button" className="c-link is-sm" onClick={onRetry}>
         try again
       </button>
     </Absent>
@@ -980,7 +980,7 @@ function Picker({
           </label>
         ))}
         {selected.length > 0 && (
-          <button type="button" className="sbf-mini" onClick={() => onChange([])}>
+          <button type="button" className="c-link is-sm" onClick={() => onChange([])}>
             clear
           </button>
         )}
@@ -1022,7 +1022,7 @@ function RangeInputs({ view, setView }: { view: LedgerView; setView: (v: LedgerV
       </label>
       <button
         type="button"
-        className="sbf-mini"
+        className="c-link is-sm"
         disabled={!ok}
         onClick={() => setView({ ...view, span: null, since: from, until: nextDay(to), back: null })}
       >
@@ -1116,7 +1116,7 @@ function LedgerToolbar({
       <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions(false)} onChange={pickSpan} />
       {back !== null && (
         // A zoom is a span change, and the chip is the way back to the span it came from.
-        <button type="button" className="sbf-mini ol-back" onClick={() => setView(back)}>
+        <button type="button" className="c-link is-sm ol-back" onClick={() => setView(back)}>
           ← {back.span ?? 'range'}
         </button>
       )}
@@ -1179,9 +1179,9 @@ function LedgerToolbar({
         {admin && view.platform && verifyServed && view.tenant.length === 0 && (
           // ONE CLICK, AND AN EXCLUSION, NOT AN INCLUDE LIST: a tenant created
           // tomorrow is still counted (owner decision on #185).
-          <button
-            type="button"
-            className="sbf-mini ol-verify"
+          <Button
+            size="sm"
+            className="ol-verify"
             aria-pressed={verifyOut}
             onClick={() =>
               setView({
@@ -1191,7 +1191,7 @@ function LedgerToolbar({
             }
           >
             {verifyOut ? `include ${VERIFY_TENANT}` : `exclude ${VERIFY_TENANT}`}
-          </button>
+          </Button>
         )}
         <Picker
           label="Profile"
