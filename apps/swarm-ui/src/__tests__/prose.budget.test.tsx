@@ -185,5 +185,13 @@ describe('the prose budget', () => {
  * states were cut to the fewest words that still name their scope
  * ("None among the 0 newest"). Two words of room, so the next sentence still
  * has to argue with this test.
+ *
+ * RAISED TO 160 WITH THE #503 PAGE HEAD, AND NOT FOR A WORD OF PROSE. The
+ * head's line used to run its words together -- this counter read `—8/8`,
+ * `reads?poll` and `20srefresh` as three words, which is the "nowrefresh" the
+ * visual QA filed as Q2. The canonical head separates them with ` · `, so the
+ * same line now counts `— · 8/8 reads? · poll 20s · refresh`: 158, every
+ * added token a separator or a word that was glued to its neighbour. Two
+ * tokens of room, as before.
  */
-const OVERVIEW_CEILING = 153
+const OVERVIEW_CEILING = 160

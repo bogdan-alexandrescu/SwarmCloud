@@ -411,7 +411,8 @@ test('the `?` sits after a label and never after a value', () => {
   assert.ok(heading, 'no run heading rendered')
   const h = heading[1]!
   const glyphAt = h.indexOf('aria-label="Help: ')
-  const chipAt = h.indexOf('class="ctl-chip ')
+  // The state chip is the canonical StateMark (`.sk-st`) since the #503 swap (it was `.ctl-chip`).
+  const chipAt = h.indexOf('class="sk-st ')
   assert.ok(glyphAt >= 0, 'the run heading no longer carries the screen ?')
   assert.ok(chipAt >= 0, 'the run heading draws no state chip')
   assert.ok(glyphAt < chipAt, 'the run heading draws its ? after the state chip, a value')

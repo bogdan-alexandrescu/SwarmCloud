@@ -668,7 +668,7 @@ function Headline({
   return (
     <section className="section panel">
       <h2>
-        {/* The state as a `.ctl-chip`, not the old `.st` span: `.st` is only
+        {/* The state as the canonical StateMark, not the old `.st` span: `.st` is only
             coloured inside `.row`, so in a heading it silently rendered in the
             heading's own faint grey -- the one element on the page whose colour
             is load-bearing was the one with none.
