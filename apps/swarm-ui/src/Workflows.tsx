@@ -108,8 +108,8 @@ import {
   type WorkflowView,
 } from './stepviews'
 import type { Result } from './fetch'
-import { MarkGlyph, STATE_MARK, StateMark } from './marks'
-import { ProgressBar } from './components'
+import { STATE_MARK, StateMark } from './marks'
+import { NamedMark, ProgressBar } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -1354,33 +1354,15 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
  * was not read is the ring in AMBER -- the warning colour, never a state's hue.
  */
 export function LookMark({ look }: { look: StepLook }) {
-  const mark = look.kind === 'unknown' ? 'queued' : look.mark
-  const hue = look.kind === 'unknown' ? 'warn' : look.hue
   const skipped = look.kind === 'state' && look.skipped === true
   return (
-    <span
-      className={`sk-st is-${hue} wf-mk`}
-      data-mark={look.kind === 'unknown' ? 'unknown' : skipped ? 'skipped' : look.mark}
-      data-hue={hue}
-      aria-hidden
-    >
-      <svg viewBox="0 0 12 12" focusable="false">
-        {skipped ? (
-          // The dashed check: ended clean, and the agent never ran.
-          <path
-            d="M2 6.4 4.8 9.1 10 3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeDasharray="2 1.6"
-          />
-        ) : (
-          <MarkGlyph mark={mark} />
-        )}
-      </svg>
-    </span>
+    <NamedMark
+      className="wf-mk"
+      mark={look.kind === 'unknown' ? 'queued' : skipped ? 'skipped' : look.mark}
+      dataMark={look.kind === 'unknown' ? 'unknown' : skipped ? 'skipped' : look.mark}
+      hue={look.kind === 'unknown' ? 'warn' : look.hue}
+      hidden
+    />
   )
 }
 
@@ -4257,14 +4239,7 @@ function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
   const s = derivedStateOf(workflow)
   if (s !== null) return <StateMark state={s} />
   const h = workflowHeaderState(workflow)
-  return (
-    <span className="sk-st is-warn" data-mark="unknown" data-hue="warn" title={h.title}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark="queued" />
-      </svg>
-      <span className="sk-st-w">{h.word}</span>
-    </span>
-  )
+  return <NamedMark mark="queued" dataMark="unknown" hue="warn" word={h.word} title={h.title} />
 }
 
 /**

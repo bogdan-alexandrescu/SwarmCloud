@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
 import type { ApiError } from './fetch'
-import { MarkGlyph } from './marks'
+import { NamedMark, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
@@ -379,12 +379,7 @@ function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
       <p className="in-meta">
         <a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a>
         {' · '}
-        <span className={`sk-st ${closed ? 'is-neu' : 'is-live'}`} data-mark={closed ? 'succeeded' : 'ready'}>
-          <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-            <MarkGlyph mark={closed ? 'succeeded' : 'ready'} />
-          </svg>
-          <span className="sk-st-w">{issue.state}</span>
-        </span>
+        <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} />
         {' · '}
         {issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}
         {' · '}read {time} with this tenant&rsquo;s forge credential
@@ -416,9 +411,7 @@ function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
       )}
       {closed && (
         <div className="in-closed" role="alert">
-          <span className="sk-st is-warn" data-mark="warn">
-            <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
-          </span>
+          <WarnMark />
           <span>
             <b>This issue is closed.</b> Planning it would reopen work someone marked done.
           </span>
@@ -503,9 +496,7 @@ function Refusal({ error, typed, tenant, onAgain, onTask }: {
   }
   return (
     <div className="in-refusal" role="alert" data-code={error.code ?? ''}>
-      <span className="sk-st is-warn" data-mark="warn">
-        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
-      </span>
+      <WarnMark />
       <div className="in-refusal-t">
         <p>{words}</p>
         <p className="sb-note">{error.message}</p>

@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { MarkGlyph } from './marks'
+import { NamedMark } from './components'
 import { PageHead } from './Shell'
 import './styles/submit.css'
 
@@ -127,11 +127,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       <section className="sb-card sb-recent" aria-labelledby="submit-recent-h">
         <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
         <p className="sb-empty">
-          <span className="sk-st is-neu" data-mark="queued" data-hue="neu">
-            <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-              <MarkGlyph mark="queued" />
-            </svg>
-          </span>
+          <NamedMark mark="queued" hue="neu" />
           <span>
             <b>No recent submissions to show yet.</b> This list needs the API to keep a short per-person list of
             what you submitted: task or workflow, name, settings, when. It does not today, so the card stays empty

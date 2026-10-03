@@ -58,7 +58,7 @@ import {
   type Outcomes,
   type Span,
 } from './outcomes'
-import { StateMark, WarnMark } from './marks'
+import { NamedMark, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { TimelinePages } from './TimelineLanes'
@@ -1345,8 +1345,8 @@ export function TenantsScreen() {
                           <StateMark state="PARKED" label="disabled" />
                         </span>
                       ) : (
-                        <span className="ten-status sk-st is-neu">
-                          <span className="sk-st-w">enabled</span>
+                        <span className="ten-status">
+                          <NamedMark mark={null} hue="neu" word="enabled" />
                         </span>
                       )}
                     </td>

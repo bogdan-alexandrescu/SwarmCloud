@@ -9,7 +9,7 @@ import '../styles/components.css'
 
 export { Button, ButtonLink, buttonClass, type ButtonKind, type ButtonSize } from './Button'
 export { Chip, Count, Dash, LiveChip, Tag } from './Chip'
-export { StatePill, ParkPill, StateMark, PARK_WORD, stateWord, type StateForm } from './StatePill'
+export { StatePill, ParkPill, StateMark, NamedMark, MarkIcon, WarnMark, PARK_WORD, stateWord, type StateForm } from './StatePill'
 export { Card, CardLink, StatTile, type TileValue } from './Card'
 export { Table, type Column, type SortState } from './Table'
 export { Tabs, Segmented, Breadcrumb, routedClick, type TabDef, type SegOption, type Crumb } from './Tabs'

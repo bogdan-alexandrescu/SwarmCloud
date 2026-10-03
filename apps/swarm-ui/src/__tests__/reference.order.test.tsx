@@ -85,7 +85,8 @@ describe('API reads orders routes by what went wrong (#140)', () => {
   it('says it is this tab only once', async () => {
     registry()
     await referenceRows()
-    const head = document.querySelector('.ctl-page-head')!
+    // The canonical page head (visual QA Q2): the caveat is its meta chip.
+    const head = document.querySelector('main .c-phead, .c-phead')!
     expect(within(head as HTMLElement).getByText(/this tab only/)).toBeTruthy()
     expect(screen.queryByRole('heading', { name: 'Routes called in this tab' })).toBeNull()
     expect(document.body.textContent ?? '').not.toMatch(/since this tab loaded/)

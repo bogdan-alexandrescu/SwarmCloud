@@ -4,7 +4,8 @@ import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
-import { MarkGlyph, type MarkHue, type MarkName } from './marks'
+import type { MarkHue, MarkName } from './marks'
+import { NamedMark } from './components'
 import { Id } from './Shell'
 import {
   DEFAULT_SORT,
@@ -72,26 +73,15 @@ export interface StepLook {
  */
 export function WfStepMark({ look, word = false }: { look: Pick<StepLook, 'mark' | 'hue' | 'word'>; word?: boolean }) {
   return (
-    <span className={`sk-st is-${look.hue} wf-mk`} data-mark={look.mark} data-hue={look.hue}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        {look.mark === 'skipped' ? (
-          // THE DASHED CHECK (wide-workflows.html A): the step ended clean and
-          // its agent never ran, so it is not the solid check of work done.
-          <path
-            d="M2 6.4 4.8 9.1 10 3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeDasharray="2 1.6"
-          />
-        ) : (
-          <MarkGlyph mark={look.mark === 'unknown' ? 'queued' : look.mark} />
-        )}
-      </svg>
-      {word ? <span className="sk-st-w">{look.word}</span> : <span className="sk-vh">{look.word}</span>}
-    </span>
+    <NamedMark
+      className="wf-mk"
+      mark={look.mark === 'unknown' ? 'queued' : look.mark}
+      dataMark={look.mark}
+      hue={look.hue}
+      word={look.word}
+      bare={!word}
+      title=""
+    />
   )
 }
 

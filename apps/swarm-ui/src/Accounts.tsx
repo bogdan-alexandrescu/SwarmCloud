@@ -13,7 +13,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { MarkGlyph, WarnMark } from './marks'
+import { NamedMark, WarnMark } from './components'
 import './styles/capacity.css'
 import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
@@ -67,36 +67,17 @@ import {
  */
 function AcctState({ state }: { state: string }) {
   const word = state.toLowerCase().replace(/_/g, ' ')
-  if (state === 'REAUTH_REQUIRED') {
-    return (
-      <span className="acct-state sk-st is-warn" data-mark="warn" data-hue="warn" title={state}>
-        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-          <MarkGlyph mark="warn" />
-        </svg>
-        <span className="sk-st-w">{word}</span>
-      </span>
-    )
-  }
-  if (state === 'PAUSED') {
-    return (
-      <span className="acct-state sk-st is-park" data-mark="parked" data-hue="park" title={state}>
-        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-          <MarkGlyph mark="parked" />
-        </svg>
-        <span className="sk-st-w">{word}</span>
-      </span>
-    )
-  }
+  if (state === 'REAUTH_REQUIRED') return <NamedMark className="acct-state" mark="warn" hue="warn" word={word} title={state} />
+  if (state === 'PAUSED') return <NamedMark className="acct-state" mark="parked" hue="park" word={word} title={state} />
   const known = state === 'AVAILABLE' || state === 'DRAINING'
   return (
-    <span
-      className={`acct-state sk-st ${known ? 'is-neu' : 'is-unknown'}`}
-      data-mark="none"
-      data-hue={known ? 'neu' : 'unknown'}
+    <NamedMark
+      className="acct-state"
+      mark={null}
+      hue={known ? 'neu' : 'unknown'}
+      word={word}
       title={known ? state : `${state}: a state this console does not recognise`}
-    >
-      <span className="sk-st-w">{word}</span>
-    </span>
+    />
   )
 }
 

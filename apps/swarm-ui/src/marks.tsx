@@ -24,6 +24,7 @@
  * (CONTRACT invariant 1), which is why they share one hue: the hue answers
  * "does this hold capacity", the mark answers "how far along is it".
  */
+import type { ReactNode } from 'react'
 import type { TaskState } from './types'
 
 export type MarkName =
@@ -56,8 +57,23 @@ export const STATE_MARK: Readonly<Record<TaskState, { mark: MarkName; hue: MarkH
 }
 
 /** The 12-unit glyph for one mark. The geometry is the mock-ups' MARKS, verbatim. */
-export function MarkGlyph({ mark }: { mark: MarkName | 'warn' }) {
+export function MarkGlyph({ mark }: { mark: MarkName | 'warn' | 'skipped' }) {
   switch (mark) {
+    case 'skipped':
+      // THE DASHED CHECK (wide-workflows.html A): a step whose verdict gate
+      // kept its agent from running ended clean, and is not the solid check
+      // of work done.
+      return (
+        <path
+          d="M2 6.4 4.8 9.1 10 3"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          strokeDasharray="2 1.6"
+        />
+      )
     case 'queued':
       return <circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" strokeWidth="1.6" />
     case 'ready':
@@ -129,25 +145,63 @@ export function StateMark({
   bare?: boolean
 }) {
   const { mark, hue } = STATE_MARK[state]
-  const word = label ?? state.toLowerCase().replace('_', '-')
+  return <NamedMark mark={mark} hue={hue} word={label ?? state.toLowerCase().replace('_', '-')} bare={bare} />
+}
+
+/**
+ * THE SAME MARK FOR A VOCABULARY THAT IS NOT A TASK STATE: an issue run's
+ * state, an account's, a workflow whose state was not derived, a warning.
+ * One element shape for every state mark in the console (brand.html §3), so
+ * no screen hand-builds the `sk-st` span and its glyph again. `mark: null`
+ * draws the word alone -- a state this console does not recognise, which is
+ * never given a healthy glyph by default. `dataMark` is what the tests read
+ * when it differs from the glyph (`unknown` drawn with the ring).
+ */
+export function NamedMark({
+  mark,
+  hue,
+  word,
+  bare = false,
+  title,
+  className,
+  dataMark,
+  hidden = false,
+}: {
+  mark: MarkName | 'warn' | 'skipped' | null
+  hue: MarkHue | 'warn' | 'unknown'
+  word?: ReactNode
+  bare?: boolean
+  title?: string
+  className?: string
+  dataMark?: string
+  /** Decoration beside words that already say it: hidden from assistive technology. */
+  hidden?: boolean
+}) {
+  const plain = typeof word === 'string' ? word : undefined
   return (
-    <span className={`sk-st is-${hue}`} data-mark={mark} data-hue={hue} title={bare ? word : undefined}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark={mark} />
-      </svg>
-      {bare ? <span className="sk-vh">{word}</span> : <span className="sk-st-w">{word}</span>}
+    <span
+      className={`sk-st is-${hue}${className === undefined ? '' : ` ${className}`}`}
+      data-mark={dataMark ?? mark ?? 'none'}
+      data-hue={hue}
+      title={title === undefined ? (bare ? plain : undefined) : title || undefined}
+      aria-hidden={hidden || undefined}
+    >
+      {mark !== null && <MarkIcon mark={mark} />}
+      {word === undefined ? null : bare ? <span className="sk-vh">{word}</span> : <span className="sk-st-w">{word}</span>}
     </span>
+  )
+}
+
+/** The 12-unit glyph alone, in an svg, for a slot that draws its own frame (a lane's end mark). */
+export function MarkIcon({ mark }: { mark: MarkName | 'warn' | 'skipped' }) {
+  return (
+    <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+      <MarkGlyph mark={mark} />
+    </svg>
   )
 }
 
 /** The amber triangle: a warning, never a state. */
 export function WarnMark({ label }: { label?: string }) {
-  return (
-    <span className="sk-st is-warn" data-mark="warn" data-hue="warn">
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark="warn" />
-      </svg>
-      {label !== undefined && <span className="sk-st-w">{label}</span>}
-    </span>
-  )
+  return <NamedMark mark="warn" hue="warn" word={label} />
 }

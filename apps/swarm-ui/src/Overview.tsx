@@ -18,7 +18,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { MarkGlyph, StateMark, WarnMark } from './marks'
+import { NamedMark, StateMark, WarnMark } from './components'
 import { Absent, Mark, UtilTrack, type TrackTone } from './primitives'
 import { SectionHelp, timeAgo } from './Shell'
 import {
@@ -838,13 +838,7 @@ export function splitHeadline(headline: string): { title: string; ids: string | 
 
 /** The red diamond, for a problem whose severity is a failure. Not a state. */
 function BadMark() {
-  return (
-    <span className="sk-st is-bad" data-mark="failed" data-hue="bad">
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark="failed" />
-      </svg>
-    </span>
-  )
+  return <NamedMark mark="failed" hue="bad" />
 }
 
 /**

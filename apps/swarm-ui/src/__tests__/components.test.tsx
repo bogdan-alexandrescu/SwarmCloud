@@ -107,7 +107,9 @@ describe('the tokens are on :root, for light and dark', () => {
     expect(STYLES).toMatch(/--ctl-hatch: repeating-linear-gradient\([^;]*var\(--ctl-bd\)/)
     // And only the "not measured" forms use the hatch in the component sheet.
     const users = [...COMPONENTS_CSS.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*var\(--ctl-hatch\)[^{}]*\}/g)].map((m) => m[1]!.trim())
-    expect(users).toEqual(['.c-bar.is-unmeasured', '.c-bar.is-unknown-ceiling > .c-h'])
+    // ProgressBar's unread steps (visual QA Q9) are counted but not measured:
+    // the hatch's one meaning, on the third form that has it.
+    expect(users).toEqual(['.c-bar.is-unmeasured', '.c-bar.is-unknown-ceiling > .c-h', '.c-bar.is-progress > .c-h'])
   })
 
   it('draws a control border with --ctl-bd and a card outline with the hairline', () => {

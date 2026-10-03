@@ -63,7 +63,8 @@ import {
   type LaneSeg,
   type LanesView,
 } from './lanes'
-import { MarkGlyph, STATE_MARK, StateMark, type MarkName } from './marks'
+import { STATE_MARK, type MarkName } from './marks'
+import { MarkIcon, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
 import { PageHead, timeAgo } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
@@ -768,25 +769,18 @@ function Legend() {
         <i className="tl-lg is-cut" /> fenced generation
       </span>
       <span className="tl-mk is-warn">
-        <TlGlyph mark="warn" /> cancel asked
+        <MarkIcon mark="warn" /> cancel asked
       </span>
       <span className="tl-mk is-neu">
-        <TlGlyph mark="succeeded" /> ended
+        <MarkIcon mark="succeeded" /> ended
       </span>
       <span className="tl-mk is-bad">
-        <TlGlyph mark="failed" /> failed · dead-lettered
+        <MarkIcon mark="failed" /> failed · dead-lettered
       </span>
     </p>
   )
 }
 
-function TlGlyph({ mark }: { mark: MarkName | 'warn' }) {
-  return (
-    <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-      <MarkGlyph mark={mark} />
-    </svg>
-  )
-}
 
 function pct(t: number, since: number, until: number): number {
   return ((Math.min(Math.max(t, since), until) - since) / (until - since)) * 100
@@ -992,7 +986,7 @@ function LaneRow({
             style={{ left: `${pct(m.at, since, until)}%` }}
             title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
           >
-            <TlGlyph mark={MARK_OF[m.kind]} />
+            <MarkIcon mark={MARK_OF[m.kind]} />
             {m.kind === 'cancel_requested' && <span className="tl-tag">{`cancel asked ${clock(m.at, wide)}`}</span>}
           </span>
         ))}
@@ -1258,7 +1252,7 @@ function EventRow({ e }: { e: TaskEvent }) {
     <li className={kind === 'generation_fenced' ? 'tl-evr is-fence' : 'tl-evr'}>
       <span className="tl-evt">{Number.isFinite(t) ? clock(t, true) : '—'}</span>
       <span className={`tl-mk is-${m.hue}`}>
-        <TlGlyph mark={m.mark} />
+        <MarkIcon mark={m.mark} />
       </span>
       <span className="tl-evk">
         {kind}

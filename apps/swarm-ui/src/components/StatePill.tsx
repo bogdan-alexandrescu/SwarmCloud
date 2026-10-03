@@ -17,11 +17,11 @@
  * tooltip. The three reasons that need a person (`PARK_NEEDS_A_PERSON`) carry
  * the amber flag, so they are found without reading every row.
  */
-import { MarkGlyph, StateMark, STATE_MARK } from '../marks'
+import { MarkGlyph, MarkIcon, NamedMark, StateMark, STATE_MARK, WarnMark } from '../marks'
 import { PARK_NEEDS_A_PERSON, reasonCopy, type ParkReason, type TaskState } from '../types'
 import { WarnGlyph } from './glyphs'
 
-export { StateMark }
+export { MarkIcon, NamedMark, StateMark, WarnMark }
 
 /** The state as a word: lower case, `DEAD_LETTERED` as `dead-lettered`. */
 export function stateWord(state: TaskState): string {

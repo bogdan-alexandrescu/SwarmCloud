@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
-import { MarkGlyph, type MarkHue, type MarkName } from './marks'
+import type { MarkHue, MarkName } from './marks'
+import { NamedMark, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { IssueRun, IssueRunPage, IssueRunState, RunPlan } from './types'
 import { useNow } from './useNow'
@@ -54,14 +55,7 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
 /** A run's state, as the API names it, with its mark. */
 export function RunStateMark({ state }: { state: IssueRunState }) {
   const { mark, hue } = RUN_MARK[state] ?? { mark: 'queued', hue: 'neu' }
-  return (
-    <span className={`sk-st is-${hue}`} data-mark={mark} data-hue={hue}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark={mark} />
-      </svg>
-      <span className="sk-st-w">{state}</span>
-    </span>
-  )
+  return <NamedMark mark={mark} hue={hue} word={state} />
 }
 
 /** `sha256:9f2c41…e7`: enough to compare by eye; the whole digest is its title. */
@@ -111,9 +105,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
         }}>‹ All runs</a>
         {notice !== null && (
           <div className="rn-notice" role="status">
-            <span className="sk-st is-warn" data-mark="warn">
-              <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
-            </span>
+            <WarnMark />
             <span>{notice}</span>
           </div>
         )}
@@ -365,9 +357,7 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
 
         {held !== null && (
           <div className="rn-notice rn-held" role="status">
-            <span className="sk-st is-warn" data-mark="warn">
-              <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false"><MarkGlyph mark="warn" /></svg>
-            </span>
+            <WarnMark />
             <span>
               The plan changed since this page drew it
               {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The actions below still name the
