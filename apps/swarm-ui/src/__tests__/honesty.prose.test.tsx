@@ -531,7 +531,11 @@ describe('Overview, with every help card closed', () => {
   it('states the cadence from the timer constant rather than in words', async () => {
     renderOverview()
     await accountLine()
-    expect(document.querySelector('.sub'), 'the screen grew a subtitle again').toBeNull()
+    // The canonical page head (#503 Q2) draws its meta and freshness in a
+    // `.sub` ON THE TITLE'S ROW (`.c-phead`, one flex row): that is the facts
+    // strip, not a subtitle line under the title. Any other `.sub` is one.
+    expect(document.querySelector('.sub:not(.c-phead > .sub)'), 'the screen grew a subtitle again').toBeNull()
+    expect(document.querySelector('.c-phead > .sub'), 'the facts strip left the page head').not.toBeNull()
 
     const poll = screen.getByLabelText(/re-read every 20 seconds/i)
     expect(textOf(poll)).toContain('20s')

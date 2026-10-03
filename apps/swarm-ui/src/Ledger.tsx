@@ -31,7 +31,7 @@
 
 import { useId, type ReactNode } from 'react'
 
-import { Segmented } from './components'
+import { Segmented, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
 import { type TopicId } from './help'
 import {
@@ -53,7 +53,7 @@ import {
   type SpanCoverage,
   type Stat,
 } from './outcomes'
-import { Absent, Mark, UtilTrack } from './primitives'
+import { Absent, Mark } from './primitives'
 import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
@@ -131,7 +131,7 @@ function Row({
   return (
     <div className="ol-row" data-row={name}>
       {label}
-      <UtilTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
+      <UsageTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
       <span className="ol-row-n">{count}</span>
       {strip}
     </div>
@@ -585,7 +585,7 @@ function Outcome4({ parts, width, say }: { parts: [number, number, number]; widt
   const total = parts[0] + parts[1] + parts[2]
   const cls = ['succeeded', 'failed', 'cancelled'] as const
   if (total === 0) {
-    return <UtilTrack pct={0} zeroTitle={say} />
+    return <UsageTrack pct={0} zeroTitle={say} />
   }
   return (
     <span className="ol-meter-wrap">

@@ -131,6 +131,136 @@ export function UsageBar({
 }
 
 /**
+ * What a fill is allowed to say, spelled as the modifier class it becomes.
+ *
+ * `is-warn`, `is-bad` and `is-paused` are verdicts and keep their hue and
+ * texture. `ov-projected` is the one documented grey: a reading that is real
+ * but not current (its window reset, or its poll is past the staleness
+ * window), drawn in `--text-faint` beside a live bar's `--text-dim` and never
+ * in the amber or red that says a ceiling is being approached NOW. A
+ * DIFFERENT grey, not a visibly different one: 1.27:1 in the dark theme and
+ * 1.11:1 in the light one (design-system.md §6.4), so in the light theme the
+ * `~` Overview writes before the figure is what tells a projected reading
+ * from a live one, not this fill. It keeps the name it shipped with, because
+ * `test_state_colour_discriminability.py` lists it BY NAME in
+ * `DOCUMENTED_GREYS` and resolves it to a text grey. Anything else is the
+ * monochrome default.
+ *
+ * CLASS NAMES RATHER THAN WORDS, on purpose. The colour guard traces a fill's
+ * className to the string literals that build it, and every literal it finds
+ * is tried as a class the fill may carry. A mapping written as
+ * `tone === 'bad' ? ' is-bad'` would hand it `bad` as well, a bare word some
+ * unrelated rule could one day paint.
+ */
+export type TrackTone = 'is-warn' | 'is-bad' | 'is-paused' | 'ov-projected'
+
+/**
+ * THE BARE TRACK (`UsageTrack`): a usage bar with no label and no figure, for
+ * a row that prints its own figure beside it -- a pool's Use cell, an
+ * account's window, a worker's CPU and memory, a ledger row. It was the local
+ * `UtilTrack` in primitives.tsx and moved into the canonical set (#503 swap),
+ * so every bar on every screen is drawn from here.
+ *
+ * IT KEEPS ITS OWN LOOK (`.ctl-util-*`), NOT `.c-bar`'s, ON PURPOSE: the grey
+ * no-verdict fill and the textured warn/bad/paused fills are the owner's
+ * decision of 2026-09-24 (design-system.md §6.4), held by
+ * tests/unit/control_plane/test_state_colour_discriminability.py, because a
+ * bare track has no words beside it to carry the verdict the way `UsageBar`'s
+ * triangle does. components.html A's sky fill and hatch-only rule would undo
+ * that decision, which is the owner's to make (raised with the owner on the #503 pull request).
+ *
+ * The four things it has to keep apart:
+ *
+ * `pct === null`  nothing measured it, or there is no ceiling to measure it
+ *                 against. Hatched, NO fill and no axis -- an unfilled plain
+ *                 track reads as "0% used", which is a claim.
+ * `pct === 0`     a MEASURED zero. A visible BASELINE TICK at the origin and
+ *                 the inset hairline, so "nothing is in use" is legible as a
+ *                 reading. Deliberately not a minimum width on the fill, which
+ *                 would say "a little is in use" and make 0 and 0.4% identical
+ *                 instead of making 0 and unmeasured different.
+ * `pct > 100`     OVER the ceiling. The track then stands for what is in use
+ *                 and the ceiling sits inside it: the fill runs to the
+ *                 ceiling and the excess is hatched in the failure colour
+ *                 rather than clipped, because a bar pinned full hides the one
+ *                 thing worth seeing.
+ * otherwise       an ordinary fill.
+ *
+ * `meter` gives the track `role="meter"` and its numbers, for a screen where
+ * the track IS the figure (a pool card) rather than a picture beside one.
+ */
+export function UsageTrack({
+  pct,
+  tone,
+  zeroTitle,
+  meter,
+}: {
+  /** Percent of the ceiling in use. null when nothing measured it. 0 is a reading. */
+  pct: number | null
+  tone?: TrackTone | undefined
+  /** What the baseline tick means, for the one case that needs explaining. */
+  zeroTitle?: string | undefined
+  meter?: { label: string; now: number; max: number } | undefined
+}) {
+  if (pct === null) {
+    return (
+      <span
+        className="ctl-util-track is-unknown"
+        role={meter === undefined ? undefined : 'meter'}
+        aria-label={meter?.label}
+      />
+    )
+  }
+  if (pct === 0) {
+    return (
+      <span
+        className="ctl-util-track is-zero"
+        title={zeroTitle}
+        role={meter === undefined ? undefined : 'meter'}
+        aria-label={meter?.label}
+        aria-valuenow={meter?.now}
+        aria-valuemin={meter === undefined ? undefined : 0}
+        aria-valuemax={meter?.max}
+      >
+        <i className="ctl-util-zero" aria-hidden />
+      </span>
+    )
+  }
+
+  const over = pct > 100
+  // When over, the track represents what is in use and the ceiling sits
+  // inside it, so the fill is the ceiling's share of the whole.
+  const fillPct = over ? (100 / pct) * 100 : Math.max(0, pct)
+  // THE CLASSES A FILL CAN CARRY, AS LITERALS IN THIS FILE. The colour guard
+  // traces this identifier to these strings; a class that arrived as an
+  // opaque prop from another file is one it could not see.
+  const fillClass =
+    tone === 'is-warn'
+      ? ' is-warn'
+      : tone === 'is-bad'
+        ? ' is-bad'
+        : tone === 'is-paused'
+          ? ' is-paused'
+          : tone === 'ov-projected'
+            ? ' ov-projected'
+            : ''
+
+  return (
+    <span
+      className="ctl-util-track"
+      role={meter === undefined ? undefined : 'meter'}
+      aria-label={meter?.label}
+      aria-valuenow={meter?.now}
+      aria-valuemin={meter === undefined ? undefined : 0}
+      aria-valuemax={meter?.max}
+    >
+      <i className={`ctl-util-fill${fillClass}`} style={{ width: `${fillPct}%` }} />
+      {over && <i className="ctl-util-over" style={{ width: `${100 - fillPct}%` }} />}
+    </span>
+  )
+}
+
+/**
  * PROGRESS, ON THE SAME 6px TRACK: `done` of `total`, in a state's hue
  * (components.html A, "Progress and usage bars"; workflows.html's Steps
  * done). A usage bar's amber "nearly full" would be wrong here -- a finished

@@ -6,10 +6,9 @@ import type { TopicId } from './help'
 import { HelpLinks } from './HelpCard'
 import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
 import { leaseCoverage } from './Holders'
-import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import './styles/capacity.css'
-import { Segmented } from './components'
+import { Segmented, UsageTrack } from './components'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -529,7 +528,7 @@ function PoolRow({
       </td>
       <td role="cell" data-label="Use">
         <span className="cap-use">
-          <UtilTrack
+          <UsageTrack
             pct={pct}
             tone={marks.track}
             meter={

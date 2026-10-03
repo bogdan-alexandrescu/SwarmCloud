@@ -299,6 +299,7 @@
 .c-bar > i { display: block; height: 100%; }
 .c-bar > .c-f { background: var(--sk-ac); }
 .c-bar.is-warn > .c-f,
+.c-bar.is-nearly-full > .c-f,
 .c-bar.is-full > .c-f { background: var(--s-warn); }
 .c-bar.is-over { overflow: visible; }
 .c-bar.is-over > .c-f { background: var(--s-bad); }

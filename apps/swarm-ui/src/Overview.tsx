@@ -18,8 +18,8 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { NamedMark, StateMark, WarnMark } from './components'
-import { Absent, Mark, UtilTrack, type TrackTone } from './primitives'
+import { NamedMark, StateMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Absent, Mark } from './primitives'
 import { PageHead, timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
@@ -1042,7 +1042,7 @@ function PoolRow({ pool: p }: { pool: Pool }) {
   return (
     <div className="ov-pl" title={say}>
       <span className="ov-idc">{p.name}</span>
-      <UtilTrack
+      <UsageTrack
         pct={known ? ratio * 100 : null}
         tone={tone}
         zeroTitle={`Measured: 0 of ${limit} in use on ${p.name}.`}

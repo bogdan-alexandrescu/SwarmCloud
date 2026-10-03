@@ -13,9 +13,8 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { NamedMark, Segmented, WarnMark } from './components'
+import { NamedMark, Segmented, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
-import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
@@ -829,7 +828,7 @@ function WindowTile({
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
       </b>
-      <UtilTrack
+      <UsageTrack
         pct={reading.pct}
         tone={projected ? 'ov-projected' : reading.kind === 'live' && reading.pct >= 100 ? 'is-bad' : undefined}
       />

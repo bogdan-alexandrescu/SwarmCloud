@@ -516,7 +516,7 @@ export { Mark, type MarkKind } from './primitives'
  * used / ceiling, as one `.ctl-util` row that stays honest when either side
  * is missing.
  *
- * The TRACK is the shared `UtilTrack`, so its four states are the product's:
+ * The TRACK is the canonical `UsageTrack`, so its four states are the product's:
  * unknown (no measurement, or no ceiling to measure it against) is hatched
  * with no fill; a measured zero draws the baseline tick; over the ceiling, the
  * track stands for what was used and the excess is hatched in the failure

@@ -553,7 +553,7 @@ describe('Capacity draws each pool row through the shared track', () => {
 // One definition of each primitive
 // ---------------------------------------------------------------------------
 
-const SOURCES = import.meta.glob<string>('../*.tsx', { query: '?raw', import: 'default', eager: true })
+const SOURCES = import.meta.glob<string>(['../*.tsx', '../components/*.tsx'], { query: '?raw', import: 'default', eager: true })
 
 /** A screen's source with its comments blanked, so a comment naming a class is not a use of it. */
 function code(text: string): string {
@@ -576,8 +576,9 @@ describe('each primitive is drawn by one file', () => {
 
   it('draws the utilisation track in exactly one place', () => {
     // Six were hand-written in four files: Overview (three branches),
-    // AgentDetail, Capacity and Holders.
-    expect(drawnBy(/className=[{"'`][^>]*\bctl-util-track\b/)).toEqual(['primitives.tsx'])
+    // AgentDetail, Capacity and Holders. It is the canonical `UsageTrack`
+    // now (#503 swap), so no screen and not primitives.tsx draws one.
+    expect(drawnBy(/className=[{"'`][^>]*\bctl-util-track\b/)).toEqual(['components/UsageBar.tsx'])
   })
 
   it('draws the metric tile in exactly one place', () => {
@@ -588,9 +589,9 @@ describe('each primitive is drawn by one file', () => {
     // `Tile` (Overview's strip policy), `CardAbsent` (the in-card variant) and
     // `CeilingRow` (AgentDetail's used/ceiling) are callers of these, not
     // copies: none of them draws the primitive's markup.
-    for (const name of ['Mark', 'Metric', 'Absent', 'UtilTrack', 'Util']) {
+    for (const name of ['Mark', 'Metric', 'Absent', 'UsageTrack', 'UtilTrack', 'Util']) {
       expect(drawnBy(new RegExp(`function ${name}\\(`)), `${name} is defined more than once`).toEqual([
-        ...(name === 'Util' ? [] : ['primitives.tsx']),
+        ...(name === 'Util' || name === 'UtilTrack' ? [] : name === 'UsageTrack' ? ['components/UsageBar.tsx'] : ['primitives.tsx']),
       ])
     }
   })

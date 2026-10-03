@@ -1626,21 +1626,23 @@ def test_the_fill_scan_reads_what_it_claims_to(sheet_scan, fill_scan):
     )
     # RE-POINTED 2026-10-01. The fill the 2026-09-24 decision was about, the
     # Workflows row's `ctl-util-fill wf-meter-fill`, was removed with the
-    # board's row (owner's decision, 2026-10-01). The shared `UtilTrack`
-    # primitive is the fill every remaining proportion bar is drawn by, so it
-    # is the one the scan must find, with the parent it really has.
+    # board's row (owner's decision, 2026-10-01). The shared track is the fill
+    # every remaining proportion bar is drawn by, so it is the one the scan
+    # must find, with the parent it really has. It is the canonical
+    # `UsageTrack` in components/UsageBar.tsx since the #503 swap (it was
+    # `UtilTrack` in primitives.tsx).
     meters = [s for s in fill_scan.sites
-              if "ctl-util-fill" in s.certain and s.where.startswith("apps/swarm-ui/src/primitives.tsx")]
+              if "ctl-util-fill" in s.certain and s.where.startswith("apps/swarm-ui/src/components/UsageBar.tsx")]
     found = "\n  ".join(
         f"{s.where} <{s.tag} {' '.join(sorted(s.certain))}> in "
         f"<{s.parent.tag} {' '.join(sorted(s.parent.classes))}>"
         for s in fill_scan.sites)
     assert meters, (
-        "the shared UtilTrack fill (`ctl-util-fill` in primitives.tsx), the "
+        "the shared UsageTrack fill (`ctl-util-fill` in components/UsageBar.tsx), the "
         "one every proportion bar is drawn by, was not found. Fills found:\n  " + found
     )
     assert all("ctl-util-track" in s.parent.classes for s in meters), (
-        "the UtilTrack fill was found but its parent was not read as "
+        "the UsageTrack fill was found but its parent was not read as "
         "`.ctl-util-track`, so a rule reaching it through the parent would "
         "be missed. Fills found:\n  " + found
     )
