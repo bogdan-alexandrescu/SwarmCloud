@@ -23,7 +23,7 @@ function track(): HTMLElement {
   host.innerHTML =
     '<div class="tl-row"><div class="tl-lab"></div><div class="tl-trk">' +
     '<span class="tl-seg is-hold"></span><span class="tl-seg is-cut"></span><span class="tl-seg is-park"></span>' +
-    '<span class="tl-mkr is-neu"></span></div></div>'
+    '<span class="tl-mkr is-neu is-end"></span><span class="tl-mkr is-warn"></span></div></div>'
   document.body.appendChild(host)
   hosts.push(host)
   return host
@@ -45,7 +45,11 @@ describe('Q6: an attempt bar is visible at any span', () => {
 
   it('sets the end mark after the bar instead of centring it over the bar', () => {
     const h = track()
-    const t = painted(h.querySelector('.tl-mkr')!, 'transform', WIDE) ?? ''
+    const t = painted(h.querySelector('.tl-mkr.is-end')!, 'transform', WIDE) ?? ''
     expect(t).not.toMatch(/translate\(\s*-50%/)
+    // A mark inside the lane (a cancel request) stays centred on its instant
+    // (review of #503: the end rule had moved every mark right by its width).
+    const mid = painted(h.querySelector('.tl-mkr:not(.is-end)')!, 'transform', WIDE) ?? ''
+    expect(mid).toMatch(/translate\(\s*-50%/)
   })
 })

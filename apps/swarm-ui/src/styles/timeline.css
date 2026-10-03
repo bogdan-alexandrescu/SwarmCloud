@@ -392,9 +392,8 @@
 .tl-mkr {
   position: absolute;
   top: 50%;
-  /* AFTER THE BAR'S END, not centred on it: centred, the 18px mark covered
-     the whole of a short bar (Q6). Its left edge is the instant it marks. */
-  transform: translate(2px, -50%);
+  /* A mark inside a lane (a cancel request) is centred on its instant. */
+  transform: translate(-50%, -50%);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -404,6 +403,10 @@
   background: var(--surface);
   z-index: 1;
 }
+/* AN END MARK SITS AFTER THE BAR'S END, not centred on it: centred, the 18px
+   mark covered the whole of a short bar (Q6). Its left edge is the instant it
+   marks. Only the end marks: a mid-lane mark stays on its instant. */
+.tl-mkr.is-end { transform: translate(2px, -50%); }
 .tl-tag {
   position: absolute;
   top: -15px;

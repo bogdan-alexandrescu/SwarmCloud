@@ -974,7 +974,7 @@ function LaneRow({
         {marks.map((m, i) => (
           <span
             key={`m${i}`}
-            className={`tl-mkr is-${MARK_HUE[m.kind]}`}
+            className={`tl-mkr is-${MARK_HUE[m.kind]}${m.kind === 'cancel_requested' ? '' : ' is-end'}`}
             data-mark={m.kind}
             style={{ left: `${pct(m.at, since, until)}%` }}
             title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}

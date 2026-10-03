@@ -143,6 +143,25 @@ describe('Lanes: the drawing', () => {
     await waitFor(() => expect(lane('task_plan').querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
   })
 
+  it('spans a held bar from its attempt start to its end at a visible width (Q6)', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan').querySelector('.tl-mkr[data-mark="succeeded"]')).not.toBeNull())
+    const plan = lane('task_plan')
+    const bar = plan.querySelector<HTMLElement>('[data-seg="hold"]')!
+    const left = parseFloat(bar.style.left)
+    const width = parseFloat(bar.style.width)
+    // 24h span ending now: the attempt ran from about 240m to 160m ago, so the
+    // bar starts near 83% of the track and is about 80/1440 = 5.6% wide --
+    // not a sliver at one column, which is what Q6 measured.
+    expect(left).toBeGreaterThan(82)
+    expect(left).toBeLessThan(84.5)
+    expect(width).toBeGreaterThan(5)
+    expect(width).toBeLessThan(6.2)
+    // The terminal mark sits after a bar's end; a cancel request stays on its instant.
+    expect(plan.querySelector('.tl-mkr[data-mark="succeeded"]')!.classList.contains('is-end')).toBe(true)
+    expect(plan.querySelector('[data-mark="cancel_requested"]')!.classList.contains('is-end')).toBe(false)
+  })
+
   it('fills a workflow step that never ran from the workflow read, and draws no bar for it', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lane('task_publish')).not.toBeNull())
