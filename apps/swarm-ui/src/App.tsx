@@ -1288,7 +1288,7 @@ function Head({
                 </span>
               )}
               {c.to === null ? (
-                <span className="id ctl-crumb-obj" aria-current="page">
+                <span className="id ctl-crumb-obj" aria-current="page" title={at.taskId ?? undefined}>
                   {c.label}
                 </span>
               ) : (
