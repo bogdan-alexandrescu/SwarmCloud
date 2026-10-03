@@ -7,7 +7,7 @@
 // frame or of redesign-v2's honesty rules.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
@@ -27,7 +27,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -266,6 +266,42 @@ describe('Lanes: the outcome strip', () => {
     expect(strip.closest('.tl-strip')?.textContent).toContain('422')
     expect(strip.closest('.tl-strip')?.textContent).toMatch(/lanes below are unaffected/)
     await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+  })
+
+  // VISUAL QA Q6 (2026-10-02): the strip said "Reading /v1/outcomes…" while
+  // the lanes were drawn, and never moved. Every way the read can end -- no
+  // answer, an empty answer, a thrown read -- resolves to words.
+  // MUTATION: drop the deadline, or map `empty` back to loading.
+  it('says the outcomes read had no answer after its deadline, instead of reading forever (Q6)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      api.loadOutcomes.mockReturnValue(new Promise(() => {}))
+      render(<TimelineLanesScreen view={null} onView={() => {}} />)
+      await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+      expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Reading \/v1\/outcomes/)
+      await act(async () => {
+        vi.advanceTimersByTime(STRIP_DEADLINE_MS + 1)
+      })
+      const text = document.querySelector('.tl-strip')?.textContent ?? ''
+      expect(text).not.toMatch(/Reading \/v1\/outcomes/)
+      expect(text).toMatch(/Outcomes not read/)
+      expect(text).toMatch(/no answer after \d+ s/)
+      expect(text).toMatch(/lanes below are unaffected/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says an empty or thrown outcomes read in words, never "Reading…" (Q6)', async () => {
+    api.loadOutcomes.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const a = render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Outcomes not read/))
+    expect(document.querySelector('.tl-strip')?.textContent).toMatch(/answered with nothing/)
+    a.unmount()
+    api.loadOutcomes.mockRejectedValue(new Error('boom'))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Outcomes not read/))
+    expect(document.querySelector('.tl-strip')?.textContent).toMatch(/boom/)
   })
 
   it('prints the success rate from the route, and fences from the lanes drawn', async () => {

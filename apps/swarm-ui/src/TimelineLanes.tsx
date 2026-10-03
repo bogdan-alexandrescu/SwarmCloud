@@ -162,6 +162,14 @@ type EventsRead =
 
 type WorkflowState = { status: 'ok'; read: WorkflowRead } | { status: 'error'; why: string }
 
+/**
+ * How long the outcome strip waits for /v1/outcomes before it says so. The
+ * ledger over a day is the heaviest read on the page; past this the strip
+ * prints "no answer" rather than "Reading…" beside lanes already drawn, and
+ * a late answer still replaces it.
+ */
+export const STRIP_DEADLINE_MS = 20_000
+
 type StripRead = { status: 'loading' } | { status: 'ok'; data: Outcomes } | { status: 'error'; error: ApiError }
 
 const isData = <T,>(r: Result<T>): r is Extract<Result<T>, { data: T }> => r.status === 'ok' || r.status === 'stale'
@@ -438,13 +446,38 @@ export function TimelineLanesScreen({
   const [strip, setStrip] = useState<StripRead>({ status: 'loading' })
   useEffect(() => {
     let live = true
+    let landed = false
     setStrip({ status: 'loading' })
-    ;(loadOutcomes(new URLSearchParams(stripQuery), ['totals']) as Promise<Result<Outcomes>>).then((r) => {
-      if (!live) return
-      setStrip(isData(r) ? { status: 'ok', data: r.data } : r.status === 'error' ? { status: 'error', error: r.error } : { status: 'loading' })
-    })
+    // EVERY WAY THE READ ENDS IS SAID (visual QA Q6, 2026-10-02): the strip
+    // read "Reading /v1/outcomes…" beside drawn lanes and never moved, because
+    // an `empty` answer was mapped back to loading and a read that never
+    // answered had no end. An empty answer, a thrown read and no answer by
+    // the deadline are each an honest error; a late answer still replaces it.
+    const fail = (message: string, httpStatus: number | null = null) =>
+      setStrip({ status: 'error', error: { kind: 'unreachable', httpStatus, code: null, message } })
+    const deadline = setTimeout(() => {
+      if (live && !landed) fail(`no answer after ${Math.round(STRIP_DEADLINE_MS / 1000)} s`)
+    }, STRIP_DEADLINE_MS)
+    ;(loadOutcomes(new URLSearchParams(stripQuery), ['totals']) as Promise<Result<Outcomes>>).then(
+      (r) => {
+        if (!live) return
+        landed = true
+        clearTimeout(deadline)
+        if (isData(r)) setStrip({ status: 'ok', data: r.data })
+        else if (r.status === 'error') setStrip({ status: 'error', error: r.error })
+        else if (r.status === 'empty') fail('the route answered with nothing')
+        else fail('the read did not finish')
+      },
+      (e: unknown) => {
+        if (!live) return
+        landed = true
+        clearTimeout(deadline)
+        fail(e instanceof Error ? e.message : String(e))
+      },
+    )
     return () => {
       live = false
+      clearTimeout(deadline)
     }
   }, [stripQuery, nonce])
 
@@ -1017,7 +1050,7 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
         <p className="tl-q">Reading /v1/outcomes…</p>
       ) : strip.status === 'error' ? (
         <p>
-          <span>{`Outcomes not read (/v1/outcomes ${strip.error.httpStatus ?? 'no answer'}: ${strip.error.message}).`}</span> The lanes below are unaffected.
+          <span>{`Outcomes not read (/v1/outcomes${strip.error.httpStatus === null ? '' : ` ${strip.error.httpStatus}`}: ${strip.error.message}).`}</span> The lanes below are unaffected.
         </p>
       ) : (
         <p className="tl-strip1">

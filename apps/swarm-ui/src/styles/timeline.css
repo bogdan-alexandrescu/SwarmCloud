@@ -382,16 +382,24 @@
   opacity: 0.55;
   border-radius: 0;
 }
+/* A BAR IS VISIBLE AT ANY SPAN (visual QA Q6, 2026-10-02): over 24h a
+   five-minute attempt is a third of a percent of the track, and the bars
+   read as nothing but their end marks. A pixel floor keeps the shortest
+   attempt a bar, and the fill is the brand's capacity hue (timeline.html A),
+   not a wash too pale to find. */
+.tl-seg.is-hold,
+.tl-seg.is-cut,
+.tl-seg.is-park { min-width: 8px; }
 .tl-seg.is-hold {
   height: 20px;
   border-radius: 6px;
-  background: color-mix(in srgb, var(--ok) 18%, var(--surface));
-  border: 1.5px solid var(--ok);
+  background: var(--s-liveb);
+  border: 1.5px solid var(--s-live);
 }
 .tl-seg.is-hold.is-open {
   border-right: 0;
   border-radius: 6px 0 0 6px;
-  background: linear-gradient(90deg, color-mix(in srgb, var(--ok) 18%, var(--surface)) 80%, transparent);
+  background: linear-gradient(90deg, var(--s-liveb) 80%, transparent);
 }
 .tl-seg.is-unknown-end { border-right-style: dotted; }
 .tl-seg.is-cut {
@@ -416,7 +424,9 @@
 .tl-mkr {
   position: absolute;
   top: 50%;
-  transform: translate(-50%, -50%);
+  /* AFTER THE BAR'S END, not centred on it: centred, the 18px mark covered
+     the whole of a short bar (Q6). Its left edge is the instant it marks. */
+  transform: translate(2px, -50%);
   display: flex;
   align-items: center;
   justify-content: center;
