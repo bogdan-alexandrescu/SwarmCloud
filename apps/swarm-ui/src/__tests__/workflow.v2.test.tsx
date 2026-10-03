@@ -307,7 +307,8 @@ describe('one workflow', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker&owner=priya" onView={onView} />)
     await waitFor(() => expect(document.querySelector('.wf-canvas')).toBeTruthy())
-    const tab = screen.getAllByRole('button').find((b) => b.textContent === 'Timeline')
+    // A canonical tab: a link to the view's own address, switched in place.
+    const tab = screen.getAllByRole('link').find((b) => b.textContent === 'Timeline')
     expect(tab, 'no Timeline tab').toBeTruthy()
     fireEvent.click(tab!)
     expect(onView).toHaveBeenLastCalledWith('wf=wf_broker&tab=timeline&owner=priya')

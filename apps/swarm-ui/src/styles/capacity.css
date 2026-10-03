@@ -80,7 +80,7 @@
 .cap-pools tbody th[scope='row'] > .ctl-link { color: var(--text); text-decoration: none; }
 .cap-pools tbody th[scope='row'] > .ctl-link:hover { text-decoration: underline; }
 .cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
+.cap-pools .cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
 .cap-scope { color: var(--text-faint); }
 
 /* THE USE CELL: the bar shrinks, the figure does not. The figure's track is

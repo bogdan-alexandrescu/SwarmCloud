@@ -94,25 +94,6 @@
 .wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .wfp-head .wfp-cost .wf-spend { display: inline; }
 
-/* THE TABS, UNDERLINED (components.html A `.c-tabs`), under the title. */
-.wf-tabs {
-  display: flex; gap: 2px;
-  border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-}
-.wf-tabs > button {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 32px; margin: 0 0 -1px; padding: 0 12px;
-  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-  background: none;
-  font: var(--t-meta)/var(--lh-meta) var(--font);
-  color: var(--text-dim);
-  white-space: nowrap; cursor: pointer;
-}
-.wf-tabs > button:hover { color: var(--text); }
-.wf-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-.wf-tabs > button.is-on { color: var(--sk-ac); border-bottom-color: var(--sk-ac); font-weight: 600; }
-.wf-tab-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
 /* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
    border away (`.wf-card.is-page`), which left a card with no top edge under

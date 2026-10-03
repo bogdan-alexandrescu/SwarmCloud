@@ -15,6 +15,7 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { painted } from './marks'
 import { cascade, gate } from './cssgate'
 
 const api = vi.hoisted(() => ({
@@ -398,19 +399,23 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker" onView={onView} />)
     const tabs = await waitFor(() => {
-      const t = document.querySelector<HTMLElement>('nav.wf-tabs')
+      // The canonical underline tabs (components.html A): a link per view.
+      const t = document.querySelector<HTMLElement>('nav.c-tabs[aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
-    const buttons = [...tabs.querySelectorAll('button')]
+    const buttons = [...tabs.querySelectorAll('a')]
     expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table4', 'Timeline'])
     expect(buttons[0]!.getAttribute('aria-current')).toBe('page')
-    expect(tabs.querySelector('.wf-tab-n')!.textContent).toBe('4')
+    expect(buttons[1]!.getAttribute('href')).toMatch(/^\/workflows\/wf_broker\/table/)
+    expect(tabs.querySelector('em')!.textContent).toBe('4')
     expect(document.querySelector('.wf-viewbar .ctl-seg'), 'the boxed Graph/Timeline/Table control is still in the card').toBeNull()
     fireEvent.click(buttons[1]!)
     expect(onView).toHaveBeenLastCalledWith('wf=wf_broker&tab=table')
     // Underlined, not boxed: the active tab carries a bottom border, the strip a hairline.
-    expect(at(buttons[0]!, 'border-bottom') ?? '').toMatch(/^2px solid/)
+    // The canonical tab's rule is in components.css, which `at` (this file's
+    // two-sheet cascade) does not read; `painted` reads every sheet.
+    expect(painted(buttons[0]!, 'border-bottom', { width: 1440 }) ?? '').toMatch(/^2px solid/)
   })
 })
 

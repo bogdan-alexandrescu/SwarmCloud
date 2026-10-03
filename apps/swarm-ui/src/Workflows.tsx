@@ -109,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
-import { Button, NamedMark, ProgressBar, TypedConfirm } from './components'
+import { Button, NamedMark, ProgressBar, Tabs, TypedConfirm } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -4739,7 +4739,7 @@ function WorkflowPage({
   return (
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
-      <WfTabs view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
+      <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
       <Board board={board} stores={stores} focus={focus} usage={usage} />
     </div>
   )
@@ -4754,22 +4754,21 @@ const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
  * inside the body card (#503). Each tab is a route of its own, so the one on
  * screen is `aria-current="page"`, not a pressed toggle.
  */
-function WfTabs({ view, steps, onView }: { view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+function WfTabs({ id, query, view, steps, onView }: { id: string; query: WorkflowQuery; view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+  // THE CANONICAL UNDERLINE TABS (components.html A; workflows.html B): each
+  // view is its own address, so each tab is a link that opens in a new tab,
+  // and a plain click switches the view in place.
+  const href = (v: WorkflowView) => workflowHref(id, query, v)
   return (
-    <nav className="wf-tabs" aria-label="Views of this workflow">
-      {PAGE_TABS.map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={v === view ? 'is-on' : undefined}
-          aria-current={v === view ? 'page' : undefined}
-          onClick={() => onView(v)}
-        >
-          {VIEW_LABEL[v]}
-          {v === 'table' && <span className="wf-tab-n">{steps}</span>}
-        </button>
-      ))}
-    </nav>
+    <Tabs
+      label="Views of this workflow"
+      current={view}
+      tabs={PAGE_TABS.map((v) => ({ key: v, label: VIEW_LABEL[v], href: href(v), ...(v === 'table' ? { count: steps } : {}) }))}
+      onGo={(to) => {
+        const v = PAGE_TABS.find((t) => href(t) === to)
+        if (v !== undefined) onView(v)
+      }}
+    />
   )
 }
 

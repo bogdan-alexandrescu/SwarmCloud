@@ -331,9 +331,10 @@ function cardOf(id: string): HTMLElement {
  * page the caller is on. The Table tab carries its step count after the word.
  */
 function chooseTab(_card: HTMLElement, label: string): void {
-  const bar = document.querySelector<HTMLElement>('nav.wf-tabs')
+  // The canonical underline tabs (components.html A): links, one per view.
+  const bar = document.querySelector<HTMLElement>('nav[aria-label="Views of this workflow"]')
   expect(bar, 'the page has no view tabs').toBeTruthy()
-  const tab = [...bar!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.firstChild?.textContent === label)
+  const tab = [...bar!.querySelectorAll<HTMLAnchorElement>('a')].find((b) => b.firstChild?.textContent === label)
   expect(tab, `no ${label} tab`).toBeTruthy()
   fireEvent.click(tab!)
 }
@@ -380,9 +381,9 @@ describe('U2: the view modes', () => {
   it('offers Table and Timeline beside the Graph, as the page tabs, and no board-wide control', async () => {
     const c = await openPage('wf_new')
     // The page's views are its underline tabs under the title (workflows.html B, #503).
-    const seg = document.querySelector('nav.wf-tabs')
+    const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
-    const buttons = [...seg!.querySelectorAll<HTMLButtonElement>('button')]
+    const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline'])
     expect(c.querySelector('.wf-viewbar .ctl-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
