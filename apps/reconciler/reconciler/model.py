@@ -360,6 +360,15 @@ class ExecutionView:
     #: backend recorded no such time. The ended-at-startup rule measures its
     #: grace from here and does nothing without it (`detect.detect_ended_at_startup`).
     completed_at: datetime | None = None
+    #: The backend's own record PROVES this execution's compute is gone: on
+    #: Cloud Run, `backends.execution_is_finished` (completion time set,
+    #: nothing running, not reconciling). Stronger than "not active": the
+    #: phase's UNKNOWN bucket is not active and proves nothing. False wherever
+    #: a backend does not establish it (GKE leaves it False), which is the
+    #: direction that holds a lease. Read by `detect.detect_stale_leases`: a
+    #: lease past its TTL whose execution has ENDED is a lost worker, and needs
+    #: no by-name probe to say so (2026-10-03, task_8fce64316ad14fc981fb).
+    ended: bool = False
 
     @property
     def is_active(self) -> bool:

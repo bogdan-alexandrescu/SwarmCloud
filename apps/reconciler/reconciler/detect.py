@@ -280,13 +280,53 @@ def scope_executions_to_their_tenant(
     return scoped
 
 
+def ended_executions_by_attempt(
+    executions: Iterable[ExecutionView],
+    active_by_attempt: dict[str, ExecutionView],
+) -> dict[str, ExecutionView]:
+    """attempt id -> an execution its backend's own record shows has ENDED.
+
+    POSITIVE PROOF THAT THE WORKER IS GONE. A worker only runs inside its
+    execution, and `ExecutionView.ended` is set only when the backend's record
+    proves the compute is over (`backends.execution_is_finished` on Cloud
+    Run). An attempt that also has an ACTIVE execution is left out: something
+    is still running for it, and that is the dead-worker rule's.
+
+    Why this exists: on 2026-10-03 task_8fce64316ad14fc981fb's execution
+    swarm-job-eng-claude-code-6c98m FAILED ("Container terminated on signal
+    7") and its lease was held for five hours. Only ACTIVE executions were
+    indexed by attempt, so a listed FAILED execution counted for nothing:
+    the lease read as having no execution at all, and its absence findings
+    waited on a by-name probe whose answer held them on every pass.
+    """
+    ended: dict[str, ExecutionView] = {}
+    for execution in executions:
+        if (
+            execution.attempt_id
+            and execution.ended
+            and not execution.is_active
+            and execution.attempt_id not in active_by_attempt
+        ):
+            ended.setdefault(execution.attempt_id, execution)
+    return ended
+
+
 def detect_stale_leases(
     snapshot: ControlSnapshot,
     executions_by_attempt: dict[str, ExecutionView],
     config: ReconcilerConfig,
     now: datetime | None = None,
+    ended_by_attempt: dict[str, ExecutionView] | None = None,
 ) -> list[Finding]:
     """Leases whose worker has stopped proving it is alive.
+
+    A STALE LEASE WHOSE EXECUTION HAS ENDED CARRIES THAT EXECUTION. Its
+    backend's record is positive proof the worker is gone, so the finding is
+    repaired on that proof, by the ordinary lost-worker path (fence, release,
+    requeue or fail by the retry rules), with no probe by name -- see
+    `ended_executions_by_attempt`. The execution is not active, so nothing is
+    terminated and nothing waits on a kill. Only an execution at the lease's
+    own generation (or one that records none) counts.
 
     NOT YET ALIVE is a different condition from SILENT, and only one clock is
     entitled to judge each of them.
@@ -400,10 +440,25 @@ def detect_stale_leases(
             continue
 
         execution = executions_by_attempt.get(lease.attempt_id)
+        ended = None
+        if execution is None and ended_by_attempt:
+            ended = ended_by_attempt.get(lease.attempt_id)
+            if ended is not None and ended.generation not in (None, lease.generation):
+                ended = None
+            execution = ended
         kind = (
             FindingKind.DEAD_WORKER
             if execution is not None and execution.is_active
             else FindingKind.STALE_LEASE
+        )
+        ended_detail: dict[str, Any] = (
+            {
+                "execution_ended": ended.phase.value,
+                "execution": ended.name,
+                "ended_at": ended.completed_at.isoformat() if ended.completed_at else None,
+            }
+            if ended is not None
+            else {}
         )
         findings.append(
             Finding(
@@ -412,6 +467,12 @@ def detect_stale_leases(
                     f"lease silent for {silent:.0f}s "
                     f"(grace {config.heartbeat_grace_seconds}s, expired={expired}, "
                     f"dispatch_overdue={overdue_dispatch})"
+                    + (
+                        f"; its execution has ended ({ended.phase.value.lower()}): "
+                        "the worker is lost"
+                        if ended is not None
+                        else ""
+                    )
                 ),
                 task_id=lease.task_id,
                 lease_id=lease.lease_id,
@@ -424,6 +485,7 @@ def detect_stale_leases(
                     "expired": expired,
                     "dispatch_overdue": overdue_dispatch,
                     "task_state": task.state.value if task else None,
+                    **ended_detail,
                 },
             )
         )
@@ -435,6 +497,7 @@ def detect_missing_executions(
     executions_by_attempt: dict[str, ExecutionView],
     config: ReconcilerConfig,
     now: datetime | None = None,
+    ended_by_attempt: dict[str, ExecutionView] | None = None,
 ) -> list[Finding]:
     """Tasks the control plane believes are running, with nothing behind them.
 
@@ -447,7 +510,14 @@ def detect_missing_executions(
     quiet is the stale-lease rule's, so nothing is lost by standing aside here.
 
     What remains is an absence claim, and on a backend that can be asked by
-    name `repair.Reconciler._admit` confirms it before anything is repaired.
+    name `repair.Reconciler._admit` confirms it before anything is repaired
+    (#450): proof of ABSENCE is still required for an execution that cannot
+    be found.
+
+    AN ATTEMPT WHOSE EXECUTION IS LISTED AS ENDED IS NOT MISSING one. Its
+    execution exists and is over, which is the stale-lease rule's positive
+    proof (`ended_executions_by_attempt`); raising an absence claim beside it
+    would hold the same lease on a probe that has nothing left to prove.
     """
     now = now or utcnow()
     findings: list[Finding] = []
@@ -458,6 +528,8 @@ def detect_missing_executions(
         if lease is None or lease.is_released:
             continue
         if lease.attempt_id in executions_by_attempt:
+            continue
+        if ended_by_attempt and lease.attempt_id in ended_by_attempt:
             continue
         if (
             lease.heartbeat_at is not None
@@ -1532,10 +1604,11 @@ def detect_all(
         for execution in executions
         if execution.attempt_id and execution.is_active
     }
+    ended = ended_executions_by_attempt(executions, by_attempt)
     findings = [
         *detect_orphan_executions(snapshot, executions, config, now),
-        *detect_stale_leases(snapshot, by_attempt, config, now),
-        *detect_missing_executions(snapshot, by_attempt, config, now),
+        *detect_stale_leases(snapshot, by_attempt, config, now, ended_by_attempt=ended),
+        *detect_missing_executions(snapshot, by_attempt, config, now, ended_by_attempt=ended),
         *detect_orphan_leases(snapshot, now, by_attempt),
         *detect_leaseless_tasks(snapshot, executions),
         *detect_left_running(snapshot, executions, config, now),
