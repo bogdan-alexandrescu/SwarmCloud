@@ -4536,17 +4536,56 @@ export interface IssuePreviewRead {
   tenant_id: string
 }
 
-/** `issueruns.PlanStep`: an id, a title and a prompt. Nothing else (invariant 10). */
+/**
+ * `issueruns.PlanStep`: an id, a title and a prompt, and optionally the files it
+ * touches, the tests it adds and an estimate. Text only (invariant 10). The
+ * optional fields are absent, not null, on a plan that did not set them.
+ */
 export interface PlanStepDoc {
   step_id: string
   title: string
   prompt: string
+  files?: string[] | null
+  tests?: string[] | null
+  estimate?: string | null
 }
 
-/** `issueruns.PlanSpec`. */
+/** `issueruns.PlanOverlap`: work in flight the planner found this plan collides with. */
+export interface PlanOverlap {
+  /** `owner/repo#N`. */
+  ref: string
+  kind: 'issue' | 'pull_request'
+  note: string
+}
+
+/** `issueruns.PlanSpec`. Every field past `steps` is optional (plans stored before #454's planning step). */
 export interface RunPlan {
   summary: string
   steps: PlanStepDoc[]
+  mode?: 'single' | 'workflow' | null
+  /** Every requirement the issue states; what decides `Closes #N` against `part of #N`. */
+  requirements?: string[] | null
+  overlaps?: PlanOverlap[] | null
+  estimate?: string | null
+}
+
+/** One open pull request in `IssueRun.open_work`, masked. */
+export interface OpenWorkPull {
+  number: number
+  title: string
+  /** Null when its files were not read (past a cap, the time budget, or a failed read). */
+  files: string[] | null
+  files_truncated: boolean
+}
+
+/** `forge.read_open_work`: the repository's open work when the run was created. */
+export interface OpenWork {
+  repository: string
+  read_at: string | null
+  issues: { number: number; title: string }[]
+  issues_truncated: boolean
+  pull_requests: OpenWorkPull[]
+  pull_requests_truncated: boolean
 }
 
 /** One transition, as `IssueRun.history` serves it. */
@@ -4585,6 +4624,8 @@ export interface IssueRun {
   rejection_reason: string | null
   error: string | null
   history: RunTransition[]
+  /** Null on runs created before the open-work read; absent from older servers. */
+  open_work?: OpenWork | null
 }
 
 /** `GET /v1/runs`: newest first, as the server orders them. */

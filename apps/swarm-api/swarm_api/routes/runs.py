@@ -1,6 +1,6 @@
 """Issue-run routes (#454). The run document and its machine are `swarm_api.issueruns`.
 
-    POST /v1/runs                         plan an issue: one planner task
+    POST /v1/runs                         read the open work, then one planner task
     GET  /v1/runs                         the caller's tenant's runs, newest first
     GET  /v1/runs/{run_id}                one run, advanced to what its tasks say
     POST /v1/runs/{run_id}/plan:approve   {"plan_digest"}  -> a new workflow
@@ -33,6 +33,7 @@ from swarm_common.states import TaskState
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
+from ..forge import ForgeReadError, read_open_work
 from ..issueruns import (
     AUTO_APPROVER,
     MAX_PLAN_BYTES,
@@ -224,11 +225,33 @@ def create_run(
     # Before anything is created: a refused option writes nothing.
     refuse_auto_merge(body.auto_merge)
     ref = parse_issue_ref(body.issue)
+    # The repository's open work, read with THIS caller's tenant's forge
+    # token (invariant 9) before anything is created: a 403 or 404 refuses
+    # the run (owner decision, "a forge 403 or 404 fails the planner") with
+    # the preview's codes, and so does a list GitHub would not serve, because
+    # a plan made blind to the work in flight is what #454 exists to stop.
+    # `tenant_for` is the create path's tenant resolution, the one
+    # `submit_tasks` runs again below.
+    tenant = ctx.submissions.tenant_for(auth)
+    try:
+        open_work = read_open_work(
+            ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now()
+        )
+    except ForgeReadError as refused:
+        log.info(
+            "issue run refused tenant=%s issue=%s open_work=%s",
+            tenant.tenant_id, ref.short, refused.code,
+        )
+        raise
+    log.info(
+        "issue run open work tenant=%s issue=%s issues=%d pull_requests=%d",
+        tenant.tenant_id, ref.short, len(open_work["issues"]), len(open_work["pull_requests"]),
+    )
     run_id = new_id("run")
     # The planner first, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
-    submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id)])
+    submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id, open_work)])
     planner = submission.tasks[0]
     now = ctx.now()
     run = _runs(ctx).create(
@@ -244,6 +267,7 @@ def create_run(
             auto_merge=body.auto_merge,
             fix_rounds=body.fix_rounds,
             planner_task_id=planner.id,
+            open_work=open_work,
         )
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
