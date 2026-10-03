@@ -2076,7 +2076,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('CH-8: every control reaches 44px at 390, by height or by hit area, with the type unchanged', () => {
     const f = fragment(
       '<div class="app">' +
-        '<div class="ctl-seg"><button>Live</button></div>' +
+        '<div class="c-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="c-btn is-primary is-full">Send</button>' +
@@ -2085,11 +2085,12 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '</div>',
     )
     // MUTATION: move any of these phone rules above the base rule it has to
-    // beat -- which is how `.ctl-seg > button` shipped -- or delete it.
+    // beat -- which is how the old `.ctl-seg > button` shipped -- or delete it.
     // (The rail's three item kinds were on this list until the Sky spine
     // replaced the rail, rebrand 2026-10-01.)
     for (const sel of [
-      '.ctl-seg > button',
+      // The canonical segmented control (it replaced `.ctl-seg`, #503 swap).
+      '.c-seg > button',
       '.limit-edit input',
       '.limit-edit button',
       '.ol-table-toggle',
@@ -2098,11 +2099,11 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     ]) {
       // The canonical button's rules are in its own sheet, which `won` (this
       // file's styles.css-only cascade) does not read: `painted` reads all.
-      const h = sel.startsWith('.c-btn') ? painted(pick(f, sel), 'min-height', PHONE) : won(pick(f, sel), 'min-height', PHONE)
+      const h = sel.startsWith('.c-') ? painted(pick(f, sel), 'min-height', PHONE) : won(pick(f, sel), 'min-height', PHONE)
       expect(px(h), `${sel} at 390`).toBeGreaterThanOrEqual(44)
     }
     // The segment keeps its desktop size: the target is a phone rule.
-    expect(px(won(pick(f, '.ctl-seg > button'), 'min-height', WIDE))).toBeLessThan(44)
+    expect(px(painted(pick(f, '.c-seg > button'), 'min-height', WIDE) ?? '0px')).toBeLessThan(44)
     // A word or a disc that must not grow gets an empty, centred hit area.
     for (const sel of ['.ctl-q-glyph', '.ov-refresh', '.ov-link', '.sbf-mini']) {
       const el = pick(f, sel)

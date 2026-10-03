@@ -258,7 +258,7 @@ describe('at 390 the section’s pages are a sticky strip', () => {
     const c = await land([STEP, LONE], null)
     const strip = c.querySelector<HTMLElement>('.ag-list-tabs')!
     expect(strip.getAttribute('role')).toBe('tablist')
-    expect(strip.closest('.ctl-seg'), 'the tabs are a boxed segmented control again').toBeNull()
+    expect(strip.closest('.ctl-seg, .c-seg'), 'the tabs are a boxed segmented control again').toBeNull()
     const sheets = AGENTS_CSS + '\n' + STYLES
     expect(cascade(sheets, strip, 'position', { width: 390 }).winner?.value).toBe('sticky')
     expect(cascade(sheets, strip, 'position', { width: 1440 }).winner?.value ?? 'static').toBe('static')

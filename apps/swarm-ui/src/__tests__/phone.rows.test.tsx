@@ -168,7 +168,7 @@ describe('#109: the phone step Table keeps the columns that compare rows', () =>
 
 describe('#109: one mode switch per phone screen', () => {
   it('has no board-level Rows/Graph switch beside the per-workflow view switch', () => {
-    const segs = [...`${WORKFLOWS_SRC}\n${WORKFLOW_VIEWS_SRC}`.matchAll(/className="ctl-seg ([\w-]+)"/g)].map((m) => m[1])
+    const segs = [...`${WORKFLOWS_SRC}\n${WORKFLOW_VIEWS_SRC}`.matchAll(/<Segmented\s+className="([\w-]+)"/g)].map((m) => m[1])
     // The list's state filter, the page's Graph/Table/Timeline, and the
     // canvas zoom (Graph only, and only when there is something to zoom).
     expect(segs.sort()).toEqual(['wf-view-seg', 'wf-zoom-seg', 'wfl-seg'])

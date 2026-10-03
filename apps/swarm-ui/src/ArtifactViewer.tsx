@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
+import { Segmented } from './components'
 import { artifactRawUrl, loadArtifactContent } from './api'
 import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
@@ -905,14 +906,16 @@ function JsonViews({ value, pretty }: { value: unknown; pretty: string }) {
   const [mode, setMode] = useState<'tree' | 'raw'>('tree')
   return (
     <>
-      <div className="ctl-seg art-view-seg" role="group" aria-label="JSON view">
-        <button type="button" aria-pressed={mode === 'tree'} onClick={() => setMode('tree')}>
-          Tree
-        </button>
-        <button type="button" aria-pressed={mode === 'raw'} onClick={() => setMode('raw')}>
-          Raw
-        </button>
-      </div>
+      <Segmented
+        className="art-view-seg"
+        label="JSON view"
+        value={mode}
+        options={[
+          { key: 'tree', label: 'Tree' },
+          { key: 'raw', label: 'Raw' },
+        ]}
+        onChange={setMode}
+      />
       {mode === 'raw' ? (
         <pre className="art-text">{pretty}</pre>
       ) : (
@@ -983,14 +986,16 @@ function MarkdownViews({ source }: { source: string }) {
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
   return (
     <>
-      <div className="ctl-seg art-view-seg" role="group" aria-label="Markdown view">
-        <button type="button" aria-pressed={mode === 'rendered'} onClick={() => setMode('rendered')}>
-          Rendered
-        </button>
-        <button type="button" aria-pressed={mode === 'source'} onClick={() => setMode('source')}>
-          Source
-        </button>
-      </div>
+      <Segmented
+        className="art-view-seg"
+        label="Markdown view"
+        value={mode}
+        options={[
+          { key: 'rendered', label: 'Rendered' },
+          { key: 'source', label: 'Source' },
+        ]}
+        onChange={setMode}
+      />
       {mode === 'rendered' ? <Markdown source={source} /> : <pre className="art-text">{source}</pre>}
     </>
   )

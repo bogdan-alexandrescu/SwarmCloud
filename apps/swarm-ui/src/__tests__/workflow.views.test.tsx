@@ -385,10 +385,10 @@ describe('U2: the view modes', () => {
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
     expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline'])
-    expect(c.querySelector('.wf-viewbar .ctl-seg'), 'the boxed control is still in the card').toBeNull()
+    expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
-    expect(document.querySelector('.wf-chrome .ctl-seg'), 'a board-wide mode control is still drawn').toBeNull()
+    expect(document.querySelector('.wf-chrome .c-seg'), 'a board-wide mode control is still drawn').toBeNull()
   })
 
   it('opens a workflow as a timeline, and draws no canvas', async () => {
@@ -657,7 +657,7 @@ describe('U2: a step reads the same in every view', () => {
     expect(said.filter((t) => /^ran\b|^\d/.test(t)), 'the node claims run time nothing recorded').toEqual([])
     expect(said).toContain('never started')
 
-    const seg = root.querySelector('.wf-viewbar .ctl-seg') as HTMLElement
+    const seg = root.querySelector('.wf-viewbar .c-seg') as HTMLElement
     fireEvent.click(within(seg).getByText('Timeline'))
     const t = track(root, 'work')
     expect(t.querySelector('.wf-tl-span.is-ran, .wf-tl-span.is-running')).toBeNull()

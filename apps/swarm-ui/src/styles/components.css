@@ -225,7 +225,10 @@
 .c-seg > a:last-child { border-right: 0; }
 .c-seg > a[aria-current='page'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .c-seg > a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.c-seg > button:hover:not(:disabled) { color: var(--text); }
+.c-seg > button:disabled { opacity: .45; cursor: not-allowed; }
 .c-seg > button[aria-pressed='true'],
+.c-seg > button[aria-selected='true'],
 .c-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .c-seg em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); }
 .c-crumb { display: flex; align-items: center; gap: 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; margin: 0; padding: 0; list-style: none; }
@@ -340,3 +343,11 @@
 .c-ds .is-del { color: var(--s-bad); }
 .c-seg.is-sm { height: var(--h-sm); }
 .c-seg.is-sm > button { padding: 0 10px; }
+/* THE PHONE TARGET (CH-8), at the foot of the sheet so no base rule after it
+   wins: below 561px a segment is 44px tall, its type unchanged. It is what the
+   local `.ctl-seg` carried before every segmented control became this one. */
+@media (max-width: 560px) {
+  .c-seg { height: auto; }
+  .c-seg > button,
+  .c-seg > a { min-height: 44px; }
+}

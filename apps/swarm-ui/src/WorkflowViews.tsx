@@ -5,7 +5,7 @@ import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, ty
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
 import type { MarkHue, MarkName } from './marks'
-import { NamedMark } from './components'
+import { NamedMark, Segmented } from './components'
 import { Id } from './Shell'
 import {
   DEFAULT_SORT,
@@ -144,8 +144,8 @@ export function SourceNote() {
 /**
  * Graph / Timeline / Table, for ONE open workflow.
  *
- * `.ctl-seg`, the same primitive as the board's Rows/Graph control and the
- * canvas's zoom -- §6.11's one segmented control, not a third kind of switch.
+ * The canonical `Segmented`, the same control as the canvas's zoom -- §6.11's
+ * one segmented control, not a third kind of switch.
  * The board's control sets every card at once; this one is how a reader who
  * opened a single row from Rows looks at its table without opening all ten.
  */
@@ -157,13 +157,13 @@ export function ViewControl({
   onChoose: (v: WorkflowView) => void
 }) {
   return (
-    <div className="ctl-seg wf-view-seg" role="group" aria-label="How to draw this workflow">
-      {WORKFLOW_VIEWS.map((v) => (
-        <button key={v} type="button" aria-pressed={view === v} onClick={() => onChoose(v)}>
-          {VIEW_LABEL[v]}
-        </button>
-      ))}
-    </div>
+    <Segmented
+      className="wf-view-seg"
+      label="How to draw this workflow"
+      value={view}
+      options={WORKFLOW_VIEWS.map((v) => ({ key: v, label: VIEW_LABEL[v] }))}
+      onChange={onChoose}
+    />
   )
 }
 

@@ -109,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
-import { Button, Chip, NamedMark, ProgressBar, Tabs, TypedConfirm } from './components'
+import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -2218,7 +2218,7 @@ type ZoomChoice = 'auto' | ZoomTier
  * a canvas whose steps have no runner profile, and this console's whole subject
  * is keeping "not shown" apart from "not there".
  *
- * `.ctl-seg`, THE SAME PRIMITIVE AS THE BOARD'S Rows/Graph CONTROL, one level
+ * `Segmented`, THE SAME CANONICAL CONTROL AS THE CARD'S VIEW CONTROL, one level
  * down -- the same gesture, the same shape, the same keyboard behaviour, and
  * §6.11's one segmented control rather than a second kind of switch invented
  * for this screen. Four real buttons, so it is tab-reachable and operable from
@@ -2255,19 +2255,13 @@ function ZoomControl({
     ...ZOOM_TIERS.map((t) => [t, TIER_LABEL[t], TIER_TITLE[t]] as const),
   ]
   return (
-    <div className="ctl-seg wf-zoom-seg" role="group" aria-label="How much each step says">
-      {options.map(([value, label, title]) => (
-        <button
-          key={value}
-          type="button"
-          aria-pressed={choice === value}
-          title={title}
-          onClick={() => onChoose(workflowId, value)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
+    <Segmented
+      className="wf-zoom-seg"
+      label="How much each step says"
+      value={choice}
+      options={options.map(([value, label, title]) => ({ key: value, label, title }))}
+      onChange={(value) => onChoose(workflowId, value)}
+    />
   )
 }
 
@@ -4296,20 +4290,14 @@ function WorkflowListFilters({
   const off = counts === null
   return (
     <div className="wfl-filters">
-      <div className="ctl-seg wfl-seg" role="group" aria-label="Which workflows">
-        {BUCKET_FILTERS.map((b) => (
-          <button
-            key={b}
-            type="button"
-            disabled={off}
-            aria-pressed={query.state === b}
-            onClick={() => choose({ ...query, state: b })}
-          >
-            {BUCKET_LABEL[b]}
-            {counts !== null && <span className="wfl-n">{counts[b]}</span>}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        className="wfl-seg"
+        label="Which workflows"
+        disabled={off}
+        value={query.state}
+        options={BUCKET_FILTERS.map((b) => ({ key: b, label: BUCKET_LABEL[b], ...(counts !== null ? { count: counts[b] } : {}) }))}
+        onChange={(b) => choose({ ...query, state: b })}
+      />
       <input
         className="wfl-search"
         type="search"

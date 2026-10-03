@@ -410,7 +410,7 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     expect(buttons[0]!.getAttribute('aria-current')).toBe('page')
     expect(buttons[1]!.getAttribute('href')).toMatch(/^\/workflows\/wf_broker\/table/)
     expect(tabs.querySelector('em')!.textContent).toBe('4')
-    expect(document.querySelector('.wf-viewbar .ctl-seg'), 'the boxed Graph/Timeline/Table control is still in the card').toBeNull()
+    expect(document.querySelector('.wf-viewbar .c-seg'), 'the boxed Graph/Timeline/Table control is still in the card').toBeNull()
     fireEvent.click(buttons[1]!)
     expect(onView).toHaveBeenLastCalledWith('wf=wf_broker&tab=table')
     // Underlined, not boxed: the active tab carries a bottom border, the strip a hairline.

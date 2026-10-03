@@ -5183,69 +5183,8 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-toolbar > .is-end { margin-left: auto; }
 
-/* ONE BORDERED GROUP, NOT N PILLS. The active segment is marked by ACCENT TEXT
-   plus a surface step — not by a filled pill. Very low ink, legible at a
-   glance, and it survives both themes without a fill that has to be re-tuned
-   for each one. Railway's time range and view switch are both this control and
-   it is why their toolbar reads as two things rather than six.
-
-   THE SELECTION IS HUELESS, for the reason `.ctl-nav-link.is-on` gives: `--info`
-   already carries seven jobs in this file, and a selected segment drawn in the
-   same blue as a live agent teaches the reader to stop trusting colour as a
-   state channel. */
-/* B4.5 — THE INTERNAL DIVIDER IS A 4px GUTTER, NOT A HAIRLINE, and the reason
-   is a gate rather than a taste.
-
-   This primitive was specified with `button + button { border-left: 1px }` and
-   no gap. Pools is the first screen to render it, and `spaceprobe.ts:1036`
-   reported it immediately: `surfaces-touch div.ctl-seg.is-end [column] 0 < 4`.
-   The probe is right and the finding is not a false positive. Its rule is that
-   two SURFACES may not touch, and inside this control both children qualify --
-   the pressed one by its `--surface-2` fill, the one after it by that left
-   border -- so the group really did draw two filled boxes edge to edge, which
-   is the shape the floor exists to stop.
-
-   The fix keeps every decision §6.11 made and changes only the mechanism of the
-   separation: still ONE bordered group rather than N pills, still an active
-   segment marked by a surface step and weight rather than by a filled pill,
-   still hueless. A 4px gutter separates the segments instead of a hairline,
-   which is `--ctl-s1` -- the smallest step this sheet's rhythm declares, and
-   exactly the floor. `padding: 2px` keeps the segments off the group's own
-   border by the same rule the probe applies to ink.
-
-   IT WAS NOT FIXED BY HIDING THE RULE. A `box-shadow` divider would have
-   passed both this check and the divider-contrast check while drawing the
-   identical pixels, because the probe reads borders and not shadows -- which
-   is the "guard that is strongest when it is broken" failure this whole suite
-   was written against. A gutter is a real change to a real geometry. */
-.ctl-seg {
-  display: inline-flex;
-  align-items: stretch;
-  gap: var(--ctl-s1);
-  padding: 2px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-}
-.ctl-seg > button {
-  min-height: 26px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 2px;
-  background: none;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color var(--ctl-dur) ease, background-color var(--ctl-dur) ease;
-}
-.ctl-seg > button:hover { color: var(--text); }
-.ctl-seg > button[aria-pressed='true'],
-.ctl-seg > button[aria-selected='true'] {
-  background: var(--surface-2);
-  color: var(--text);
-  font-weight: 600;
-}
-.ctl-seg > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+/* THE SEGMENTED CONTROL is the canonical `Segmented` (components.css, `.c-seg`);
+   the local `.ctl-seg` it replaced is gone (#503 swap). */
 
 /* -------------------------------------------------------------------------- */
 /* 17. Page header                                                             */
@@ -9805,8 +9744,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
                                    the pointer and draws nothing
    A linked fact (`a.ctl-metric`) already clears 44px and is not listed. */
 @media (max-width: 560px) {
-  .ctl-seg > button { min-height: 44px; }
-
   .limit-edit input,
   .limit-edit button {
     min-height: 44px;
@@ -10902,7 +10839,6 @@ span.sk-ttile { cursor: default; }
 /* The list, full width (workflows.html A). */
 .wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfl-n { margin-left: 6px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
 .wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }

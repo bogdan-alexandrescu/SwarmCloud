@@ -13,7 +13,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { NamedMark, WarnMark } from './components'
+import { NamedMark, Segmented, WarnMark } from './components'
 import './styles/capacity.css'
 import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
@@ -1454,19 +1454,16 @@ function Holding({ account, now }: { account: Account; now: number }) {
   const pick = (t: 'now' | 'history') => setTab(tab === t ? 'none' : t)
   return (
     <div className="acct-action acct-holding">
-      <div className="ctl-seg" role="tablist" aria-label={`Who holds ${account.label}`}>
-        <button type="button" role="tab" aria-selected={tab === 'now'} onClick={() => pick('now')}>
-          Holding now ({account.assigned})
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'history'}
-          onClick={() => pick('history')}
-        >
-          History
-        </button>
-      </div>
+      <Segmented
+        role="tablist"
+        label={`Who holds ${account.label}`}
+        value={tab === 'none' ? null : tab}
+        options={[
+          { key: 'now', label: `Holding now (${account.assigned})` },
+          { key: 'history', label: 'History' },
+        ]}
+        onChange={pick}
+      />
       {tab === 'now' && <HoldingNow accountId={account.account_id} now={now} />}
       {tab === 'history' && <HoldingHistory account={account} now={now} />}
     </div>

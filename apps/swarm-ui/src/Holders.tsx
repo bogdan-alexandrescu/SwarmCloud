@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
+import { Segmented } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
 import { Mark } from './primitives'
@@ -532,16 +533,14 @@ function HolderTable({
             so on a board one tenant holds the table had no filter at all and
             nothing said whose rows they were; `All | eng` says it. */}
         {tenants.length > 0 && (
-          <div className="ctl-seg hold-tenants" role="group" aria-label="Tenant">
-            <button type="button" aria-pressed={tenant === null} onClick={() => setTenant(null)}>
-              All
-            </button>
-            {tenants.map((t) => (
-              <button key={t} type="button" aria-pressed={tenant === t} onClick={() => setTenant(t)}>
-                {t}
-              </button>
-            ))}
-          </div>
+          // All's key is '', which no tenant id is.
+          <Segmented
+            className="hold-tenants"
+            label="Tenant"
+            value={tenant ?? ''}
+            options={[{ key: '', label: 'All' }, ...tenants.map((t) => ({ key: t, label: t }))]}
+            onChange={(k) => setTenant(k === '' ? null : k)}
+          />
         )}
         <span className="ctl-card-note is-end">
           {coverage.kind !== 'complete' && <>{coverageMark(rows.length, coverage, 'This list')} </>}

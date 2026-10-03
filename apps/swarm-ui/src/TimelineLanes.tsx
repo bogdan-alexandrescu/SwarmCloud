@@ -64,7 +64,7 @@ import {
   type LanesView,
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
-import { Button, ButtonLink, MarkIcon, StateMark } from './components'
+import { Button, ButtonLink, MarkIcon, Segmented, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
 import { PageHead, timeAgo } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
@@ -520,18 +520,12 @@ export function TimelineLanesScreen({
       )}
 
       <div className="tl-ctl" role="group" aria-label="Timeline span and filters">
-        <div className="ctl-seg" role="group" aria-label="Span">
-          {LANE_SPANS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              aria-pressed={!zoomed && view.span === s}
-              onClick={() => setView({ ...view, span: s, since: null, until: null, back: null })}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Span"
+          value={zoomed ? null : view.span}
+          options={LANE_SPANS.map((s) => ({ key: s, label: s }))}
+          onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
+        />
         {back !== null && zoomed && (
           <button type="button" className="tl-backchip" onClick={() => setView(back)}>
             ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
@@ -564,13 +558,12 @@ export function TimelineLanesScreen({
             ))}
           </select>
         </label>
-        <div className="ctl-seg" role="group" aria-label="Kind">
-          {LANE_KINDS.map((k) => (
-            <button key={k} type="button" aria-pressed={view.kind === k} onClick={() => setView({ ...view, kind: k })}>
-              {k === 'steps' ? 'workflow steps' : k}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Kind"
+          value={view.kind}
+          options={LANE_KINDS.map((k) => ({ key: k, label: k === 'steps' ? 'workflow steps' : k }))}
+          onChange={(k) => setView({ ...view, kind: k })}
+        />
         <label className="tl-flt">
           Group by{' '}
           <select value={view.by} onChange={(e) => setView({ ...view, by: e.target.value as LanesView['by'] })}>

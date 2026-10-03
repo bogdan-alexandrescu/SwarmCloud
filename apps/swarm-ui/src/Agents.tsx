@@ -15,6 +15,7 @@ import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
+import { Segmented } from './components'
 import { Id, Screen } from './Shell'
 import { rowClock, useNow } from './useNow'
 import {
@@ -531,18 +532,12 @@ function AgentsBody({
             from the loaded rows, like the tab badges, and DEAD_LETTERED is
             never offered: nothing writes it (`agentlist.ts`). */}
         {shown === 'recent' && (
-          <div className="ctl-seg" role="group" aria-label="Recent, by state">
-            {([null, ...RECENT_STATES] as const).map((s) => (
-              <button
-                key={s ?? 'all'}
-                type="button"
-                aria-pressed={recentState === s}
-                onClick={() => chooseState(s)}
-              >
-                {s ?? 'all'} <span className="badge">{stateCounts[s ?? 'all']}</span>
-              </button>
-            ))}
-          </div>
+          <Segmented
+            label="Recent, by state"
+            value={recentState ?? 'all'}
+            options={(['all', ...RECENT_STATES] as const).map((s) => ({ key: s, label: s, count: stateCounts[s] }))}
+            onChange={(s) => chooseState(s === 'all' ? null : s)}
+          />
         )}
 
         {shown === 'recent' && (

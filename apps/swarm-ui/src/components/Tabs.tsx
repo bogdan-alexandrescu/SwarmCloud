@@ -103,16 +103,49 @@ export interface SegOption<K extends string> {
    * drawn exactly as the toggle form is.
    */
   href?: string
+  /** What choosing it does, as the segment's title. */
+  title?: string
+  /** Layout only (`is-wide-only`: a segment the phone sheet carries instead). */
+  className?: string
 }
 
-export function Segmented<K extends string>({ options, value, onChange, label, small = false }: { options: readonly SegOption<K>[]; value: K; onChange?: (k: K) => void; label: string; small?: boolean }) {
+/**
+ * `value` null presses nothing (a span the reader zoomed away from, a toggle
+ * that is off). `role="tablist"` is for a strip that opens a pane under it
+ * (Accounts' Holding now | History): tabs with `aria-selected`, same drawing.
+ * `disabled` disables every segment (a list still loading).
+ */
+export function Segmented<K extends string>({
+  options,
+  value,
+  onChange,
+  label,
+  small = false,
+  className,
+  disabled = false,
+  role = 'group',
+}: {
+  options: readonly SegOption<K>[]
+  value: K | null
+  onChange?: (k: K) => void
+  label: string
+  small?: boolean
+  /** Layout only, in the region that holds it; never a restyle. */
+  className?: string
+  disabled?: boolean
+  role?: 'group' | 'tablist'
+}) {
+  const cls = ['c-seg', small ? 'is-sm' : '', className ?? ''].filter(Boolean).join(' ')
+  const count = (o: SegOption<K>) => o.count !== undefined && <em>{o.count === null ? '—' : o.count}</em>
   if (options.length > 0 && options.every((o) => o.href !== undefined)) {
     return (
-      <nav className={`c-seg${small ? ' is-sm' : ''}`} aria-label={label}>
+      <nav className={cls} aria-label={label}>
         {options.map((o) => (
           <a
             key={o.key}
             href={o.href}
+            className={o.className}
+            title={o.title}
             aria-current={o.key === value ? 'page' : undefined}
             onClick={(e) => {
               if (onChange === undefined || !routedClick(e)) return
@@ -121,18 +154,29 @@ export function Segmented<K extends string>({ options, value, onChange, label, s
             }}
           >
             {o.label}
-            {o.count !== undefined && <em>{o.count === null ? '—' : o.count}</em>}
+            {count(o)}
           </a>
         ))}
       </nav>
     )
   }
+  const tabs = role === 'tablist'
   return (
-    <div className={`c-seg${small ? ' is-sm' : ''}`} role="group" aria-label={label}>
+    <div className={cls} role={role} aria-label={label}>
       {options.map((o) => (
-        <button key={o.key} type="button" aria-pressed={o.key === value} onClick={() => onChange?.(o.key)}>
+        <button
+          key={o.key}
+          type="button"
+          role={tabs ? 'tab' : undefined}
+          className={o.className}
+          title={o.title}
+          disabled={disabled || undefined}
+          aria-pressed={tabs ? undefined : o.key === value}
+          aria-selected={tabs ? o.key === value : undefined}
+          onClick={() => onChange?.(o.key)}
+        >
           {o.label}
-          {o.count !== undefined && <em>{o.count === null ? '—' : o.count}</em>}
+          {count(o)}
         </button>
       ))}
     </div>

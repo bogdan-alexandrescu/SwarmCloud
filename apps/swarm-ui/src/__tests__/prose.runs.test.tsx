@@ -257,7 +257,7 @@ async function renderAgents(rows: TaskPage = page()): Promise<HTMLElement> {
     fetchedAt: Date.now(),
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} />)
-  await waitFor(() => expect(container.querySelector('.tabs, .ctl-seg, .ag-list-tabs')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.tabs, .c-seg, .ag-list-tabs')).not.toBeNull())
   return container as HTMLElement
 }
 

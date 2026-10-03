@@ -31,6 +31,7 @@
 
 import { useId, type ReactNode } from 'react'
 
+import { Segmented } from './components'
 import { HelpNote } from './HelpCard'
 import { type TopicId } from './help'
 import {
@@ -841,13 +842,7 @@ export function ReliabilityCard({
       }
       className="is-wide ol-reliability"
     >
-      <div className="ctl-seg ol-group" role="group" aria-label="Group by">
-        {choices.map((c) => (
-          <button key={c} type="button" aria-pressed={group === c} onClick={() => onGroup(c)}>
-            {GROUP_LABEL[c]}
-          </button>
-        ))}
-      </div>
+      <Segmented className="ol-group" label="Group by" value={group} options={choices.map((c) => ({ key: c, label: GROUP_LABEL[c] }))} onChange={onGroup} />
       {cov.none ? (
         <NotRead cov={cov} what="Reliability" />
       ) : g.rows.length === 0 ? (

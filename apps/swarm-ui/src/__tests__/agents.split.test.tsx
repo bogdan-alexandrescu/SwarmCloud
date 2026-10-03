@@ -137,7 +137,7 @@ describe('underline tabs with counts, and an unknown count is a dash with its re
     render(split('attempts'))
     const list = screen.getByRole('tablist', { name: 'Agent panes' })
     expect(list.classList.contains('c-tabs'), 'the strip is not the canonical Tabs').toBe(true)
-    expect(list.classList.contains('ctl-seg'), 'the boxed segmented control is back').toBe(false)
+    expect(list.classList.contains('c-seg'), 'the boxed segmented control is back').toBe(false)
     await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
     expect(tab('Attempts').getAttribute('aria-selected')).toBe('true')
     const artifacts = tab('Artifacts').querySelector('.c-tabs em')!

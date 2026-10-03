@@ -32,7 +32,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, type SpineSection } from './Spine'
-import { routedClick } from './components'
+import { routedClick, Segmented } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -1736,13 +1736,13 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
               this tab loaded") said it twice more; the count the caption
               carried is the `N of M` beside the toggle. */}
           <div className="ctl-toolbar">
-            {/* `ctl-seg`, the product's pressed-state control: it draws the
-                on state and takes the 44px phone target already. */}
-            <div className="ctl-seg" role="group" aria-label="Rows">
-              <button type="button" aria-pressed={failuresOnly} onClick={() => setFailuresOnly(!failuresOnly)}>
-                failures only
-              </button>
-            </div>
+            {/* The canonical segmented control, one segment: pressed is on. */}
+            <Segmented
+              label="Rows"
+              value={failuresOnly ? 'failures' : null}
+              options={[{ key: 'failures', label: 'failures only' }]}
+              onChange={() => setFailuresOnly(!failuresOnly)}
+            />
             <span className="ctl-card-note ref-count">
               {shown.length} of {probes.length}
             </span>
