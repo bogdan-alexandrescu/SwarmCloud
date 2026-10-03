@@ -49,17 +49,7 @@
   margin-bottom: var(--ctl-s3);
 }
 .tl-zoom { display: inline-flex; gap: 4px; }
-.tl-backchip {
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid color-mix(in srgb, var(--info) 45%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--info) 12%, var(--surface));
-  color: var(--info);
-  font: inherit;
-  font-size: var(--t-micro);
-  cursor: pointer;
-}
+/* The back-to-span chip is the canonical button Chip (#503 swap). */
 .tl-flt {
   position: relative;
   display: inline-flex;

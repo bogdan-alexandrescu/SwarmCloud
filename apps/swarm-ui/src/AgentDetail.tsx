@@ -1,4 +1,4 @@
-import { Count, StateMark, ToneMark } from './components'
+import { Button, CIcon, Count, StateMark, ToneMark } from './components'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -187,9 +187,9 @@ export function AgentDetailScreen({
   if (headed) return screenEl
   return (
     <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
-      <button className="drawer-close" onClick={onClose} aria-label="Close">
-        ✕
-      </button>
+      <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={onClose}>
+        Close
+      </Button>
       {screenEl}
     </div>
   )
@@ -633,9 +633,9 @@ function IdCopy({ value }: { value: string }) {
   return (
     <>
       <span className="mono ad-id-text">{value}</span>
-      <button type="button" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
+      <Button size="sm" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
         copy
-      </button>
+      </Button>
       <span className="ad-id-said" role="status">
         {said}
       </span>
@@ -3090,12 +3090,13 @@ function GitOutcome({
           {patch ? (
             <>
               <span className="mono uri">{patch.uri}</span>
-              <button
+              <Button
+                size="sm"
                 className="copy"
                 onClick={() => navigator.clipboard?.writeText(`gsutil cat ${patch.uri} | git apply -`)}
               >
                 copy apply
-              </button>
+              </Button>
             </>
           ) : git.patch_omitted ? (
             <>
@@ -3354,9 +3355,9 @@ function HandedFile({ task, file, to }: { task: Task; file: ArtifactRef; to: str
           </>
         )}
         {!open && (
-          <button type="button" className="copy" onClick={() => setOpen(true)}>
+          <Button size="sm" className="copy" onClick={() => setOpen(true)}>
             show diff
-          </button>
+          </Button>
         )}
       </p>
       {open && read !== null && (
@@ -3594,9 +3595,9 @@ function AgPatchDiff({ taskId, patch }: { taskId: string; patch: ArtifactRef }) 
   if (!open) {
     return (
       <p className="ag-diff-open">
-        <button type="button" className="copy" onClick={() => setOpen(true)}>
+        <Button size="sm" className="copy" onClick={() => setOpen(true)}>
           Show the diff
-        </button>{' '}
+        </Button>{' '}
         <span className="ctl-sub">
           {patch.name} · {num(patch.bytes)} bytes
         </span>

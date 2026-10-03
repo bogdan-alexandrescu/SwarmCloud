@@ -32,7 +32,7 @@ import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
 import { RESOURCE_UNITS, TERMINAL_STATES, type Task } from './types'
 import './styles/agents.css'
-import { Button, StateMark, Tabs } from './components'
+import { Button, CIcon, StateMark, Tabs } from './components'
 
 /**
  * ONE AGENT, IN THE SPLIT (agents.html V1, decided 2026-10-01; viewers.html A
@@ -316,9 +316,9 @@ export function AgentSplit({
       <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
       </button>
-      <button className="drawer-close" onClick={close} aria-label="Close">
-        ✕
-      </button>
+      <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={close}>
+        Close
+      </Button>
 
       <AgHead taskId={taskId} task={task} read={head.state.status} reload={reload} />
 

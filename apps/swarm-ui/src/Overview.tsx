@@ -18,7 +18,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { NamedMark, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Button, NamedMark, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { PageHead, timeAgo } from './Shell'
 import {
@@ -119,9 +119,9 @@ export function OverviewScreen() {
       <div className="ctl-empty is-failed ov-page-empty">
         <Mark kind="unread" say="The API answered a sign-in page instead of data, so nothing on this screen is a reading of the platform." />
         <h3>Session expired</h3>
-        <button className="retry" onClick={() => window.location.reload()}>
+        <Button className="retry" onClick={() => window.location.reload()}>
           Reload to sign in
-        </button>
+        </Button>
       </div>
     )
   }

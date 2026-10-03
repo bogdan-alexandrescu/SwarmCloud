@@ -459,12 +459,12 @@ export function StopRun({
       )}
 
       <div className="stop-actions">
-        <button type="button" className="danger" disabled={busy} onClick={() => void run()}>
+        <Button kind="danger-filled" disabled={busy} onClick={() => void run()}>
           {busy ? 'stopping…' : `stop ${what}`}
-        </button>
-        <button type="button" disabled={busy} onClick={() => setOpen(false)}>
+        </Button>
+        <Button kind="ghost" disabled={busy} onClick={() => setOpen(false)}>
           keep running
-        </button>
+        </Button>
       </div>
 
       {/* "Nothing was stopped" stays: an absent side effect has nothing to put

@@ -993,12 +993,9 @@ body {
    "Run the count" is not inside a `.state` at all. That one shipped as a
    native grey button on a dark screen, and the spacing probe found it by
    failing to resolve `buttonface` to a colour. */
-.retry {
-  margin-top: 14px; background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-      padding: 6px 14px; font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
-}
-.retry:hover { border-color: var(--text-faint); }
+/* It is the canonical Button now (#503 swap), so one control has one
+   appearance wherever it is drawn; `.retry` is the layout hook only. */
+.c-btn.retry { margin-top: 14px; }
 
 /* A PLACEHOLDER BREATHES; IT DOES NOT BLINK. This keyframes was called
    `pulse`, and so was the liveness dot's, declared ~2,500 lines further down.
@@ -3059,17 +3056,13 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   position: sticky; top: 0;
   /* A LINE OF ITS OWN, not a float sharing one with the pane tabs — see the
      band above, whose height is only correct because of this. */
-  display: block; margin-left: auto;
+  display: flex; margin-left: auto;
   /* ON the band, not merely above the parent's other children. */
   z-index: 4;
+  /* The canonical icon Button (#503 swap) draws the look; these are the
+     band's geometry, which the band's height is measured against. */
   width: 32px; height: 32px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text-dim);
-  /* --lh-flush: the box is the square above. A glyph centred in a fixed square
-     takes no leading. */
-  cursor: pointer; font-size: var(--t-body); line-height: var(--lh-flush);
 }
-.drawer-close:hover { color: var(--text); border-color: var(--text-faint); }
 
 /* 560, not 640 -- §7.1's nearest survivor, the same move the run list's own
    phone block made. Nothing changes for a phone: `width: min(560px, 100vw)`
@@ -3287,13 +3280,8 @@ ol.timeline li::before {
    claiming one. */
 .s-age { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
-.reauth {
-  display: block; width: 100%;
-  margin-bottom: 8px; padding: 9px 12px;
-  border: 1px solid var(--bad); border-radius: var(--ctl-radius-sm);
-  background: color-mix(in srgb, var(--bad) 12%, var(--surface));
-  color: var(--bad-ink); font-size: var(--t-body); font-weight: 600; cursor: pointer;
-}
+/* The canonical full-width danger Button (#503 swap); the gap below is layout. */
+.c-btn.reauth { margin-bottom: 8px; }
 
 /* ------------------------------------------------------------------------ */
 /* Trouble board                                                             */
@@ -3370,21 +3358,13 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
   background: color-mix(in srgb, var(--paused) 20%, transparent);
   color: var(--paused-ink); font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
 }
-button.copy,
-a.copy {
-  margin-left: 8px; padding: 1px 7px;
-  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2); color: var(--text-dim);
-  font: var(--t-meta)/var(--lh-meta) var(--mono); cursor: pointer;
-}
-button.copy:hover,
-a.copy:hover { color: var(--text); border-color: var(--text-faint); }
-/* A LINK DRAWN AS THE COPY CONTROL (#184): the Artifacts pane's `download`
-   and `open full` are anchors -- the browser fetches the raw route itself,
-   with the session cookie, which a button calling `fetch` could not hand to a
-   download -- and they sit in a row of `copy gsutil` buttons, so they wear the
-   same box. No underline: the box is the affordance, as it is for the button. */
-a.copy { display: inline-block; text-decoration: none; }
+/* THE COPY AND DOWNLOAD CONTROLS are the canonical small Button and
+   ButtonLink (#503 swap: `button.copy` / `a.copy` drew a button style of their
+   own). The Artifacts pane's `download` and `open full` stay anchors -- the
+   browser fetches the raw route itself, with the session cookie, which a
+   button calling `fetch` could not hand to a download (#184). `.copy` is the
+   layout hook only: its gap from the value it acts on. */
+.c-btn.copy { margin-left: 8px; }
 
 /* ------------------------------------------------------------------------ */
 /* Activity                                                                  */
@@ -3741,8 +3721,6 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .acct-action button:not(:disabled):hover,
 .acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
 .acct-action button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
-.acct-action button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd)); }
-.acct-action button.danger:not(:disabled):hover { border-color: var(--bad); color: var(--bad); }
 
 /* Inputs and textareas are scoped to this screen rather than styled globally:
    other screens' forms belong to other tracks and a global rule would restyle
@@ -6818,18 +6796,8 @@ table.pools tbody tr.unmeasured {
 }
 
 .stop-actions { display: flex; gap: var(--ctl-s2); margin-top: var(--ctl-s3); }
-.stop-actions button {
-  /* --lh-flush: a button label centred in a box whose height is its own
-     padding. Leading would only make the two buttons taller than the
-     confirmation copy above them. */
-  font: 500 var(--t-body)/var(--lh-flush) var(--mono); padding: 6px 10px;
-  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text-dim); cursor: pointer;
-}
-.stop-actions button.danger {
-  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
-}
-.stop-actions button:disabled { opacity: .55; cursor: default; }
+/* Stop's confirm is the canonical danger-filled Button and its "keep
+   running" the ghost one (#503 swap). */
 .stop-note { font-size: var(--t-body); color: var(--text-dim); margin: var(--ctl-s2) 0 0; }
 .stop-note.small { font-size: var(--t-micro); }
 
@@ -9356,16 +9324,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ckb-facts { margin: var(--ctl-s2) 0; }
 .ckb-cut { color: var(--text-dim); }
 
-/* THE LINK TO THE WHOLE ARCHIVE, drawn as `button.copy` is so the controls on
-   this row read as one kind of thing. The same pair of tokens, so the
-   contrast it has is the contrast `button.copy` already clears. */
-.ckb-download {
-  padding: 1px 7px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2); color: var(--text-dim);
-  font: var(--t-meta)/var(--lh-meta) var(--mono); text-decoration: none;
-}
-.ckb-download:hover { color: var(--text); border-color: var(--text-faint); }
+/* THE LINK TO THE WHOLE ARCHIVE is the canonical small ButtonLink, as the
+   copy controls on this row are, so they read as one kind of thing (#503
+   swap: it had a rule of its own restating `button.copy`'s). */
 
 /* The tree. Mono because every label in it is a path; bounded in height so a
    5000-entry listing scrolls inside the panel instead of pushing the logs

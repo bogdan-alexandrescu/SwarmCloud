@@ -35,9 +35,12 @@ export function Chip({
   onRemove?: () => void
   /** The cross's accessible name, e.g. "Remove filter state: failed". */
   removeLabel?: string
-  /** A pick chip: the chip is a toggle button (a workflow band's named steps). */
+  /**
+   * A button chip: an action in the chip's shape (Timeline's back-to-span
+   * chip), or with `pressed` a toggle (a workflow band's named steps).
+   */
   onClick?: () => void
-  /** A pick chip's pressed state; the picked chip carries the text-ink edge. */
+  /** A toggle's pressed state; the picked chip carries the text-ink edge. Omitted, no `aria-pressed`. */
   pressed?: boolean
   /** The state's tint and edge (brand §3 hues), for a chip naming a step in that state. */
   tone?: ChipTone
@@ -68,7 +71,7 @@ export function Chip({
   }
   if (onClick !== undefined) {
     return (
-      <button type="button" className={cls('c-chip is-pick')} aria-pressed={pressed ?? false} title={title} onClick={onClick}>
+      <button type="button" className={cls('c-chip is-pick')} aria-pressed={pressed} title={title} onClick={onClick}>
         {children}
       </button>
     )

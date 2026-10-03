@@ -6,7 +6,7 @@ import {
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
-import { ToneMark } from './components'
+import { Button, ToneMark } from './components'
 import { DataSourceCells } from './DataSources'
 import { probeSnapshot, subscribeProbes } from './fetch'
 import { nudgePane } from './focus'
@@ -229,9 +229,9 @@ export function Dock() {
           dot turns `is-bad` (the diamond) for the same state, but a dot is not
           a button. */}
       {s.expired && (
-        <button className="reauth" onClick={() => window.location.reload()}>
+        <Button kind="danger" full className="reauth" onClick={() => window.location.reload()}>
           Session expired — reload to sign in
-        </button>
+        </Button>
       )}
 
       <button

@@ -64,7 +64,7 @@ import {
   type LanesView,
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
-import { Button, ButtonLink, MarkIcon, Segmented, StateMark } from './components'
+import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
 import { PageHead, timeAgo } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
@@ -527,9 +527,9 @@ export function TimelineLanesScreen({
           onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
         />
         {back !== null && zoomed && (
-          <button type="button" className="tl-backchip" onClick={() => setView(back)}>
+          <Chip onClick={() => setView(back)}>
             ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
-          </button>
+          </Chip>
         )}
         <span className="tl-zoom">
           <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>

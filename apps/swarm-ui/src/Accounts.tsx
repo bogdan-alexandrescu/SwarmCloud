@@ -13,7 +13,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
+import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -3876,14 +3876,13 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           aria-label={`Type ${account.label} to confirm removal`}
           onChange={(e) => setTyped(e.target.value)}
         />
-        <button
-          type="button"
-          className="danger"
+        <Button
+          kind="danger-filled"
           disabled={!armed || busy}
           onClick={() => void run()}
         >
           {busy ? 'removing…' : `remove ${account.label}`}
-        </button>
+        </Button>
         <span className="client-side">type the label to arm this</span>
       </span>
       {error && (

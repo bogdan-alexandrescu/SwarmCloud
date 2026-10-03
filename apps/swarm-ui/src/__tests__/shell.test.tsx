@@ -29,12 +29,13 @@ import STYLES from '../styles.css?raw'
 import CAPACITY_CSS from '../styles/capacity.css?raw'
 import HELP_CSS from '../styles/help.css?raw'
 import AGENTS_CSS from '../styles/agents.css?raw'
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
 import { painted } from './marks'
 import { App } from '../App'
-import { Tabs } from '../components'
+import { Button, Tabs } from '../components'
 import { HelpScreen } from '../HelpSection'
 import {
   DOCK,
@@ -400,13 +401,19 @@ describe('one control, one appearance', () => {
     // This is the claim the probe CANNOT make -- it measures geometry and
     // contrast, not "these two are the same button" -- so it is made here, on
     // the shipped sheet, against two elements the cascade actually reached.
+    //
+    // Since the #503 swap the retry IS the canonical Button, so the claim is
+    // asked of the canonical sheet as well as this one.
     const style = withStyles()
+    const canon = document.createElement('style')
+    canon.textContent = COMPONENTS_CSS
+    document.head.appendChild(canon)
     const { container } = render(
       <div className="app">
         <div className="state">
-          <button className="retry">Try again</button>
+          <Button className="retry">Try again</Button>
         </div>
-        <button className="retry">try again</button>
+        <Button className="retry">try again</Button>
       </div>,
     )
     const both = [...container.querySelectorAll<HTMLElement>('.retry')]
@@ -419,8 +426,11 @@ describe('one control, one appearance', () => {
     expect(read(outside)).toBe(read(inside))
     // And what they agree on is the PRODUCT's surface, not the user agent's.
     // An unstyled `<button>` computes `background: none` and a `buttonface`
-    // border here; reaching `--surface-2` means this sheet's rule got to it.
-    expect(read(outside)).toContain('var(--surface-2)')
+    // border here; reaching `--surface` means the canonical rule got to it.
+    // The canonical button's surface (components.css `.c-btn`).
+    expect(read(outside)).toContain('var(--surface)')
+    expect(outside.classList.contains('c-btn')).toBe(true)
+    canon.remove()
     style.remove()
   })
 })
