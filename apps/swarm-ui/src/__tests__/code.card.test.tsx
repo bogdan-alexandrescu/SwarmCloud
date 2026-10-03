@@ -238,10 +238,10 @@ describe('the split holds Stop in its header, so Details draws none', () => {
   it('draws the pane’s own stop control only when no header holds one', () => {
     const t = runTask({ state: 'RUNNING', completed_at: null })
     const { unmount } = render(<Run run={run(t)} reload={() => {}} />)
-    expect(document.querySelector('.run-stop .stop-btn')).not.toBeNull()
+    expect(document.querySelector('.run-stop .run-stop-btn')).not.toBeNull()
     unmount()
     render(<Run run={run(t)} reload={() => {}} headed />)
-    expect(document.querySelector('.run-stop .stop-btn')).toBeNull()
+    expect(document.querySelector('.run-stop .run-stop-btn')).toBeNull()
   })
 })
 

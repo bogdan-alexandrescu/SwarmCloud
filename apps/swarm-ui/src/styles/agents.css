@@ -203,20 +203,6 @@
 .ag-head-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); margin-inline-start: auto; flex: none; }
 .ag-head-sub { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
-.ag-head-stop .stop-btn {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
-  cursor: pointer;
-}
-.ag-head-stop .stop-btn { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
-.ag-head-stop .stop-btn:hover { background: var(--surface-2); }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 

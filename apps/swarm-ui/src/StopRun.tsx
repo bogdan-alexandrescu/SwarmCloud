@@ -1,6 +1,7 @@
 import { useState } from 'react'
 
 import { cancelTask } from './api'
+import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
 import {
   TERMINAL_STATES,
@@ -302,13 +303,13 @@ export function StopRun({
 
   if (!open) {
     return (
-      <button
-        type="button"
-        className={variant === 'inline' ? 'stop-btn inline' : 'stop-btn'}
-        onClick={() => setOpen(true)}
-      >
+      // The canonical button (components.html A). In a row or on a graph node
+      // it is QUIET until opened (B28) -- the plain small button, whose 28px
+      // the node's slot is measured for; in an agent's header, where there is
+      // one, it is the danger outline: a destructive action that will still ask.
+      <Button kind={variant === 'inline' ? 'secondary' : 'danger'} size={variant === 'inline' ? 'sm' : 'md'} className="run-stop-btn" onClick={() => setOpen(true)}>
         stop
-      </button>
+      </Button>
     )
   }
 

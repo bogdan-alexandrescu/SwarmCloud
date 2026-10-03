@@ -4454,9 +4454,9 @@ function WorkflowList({
           No {query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow matches
           {filteredAtAll ? ' these filters' : ' in this read'}.
           {filteredAtAll && (
-            <button type="button" className="wfl-clear" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
+            <Button size="sm" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
               Clear the filters
-            </button>
+            </Button>
           )}
         </p>
       ) : (

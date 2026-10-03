@@ -6972,26 +6972,8 @@ table.pools tbody tr.unmeasured {
    it is a panel with a real border and the danger colour, because that is the
    moment the decision is actually being made. */
 
-.stop-btn {
-  /* --lh-flush: the box is the `--row-h` row this control sits in on every
-     non-terminal agent. It was 10.5px, under the floor; --t-meta plus flush
-     leading is the largest it can be without making the row taller. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--font);
-  padding: 4px 8px; border-radius: var(--ctl-radius-sm);
-  border: 1px solid var(--ctl-bd); background: transparent; color: var(--text-dim);
-  cursor: pointer;
-}
-.stop-btn:hover {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
-}
-    /* Tighter padding, same type. The 10px that was here was below the 11px floor
-       and it sat on a destructive control in every row -- the last thing in this
-       product that should be the hardest to read. It is --t-meta with its parent.
-       The lane's 3px is kept over the 2px this had: its spacing pass raised every
-       control's vertical padding, and a stop button alone at 2px reads as cramped
-       beside the rest of the row. */
-    .stop-btn.inline { padding: 3px 6px; }
+/* The closed control is the canonical `Button` (StopRun.tsx, #503 swap): plain
+   and small in a row, the danger outline in an agent's header. */
 
 .run-stop { margin-left: auto; }
 /* NOT A FLEX CHILD OF THE CARD ANY MORE, because the card is an `<a>` and a
@@ -7066,7 +7048,7 @@ table.pools tbody tr.unmeasured {
    already in, and something that invited a second press would imply the first
    had not taken. */
 .stop-pending {
-  /* --lh-flush: same box as `.stop-btn`, which this replaces in place -- the
+  /* --lh-flush: same box as the closed stop button, which this replaces in place -- the
      row must not jump when a stop is requested. */
   font: 500 var(--t-meta)/var(--lh-flush) var(--font);
   color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));
@@ -10858,7 +10840,6 @@ span.sk-ttile { cursor: default; }
 .wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.wfl-clear { font: inherit; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 .wfl-started { color: var(--text-dim); white-space: nowrap; }
 .wfl-dur { white-space: nowrap; }

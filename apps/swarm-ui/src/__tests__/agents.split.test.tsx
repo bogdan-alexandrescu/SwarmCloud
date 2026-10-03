@@ -127,7 +127,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
     render(split())
     expect(document.querySelector('.ag-head-title')?.textContent).toBe(ID)
     expect(document.querySelector('.ag-head-state')?.textContent).toBe('reading')
-    expect(document.querySelector('.ag-head .stop-btn')).toBeNull()
+    expect(document.querySelector('.ag-head .run-stop-btn')).toBeNull()
   })
 })
 

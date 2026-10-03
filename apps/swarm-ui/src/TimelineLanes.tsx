@@ -532,12 +532,12 @@ export function TimelineLanesScreen({
           </button>
         )}
         <span className="tl-zoom">
-          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(2)}>
+          <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>
             −
-          </button>
-          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>
+          </Button>
+          <Button size="sm" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>
             +
-          </button>
+          </Button>
         </span>
         <TlPicker
           label="State"
@@ -592,9 +592,9 @@ export function TimelineLanesScreen({
           <p>
             The attempts could not be read. /v1/attempts {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
           </p>
-          <button type="button" onClick={refresh}>
+          <Button size="sm" onClick={refresh}>
             Try again
-          </button>
+          </Button>
         </div>
       ) : shown === null ? (
         <div className="tl-state" aria-busy="true">
@@ -612,9 +612,9 @@ export function TimelineLanesScreen({
       ) : lanes.length === 0 ? (
         <div className="tl-state">
           <p>{`No lane matches ${filterWords(view)} among the ${rows.length} attempts read.`}</p>
-          <button type="button" onClick={() => setView({ ...view, state: [], profile: [], wf: null, kind: 'all', lane: null })}>
+          <Button size="sm" onClick={() => setView({ ...view, state: [], profile: [], wf: null, kind: 'all', lane: null })}>
             Clear filters
-          </button>
+          </Button>
         </div>
       ) : (
         <div className={rereading ? 'tl-chart is-stale' : 'tl-chart'} aria-busy={rereading}>
@@ -658,9 +658,9 @@ export function TimelineLanesScreen({
             {shown.rows.length} attempts drawn, newest first. Older attempts in this span: <b className="tl-dash">—</b> the route returns a page token, not a total.
           </p>
           {typeof shown.more === 'object' && <p>{`The next page ${failureWords(shown.more)}.`}</p>}
-          <button type="button" onClick={readNextPage} disabled={shown.more === 'reading'}>
+          <Button size="sm" onClick={readNextPage} disabled={shown.more === 'reading'}>
             {shown.more === 'reading' ? 'Reading…' : 'Read the next page ›'}
-          </button>
+          </Button>
         </div>
       )}
 
