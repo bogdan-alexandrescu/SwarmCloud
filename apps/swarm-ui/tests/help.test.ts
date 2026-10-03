@@ -233,7 +233,8 @@ test('the Help page head says what the page is and which topic is showing (AH-25
   ] as const) {
     // H1: the page head is the shared one, titled with the group the page is.
     assert.ok(
-      markup.includes(`<div class="head"><h1>${group.title}</h1></div><p class="sub">`),
+      // The title is its own tooltip too (walkthrough C: a long title is clamped to two lines).
+      markup.includes(`<div class="head"><h1 title="${group.title}">${group.title}</h1></div><p class="sub">`),
       `the Help page does not draw the shared head titled ${group.title}`,
     )
     assert.ok(!markup.includes('ctl-page-head'), 'the Help page still draws a head of its own shape')

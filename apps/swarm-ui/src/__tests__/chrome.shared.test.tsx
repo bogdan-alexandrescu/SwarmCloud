@@ -191,7 +191,8 @@ describe("CH-2: the head's read age is the screen's own", () => {
     await act(async () => {
       window.location.hash = '#work/task/tsk_done'
     })
-    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent).toContain('tsk_done'))
+    // The crumb names the open agent (walkthrough G): its id until read, then what it is.
+    await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')).not.toBeNull())
     await waitFor(() => expect(headAge()).toMatch(/newest read/), { timeout: 5000 })
 
     // Close it: the list never went away and reads nothing now.
@@ -199,7 +200,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
       window.location.hash = '#work/running'
     })
     // No crumb at all on the list once the object closes (visual QA Q2).
-    await waitFor(() => expect(document.querySelector('.ctl-crumb')?.textContent ?? '').not.toContain('tsk_done'))
+    await waitFor(() => expect(document.querySelector('.ctl-crumb [aria-current="page"]')).toBeNull())
     await act(async () => {})
     expect(pending, 'a read is in flight after all; the check would prove nothing').toBe(0)
     expect(headAge(), 'the head says "reading…" with nothing being read').not.toMatch(/reading…/)

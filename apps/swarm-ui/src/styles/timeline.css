@@ -221,7 +221,7 @@
 }
 .tl-lab b {
   display: flex;
-  gap: 6px;
+  gap: 4px;
   align-items: center;
   min-width: 0;
   font-size: var(--t-meta);
@@ -230,6 +230,8 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.tl-lab .tl-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tl-lab .tl-dur { flex: none; font: var(--t-micro) / var(--lh-micro) var(--mono); font-weight: 400; color: var(--text-dim); white-space: pre; }
 .tl-lab small {
   font: var(--t-micro) / var(--lh-micro) var(--mono);
   color: var(--text-dim);
@@ -397,12 +399,17 @@
    mark covered the whole of a short bar (Q6). Its left edge is the instant it
    marks. Only the end marks: a mid-lane mark stays on its instant. */
 .tl-mkr.is-end { transform: translate(2px, -50%); }
+/* THE CANCEL TAG HANGS ABOVE THE BAR, NEVER ON IT (walkthrough G, owner
+   2026-10-03: "cancel asked 21:16" overlapped its bar). Its foot is 1px over
+   the mark's top, which in the 46px track is 1px over the 20px bar's top;
+   at line-height 1 its 12px fit between the bar and the track's top edge. */
 .tl-tag {
   position: absolute;
-  top: -15px;
+  bottom: calc(100% + 1px);
   left: 50%;
   transform: translateX(-50%);
   font-size: var(--t-micro);
+  line-height: var(--lh-flush);
   color: var(--text-dim);
   white-space: nowrap;
 }

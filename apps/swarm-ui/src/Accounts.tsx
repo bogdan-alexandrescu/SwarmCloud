@@ -3143,7 +3143,7 @@ function SignInSteps({
                 follows names the controls that do work, per refusal. */}
             <SignInFailure
               error={at.failed}
-              what="POST /v1/accounts/exchange"
+              what="the code exchange"
               /* A 201 is not a failure, and the panel may not shout that it
                  is over a message saying the platform accepted the sign-in. */
               heading={
@@ -3490,7 +3490,7 @@ function AddAccount({
                   control that cannot act does not look like one that can. */}
               <SignInFailure
                 error={state.error}
-                what="POST /v1/accounts/authorize"
+                what="the sign-in start"
                 onRetry={trimmed === '' ? undefined : () => void start()}
               />
               {/* THE MISSING CONTROL IS NAMED WHERE IT WOULD BE. A "Try
@@ -3784,7 +3784,7 @@ function Reauth({
           {state.kind === 'start_failed' && (
             <SignInFailure
               error={state.error}
-              what="POST /v1/accounts/authorize"
+              what="the sign-in start"
               onRetry={() => void start()}
             />
           )}

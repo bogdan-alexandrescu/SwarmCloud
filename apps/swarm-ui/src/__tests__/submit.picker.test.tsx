@@ -115,7 +115,8 @@ describe('RunnerPicker: every row says its room and its key', () => {
     const el = picker([['a', profile({ available: false, disabled_reason: 'switched off. Use b.' })]])
     const r = row(el, 'a', 't')
     expect(r.querySelector('input')!.disabled).toBe(true)
-    expect(visible(r.querySelector('.sbf-runner-off'))).toBe('disabled: switched off. Use b.')
+    // A reason already one short plain sentence is shown as it is (walkthrough E).
+    expect(visible(r.querySelector('.sbf-runner-off'))).toBe('switched off. Use b')
     // The reason takes the room line's place: a refused runner can start none.
     expect(r.querySelector('.sbf-runner-room')).toBeNull()
   })

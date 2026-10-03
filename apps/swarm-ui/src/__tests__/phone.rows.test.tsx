@@ -58,13 +58,15 @@ describe('#94: an Overview running agent is named by its step', () => {
     const th = row({ id: 'task_9c0ade75fd0c4f1c9a6e', runner_profile: 'codex', workflow_id: 'wf_one', step_id: 'scan-04' })
     const name = th.querySelector('a.ov-name')!
     expect(name.textContent).toBe('scan-04')
-    expect(name.getAttribute('title')).toBe('task_9c0ade75fd0c4f1c9a6e')
+    // The whole name and the whole id (walkthrough C: the name is clamped to two lines).
+    expect(name.getAttribute('title')).toBe('scan-04 · task_9c0ade75fd0c4f1c9a6e')
     expect(th.querySelector('.ov-sub')?.textContent).toBe('codex · wf_one')
   })
 
-  it('names a standalone agent by its id, which has no step, with its profile under it', () => {
+  it('names a standalone agent by what it is and its short id, with its profile under it', () => {
+    // Walkthrough G (2026-10-03): `agentName`, as the list, the Timeline and the crumb name it.
     const th = row({ id: 'task_alone', runner_profile: 'claude-code', workflow_id: null, step_id: null })
-    expect(th.querySelector('a.ov-name')?.textContent).toBe('task_alone')
+    expect(th.querySelector('a.ov-name')?.textContent).toBe('claude-code task · alone')
     expect(th.querySelector('.ov-sub')?.textContent).toBe('claude-code')
   })
 })

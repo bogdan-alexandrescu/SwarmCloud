@@ -34,7 +34,7 @@ import {
   type WindowAt,
 } from './logLines'
 import { GapNotice, LogMarksContext, type LogMarks } from './logMarks'
-import { clampPane, readPane, safeStorage, writePane, type PaneSpec } from './panes'
+import { clampPane, readPane, writePane, type PaneSpec } from './panes'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'
 import { useNow } from './useNow'
@@ -74,23 +74,18 @@ import { Button } from './components'
 
 /** The dock's height, remembered per viewer: 120px to 70% of the window, as the frames say. */
 const LOG_DOCK: PaneSpec = { key: 'swarm.agents.logdock.h', min: 120, max: 720, initial: 300 }
-/** Open or folded to its one-line strip, remembered per viewer. */
-const LOG_DOCK_OPEN_PREF = 'swarm.agents.logdock.open'
-
-function readOpen(): boolean {
-  try {
-    return safeStorage()?.getItem(LOG_DOCK_OPEN_PREF) !== 'strip'
-  } catch {
-    return true
-  }
-}
-
-function writeOpen(open: boolean): void {
-  try {
-    safeStorage()?.setItem(LOG_DOCK_OPEN_PREF, open ? 'open' : 'strip')
-  } catch {
-    // A preference that cannot be written is a preference for this visit.
-  }
+/**
+ * OPEN WHILE THE AGENT RUNS, FOLDED TO ITS ONE LINE ONCE IT HAS FINISHED
+ * (walkthrough B, owner 2026-10-03). A live log is what people open an agent
+ * to watch; a finished agent is opened to read what it did, and an open log
+ * took the column's lower third from the Details that say so. This was one
+ * open-or-folded preference for every agent, which opened every finished
+ * agent with its log up. The HEIGHT is still remembered per device
+ * (`LOG_DOCK`); whether it is open is the agent's state, and a reader's click
+ * holds for the agent on screen.
+ */
+export function logOpenByDefault(task: Pick<Task, 'state'>): boolean {
+  return !TERMINAL_STATES.has(task.state)
 }
 
 /** A runner with an agent CLI writes a transcript; the others open on the runner's own log. */
@@ -136,7 +131,7 @@ function attemptEnd(a: AttemptRow): string {
 }
 
 export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }) {
-  const [open, setOpenState] = useState(readOpen)
+  const [open, setOpenState] = useState(() => logOpenByDefault(task))
   const [full, setFull] = useState(false)
   const [height, setHeight] = useState(() => readPane(LOG_DOCK))
   const [view, setView] = useState<LogView>(() => defaultView(task.runner_profile))
@@ -152,10 +147,7 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const autoScroll = useRef(false)
   const root = useRef<HTMLElement | null>(null)
 
-  const setOpen = useCallback((next: boolean) => {
-    setOpenState(next)
-    writeOpen(next)
-  }, [])
+  const setOpen = useCallback((next: boolean) => setOpenState(next), [])
 
   // A different agent opened in the same split starts over: its own default
   // stream, its latest attempt, nothing searched.

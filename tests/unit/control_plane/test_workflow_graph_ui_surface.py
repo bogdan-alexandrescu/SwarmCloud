@@ -433,7 +433,10 @@ def test_every_identifier_rendered_under_an_uppercasing_rule_carries_it():
     # uppercases it -- the wide table's `.tag`-styled Step column is gone. So
     # what is held is that nothing in the list's own sheet transforms case.
     agents = _src("Agents.tsx")
-    assert '<b title={task.id}>{name}</b>' in agents
+    # The row's name is `agentName`'s rule drawn in the row (walkthrough G,
+    # 2026-10-03): a step's id, or a lone task's kind and short id.
+    assert "<b title={task.id}>" in agents
+    assert "task.step_id ??" in agents
     assert "text-transform" not in (UI / "styles" / "agents.css").read_text()
     assert "<Id>{c}</Id>" in _src("Activity.tsx")
 

@@ -169,7 +169,9 @@ export function AgentDetailScreen({
         // `drawerPoll` stops once a finished task's last writes are in:
         // nothing it draws changes after that.
         pollMs={drawerPoll}
-        summary={(r) => (
+        // HEADED, THE SPLIT'S HEADER BLOCK SAYS PROFILE · CLASS ONCE
+        // (walkthrough B, 2026-10-03): this line repeated it under it.
+        summary={headed ? undefined : (r) => (
           <>
             {r.task.runner_profile} · {r.task.resource_class} ·{' '}
             {r.attempts === null
@@ -344,7 +346,7 @@ export function Run({
           scope to, and it is one element rather than a class change on the
           twenty-eight `.section`s this file renders. */
     <div className="run-stack">
-      <Headline run={run} now={now} reload={headed ? undefined : reload} />
+      <Headline run={run} now={now} reload={headed ? undefined : reload} headed={headed} />
       <Alerts task={task} />
       <Why task={task} events={events} now={now} classes={run.classes} />
       <ErrorBanner run={run} />
@@ -611,7 +613,7 @@ const COPY_SAID_MS = 4000
  * outside a secure context and a write can be refused, and the status says
  * which happened, then clears.
  */
-function IdCopy({ value }: { value: string }) {
+export function IdCopy({ value }: { value: string }) {
   const [said, setSaid] = useState('')
   useEffect(() => {
     if (said === '') return
@@ -651,9 +653,18 @@ function Headline({
   run,
   now,
   reload,
+  headed = false,
 }: {
   run: AgentRun
   now: number
+  /**
+   * Under the split's header block (AgentSplit.tsx `AgHead`), which says the
+   * state, the id with its copy, started / ended, the account, the tenant and
+   * the workflow ONCE (walkthrough B, owner 2026-10-03: they were said three
+   * times). Headed, this draws only what the header does not: liveness, the
+   * wait, the submit time, the age and who submitted it.
+   */
+  headed?: boolean
   // Optional, threaded from Run -- see the note there. Absent only when the
   // acceptance test renders the body statically, where there is nothing to
   // reload and no stop control to press.
@@ -686,13 +697,15 @@ function Headline({
             does: `state ? ● running`. The key is `.ctl-fact > b`, the label
             treatment the strip uses, and the glyph is inside it, after its
             word, as Overview's `reads ?` is. */}
-        <span className="ctl-fact">
-          <b>
-            state
-            <HelpCard topic="capacity" />
-          </b>
-          <StateMark state={task.state} />
-        </span>
+        {!headed && (
+          <span className="ctl-fact">
+            <b>
+              state
+              <HelpCard topic="capacity" />
+            </b>
+            <StateMark state={task.state} />
+          </span>
+        )}
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
             drawn after the chip's key (AH-24, above).
             The agent detail carried twenty-two help anchors, the most in the
@@ -753,15 +766,17 @@ function Headline({
             instant and its age in the hover. `never started` is a value --
             a cancelled or failed task that never ran says so -- and the
             submit time is there either way. */}
-        <li className="ctl-fact" title={start.title}>
-          <b>started</b>
-          {start.text}
-        </li>
+        {!headed && (
+          <li className="ctl-fact" title={start.title}>
+            <b>started</b>
+            {start.text}
+          </li>
+        )}
         <li className="ctl-fact" title={start.submittedTitle}>
           <b>submitted</b>
           {start.submitted}
         </li>
-        {ended !== null && (
+        {!headed && ended !== null && (
           <li className="ctl-fact" title={`ended ${ended.title}`}>
             <b>ended</b>
             {ended.text}
@@ -769,10 +784,12 @@ function Headline({
         )}
         {/* THE ACCOUNT THE LATEST ATTEMPT RUNS ON (#379). Each attempt's own,
             and the accounts it gave back, are on its card below. */}
-        <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
-          <b>account</b>
-          <span className="mono">{account.text}</span>
-        </li>
+        {!headed && (
+          <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+            <b>account</b>
+            <span className="mono">{account.text}</span>
+          </li>
+        )}
         <li className="ctl-fact">
           <b>age</b>
           {timeAgo(task.created_at)}
@@ -781,14 +798,16 @@ function Headline({
           <b>by</b>
           {task.submitted_by ?? <Em />}
         </li>
-        <li className="ctl-fact">
-          <b>tenant</b>
-          <span className="mono">{task.tenant_id}</span>
-        </li>
+        {!headed && (
+          <li className="ctl-fact">
+            <b>tenant</b>
+            <span className="mono">{task.tenant_id}</span>
+          </li>
+        )}
         {/* THE WORKFLOW IS ONE CLICK AWAY (#94). The id is a link to that
             workflow's page; the step is the drawer's heading, so it is not
             said again here. */}
-        {task.workflow_id !== null && (
+        {!headed && task.workflow_id !== null && (
           <li className="ctl-fact">
             <b>wf</b>
             <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
@@ -798,7 +817,7 @@ function Headline({
         )}
         {/* THE WHOLE ID, ONLY WHERE THE HEADING IS NOT ALREADY IT (#94, #102:
             one fact, one home). A standalone task is headed by its id. */}
-        {task.step_id !== null && (
+        {!headed && task.step_id !== null && (
           <li className="ctl-fact ad-id">
             <b>id</b>
             <IdCopy value={task.id} />

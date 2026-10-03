@@ -149,6 +149,7 @@ import {
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
 import './styles/workflows.css'
+import './styles/names.css'
 import {
   anyRunning,
   backLabel,
@@ -617,26 +618,9 @@ function Board({
   // THE ATTEMPT READ is the page's (`useWorkflowUsage`), handed in, so the
   // head, the table and the nodes read one set of figures (WF-5).
 
-  // WHAT THE CARD IS DRAWING, stated once. The card below is handed exactly
-  // these, and the sample mark asks the same questions of it -- a second
-  // spelling of "in which view" is how the mark and the card would come to
-  // disagree about what is on screen.
+  // WHAT THE CARD IS DRAWING, stated once: the card below is handed exactly these.
   const viewOf = (): WorkflowView => focus.view
   const zoomOf = (id: string): ZoomChoice => zooms[id] ?? 'auto'
-
-  // THE SAMPLE MARK DESCRIBES THE STEP FIGURES, SO IT SHOWS ONLY WHERE THEY ARE
-  // DRAWN. `n/m sampled` is the coverage of the per-step attempt read -- the
-  // cost, tokens and checkpoints on a Figures-tier node and in the Table's
-  // columns. The Timeline
-  // draws times from the task read, and a Graph below the Figures tier draws no
-  // figure either.
-  const figuresDrawn = shown.some((w) => {
-    const view = viewOf()
-    if (view === 'table') return true
-    if (view !== 'graph') return false
-    const zoom = zoomOf(w.workflow_id)
-    return (zoom === 'auto' ? autoTier(w.steps) : zoom) === 'figures'
-  })
 
   return (
     <>
@@ -645,11 +629,15 @@ function Board({
           the board could not read sits right, as marks. Both banners this
           replaces were full-width panels that pushed the first row of actual
           data below the fold on a laptop. */}
+      {/* DRAWN ONLY WHEN IT HAS SOMETHING TO SAY (walkthrough C, 2026-10-03):
+          empty, it was a 32px strip and two gaps -- the ~100px band between
+          the page's tabs and its card. The sample mark is in the Steps
+          table's own head row now (walkthrough A). */}
+      {board.statesDetail !== null && (
       <div className="ctl-toolbar wf-chrome">
         {/* NO BOARD CONTROLS: the page's view is its address. */}
         <span className="is-end wf-caveats">
-          {board.statesDetail !== null && <StatesUnavailable detail={board.statesDetail} />}
-          {figuresDrawn && usage.kind === 'ready' && usage.usage !== null && <SampleNote usage={usage.usage} />}
+          <StatesUnavailable detail={board.statesDetail} />
           {/* THE BOARD'S `?` IS NOT IN THIS STRIP (AH-24). It trailed the
               caveats -- `6/8 sampled ?`, a footnote on the figure -- and then
               led them, which followed nothing: the strip has no label. It
@@ -657,6 +645,7 @@ function Board({
               screen's heading; see `help` on the Screen above. */}
         </span>
       </div>
+      )}
       <div className="wf-board">
         {shown.map((w) => {
           // The selection, only when it is in THIS workflow. Every other card
@@ -1087,6 +1076,8 @@ export function WorkflowCard({
   // tasks the board already joined -- see `workflowLabel` and `workflowPullRequest`.
   const label = workflowLabel(workflow, taskById)
   const pr = workflowPullRequest(workflow, taskById)
+  const strays = straysOf(workflow, taskById)
+  const unreadable = unreadableOf(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
   const narrow = useNarrow()
 
@@ -1163,12 +1154,17 @@ export function WorkflowCard({
         {/* THE CARD'S OWN VIEW STRIP: which of the three drawings this is,
             and the one mark that belongs to the workflow rather than to any
             view -- staged files no edge can carry. Chrome, no prose (§6.11). */}
-        <div className="wf-viewbar">
-          {/* The page's views are its underline tabs (`WfTabs`), under the title. */}
-          {!page && <ViewControl view={view} onChoose={chooseView} />}
-          <StrayMark strays={straysOf(workflow, taskById)} />
-          <UnreadableMark counts={unreadableOf(workflow, taskById)} />
-        </div>
+        {/* DRAWN ONLY WHEN IT HOLDS SOMETHING (walkthrough C): on a page,
+            with no stray or unread mark, it was an empty row and a margin
+            between the tabs and the graph. */}
+        {(!page || strays.length > 0 || unreadable.length > 0) && (
+          <div className="wf-viewbar">
+            {/* The page's views are its underline tabs (`WfTabs`), under the title. */}
+            {!page && <ViewControl view={view} onChoose={chooseView} />}
+            <StrayMark strays={strays} />
+            <UnreadableMark counts={unreadable} />
+          </div>
+        )}
         {view === 'graph' ? (
           // THE GRAPH AND ITS PANEL, SIDE BY SIDE (#330, owner request
           // 2026-09-29). The inspector sat under the canvas, which on a
@@ -1213,8 +1209,8 @@ export function WorkflowCard({
             step into the card beside the graph. */}
         {page && view === 'graph' && (
           <div className="wfp-steps">
-            <h3 className="wfp-eyb">Steps</h3>
             <WorkflowSteps
+              title="Steps"
               workflow={workflow}
               taskById={taskById}
               classes={classes}
@@ -1825,11 +1821,14 @@ function WorkflowSteps({
   detail = null,
   filter = null,
   onClearFilter,
+  title = null,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
   classes: ResourceClasses | null
   usage: UsageRead
+  /** The table's head-row title, where it sits under the Graph. */
+  title?: string | null
   view: Exclude<WorkflowView, 'graph'>
   picked: string | null
   onPick: (stepId: string) => void
@@ -1869,7 +1868,17 @@ function WorkflowSteps({
             </span>
           </p>
         )}
-        <WorkflowTable rows={rows} picked={picked} onPick={onPick} detail={detail} />
+        <WorkflowTable
+          rows={rows}
+          picked={picked}
+          onPick={onPick}
+          detail={detail}
+          title={title}
+          // THE SAMPLE MARK QUALIFIES THESE FIGURES, SO IT IS IN THIS TABLE'S
+          // HEAD ROW, inside the card (walkthrough A, 2026-10-03): it was a
+          // chip in a strip above the card, floating apart from what it qualifies.
+          head={usage.kind === 'ready' && usage.usage !== null ? <SampleNote usage={usage.usage} /> : null}
+        />
         <p className="wf-table-total">
           <span>Total</span> <Spend spend={spend} />
         </p>

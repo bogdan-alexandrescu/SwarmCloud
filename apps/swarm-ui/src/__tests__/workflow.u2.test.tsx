@@ -364,7 +364,8 @@ describe('Recent (5) shows on the list page, by name (#503)', () => {
     const cls = (tail: string) => `.${['sk', 'recent', tail].join('-')}`
     const kids = [...group.querySelectorAll<HTMLElement>(cls('kid'))]
     expect(kids[0]!.querySelector(cls('id'))!.textContent).toBe('name-6')
-    expect(kids[0]!.getAttribute('title')).toBe('wf_6')
+    // The whole name, then the id (walkthrough C: the name is clamped to two lines).
+    expect(kids[0]!.getAttribute('title')).toBe('name-6 · wf_6')
     expect(kids[0]!.querySelector('[data-mark="running"][data-hue="live"]')).toBeTruthy()
     expect(within(group).getByText('All workflows →')).toBeTruthy()
   })

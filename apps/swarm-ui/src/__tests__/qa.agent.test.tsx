@@ -73,13 +73,14 @@ describe('Q4: the log dock is at the foot of the detail column', () => {
 describe('Q4: the detail header and tabs fit the split', () => {
   it('ellipses the title and keeps the actions whole', async () => {
     const s = await split()
+    // TWO LINES, THEN AN ELLIPSIS (walkthrough C, 2026-10-03): the title is
+    // clamped rather than cut at one line, the whole name in its title.
     const title = s.querySelector('.ag-head-title')!
-    expect(painted(title, 'white-space', WIDE)).toBe('nowrap')
-    expect(painted(title, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(painted(title, '-webkit-line-clamp', WIDE)).toBe('2')
     expect(painted(title, 'overflow', WIDE)).toBe('hidden')
+    expect(title.getAttribute('title')).toBe(title.textContent)
     expect(painted(s.querySelector('.ag-head-row')!, 'flex-wrap', WIDE)).toBe('nowrap')
     expect(painted(s.querySelector('.ag-head-actions')!, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
-    expect(painted(s.querySelector('.ag-head-sub')!, 'text-overflow', WIDE)).toBe('ellipsis')
   })
 
   it('scrolls the tabs sideways rather than cutting or wrapping them', async () => {

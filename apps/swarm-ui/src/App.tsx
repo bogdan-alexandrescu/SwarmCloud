@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, parseAgentList, type AgentList } from './agentlist'
+import { agentListPath, parseAgentList, useAgentName, type AgentList } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -1266,7 +1266,9 @@ function Head({
   const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
     : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
-  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo })
+  // The open agent by its name once its split has read it (walkthrough G).
+  const named = useAgentName(at.taskId)
+  const crumbs = crumbsOf({ at, head, home, tab, tabs: section?.tabs.length ?? 0, title, closeTo, named })
 
   // A SECTION PAGE HAS NO ROW HERE (visual QA Q2/Q10, 2026-10-02): its title,
   // meta, freshness and `?` are one row (`PageHead`), and a breadcrumb above
@@ -1359,6 +1361,7 @@ export function crumbsOf({
   tabs,
   title,
   closeTo,
+  named = null,
 }: {
   at: Route
   head: string
@@ -1367,6 +1370,8 @@ export function crumbsOf({
   tabs: number
   title: string
   closeTo: string
+  /** The open agent's name (`agentName`), once read; its id until then. */
+  named?: string | null
 }): Crumb[] {
   const out: Crumb[] = []
   const object = openObjectOf(at)
@@ -1375,7 +1380,7 @@ export function crumbsOf({
   if (tab !== null && tabs > 1 && (open || tab.label !== title)) {
     out.push({ key: 'tab', label: tab.label, to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}` })
   }
-  if (object !== null) out.push({ key: 'object', label: object, to: null })
+  if (object !== null) out.push({ key: 'object', label: at.taskId !== null && named !== null ? named : object, to: null })
   return out
 }
 

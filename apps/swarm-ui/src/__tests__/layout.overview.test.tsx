@@ -590,10 +590,12 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
    * MUTATION: fall through to the check cards or the partial mark while a
    * check reads.
    */
-  it('draws the pending mark, no count and no partial mark, and says the tenant is reading', async () => {
+  it('draws a skeleton card, no count and no partial mark, and says the tenant is reading', async () => {
     const el = await mountWith({ loadStats: never(), loadTasks: never() })
     const lead = el.querySelector('#ov-needs')!
-    expect(lead.querySelector('.ctl-mark.is-pending'), 'the lead carries no pending mark').not.toBeNull()
+    // A SKELETON OF THE CHECK CARD, not the pending mark's dashed box
+    // (walkthrough F, 2026-10-03): still pending, still no count.
+    expect(lead.querySelector('.ov-atts[aria-busy="true"] .ov-att.is-skel'), 'the lead carries no skeleton').not.toBeNull()
     expect(lead.querySelector('.ctl-mark.is-partial'), 'a read in flight drew the partial mark').toBeNull()
     expect(lead.querySelectorAll('a.ov-att').length, 'a check card was drawn before the checks ran').toBe(0)
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^\d+ of \d+ checks still reading$/)

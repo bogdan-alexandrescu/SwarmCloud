@@ -1,4 +1,5 @@
 import './styles/overview.css'
+import './styles/names.css'
 import { LifecycleBand, RecentFailures, WaitingWhy, failuresOf, waitGroups } from './OverviewRegions'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
@@ -18,7 +19,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { Button, NamedMark, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Button, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { PageHead, timeAgo } from './Shell'
 import {
@@ -761,10 +762,23 @@ function NeedsALook({ checks }: { checks: Check[] }) {
       </div>
 
       {reading.length > 0 ? (
-        <Mark
-          kind="pending"
-          say={`${reading.length} of ${checks.length} checks are still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}. No count is drawn until they have run.`}
-        />
+        // A SKELETON OF THE CARD IT WILL BE (walkthrough F, owner
+        // 2026-10-03): the pending mark here was an empty dashed box the
+        // width of the row, which read as a broken input. Still no count:
+        // the sentence is the row's accessible name.
+        <div
+          className="ov-atts"
+          aria-busy="true"
+          aria-label={`${reading.length} of ${checks.length} checks are still reading: ${reading.map((c) => c.label.toLowerCase()).join(', ')}. No count is drawn until they have run.`}
+        >
+          <div className="ov-att is-skel" aria-hidden="true">
+            <span className="ov-att-t">
+              <Skeleton title width="45%" />
+              <Skeleton width="85%" />
+              <Skeleton width="60%" />
+            </span>
+          </div>
+        </div>
       ) : problems.length > 0 ? (
         <div className="ov-atts">
           {problems.map((p, i) => (
@@ -1006,7 +1020,7 @@ function ProfileTile({
             : '')
   return (
     <div className="ov-hp" title={long}>
-      <span className="ov-idc">{name}</span>
+      <span className="ov-idc" title={name}>{name}</span>
       {h.agents === null ? (
         <b className="ctl-em">&mdash;</b>
       ) : h.agents === 0 ? (
@@ -1288,7 +1302,7 @@ function RunningCard({
         {running.map((t) => (
           <li key={t.id}>
             <StateMark state={t.state} />
-            <a className="ov-prun-n" href={`#work/task/${encodeURIComponent(t.id)}`}>
+            <a className="ov-prun-n" href={`#work/task/${encodeURIComponent(t.id)}`} title={`${agentName(t)} · ${t.id}`}>
               {agentName(t)}
             </a>
             <em>
@@ -1316,7 +1330,7 @@ export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number
       </td>
       <th scope="row">
         {/* NAMED BY ITS STEP (#94), else its id; the profile under it. */}
-        <a className="ov-name" href={`#work/task/${encodeURIComponent(task.id)}`} title={task.id}>
+        <a className="ov-name" href={`#work/task/${encodeURIComponent(task.id)}`} title={`${agentName(task)} · ${task.id}`}>
           {agentName(task)}
         </a>
         {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}

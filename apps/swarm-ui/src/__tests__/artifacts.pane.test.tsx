@@ -309,6 +309,12 @@ function drawer(): HTMLElement {
 }
 
 function section(title: string): HTMLElement {
+  // A FINISHED AGENT'S LOG OPENS FOLDED to its one line (walkthrough B,
+  // 2026-10-03): unfold it, as a reader would, before reading it.
+  if (title === 'Log') {
+    const folded = drawer().querySelector<HTMLButtonElement>('.ag-logdock button.ag-logdock-line[aria-expanded="false"]')
+    if (folded !== null) fireEvent.click(folded)
+  }
   const s = [...drawer().querySelectorAll<HTMLElement>('section')].find((x) => x.querySelector('h2')?.textContent === title)
   expect(s, `no ${title} section in the drawer`).toBeTruthy()
   return s!

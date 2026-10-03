@@ -302,7 +302,8 @@ describe('#92: the overview’s attention items say which workers are silent and
       loadLeases: ok(leasePage([lease('tsk_quiet', 400)])),
     })
     const visible = [...el.querySelectorAll('.ov-running > .ov-rows > table tbody tr')]
-    const row = visible.find((r) => text(r).includes('tsk_quiet'))
+    // Named by what it is (walkthrough G); the id is the name's title.
+    const row = visible.find((r) => r.querySelector('a.ov-name[title$=" · tsk_quiet"]') !== null)
     expect(row, 'the silent agent is not among the visible Running rows').toBeDefined()
     expect(row!.querySelector('.ov-silent'), 'the silent agent’s row carries no mark').not.toBeNull()
     expect(text(row!.querySelector('.ov-silent'))).toMatch(/silent 6m/)
