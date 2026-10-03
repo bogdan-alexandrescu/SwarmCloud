@@ -294,11 +294,10 @@ def ended_executions_by_attempt(
 
     Why this exists: on 2026-10-03 task_8fce64316ad14fc981fb's execution
     swarm-job-eng-claude-code-6c98m FAILED ("Container terminated on signal
-    7") and was listed, attributed, as failed on every pass. The listing
-    counted only ACTIVE executions, so the lease looked like it had none, and
-    the absence finding waited on a by-name probe that never answered -- the
-    lease and its capacity were held for five hours while the evidence that
-    released it sat in the listing.
+    7") and its lease was held for five hours. Only ACTIVE executions were
+    indexed by attempt, so a listed FAILED execution counted for nothing:
+    the lease read as having no execution at all, and its absence findings
+    waited on a by-name probe whose answer held them on every pass.
     """
     ended: dict[str, ExecutionView] = {}
     for execution in executions:
