@@ -31,7 +31,7 @@
 
 import { useId, type ReactNode } from 'react'
 
-import { Segmented, UsageTrack } from './components'
+import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
 import { type TopicId } from './help'
 import {
@@ -896,9 +896,9 @@ export function ReliabilityCard({
                     {r.declared_cost && (
                       <>
                         {' '}
-                        <span className="ol-tag" title="this profile declares its own cost, from its input; it is test data">
+                        <Tag title="this profile declares its own cost, from its input; it is test data">
                           declared
-                        </span>
+                        </Tag>
                       </>
                     )}
                   </th>
@@ -1067,7 +1067,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
       </p>
       {c.declared.profiles.length > 0 && (
         <p className="ol-line">
-          <span className="ol-tag">declared</span> {c.declared.profiles.join(', ')}{' '}
+          <Tag>declared</Tag> {c.declared.profiles.join(', ')}{' '}
           {c.declared.sum_usd === null ? '—' : money(c.declared.sum_usd)} <span className="ol-q">included above</span>
         </p>
       )}

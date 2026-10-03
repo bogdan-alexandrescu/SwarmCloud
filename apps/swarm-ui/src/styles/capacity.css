@@ -277,11 +277,6 @@
 .acct-dhead { display: grid; gap: 4px; min-width: 0; }
 .acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
-.acct-pill {
-  display: inline-flex; align-items: center; padding: 1px 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  font-size: var(--t-micro); color: var(--text-dim);
-}
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
 
 .acct-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }

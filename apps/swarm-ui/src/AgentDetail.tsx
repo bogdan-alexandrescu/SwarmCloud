@@ -1,4 +1,4 @@
-import { StateMark, ToneMark } from './components'
+import { Count, StateMark, ToneMark } from './components'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -1621,7 +1621,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
     <section className="section panel">
       <h2>
         Attempts
-        <span className="count-chip">{ordered.length}</span>
+        <Count n={ordered.length} label="attempts" bare />
         {ordered.length < task.attempt_count && (
           // THE GAP, IN THE HEADING IT QUALIFIES. This was a full partial
           // panel with a two-sentence body; the figures are the fact and the
@@ -4224,7 +4224,7 @@ function Timeline({
       <div className="ctl-toolbar">
         <h2>
           Timeline
-          <span className="count-chip">{events.length}</span>
+          <Count n={events.length} label="events" bare />
         </h2>
         {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER.
             Two paragraphs stood here -- one for the proven case (a terminal

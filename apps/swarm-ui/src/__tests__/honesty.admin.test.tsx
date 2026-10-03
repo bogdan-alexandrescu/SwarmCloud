@@ -499,7 +499,7 @@ describe('Provider quota counts in English (CP-22)', () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota({})] }))
     render(<QuotaDetailScreen />)
     await screen.findByRole('rowheader', { name: 'eng' }, WAIT)
-    expect(document.querySelector('.count-chip')).toBeNull()
+    expect(document.querySelector('.count-chip, .c-chip.is-n')).toBeNull()
     const note = document.querySelector('.ctl-toolbar > .ctl-card-note')
     expect(note, 'the tenant count is not a card note').not.toBeNull()
     expect(note!.textContent).toBe('1 tenant')

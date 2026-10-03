@@ -152,6 +152,17 @@
 .c-chip.is-dash { color: var(--ctl-absent); cursor: help; }
 .c-chip.is-filter { background: var(--sk-acs); color: var(--sk-ac); padding-right: 3px; }
 .c-chip.is-link { color: var(--sk-ac); border-color: var(--sk-acl); background: none; text-decoration: underline; text-decoration-color: var(--sk-acl); text-underline-offset: 2px; }
+/* A pick chip is a toggle button in the chip's shape; the picked one takes the
+   text-ink edge, so the pick is not carried by colour alone. */
+.c-chip.is-pick { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); margin: 0; cursor: pointer; }
+.c-chip.is-pick[aria-pressed='true'] { border-color: var(--text); }
+/* A chip naming a step in a state: the state's tint and a 45% edge (brand §3). */
+.c-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); color: var(--text); }
+.c-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); color: var(--text); }
+.c-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); color: var(--text); }
+.c-chip.is-faint { background: none; color: var(--text-faint); }
+/* A bare count is a measured figure: tabular, so a column of them aligns. */
+.c-chip.is-n { font-variant-numeric: tabular-nums; }
 .c-x { border: 0; background: none; color: inherit; display: inline-flex; padding: 1px; border-radius: 50%; cursor: pointer; }
 .c-x .c-ic { width: 12px; height: 12px; }
 .c-tag { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 3px 6px; border-radius: var(--r-xs); border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }

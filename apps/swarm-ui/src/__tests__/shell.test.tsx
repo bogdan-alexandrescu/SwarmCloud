@@ -2080,7 +2080,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
         '<button class="c-btn is-primary is-full">Send</button>' +
-        '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
+        '<button class="ctl-q-glyph">?</button><p class="sub"><button>refresh</button></p>' +
         '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
         '</div>',
     )
@@ -2105,7 +2105,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     // The segment keeps its desktop size: the target is a phone rule.
     expect(px(painted(pick(f, '.c-seg > button'), 'min-height', WIDE) ?? '0px')).toBeLessThan(44)
     // A word or a disc that must not grow gets an empty, centred hit area.
-    for (const sel of ['.ctl-q-glyph', '.ov-refresh', '.ov-link', '.sbf-mini']) {
+    for (const sel of ['.ctl-q-glyph', '.sub button', '.ov-link', '.sbf-mini']) {
       const el = pick(f, sel)
       expect(won(el, 'position', PHONE), `${sel} is not the hit area's containing block`).toBe('relative')
       expect(won(el, 'content', PHONE, 'after'), `${sel} has no hit area`).toBe("''")
@@ -2384,13 +2384,15 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('WF-16: a mix chip is whole or absent', () => {
     // The flags-column half of WF-16 went with `.wf-bar`, the board row whose
     // grid it held: no source renders that row any more (2026-10-01).
-    const f = fragment('<span class="wf-mix"><span class="wf-chip">mock</span></span>')
+    const f = fragment('<span class="wf-mix"><span class="c-chip">mock</span></span>')
     // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
     // mid-word; or drop the one-chip height that hides the second line.
     const mix = pick(f, '.wf-mix')
     expect(won(mix, 'flex-wrap', WIDE)).toBe('wrap')
     expect(won(mix, 'overflow', WIDE)).toBe('hidden')
-    expect(won(mix, 'height', WIDE)).toContain('var(--lh-micro)')
-    expect(won(pick(f, '.wf-chip'), 'text-overflow', WIDE)).toBe('ellipsis')
+    // One canonical chip's height (the flush line plus its padding and edge).
+    expect(won(mix, 'height', WIDE)).toContain('var(--lh-flush)')
+    expect(won(pick(f, '.c-chip'), 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(won(pick(f, '.c-chip'), 'display', WIDE), 'an ellipsis needs a block container').toBe('block')
   })
 })

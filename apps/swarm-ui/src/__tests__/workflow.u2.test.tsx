@@ -581,10 +581,13 @@ describe('a wide stage band: mix bar, slots held, named chips (wide-workflows.ht
       'mx-done',
     ])
     expect(band.querySelector('.wf-band-hold')!.textContent).toBe('holds 3 slots · 2 waiting hold none')
-    const chips = [...band.querySelectorAll<HTMLButtonElement>('button.wf-band-chip')]
+    const chips = [...band.querySelectorAll<HTMLButtonElement>('.wf-band-chips > button.c-chip.is-pick')]
     expect(chips.map((c) => c.textContent)).toEqual(['impl-6', 'impl-3', 'impl-4', 'impl-7', 'impl-5'])
     fireEvent.click(chips[1]!)
     await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+
+    // The named steps are the canonical pick Chip (#503 swap): a toggle, pressed when picked.
+    await waitFor(() => expect(document.querySelector('.wf-band-chips > button.c-chip[aria-pressed="true"]')?.textContent).toBe('impl-3'))
   })
 
   it('opens the Table filtered to the stage and state from a band count', async () => {

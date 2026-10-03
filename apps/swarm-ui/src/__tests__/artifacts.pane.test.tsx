@@ -599,7 +599,7 @@ describe('Outputs lists every file the run uploaded, past one page of the listin
       expect(drawn.has(rawHref(REF, e.name, 'inline')), `${e.name} is not drawn inline`).toBe(true)
     }
     expect(served.every((n) => n === manifest.length), 'the listing read was cut at the server’s default page').toBe(true)
-    expect(out.querySelector('.arts-files .count-chip')?.textContent).toBe(String(manifest.length))
+    expect(out.querySelector('.arts-files .c-chip.is-n')?.textContent).toBe(String(manifest.length))
     expect(out.textContent, 'a whole listing is marked as cut').not.toMatch(/\d+ of \d+ listed/)
   })
 
@@ -612,7 +612,7 @@ describe('Outputs lists every file the run uploaded, past one page of the listin
     const head = out.querySelector<HTMLElement>('.arts-files .att-sub-head')!
     expect(head.textContent).toMatch(new RegExp(`${listed} of ${manifest.length} listed`))
     expect(head.querySelector('.ctl-mark.is-partial'), 'a cut listing is not marked partial').not.toBeNull()
-    expect(out.querySelector('.arts-files .count-chip')?.textContent, 'the count is the page, not the run').toBe(String(manifest.length))
+    expect(out.querySelector('.arts-files .c-chip.is-n')?.textContent, 'the count is the page, not the run').toBe(String(manifest.length))
 
     await waitFor(() => expect(fileRows(out).size).toBe(manifest.length), WAIT)
     const rows = fileRows(out)
@@ -677,7 +677,7 @@ describe('Outputs says which working-folder files were not uploaded, and why', (
     const out = await sectionReady('Outputs', /not uploaded from the working folder/)
     const block = out.querySelector<HTMLElement>('.arts-unuploaded')
     expect(block, 'the files the worker did not upload are not drawn').not.toBeNull()
-    expect(block!.querySelector('.count-chip')?.textContent, 'the count is the page, not the whole').toBe('55')
+    expect(block!.querySelector('.c-chip.is-n')?.textContent, 'the count is the page, not the whole').toBe('55')
     for (const e of NOT_UPLOADED) {
       const r = row(block!, e.name)
       expect(r.querySelector('td[data-label="Why"]')?.textContent, `${e.name} has no reason`).toBe(e.reason)
@@ -729,7 +729,7 @@ describe('Outputs says how many files in $SWARM_ARTIFACTS_DIR were past the 500-
     const out = await sectionReady('Outputs', /not uploaded from \$SWARM_ARTIFACTS_DIR/)
     const block = out.querySelector<HTMLElement>('.arts-overcap')
     expect(block, 'the files past the cap are not drawn').not.toBeNull()
-    expect(block!.querySelector('.count-chip')?.textContent).toBe('104')
+    expect(block!.querySelector('.c-chip.is-n')?.textContent).toBe('104')
     expect(block!.textContent).toMatch(/104 over the 500-file cap, named in the worker log/)
     // The same count line #225 drew for the working folder: a mark that says
     // the list is partial, and where the rest are named.

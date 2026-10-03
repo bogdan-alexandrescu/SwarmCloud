@@ -178,8 +178,8 @@
   .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
   .ov-prun { display: block; }
-  .ov-refresh, .ov-link, .ov-open { position: relative; }
-  .ov-refresh::after, .ov-link::after, .ov-open::after {
+  .ov-link, .ov-open { position: relative; }
+  .ov-link::after, .ov-open::after {
     content: '';
     position: absolute;
     left: 50%;

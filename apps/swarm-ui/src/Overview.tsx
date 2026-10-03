@@ -192,9 +192,8 @@ export function OverviewScreen() {
           poll <span className="ov-num">{POLL_MS / 1000}s</span>
         </span>
         {' · '}
-        <button className="ov-refresh" onClick={refresh}>
-          refresh
-        </button>
+        {/* The head's own refresh, as every screen's head draws it (`.sub button`). */}
+        <button onClick={refresh}>refresh</button>
       </PageHead>
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">

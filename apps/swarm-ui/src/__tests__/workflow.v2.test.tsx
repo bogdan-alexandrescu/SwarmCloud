@@ -635,8 +635,8 @@ describe('the list row: shape, runners and spend', () => {
         expect(m).toBeTruthy()
         return m!
       })
-      const named = [...mix.querySelectorAll('.wf-chip:not(.more)')].map((c) => c.firstChild?.textContent)
-      const more = mix.querySelector('.wf-chip.more')?.textContent ?? null
+      const named = [...mix.querySelectorAll('.c-chip:not(.is-faint)')].map((c) => c.firstChild?.textContent)
+      const more = mix.querySelector('.c-chip.is-faint')?.textContent ?? null
       const title = mix.getAttribute('title')
       unmount()
       spy.mockRestore()

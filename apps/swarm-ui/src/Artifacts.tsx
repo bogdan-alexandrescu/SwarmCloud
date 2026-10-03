@@ -11,7 +11,7 @@ import {
   type ReactNode,
 } from 'react'
 import { DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
-import { ToneMark } from './components'
+import { Count, ToneMark } from './components'
 import {
   ARTIFACT_PAGE_LIMIT,
   artifactRawUrl,
@@ -674,7 +674,7 @@ function NotUploaded({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-unuploaded">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">not uploaded from the working folder</span>
-        <span className="count-chip">{total}</span>
+        <Count n={total} label="not uploaded" bare />
       </div>
       {listed.length > 0 && (
         <div className="ctl-table is-stacked">
@@ -735,7 +735,7 @@ function OverCap({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-overcap">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">not uploaded from $SWARM_ARTIFACTS_DIR</span>
-        <span className="count-chip">{over.count}</span>
+        <Count n={over.count} label="not uploaded" bare />
       </div>
       <InWorkerLog
         say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the task's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
@@ -1062,7 +1062,7 @@ function Files({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-files">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">files</span>
-        {entries.length > 0 && <span className="count-chip">{entries.length}</span>}
+        {entries.length > 0 && <Count n={entries.length} label="files" bare />}
         {notes.length > 0 && (
           <span className="is-end ctl-card-note">
             {notes.map((n, i) => (

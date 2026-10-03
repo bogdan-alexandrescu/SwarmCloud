@@ -141,21 +141,8 @@
 .wf-table .wf-why { display: block; max-width: 100%; }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
 
-/* THE STAGE FILTER A BAND COUNT OPENED, as a removable filter chip. */
+/* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */
 .wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
-.wf-filter-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 2px 4px 2px 10px; border-radius: 999px;
-  background: color-mix(in srgb, var(--sk-ac) 12%, var(--surface));
-  color: var(--sk-ac);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-}
-.wf-filter-x {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 999px;
-  background: none; color: inherit; font: inherit; cursor: pointer;
-}
-.wf-filter-x:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
 
@@ -244,26 +231,14 @@
 }
 
 /* THE NAMED STEPS: failed, then holding capacity, then parked, as pill chips
-   in their state's tint and edge, each picking its step. */
+   in their state's tint and edge (Chip `tone`), each picking its step. */
 .wf-band-chips {
   display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
   height: 22px; min-width: 0; overflow: hidden;
 }
-.wf-band-chip {
-  display: inline-flex; align-items: center; gap: 5px; flex: none;
-  height: 20px; margin: 0; padding: 0 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: var(--s-neub); color: var(--text);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  white-space: nowrap; cursor: pointer;
-}
-.wf-band-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
-.wf-band-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); }
-.wf-band-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
-.wf-band-chip.is-picked { border-color: var(--text); }
-.wf-band-chip.is-more { background: none; color: var(--text-dim); cursor: default; }
-.wf-band-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.wf-band-chip > .wf-mk,
+/* The named steps are canonical pick Chips in their state's tint (#503 swap; they were `.wf-band-chip`). */
+.wf-band-chips > .c-chip { flex: none; }
+.wf-band-chips .wf-mk,
 .wf-canvas .wf-band-count > .wf-mk { display: inline-flex; }
 .wf-canvas .wf-band-pick { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); white-space: nowrap; }
 

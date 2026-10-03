@@ -109,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
-import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm } from './components'
+import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -1331,6 +1331,12 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
   )
 }
 
+/** The band chip's tint: a step holding capacity, parked or failed takes its state's; the rest stay neutral. */
+function chipTone(look: StepLook): ChipTone | undefined {
+  if (look.kind !== 'state') return undefined
+  return look.hue === 'live' || look.hue === 'park' || look.hue === 'bad' ? look.hue : undefined
+}
+
 /**
  * A STEP'S BRAND MARK (marks.tsx), drawn on the graph's nodes and the stage
  * bands. The mark is the shape channel and the hue the second one; the state
@@ -1447,12 +1453,12 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
   return (
     <span className="wf-mix" ref={ref} title={`Runner profiles: ${all}`}>
       {shown.map((m) => (
-        <span className="wf-chip" key={m.profile}>
+        <Chip key={m.profile}>
           {m.profile}
-          <span className="wf-chip-n">×{m.count}</span>
-        </span>
+          <span className="wf-mix-n">×{m.count}</span>
+        </Chip>
       ))}
-      {rest > 0 && <span className="wf-chip more">+{rest}</span>}
+      {rest > 0 && <Chip faint>+{rest}</Chip>}
     </span>
   )
 }
@@ -1855,14 +1861,9 @@ function WorkflowSteps({
       <>
         {filter !== null && (
           <p className="wf-filter">
-            <span className="wf-filter-chip">
+            <Chip onRemove={onClearFilter} removeLabel="Clear the stage filter">
               stage {filter.level + 1} · {filter.word}
-              {onClearFilter !== undefined && (
-                <button type="button" className="wf-filter-x" aria-label="Clear the stage filter" onClick={onClearFilter}>
-                  ×
-                </button>
-              )}
-            </span>
+            </Chip>
             <span className="wf-filter-n">
               {rows.length} of {all.length} steps
             </span>
@@ -3086,18 +3087,12 @@ function StageBand({
           opening anything, by name and not only by count. */}
       <span className="wf-band-chips">
         {chips.map((c) => (
-          <button
-            key={c.stepId}
-            type="button"
-            className={`wf-band-chip ${lookClass(c.look)}${c.stepId === picked ? ' is-picked' : ''}`}
-            aria-pressed={c.stepId === picked}
-            onClick={() => onPick(c.stepId)}
-          >
+          <Chip key={c.stepId} tone={chipTone(c.look)} pressed={c.stepId === picked} onClick={() => onPick(c.stepId)}>
             <LookMark look={c.look} />
             {c.stepId}
-          </button>
+          </Chip>
         ))}
-        {more > 0 && <span className="wf-band-chip is-more">+{more} more</span>}
+        {more > 0 && <Chip faint>+{more} more</Chip>}
         {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10),
             when it is not one of the chips already. */}
         {picked !== null && !chips.some((c) => c.stepId === picked) && <span className="wf-band-pick">{picked}</span>}

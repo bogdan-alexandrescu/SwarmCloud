@@ -8,7 +8,7 @@
 import '../styles/components.css'
 
 export { Button, ButtonLink, buttonClass, type ButtonKind, type ButtonSize } from './Button'
-export { Chip, Count, Dash, LiveChip, Tag } from './Chip'
+export { Chip, Count, Dash, LiveChip, Tag, type ChipTone } from './Chip'
 export { StatePill, ParkPill, StateMark, NamedMark, MarkIcon, WarnMark, ToneMark, toneOf, TONE_MARK, PARK_WORD, stateWord, type StateForm, type MarkTone } from './StatePill'
 export { Card, CardLink, StatTile, type TileValue } from './Card'
 export { Table, type Column, type SortState } from './Table'

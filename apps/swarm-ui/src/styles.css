@@ -1472,18 +1472,16 @@ body {
 .wf-mix {
   display: flex; flex-wrap: wrap; align-content: flex-start;
   gap: var(--ctl-s1); min-width: 0; overflow: hidden;
-  height: calc(var(--t-micro) * var(--lh-micro) + 2px);
+  /* One canonical chip's height (components.css `.c-chip`: the flush line,
+     4px padding twice and the 1px edge twice), so a second line is hidden. */
+  height: calc(var(--t-micro) * var(--lh-flush) + 10px);
 }
-.wf-chip {
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  padding: 0 5px; color: var(--text-dim); white-space: nowrap;
-  /* A lone chip wider than the whole column is the one case wrapping cannot
-     hide, so it says it was shortened rather than being sliced. */
-  min-width: 0; overflow: hidden; text-overflow: ellipsis;
-}
-.wf-chip-n { color: var(--text-faint); margin-left: 3px; }
-.wf-chip.more { color: var(--text-faint); }
+/* The mix's chips are the canonical Chip (#503 swap; it was `.wf-chip`).
+   A lone chip wider than the whole column is the one case wrapping cannot
+   hide, so it says it was shortened rather than being sliced: a block box,
+   because an ellipsis applies to a block container and not to a flex one. */
+.wf-mix > .c-chip { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wf-mix-n { color: var(--text-faint); margin-left: 3px; }
 
 /* AN ABSENT COST IS NOT $0.00. The absent treatment is the one every unmeasured
    figure in this console gets: faint and italic, with the word rather than a
@@ -3320,14 +3318,8 @@ ol.timeline li::before {
   color: var(--warn-ink);
 }
 .banner.neutral { background: var(--surface); color: var(--text-dim); }
-/* Never collapsed, never truncated: an admin reading their own tenant's four
-   running tasks as the platform total is a truth bug, not a layout choice. */
-.count-chip {
-  display: inline-block;
-  margin-right: 10px;
-  font: var(--t-body)/var(--lh-body) var(--mono);
-  font-variant-numeric: tabular-nums;
-}
+/* A heading's count is the canonical bare Count (#503 swap; it was
+   `.count-chip`): a nowrap chip, never collapsed and never truncated. */
 
 .panel h2 { display: flex; align-items: center; gap: 10px; }
 /* Mandatory and always visible. */
@@ -9462,14 +9454,16 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     min-height: 44px;
   }
 
+  /* `.sub button` is every page head's refresh (Shell's and Overview's,
+     which was `.ov-refresh` until the #503 swap). */
   .ctl-q-glyph,
-  .ov-refresh,
+  .sub button,
   .ov-link,
   .sbf-mini {
     position: relative;
   }
   .ctl-q-glyph::after,
-  .ov-refresh::after,
+  .sub button::after,
   .ov-link::after,
   .sbf-mini::after {
     content: '';
@@ -9836,13 +9830,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* The Workflows row's 54px, in this page's forms: succeeded solid --ok. */
 .ol-steps > .ol-meter { flex: none; width: 54px; }
 .ol-phrase { color: var(--text-dim); }
-.ol-tag {
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-dim);
-  background: var(--surface-2);
-  border-radius: 2px;
-  padding: 0 var(--ctl-s1);
-}
 .ol-ring {
   display: inline-block;
   width: 8px;

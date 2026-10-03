@@ -212,7 +212,7 @@ describe('the pool’s count sits in the card-note slot (CP-22)', () => {
     api.loadAccountsBoard.mockResolvedValue(ok(board([account({})])))
     render(<AccountsScreen />)
     expect(await screen.findByText('eng:laptop', undefined, WAIT)).toBeTruthy()
-    expect(document.querySelector('.count-chip')).toBeNull()
+    expect(document.querySelector('.count-chip, .c-chip.is-n')).toBeNull()
     const note = [...document.querySelectorAll('.ctl-card-note')].find((n) =>
       /\baccounts?\b/.test(n.textContent ?? ''),
     )

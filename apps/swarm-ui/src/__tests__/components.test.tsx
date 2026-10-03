@@ -37,6 +37,7 @@ import {
   StatTile,
   Table,
   Tabs,
+  Tag,
   Toaster,
   Tooltip,
   TOAST_MS,
@@ -359,6 +360,51 @@ describe('an unknown figure is a dash with its reason, never 0', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove filter state: failed' }))
     expect(off).toHaveBeenCalledOnce()
     expect(screen.getByRole('link', { name: 'pool:global' }).getAttribute('href')).toBe('/capacity/pools?pool=global')
+  })
+
+  // The forms the section-local chips needed (#503 swap): `.wf-band-chip`,
+  // `.wf-chip.more`, `.count-chip` and `.ol-tag` are these now.
+  it('a pick chip is a toggle button that says whether it is picked, in its state tint', () => {
+    const pick = vi.fn()
+    render(
+      <>
+        <Chip tone="bad" pressed onClick={pick}>
+          impl-3
+        </Chip>
+        <Chip pressed={false} onClick={pick}>
+          impl-4
+        </Chip>
+      </>,
+    )
+    const on = screen.getByRole('button', { name: 'impl-3' })
+    expect(on.getAttribute('aria-pressed')).toBe('true')
+    expect(on.classList.contains('t-bad')).toBe(true)
+    expect(screen.getByRole('button', { name: 'impl-4' }).getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(on)
+    expect(pick).toHaveBeenCalledOnce()
+    // MUTATION: drop the pressed edge and the pick is carried by nothing.
+    expect(COMPONENTS_CSS).toMatch(/\.c-chip\.is-pick\[aria-pressed='true'\]\s*\{[^}]*border-color:\s*var\(--text\)/)
+    for (const t of ['live', 'park', 'bad']) {
+      expect(COMPONENTS_CSS, `no ${t} tint`).toMatch(new RegExp(`\\.c-chip\\.t-${t}\\s*\\{[^}]*background:\\s*var\\(--s-${t}b\\)`))
+    }
+  })
+
+  it('a bare Count is the figure, named by what it counts; a faint chip is quieter', () => {
+    const { container } = render(
+      <>
+        <Count n={12} label="files" bare />
+        <Chip faint>+2</Chip>
+        <Tag title="it is test data">declared</Tag>
+      </>,
+    )
+    const n = container.querySelector('.c-chip.is-n')!
+    expect(n.textContent).toBe('12')
+    expect(n.getAttribute('aria-label')).toBe('12 files')
+    expect(container.querySelector('.c-chip.is-faint')?.textContent).toBe('+2')
+    expect(container.querySelector('.c-tag')?.getAttribute('title')).toBe('it is test data')
+    // An unknown count stays a dash with its reason even when bare was asked for.
+    const { container: dash } = render(<Count n={null} label="files" why="not read" bare />)
+    expect(dash.querySelector('.c-chip.is-dash')?.textContent).toContain('\u2014')
   })
 })
 

@@ -13,7 +13,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
+import { Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -1165,9 +1165,9 @@ function Detail({
       <header className="acct-dhead">
         <div className="acct-dhead-row">
           <AcctState state={account.state} />
-          <span className="acct-pill">
+          <Chip>
             {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
-          </span>
+          </Chip>
         </div>
         <h3>{account.label}</h3>
         <p className="acct-idt">
