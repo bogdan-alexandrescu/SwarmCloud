@@ -7,7 +7,7 @@
 // frame or of redesign-v2's honesty rules.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 
 import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
@@ -27,7 +27,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -141,6 +141,25 @@ describe('Lanes: the drawing', () => {
     expect(cut).not.toBeNull()
     expect(solo.textContent).toContain('gen 1 fenced')
     await waitFor(() => expect(lane('task_plan').querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
+  })
+
+  it('spans a held bar from its attempt start to its end at a visible width (Q6)', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(lane('task_plan').querySelector('.tl-mkr[data-mark="succeeded"]')).not.toBeNull())
+    const plan = lane('task_plan')
+    const bar = plan.querySelector<HTMLElement>('[data-seg="hold"]')!
+    const left = parseFloat(bar.style.left)
+    const width = parseFloat(bar.style.width)
+    // 24h span ending now: the attempt ran from about 240m to 160m ago, so the
+    // bar starts near 83% of the track and is about 80/1440 = 5.6% wide --
+    // not a sliver at one column, which is what Q6 measured.
+    expect(left).toBeGreaterThan(82)
+    expect(left).toBeLessThan(84.5)
+    expect(width).toBeGreaterThan(5)
+    expect(width).toBeLessThan(6.2)
+    // The terminal mark sits after a bar's end; a cancel request stays on its instant.
+    expect(plan.querySelector('.tl-mkr[data-mark="succeeded"]')!.classList.contains('is-end')).toBe(true)
+    expect(plan.querySelector('[data-mark="cancel_requested"]')!.classList.contains('is-end')).toBe(false)
   })
 
   it('fills a workflow step that never ran from the workflow read, and draws no bar for it', async () => {
@@ -266,6 +285,42 @@ describe('Lanes: the outcome strip', () => {
     expect(strip.closest('.tl-strip')?.textContent).toContain('422')
     expect(strip.closest('.tl-strip')?.textContent).toMatch(/lanes below are unaffected/)
     await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+  })
+
+  // VISUAL QA Q6 (2026-10-02): the strip said "Reading /v1/outcomes…" while
+  // the lanes were drawn, and never moved. Every way the read can end -- no
+  // answer, an empty answer, a thrown read -- resolves to words.
+  // MUTATION: drop the deadline, or map `empty` back to loading.
+  it('says the outcomes read had no answer after its deadline, instead of reading forever (Q6)', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      api.loadOutcomes.mockReturnValue(new Promise(() => {}))
+      render(<TimelineLanesScreen view={null} onView={() => {}} />)
+      await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
+      expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Reading \/v1\/outcomes/)
+      await act(async () => {
+        vi.advanceTimersByTime(STRIP_DEADLINE_MS + 1)
+      })
+      const text = document.querySelector('.tl-strip')?.textContent ?? ''
+      expect(text).not.toMatch(/Reading \/v1\/outcomes/)
+      expect(text).toMatch(/Outcomes not read/)
+      expect(text).toMatch(/no answer after \d+ s/)
+      expect(text).toMatch(/lanes below are unaffected/)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('says an empty or thrown outcomes read in words, never "Reading…" (Q6)', async () => {
+    api.loadOutcomes.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
+    const a = render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Outcomes not read/))
+    expect(document.querySelector('.tl-strip')?.textContent).toMatch(/answered with nothing/)
+    a.unmount()
+    api.loadOutcomes.mockRejectedValue(new Error('boom'))
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Outcomes not read/))
+    expect(document.querySelector('.tl-strip')?.textContent).toMatch(/boom/)
   })
 
   it('prints the success rate from the route, and fences from the lanes drawn', async () => {

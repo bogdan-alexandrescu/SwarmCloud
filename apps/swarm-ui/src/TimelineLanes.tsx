@@ -63,7 +63,8 @@ import {
   type LaneSeg,
   type LanesView,
 } from './lanes'
-import { MarkGlyph, STATE_MARK, StateMark, type MarkName } from './marks'
+import { STATE_MARK, type MarkName } from './marks'
+import { Button, ButtonLink, Chip, MarkIcon, Segmented, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
 import { PageHead, timeAgo } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
@@ -161,6 +162,14 @@ type EventsRead =
   | { status: 'ok'; events: TaskEvent[]; next: string | null; older: 'idle' | 'reading' | string }
 
 type WorkflowState = { status: 'ok'; read: WorkflowRead } | { status: 'error'; why: string }
+
+/**
+ * How long the outcome strip waits for /v1/outcomes before it says so. The
+ * ledger over a day is the heaviest read on the page; past this the strip
+ * prints "no answer" rather than "Reading…" beside lanes already drawn, and
+ * a late answer still replaces it.
+ */
+export const STRIP_DEADLINE_MS = 20_000
 
 type StripRead = { status: 'loading' } | { status: 'ok'; data: Outcomes } | { status: 'error'; error: ApiError }
 
@@ -438,13 +447,38 @@ export function TimelineLanesScreen({
   const [strip, setStrip] = useState<StripRead>({ status: 'loading' })
   useEffect(() => {
     let live = true
+    let landed = false
     setStrip({ status: 'loading' })
-    ;(loadOutcomes(new URLSearchParams(stripQuery), ['totals']) as Promise<Result<Outcomes>>).then((r) => {
-      if (!live) return
-      setStrip(isData(r) ? { status: 'ok', data: r.data } : r.status === 'error' ? { status: 'error', error: r.error } : { status: 'loading' })
-    })
+    // EVERY WAY THE READ ENDS IS SAID (visual QA Q6, 2026-10-02): the strip
+    // read "Reading /v1/outcomes…" beside drawn lanes and never moved, because
+    // an `empty` answer was mapped back to loading and a read that never
+    // answered had no end. An empty answer, a thrown read and no answer by
+    // the deadline are each an honest error; a late answer still replaces it.
+    const fail = (message: string, httpStatus: number | null = null) =>
+      setStrip({ status: 'error', error: { kind: 'unreachable', httpStatus, code: null, message } })
+    const deadline = setTimeout(() => {
+      if (live && !landed) fail(`no answer after ${Math.round(STRIP_DEADLINE_MS / 1000)} s`)
+    }, STRIP_DEADLINE_MS)
+    ;(loadOutcomes(new URLSearchParams(stripQuery), ['totals']) as Promise<Result<Outcomes>>).then(
+      (r) => {
+        if (!live) return
+        landed = true
+        clearTimeout(deadline)
+        if (isData(r)) setStrip({ status: 'ok', data: r.data })
+        else if (r.status === 'error') setStrip({ status: 'error', error: r.error })
+        else if (r.status === 'empty') fail('the route answered with nothing')
+        else fail('the read did not finish')
+      },
+      (e: unknown) => {
+        if (!live) return
+        landed = true
+        clearTimeout(deadline)
+        fail(e instanceof Error ? e.message : String(e))
+      },
+    )
     return () => {
       live = false
+      clearTimeout(deadline)
     }
   }, [stripQuery, nonce])
 
@@ -486,30 +520,24 @@ export function TimelineLanesScreen({
       )}
 
       <div className="tl-ctl" role="group" aria-label="Timeline span and filters">
-        <div className="ctl-seg" role="group" aria-label="Span">
-          {LANE_SPANS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              aria-pressed={!zoomed && view.span === s}
-              onClick={() => setView({ ...view, span: s, since: null, until: null, back: null })}
-            >
-              {s}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Span"
+          value={zoomed ? null : view.span}
+          options={LANE_SPANS.map((s) => ({ key: s, label: s }))}
+          onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
+        />
         {back !== null && zoomed && (
-          <button type="button" className="tl-backchip" onClick={() => setView(back)}>
+          <Chip onClick={() => setView(back)}>
             ← {back.since !== null && back.until !== null ? rangeWords(Date.parse(back.since), Date.parse(back.until)) : back.span} · zoomed to {rangeWords(win.since, win.until)}
-          </button>
+          </Chip>
         )}
         <span className="tl-zoom">
-          <button type="button" aria-label="Zoom out" onClick={() => zoomBy(2)}>
+          <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>
             −
-          </button>
-          <button type="button" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>
+          </Button>
+          <Button size="sm" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>
             +
-          </button>
+          </Button>
         </span>
         <TlPicker
           label="State"
@@ -530,13 +558,12 @@ export function TimelineLanesScreen({
             ))}
           </select>
         </label>
-        <div className="ctl-seg" role="group" aria-label="Kind">
-          {LANE_KINDS.map((k) => (
-            <button key={k} type="button" aria-pressed={view.kind === k} onClick={() => setView({ ...view, kind: k })}>
-              {k === 'steps' ? 'workflow steps' : k}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          label="Kind"
+          value={view.kind}
+          options={LANE_KINDS.map((k) => ({ key: k, label: k === 'steps' ? 'workflow steps' : k }))}
+          onChange={(k) => setView({ ...view, kind: k })}
+        />
         <label className="tl-flt">
           Group by{' '}
           <select value={view.by} onChange={(e) => setView({ ...view, by: e.target.value as LanesView['by'] })}>
@@ -565,9 +592,9 @@ export function TimelineLanesScreen({
           <p>
             The attempts could not be read. /v1/attempts {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
           </p>
-          <button type="button" onClick={refresh}>
+          <Button size="sm" onClick={refresh}>
             Try again
-          </button>
+          </Button>
         </div>
       ) : shown === null ? (
         <div className="tl-state" aria-busy="true">
@@ -585,9 +612,9 @@ export function TimelineLanesScreen({
       ) : lanes.length === 0 ? (
         <div className="tl-state">
           <p>{`No lane matches ${filterWords(view)} among the ${rows.length} attempts read.`}</p>
-          <button type="button" onClick={() => setView({ ...view, state: [], profile: [], wf: null, kind: 'all', lane: null })}>
+          <Button size="sm" onClick={() => setView({ ...view, state: [], profile: [], wf: null, kind: 'all', lane: null })}>
             Clear filters
-          </button>
+          </Button>
         </div>
       ) : (
         <div className={rereading ? 'tl-chart is-stale' : 'tl-chart'} aria-busy={rereading}>
@@ -631,9 +658,9 @@ export function TimelineLanesScreen({
             {shown.rows.length} attempts drawn, newest first. Older attempts in this span: <b className="tl-dash">—</b> the route returns a page token, not a total.
           </p>
           {typeof shown.more === 'object' && <p>{`The next page ${failureWords(shown.more)}.`}</p>}
-          <button type="button" onClick={readNextPage} disabled={shown.more === 'reading'}>
+          <Button size="sm" onClick={readNextPage} disabled={shown.more === 'reading'}>
             {shown.more === 'reading' ? 'Reading…' : 'Read the next page ›'}
-          </button>
+          </Button>
         </div>
       )}
 
@@ -735,25 +762,18 @@ function Legend() {
         <i className="tl-lg is-cut" /> fenced generation
       </span>
       <span className="tl-mk is-warn">
-        <TlGlyph mark="warn" /> cancel asked
+        <MarkIcon mark="warn" /> cancel asked
       </span>
       <span className="tl-mk is-neu">
-        <TlGlyph mark="succeeded" /> ended
+        <MarkIcon mark="succeeded" /> ended
       </span>
       <span className="tl-mk is-bad">
-        <TlGlyph mark="failed" /> failed · dead-lettered
+        <MarkIcon mark="failed" /> failed · dead-lettered
       </span>
     </p>
   )
 }
 
-function TlGlyph({ mark }: { mark: MarkName | 'warn' }) {
-  return (
-    <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-      <MarkGlyph mark={mark} />
-    </svg>
-  )
-}
 
 function pct(t: number, since: number, until: number): number {
   return ((Math.min(Math.max(t, since), until) - since) / (until - since)) * 100
@@ -942,7 +962,7 @@ function LaneRow({
         </b>
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>
         {events?.status === 'error' && !lane.neverRan && (
-          <button type="button" className="tl-retry" onClick={() => onRetry(lane.taskId)}>
+          <button type="button" className="c-link tl-retry" onClick={() => onRetry(lane.taskId)}>
             read its events again
           </button>
         )}
@@ -954,12 +974,12 @@ function LaneRow({
         {marks.map((m, i) => (
           <span
             key={`m${i}`}
-            className={`tl-mkr is-${MARK_HUE[m.kind]}`}
+            className={`tl-mkr is-${MARK_HUE[m.kind]}${m.kind === 'cancel_requested' ? '' : ' is-end'}`}
             data-mark={m.kind}
             style={{ left: `${pct(m.at, since, until)}%` }}
             title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
           >
-            <TlGlyph mark={MARK_OF[m.kind]} />
+            <MarkIcon mark={MARK_OF[m.kind]} />
             {m.kind === 'cancel_requested' && <span className="tl-tag">{`cancel asked ${clock(m.at, wide)}`}</span>}
           </span>
         ))}
@@ -1017,7 +1037,7 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
         <p className="tl-q">Reading /v1/outcomes…</p>
       ) : strip.status === 'error' ? (
         <p>
-          <span>{`Outcomes not read (/v1/outcomes ${strip.error.httpStatus ?? 'no answer'}: ${strip.error.message}).`}</span> The lanes below are unaffected.
+          <span>{`Outcomes not read (/v1/outcomes${strip.error.httpStatus === null ? '' : ` ${strip.error.httpStatus}`}: ${strip.error.message}).`}</span> The lanes below are unaffected.
         </p>
       ) : (
         <p className="tl-strip1">
@@ -1153,9 +1173,9 @@ function LaneDetail({
           </dd>
         </dl>
         <p className="tl-acts">
-          <a className="tl-btn is-pri" href={href}>
+          <ButtonLink kind="primary" href={href}>
             Open in Agents ›
-          </a>
+          </ButtonLink>
         </p>
       </div>
       <div className="tl-card">
@@ -1183,9 +1203,9 @@ function LaneDetail({
           </ol>
         )}
         {events?.status === 'ok' && events.next !== null && (
-          <button type="button" className="tl-btn" onClick={onOlder} disabled={events.older === 'reading'}>
+          <Button onClick={onOlder} disabled={events.older === 'reading'}>
             {events.older === 'reading' ? 'Reading…' : 'Older events ›'}
-          </button>
+          </Button>
         )}
         {events?.status === 'ok' && typeof events.older === 'string' && events.older !== 'idle' && events.older !== 'reading' && (
           <p className="tl-q">{events.older}</p>
@@ -1225,7 +1245,7 @@ function EventRow({ e }: { e: TaskEvent }) {
     <li className={kind === 'generation_fenced' ? 'tl-evr is-fence' : 'tl-evr'}>
       <span className="tl-evt">{Number.isFinite(t) ? clock(t, true) : '—'}</span>
       <span className={`tl-mk is-${m.hue}`}>
-        <TlGlyph mark={m.mark} />
+        <MarkIcon mark={m.mark} />
       </span>
       <span className="tl-evk">
         {kind}

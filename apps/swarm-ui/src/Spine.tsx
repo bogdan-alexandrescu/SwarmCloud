@@ -25,10 +25,10 @@ import { Fragment, useCallback, useEffect, useRef, useState, useSyncExternalStor
 import { AGENT_TABS, type AgentTab } from './agentlist'
 import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
-import { Banner, Button, Toaster, acknowledge, routedClick } from './components'
+import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
 import { HELP_GROUPS, HELP, TOPIC_IDS } from './help'
-import { MarkGlyph, STATE_MARK } from './marks'
+import { STATE_MARK } from './marks'
 import { addressToPath } from './paths'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
@@ -68,6 +68,10 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
       kids: AGENT_TABS.map((t) => ({ key: t, label: AGENT_LABEL[t], to: `work/running/${t}` })),
     },
     { key: 'workflows', label: 'Workflows', icon: 'workflows', to: 'work/workflows' },
+    // ISSUE RUNS (intake-tenants.html 1A): a route and a SECTIONS tab since
+    // #523, and missing here, so /runs was reachable only from a submit's
+    // redirect (visual QA Q7, 2026-10-02).
+    { key: 'runs', label: 'Runs', icon: 'runs', to: 'work/runs' },
     { key: 'timeline', label: 'Timeline', icon: 'timeline', to: 'work/timeline' },
   ],
   capacity: [
@@ -503,6 +507,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
       <circle cx="6" cy="18" r="2.2" />
       <circle cx="18" cy="12" r="2.2" />
       <path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8" />
+    </>
+  ),
+  runs: (
+    <>
+      <circle cx="6" cy="6" r="1.8" />
+      <circle cx="6" cy="12" r="1.8" />
+      <circle cx="6" cy="18" r="1.8" />
+      <path d="M10 6h9M10 12h9M10 18h9" />
     </>
   ),
   timeline: (
@@ -1473,17 +1485,7 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
             onClick={() => nav(`work/workflows?wf=${encodeURIComponent(w.id)}`)}
           >
             <span className="sk-recent-row">
-              <span
-                className={`sk-st is-${look === null ? 'neu' : look.hue}`}
-                data-mark={look === null ? 'none' : look.mark}
-                data-hue={look === null ? 'neu' : look.hue}
-                title={word}
-              >
-                <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-                  {look !== null && <MarkGlyph mark={look.mark} />}
-                </svg>
-                <span className="sk-vh">{word}</span>
-              </span>
+              <NamedMark mark={look === null ? null : look.mark} hue={look === null ? 'neu' : look.hue} word={word} bare />
               <span className={RECENT_NAME_CLASS}>{w.name ?? w.id}</span>
             </span>
           </button>

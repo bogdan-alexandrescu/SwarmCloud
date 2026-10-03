@@ -31,6 +31,7 @@
 
 import { useId, type ReactNode } from 'react'
 
+import { Segmented, Tag, UsageTrack } from './components'
 import { HelpNote } from './HelpCard'
 import { type TopicId } from './help'
 import {
@@ -52,7 +53,7 @@ import {
   type SpanCoverage,
   type Stat,
 } from './outcomes'
-import { Absent, Mark, UtilTrack } from './primitives'
+import { Absent, Mark } from './primitives'
 import { HatchDef, useHatchId } from './charts/parts'
 import {
   CONCURRENCY_STATES,
@@ -130,7 +131,7 @@ function Row({
   return (
     <div className="ol-row" data-row={name}>
       {label}
-      <UtilTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
+      <UsageTrack pct={pctOf} zeroTitle={`${name}: a measured zero`} />
       <span className="ol-row-n">{count}</span>
       {strip}
     </div>
@@ -584,7 +585,7 @@ function Outcome4({ parts, width, say }: { parts: [number, number, number]; widt
   const total = parts[0] + parts[1] + parts[2]
   const cls = ['succeeded', 'failed', 'cancelled'] as const
   if (total === 0) {
-    return <UtilTrack pct={0} zeroTitle={say} />
+    return <UsageTrack pct={0} zeroTitle={say} />
   }
   return (
     <span className="ol-meter-wrap">
@@ -841,13 +842,7 @@ export function ReliabilityCard({
       }
       className="is-wide ol-reliability"
     >
-      <div className="ctl-seg ol-group" role="group" aria-label="Group by">
-        {choices.map((c) => (
-          <button key={c} type="button" aria-pressed={group === c} onClick={() => onGroup(c)}>
-            {GROUP_LABEL[c]}
-          </button>
-        ))}
-      </div>
+      <Segmented className="ol-group" label="Group by" value={group} options={choices.map((c) => ({ key: c, label: GROUP_LABEL[c] }))} onChange={onGroup} />
       {cov.none ? (
         <NotRead cov={cov} what="Reliability" />
       ) : g.rows.length === 0 ? (
@@ -901,9 +896,9 @@ export function ReliabilityCard({
                     {r.declared_cost && (
                       <>
                         {' '}
-                        <span className="ol-tag" title="this profile declares its own cost, from its input; it is test data">
+                        <Tag title="this profile declares its own cost, from its input; it is test data">
                           declared
-                        </span>
+                        </Tag>
                       </>
                     )}
                   </th>
@@ -1072,7 +1067,7 @@ export function CostCard({ data, picked }: { data: Outcomes; picked: string | nu
       </p>
       {c.declared.profiles.length > 0 && (
         <p className="ol-line">
-          <span className="ol-tag">declared</span> {c.declared.profiles.join(', ')}{' '}
+          <Tag>declared</Tag> {c.declared.profiles.join(', ')}{' '}
           {c.declared.sum_usd === null ? '—' : money(c.declared.sum_usd)} <span className="ol-q">included above</span>
         </p>
       )}

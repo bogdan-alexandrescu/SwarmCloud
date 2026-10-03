@@ -28,6 +28,7 @@ import {
   type Task,
 } from './types'
 import './styles/submit.css'
+import { Button } from './components'
 
 /**
  * Submit one task -- and the honest constraints on doing so.
@@ -513,9 +514,9 @@ function ValueEditor({ f, id, choices, invalid, describedBy, onBlur, onChange }:
             onChange={(e) => onChange({ ...f, list: f.list.map((o, j) => (j === i ? e.target.value : o)) })} />
         ))}
         <div className="sbf-listact">
-          <button type="button" className="sbf-mini" onClick={() => onChange({ ...f, list: [...f.list, ''] })}>one more</button>
+          <button type="button" className="c-link is-sm" onClick={() => onChange({ ...f, list: [...f.list, ''] })}>one more</button>
           {f.list.length > 1 && (
-            <button type="button" className="sbf-mini" onClick={() => onChange({ ...f, list: f.list.slice(0, -1) })}>one fewer</button>
+            <button type="button" className="c-link is-sm" onClick={() => onChange({ ...f, list: f.list.slice(0, -1) })}>one fewer</button>
           )}
         </div>
       </div>
@@ -569,11 +570,11 @@ function BrowserActions({ f, onChange }: { f: InputField; onChange: (next: Input
               value={String(a[part.prop] ?? '')} spellCheck={false}
               onChange={(e) => set(i, { ...a, [part.prop]: e.target.value })} />
           ))}
-          <button type="button" className="sbf-mini" aria-label={`remove action ${i + 1}`}
+          <button type="button" className="c-link is-sm" aria-label={`remove action ${i + 1}`}
             onClick={() => onChange({ ...f, actions: f.actions.filter((_, j) => j !== i) })}>remove</button>
         </div>
       ))}
-      <button type="button" className="sbf-mini" onClick={() => onChange({ ...f, actions: [...f.actions,
+      <button type="button" className="c-link is-sm" onClick={() => onChange({ ...f, actions: [...f.actions,
         { key: nextKey++, type: 'goto', url: '', selector: '', text: '', name: '', seconds: '1' }] })}>
         add an action
       </button>
@@ -702,7 +703,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                 </select>
               )}
               {!f.required && (
-                <button type="button" className="sbf-mini" onClick={() => onChange(fields.filter((_, j) => j !== i))}>
+                <button type="button" className="c-link is-sm" onClick={() => onChange(fields.filter((_, j) => j !== i))}>
                   remove
                 </button>
               )}
@@ -1014,7 +1015,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                   : missing.length > 0 ? (
                     <span className="sbf-gaps">
                       {missing.map((k) => (
-                        <button type="button" key={k} className="sbf-mini sbf-bad" onClick={() => toField(k)}>
+                        <button type="button" key={k} className="c-link is-sm sbf-bad" onClick={() => toField(k)}>
                           <code>{k}</code> missing
                         </button>
                       ))}
@@ -1063,9 +1064,9 @@ function Form({ capacity }: { capacity: Capacity }) {
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
-          <button type="submit" className="sbf-go sb-go" disabled={outcome.kind === 'sending' || blocked}>
+          <Button type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
             {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
-          </button>
+          </Button>
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {outcome.kind === 'refused' && outcome.unattributed && (
             <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>

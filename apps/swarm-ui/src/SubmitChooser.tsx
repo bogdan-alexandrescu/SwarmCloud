@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
-import { MarkGlyph } from './marks'
+import { Button, NamedMark } from './components'
+import { PageHead } from './Shell'
 import './styles/submit.css'
 
 /**
@@ -82,7 +83,11 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
 
   return (
     <section className="sb-chooser" aria-labelledby="submit-h">
-      <h1 id="submit-h">Submit</h1>
+      {/* The page head every page draws (Q2): the title, its `?` and the
+          head's "reads nothing" on one row. */}
+      <PageHead title="Submit" headingId="submit-h">
+        {null}
+      </PageHead>
       <div className="sb-choices">
         <div className="sb-card sb-choice">
           <h2><TaskGlyph />Submit a task</h2>
@@ -90,9 +95,9 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             One agent, one runner. It lands READY or PARKED and costs nothing until the scheduler admits it.
           </p>
           <span className="sb-row">
-            <button type="button" className="sb-btn is-pri" aria-keyshortcuts="T" onClick={() => go(TASK_FORM)}>
+            <Button kind="primary" aria-keyshortcuts="T" onClick={() => go(TASK_FORM)}>
               Start a task
-            </button>
+            </Button>
             <kbd className="sb-kbd">T</kbd>
           </span>
         </div>
@@ -100,9 +105,9 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           <h2><WorkflowGlyph />Submit a workflow</h2>
           <p className="sb-note">Steps in stages that hand work to each other, opening one PR or one per step.</p>
           <span className="sb-row">
-            <button type="button" className="sb-btn" aria-keyshortcuts="W" onClick={() => go(WORKFLOW_FORM)}>
+            <Button aria-keyshortcuts="W" onClick={() => go(WORKFLOW_FORM)}>
               Start a workflow
-            </button>
+            </Button>
             <kbd className="sb-kbd">W</kbd>
           </span>
         </div>
@@ -112,9 +117,9 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow.
           </p>
           <span className="sb-row">
-            <button type="button" className="sb-btn" aria-keyshortcuts="I" onClick={() => go(ISSUE_FORM)}>
+            <Button aria-keyshortcuts="I" onClick={() => go(ISSUE_FORM)}>
               Start from an issue
-            </button>
+            </Button>
             <kbd className="sb-kbd">I</kbd>
           </span>
         </div>
@@ -122,11 +127,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
       <section className="sb-card sb-recent" aria-labelledby="submit-recent-h">
         <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
         <p className="sb-empty">
-          <span className="sk-st is-neu" data-mark="queued" data-hue="neu">
-            <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-              <MarkGlyph mark="queued" />
-            </svg>
-          </span>
+          <NamedMark mark="queued" hue="neu" />
           <span>
             <b>No recent submissions to show yet.</b> This list needs the API to keep a short per-person list of
             what you submitted: task or workflow, name, settings, when. It does not today, so the card stays empty

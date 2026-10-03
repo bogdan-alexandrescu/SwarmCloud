@@ -815,8 +815,8 @@ describe('B17: an identifier is never restyled', () => {
     // The text is the id as the API serves it, in lower case, paste-ready.
     expect(heading.textContent).toBe('wf_audit_01')
 
-    // The precondition lives in the next test (`.ctl-chip`, a rule that still
-    // case-shifts); a B17 assertion with nothing transforming above it passes
+    // The precondition lives in the next test (`.att-backend`, a rule that
+    // still case-shifts); a B17 assertion with nothing transforming above it passes
     // on an empty stylesheet.
     expect(getComputedStyle(heading).textTransform).not.toBe('uppercase')
     style.remove()
@@ -826,8 +826,11 @@ describe('B17: an identifier is never restyled', () => {
     const style = withStyles()
     // WHAT MOVED, AND WHY THIS IS THE SAME TEST.
     //
-    // `.ctl-chip` is still the live case-shifting ancestor B17 was written
-    // for; the restraint pass changed the DIRECTION of the shift, not its
+    // `.ctl-chip` was the live case-shifting ancestor B17 was written for,
+    // until the status chip became the canonical `ToneMark`/`StateMark`
+    // (#503 swap), which lowercases its word in code rather than in the sheet.
+    // `.att-backend` -- the attempt card's backend name -- is the live
+    // case-shifting ancestor now. The restraint pass changed the DIRECTION of the shift, not its
     // existence. The chip used to be UPPERCASE -- 600/13px/mono/tracked, the
     // badge treatment -- and design-system.md §6.6 replaced that with Vercel's
     // measured status idiom: a 10px dot and the state word at --t-body in
@@ -841,11 +844,11 @@ describe('B17: an identifier is never restyled', () => {
     // uppercased id still looks like an id someone shouted; a LOWERCASED one
     // silently becomes a different string to anyone who retypes what they see.
     const { container } = render(
-      <span className="ctl-chip">
+      <span className="att-backend">
         RUNNING <span className="id">WF_AUDIT_01</span>
       </span>,
     )
-    const chip = container.querySelector('.ctl-chip')!
+    const chip = container.querySelector('.att-backend')!
     const id = container.querySelector('.id')!
     // The ancestor really does case-shift, so the assertion below is not
     // passing on a stylesheet that failed to load.
@@ -857,13 +860,13 @@ describe('B17: an identifier is never restyled', () => {
   it('and the rule reaches literals that were never wrapped in anything', () => {
     const style = withStyles()
     const { container } = render(
-      <span className="ctl-chip">
+      <span className="att-backend">
         route <code>/v1/tasks</code>
       </span>,
     )
     // `lowercase`, not `uppercase` -- see the note in the test above. The
     // ancestor still transforms; a route literal still must not.
-    expect(getComputedStyle(container.querySelector('.ctl-chip')!).textTransform).toBe(
+    expect(getComputedStyle(container.querySelector('.att-backend')!).textTransform).toBe(
       'lowercase',
     )
     expect(getComputedStyle(container.querySelector('code')!).textTransform).toBe('none')

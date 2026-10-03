@@ -1,4 +1,4 @@
-import { MarkGlyph, STATE_MARK } from './marks'
+import { Button, CIcon, Count, StateMark, ToneMark } from './components'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -50,7 +50,6 @@ import {
   reasonCopy,
   restoredFrom,
   startedOf,
-  stateTone,
   usageOf,
   waitingLine,
   whyAgent,
@@ -67,7 +66,6 @@ import {
   type Task,
   type TaskEvent,
   type TaskInputCopy,
-  type TaskState,
   type Tone,
 } from './types'
 
@@ -189,9 +187,9 @@ export function AgentDetailScreen({
   if (headed) return screenEl
   return (
     <div className="drawer" role="dialog" aria-label={`Agent ${taskId}`}>
-      <button className="drawer-close" onClick={onClose} aria-label="Close">
-        ✕
-      </button>
+      <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={onClose}>
+        Close
+      </Button>
       {screenEl}
     </div>
   )
@@ -372,23 +370,8 @@ export function Run({
 // ---------------------------------------------------------------------------
 
 /**
- * `.ctl-chip` tones are ok / warn / bad / info / paused / unknown / live.
- * `Tone` from types.ts has `wait`, which has no chip class -- mapping it to
- * `warn` rather than letting it fall through keeps a THROTTLED-shaped state
- * from silently rendering in the default grey, which is the colour reserved
- * for "we do not know".
- *
- * `ended` (CANCELLED, CH-22) is the flat bar: the ONE `is-info` modifier, not a
- * second one, grey since CH-17 -- a terminal state that is not a verdict.
- */
-export function chipTone(tone: ChipTone): string {
-  if (tone === 'wait') return 'warn'
-  if (tone === 'ended') return 'info'
-  return tone
-}
-
-/**
- * The tones a chip may take. `Tone` from types.ts is the derived one; the
+ * The tones a state mark may take (the canonical `ToneMark` draws them; `wait`
+ * is drawn as warn, `ended` as the flat bar). The tones a chip may take. `Tone` from types.ts is the derived one; the
  * other three are states a chip can be in that no task ever is -- an outcome
  * nobody recorded (`unknown`), a fact rather than a verdict (`info`), and work
  * an operator has held (`paused`).
@@ -419,52 +402,6 @@ export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } 
   return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
 }
 
-/**
- * A MARK AND A WORD, and the mark is the ONLY shape in it.
- *
- * design-system.md §6.6 rebuilt this primitive and §11.2 names the one thing
- * the screens still had to do: `{stateGlyph(state)} {state}` inside the chip
- * is a SECOND shape encoding of the fact the `<i>` already carries, and the
- * pill was the only reason it did not read as two dots. The pill is gone, so
- * the duplicate is gone with it -- here, in Agents.tsx and in AttemptTimeline.
- *
- * NOTHING THAT CARRIED INFORMATION LEFT. The shape channel is a TONE channel
- * (§6.6's table is ok/warn/bad/info/paused/unknown/live, not a state table)
- * and the `<i>` still carries all of it; the WORD, which §6.6 makes mandatory,
- * is what separates PARKED from READY from QUEUED and it is now at full ink
- * rather than in a mid-tone hue. The glyph was a third copy of a fact already
- * drawn twice.
- *
- * EXPORTED, because there were four state chips in this group and §9.3 asked
- * for one. Agents draws it forty times a screen; AttemptTimeline draws the
- * attempt outcome with it; this file draws the run's own state.
- */
-export function Chip({ tone, state, children }: { tone: ChipTone; state?: TaskState; children: ReactNode }) {
-  // A TASK STATE draws the brand mark (marks.tsx, rebrand 2026-10-01): one
-  // shape and one hue per state, the half disc, the haloed disc, the pause
-  // bars, the ring and so on. Any other chip keeps the tone's mark.
-  const brand = state === undefined ? null : STATE_MARK[state]
-  return (
-    <span
-      className={`ctl-chip is-${chipTone(tone)}`}
-      data-mark={brand?.mark}
-      data-hue={brand?.hue}
-    >
-      {/* Decoration only. The word beside it carries the meaning, because a
-          colour-only chip fails in a greyscale incident screenshot. */}
-      {brand === null ? (
-        <i aria-hidden />
-      ) : (
-        <i aria-hidden>
-          <svg viewBox="0 0 12 12" focusable="false">
-            <MarkGlyph mark={brand.mark} />
-          </svg>
-        </i>
-      )}
-      {children}
-    </span>
-  )
-}
 
 /** The em dash, as a token rather than a bare character, so "not measured" is
  *  styleable as a class of thing and never mistaken for a digit.
@@ -516,7 +453,7 @@ export { Mark, type MarkKind } from './primitives'
  * used / ceiling, as one `.ctl-util` row that stays honest when either side
  * is missing.
  *
- * The TRACK is the shared `UtilTrack`, so its four states are the product's:
+ * The TRACK is the canonical `UsageTrack`, so its four states are the product's:
  * unknown (no measurement, or no ceiling to measure it against) is hatched
  * with no fill; a measured zero draws the baseline tick; over the ceiling, the
  * track stands for what was used and the excess is hatched in the failure
@@ -696,9 +633,9 @@ function IdCopy({ value }: { value: string }) {
   return (
     <>
       <span className="mono ad-id-text">{value}</span>
-      <button type="button" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
+      <Button size="sm" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
         copy
-      </button>
+      </Button>
       <span className="ad-id-said" role="status">
         {said}
       </span>
@@ -731,7 +668,7 @@ function Headline({
   return (
     <section className="section panel">
       <h2>
-        {/* The state as a `.ctl-chip`, not the old `.st` span: `.st` is only
+        {/* The state as the canonical StateMark, not the old `.st` span: `.st` is only
             coloured inside `.row`, so in a heading it silently rendered in the
             heading's own faint grey -- the one element on the page whose colour
             is load-bearing was the one with none.
@@ -754,7 +691,7 @@ function Headline({
             state
             <HelpCard topic="capacity" />
           </b>
-          <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+          <StateMark state={task.state} />
         </span>
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
             drawn after the chip's key (AH-24, above).
@@ -1684,7 +1621,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
     <section className="section panel">
       <h2>
         Attempts
-        <span className="count-chip">{ordered.length}</span>
+        <Count n={ordered.length} label="attempts" bare />
         {ordered.length < task.attempt_count && (
           // THE GAP, IN THE HEADING IT QUALIFIES. This was a full partial
           // panel with a two-sentence body; the figures are the fact and the
@@ -1866,7 +1803,7 @@ function AttemptCard({
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">
           {attemptLabel(ordinal, a.generation)}
-          <Chip tone={chip.tone}>{chip.label}</Chip>
+          <ToneMark tone={chip.tone}>{chip.label}</ToneMark>
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
               Koyeb's rule, quoted in §6.6: their one pill-shaped element is
@@ -1874,7 +1811,7 @@ function AttemptCard({
               meaning "status". It stays a `.tag`; what changed is that the two
               STATES beside it stopped being one. */}
           {isLatest && <span className="tag">latest</span>}
-          {a.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
+          {a.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         {/* THE BACKEND IS A STRING THE API CHOSE, SO IT IS BROUGHT INTO THIS
             CONSOLE'S REGISTER RATHER THAN LEFT SHOUTING. `a.backend` arrives
@@ -3153,12 +3090,13 @@ function GitOutcome({
           {patch ? (
             <>
               <span className="mono uri">{patch.uri}</span>
-              <button
+              <Button
+                size="sm"
                 className="copy"
                 onClick={() => navigator.clipboard?.writeText(`gsutil cat ${patch.uri} | git apply -`)}
               >
                 copy apply
-              </button>
+              </Button>
             </>
           ) : git.patch_omitted ? (
             <>
@@ -3207,7 +3145,7 @@ function GitOutcome({
                 `ok`: it is a FACT about the branch, not a verdict that the run
                 went well (§1.3 -- the accent is a fact or a link, never a
                 verdict), and `is-info`'s flat bar is the mark that says so. */}
-            <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
+            <ToneMark tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</ToneMark>
             {pr.created === false && ' · reused'}
           </li>
         )}
@@ -3349,7 +3287,7 @@ function HandedOn({
           <a href={pr.url} target="_blank" rel="noreferrer">
             #{pr.number}
           </a>{' '}
-          <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
+          <ToneMark tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</ToneMark>
           {integrator?.step_id ? ` · opened by ${integrator.step_id}` : ''}
         </p>
       )}
@@ -3417,9 +3355,9 @@ function HandedFile({ task, file, to }: { task: Task; file: ArtifactRef; to: str
           </>
         )}
         {!open && (
-          <button type="button" className="copy" onClick={() => setOpen(true)}>
+          <Button size="sm" className="copy" onClick={() => setOpen(true)}>
             show diff
-          </button>
+          </Button>
         )}
       </p>
       {open && read !== null && (
@@ -3657,9 +3595,9 @@ function AgPatchDiff({ taskId, patch }: { taskId: string; patch: ArtifactRef }) 
   if (!open) {
     return (
       <p className="ag-diff-open">
-        <button type="button" className="copy" onClick={() => setOpen(true)}>
+        <Button size="sm" className="copy" onClick={() => setOpen(true)}>
           Show the diff
-        </button>{' '}
+        </Button>{' '}
         <span className="ctl-sub">
           {patch.name} · {num(patch.bytes)} bytes
         </span>
@@ -4287,7 +4225,7 @@ function Timeline({
       <div className="ctl-toolbar">
         <h2>
           Timeline
-          <span className="count-chip">{events.length}</span>
+          <Count n={events.length} label="events" bare />
         </h2>
         {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER.
             Two paragraphs stood here -- one for the proven case (a terminal

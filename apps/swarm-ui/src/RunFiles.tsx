@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Chip, Em } from './AgentDetail'
+import { Em } from './AgentDetail'
+import { Button, ToneMark } from './components'
 import { loadCheckpoints } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { Absent, Mark } from './primitives'
@@ -785,10 +786,10 @@ function CheckpointRow({
     <tr role="row">
       <th role="rowheader" scope="row">
         <span className="mono">{record.checkpoint_id}</span>{' '}
-        {record.is_latest_pointer && <Chip tone="info">latest</Chip>}{' '}
-        <button type="button" className="copy" aria-expanded={browsing} onClick={onBrowse}>
+        {record.is_latest_pointer && <ToneMark tone="info">latest</ToneMark>}{' '}
+        <Button size="sm" className="copy" aria-expanded={browsing} onClick={onBrowse}>
           files
-        </button>
+        </Button>
         <span className="ctl-sub">
           {record.attempt_id}
           {!record.attempt_known && (
@@ -819,9 +820,9 @@ function CheckpointRow({
           <code className="mono uri" title={record.uri}>
             {record.uri}
           </code>
-          <button type="button" className="copy" onClick={() => navigator.clipboard?.writeText(`gsutil cp -r ${record.uri} .`)}>
+          <Button size="sm" className="copy" onClick={() => navigator.clipboard?.writeText(`gsutil cp -r ${record.uri} .`)}>
             copy gsutil
-          </button>
+          </Button>
         </span>
         <span className="ctl-sub" data-testid="rf-resume">
           resume{' '}
@@ -849,9 +850,9 @@ function CheckpointRow({
         {bytesLabel(record.stored_bytes)}
         {n > 0 && (
           <span className="ctl-sub">
-            <button type="button" className="copy" aria-expanded={listing} onClick={onList}>
+            <Button size="sm" className="copy" aria-expanded={listing} onClick={onList}>
               {n} object{n === 1 ? '' : 's'}
-            </button>
+            </Button>
           </span>
         )}
       </td>
@@ -1036,13 +1037,13 @@ export function Stream({
             <span className="ctl-sub uri" title={stream.uri}>
               {stream.uri}
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               className="copy"
               onClick={() => navigator.clipboard?.writeText(`gsutil cat ${stream.uri}`)}
             >
               copy gsutil
-            </button>
+            </Button>
           </>
         )}
       </th>

@@ -433,8 +433,10 @@ def test_a_measured_zero_bar_gets_a_baseline():
     """
     # THE SHARED TRACK, not Overview's copy of it. U8 collapsed the six hand-
     # drawn tracks (Overview x3, AgentDetail, Capacity, Holders) onto one
-    # component, so the baseline tick is asserted where every screen gets it.
-    fn = body_of(src("primitives.tsx"), "export function UtilTrack(")
+    # component, so the baseline tick is asserted where every screen gets it:
+    # the canonical `UsageTrack` since the #503 swap (it was `UtilTrack` in
+    # primitives.tsx).
+    fn = body_of(src("components/UsageBar.tsx"), "export function UsageTrack(")
     assert "if (pct === null) {" in fn, "an unmeasured track no longer hatches"
     assert "is-unknown" in fn, "an unmeasured track no longer hatches"
     assert "if (pct === 0) {" in fn, "a measured zero draws nothing distinguishable"
@@ -477,11 +479,13 @@ def test_both_utilisation_bars_go_through_one_component():
     first version was standing in for: `.ctl-util-track` is drawn by exactly one
     file, and every screen that shows a utilisation goes through it.
     """
+    # Screens and the canonical set: the track is `UsageTrack` in
+    # components/UsageBar.tsx since the #503 swap.
     drawers = sorted(
-        p.name for p in UI.glob("*.tsx")
+        p.relative_to(UI).as_posix() for p in [*UI.glob("*.tsx"), *UI.glob("components/*.tsx")]
         if re.search(r"""className=[{"'`][^>]*\bctl-util-track\b""", p.read_text())
     )
-    assert drawers == ["primitives.tsx"], (
+    assert drawers == ["components/UsageBar.tsx"], (
         f"a utilisation track is drawn outside the shared primitive, in {drawers}; "
         "each copy is a place the hatch, the baseline tick or the over-ceiling "
         "segment can be kept on one screen and lost on the next"
@@ -489,7 +493,7 @@ def test_both_utilisation_bars_go_through_one_component():
     # Overview's pool rows go through the shared track too (O1, 2026-10-02:
     # Headroom is profile tiles, pool rows and one account line).
     ov = src("Overview.tsx")
-    assert "<UtilTrack" in body_of(ov, "function PoolRow("), (
+    assert "<UsageTrack" in body_of(ov, "function PoolRow("), (
         "Overview's pool rows stopped drawing the shared track"
     )
 

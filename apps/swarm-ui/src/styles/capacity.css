@@ -18,35 +18,8 @@
 /* -- Pools, Runtimes, Holders, Provider quota ----------------------------- */
 
 /* The in-page view strip under the Pools heading (capacity.html C1, frames 0
-   and 3): Ceilings | By runner profile. components.html A's segmented control
-   -- one bordered pill-ended group, 32px tall, the current view in the
-   accent's soft fill -- drawn locally until the shared one lands. */
-.cap-seg {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: var(--ctl-s1);
-  padding: var(--ctl-s1);
-  margin: 0 0 var(--ctl-s3);
-  /* A control's own boundary, so --line (3:1 on the page), not the nav
-     hairline --sk-ln (1.2-1.4:1). The segments sit 4px apart rather than
-     touching, so no rule between them is needed. */
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--surface);
-}
-.cap-seg a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  font-size: var(--t-micro);
-  color: var(--text-dim);
-  text-decoration: none;
-  border-radius: 2px;
-}
-.cap-seg a[aria-current="page"] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
-.cap-seg a:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+   and 3): the canonical segmented control's link form; this only spaces it. */
+.cap-seg { display: flex; margin: 0 0 var(--ctl-s3); }
 
 /* Ceilings: "Needs action" leads (the pools a person has to act on), in the
    warning hue's soft surface. */
@@ -70,8 +43,17 @@
 .cap-pools thead th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The pool's id and its scope share the line under its name (CP-2): one
    sub-line, not a second row of height. */
-.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.cap-sub .ctl-sub { display: inline; }
+/* A ROW TITLE OVER ONE SANS LINE (visual QA Q8, 2026-10-02; capacity.html):
+   the name was an underlined bold link -- a <th> is bold by default -- and
+   the mono sublabel wrapped "global / global / · platform" over three lines
+   in the 23% column. The name is the row's title at normal weight, still the
+   link to Holders (underlined on hover); the sublabel holds one line and
+   ellipses, its whole text in the cell's title. */
+.cap-pools tbody th[scope='row'] { font-weight: 400; }
+.cap-pools tbody th[scope='row'] > .ctl-link { color: var(--text); text-decoration: none; }
+.cap-pools tbody th[scope='row'] > .ctl-link:hover { text-decoration: underline; }
+.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-pools .cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
 .cap-scope { color: var(--text-faint); }
 
 /* THE USE CELL: the bar shrinks, the figure does not. The figure's track is
@@ -127,8 +109,6 @@
 .rt-cards { margin-bottom: var(--ctl-s5); }
 .rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.rt-pool-chip { font-size: var(--t-micro); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; color: var(--info); text-decoration: none; }
-.rt-pool-chip:hover { border-color: var(--info); }
 /* SIZING FITS ITS CARD (#503): "Resolves from" lists every runtime that
    resolves to a class, and a nowrap list ran past the card's right edge. It
    is the one prose-shaped column in the table, so it wraps. */
@@ -297,11 +277,6 @@
 .acct-dhead { display: grid; gap: 4px; min-width: 0; }
 .acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
-.acct-pill {
-  display: inline-flex; align-items: center; padding: 1px 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  font-size: var(--t-micro); color: var(--text-dim);
-}
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
 
 .acct-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }

@@ -268,7 +268,8 @@ describe('a window of an artifact downloads the whole object', () => {
       <live.ArtifactViewer taskId="tsk_diff" artifact={{ name: 'change.diff', bytes: 9000, uri: 'gs://b/change.diff' }} onClose={() => {}} />,
     )
     const a = await waitFor(() => {
-      const el = container.querySelector<HTMLAnchorElement>('.diff-bar a.diff-btn[download]')
+      // The canonical button's link form (components.html A).
+      const el = container.querySelector<HTMLAnchorElement>('.diff-bar a.c-btn[download]')
       expect(el, 'a partial patch still downloads a blob of its window').not.toBeNull()
       return el!
     })

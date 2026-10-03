@@ -85,11 +85,11 @@ describe('Capacity draws a pool with no limit set as that, not as ok or limit 0'
     api.loadCapacity.mockResolvedValue(ok(capacity()))
     render(<CapacityScreen />)
     const row = await capacityRow('tenant:eng')
-    const chips = [...row.querySelectorAll('.ctl-chip')].map((c) => c.textContent?.trim())
+    const chips = [...row.querySelectorAll('.sk-st')].map((c) => c.textContent?.trim())
     expect(chips).toContain('no limit set')
     expect(chips).not.toContain('ok')
     expect(chips).not.toContain('limit 0')
-    expect(row.querySelector('.ctl-chip.is-paused')?.textContent).toContain('no limit set')
+    expect(row.querySelector('.sk-st[data-tone="paused"]')?.textContent).toContain('no limit set')
     expect(row.className).toContain('is-paused')
   })
 

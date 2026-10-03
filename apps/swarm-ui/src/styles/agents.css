@@ -97,7 +97,7 @@
   padding-top: 6px;
   padding-bottom: 6px;
 }
-.row.is-compact > .ctl-chip { font-size: 0; }
+.row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
 .row.is-compact > .cr-name b {
   display: block;
@@ -122,7 +122,6 @@
   color: var(--text-dim);
 }
 .cr-sub .id { font-family: var(--mono); }
-.cr-sub .ctl-chip { font-size: var(--t-micro); }
 .cr-try.is-over { color: var(--bad); font-weight: 600; }
 
 /* --- the 64px strip: the list folded by «, [ or the divider --------------- */
@@ -131,9 +130,8 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.ctl-chip) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st) { display: none; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact { grid-template-columns: 1fr; justify-items: center; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .ctl-chip { font-size: 0; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-tabs,
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head > :not(.ag-collapse),
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-wait-group > h2,
@@ -183,36 +181,26 @@
 .ag-snap-say { color: var(--text-faint); }
 
 /* --- the header row: state pill, name, Copy link, Stop ------------------- */
-.ag-head { display: flex; flex-direction: column; gap: 2px; padding: var(--ctl-s2) 0 0; }
-.ag-head-row { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); }
+/* ONE ROW THAT FITS THE SPLIT (visual QA Q4, 2026-10-02): at the split's
+   width the title wrapped and the actions were cut. The title ellipses (its
+   whole id is its title), the state pill and the actions keep their width,
+   and the id line under it ellipses too. */
+.ag-head { display: flex; flex-direction: column; gap: 2px; padding: var(--ctl-s2) 0 0; min-width: 0; }
+.ag-head-row { display: flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); min-width: 0; }
+.ag-head-row > :first-child { flex: none; }
 .ag-head-title {
-  flex: 1 1 200px;
+  flex: 1 1 auto;
   min-width: 0;
   margin: 0;
   font: 650 var(--t-title)/var(--lh-title) var(--font);
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }
-.ag-head-actions { display: inline-flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); margin-inline-start: auto; }
-.ag-head-sub { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+.ag-head-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); margin-inline-start: auto; flex: none; }
+.ag-head-sub { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
-.ag-btn,
-.ag-head-stop .stop-btn {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface);
-  color: var(--text);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
-  cursor: pointer;
-}
-.ag-head-stop .stop-btn { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
-.ag-btn:hover,
-.ag-head-stop .stop-btn:hover { background: var(--surface-2); }
-.ag-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -224,45 +212,26 @@
 .ag-split-pane .head { display: none; }
 
 /* --- underline tabs with counts ------------------------------------------ */
-.ag-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--ctl-s3);
-  border-bottom: 1px solid var(--line);
-  margin: var(--ctl-s2) 0 var(--ctl-s3);
-}
-.ag-tabs > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 2px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  background: none;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  cursor: pointer;
-}
-.ag-tabs > button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--sk-ac); font-weight: 600; }
-.ag-tabs > button:hover { color: var(--text); }
-.ag-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-.ag-tab-count {
-  min-width: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-dim);
-  font-size: var(--t-micro);
-  line-height: var(--lh-micro);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
+/* The canonical `Tabs` in its tablist form (components.html A). It scrolls
+   sideways when it does not fit the split (Q4), rather than wrapping or being
+   cut ("Details Children 0 Att…"); here it only takes its place in the column. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
 
 /* --- the log dock --------------------------------------------------------- */
 /* STICKY TO THE BOTTOM OF THE DETAIL COLUMN, which is the drawer's scroller:
    it stays put while the tab above it scrolls, and spans this column only. */
+/* AT THE FOOT OF THE COLUMN WHATEVER THE PANE HOLDS (visual QA Q4,
+   2026-10-02; viewers.html A). The column is a full-height flex column whose
+   pane takes the slack, so a short or still-reading Details tab no longer
+   leaves the dock under the tabs; and the dock is never wider than the
+   column (it was cut off at the right). */
+.ag-split { display: flex; flex-direction: column; }
+.ag-split > * { flex: none; }
+.ag-split > .ag-split-pane { flex: 1 0 auto; min-width: 0; }
+.ag-split > .ctl-agent-back { align-self: flex-start; }
+@media (min-width: 1100px) {
+  .app.has-inspector > .ctl-drawer { height: calc(100vh - var(--dock-h, 28px)); }
+}
 .ag-logdock {
   position: sticky;
   bottom: 0;
@@ -270,7 +239,9 @@
   display: flex;
   flex-direction: column;
   min-height: 0;
-  margin-top: var(--ctl-s3);
+  min-width: 0;
+  max-width: 100%;
+  margin-top: auto;
   border: 1px solid var(--line);
   border-radius: var(--radius) var(--radius) 0 0;
   background: var(--surface);
@@ -323,8 +294,7 @@
 }
 .ag-logdock-head h2 { margin: 0; font: 600 var(--t-body)/var(--lh-body) var(--font); }
 .ag-logdock-streams { display: inline-flex; gap: 2px; }
-.ag-logdock-streams > button,
-.ag-logdock-btn {
+.ag-logdock-streams > button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -337,11 +307,8 @@
   font: var(--t-meta)/var(--lh-meta) var(--font);
   cursor: pointer;
 }
-.ag-logdock-streams > button[aria-pressed='true'],
-.ag-logdock-btn[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
-.ag-logdock-btn:disabled { opacity: .6; cursor: default; }
-.ag-logdock-streams > button:focus-visible,
-.ag-logdock-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-logdock-streams > button[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
+.ag-logdock-streams > button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ag-logdock-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logdock-attempt select {
   min-height: 28px;

@@ -1094,11 +1094,11 @@ export function OutcomeLedger({ data, picked, onPick, onZoom }: OutcomeLedgerPro
 
         {pickedBucket !== null && (
           <p className="ol-actions">
-            <button type="button" className="sbf-mini ol-all" ref={allButton} onClick={restore}>
+            <button type="button" className="c-link is-sm ol-all" ref={allButton} onClick={restore}>
               all
             </button>
             {onZoom !== undefined && bucket !== 'hour' && (
-              <button type="button" className="sbf-mini ol-zoom" onClick={() => onZoom(pickedBucket)}>
+              <button type="button" className="c-link is-sm ol-zoom" onClick={() => onZoom(pickedBucket)}>
                 zoom to {bucketName(pickedBucket.start, bucket, tz).split(' · ')[0]}
               </button>
             )}

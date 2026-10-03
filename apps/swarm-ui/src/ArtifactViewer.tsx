@@ -1,6 +1,7 @@
 import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
+import { Button, ButtonLink, Segmented } from './components'
 import { artifactRawUrl, loadArtifactContent } from './api'
 import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
@@ -169,9 +170,9 @@ export function ArtifactViewer({
             {errorHeading(state.error)}
           </h3>
           <p>{state.error.message}</p>
-          <button type="button" className="retry" onClick={() => void load()}>
+          <Button className="retry" onClick={() => void load()}>
             try again
-          </button>
+          </Button>
         </div>
       )}
       {state.kind === 'ok' && (
@@ -295,9 +296,9 @@ function Body({
           No preview. This file is not text and not an image, so nothing here reads it.{' '}
           {rawUrl !== null ? (
             <>
-              <a className="copy" href={rawUrl} download>
+              <ButtonLink size="sm" className="copy" href={rawUrl} download>
                 Download
-              </a>{' '}
+              </ButtonLink>{' '}
               saves it as stored. It is <b>not redacted</b>: no rule can scan these bytes.
             </>
           ) : (
@@ -396,14 +397,14 @@ function Provenance({
             <>{num(data.total_bytes)} · complete</>
           )}
           {onPage !== null && next !== null && (
-            <button type="button" className="copy" onClick={() => onPage(next)}>
+            <Button size="sm" className="copy" onClick={() => onPage(next)}>
               next window
-            </button>
+            </Button>
           )}
           {onPage !== null && data.offset > 0 && (
-            <button type="button" className="copy" onClick={() => onPage(null)}>
+            <Button size="sm" className="copy" onClick={() => onPage(null)}>
               from the start
-            </button>
+            </Button>
           )}
         </li>
         {/* BYTES THAT ARE NOT UTF-8 (#188 review). JSON cannot carry them, so
@@ -493,22 +494,22 @@ function Download({ name, content }: { name: string; content: string }) {
   // saves -- what is on screen, not a second unredacted fetch of the whole
   // object -- and that distinction is the reason the button exists at all.
   return (
-    <button type="button" className="copy" onClick={save}>
+    <Button size="sm" className="copy" onClick={save}>
       download what is shown
-    </button>
+    </Button>
   )
 }
 
 function CopyGsutil({ uri }: { uri: string | null }) {
   if (uri === null) return null
   return (
-    <button
-      type="button"
+    <Button
+      size="sm"
       className="copy"
       onClick={() => navigator.clipboard?.writeText(`gsutil cp ${uri} .`)}
     >
       copy gsutil
-    </button>
+    </Button>
   )
 }
 
@@ -905,14 +906,16 @@ function JsonViews({ value, pretty }: { value: unknown; pretty: string }) {
   const [mode, setMode] = useState<'tree' | 'raw'>('tree')
   return (
     <>
-      <div className="ctl-seg art-view-seg" role="group" aria-label="JSON view">
-        <button type="button" aria-pressed={mode === 'tree'} onClick={() => setMode('tree')}>
-          Tree
-        </button>
-        <button type="button" aria-pressed={mode === 'raw'} onClick={() => setMode('raw')}>
-          Raw
-        </button>
-      </div>
+      <Segmented
+        className="art-view-seg"
+        label="JSON view"
+        value={mode}
+        options={[
+          { key: 'tree', label: 'Tree' },
+          { key: 'raw', label: 'Raw' },
+        ]}
+        onChange={setMode}
+      />
       {mode === 'raw' ? (
         <pre className="art-text">{pretty}</pre>
       ) : (
@@ -983,14 +986,16 @@ function MarkdownViews({ source }: { source: string }) {
   const [mode, setMode] = useState<'rendered' | 'source'>('rendered')
   return (
     <>
-      <div className="ctl-seg art-view-seg" role="group" aria-label="Markdown view">
-        <button type="button" aria-pressed={mode === 'rendered'} onClick={() => setMode('rendered')}>
-          Rendered
-        </button>
-        <button type="button" aria-pressed={mode === 'source'} onClick={() => setMode('source')}>
-          Source
-        </button>
-      </div>
+      <Segmented
+        className="art-view-seg"
+        label="Markdown view"
+        value={mode}
+        options={[
+          { key: 'rendered', label: 'Rendered' },
+          { key: 'source', label: 'Source' },
+        ]}
+        onChange={setMode}
+      />
       {mode === 'rendered' ? <Markdown source={source} /> : <pre className="art-text">{source}</pre>}
     </>
   )
@@ -1331,9 +1336,9 @@ function TranscriptRow({ turn }: { turn: TranscriptTurn }) {
     <div className={`art-turn art-turn-${turn.role.replace(/[^a-z]/gi, '') || 'other'}`}>
       <div className="art-turn-head">
         <span className="art-turn-role">{turn.role}</span>
-        <button type="button" className="copy" onClick={() => setRaw((v) => !v)}>
+        <Button size="sm" className="copy" onClick={() => setRaw((v) => !v)}>
           {raw ? 'hide record' : 'show record'}
-        </button>
+        </Button>
       </div>
       {turn.text !== '' ? (
         <div className="art-turn-body">{turn.text}</div>

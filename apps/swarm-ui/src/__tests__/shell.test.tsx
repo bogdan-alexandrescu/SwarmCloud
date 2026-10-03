@@ -29,11 +29,13 @@ import STYLES from '../styles.css?raw'
 import CAPACITY_CSS from '../styles/capacity.css?raw'
 import HELP_CSS from '../styles/help.css?raw'
 import AGENTS_CSS from '../styles/agents.css?raw'
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
+import { painted } from './marks'
 import { App } from '../App'
-import { Tabs } from '../components'
+import { Button, Tabs } from '../components'
 import { HelpScreen } from '../HelpSection'
 import {
   DOCK,
@@ -106,8 +108,10 @@ describe('B2: the section question is printed once, not on every pane', () => {
 
   it('carries the question behind the head glyph, and opens it on FOCUS', async () => {
     render(<App />)
-    const glyph = document.querySelector<HTMLButtonElement>('.ctl-head .ctl-q-glyph')
-    expect(glyph, 'the head has no section `?`').not.toBeNull()
+    // By the page's title now (visual QA Q2): the row it sat on is gone.
+    const glyph = document.querySelector<HTMLButtonElement>('main.work h1 ~ .ctl-q .ctl-q-glyph')
+    expect(glyph, 'the title has no section `?`').not.toBeNull()
+    expect(document.querySelectorAll('.ctl-q-glyph'), 'the section `?` is drawn twice').toHaveLength(1)
 
     // Nothing is on screen until it is asked for: that is the whole move.
     expect(document.querySelector('.ctl-q-card')).toBeNull()
@@ -136,12 +140,12 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
 
     const drawer = document.querySelector('.ctl-drawer')
     expect(drawer, 'the agent inspector did not open').not.toBeNull()
-    const panes = [...drawer!.querySelectorAll('[role="tab"] .ag-tab-label')].map((b) => b.textContent?.trim())
+    const panes = [...drawer!.querySelectorAll('[role="tab"] .c-tab-label')].map((b) => b.textContent?.trim())
     // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
     // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
     expect(panes).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
-      drawer!.querySelector('[role="tab"][aria-selected="true"] .ag-tab-label')?.textContent?.trim(),
+      drawer!.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent?.trim(),
     ).toBe('Attempts')
 
     // And it is NOT in the spine or the panel: a nav entry pointing at it would
@@ -195,11 +199,21 @@ describe('B3: the head', () => {
     // THE CRUMB IS THE TRAIL TO THE PAGE (#138): on Overview, a one-page
     // section, the trail is empty -- the `<h1>` names the page -- and on a
     // page inside a section it is the section, as a link.
+    //
+    // THE CRUMB ROW IS GONE FROM SECTION PAGES (visual QA Q2, 2026-10-02):
+    // the panel lights the page and the title names it, and the age sits on
+    // the title row. The trail is drawn inside an open object (crossscreen
+    // #138), so this asks the open agent for it.
     window.history.replaceState(null, '', '/capacity/accounts')
+    const page = render(<App />)
+    expect(document.querySelector('.ctl-head'), 'a section page draws the crumb row').toBeNull()
+    expect(document.querySelectorAll('.ctl-head-age'), 'the age is drawn twice').toHaveLength(1)
+    page.unmount()
+    window.location.hash = '#work/task/t-1'
     render(<App />)
     const head = document.querySelector('.ctl-head')
-    expect(head, 'no head region').not.toBeNull()
-    expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Capacity')
+    expect(head, 'no head region inside an open agent').not.toBeNull()
+    expect(head!.querySelector('.ctl-crumb a')?.textContent ?? '').toBe('Work')
 
     // READING is a different sentence from "0s ago", and on the first render
     // nothing this screen asked for has landed, so it is the true one here. A
@@ -387,13 +401,19 @@ describe('one control, one appearance', () => {
     // This is the claim the probe CANNOT make -- it measures geometry and
     // contrast, not "these two are the same button" -- so it is made here, on
     // the shipped sheet, against two elements the cascade actually reached.
+    //
+    // Since the #503 swap the retry IS the canonical Button, so the claim is
+    // asked of the canonical sheet as well as this one.
     const style = withStyles()
+    const canon = document.createElement('style')
+    canon.textContent = COMPONENTS_CSS
+    document.head.appendChild(canon)
     const { container } = render(
       <div className="app">
         <div className="state">
-          <button className="retry">Try again</button>
+          <Button className="retry">Try again</Button>
         </div>
-        <button className="retry">try again</button>
+        <Button className="retry">try again</Button>
       </div>,
     )
     const both = [...container.querySelectorAll<HTMLElement>('.retry')]
@@ -406,8 +426,11 @@ describe('one control, one appearance', () => {
     expect(read(outside)).toBe(read(inside))
     // And what they agree on is the PRODUCT's surface, not the user agent's.
     // An unstyled `<button>` computes `background: none` and a `buttonface`
-    // border here; reaching `--surface-2` means this sheet's rule got to it.
-    expect(read(outside)).toContain('var(--surface-2)')
+    // border here; reaching `--surface` means the canonical rule got to it.
+    // The canonical button's surface (components.css `.c-btn`).
+    expect(read(outside)).toContain('var(--surface)')
+    expect(outside.classList.contains('c-btn')).toBe(true)
+    canon.remove()
     style.remove()
   })
 })
@@ -1702,7 +1725,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     return r.winner?.value ?? null
   }
   const COMPACT =
-    '<div class="rows"><div class="row clickable is-compact"><span class="ctl-chip">RUNNING</span>' +
+    '<div class="rows"><div class="row clickable is-compact"><span class="sk-st is-live"><span class="sk-st-w">running</span></span>' +
     '<span class="agent cr-name"><b class="id">0961e42e</b></span><span class="when">waiting 99d 23h</span>' +
     '<span class="cr-sub"><span class="cr-try is-over">try 4/3</span></span></div></div>'
 
@@ -2063,31 +2086,36 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('CH-8: every control reaches 44px at 390, by height or by hit area, with the type unchanged', () => {
     const f = fragment(
       '<div class="app">' +
-        '<div class="ctl-seg"><button>Live</button></div>' +
+        '<div class="c-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
-        '<button class="sbf-go">Send</button>' +
-        '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
-        '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
+        '<button class="c-btn is-primary is-full">Send</button>' +
+        '<button class="ctl-q-glyph">?</button><p class="sub"><button>refresh</button></p>' +
+        '<a class="ov-link" href="#x">open</a><button class="c-link is-sm">remove</button>' +
         '</div>',
     )
     // MUTATION: move any of these phone rules above the base rule it has to
-    // beat -- which is how `.ctl-seg > button` shipped -- or delete it.
+    // beat -- which is how the old `.ctl-seg > button` shipped -- or delete it.
     // (The rail's three item kinds were on this list until the Sky spine
     // replaced the rail, rebrand 2026-10-01.)
     for (const sel of [
-      '.ctl-seg > button',
+      // The canonical segmented control (it replaced `.ctl-seg`, #503 swap).
+      '.c-seg > button',
       '.limit-edit input',
       '.limit-edit button',
       '.ol-table-toggle',
-      '.sbf-go',
+      // The forms' commit control is the canonical full-width primary now.
+      '.c-btn.is-primary.is-full',
     ]) {
-      expect(px(won(pick(f, sel), 'min-height', PHONE)), `${sel} at 390`).toBeGreaterThanOrEqual(44)
+      // The canonical button's rules are in its own sheet, which `won` (this
+      // file's styles.css-only cascade) does not read: `painted` reads all.
+      const h = sel.startsWith('.c-') ? painted(pick(f, sel), 'min-height', PHONE) : won(pick(f, sel), 'min-height', PHONE)
+      expect(px(h), `${sel} at 390`).toBeGreaterThanOrEqual(44)
     }
     // The segment keeps its desktop size: the target is a phone rule.
-    expect(px(won(pick(f, '.ctl-seg > button'), 'min-height', WIDE))).toBeLessThan(44)
+    expect(px(painted(pick(f, '.c-seg > button'), 'min-height', WIDE) ?? '0px')).toBeLessThan(44)
     // A word or a disc that must not grow gets an empty, centred hit area.
-    for (const sel of ['.ctl-q-glyph', '.ov-refresh', '.ov-link', '.sbf-mini']) {
+    for (const sel of ['.ctl-q-glyph', '.sub button', '.ov-link', '.c-link.is-sm']) {
       const el = pick(f, sel)
       expect(won(el, 'position', PHONE), `${sel} is not the hit area's containing block`).toBe('relative')
       expect(won(el, 'content', PHONE, 'after'), `${sel} has no hit area`).toBe("''")
@@ -2330,8 +2358,8 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
   it('CP-20: the fixed provider and its chip are two words, not one', () => {
     // MUTATION: drop the chip's margin.
-    const f = fragment('<p class="acct-fixed mono">anthropic<span class="ctl-chip is-info"><i></i>fixed</span></p>')
-    expect(won(pick(f, '.ctl-chip'), ['margin-left', 'margin'], WIDE)).toBe('var(--ctl-s2)')
+    const f = fragment('<p class="acct-fixed mono">anthropic<span class="sk-st is-neu" data-tone="info"><span class="sk-st-w">fixed</span></span></p>')
+    expect(won(pick(f, '.sk-st'), ['margin-left', 'margin'], WIDE)).toBe('var(--ctl-s2)')
   })
 
   it('CP-22: the em dash is one face wherever it lands', () => {
@@ -2366,13 +2394,15 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
   it('WF-16: a mix chip is whole or absent', () => {
     // The flags-column half of WF-16 went with `.wf-bar`, the board row whose
     // grid it held: no source renders that row any more (2026-10-01).
-    const f = fragment('<span class="wf-mix"><span class="wf-chip">mock</span></span>')
+    const f = fragment('<span class="wf-mix"><span class="c-chip">mock</span></span>')
     // MUTATION: the one-line `overflow: hidden` strip back, which cut chips
     // mid-word; or drop the one-chip height that hides the second line.
     const mix = pick(f, '.wf-mix')
     expect(won(mix, 'flex-wrap', WIDE)).toBe('wrap')
     expect(won(mix, 'overflow', WIDE)).toBe('hidden')
-    expect(won(mix, 'height', WIDE)).toContain('var(--lh-micro)')
-    expect(won(pick(f, '.wf-chip'), 'text-overflow', WIDE)).toBe('ellipsis')
+    // One canonical chip's height (the flush line plus its padding and edge).
+    expect(won(mix, 'height', WIDE)).toContain('var(--lh-flush)')
+    expect(won(pick(f, '.c-chip'), 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(won(pick(f, '.c-chip'), 'display', WIDE), 'an ellipsis needs a block container').toBe('block')
   })
 })

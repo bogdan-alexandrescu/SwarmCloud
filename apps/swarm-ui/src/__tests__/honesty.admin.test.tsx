@@ -499,7 +499,7 @@ describe('Provider quota counts in English (CP-22)', () => {
     api.loadAdminQuota.mockResolvedValue(ok({ quota: [quota({})] }))
     render(<QuotaDetailScreen />)
     await screen.findByRole('rowheader', { name: 'eng' }, WAIT)
-    expect(document.querySelector('.count-chip')).toBeNull()
+    expect(document.querySelector('.count-chip, .c-chip.is-n')).toBeNull()
     const note = document.querySelector('.ctl-toolbar > .ctl-card-note')
     expect(note, 'the tenant count is not a card note').not.toBeNull()
     expect(note!.textContent).toBe('1 tenant')
@@ -590,7 +590,7 @@ describe('Provider quota never draws an old reading as a current verdict (CP-9)'
 
   it('draws a reading five days old with the stale mark and its age, not the ok chip', async () => {
     const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(5 * 24 * 60) })]))
-    expect(cell.querySelector('.ctl-chip.is-ok'), 'a five-day-old reading is drawn as a current verdict').toBeNull()
+    expect(cell.querySelector('.sk-st[data-tone="ok"]'), 'a five-day-old reading is drawn as a current verdict').toBeNull()
     expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('5d')
     // The word it last reported is still on the row, marked, not hidden.
     expect((cell.textContent ?? '').toLowerCase()).toContain('available')
@@ -608,7 +608,7 @@ describe('Provider quota never draws an old reading as a current verdict (CP-9)'
 
   it('draws a reading past twice the broker’s five-minute interval as stale', async () => {
     const cell = state(await renderQuota([quota({ state: 'AVAILABLE', updated_at: minutesAgo(11) })]))
-    expect(cell.querySelector('.ctl-chip.is-ok')).toBeNull()
+    expect(cell.querySelector('.sk-st[data-tone="ok"]')).toBeNull()
     expect(cell.querySelector('.ctl-stale-mark')?.textContent).toContain('11m')
   })
 

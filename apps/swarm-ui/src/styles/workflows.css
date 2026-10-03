@@ -29,27 +29,26 @@
   .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
   .wfl .wfl-table { table-layout: fixed; width: 100%; }
   .wfl .wfl-table th[data-col="state"] { width: 9%; }
-  .wfl .wfl-table th[data-col="workflow"] { width: 21%; }
+  .wfl .wfl-table th[data-col="workflow"] { width: 19%; }
   .wfl .wfl-table th[data-col="shape"] { width: 13%; }
   .wfl .wfl-table th[data-col="done"] { width: 9%; }
   .wfl .wfl-table th[data-col="runners"] { width: 14%; }
-  .wfl .wfl-table th[data-col="cost"] { width: 7%; }
+  .wfl .wfl-table th[data-col="cost"] { width: 9%; }
   .wfl .wfl-table th[data-col="owner"] { width: 9%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
   .wfl .wfl-table th[data-col="duration"] { width: 9%; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
+  /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
+     column holds "$12.3456 3/5"; an unreported cost is a dash. */
+  .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
   .wfl .wfl-name { min-width: 0; }
   .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 .wfl-shape { white-space: nowrap; }
 /* "partial": some step depends on part of the level above (§6), which the
-   text shape cannot say. A fact chip, not a state. */
-.wf-pchip {
-  display: inline-flex; margin-left: 6px; padding: 1px 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
-}
+   text shape cannot say. A fact chip (the canonical `Chip`), not a state. */
+.wfl-shape > .c-chip { margin-left: 6px; }
 
 /* THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one 7px column per stage,
    its height log-scaled from the stage's width (`stageGlyph`), filled bottom
@@ -91,25 +90,6 @@
 .wfp > .wfp-head > .wfp-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .wfp-head .wfp-cost .wf-spend { display: inline; }
 
-/* THE TABS, UNDERLINED (components.html A `.c-tabs`), under the title. */
-.wf-tabs {
-  display: flex; gap: 2px;
-  border-bottom: 1px solid var(--line);
-  overflow-x: auto;
-}
-.wf-tabs > button {
-  display: inline-flex; align-items: center; gap: 6px;
-  height: 32px; margin: 0 0 -1px; padding: 0 12px;
-  border: 0; border-bottom: 2px solid transparent; border-radius: 0;
-  background: none;
-  font: var(--t-meta)/var(--lh-meta) var(--font);
-  color: var(--text-dim);
-  white-space: nowrap; cursor: pointer;
-}
-.wf-tabs > button:hover { color: var(--text); }
-.wf-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-.wf-tabs > button.is-on { color: var(--sk-ac); border-bottom-color: var(--sk-ac); font-weight: 600; }
-.wf-tab-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
 /* THE BODY CARD KEEPS ALL FOUR EDGES on the page. `styles.css` took its
    border away (`.wf-card.is-page`), which left a card with no top edge under
@@ -132,56 +112,44 @@
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
-/* THE STEP TABLE FITS ITS COLUMN (#503): 1465px of content in a 618px
-   wrapper beside the inspector, six of ten columns behind a scroll, and the
-   last column clipped under the graph. Fixed layout at the column's width,
-   cells that wrap; below 900 the phone form keeps its sideways scroll. */
+/* THE STEP TABLE HAS REAL COLUMN WIDTHS (visual QA Q3, 2026-10-02). #503
+   fitted it to its column with fixed percentages and `overflow-wrap:
+   anywhere`, which broke values inside a word ("not reporte / d", "attempt /
+   s") and left the why line -- 40ch, one line -- wider than its 15% column,
+   so it ran over `runner`. Now every column but `why` has a width, `why`
+   takes the slack and ellipses inside it (its full text is its title), heads
+   and figures never wrap, nothing breaks inside a word, and below its
+   minimum width the table scrolls inside its card. Below 900 the phone form
+   keeps its sideways scroll. */
 @media (min-width: 900px) {
-  .wf-card .ctl-table.wf-table { overflow-x: visible; }
-  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; }
-  .wf-card .ctl-table.wf-table th,
-  .wf-card .ctl-table.wf-table td { white-space: normal; overflow-wrap: anywhere; }
-  .wf-card .ctl-table.wf-table [data-col="step"] { width: 15%; }
-  .wf-card .ctl-table.wf-table [data-col="state"] { width: 12%; }
-  .wf-card .ctl-table.wf-table [data-col="why"] { width: 15%; }
+  .wf-card .ctl-table.wf-table { overflow-x: auto; }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; }
+  .wf-card .ctl-table.wf-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-card .ctl-table.wf-table td { white-space: normal; }
+  .wf-card .ctl-table.wf-table td.is-num { white-space: nowrap; }
+  /* WHY GETS THE SLACK (Q3): the other columns take 71%, so why is the widest
+     column at 29% -- a sentence, where every other column holds a word or a
+     figure. At the 1000px minimum a 7% column is 70px: "attempts" and
+     "$12.3456" fit, and a head that does not is cut with an ellipsis. */
+  .wf-card .ctl-table.wf-table [data-col="step"] { width: 10%; }
+  .wf-card .ctl-table.wf-table [data-col="state"] { width: 9%; }
   .wf-card .ctl-table.wf-table [data-col="runner"] { width: 9%; }
   .wf-card .ctl-table.wf-table [data-col="waited"],
-  .wf-card .ctl-table.wf-table [data-col="ran"],
-  .wf-card .ctl-table.wf-table [data-col="cost"],
-  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 8%; }
-  .wf-card .ctl-table.wf-table [data-col="attempts"] { width: 7%; }
-  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 10%; }
+  .wf-card .ctl-table.wf-table [data-col="attempts"],
+  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 7%; }
+  .wf-card .ctl-table.wf-table [data-col="cost"] { width: 8%; }
+  .wf-card .ctl-table.wf-table [data-col="ran"] { width: 6%; }
+  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 8%; }
 }
+/* The why line fits the cell it is in, whatever that cell's width. */
+.wf-table .wf-why { display: block; max-width: 100%; }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
 
-/* THE STAGE FILTER A BAND COUNT OPENED, as a removable filter chip. */
+/* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */
 .wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
-.wf-filter-chip {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 2px 4px 2px 10px; border-radius: 999px;
-  background: color-mix(in srgb, var(--sk-ac) 12%, var(--surface));
-  color: var(--sk-ac);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-}
-.wf-filter-x {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 20px; height: 20px; padding: 0; border: 0; border-radius: 999px;
-  background: none; color: inherit; font: inherit; cursor: pointer;
-}
-.wf-filter-x:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
-/* ---- The typed confirm on Cancel workflow (states.html §12) -------------- */
 
-.wf-typed { display: flex; flex-direction: column; gap: 4px; }
-.wf-typed-l { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.wf-typed input {
-  height: 32px; padding: 0 10px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text);
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
-}
-.wf-typed input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 /* ---- A wide stage's band (wide-workflows.html A) ------------------------- */
 
@@ -267,26 +235,14 @@
 }
 
 /* THE NAMED STEPS: failed, then holding capacity, then parked, as pill chips
-   in their state's tint and edge, each picking its step. */
+   in their state's tint and edge (Chip `tone`), each picking its step. */
 .wf-band-chips {
   display: flex; flex-wrap: nowrap; align-items: center; gap: 6px;
   height: 22px; min-width: 0; overflow: hidden;
 }
-.wf-band-chip {
-  display: inline-flex; align-items: center; gap: 5px; flex: none;
-  height: 20px; margin: 0; padding: 0 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  background: var(--s-neub); color: var(--text);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  white-space: nowrap; cursor: pointer;
-}
-.wf-band-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); }
-.wf-band-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); }
-.wf-band-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
-.wf-band-chip.is-picked { border-color: var(--text); }
-.wf-band-chip.is-more { background: none; color: var(--text-dim); cursor: default; }
-.wf-band-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
-.wf-band-chip > .wf-mk,
+/* The named steps are canonical pick Chips in their state's tint (#503 swap; they were `.wf-band-chip`). */
+.wf-band-chips > .c-chip { flex: none; }
+.wf-band-chips .wf-mk,
 .wf-canvas .wf-band-count > .wf-mk { display: inline-flex; }
 .wf-canvas .wf-band-pick { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); white-space: nowrap; }
 

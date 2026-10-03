@@ -13,9 +13,8 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { MarkGlyph, WarnMark } from './marks'
+import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
-import { UtilTrack } from './primitives'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
 import {
@@ -67,36 +66,17 @@ import {
  */
 function AcctState({ state }: { state: string }) {
   const word = state.toLowerCase().replace(/_/g, ' ')
-  if (state === 'REAUTH_REQUIRED') {
-    return (
-      <span className="acct-state sk-st is-warn" data-mark="warn" data-hue="warn" title={state}>
-        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-          <MarkGlyph mark="warn" />
-        </svg>
-        <span className="sk-st-w">{word}</span>
-      </span>
-    )
-  }
-  if (state === 'PAUSED') {
-    return (
-      <span className="acct-state sk-st is-park" data-mark="parked" data-hue="park" title={state}>
-        <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-          <MarkGlyph mark="parked" />
-        </svg>
-        <span className="sk-st-w">{word}</span>
-      </span>
-    )
-  }
+  if (state === 'REAUTH_REQUIRED') return <NamedMark className="acct-state" mark="warn" hue="warn" word={word} title={state} />
+  if (state === 'PAUSED') return <NamedMark className="acct-state" mark="parked" hue="park" word={word} title={state} />
   const known = state === 'AVAILABLE' || state === 'DRAINING'
   return (
-    <span
-      className={`acct-state sk-st ${known ? 'is-neu' : 'is-unknown'}`}
-      data-mark="none"
-      data-hue={known ? 'neu' : 'unknown'}
+    <NamedMark
+      className="acct-state"
+      mark={null}
+      hue={known ? 'neu' : 'unknown'}
+      word={word}
       title={known ? state : `${state}: a state this console does not recognise`}
-    >
-      <span className="sk-st-w">{word}</span>
-    </span>
+    />
   )
 }
 
@@ -848,7 +828,7 @@ function WindowTile({
         {projected && <span className="acct-tilde">~</span>}
         {Math.round(reading.pct)}%
       </b>
-      <UtilTrack
+      <UsageTrack
         pct={reading.pct}
         tone={projected ? 'ov-projected' : reading.kind === 'live' && reading.pct >= 100 ? 'is-bad' : undefined}
       />
@@ -1185,9 +1165,9 @@ function Detail({
       <header className="acct-dhead">
         <div className="acct-dhead-row">
           <AcctState state={account.state} />
-          <span className="acct-pill">
+          <Chip>
             {account.provider} &middot; {lent ? 'lending on' : 'lending off'}
-          </span>
+          </Chip>
         </div>
         <h3>{account.label}</h3>
         <p className="acct-idt">
@@ -1473,19 +1453,16 @@ function Holding({ account, now }: { account: Account; now: number }) {
   const pick = (t: 'now' | 'history') => setTab(tab === t ? 'none' : t)
   return (
     <div className="acct-action acct-holding">
-      <div className="ctl-seg" role="tablist" aria-label={`Who holds ${account.label}`}>
-        <button type="button" role="tab" aria-selected={tab === 'now'} onClick={() => pick('now')}>
-          Holding now ({account.assigned})
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={tab === 'history'}
-          onClick={() => pick('history')}
-        >
-          History
-        </button>
-      </div>
+      <Segmented
+        role="tablist"
+        label={`Who holds ${account.label}`}
+        value={tab === 'none' ? null : tab}
+        options={[
+          { key: 'now', label: `Holding now (${account.assigned})` },
+          { key: 'history', label: 'History' },
+        ]}
+        onChange={pick}
+      />
       {tab === 'now' && <HoldingNow accountId={account.account_id} now={now} />}
       {tab === 'history' && <HoldingHistory account={account} now={now} />}
     </div>
@@ -2168,10 +2145,7 @@ function Lending({
         {/* The second `.tag` on this screen, collapsed into the same primitive
             for the same reason as the state chip above. */}
         {saved && (
-          <span className="ctl-chip is-ok">
-            <i aria-hidden="true" />
-            saved
-          </span>
+          <ToneMark tone="is-ok">saved</ToneMark>
         )}
       </span>
       {includesOwner && (
@@ -3431,13 +3405,8 @@ function AddAccount({
               with nothing on screen admitting it. */}
           <p className="acct-fixed mono">
             {SUBSCRIPTION_PROVIDER}
-            <span
-              className="ctl-chip is-info"
-              aria-label="Fixed. This is the only credential kind this pool handles, so there is nothing to choose between — but the form states the value it sends rather than hiding it."
-            >
-              <i aria-hidden="true" />
-              fixed
-            </span>
+            <ToneMark tone="is-info"
+              label="Fixed. This is the only credential kind this pool handles, so there is nothing to choose between — but the form states the value it sends rather than hiding it.">fixed</ToneMark>
           </p>
 
           <label className="t-label" htmlFor="acct-label">
@@ -3891,13 +3860,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
                 have said "we could not read this", which is the opposite of
                 what the digit beside it means. */}
             {account.assigned > 0 && (
-              <span
-                className="ctl-chip is-warn"
-                aria-label={`${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`}
-              >
-                <i aria-hidden="true" />
-                in use
-              </span>
+              <ToneMark tone="is-warn"
+                label={`${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`}>in use</ToneMark>
             )}
           </span>
         </li>
@@ -3912,14 +3876,13 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
           aria-label={`Type ${account.label} to confirm removal`}
           onChange={(e) => setTyped(e.target.value)}
         />
-        <button
-          type="button"
-          className="danger"
+        <Button
+          kind="danger-filled"
           disabled={!armed || busy}
           onClick={() => void run()}
         >
           {busy ? 'removing…' : `remove ${account.label}`}
-        </button>
+        </Button>
         <span className="client-side">type the label to arm this</span>
       </span>
       {error && (

@@ -7,7 +7,7 @@ import { createPortal } from 'react-dom'
 // `Chip` joins them for the same reason: §9.3 of design-system.md counted four
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
-import { Chip, Em, Mark, type ChipTone } from './AgentDetail'
+import { Em, Mark, type ChipTone } from './AgentDetail'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
@@ -15,6 +15,7 @@ import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
+import { Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { rowClock, useNow } from './useNow'
 import {
@@ -23,7 +24,6 @@ import {
   compareStarted,
   elapsed,
   rollupState,
-  stateTone,
   taskGroup,
   whyAgent,
   whyNeedsAction,
@@ -531,18 +531,12 @@ function AgentsBody({
             from the loaded rows, like the tab badges, and DEAD_LETTERED is
             never offered: nothing writes it (`agentlist.ts`). */}
         {shown === 'recent' && (
-          <div className="ctl-seg" role="group" aria-label="Recent, by state">
-            {([null, ...RECENT_STATES] as const).map((s) => (
-              <button
-                key={s ?? 'all'}
-                type="button"
-                aria-pressed={recentState === s}
-                onClick={() => chooseState(s)}
-              >
-                {s ?? 'all'} <span className="badge">{stateCounts[s ?? 'all']}</span>
-              </button>
-            ))}
-          </div>
+          <Segmented
+            label="Recent, by state"
+            value={recentState ?? 'all'}
+            options={(['all', ...RECENT_STATES] as const).map((s) => ({ key: s, label: s, count: stateCounts[s] }))}
+            onChange={(s) => chooseState(s === 'all' ? null : s)}
+          />
         )}
 
         {shown === 'recent' && (
@@ -850,7 +844,7 @@ function GroupedRows({
                   same kind of fact as every other state here, so it is drawn
                   the same way. `.roll`'s four rules went with it; nothing else
                   rendered them. */}
-              <Chip tone={rollTone(roll)}>{roll}</Chip>
+              <ToneMark tone={rollTone(roll)}>{roll}</ToneMark>
               {/* THE FIGURE IS THE FACT. "3 steps in this page" said `3` and
                   then re-said, in four more words, the thing the toolbar's
                   scope qualifier already says once for the whole screen. A
@@ -1081,7 +1075,7 @@ function CompactRow({
       onFocus={(e) => show(e.currentTarget)}
       onBlur={hide}
     >
-      <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+      <StateMark state={task.state} />
       <span className="agent cr-name">
         {task.step_id ? (
           <b title={task.id}>{name}</b>
@@ -1126,7 +1120,7 @@ function CompactRow({
         {cancelling && (
           <>
             {' · '}
-            <Chip tone="wait">cancelling</Chip>
+            <ToneMark tone="wait">cancelling</ToneMark>
           </>
         )}
         {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), in words on line two:
@@ -1143,7 +1137,7 @@ function CompactRow({
         createPortal(
           <div id={cardId} role="tooltip" className="ag-hovcard" style={{ top: card.top, left: card.left }}>
             <span className="ag-hovcard-head">
-              <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+              <StateMark state={task.state} />
               <span className="ag-hovcard-when">{el.text}</span>
             </span>
             <b>{name}</b>

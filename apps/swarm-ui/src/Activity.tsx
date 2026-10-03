@@ -58,7 +58,7 @@ import {
   type Outcomes,
   type Span,
 } from './outcomes'
-import { StateMark, WarnMark } from './marks'
+import { Button, NamedMark, Segmented, StateMark, WarnMark } from './components'
 import { Absent, Mark } from './primitives'
 import { Id, PageHead, Screen, timeAgo } from './Shell'
 import { TimelinePages } from './TimelineLanes'
@@ -921,7 +921,7 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
         say="The platform-wide ledger is served to administrators only. Nothing failed, and your own tenant's ledger is readable."
       >
         Your own tenant’s ledger is one click away:{' '}
-        <button type="button" className="sbf-mini" onClick={onMine}>
+        <button type="button" className="c-link is-sm" onClick={onMine}>
           my tenant
         </button>
       </Absent>
@@ -934,7 +934,7 @@ function LedgerFailed({ error, onRetry, onMine }: { error: ApiError; onRetry: ()
       say={`The outcome ledger could not be read: ${error.message}. No figure is drawn, because none was read.`}
     >
       {error.message}{' '}
-      <button type="button" className="sbf-mini" onClick={onRetry}>
+      <button type="button" className="c-link is-sm" onClick={onRetry}>
         try again
       </button>
     </Absent>
@@ -980,7 +980,7 @@ function Picker({
           </label>
         ))}
         {selected.length > 0 && (
-          <button type="button" className="sbf-mini" onClick={() => onChange([])}>
+          <button type="button" className="c-link is-sm" onClick={() => onChange([])}>
             clear
           </button>
         )}
@@ -1022,7 +1022,7 @@ function RangeInputs({ view, setView }: { view: LedgerView; setView: (v: LedgerV
       </label>
       <button
         type="button"
-        className="sbf-mini"
+        className="c-link is-sm"
         disabled={!ok}
         onClick={() => setView({ ...view, span: null, since: from, until: nextDay(to), back: null })}
       >
@@ -1103,37 +1103,20 @@ function LedgerToolbar({
         : tenants === null
           ? 'all'
           : `all ${tenants.length}`
-  const spanSeg = (extra: boolean) => (
-    <>
-      {SPANS.map((s) =>
-        (s === '24h') === extra ? (
-          <button key={s} type="button" aria-pressed={view.span === s} onClick={() => choose(s)}>
-            {s}
-          </button>
-        ) : null,
-      )}
-      {extra && (
-        <button type="button" aria-pressed={view.span === null} onClick={() => setRange(!range)}>
-          from–to
-        </button>
-      )}
-    </>
-  )
+  // THE SPAN CONTROL, the canonical segmented control (#503 swap): every span
+  // and `from–to` on a wide screen; on a phone 24h and `from–to` move to the
+  // sheet (`is-wide-only` here, `ol-span-more` there).
+  const pickSpan = (k: Span | 'range') => (k === 'range' ? setRange(!range) : choose(k))
+  const spanOptions = (sheet: boolean) => [
+    ...SPANS.filter((s) => !sheet || s === '24h').map((s) => ({ key: s as Span | 'range', label: s, ...(!sheet && s === '24h' ? { className: 'is-wide-only' } : {}) })),
+    { key: 'range' as const, label: 'from–to', ...(sheet ? {} : { className: 'is-wide-only' }) },
+  ]
   return (
     <div className="ctl-toolbar ol-toolbar" role="group" aria-label="Timeline filters">
-      <div className="ctl-seg ol-span" role="group" aria-label="Span">
-        {SPANS.map((s) => (
-          <button key={s} type="button" className={s === '24h' ? 'is-wide-only' : undefined} aria-pressed={view.span === s} onClick={() => choose(s)}>
-            {s}
-          </button>
-        ))}
-        <button type="button" className="is-wide-only" aria-pressed={view.span === null} onClick={() => setRange(!range)}>
-          from–to
-        </button>
-      </div>
+      <Segmented className="ol-span" label="Span" value={view.span ?? 'range'} options={spanOptions(false)} onChange={pickSpan} />
       {back !== null && (
         // A zoom is a span change, and the chip is the way back to the span it came from.
-        <button type="button" className="sbf-mini ol-back" onClick={() => setView(back)}>
+        <button type="button" className="c-link is-sm ol-back" onClick={() => setView(back)}>
           ← {back.span ?? 'range'}
         </button>
       )}
@@ -1147,9 +1130,7 @@ function LedgerToolbar({
         Filters · {n}
       </button>
       <div className={sheet ? 'ol-sheet is-open' : 'ol-sheet'} id="ol-sheet">
-        <div className="ctl-seg ol-span-more" role="group" aria-label="More spans">
-          {spanSeg(true)}
-        </div>
+        <Segmented className="ol-span-more" label="More spans" value={view.span ?? 'range'} options={spanOptions(true)} onChange={pickSpan} />
         {(range || view.span === null) && <RangeInputs view={view} setView={setView} />}
         <label className="ol-field">
           Group by{' '}
@@ -1171,14 +1152,20 @@ function LedgerToolbar({
           </select>
         </label>
         {admin && (
-          <div className="ctl-seg ol-scope" role="group" aria-label="Scope">
-            <button type="button" aria-pressed={!view.platform} onClick={() => setView({ ...view, platform: false, tenant: [], exclude_tenant: [], group: view.group === 'tenant_id' ? 'runner_profile' : view.group })}>
-              my tenant
-            </button>
-            <button type="button" aria-pressed={view.platform} onClick={() => setView({ ...view, platform: true })}>
-              platform
-            </button>
-          </div>
+          <Segmented
+            className="ol-scope"
+            label="Scope"
+            value={view.platform ? 'platform' : 'tenant'}
+            options={[
+              { key: 'tenant', label: 'my tenant' },
+              { key: 'platform', label: 'platform' },
+            ]}
+            onChange={(k) =>
+              k === 'platform'
+                ? setView({ ...view, platform: true })
+                : setView({ ...view, platform: false, tenant: [], exclude_tenant: [], group: view.group === 'tenant_id' ? 'runner_profile' : view.group })
+            }
+          />
         )}
         {admin && view.platform && (
           <Picker
@@ -1192,9 +1179,9 @@ function LedgerToolbar({
         {admin && view.platform && verifyServed && view.tenant.length === 0 && (
           // ONE CLICK, AND AN EXCLUSION, NOT AN INCLUDE LIST: a tenant created
           // tomorrow is still counted (owner decision on #185).
-          <button
-            type="button"
-            className="sbf-mini ol-verify"
+          <Button
+            size="sm"
+            className="ol-verify"
             aria-pressed={verifyOut}
             onClick={() =>
               setView({
@@ -1204,7 +1191,7 @@ function LedgerToolbar({
             }
           >
             {verifyOut ? `include ${VERIFY_TENANT}` : `exclude ${VERIFY_TENANT}`}
-          </button>
+          </Button>
         )}
         <Picker
           label="Profile"
@@ -1222,13 +1209,13 @@ function LedgerToolbar({
           onChange={(next) => setView({ ...view, profile: next.sort() })}
         />
         <SubmittedBy view={view} setView={setView} />
-        <div className="ctl-seg ol-kind" role="group" aria-label="Kind">
-          {(['all', 'standalone', 'steps'] as const).map((k) => (
-            <button key={k} type="button" aria-pressed={view.kind === k} onClick={() => setView({ ...view, kind: k })}>
-              {KIND_LABEL[k]}
-            </button>
-          ))}
-        </div>
+        <Segmented
+          className="ol-kind"
+          label="Kind"
+          value={view.kind}
+          options={(['all', 'standalone', 'steps'] as const).map((k) => ({ key: k, label: KIND_LABEL[k] }))}
+          onChange={(k) => setView({ ...view, kind: k })}
+        />
       </div>
       <button
         type="button"
@@ -1345,8 +1332,8 @@ export function TenantsScreen() {
                           <StateMark state="PARKED" label="disabled" />
                         </span>
                       ) : (
-                        <span className="ten-status sk-st is-neu">
-                          <span className="sk-st-w">enabled</span>
+                        <span className="ten-status">
+                          <NamedMark mark={null} hue="neu" word="enabled" />
                         </span>
                       )}
                     </td>

@@ -709,7 +709,11 @@ function isPanel(el: Element): boolean {
  */
 function isSegmentedGroup(el: Element, surfaces: readonly Element[]): boolean {
   if (surfaces.length === 0) return false
-  if (!surfaces.every((k) => k.tagName === 'BUTTON')) return false
+  // THE LINK FORM (components.html A's segmented control between views that
+  // each have an address, 2026-10-03): a bordered `<nav>` whose segments are
+  // links. Still structural -- a row of cards is not links in a nav.
+  const segment = (k: Element) => k.tagName === 'BUTTON' || (k.tagName === 'A' && el.tagName === 'NAV')
+  if (!surfaces.every(segment)) return false
   const s = styleOf(el)
   return SIDES.some((side) => {
     if (borderPx(s, side) <= 0) return false

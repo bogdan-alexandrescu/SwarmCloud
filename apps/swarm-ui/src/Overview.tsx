@@ -18,9 +18,9 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { MarkGlyph, StateMark, WarnMark } from './marks'
-import { Absent, Mark, UtilTrack, type TrackTone } from './primitives'
-import { timeAgo } from './Shell'
+import { Button, NamedMark, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Absent, Mark } from './primitives'
+import { PageHead, timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
@@ -119,9 +119,9 @@ export function OverviewScreen() {
       <div className="ctl-empty is-failed ov-page-empty">
         <Mark kind="unread" say="The API answered a sign-in page instead of data, so nothing on this screen is a reading of the platform." />
         <h3>Session expired</h3>
-        <button className="retry" onClick={() => window.location.reload()}>
+        <Button className="retry" onClick={() => window.location.reload()}>
           Reload to sign in
-        </button>
+        </Button>
       </div>
     )
   }
@@ -158,10 +158,13 @@ export function OverviewScreen() {
           not decoration: `/v1/stats` and `/v1/tasks` are tenant-scoped while
           the `global` pool is platform-wide. Still reading is not missing
           (OV-9): the dash is for a read that landed without a tenant. */}
-      <div className="ov-head">
-        <h1>Overview</h1>
-        <span className="ov-chip">
-          {tasks.status === 'loading' ? (
+      {/* THE CANONICAL PAGE HEAD (`PageHead`, #503 Q2): the title, the
+          section's `?` by it, the tenant as its meta chip, and the tally,
+          the poll and refresh right-aligned on the same row. */}
+      <PageHead
+        title="Overview"
+        meta={
+          tasks.status === 'loading' ? (
             <span className="ov-reading">tenant reading…</span>
           ) : tenant === null ? (
             <>
@@ -169,29 +172,29 @@ export function OverviewScreen() {
             </>
           ) : (
             `tenant ${tenant}`
-          )}
+          )
+        }
+      >
+        {/* THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
+            the reads behind the cards below did not land, and every em dash
+            further down is one of those two. Its dot is the severity, its
+            accessible name the sentence. */}
+        <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
+          <ToneMark tone={tallyTone(pending, refused, broken)} />
+          <span className="ov-num">
+            {landed}/{reads.length}
+          </span>{' '}
+          reads
+          <HelpCard topic="absent-vs-zero" />
         </span>
-        <span className="ov-age">
-          {/* THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
-              the reads behind the cards below did not land, and every em dash
-              further down is one of those two. Its dot is the severity, its
-              accessible name the sentence. */}
-          <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
-            <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
-            <span className="ov-num">
-              {landed}/{reads.length}
-            </span>{' '}
-            reads
-            <HelpCard topic="absent-vs-zero" />
-          </span>
-          <span aria-label={`re-read every ${POLL_MS / 1000} seconds`}>
-            poll <span className="ov-num">{POLL_MS / 1000}s</span>
-          </span>
-          <button className="ov-refresh" onClick={refresh}>
-            refresh
-          </button>
+        {' · '}
+        <span aria-label={`re-read every ${POLL_MS / 1000} seconds`}>
+          poll <span className="ov-num">{POLL_MS / 1000}s</span>
         </span>
-      </div>
+        {' · '}
+        {/* The head's own refresh, as every screen's head draws it (`.sub button`). */}
+        <button onClick={refresh}>refresh</button>
+      </PageHead>
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
@@ -790,28 +793,52 @@ function NeedsALook({ checks }: { checks: Check[] }) {
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
  * card's second line, clamped to two, and its whole text is the title.
  */
-function CheckCard({ problem: p }: { problem: Problem }) {
+export function CheckCard({ problem: p }: { problem: Problem }) {
+  // A SHORT TITLE, THEN TWO LINES OF REGULAR TEXT (visual QA Q5, 2026-10-02;
+  // O1's check card). The headline's first clause is the title; the clauses
+  // after it -- the age, the workflow and worker ids -- are the second line,
+  // one line, cut with an ellipsis and whole in its title; the detail is the
+  // third. The whole headline stays the card's accessible name.
+  const { title, ids } = splitHeadline(p.headline)
   return (
     <a className={`ov-att is-${p.severity}`} href={p.href} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
       <span className="ov-att-t">
-        <b>{p.headline}</b>
-        <small title={p.detail}>{p.detail}</small>
+        <b title={p.headline}>{title}</b>
+        {ids !== null && (
+          <small className="ov-att-ids" title={ids}>
+            {ids}
+          </small>
+        )}
+        <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
+          {p.detail}
+        </small>
       </span>
       <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
     </a>
   )
 }
 
+/**
+ * A check's headline as O1's title and its second line: the title is the
+ * first clause, up to the first ` · ` or `: `, and the rest -- where the
+ * ages and the ids live -- is the second line. A headline with no clause
+ * after it is all title.
+ */
+export function splitHeadline(headline: string): { title: string; ids: string | null } {
+  const cuts = [
+    { at: headline.indexOf(' · '), len: 3 },
+    { at: headline.indexOf(': '), len: 2 },
+  ].filter((c) => c.at > 0)
+  if (cuts.length === 0) return { title: headline, ids: null }
+  const cut = cuts.reduce((a, b) => (b.at < a.at ? b : a))
+  const rest = headline.slice(cut.at + cut.len).trim()
+  return rest === '' ? { title: headline, ids: null } : { title: headline.slice(0, cut.at), ids: rest }
+}
+
 /** The red diamond, for a problem whose severity is a failure. Not a state. */
 function BadMark() {
-  return (
-    <span className="sk-st is-bad" data-mark="failed" data-hue="bad">
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark="failed" />
-      </svg>
-    </span>
-  )
+  return <NamedMark mark="failed" hue="bad" />
 }
 
 /**
@@ -1014,7 +1041,7 @@ function PoolRow({ pool: p }: { pool: Pool }) {
   return (
     <div className="ov-pl" title={say}>
       <span className="ov-idc">{p.name}</span>
-      <UtilTrack
+      <UsageTrack
         pct={known ? ratio * 100 : null}
         tone={tone}
         zeroTitle={`Measured: 0 of ${limit} in use on ${p.name}.`}

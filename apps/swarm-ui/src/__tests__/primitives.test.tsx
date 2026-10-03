@@ -20,7 +20,8 @@ import { describe, expect, it } from 'vitest'
 
 import { classifyEnvironment, envTreatment } from '../Brand'
 import { leaseCoverage } from '../Holders'
-import { Absent, Mark, Metric, UtilRow, UtilTrack } from '../primitives'
+import { UsageTrack } from '../components'
+import { Absent, Mark, Metric, UtilRow } from '../primitives'
 import type { LeasePage } from '../types'
 
 function one(node: ReactElement): HTMLElement {
@@ -28,15 +29,15 @@ function one(node: ReactElement): HTMLElement {
   return container.firstElementChild as HTMLElement
 }
 
-describe('UtilTrack keeps its four states apart', () => {
+describe('UsageTrack keeps its four states apart', () => {
   it('hatches a reading nobody took, with no fill and no tick', () => {
-    const t = one(<UtilTrack pct={null} />)
+    const t = one(<UsageTrack pct={null} />)
     expect(t.className).toBe('ctl-util-track is-unknown')
     expect(t.children).toHaveLength(0)
   })
 
   it('draws a measured zero as the baseline tick, never as a zero-width fill', () => {
-    const t = one(<UtilTrack pct={0} zeroTitle="Measured: 0 of 4." />)
+    const t = one(<UsageTrack pct={0} zeroTitle="Measured: 0 of 4." />)
     expect(t.className).toBe('ctl-util-track is-zero')
     expect(t.getAttribute('title')).toBe('Measured: 0 of 4.')
     expect(t.querySelector('.ctl-util-zero')?.getAttribute('aria-hidden')).toBe('true')
@@ -44,7 +45,7 @@ describe('UtilTrack keeps its four states apart', () => {
   })
 
   it('fills a reading, grey unless a verdict says otherwise', () => {
-    const t = one(<UtilTrack pct={37.5} />)
+    const t = one(<UsageTrack pct={37.5} />)
     expect(t.className).toBe('ctl-util-track')
     const fill = t.querySelector<HTMLElement>('.ctl-util-fill')!
     expect(fill.className).toBe('ctl-util-fill')
@@ -54,28 +55,28 @@ describe('UtilTrack keeps its four states apart', () => {
 
   it('does not round a small reading down to a measured zero', () => {
     // 1 unit of 300. A rounded 0 would hand the track a zero it did not have.
-    const t = one(<UtilTrack pct={(1 / 300) * 100} />)
+    const t = one(<UsageTrack pct={(1 / 300) * 100} />)
     expect(t.classList.contains('is-zero')).toBe(false)
     expect(t.querySelector('.ctl-util-fill')).not.toBeNull()
   })
 
   it('draws over the ceiling as the ceiling share plus the hatched excess', () => {
-    const t = one(<UtilTrack pct={125} tone="is-bad" />)
+    const t = one(<UsageTrack pct={125} tone="is-bad" />)
     expect(t.querySelector<HTMLElement>('.ctl-util-fill.is-bad')!.style.width).toBe('80%')
     expect(t.querySelector<HTMLElement>('.ctl-util-over')!.style.width).toBe('20%')
   })
 
   it('carries exactly the four fill classes a tone names', () => {
     for (const tone of ['is-warn', 'is-bad', 'is-paused', 'ov-projected'] as const) {
-      const fill = one(<UtilTrack pct={50} tone={tone} />).querySelector('.ctl-util-fill')!
+      const fill = one(<UsageTrack pct={50} tone={tone} />).querySelector('.ctl-util-fill')!
       expect(fill.className).toBe(`ctl-util-fill ${tone}`)
     }
   })
 
   it('is a meter only when asked to be one, in every state', () => {
-    expect(one(<UtilTrack pct={50} />).getAttribute('role')).toBeNull()
+    expect(one(<UsageTrack pct={50} />).getAttribute('role')).toBeNull()
     for (const pct of [null, 0, 50, 150]) {
-      const t = one(<UtilTrack pct={pct} meter={{ label: 'global: 2 of 4 units in use', now: 2, max: 4 }} />)
+      const t = one(<UsageTrack pct={pct} meter={{ label: 'global: 2 of 4 units in use', now: 2, max: 4 }} />)
       expect(t.getAttribute('role')).toBe('meter')
       expect(t.getAttribute('aria-label')).toBe('global: 2 of 4 units in use')
     }

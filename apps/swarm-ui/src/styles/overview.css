@@ -19,13 +19,9 @@
 
 .ov-page { display: flex; flex-direction: column; gap: 16px; padding-bottom: 28px; }
 
-/* ---- page head: title, tenant chip, provenance on one line ---------------- */
-.ov-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.ov-head h1 { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); }
-.ov-chip { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px; border-radius: var(--ctl-radius-pill); background: var(--sk-hv); color: var(--text-dim); white-space: nowrap; }
-.ov-age { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.ov-age .ctl-dot { margin-right: 4px; }
-.ov-refresh { font: inherit; color: var(--sk-ac); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+/* ---- page head: the canonical `PageHead` (.c-phead), as on every page ---- */
+.ov-page > .c-phead { margin: 0; }
+.ov-tally .sk-st { margin-right: 4px; }
 .ov-num { font-variant-numeric: tabular-nums; }
 .ov-reading { color: var(--text-faint); }
 
@@ -46,8 +42,14 @@
 .ov-att:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ov-att > .sk-st { margin-top: 3px; }
 .ov-att-t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.ov-att-t b { font-weight: 600; }
+/* O1's check card: a short title, two lines of regular text, a link (visual
+   QA Q5, 2026-10-02). The title was the whole headline -- ids and all --
+   wrapping in bold; it is one line now, and the ids are the second. */
+.ov-att-t b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-att-t small.ov-att-ids,
+.ov-att-t small.is-one { -webkit-line-clamp: 1; }
+.ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
 
 /* ---- the lifecycle band: three figures, each broken down by state --------- */
@@ -78,7 +80,7 @@
 .ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
 .ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 10px; }
 .ov-card .ctl-card-title { flex: none; }
-.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-card .ov-link { margin-left: auto; color: var(--sk-ac); font-size: var(--t-micro); white-space: nowrap; text-decoration: none; }
 
 /* ---- tables: 32px rows, sentence-case heads, flat in a card --------------- */
@@ -163,8 +165,8 @@
    aside -- visually, never from the outline: a screen reader still lands on
    it. */
 @media (max-width: 759px) {
-  .ov-head h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .ov-age { margin-left: 0; }
+  .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ov-page > .c-phead .c-age { margin-left: 0; }
 }
 @media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
@@ -176,8 +178,8 @@
   .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
   .ov-prun { display: block; }
-  .ov-refresh, .ov-link, .ov-open { position: relative; }
-  .ov-refresh::after, .ov-link::after, .ov-open::after {
+  .ov-link, .ov-open { position: relative; }
+  .ov-link::after, .ov-open::after {
     content: '';
     position: absolute;
     left: 50%;

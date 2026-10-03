@@ -183,27 +183,27 @@ describe('the liveness badge is a word and a figure, not a sentence', () => {
 // IS NOTHING TO SAY.
 //
 // It drew a private dot and painted its WORD in the verdict hue -- `live` green,
-// `silent` red -- beside a state chip whose mark is `.ctl-dot`-shaped and whose
+// `silent` red -- beside a state mark (the canonical `ToneMark`, once `.ctl-dot`) whose
 // word is at full ink. And on a finished task it printed `done at 8:46:38 PM`,
 // a clock time with no date repeating what the chip already said.
 describe('the liveness badge draws the console’s own dot, and nothing for a finished task', () => {
   const TONES: ReadonlyArray<{ name: string; events: TaskEvent[] | null; tone: string }> = [
-    { name: 'live', events: eventAgo(12), tone: 'is-ok' },
-    { name: 'quiet', events: eventAgo(240), tone: 'is-warn' },
-    { name: 'silent', events: eventAgo(540), tone: 'is-bad' },
+    { name: 'live', events: eventAgo(12), tone: 'ok' },
+    { name: 'quiet', events: eventAgo(240), tone: 'warn' },
+    { name: 'silent', events: eventAgo(540), tone: 'bad' },
     // "We could not look" is the unknown ring, never the caution triangle
     // that says the worker has gone quiet.
-    { name: 'unknown (read failed)', events: null, tone: 'is-unknown' },
+    { name: 'unknown (read failed)', events: null, tone: 'unknown' },
   ]
 
   for (const c of TONES) {
-    it(`${c.name}: one .ctl-dot in the ${c.tone} tone, and the word carries no hue of its own`, () => {
+    it(`${c.name}: one canonical ToneMark in the ${c.tone} tone, and the word carries no hue of its own`, () => {
       // BREAK IT: go back to `<i aria-hidden />` inside `liveness ${kind}`.
       const { container } = render(<LivenessBadge task={task('RUNNING')} events={c.events} now={NOW} />)
       const badge = container.querySelector('.liveness')!
-      const dots = badge.querySelectorAll('.ctl-dot')
-      expect(dots.length, 'the badge draws a mark outside the .ctl-dot vocabulary').toBe(1)
-      expect(dots[0]!.classList.contains(c.tone), `${c.name} is not drawn ${c.tone}`).toBe(true)
+      const dots = badge.querySelectorAll('.sk-st, i')
+      expect(dots.length, 'the badge draws a mark outside the canonical ToneMark').toBe(1)
+      expect(dots[0]!.getAttribute('data-tone'), `${c.name} is not drawn ${c.tone}`).toBe(c.tone)
       // THE WORD IS NOT COLOURED BY THE BADGE. The sheet's word colours hang
       // off `.liveness.<kind>`; a badge that no longer carries its kind as a
       // class cannot be reached by them, whatever the sheet still says.
@@ -277,13 +277,14 @@ describe("a chart with nothing measured says so in §6.9's shape", () => {
 // ---------------------------------------------------------------------------
 
 describe("the agent's panes are underline tabs with counts (agents.html V1)", () => {
-  it('renders Details / Attempts / Artifacts / Checkpoints as `.ag-tabs`, not a boxed segmented control', () => {
+  it('renders Details / Attempts / Artifacts / Checkpoints as the canonical Tabs, not a boxed segmented control', () => {
     // #503 measured the panes as a boxed `.ctl-seg` with no counts; V1 draws
     // underline tabs with counts. BREAK IT: put `ctl-seg` back on the strip.
-    const m = /<div className="([^"]*)" role="tablist" aria-label="Agent panes">/.exec(SPLIT)
-    expect(m, 'AgentSplit.tsx no longer renders the Agent panes tablist this test knows').not.toBeNull()
-    expect(m![1]!.split(/\s+/)).toContain('ag-tabs')
-    expect(m![1]!.split(/\s+/)).not.toContain('ctl-seg')
+    // The strip is the canonical `Tabs` in its tablist form (#503 swap).
+    const m = /<Tabs\b[^>]*?label="Agent panes"/.exec(SPLIT)
+    expect(m, 'AgentSplit.tsx no longer renders the Agent panes Tabs this test knows').not.toBeNull()
+    expect(m![0]).not.toMatch(/ctl-seg/)
+    expect(SPLIT, 'a local tablist is back').not.toMatch(/role="tablist"/)
     expect(APP, 'App.tsx draws a pane strip of its own again').not.toMatch(/aria-label="Agent panes"/)
   })
 

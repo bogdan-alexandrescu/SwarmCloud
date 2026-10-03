@@ -1,4 +1,5 @@
 import type { ProbeRecord } from './fetch'
+import { ToneMark } from './components'
 import { timeAgo } from './Shell'
 
 /**
@@ -56,7 +57,7 @@ function Cell({ probe }: { probe: ProbeRecord }) {
   return (
     <div className={`source ${tone}`} title={detailFor(probe)}>
       <span className="s-path">
-        <i className={`ctl-dot is-${tone}`} />
+        <ToneMark tone={tone} />
         <span className="s-path-t">{probe.path}</span>
       </span>
       <span className="s-status">{label}</span>

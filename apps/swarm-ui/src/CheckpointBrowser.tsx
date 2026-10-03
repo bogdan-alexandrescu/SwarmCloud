@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useState, type KeyboardEvent, type Mou
 import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
+import { Button, ButtonLink } from './components'
 import { encoded, errorHeading, noteFixtureProbe, read, route, type ApiError, type Result } from './fetch'
 import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
@@ -354,13 +355,14 @@ export function CheckpointBrowser({
             by a budget -- that is exactly when it is needed. Withheld only
             once the server has said there is no archive to download. */}
         {!absent && (
-          <a
+          <ButtonLink
+            size="sm"
             className="ckb-download"
             href={checkpointDownloadHref(taskId, attemptId, checkpointId)}
             download
           >
             download archive
-          </a>
+          </ButtonLink>
         )}
         <button
           type="button"
@@ -453,9 +455,9 @@ function Failed({ error, onRetry }: { error: ApiError; onRetry: () => void }) {
         {errorHeading(error)}
       </h3>
       <p>{error.message}</p>
-      <button type="button" className="retry" onClick={onRetry}>
+      <Button className="retry" onClick={onRetry}>
         try again
-      </button>
+      </Button>
     </div>
   )
 }

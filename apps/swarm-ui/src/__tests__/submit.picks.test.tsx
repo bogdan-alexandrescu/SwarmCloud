@@ -26,6 +26,7 @@ import { SubmitScreen } from '../Submit'
 import { SubmitChooser } from '../SubmitChooser'
 import { SubmitWorkflowScreen } from '../SubmitWorkflow'
 import SUBMIT_CSS from '../styles/submit.css?raw'
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import STYLES from '../styles.css?raw'
 import { flatRules, gate } from './cssgate'
 
@@ -45,7 +46,8 @@ describe('/submit is a page of its own in the frame', () => {
     window.history.replaceState(null, '', '/submit')
     render(<App />)
     await screen.findByRole('heading', { name: 'Submit' }, WAIT)
-    const head = document.querySelector<HTMLElement>('.ctl-head')!
+    // The page head (visual QA Q2): the title and the head's age on one row.
+    const head = document.querySelector<HTMLElement>('main.work .c-phead')!
     expect(visible(head), 'the head fell through to the API reads label').not.toContain('API reads')
     // MUTATION: drop SUBMIT from ScreenAge's "reads nothing" branch.
     expect(visible(head.querySelector('.ctl-head-age'))).toBe('reads nothing')
@@ -58,9 +60,12 @@ describe('/submit is a page of its own in the frame', () => {
       window.history.replaceState(null, '', path)
       const { unmount } = render(<App />)
       await screen.findByRole('heading', { name: h1, level: 1 }, WAIT)
-      const crumb = document.querySelector<HTMLAnchorElement>('.ctl-crumb a')
-      expect(visible(crumb), `${path} has no "Submit" crumb`).toBe('Submit')
-      fireEvent.click(crumb!)
+      // THE WAY BACK IS THE SPINE'S SUBMIT, not a crumb row (visual QA Q2,
+      // 2026-10-02: no breadcrumb on a section page). It is on every form.
+      expect(document.querySelector('.ctl-crumb'), `${path} draws a breadcrumb row`).toBeNull()
+      const back = document.querySelector<HTMLAnchorElement>('.sk-spine a.sk-cta')
+      expect(back?.getAttribute('href'), `${path} has no way back to the chooser`).toBe('/submit')
+      fireEvent.click(back!)
       await waitFor(() => expect(window.location.pathname).toBe('/submit'))
       unmount()
     }
@@ -181,10 +186,12 @@ describe('the task form is F1', () => {
     expect(visible(lands!)).toContain('READY or PARKED · costs nothing')
     expect(visible(panel)).toContain('Nothing runs until the scheduler admits it into every pool it needs.')
     const go = within(panel).getByRole('button', { name: 'Submit one task' })
-    expect(go.classList.contains('sb-go')).toBe(true)
-    const css = rules(SUBMIT_CSS)
-    expect(css).toMatch(/\.sbf-send \.sb-go\s*\{[^}]*background:\s*var\(--sk-ac\)/)
-    expect(css).toMatch(/\.sbf-send \.sb-go:disabled\s*\{[^}]*opacity/)
+    // The canonical primary button (components.html A): the accent fill, and
+    // ONE disabled treatment that pales it.
+    expect(go.className).toContain('c-btn is-primary')
+    const css = rules(COMPONENTS_CSS)
+    expect(css).toMatch(/\.c-btn\.is-primary\s*\{[^}]*background:\s*var\(--sk-ac\)/)
+    expect(css).toMatch(/\.c-btn:disabled,\s*\.c-btn\[aria-disabled='true'\]\s*\{[^}]*opacity/)
   })
 })
 

@@ -108,7 +108,8 @@ import {
   type WorkflowView,
 } from './stepviews'
 import type { Result } from './fetch'
-import { MarkGlyph, STATE_MARK, StateMark } from './marks'
+import { STATE_MARK, StateMark } from './marks'
+import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -1330,22 +1331,12 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
   )
 }
 
-/**
- * Which silhouette the row's state mark takes.
- *
- * FIVE TONES, SIX MARKS, because `unknown` is two different facts and the old
- * row drew them as one grey `?`:
- *
- *  - `derived: false` -- this API did not derive a state at all. The state
- *    EXISTS; nobody computed it. `.ctl-dot.is-underived`, a ring with a bar
- *    through it (design-system.md §6.6).
- *  - `derived: true` with an incomplete rollup -- the derivation was attempted
- *    and some steps could not be read. An absence of information, drawn as the
- *    default hollow ring.
- *
- * Neither is a filled mark, so neither can be read as a state the platform
- * holds -- which is the whole of the invariant, restated as a shape.
- */
+/** The band chip's tint: a step holding capacity, parked or failed takes its state's; the rest stay neutral. */
+function chipTone(look: StepLook): ChipTone | undefined {
+  if (look.kind !== 'state') return undefined
+  return look.hue === 'live' || look.hue === 'park' || look.hue === 'bad' ? look.hue : undefined
+}
+
 /**
  * A STEP'S BRAND MARK (marks.tsx), drawn on the graph's nodes and the stage
  * bands. The mark is the shape channel and the hue the second one; the state
@@ -1353,64 +1344,21 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
  * was not read is the ring in AMBER -- the warning colour, never a state's hue.
  */
 export function LookMark({ look }: { look: StepLook }) {
-  const mark = look.kind === 'unknown' ? 'queued' : look.mark
-  const hue = look.kind === 'unknown' ? 'warn' : look.hue
   const skipped = look.kind === 'state' && look.skipped === true
   return (
-    <span
-      className={`sk-st is-${hue} wf-mk`}
-      data-mark={look.kind === 'unknown' ? 'unknown' : skipped ? 'skipped' : look.mark}
-      data-hue={hue}
-      aria-hidden
-    >
-      <svg viewBox="0 0 12 12" focusable="false">
-        {skipped ? (
-          // The dashed check: ended clean, and the agent never ran.
-          <path
-            d="M2 6.4 4.8 9.1 10 3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeDasharray="2 1.6"
-          />
-        ) : (
-          <MarkGlyph mark={mark} />
-        )}
-      </svg>
-    </span>
+    <NamedMark
+      className="wf-mk"
+      mark={look.kind === 'unknown' ? 'queued' : skipped ? 'skipped' : look.mark}
+      dataMark={look.kind === 'unknown' ? 'unknown' : skipped ? 'skipped' : look.mark}
+      hue={look.kind === 'unknown' ? 'warn' : look.hue}
+      hidden
+    />
   )
 }
 
 /** The stage band's per-count modifier: `is-bad` for a failure, `is-unknown` for an unread step. */
 function bandClass(look: StepLook): string {
   return look.kind === 'unknown' ? 'is-unknown' : `is-${look.hue}`
-}
-
-export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
-  if (header.tone === 'unknown') {
-    return header.derived ? 'ctl-dot' : 'ctl-dot is-underived'
-  }
-  switch (header.tone) {
-    case 'ok':
-      return 'ctl-dot is-ok'
-    case 'bad':
-      return 'ctl-dot is-bad'
-    case 'live':
-      return 'ctl-dot is-live'
-    // QUEUED, PARKED, READY: THE WAIT MARK AGENTS ALREADY DRAWS (CH-22). This
-    // was `is-info`, argued as "a fact, not a verdict" -- and `is-info` is now
-    // the flat bar CANCELLED ends in, so a waiting workflow and a cancelled
-    // one would have shared it. Agents' chip draws `wait` as the caution
-    // triangle (`chipTone` in AgentDetail.tsx); the workflow row, its graph
-    // node and its band now draw the same.
-    case 'wait':
-      return 'ctl-dot is-warn'
-    // CANCELLED: the neutral flat bar, the one `is-info` modifier (CH-22).
-    case 'ended':
-      return 'ctl-dot is-info'
-  }
 }
 
 /**
@@ -1505,12 +1453,12 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
   return (
     <span className="wf-mix" ref={ref} title={`Runner profiles: ${all}`}>
       {shown.map((m) => (
-        <span className="wf-chip" key={m.profile}>
+        <Chip key={m.profile}>
           {m.profile}
-          <span className="wf-chip-n">×{m.count}</span>
-        </span>
+          <span className="wf-mix-n">×{m.count}</span>
+        </Chip>
       ))}
-      {rest > 0 && <span className="wf-chip more">+{rest}</span>}
+      {rest > 0 && <Chip faint>+{rest}</Chip>}
     </span>
   )
 }
@@ -1528,7 +1476,7 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
  * dollars for the same reason Overview uses them: a single attempt is routinely
  * worth $0.0312, and $0.03 loses a third of the figures on this board.
  */
-function Spend({ spend }: { spend: WorkflowSpend }) {
+function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean }) {
   if (spend.usd === null) {
     // `title` AND `aria-label`. The title was already here and was never the
     // only route -- the word `not reported` is on the surface, in the absent
@@ -1538,9 +1486,12 @@ function Spend({ spend }: { spend: WorkflowSpend }) {
       spend.joined === 0
         ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
         : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
+    // `short`: the list's narrow Cost column, where "not reported" was cut
+    // to "not re…" (visual QA Q9). The honest short form is a dash with the
+    // reason as its title and its name -- never a 0, never a cut word.
     return (
-      <span className="wf-spend absent" title={why} aria-label={why}>
-        not reported
+      <span className={`wf-spend absent${short ? ' c-dash' : ''}`} title={why} aria-label={why} role={short ? 'img' : undefined}>
+        {short ? '—' : 'not reported'}
       </span>
     )
   }
@@ -1910,14 +1861,9 @@ function WorkflowSteps({
       <>
         {filter !== null && (
           <p className="wf-filter">
-            <span className="wf-filter-chip">
+            <Chip onRemove={onClearFilter} removeLabel="Clear the stage filter">
               stage {filter.level + 1} · {filter.word}
-              {onClearFilter !== undefined && (
-                <button type="button" className="wf-filter-x" aria-label="Clear the stage filter" onClick={onClearFilter}>
-                  ×
-                </button>
-              )}
-            </span>
+            </Chip>
             <span className="wf-filter-n">
               {rows.length} of {all.length} steps
             </span>
@@ -2232,7 +2178,7 @@ type ZoomChoice = 'auto' | ZoomTier
  * a canvas whose steps have no runner profile, and this console's whole subject
  * is keeping "not shown" apart from "not there".
  *
- * `.ctl-seg`, THE SAME PRIMITIVE AS THE BOARD'S Rows/Graph CONTROL, one level
+ * `Segmented`, THE SAME CANONICAL CONTROL AS THE CARD'S VIEW CONTROL, one level
  * down -- the same gesture, the same shape, the same keyboard behaviour, and
  * §6.11's one segmented control rather than a second kind of switch invented
  * for this screen. Four real buttons, so it is tab-reachable and operable from
@@ -2269,19 +2215,13 @@ function ZoomControl({
     ...ZOOM_TIERS.map((t) => [t, TIER_LABEL[t], TIER_TITLE[t]] as const),
   ]
   return (
-    <div className="ctl-seg wf-zoom-seg" role="group" aria-label="How much each step says">
-      {options.map(([value, label, title]) => (
-        <button
-          key={value}
-          type="button"
-          aria-pressed={choice === value}
-          title={title}
-          onClick={() => onChoose(workflowId, value)}
-        >
-          {label}
-        </button>
-      ))}
-    </div>
+    <Segmented
+      className="wf-zoom-seg"
+      label="How much each step says"
+      value={choice}
+      options={options.map(([value, label, title]) => ({ key: value, label, title }))}
+      onChange={(value) => onChoose(workflowId, value)}
+    />
   )
 }
 
@@ -3147,18 +3087,12 @@ function StageBand({
           opening anything, by name and not only by count. */}
       <span className="wf-band-chips">
         {chips.map((c) => (
-          <button
-            key={c.stepId}
-            type="button"
-            className={`wf-band-chip ${lookClass(c.look)}${c.stepId === picked ? ' is-picked' : ''}`}
-            aria-pressed={c.stepId === picked}
-            onClick={() => onPick(c.stepId)}
-          >
+          <Chip key={c.stepId} tone={chipTone(c.look)} pressed={c.stepId === picked} onClick={() => onPick(c.stepId)}>
             <LookMark look={c.look} />
             {c.stepId}
-          </button>
+          </Chip>
         ))}
-        {more > 0 && <span className="wf-band-chip is-more">+{more} more</span>}
+        {more > 0 && <Chip faint>+{more} more</Chip>}
         {/* WHICH STEP IS PICKED IN HERE, by name, on the band itself (WF-10),
             when it is not one of the chips already. */}
         {picked !== null && !chips.some((c) => c.stepId === picked) && <span className="wf-band-pick">{picked}</span>}
@@ -3318,8 +3252,7 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
 /** How each of the three step-state kinds presents. Kept together so the
  *  difference between "not started" and "not read" stays deliberate.
  *
- *  `derived` is what `dotClass` reads to pick between the hollow ring and the
- *  ring-with-a-bar. At STEP level it is always true: a step whose task was not
+ *  `derived` says whether a state was computed at all. At STEP level it is always true: a step whose task was not
  *  in the read is an absence of information, not a state nobody computed --
  *  the distinction that needs the second mark exists one level up, on the
  *  workflow header, where an API without `rollup.py` derives nothing at all. */
@@ -4253,14 +4186,7 @@ function WorkflowStateMark({ workflow }: { workflow: Workflow }) {
   const s = derivedStateOf(workflow)
   if (s !== null) return <StateMark state={s} />
   const h = workflowHeaderState(workflow)
-  return (
-    <span className="sk-st is-warn" data-mark="unknown" data-hue="warn" title={h.title}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        <MarkGlyph mark="queued" />
-      </svg>
-      <span className="sk-st-w">{h.word}</span>
-    </span>
-  )
+  return <NamedMark mark="queued" dataMark="unknown" hue="warn" word={h.word} title={h.title} />
 }
 
 /**
@@ -4317,20 +4243,14 @@ function WorkflowListFilters({
   const off = counts === null
   return (
     <div className="wfl-filters">
-      <div className="ctl-seg wfl-seg" role="group" aria-label="Which workflows">
-        {BUCKET_FILTERS.map((b) => (
-          <button
-            key={b}
-            type="button"
-            disabled={off}
-            aria-pressed={query.state === b}
-            onClick={() => choose({ ...query, state: b })}
-          >
-            {BUCKET_LABEL[b]}
-            {counts !== null && <span className="wfl-n">{counts[b]}</span>}
-          </button>
-        ))}
-      </div>
+      <Segmented
+        className="wfl-seg"
+        label="Which workflows"
+        disabled={off}
+        value={query.state}
+        options={BUCKET_FILTERS.map((b) => ({ key: b, label: BUCKET_LABEL[b], ...(counts !== null ? { count: counts[b] } : {}) }))}
+        onChange={(b) => choose({ ...query, state: b })}
+      />
       <input
         className="wfl-search"
         type="search"
@@ -4487,9 +4407,9 @@ function WorkflowList({
           No {query.state === 'all' ? '' : `${BUCKET_LABEL[query.state].toLowerCase()} `}workflow matches
           {filteredAtAll ? ' these filters' : ' in this read'}.
           {filteredAtAll && (
-            <button type="button" className="wfl-clear" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
+            <Button size="sm" onClick={() => choose({ ...query, q: '', owner: '', profile: '' })}>
               Clear the filters
-            </button>
+            </Button>
           )}
         </p>
       ) : (
@@ -4570,9 +4490,7 @@ function WorkflowListRow({
         <StageGlyph steps={workflow.steps} taskById={taskById} />
         <Shape shape={shapeOf(workflow.steps)} />
         {partialDeps(workflow.steps) && (
-          <span className="wf-pchip" title="Some steps depend on part of the level above, not all of it">
-            partial
-          </span>
+          <Chip title="Some steps depend on part of the level above, not all of it">partial</Chip>
         )}
       </td>
       <td>
@@ -4581,8 +4499,8 @@ function WorkflowListRow({
       <td>
         <Mix steps={workflow.steps} />
       </td>
-      <td className="num">
-        <Spend spend={spend} />
+      <td className="num" data-col="cost">
+        <Spend spend={spend} short />
       </td>
       <td className="wfl-owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
@@ -4659,22 +4577,27 @@ function RowWhyLine({ why }: { why: RowWhy }) {
  * read turned into a width would be a measurement of a census that failed.
  */
 function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
+  const s = derivedStateOf(workflow)
+  const hue = s === null ? 'neu' : STATE_MARK[s].hue
   if (!roll.trustworthy) {
+    // DONE OF TOTAL EVEN WHEN THE CENSUS IS PARTIAL (visual QA Q9,
+    // 2026-10-02): every row drew the same whole grey hatch, whatever it had
+    // counted. What the census DID count is drawn as the fill; the steps it
+    // could not read are hatched after it; with no census at all the whole
+    // track is hatched. No figure is invented -- the fill is the steps the
+    // census read as succeeded, and the words still say it is unread.
+    const counted = workflow.rollup?.counts.SUCCEEDED ?? 0
+    const unread = workflow.rollup?.unreadable_steps.length ?? roll.total
     return (
       <span className="wfl-done" title={roll.why}>
-        <span className="wfl-bar is-unknown" aria-hidden />
+        <ProgressBar done={workflow.rollup ? counted : 0} total={workflow.rollup ? roll.total : 0} unread={unread} tone={hue} label={roll.why} />
         <small>{roll.text}</small>
       </span>
     )
   }
-  const s = derivedStateOf(workflow)
-  const hue = s === null ? 'neu' : STATE_MARK[s].hue
-  const pct = roll.total === 0 ? 0 : Math.round((100 * roll.done) / roll.total)
   return (
     <span className="wfl-done" title={roll.why}>
-      <span className={`wfl-bar t-${hue}`} role="img" aria-label={roll.why}>
-        <i style={{ width: `${pct}%` }} />
-      </span>
+      <ProgressBar done={roll.done} total={roll.total} tone={hue} label={roll.why} />
       <small>
         {roll.done}/{roll.total}
       </small>
@@ -4755,7 +4678,7 @@ function WorkflowPage({
   return (
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
-      <WfTabs view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
+      <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
       <Board board={board} stores={stores} focus={focus} usage={usage} />
     </div>
   )
@@ -4770,22 +4693,21 @@ const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
  * inside the body card (#503). Each tab is a route of its own, so the one on
  * screen is `aria-current="page"`, not a pressed toggle.
  */
-function WfTabs({ view, steps, onView }: { view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+function WfTabs({ id, query, view, steps, onView }: { id: string; query: WorkflowQuery; view: WorkflowView; steps: number; onView: (v: WorkflowView) => void }) {
+  // THE CANONICAL UNDERLINE TABS (components.html A; workflows.html B): each
+  // view is its own address, so each tab is a link that opens in a new tab,
+  // and a plain click switches the view in place.
+  const href = (v: WorkflowView) => workflowHref(id, query, v)
   return (
-    <nav className="wf-tabs" aria-label="Views of this workflow">
-      {PAGE_TABS.map((v) => (
-        <button
-          key={v}
-          type="button"
-          className={v === view ? 'is-on' : undefined}
-          aria-current={v === view ? 'page' : undefined}
-          onClick={() => onView(v)}
-        >
-          {VIEW_LABEL[v]}
-          {v === 'table' && <span className="wf-tab-n">{steps}</span>}
-        </button>
-      ))}
-    </nav>
+    <Tabs
+      label="Views of this workflow"
+      current={view}
+      tabs={PAGE_TABS.map((v) => ({ key: v, label: VIEW_LABEL[v], href: href(v), ...(v === 'table' ? { count: steps } : {}) }))}
+      onGo={(to) => {
+        const v = PAGE_TABS.find((t) => href(t) === to)
+        if (v !== undefined) onView(v)
+      }}
+    />
   )
 }
 
@@ -4825,12 +4747,10 @@ function WorkflowHead({
     <div className="wfp-head">
       <div className="wfp-chips">
         <WorkflowStateMark workflow={workflow} />
-        {pr !== null && <PullRequestLink pr={pr} className="wfp-chip" />}
-        <span className="wfp-chip">
-          on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}
-        </span>
-        <span className="wfp-chip wfp-cost">
-          {spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}
+        {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
+        <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
+        <span className="wfp-cost">
+          <Chip>{spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}</Chip>
         </span>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
@@ -4856,9 +4776,7 @@ function CopyLink() {
     }
   }
   return (
-    <button type="button" className="btn wfp-btn" onClick={copy}>
-      {copied ? 'Link copied' : 'Copy link'}
-    </button>
+    <Button onClick={copy}>{copied ? 'Link copied' : 'Copy link'}</Button>
   )
 }
 
@@ -4912,7 +4830,6 @@ export function CancelWorkflow({
 }) {
   const [phase, setPhase] = useState<'idle' | 'asking' | 'sending' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [typed, setTyped] = useState('')
   const derived = derivedStateOf(workflow)
   if (derived !== null && TERMINAL_STATES.has(derived)) return null
   if (cancelPending(workflow) && phase === 'idle') return null
@@ -4921,7 +4838,6 @@ export function CancelWorkflow({
   // on the exact workflow id. With nothing running, the two-click confirm
   // stays: cancelling work that has not started loses nothing.
   const typedConfirm = holdsCapacity(workflow, taskById)
-  const unlocked = !typedConfirm || typed === workflow.workflow_id
 
   const send = async () => {
     setPhase('sending')
@@ -4935,44 +4851,52 @@ export function CancelWorkflow({
     setPhase('failed')
   }
 
-  if (phase === 'idle') {
+  const trigger = (
+    <Button kind="danger" onClick={() => setPhase('asking')}>
+      Cancel workflow
+    </Button>
+  )
+  if (phase === 'idle') return trigger
+  const reset = () => {
+    setError(null)
+    setPhase('idle')
+  }
+  // WHILE A STEP RUNS: the canonical typed confirm (components.html A,
+  // states.html C §12), with this page's own account of what cancelling does.
+  if (typedConfirm) {
     return (
-      <button type="button" className="btn danger wfp-btn" onClick={() => setPhase('asking')}>
-        Cancel workflow
-      </button>
+      <>
+        {trigger}
+        <TypedConfirm
+          title="Cancel this workflow?"
+          name={workflow.workflow_id}
+          verb="Cancel the workflow"
+          keep="Keep it running"
+          onConfirm={() => void send()}
+          onClose={reset}
+          busy={phase === 'sending' ? 'Cancelling…' : false}
+          error={phase === 'failed' && error !== null ? `The cancel was not recorded: ${error}` : undefined}
+        >
+          <p>{cancelConsequence(workflow, taskById)}</p>
+        </TypedConfirm>
+      </>
     )
   }
   return (
     <div className="wfp-confirm" role="group" aria-label="Confirm cancelling this workflow">
       <p>{cancelConsequence(workflow, taskById)}</p>
-      {typedConfirm && <WfTypedConfirm expect={workflow.workflow_id} value={typed} onChange={setTyped} disabled={phase === 'sending'} />}
       {phase === 'failed' && error !== null && (
         <p className="wfp-confirm-err" role="alert">
           The cancel was not recorded: {error}
         </p>
       )}
       <span className="wfp-confirm-do">
-        <button
-          type="button"
-          className="btn danger wfp-btn"
-          disabled={phase === 'sending' || !unlocked}
-          onClick={() => {
-            if (unlocked) void send()
-          }}
-        >
-          {phase === 'sending' ? 'Cancelling…' : typedConfirm ? 'Cancel the workflow' : 'Yes, cancel the workflow'}
-        </button>
-        <button
-          type="button"
-          className="btn wfp-btn"
-          disabled={phase === 'sending'}
-          onClick={() => {
-            setTyped('')
-            setPhase('idle')
-          }}
-        >
+        <Button kind="danger-filled" busy={phase === 'sending' ? 'Cancelling…' : false} onClick={() => void send()}>
+          Yes, cancel the workflow
+        </Button>
+        <Button kind="ghost" disabled={phase === 'sending'} onClick={reset}>
           Keep it running
-        </button>
+        </Button>
       </span>
     </div>
   )
@@ -4986,37 +4910,3 @@ function holdsCapacity(workflow: Workflow, taskById: ReadonlyMap<string, Task> |
   })
 }
 
-/**
- * THE TYPED CONFIRM, LOCAL TO THIS SECTION (components.html A `.c-dlg` with
- * its typed variant; named `Wf` so a later pass can swap in the shared one):
- * "Type <id> to confirm", in the mono face, unlocking only on an exact match.
- */
-function WfTypedConfirm({
-  expect: want,
-  value,
-  onChange,
-  disabled,
-}: {
-  expect: string
-  value: string
-  onChange: (v: string) => void
-  disabled: boolean
-}) {
-  return (
-    <label className="wf-typed">
-      <span className="wf-typed-l">
-        Type <b className="mono">{want}</b> to confirm
-      </span>
-      <input
-        type="text"
-        className="mono"
-        autoComplete="off"
-        spellCheck={false}
-        value={value}
-        disabled={disabled}
-        aria-label={`Type ${want} to confirm`}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </label>
-  )
-}

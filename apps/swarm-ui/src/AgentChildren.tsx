@@ -1,12 +1,13 @@
 import { useMemo } from 'react'
 
-import { Chip, Em, Mark } from './AgentDetail'
+import { Em, Mark } from './AgentDetail'
+import { StateMark } from './components'
 import { agentName } from './agentlist'
 import { loadChildren } from './api'
 import type { Result } from './fetch'
 import { useRead } from './RunFiles'
 import { useNow } from './useNow'
-import { TERMINAL_STATES, elapsed, stateTone, type Task, type TaskPage, type TaskState } from './types'
+import { TERMINAL_STATES, elapsed, type Task, type TaskPage, type TaskState } from './types'
 
 /**
  * CHILD TASKS IN THE SPLIT DETAIL (agent-detail-2.html, pick A).
@@ -228,9 +229,7 @@ function ChildTable({
         <p className="ag-children-mix" aria-label="Children by state">
           {[...counts.entries()].map(([s, n]) => (
             <span key={s} className="ag-children-mixpart">
-              <Chip tone={stateTone(s)} state={s}>
-                {s}
-              </Chip>{' '}
+              <StateMark state={s} />{' '}
               {n}
             </span>
           ))}
@@ -266,9 +265,7 @@ function ChildTable({
                 return (
                   <tr role="row" key={c.id} data-task-id={c.id}>
                     <td role="cell" data-label="State">
-                      <Chip tone={stateTone(c.state)} state={c.state}>
-                        {c.state}
-                      </Chip>
+                      <StateMark state={c.state} />
                     </td>
                     <th role="rowheader" scope="row">
                       <a className="ctl-link" href={`#work/task/${encodeURIComponent(c.id)}`}>

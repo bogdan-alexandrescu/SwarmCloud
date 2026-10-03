@@ -963,7 +963,7 @@ body {
 
 .tags { display: flex; gap: 6px; flex-wrap: wrap; min-height: 17px; }
 .tag {
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   padding: 0 6px; border-radius: var(--ctl-radius-sm);
   border: 1px solid currentColor;
 }
@@ -993,12 +993,9 @@ body {
    "Run the count" is not inside a `.state` at all. That one shipped as a
    native grey button on a dark screen, and the spacing probe found it by
    failing to resolve `buttonface` to a colour. */
-.retry {
-  margin-top: 14px; background: var(--surface-2); color: var(--text);
-      border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-      padding: 6px 14px; font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
-}
-.retry:hover { border-color: var(--text-faint); }
+/* It is the canonical Button now (#503 swap), so one control has one
+   appearance wherever it is drawn; `.retry` is the layout hook only. */
+.c-btn.retry { margin-top: 14px; }
 
 /* A PLACEHOLDER BREATHES; IT DOES NOT BLINK. This keyframes was called
    `pulse`, and so was the liveness dot's, declared ~2,500 lines further down.
@@ -1196,7 +1193,7 @@ body {
    the one status encoding in this product now.
    `min-width: 0` so the chip's own `nowrap` truncates the column rather than
    pushing the name out of it. */
-.row > .ctl-chip { min-width: 0; overflow: hidden; }
+.row > .sk-st { min-width: 0; overflow: hidden; }
 /* `.row .meta` IS DELETED. Nothing has rendered a `.meta` cell in a task row
    since the row was rewritten; the two rules that referenced it -- this one and
    a `display: none` in the board's stray phone block -- were a selector pair
@@ -1238,7 +1235,7 @@ body {
    one at equal weight, so a failed row with an urgent reason is drawn as
    failed. */
 .row:has(.why.is-warn),
-.row:has(> .ctl-chip[data-hue='bad']) {
+.row:has(> .sk-st[data-hue='bad']) {
   background-repeat: no-repeat;
   background-position: left center;
 }
@@ -1246,7 +1243,7 @@ body {
   background-image: linear-gradient(var(--warn), var(--warn));
   background-size: 3px 46%;
 }
-.row:has(> .ctl-chip[data-hue='bad']) {
+.row:has(> .sk-st[data-hue='bad']) {
   background-image: linear-gradient(var(--bad), var(--bad));
   background-size: 3px 100%;
 }
@@ -1254,7 +1251,7 @@ body {
    and its 2px ink rule; the tone rule steps in beside it rather than under
    it, so an open failed row still says both things. */
 .row[aria-current]:not([aria-current='false']):has(.why.is-warn),
-.row[aria-current]:not([aria-current='false']):has(> .ctl-chip[data-hue='bad']) {
+.row[aria-current]:not([aria-current='false']):has(> .sk-st[data-hue='bad']) {
   background-position: 2px center;
 }
 
@@ -1472,18 +1469,16 @@ body {
 .wf-mix {
   display: flex; flex-wrap: wrap; align-content: flex-start;
   gap: var(--ctl-s1); min-width: 0; overflow: hidden;
-  height: calc(var(--t-micro) * var(--lh-micro) + 2px);
+  /* One canonical chip's height (components.css `.c-chip`: the flush line,
+     4px padding twice and the 1px edge twice), so a second line is hidden. */
+  height: calc(var(--t-micro) * var(--lh-flush) + 10px);
 }
-.wf-chip {
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  padding: 0 5px; color: var(--text-dim); white-space: nowrap;
-  /* A lone chip wider than the whole column is the one case wrapping cannot
-     hide, so it says it was shortened rather than being sliced. */
-  min-width: 0; overflow: hidden; text-overflow: ellipsis;
-}
-.wf-chip-n { color: var(--text-faint); margin-left: 3px; }
-.wf-chip.more { color: var(--text-faint); }
+/* The mix's chips are the canonical Chip (#503 swap; it was `.wf-chip`).
+   A lone chip wider than the whole column is the one case wrapping cannot
+   hide, so it says it was shortened rather than being sliced: a block box,
+   because an ellipsis applies to a block container and not to a flex one. */
+.wf-mix > .c-chip { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wf-mix-n { color: var(--text-faint); margin-left: 3px; }
 
 /* AN ABSENT COST IS NOT $0.00. The absent treatment is the one every unmeasured
    figure in this console gets: faint and italic, with the word rather than a
@@ -1678,7 +1673,7 @@ body {
    mono at the micro step, no border, no dash, no hue. Its sentence is its
    accessible name and its title. The partial mark stays where a read IS
    partial, on the sample note. */
-.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
+.wf-zoom-note { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-faint); }
 
 /* THE MAP.
    ---------------------------------------------------------------------------
@@ -1815,7 +1810,6 @@ body {
    `running` and then `running 1m 32s` -- the same word twice and 18px of node
    height on every step in every graph. */
 .node-line { display: flex; align-items: baseline; gap: var(--ctl-s2); min-width: 0; }
-.node-line > .ctl-dot { align-self: center; }
 .node-line > .node-state { flex: none; }
 .node-line > .node-dur { margin-left: auto; text-align: right; }
 /* THE CARD IS A BUTTON THAT PICKS ITS STEP (WF-7). It was an `<a>` to the task
@@ -1840,18 +1834,23 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    It painted `--ok`, the graph's last healthy green. */
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
-.node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
+/* THE CARD'S WORDS ARE SANS (visual QA Q3, 2026-10-02; wide-workflows.html
+   A): the step's name is the card's title, not a value, and the mono line
+   read as cramped code. Figures in `.node-num dd` stay mono. The size is
+   unchanged, so `dag.ts`'s row heights hold; sans is narrower than the mono
+   advance its widths are derived from, so every width bound still holds. */
+.node-id { font: 600 var(--t-body)/var(--lh-body) var(--font); }
 /* `.node-id a` WAS THE LINK AND THERE IS NO LONGER AN ANCHOR IN HERE: the card
    around it is the anchor. `.node-name` is what that anchor's text used to be,
    and it is deliberately NOT underlined on hover -- one affordance per target,
    and the target is the card, which brightens its own border. */
 .node-name { color: var(--text); }
-.node-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.node-state { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 /* FIVE KINDS OF TIME, FIVE TREATMENTS -- and the first one has no number at
    all. A step that has not started HAS NO DURATION; `0s` would be a claim that
    it ran instantly. Waiting (queued or parked) is not working, so it is drawn
    in the waiting colour rather than the running one. */
-.node-dur { font: var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal; color: var(--text-dim); }
+.node-dur { font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; font-style: normal; color: var(--text-dim); }
 .node-dur.is-ran { color: var(--text-dim); }
 .node-dur.is-running { color: var(--info-ink); }
 .node-dur.is-queued, .node-dur.is-parked { color: var(--warn-ink); }
@@ -1918,7 +1917,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    against a 4px floor. The absent treatment is the one thing on this node
    that may not be traded for height, so the height is what gives. */
 .node-num dt {
-  font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); align-self: baseline;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); align-self: baseline;
 }
 /* THE DASHED RULE IS DECLARED HERE AND ONLY RECOLOURED BELOW, which is §13.5's
    named pattern ("`.ctl-metric` keeps its transparent declared border ... a
@@ -1974,7 +1973,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    on focus. Plain ink unless it asks a person to act (`whyNeedsAction`, the
    Agents list's rule for its own why line). */
 .node-note {
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .node-note.is-warn { color: var(--warn-ink); }
@@ -2283,7 +2282,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
   margin-left: 10px;
   padding: 2px 8px;
   border-radius: 999px;
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   vertical-align: middle;
 }
 .scope.platform { background: color-mix(in srgb, var(--info) 15%, transparent); color: var(--info-ink); }
@@ -2349,7 +2348,7 @@ table.pools thead {
 }
 table.pools thead th {
   border-bottom: 1px solid var(--line-soft);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 table.pools .n { text-align: right; font-family: var(--mono); font-variant-numeric: tabular-nums; }
@@ -3057,17 +3056,13 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
   position: sticky; top: 0;
   /* A LINE OF ITS OWN, not a float sharing one with the pane tabs — see the
      band above, whose height is only correct because of this. */
-  display: block; margin-left: auto;
+  display: flex; margin-left: auto;
   /* ON the band, not merely above the parent's other children. */
   z-index: 4;
+  /* The canonical icon Button (#503 swap) draws the look; these are the
+     band's geometry, which the band's height is measured against. */
   width: 32px; height: 32px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text-dim);
-  /* --lh-flush: the box is the square above. A glyph centred in a fixed square
-     takes no leading. */
-  cursor: pointer; font-size: var(--t-body); line-height: var(--lh-flush);
 }
-.drawer-close:hover { color: var(--text); border-color: var(--text-faint); }
 
 /* 560, not 640 -- §7.1's nearest survivor, the same move the run list's own
    phone block made. Nothing changes for a phone: `width: min(560px, 100vw)`
@@ -3272,7 +3267,7 @@ ol.timeline li::before {
    text colour" and §6.6's "the hue never touches the word", which is how the
    API reads table already draws the same records. The mark and the edge
    carry the tone. */
-.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-dim); }
+.s-status { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
 .source.warn .s-status,
 .source.bad .s-status { color: var(--text); }
 /* `grid-column: 1 / -1` IS GONE, which is the other half of F5's regrouping.
@@ -3285,13 +3280,8 @@ ol.timeline li::before {
    claiming one. */
 .s-age { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 
-.reauth {
-  display: block; width: 100%;
-  margin-bottom: 8px; padding: 9px 12px;
-  border: 1px solid var(--bad); border-radius: var(--ctl-radius-sm);
-  background: color-mix(in srgb, var(--bad) 12%, var(--surface));
-  color: var(--bad-ink); font-size: var(--t-body); font-weight: 600; cursor: pointer;
-}
+/* The canonical full-width danger Button (#503 swap); the gap below is layout. */
+.c-btn.reauth { margin-bottom: 8px; }
 
 /* ------------------------------------------------------------------------ */
 /* Trouble board                                                             */
@@ -3316,14 +3306,8 @@ ol.timeline li::before {
   color: var(--warn-ink);
 }
 .banner.neutral { background: var(--surface); color: var(--text-dim); }
-/* Never collapsed, never truncated: an admin reading their own tenant's four
-   running tasks as the platform total is a truth bug, not a layout choice. */
-.count-chip {
-  display: inline-block;
-  margin-right: 10px;
-  font: var(--t-body)/var(--lh-body) var(--mono);
-  font-variant-numeric: tabular-nums;
-}
+/* A heading's count is the canonical bare Count (#503 swap; it was
+   `.count-chip`): a nowrap chip, never collapsed and never truncated. */
 
 .panel h2 { display: flex; align-items: center; gap: 10px; }
 /* Mandatory and always visible. */
@@ -3374,21 +3358,13 @@ pre.err.full { max-height: none; white-space: pre-wrap; }
   background: color-mix(in srgb, var(--paused) 20%, transparent);
   color: var(--paused-ink); font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
 }
-button.copy,
-a.copy {
-  margin-left: 8px; padding: 1px 7px;
-  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2); color: var(--text-dim);
-  font: var(--t-meta)/var(--lh-meta) var(--mono); cursor: pointer;
-}
-button.copy:hover,
-a.copy:hover { color: var(--text); border-color: var(--text-faint); }
-/* A LINK DRAWN AS THE COPY CONTROL (#184): the Artifacts pane's `download`
-   and `open full` are anchors -- the browser fetches the raw route itself,
-   with the session cookie, which a button calling `fetch` could not hand to a
-   download -- and they sit in a row of `copy gsutil` buttons, so they wear the
-   same box. No underline: the box is the affordance, as it is for the button. */
-a.copy { display: inline-block; text-decoration: none; }
+/* THE COPY AND DOWNLOAD CONTROLS are the canonical small Button and
+   ButtonLink (#503 swap: `button.copy` / `a.copy` drew a button style of their
+   own). The Artifacts pane's `download` and `open full` stay anchors -- the
+   browser fetches the raw route itself, with the session cookie, which a
+   button calling `fetch` could not hand to a download (#184). `.copy` is the
+   layout hook only: its gap from the value it acts on. */
+.c-btn.copy { margin-left: 8px; }
 
 /* ------------------------------------------------------------------------ */
 /* Activity                                                                  */
@@ -3466,7 +3442,7 @@ a.copy { display: inline-block; text-decoration: none; }
    is `.coverage`, the Timeline's row-count bar and its only caller (TS-12).
    `.t-label` stays: Dispatch.tsx, SubmitWorkflow.tsx and Accounts.tsx label
    fields with it. */
-.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--mono); color: var(--text-faint); }
+.t-label { display: block; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-faint); }
 
 /* §B4.3 move 3, the same cap on the proportional row. `minmax(0, 1fr)` in the
    middle stretched the bar to whatever was left, which on a wide screen is a
@@ -3745,8 +3721,6 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .acct-action button:not(:disabled):hover,
 .acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
 .acct-action button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
-.acct-action button.danger { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd)); }
-.acct-action button.danger:not(:disabled):hover { border-color: var(--bad); color: var(--bad); }
 
 /* Inputs and textareas are scoped to this screen rather than styled globally:
    other screens' forms belong to other tracks and a global rule would restyle
@@ -3756,7 +3730,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .acct-fixed { margin: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
 /* `anthropic` and the `fixed` chip beside it had no space between them -- the
    markup has no whitespace there -- and read as one word (CP-20). */
-.acct-fixed > .ctl-chip { margin-left: var(--ctl-s2); }
+.acct-fixed > .sk-st { margin-left: var(--ctl-s2); }
 
 .acct-wide { width: 100%; max-width: 420px; }
 .acct-action input, #acct-label, #acct-lend {
@@ -4308,14 +4282,15 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
   font-weight: 600;
   color: var(--text);
 }
-/* THE QUALIFIER SLOT. Muted, right-aligned, mono, and it does not wrap: it is
+/* THE QUALIFIER SLOT. Muted, right-aligned, and it does not wrap: it is
    a fact about the card, so it reads as chrome and never competes with the
-   title. `flex: none` is what keeps it on the title's line — a qualifier that
+   title. SANS, NOT MONO (visual QA Q1, review of #503): "6 accounts" is a
+   meta line, and mono is for ids, values, code and timestamps only. `flex: none` is what keeps it on the title's line — a qualifier that
    wraps under the title has become a subtitle, which is a paragraph with
    better manners. */
 .ctl-card-note {
   flex: none;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
   white-space: nowrap;
   text-align: right;
@@ -4450,7 +4425,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .ctl-eyebrow {
   display: block;
   margin: 0 0 var(--ctl-s2);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 
@@ -4651,7 +4626,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-fact > b {
   flex: none;
-  font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
+  font: 500 var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 /* A fact whose value was not read keeps its slot and its key. It does not
@@ -4700,7 +4675,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   padding: 0 6px;
   border: 1px solid currentColor;
   border-radius: var(--ctl-radius-sm);
-  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
   white-space: nowrap;
   vertical-align: middle;
   /* No background: an accent on a tint of itself is the one pairing this sheet
@@ -4772,97 +4747,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   border-style: dotted;
 }
 
-/* -------------------------------------------------------------------------- */
-/* 13. The bare state dot                                                      */
-/* -------------------------------------------------------------------------- */
-/* THE CHIP'S SHAPE VOCABULARY, WITHOUT THE CHIP. `.ctl-chip` is a mark plus a
-   word in a bordered pill; a table cell, a DAG node and a dense row want the
-   mark alone, and the audit found four different state chips because there was
-   no way to get one without the other. Same seven silhouettes, same seven
-   tones, same meanings — a reader learns the vocabulary once and it holds
-   wherever a state is drawn.
-
-   THE DEFAULT IS UNKNOWN, AND THAT IS THE WHOLE POINT. Northflank's status dot
-   defaults to a neutral grey and green is an opt-in modifier, so a state nobody
-   derived renders as a fully-formed dot in a tone that is deliberately outside
-   the ok/warn/bad triad. It is present, legible, the same size as a healthy
-   one, and it cannot be mistaken for either a healthy state or a missing
-   element. A dot that is not drawn is a dot nobody can ask about. */
-.ctl-dot {
-  display: inline-block;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--ctl-radius-pill);
-  vertical-align: middle;
-  /* UNKNOWN by default: a hollow ring in the neutral tone. */
-  background: transparent;
-  border: 1.5px solid var(--text-faint);
-}
-/* OK AND INFO KEEP THEIR SHAPES AND LOSE THEIR HUE (CH-17, design-system.md
-   §6.6). On a state mark, hue is spent only on warn, bad, paused and live; a
-   healthy platform is a quiet grey screen. The ok mark is a filled disc in
-   `--text-faint` -- a disc, where the unknown default is a hollow ring.
-   CP-14 (#85) ruled first that healthy carries no hue and painted this disc
-   `--text-dim`; CH-17, decided after it, names this primitive and draws it in
-   `--text-faint`, so the later ruling sets the grey and CP-14's no-hue ruling
-   holds either way (`test_the_ok_mark_is_a_text_grey` accepts both greys).
-   THE INFO MARK IS THE FLAT BAR §6.6 SPECIFIES (CH-22), not the filled disc it
-   was: at 390, where the word is hidden, a cancelled and a queued workflow
-   were the same dot. It is the neutral "ended" mark CANCELLED takes and the
-   mark for a fact that is not a verdict -- ONE modifier, not a second one --
-   and it is the chip's own bar (`.ctl-chip.is-info > i`), 10 by 3. */
-.ctl-dot.is-ok     { background: var(--text-faint); border-color: var(--text-faint); }
-.ctl-dot.is-info {
-  width: 10px; height: 3px;
-  border: 0;
-  border-radius: 1px;
-  background: var(--text-faint);
-}
-.ctl-dot.is-paused { background: var(--paused); border-color: var(--paused); }
-/* Caution keeps the chip's triangle; failure keeps its diamond. */
-.ctl-dot.is-warn {
-  width: 10px; height: 9px;
-  border: 0;
-  border-radius: 0;
-  background: var(--warn);
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-}
-.ctl-dot.is-bad {
-  width: 7px; height: 7px;
-  border: 0;
-  border-radius: 1px;
-  background: var(--bad);
-  transform: rotate(45deg);
-}
-/* NOT DERIVED, which is a third thing again: the state exists, nobody computed
-   it. A ring with a bar through it — present, and struck out. Railway's legend
-   already means "present, not drawn" with a hollow ring; this is that ring
-   with the absence made explicit. */
-/* BROADCASTING. §6.6's table names `live` as "a disc with a halo" and the chip
-   half of it already shipped as `.ctl-chip.is-live > i`; the bare mark had no
-   way to say it, so a workflow board drew a RUNNING row and a QUEUED row as
-   two identical blue discs. Same halo, same 2s pulse, same token as the chip's
-   -- this is the chip's own declaration applied to the mark alone, not a
-   second treatment.
-   The halo is what survives `prefers-reduced-motion`, which stops the pulse
-   further down this file: live must not become pixel-identical to anything
-   when the motion is taken away. */
-.ctl-dot.is-live {
-  background: var(--info);
-  border-color: var(--info);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 35%, transparent);
-  animation: ctl-live-pulse 2s ease-in-out infinite;
-}
-.ctl-dot.is-underived {
-  border-color: var(--text-faint);
-  background: linear-gradient(
-    90deg,
-    transparent 0 34%,
-    var(--text-faint) 34% 66%,
-    transparent 66% 100%
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /* 14. Absence occupies the space it would have occupied                       */
@@ -5178,69 +5062,8 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-toolbar > .is-end { margin-left: auto; }
 
-/* ONE BORDERED GROUP, NOT N PILLS. The active segment is marked by ACCENT TEXT
-   plus a surface step — not by a filled pill. Very low ink, legible at a
-   glance, and it survives both themes without a fill that has to be re-tuned
-   for each one. Railway's time range and view switch are both this control and
-   it is why their toolbar reads as two things rather than six.
-
-   THE SELECTION IS HUELESS, for the reason `.ctl-nav-link.is-on` gives: `--info`
-   already carries seven jobs in this file, and a selected segment drawn in the
-   same blue as a live agent teaches the reader to stop trusting colour as a
-   state channel. */
-/* B4.5 — THE INTERNAL DIVIDER IS A 4px GUTTER, NOT A HAIRLINE, and the reason
-   is a gate rather than a taste.
-
-   This primitive was specified with `button + button { border-left: 1px }` and
-   no gap. Pools is the first screen to render it, and `spaceprobe.ts:1036`
-   reported it immediately: `surfaces-touch div.ctl-seg.is-end [column] 0 < 4`.
-   The probe is right and the finding is not a false positive. Its rule is that
-   two SURFACES may not touch, and inside this control both children qualify --
-   the pressed one by its `--surface-2` fill, the one after it by that left
-   border -- so the group really did draw two filled boxes edge to edge, which
-   is the shape the floor exists to stop.
-
-   The fix keeps every decision §6.11 made and changes only the mechanism of the
-   separation: still ONE bordered group rather than N pills, still an active
-   segment marked by a surface step and weight rather than by a filled pill,
-   still hueless. A 4px gutter separates the segments instead of a hairline,
-   which is `--ctl-s1` -- the smallest step this sheet's rhythm declares, and
-   exactly the floor. `padding: 2px` keeps the segments off the group's own
-   border by the same rule the probe applies to ink.
-
-   IT WAS NOT FIXED BY HIDING THE RULE. A `box-shadow` divider would have
-   passed both this check and the divider-contrast check while drawing the
-   identical pixels, because the probe reads borders and not shadows -- which
-   is the "guard that is strongest when it is broken" failure this whole suite
-   was written against. A gutter is a real change to a real geometry. */
-.ctl-seg {
-  display: inline-flex;
-  align-items: stretch;
-  gap: var(--ctl-s1);
-  padding: 2px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-}
-.ctl-seg > button {
-  min-height: 26px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 2px;
-  background: none;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  white-space: nowrap;
-  cursor: pointer;
-  transition: color var(--ctl-dur) ease, background-color var(--ctl-dur) ease;
-}
-.ctl-seg > button:hover { color: var(--text); }
-.ctl-seg > button[aria-pressed='true'],
-.ctl-seg > button[aria-selected='true'] {
-  background: var(--surface-2);
-  color: var(--text);
-  font-weight: 600;
-}
-.ctl-seg > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+/* THE SEGMENTED CONTROL is the canonical `Segmented` (components.css, `.c-seg`);
+   the local `.ctl-seg` it replaced is gone (#503 swap). */
 
 /* -------------------------------------------------------------------------- */
 /* 17. Page header                                                             */
@@ -5421,7 +5244,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 }
 .ctl-metric-label {
   display: block;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-metric-value {
@@ -5455,7 +5278,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 .ctl-metric-foot {
   display: block;
   margin-top: 2px;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 
@@ -5899,189 +5722,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* -------------------------------------------------------------------------- */
 /* 3. Status chip                                                              */
 /* -------------------------------------------------------------------------- */
-/* THE WORD IS MANDATORY; the mark repeats it as a SHAPE. A colour-only chip
-   fails for a colour-blind operator and in the greyscale screenshot that gets
-   pasted into an incident channel — which is where these screens are actually
-   read. The mark carries no meaning the text does not, so it stays aria-hidden
-   at the call site and this file never relies on it alone.
-
-   THE SHAPE VOCABULARY. `.ctl-chip.is-unknown` already argued this case and
-   won it — "UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour", so
-   its dot went hollow — and then the idiom was used exactly once. Every state
-   now has a silhouette, and it is the same vocabulary wherever a state is
-   drawn; the metric tile below reuses it rather than inventing a second one:
-
-     ok        a filled disc          present, and fine
-     warn      a triangle, apex up    the universal caution shape
-     bad       a diamond              a disc knocked off its axis
-     info      a bar                  flat: a fact, not a verdict
-     paused    two bars               the pause glyph
-     unknown   a hollow disc          an absence of information, drawn as one
-     live      a disc with a halo     a dot that is broadcasting
-
-   SOLID SHAPES, deliberately. A stroked glyph — an outlined tick, a drawn
-   "x" — needs sub-pixel strokes at 7px and turns to mush on a 1x display,
-   which is what an operator's second monitor usually is. A filled silhouette
-   survives any DPI and any greyscale conversion.
-
-   `prefers-reduced-motion` kills the live pulse (see the top of this file), so
-   `.is-live` cannot be told from `.is-ok` by motion alone. Its halo is what
-   keeps the two apart when the animation is off. */
-
-/* THE CHIP IS A MARK AND A WORD. IT IS NOT A BADGE.
-   ---------------------------------------------------------------------------
-   Measured, what shipped was 102x23px to say "running": a 1px border in
-   currentColor, a 999px radius, 600-weight 13px mono, .04em tracking,
-   UPPERCASE, and a dot. Four of them stacked in one card is 408px of chrome
-   spent saying one word four times, and twelve pill radii on the Overview is
-   as much of the "cartoonish" read as the numerals are.
-
-   VERCEL IS THE PRECISE ANSWER and it was measured in a browser rather than
-   guessed at, because Geist ships StatusDot as a documented component: a
-   10x10px solid circle with `border-width: 0`, no ring and no tint, and beside
-   it the state word in SENTENCE CASE at 14px/400 in primary ink -- even
-   "Error" is drawn in #171717. The hue never touches the word. Northflank
-   agrees (a small glyph, then "Job succeeded" in plain sentence case, no
-   border, no fill); so does Koyeb (a 14px check glyph beside the name, and a
-   6px round `ping` dot as their status indicator -- their one pill-shaped
-   element is METADATA in a grey hairline outline, which is how they keep a
-   pill from meaning "status"); so does Railway (a 6px legend dot and the row's
-   own ink).
-
-   SO: no border, no pill, no uppercase, no tracking. The word moves to
-   `--text` at `--t-body` in the SANS face, which is this sheet's own rule
-   (sec 2: mono means "an identifier or chrome"; sans at full strength means
-   "this is the datum", and a state word is a NAME -- sec 8.5, kind 1 -- not an
-   id). `lowercase` rather than sentence case because the states arrive from
-   the API already shouting (`RUNNING`, `REAUTH_REQUIRED`) and lowercase is
-   what `.wf-state` already renders on Workflows -- the one screen the owner
-   named as already correct. Matching it is the point.
-
-   THIS STRENGTHENS THE HONESTY INVARIANT RATHER THAN SPENDING IT, and that is
-   worth stating plainly because the change looks like a removal. Before:
-   colour on the word, colour on the border, a shape on the dot. After: the
-   word at FULL INK, legible and never competing with the datum beside it, and
-   the shape vocabulary untouched on the mark. Nothing that carried
-   information was removed -- what went was a duplicate of the tone channel
-   (the border) and three typographic amplifiers (case, weight, tracking). The
-   seven silhouettes below are still seven, and
-   `test_every_chip_state_has_its_own_silhouette` still holds them apart.
-
-   THE TONE MOVED OFF `color` AND ONTO `--chip-tone`, which is what lets the
-   word be `--text` while the mark stays hued. Every read of it carries a
-   fallback for the reason the dial block above gives at length:
-   `spaceprobe.ts` resolves this sheet against `:root` alone and throws on a
-   `var()` it cannot find there. */
-.ctl-chip {
-  --chip-tone: var(--text-faint);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ctl-s1);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  text-transform: lowercase;
-  white-space: nowrap;
-  /* The word is the datum. It is never the hue. */
-  color: var(--text);
-}
-/* 10px, no fill -- THE UNKNOWN RING, AND THE BASE ON PURPOSE (CP-14, #85).
-   The base mark was the filled disc, so a modifier no rule matched (`is-wait`
-   is the one Accounts nearly shipped, §12.2 of design-system.md) drew the
-   HEALTHY mark for a state nobody derived. It is now the hollow ring, which
-   is `.ctl-dot`'s base too (§6.6): a chip whose modifier did not match says
-   "unknown" rather than "fine", and every state below declares its own fill.
-   `.is-unknown` is the one state that equals this base.
-
-   10px because it is Geist's measured StatusDot: the mark carries the chip's
-   presence alone now that the border is gone, and 10px reads at arm's length
-   on the second monitor these screens are actually read on. */
-.ctl-chip > i {
-  width: 10px; height: 10px;
-  border-radius: 999px;
-  background: transparent;
-  border: 1.5px solid var(--chip-tone, var(--text-faint));
-  flex: none;
-}
-/* HEALTHY CARRIES NO HUE (owner rulings CP-14 and CH-17, 2026-09-25;
-   design-system §6.6-§6.7, redesign-v2 §5.5). `ok` and `info` are grey: the
-   disc and the flat bar keep the shape, the hue is spent only on warn, bad,
-   paused and live, and the ok word stays at full ink. The flat bar is also the
-   neutral "ended" mark CANCELLED takes (CH-22). Because this is the primitive,
-   every screen's ok mark goes grey with no screen edit. CP-14 painted the ok
-   tone `--text-dim`; CH-17, decided after it, names this primitive and paints
-   it `--text-faint`, so the later ruling sets the grey. The cost CP-14 asked to
-   have recorded: in greyscale the ok disc is told from warn and bad by its
-   silhouette alone (`--text-faint` is 1.01:1 from `--bad` in the dark theme
-   and 1.45:1 from `--warn` in the light one), which is what
-   `test_every_chip_state_has_its_own_silhouette` holds. `--ok` stays defined. */
-.ctl-chip.is-ok      { --chip-tone: var(--text-faint); }
-.ctl-chip.is-warn    { --chip-tone: var(--warn); }
-.ctl-chip.is-bad     { --chip-tone: var(--bad); }
-.ctl-chip.is-info    { --chip-tone: var(--text-faint); }
-.ctl-chip.is-paused  { --chip-tone: var(--paused); }
-
-/* The shapes. Each one declares its own fill over the ring and overrides the
-   disc; none of them changes the colour, so tone and shape stay independent
-   and a greyscale reader loses neither. */
-
-/* Present, and fine: the filled disc. */
-.ctl-chip.is-ok > i {
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-}
-/* Caution: a triangle, wider than it is tall so the base reads as a base. */
-.ctl-chip.is-warn > i {
-  width: 12px; height: 10px;
-  border-radius: 0;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-}
-/* Failure: a diamond. Same area as the disc, off its axis — the one mark on
-   the screen with corners. */
-.ctl-chip.is-bad > i {
-  width: 8px; height: 8px;
-  border-radius: 1px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  transform: rotate(45deg);
-}
-/* A fact rather than a verdict: flat. */
-.ctl-chip.is-info > i {
-  width: 10px; height: 3px;
-  border-radius: 1px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-}
-/* Held, not running: the pause glyph. Two bars with a gap wide enough to
-   survive a 1x display. */
-.ctl-chip.is-paused > i {
-  width: 10px; height: 10px;
-  border-radius: 1px;
-  border: 0;
-  background: linear-gradient(
-    90deg,
-    var(--chip-tone, var(--text-faint)) 0 34%,
-    transparent 34% 66%,
-    var(--chip-tone, var(--text-faint)) 66% 100%
-  );
-}
-/* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour -- but the WORD
-   still goes at full ink, because "state not derived" is a fact the operator
-   has to be able to read, not a thing to whisper. Only the mark is faint. Its
-   mark is the base ring above, unchanged: `.is-unknown` needs no `> i` rule of
-   its own, and a chip whose modifier matched nothing draws the same thing. */
-.ctl-chip.is-unknown { --chip-tone: var(--text-faint); }
-/* Live work gets the only motion on the screen, and only while it is live —
-   plus a halo, which is what distinguishes it from `.is-ok` once
-   `prefers-reduced-motion` has stopped the pulse. */
-.ctl-chip.is-live { --chip-tone: var(--info); }
-.ctl-chip.is-live > i {
-  width: 8px; height: 8px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-tone, var(--text-faint)) 35%, transparent);
-  animation: ctl-live-pulse 2s ease-in-out infinite;
-}
+/* THE STATUS CHIP AND THE BARE STATE DOT ARE THE CANONICAL `ToneMark` and
+   `StateMark` now (components/StatePill.tsx, `.sk-st`): the brand marks of
+   brand.html §3, one silhouette per tone, the word beside it. The local
+   `.ctl-chip` and `.ctl-dot` and their CSS-drawn shapes are gone (#503 swap:
+   "state marks must be the brand marks everywhere, never a local dot or
+   glyph"). */
 
 /* -------------------------------------------------------------------------- */
 /* 4. Table                                                                    */
@@ -6181,14 +5827,16 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 }
 .ctl-table thead th {
   border-bottom: 1px solid var(--line-soft);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-table .is-num {
   text-align: right;
-  font-family: var(--mono);
   font-variant-numeric: tabular-nums;
 }
+/* The FIGURE is a value and keeps the mono face; its head is a label and
+   stays sans (visual QA Q1, 2026-10-02: "Leased (units)" was mono). */
+.ctl-table td.is-num { font-family: var(--mono); }
 /* Row tones are a wash, never a text colour: the cells still have to be read
    and a red row of red text is not legible at 3am. */
 .ctl-table tbody tr.is-bad    { background: color-mix(in srgb, var(--bad) 8%, transparent); }
@@ -6308,7 +5956,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-empty-foot {
   display: block;
   margin-top: var(--ctl-s3);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 
@@ -6371,7 +6019,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
   padding: 0 6px 0 0;
   border-radius: var(--ctl-radius-sm);
   background: var(--surface-2);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-dim);
   vertical-align: middle;
 }
@@ -6544,7 +6192,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-q-title {
   display: block;
   margin: 0 0 4px;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 .ctl-q-body {
@@ -6663,7 +6311,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    the triangle for failures, the diamond for an expired session. */
 .ctl-dock-label {
   flex: none;
-  font: 600 var(--t-meta)/var(--lh-meta) var(--mono);
+  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
   color: var(--text-faint);
 }
 /* F10 OF THE 2026-09-23 OVERFLOW INVENTORY: THE STRIP WRAPS, IT DOES NOT
@@ -7026,26 +6674,8 @@ table.pools tbody tr.unmeasured {
    it is a panel with a real border and the danger colour, because that is the
    moment the decision is actually being made. */
 
-.stop-btn {
-  /* --lh-flush: the box is the `--row-h` row this control sits in on every
-     non-terminal agent. It was 10.5px, under the floor; --t-meta plus flush
-     leading is the largest it can be without making the row taller. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
-  padding: 4px 8px; border-radius: var(--ctl-radius-sm);
-  border: 1px solid var(--ctl-bd); background: transparent; color: var(--text-dim);
-  cursor: pointer;
-}
-.stop-btn:hover {
-  color: var(--bad);
-  border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
-}
-    /* Tighter padding, same type. The 10px that was here was below the 11px floor
-       and it sat on a destructive control in every row -- the last thing in this
-       product that should be the hardest to read. It is --t-meta with its parent.
-       The lane's 3px is kept over the 2px this had: its spacing pass raised every
-       control's vertical padding, and a stop button alone at 2px reads as cramped
-       beside the rest of the row. */
-    .stop-btn.inline { padding: 3px 6px; }
+/* The closed control is the canonical `Button` (StopRun.tsx, #503 swap): plain
+   and small in a row, the danger outline in an agent's header. */
 
 .run-stop { margin-left: auto; }
 /* NOT A FLEX CHILD OF THE CARD ANY MORE, because the card is an `<a>` and a
@@ -7120,9 +6750,9 @@ table.pools tbody tr.unmeasured {
    already in, and something that invited a second press would imply the first
    had not taken. */
 .stop-pending {
-  /* --lh-flush: same box as `.stop-btn`, which this replaces in place -- the
+  /* --lh-flush: same box as the closed stop button, which this replaces in place -- the
      row must not jump when a stop is requested. */
-  font: 500 var(--t-meta)/var(--lh-flush) var(--mono);
+  font: 500 var(--t-meta)/var(--lh-flush) var(--font);
   color: var(--warn); border: 1px dashed color-mix(in srgb, var(--warn) 45%, var(--line));
   border-radius: var(--ctl-radius-sm); padding: 3px 7px; white-space: nowrap;
 }
@@ -7166,18 +6796,8 @@ table.pools tbody tr.unmeasured {
 }
 
 .stop-actions { display: flex; gap: var(--ctl-s2); margin-top: var(--ctl-s3); }
-.stop-actions button {
-  /* --lh-flush: a button label centred in a box whose height is its own
-     padding. Leading would only make the two buttons taller than the
-     confirmation copy above them. */
-  font: 500 var(--t-body)/var(--lh-flush) var(--mono); padding: 6px 10px;
-  border: 1px solid var(--ctl-bd); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text-dim); cursor: pointer;
-}
-.stop-actions button.danger {
-  color: var(--bad); border-color: color-mix(in srgb, var(--bad) 45%, var(--ctl-bd));
-}
-.stop-actions button:disabled { opacity: .55; cursor: default; }
+/* Stop's confirm is the canonical danger-filled Button and its "keep
+   running" the ghost one (#503 swap). */
 .stop-note { font-size: var(--t-body); color: var(--text-dim); margin: var(--ctl-s2) 0 0; }
 .stop-note.small { font-size: var(--t-micro); }
 
@@ -8017,10 +7637,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
    just picked is not painted red; until then the `required` tag carries it. */
 .sbf-miss { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
 .sbf-miss code { font-size: var(--t-micro); color: var(--warn-ink); }
-/* The send panel names the same gap as a `.sbf-mini` button to the field.
-   `.sbf-mini`'s own grey comes later in the sheet at equal specificity, so the
-   warn ink is restated on the pair rather than left to lose. */
-.sbf-mini.sbf-bad { color: var(--warn-ink); }
+/* The send panel names the same gap as a small canonical link button to the
+   field. `.c-link`'s own sky would win at equal specificity, so the warn ink
+   is restated on the pair rather than left to lose. */
+.c-link.sbf-bad { color: var(--warn-ink); text-decoration-color: currentColor; }
 .sbf-gaps { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s1) var(--ctl-s2); }
 
 .sbf-flag { display: inline-flex; align-items: center; gap: var(--ctl-s2); font-size: var(--t-body); color: var(--text-dim); }
@@ -8028,16 +7648,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-list > input { width: 100%; }
 .sbf-listact { display: flex; gap: var(--ctl-s3); }
 
-/* A TEXT BUTTON, NOT A PILL. `:where(.app button)` puts a 1px box around every
-   unstyled button; a field with a remove, a kind and two list controls would
-   be four boxes inside one row. The sheet already draws several buttons as
-   plain text (`.ctl-nav-link`, `.art-open`) and this is the same case. */
-.sbf-mini {
-  border: 0; background: transparent; padding: 0; min-height: 0;
-  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
-  text-decoration: underline; text-underline-offset: 3px;
-}
-.sbf-mini:not(:disabled):hover { color: var(--text); }
+/* A TEXT BUTTON, NOT A PILL: a field with a remove, a kind and two list
+   controls would be four boxes inside one row. It is the canonical small
+   link button (`.c-link.is-sm`) since the #503 swap; it was `.sbf-mini`. */
 
 /* ---- browser actions, built rather than typed ---- */
 .sbf-acts { display: grid; gap: var(--ctl-s1); }
@@ -8062,7 +7675,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .sbf-send > h2 {
   margin: 0;
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
   font-weight: 600; color: var(--text-faint);
 }
 /* A COLUMN, BECAUSE THE PANEL IS 300px. `.ctl-facts` is a wrapping flex ROW,
@@ -8073,14 +7686,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-send .ctl-fact { justify-content: space-between; gap: var(--ctl-s3); }
 .sbf-send .ctl-fact > b { flex: none; }
 .sbf-send .warn-text { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-/* THE ONE CONTROL ON EITHER FORM THAT COMMITS ANYTHING. Its fill is the
-   accent, and pale when disabled, from styles/submit.css (`.sb-go`,
-   submit.html F1/G1); this keeps its size. */
-.sbf-go {
-  width: 100%; min-height: 34px;
-  justify-content: center;
-  font-weight: 600;
-}
 
 /* ==========================================================================
    The workflow plan — stages, not a list
@@ -8418,7 +8023,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      `.scope`'s 10px of left margin is for sitting beside a heading; in a value
      column it only pushes the pill off the column's edge. */
   .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
-  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .sk-st,
   .is-stacked > table > tbody > tr > td[data-label] > .tag,
   .is-stacked > table > tbody > tr > td[data-label] > .scope {
     justify-self: start;
@@ -8570,7 +8175,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     grid-column: 2;
   }
   .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
-  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .sk-st,
   .is-stacked > table > tbody > tr > td[data-label] > .tag,
   .is-stacked > table > tbody > tr > td[data-label] > .scope {
     justify-self: start;
@@ -8975,15 +8580,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   outline-offset: -2px;
 }
 
-/* The drawer's ✕. It had `:hover` and nothing else, and it is the control a
-   keyboard reader reaches first when the inspector opens over the list. */
-.drawer-close:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-
-/* The two buttons a failed read renders, and the one the dock renders for an
-   expired session. These are the controls on the screens where something has
-   already gone wrong, which is the worst place to make someone hunt for focus. */
-.retry:focus-visible,
-.reauth:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* The drawer's ✕, the failed read's retry and the dock's reauth take the
+   canonical Button's focus ring (components.css) since the #503 swap: these
+   are the controls a keyboard reader reaches first when something has gone
+   wrong, and they now ring exactly as every other button does. */
 
 /* `refresh` / `paused 12s`, in the summary line under every screen title. It
    is on all fifteen routes, which makes it the most-tabbed control in the app
@@ -9365,7 +8965,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .wf-inspect-wf.has-label > .id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
 /* #376: the workflow's start and submit, under its id, in the same register. */
 .wf-inspect-times { flex-basis: 100%; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.wf-inspect-state { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wf-inspect-run { margin-left: auto; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .wf-inspect-close {
   min-width: 28px;
@@ -9712,16 +9312,9 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .ckb-facts { margin: var(--ctl-s2) 0; }
 .ckb-cut { color: var(--text-dim); }
 
-/* THE LINK TO THE WHOLE ARCHIVE, drawn as `button.copy` is so the controls on
-   this row read as one kind of thing. The same pair of tokens, so the
-   contrast it has is the contrast `button.copy` already clears. */
-.ckb-download {
-  padding: 1px 7px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2); color: var(--text-dim);
-  font: var(--t-meta)/var(--lh-meta) var(--mono); text-decoration: none;
-}
-.ckb-download:hover { color: var(--text); border-color: var(--text-faint); }
+/* THE LINK TO THE WHOLE ARCHIVE is the canonical small ButtonLink, as the
+   copy controls on this row are, so they read as one kind of thing (#503
+   swap: it had a rule of its own restating `button.copy`'s). */
 
 /* The tree. Mono because every label in it is a path; bounded in height so a
    5000-entry listing scrolls inside the panel instead of pushing the logs
@@ -9806,24 +9399,23 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
                                    the pointer and draws nothing
    A linked fact (`a.ctl-metric`) already clears 44px and is not listed. */
 @media (max-width: 560px) {
-  .ctl-seg > button { min-height: 44px; }
-
   .limit-edit input,
-  .limit-edit button,
-  .sbf-go {
+  .limit-edit button {
     min-height: 44px;
   }
 
+  /* `.sub button` is every page head's refresh (Shell's and Overview's,
+     which was `.ov-refresh` until the #503 swap). */
   .ctl-q-glyph,
-  .ov-refresh,
+  .sub button,
   .ov-link,
-  .sbf-mini {
+  .c-link.is-sm {
     position: relative;
   }
   .ctl-q-glyph::after,
-  .ov-refresh::after,
+  .sub button::after,
   .ov-link::after,
-  .sbf-mini::after {
+  .c-link.is-sm::after {
     content: '';
     position: absolute;
     left: 50%;
@@ -10188,13 +9780,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 /* The Workflows row's 54px, in this page's forms: succeeded solid --ok. */
 .ol-steps > .ol-meter { flex: none; width: 54px; }
 .ol-phrase { color: var(--text-dim); }
-.ol-tag {
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
-  color: var(--text-dim);
-  background: var(--surface-2);
-  border-radius: 2px;
-  padding: 0 var(--ctl-s1);
-}
 .ol-ring {
   display: inline-block;
   width: 8px;
@@ -10326,20 +9911,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .diff-name-main { color: var(--text); font: 600 var(--t-body)/var(--lh-body) var(--mono); overflow-wrap: anywhere; }
 .diff-meta { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
-.diff-btn {
-  padding: 2px var(--ctl-s2);
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2);
-  color: var(--text);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
-  text-decoration: none;
-  display: inline-block;
-  cursor: pointer;
-}
-.diff-btn:disabled { color: var(--text-faint); cursor: default; }
-.diff-btn[aria-pressed='true'] { box-shadow: inset 0 -2px 0 var(--text); font-weight: 600; }
-.diff-btn:focus-visible,
 .diff-back:focus-visible,
 .diff-file:focus-visible,
 .diff-filter:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
@@ -10678,7 +10249,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-ph { display: flex; align-items: center; gap: 8px; padding: 2px 10px 12px 16px; }
 .sk-wm { font-weight: 650; font-size: var(--t-lead); white-space: nowrap; }
 .sk-wm span { color: var(--sk-ac); }
-.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
+.sk-pill { font: 600 var(--t-micro)/var(--lh-micro) var(--font); padding: 4px 7px; border-radius: 999px; white-space: nowrap; color: var(--sk-ac); border: 1px solid var(--sk-acl); background: var(--sk-acs); margin-left: auto; }
 .sk-pill.is-prod { background: var(--sk-prod); color: #fff; border-color: var(--sk-prod); }
 .sk-pill.is-mini { font-size: var(--t-micro); padding: 3px 4px; margin-left: 0; }
 .sk-ibtn { border: 0; background: none; color: var(--text-dim); padding: 5px; border-radius: 6px; display: inline-flex; cursor: pointer; }
@@ -10687,11 +10258,11 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
 .sk-tt b { font-size: var(--t-micro); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
-.sk-cp, .sk-tretry { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
+.sk-tt small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
+.sk-cp, .sk-tretry { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); border: 1px solid var(--sk-acl); border-radius: 2px; padding: 0 4px; background: none; cursor: pointer; }
 .sk-said { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .sk-pscroll { flex: 1; overflow-y: auto; min-height: 0; }
-.sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
+.sk-pt { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 8px 18px 6px; display: flex; align-items: center; gap: 6px; }
 .sk-pk { display: flex; align-items: center; gap: 9px; padding: 7px 9px; margin: 0 10px; width: calc(100% - 20px); border: 0; border-radius: 6px; background: none; color: var(--text-dim); white-space: nowrap; position: relative; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); text-align: left; }
 .sk-pk .sk-pl { color: var(--text); opacity: .86; flex: 1; }
 .sk-pk > .sk-ic { width: 16px; height: 16px; }
@@ -10726,7 +10297,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-theme button:hover { background: var(--sk-hv); }
 .sk-theme button.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
-.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
+.sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
 
 /* --- the tenant switcher (intake-tenants.html 2A, picked 2026-10-02) ----- */
 .sk-tenant.is-sw { flex-direction: column; align-items: stretch; gap: 4px; padding: 0; }
@@ -10744,7 +10315,7 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-to .sk-tg { background: var(--sk-hv); }
 .sk-to.is-on .sk-tg { background: var(--sk-ac); color: var(--ctl-onac); }
 .sk-to b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-to small { grid-column: 2 / 4; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.sk-to small { grid-column: 2 / 4; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .sk-ck { color: var(--sk-ac); font-size: var(--t-micro); font-weight: 600; }
 .sk-tf { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); padding: 6px 8px; border-top: 1px solid var(--line); margin-top: 4px; }
 /* The collapsed spine's tile, under the Hive. */
@@ -10769,7 +10340,7 @@ span.sk-ttile { cursor: default; }
 .app-takeover h1 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); }
 .app-takeover p { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); color: var(--text-dim); }
 .app-takeover .app-takeover-inv { color: var(--text); }
-.app-takeover .app-takeover-foot { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.app-takeover .app-takeover-foot { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 /* PAGE: one banner over the page (offline, a kept form's switch, the stale rule). */
 .app-banner, .sk-kept { margin: 0 0 var(--ctl-s3); }
 .sk-main > .ctl-scroll > .app-banner, .sk-main > .ctl-scroll > .sk-kept { margin: var(--ctl-s3) var(--ctl-gutter) 0; }
@@ -10780,13 +10351,29 @@ span.sk-ttile { cursor: default; }
 /* The title, a mono meta chip, and right-aligned "read · poll · refresh", as
    the picked frames draw it. `.head` and `.sub` keep their names (and their
    order: `.head + .sub`) inside the row. */
-.c-phead { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); }
-.c-phead > .head { margin: 0; }
-.c-phead > .sub { flex: 1 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
-/* The provenance group never splits: "refresh" stays with its age. */
-.c-age { margin-left: auto; display: inline-flex; flex-wrap: nowrap; align-items: baseline; gap: 0; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; }
-.c-age > .ctl-head-age { margin: 0; }
+/* ONE ROW AT DESKTOP WIDTH (visual QA Q2, 2026-10-02): the meta chip gives
+   way (ellipsis, its full text in its title) before the freshness leaves the
+   title's row. Below 760px the row may wrap the freshness under the title. */
+.c-phead { display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); margin: 0 0 var(--ctl-s3); min-width: 0; }
+.c-phead > .head { margin: 0; flex: none; align-items: center; gap: var(--ctl-s2); flex-wrap: nowrap; }
+.c-phead > .sub { flex: 1 1 auto; min-width: 0; display: flex; flex-wrap: nowrap; align-items: center; gap: var(--ctl-s2) var(--ctl-s3); max-width: none; margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-phead .c-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A PLACEHOLDER IS AN INSTRUCTION, NOT A VALUE: sans even in a field whose
+   typed value is an id and therefore mono (visual QA Q1, 2026-10-02). */
+.sk-app input::placeholder,
+.sk-app textarea::placeholder { font-family: var(--font); }
+@media (max-width: 759px) {
+  .c-phead { flex-wrap: wrap; }
+  .c-phead > .sub { flex-wrap: wrap; }
+}
+.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
+/* The provenance group never splits: "refresh" stays with its age. INLINE
+   TEXT, not a flex box: as `inline-flex` each text run was an anonymous flex
+   item and lost its edge spaces, which drew "just now·refresh" and
+   "nowrefresh" (visual QA Q2, 2026-10-02). Sans: a relative age is words,
+   not a timestamp (Q1). */
+.c-age { margin-left: auto; display: inline-block; font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; color: var(--text-dim); white-space: nowrap; }
+.c-age > .ctl-head-age { margin: 0; min-width: 0; font: inherit; color: inherit; }
 
 /* --- collapsed: the spine alone, a flyout per section -------------------- */
 /* Each flyout sits beside its section, which the collapsed spine's tenant tile
@@ -10794,7 +10381,7 @@ span.sk-ttile { cursor: default; }
 .sk-flyout { position: fixed; left: 90px; top: 202px; background: var(--surface); border: 1px solid var(--line-soft); border-radius: 10px; padding: 8px; box-shadow: var(--sk-sh); display: flex; flex-direction: column; min-width: 170px; z-index: 20; }
 .sk-flyout.is-capacity { top: 262px; }
 .sk-flyout.is-admin { top: 322px; }
-.sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); padding: 2px 8px 4px; color: var(--text-dim); }
+.sk-flyout b { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px 4px; color: var(--text-dim); }
 .sk-flyout a { padding: 6px 8px; border: 0; border-radius: var(--r-ctl); background: none; color: var(--text); text-align: left; cursor: pointer; font: var(--t-meta)/var(--lh-meta) var(--font); }
 .sk-flyout a:hover { background: var(--sk-hv); }
 .sk-flyout a.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
@@ -10859,17 +10446,12 @@ span.sk-ttile { cursor: default; }
 .sk-st.is-bad { color: var(--s-bad); }
 .sk-st.is-warn { color: var(--s-warn); }
 .sk-st.is-neu { color: var(--s-neu); }
+/* NOBODY DERIVED IT: the hollow ring in the faint grey, outside every state's
+   hue (`ToneMark`'s unknown tone). */
+.sk-st.is-unknown { color: var(--text-faint); }
 .sk-st-w { color: var(--text); font-size: var(--t-micro); }
 .sk-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* --- a task state's chip draws its brand mark (marks.tsx) ---------------- */
-.ctl-chip[data-mark][data-hue] > i { width: 12px; height: 12px; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; display: inline-flex; flex: none; }
-.ctl-chip[data-mark][data-hue] > i::before, .ctl-chip[data-mark][data-hue] > i::after { content: none; }
-.ctl-chip[data-mark][data-hue] > i > svg { width: 12px; height: 12px; }
-.ctl-chip[data-hue='live'] > i { color: var(--s-live); }
-.ctl-chip[data-hue='park'] > i { color: var(--s-park); }
-.ctl-chip[data-hue='bad'] > i { color: var(--s-bad); }
-.ctl-chip[data-hue='neu'] > i { color: var(--s-neu); }
 
 /* --- Overview O1: the lifecycle band, the pair, the task lists ------------ */
 .ov-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }
@@ -10902,7 +10484,6 @@ span.sk-ttile { cursor: default; }
 /* The list, full width (workflows.html A). */
 .wfl { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfl-filters { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfl-n { margin-left: 6px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
 .wfl-search { flex: 1 1 200px; min-width: 0; font: var(--t-body)/var(--lh-body) var(--font); padding: 5px 10px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
 .wfl-pick { display: inline-flex; gap: 6px; align-items: center; font-size: var(--t-meta); color: var(--text-dim); }
 .wfl-pick select { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 4px 8px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); }
@@ -10919,16 +10500,9 @@ span.sk-ttile { cursor: default; }
 .wfl-why.is-bad { color: var(--s-bad); }
 .wfl-why.is-warn { color: var(--s-warn); }
 .wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.wfl-bar { display: inline-flex; width: 96px; height: 6px; border-radius: 2px; overflow: hidden; background: var(--line-soft); }
-.wfl-bar > i { display: block; height: 100%; background: var(--s-neu); }
-.wfl-bar.t-live > i { background: var(--s-live); }
-.wfl-bar.t-park > i { background: var(--s-park); }
-.wfl-bar.t-bad > i { background: var(--s-bad); }
-.wfl-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--line-soft) 0 3px, transparent 3px 6px); }
+.wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-.wfl-clear { font: inherit; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
 .wfl-foot { margin: 0; font-size: var(--t-micro); color: var(--text-faint); }
 .wfl-started { color: var(--text-dim); white-space: nowrap; }
 .wfl-dur { white-space: nowrap; }
@@ -10971,10 +10545,6 @@ span.sk-ttile { cursor: default; }
 .wfp-back:hover, .wfp-back:focus-visible { text-decoration: underline; }
 .wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfp-chip { font-size: var(--t-micro); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; }
-.wfp-btn { font: var(--t-meta)/var(--lh-meta) var(--font); padding: 5px 12px; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); cursor: pointer; }
-.wfp-btn.danger { color: var(--s-bad); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); }
-.wfp-btn:disabled { opacity: .6; cursor: default; }
 .wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }
 .wfp-confirm p { margin: 0; }
 .wfp-confirm-err { color: var(--s-bad); }

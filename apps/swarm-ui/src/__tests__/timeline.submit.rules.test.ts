@@ -121,9 +121,9 @@ describe('epic #84: the Timeline and Submit rules', () => {
     expect(won(bad!, ['border-color', 'border'], WIDE)).toBe('var(--warn)')
     expect(won(fine!, ['border-color', 'border'], WIDE) ?? '').not.toContain('--warn')
     expect(won(pick(f, '.sbf-miss'), 'color', WIDE)).toBe('var(--warn-ink)')
-    // The send panel's "prompt missing" is a `.sbf-mini` button in `.sbf-bad`
-    // ink; `.sbf-mini`'s own grey is later in the sheet and must not win.
-    const panel = fragment('<div class="sbf-send"><button class="sbf-mini sbf-bad">prompt missing</button></div>')
+    // The send panel's "prompt missing" is the canonical small link button
+    // (`.c-link.is-sm`, #503 swap) in `.sbf-bad` ink; the link's sky must not win.
+    const panel = fragment('<div class="sbf-send"><button class="c-link is-sm sbf-bad">prompt missing</button></div>')
     expect(won(pick(panel, 'button'), 'color', WIDE)).toBe('var(--warn-ink)')
   })
 

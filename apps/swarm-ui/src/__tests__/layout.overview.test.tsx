@@ -597,7 +597,7 @@ describe('OV-9: while the checks read, the lead says so and draws no figure', ()
     expect(lead.querySelector('.ctl-mark.is-partial'), 'a read in flight drew the partial mark').toBeNull()
     expect(lead.querySelectorAll('a.ov-att').length, 'a check card was drawn before the checks ran').toBe(0)
     expect(text(lead.querySelector('.ov-cnt'))).toMatch(/^\d+ of \d+ checks still reading$/)
-    expect(text(el.querySelector('.ov-head .ov-chip')), 'the tenant reads as missing while it is in flight').toBe('tenant reading…')
+    expect(text(el.querySelector('.ov-page > .c-phead .c-meta')), 'the tenant reads as missing while it is in flight').toBe('tenant reading…')
   })
 
   /** MUTATION: drop the partial mark, or the blind count, for a check that could not run. */

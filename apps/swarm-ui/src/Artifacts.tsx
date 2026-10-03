@@ -10,7 +10,8 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import { Chip, DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
+import { DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
+import { Button, ButtonLink, Count, ToneMark } from './components'
 import {
   ARTIFACT_PAGE_LIMIT,
   artifactRawUrl,
@@ -514,9 +515,9 @@ function StagedFiles({ v }: { v: ArtifactsView }) {
                       )}
                       {up !== null && (
                         <span className="ctl-sub">
-                          <a className="copy" href={artifactRawUrl(up, r.file, 'attachment')} download={fileName(r.file)}>
+                          <ButtonLink size="sm" className="copy" href={artifactRawUrl(up, r.file, 'attachment')} download={fileName(r.file)}>
                             download
-                          </a>
+                          </ButtonLink>
                         </span>
                       )}
                     </th>
@@ -673,7 +674,7 @@ function NotUploaded({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-unuploaded">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">not uploaded from the working folder</span>
-        <span className="count-chip">{total}</span>
+        <Count n={total} label="not uploaded" bare />
       </div>
       {listed.length > 0 && (
         <div className="ctl-table is-stacked">
@@ -734,7 +735,7 @@ function OverCap({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-overcap">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">not uploaded from $SWARM_ARTIFACTS_DIR</span>
-        <span className="count-chip">{over.count}</span>
+        <Count n={over.count} label="not uploaded" bare />
       </div>
       <InWorkerLog
         say={`The worker uploads at most ${over.cap === null ? 'a fixed number of' : over.cap} files from $SWARM_ARTIFACTS_DIR per attempt, because each is an entry in the task's record, which has a size limit. ${over.count} more ${over.count === 1 ? 'was' : 'were'} there and ${over.count === 1 ? 'was' : 'were'} not uploaded. The worker's log names every one.`}
@@ -841,7 +842,7 @@ function AnswerNote({ a }: { a: TaskAnswer }) {
       )}
       {a.is_error === true && (
         <>
-          <Chip tone="bad">the agent reported an error</Chip>{' '}
+          <ToneMark tone="bad">the agent reported an error</ToneMark>{' '}
         </>
       )}
       {a.source === 'runner_summary' && (
@@ -1061,7 +1062,7 @@ function Files({ v }: { v: ArtifactsView }) {
     <div className="arts-block arts-files">
       <div className="ctl-toolbar att-sub-head">
         <span className="ctl-eyebrow">files</span>
-        {entries.length > 0 && <span className="count-chip">{entries.length}</span>}
+        {entries.length > 0 && <Count n={entries.length} label="files" bare />}
         {notes.length > 0 && (
           <span className="is-end ctl-card-note">
             {notes.map((n, i) => (
@@ -1189,26 +1190,26 @@ function FileRow({
           {/* THROUGH THE API, as an attachment: the raw route redacts text
               window by window and sends an image as stored. Never `read()`,
               which would call a byte stream an expired session. */}
-          <a className="copy" href={artifactRawUrl(task, entry.name, 'attachment')} download={fileName(entry.name)}>
+          <ButtonLink size="sm" className="copy" href={artifactRawUrl(task, entry.name, 'attachment')} download={fileName(entry.name)}>
             download
-          </a>
+          </ButtonLink>
           {/* OPEN FULL for an image, and for any file the server named no
               kind for: the raw route sniffs the bytes and serves an image as
               an image, text as text/plain and anything else as a download,
               so no name rule here has to guess. */}
           {(kind === 'image' || kind === null) && (
-            <a className="copy" href={artifactRawUrl(task, entry.name, 'inline')} target="_blank" rel="noreferrer">
+            <ButtonLink size="sm" className="copy" href={artifactRawUrl(task, entry.name, 'inline')} target="_blank" rel="noreferrer">
               open full
-            </a>
+            </ButtonLink>
           )}
-          <button
-            type="button"
+          <Button
+            size="sm"
             className="copy"
             title={entry.uri}
             onClick={() => navigator.clipboard?.writeText(`gsutil cp ${entry.uri} .`)}
           >
             copy gsutil
-          </button>
+          </Button>
         </span>
       </td>
     </tr>
@@ -1247,9 +1248,9 @@ function ImageFigure({ task, entry }: { task: string; entry: ArtifactEntry }) {
       )}
       <figcaption>
         <span className="mono">{entry.name}</span>{' '}
-        <a className="copy" href={src} target="_blank" rel="noreferrer">
+        <ButtonLink size="sm" className="copy" href={src} target="_blank" rel="noreferrer">
           open full
-        </a>{' '}
+        </ButtonLink>{' '}
         {/* THE RAW ROUTE'S OWN WORDS (viewers.html A): an image is served as
             stored, and no redaction rule can scan one. */}
         <span className="ctl-sub">served as stored · not redacted (an image cannot be scanned)</span>
@@ -1658,19 +1659,19 @@ function TranscriptBody({
             <span className="mono uri" title={t.stream.uri}>
               {t.stream.uri}
             </span>
-            <button
-              type="button"
+            <Button
+              size="sm"
               className="copy"
               onClick={() => navigator.clipboard?.writeText(`gsutil cat ${t.stream.uri}`)}
             >
               copy gsutil
-            </button>
+            </Button>
           </li>
         )}
         <li className="ctl-fact">
-          <button type="button" className="copy" onClick={onRecords}>
+          <Button size="sm" className="copy" onClick={onRecords}>
             {records ? 'hide records' : 'show records'}
-          </button>
+          </Button>
         </li>
       </ul>
       )}
@@ -1693,9 +1694,9 @@ function TranscriptBody({
             say={`The transcript continues past this window, from byte ${next}. Later steps are not drawn until the next window is read.`}
           />{' '}
           later steps are in the next window{' '}
-          <button type="button" className="copy" onClick={() => void readNext()} disabled={reading2}>
+          <Button size="sm" className="copy" onClick={() => void readNext()} disabled={reading2}>
             {reading2 ? 'reading…' : 'next window'}
-          </button>
+          </Button>
         </p>
       )}
       {more.key === key && more.failed !== null && <ReadFailed error={more.failed} what="the next window" />}
@@ -2026,7 +2027,7 @@ function StepRowBody({
             {typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}
             {turns !== null ? ` · ${turns} turns` : ''}
           </span>{' '}
-          {m.is_error === true && <Chip tone="bad">the agent reported an error</Chip>} {capped}
+          {m.is_error === true && <ToneMark tone="bad">the agent reported an error</ToneMark>} {capped}
           {text(step.text)}
           {record}
         </li>

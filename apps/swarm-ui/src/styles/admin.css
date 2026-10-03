@@ -225,26 +225,8 @@
    first run and plain after it, when it is a re-run -- except the radius:
    A's 8px is off spacing.test.tsx's corner scale (0, 2, 6, 10, 14, 999), so
    the control takes the scale's control radius, 6px. */
-.counts-run-btn {
-  min-height: 32px;
-  padding: 0 12px;
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background: var(--surface);
-  color: var(--text);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  white-space: nowrap;
-  cursor: pointer;
-  align-self: center;
-}
-.counts-run-btn.is-primary { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); }
-.counts-run-btn:not(:disabled):hover { border-color: var(--info); }
-.counts-run-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.counts-run-btn:disabled { opacity: .6; cursor: progress; }
-.counts-run-btn > .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
-@media (max-width: 560px) {
-  .counts-run-btn { min-height: 44px; }
-}
+.c-phead .counts-run { align-self: center; }
+.counts-run .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 /* BEFORE THE FIRST RUN (#135): both cards drawn, each with the neutral
    `not measured` mark and the words `not run yet`, so the page has its shape
    before the press. Not a task-state mark: nothing here is a task. */

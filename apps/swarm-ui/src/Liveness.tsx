@@ -1,4 +1,5 @@
 import { CONCURRENCY_STATES, TERMINAL_STATES, type Task, type TaskEvent } from './types'
+import { ToneMark } from './components'
 
 /**
  * The liveness badge. Shared, so it is defined once.
@@ -156,11 +157,10 @@ export function LivenessBadge({
       aria-label={`${l.word}: ${l.say} ${CAPTION}`}
       title={`${l.say}\n\n${CAPTION}`}
     >
-      {/* A <span>, not the <i> the old dot was: `.liveness > i` in the sheet
-          paints any italic child an 8px faint disc, which would fill the
-          unknown ring in. Out of that selector's reach, the mark is exactly
-          `.ctl-dot`'s, whatever the sheet still carries for the old badge. */}
-      <span className={`ctl-dot is-${l.tone}`} aria-hidden />
+      {/* The canonical `ToneMark` (brand.html §3), a <span>, not the <i> the
+          old dot was: `.liveness > i` in the sheet paints any italic child an
+          8px faint disc, which would fill the unknown ring in. */}
+      <ToneMark tone={l.tone} />
       <span className="lv-word">{l.word}</span>
       {l.copy !== '' && <span className="lv-copy">{l.copy}</span>}
     </span>

@@ -7,7 +7,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, Chip, DRAWER_POLL_MS } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS } from './AgentDetail'
 import { agentName, backLabel } from './agentlist'
 import { loadTask } from './api'
 import type { TaskPane } from './App'
@@ -30,8 +30,9 @@ import {
 import { LogDock } from './LogDock'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { RESOURCE_UNITS, TERMINAL_STATES, stateTone, type Task } from './types'
+import { RESOURCE_UNITS, TERMINAL_STATES, type Task } from './types'
 import './styles/agents.css'
+import { Button, CIcon, StateMark, Tabs } from './components'
 
 /**
  * ONE AGENT, IN THE SPLIT (agents.html V1, decided 2026-10-01; viewers.html A
@@ -315,9 +316,9 @@ export function AgentSplit({
       <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
       </button>
-      <button className="drawer-close" onClick={close} aria-label="Close">
-        ✕
-      </button>
+      <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={close}>
+        Close
+      </Button>
 
       <AgHead taskId={taskId} task={task} read={head.state.status} reload={reload} />
 
@@ -325,30 +326,24 @@ export function AgentSplit({
           segmented control with none). A count the task document does not
           carry is a dash with its reason in the title, never a 0. The ids and
           addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
-      <div className="ag-tabs" role="tablist" aria-label="Agent panes">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            type="button"
-            aria-selected={selected === t.id}
-            onClick={() => {
-              if (t.to === null) setChildren(true)
-              else {
-                setChildren(false)
-                go(t.to)
-              }
-            }}
-          >
-            <span className="ag-tab-label">{t.label}</span>
-            {t.id !== 'detail' && (
-              <span className="ag-tab-count" title={t.say ?? undefined}>
-                {t.count === null ? '—' : t.count}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        className="ag-split-tabs"
+        label="Agent panes"
+        current={selected}
+        tabs={tabs.map((t) => ({
+          key: t.id,
+          label: t.label,
+          ...(t.id === 'detail' ? {} : { count: t.count, why: t.say ?? undefined }),
+        }))}
+        onSelect={(key) => {
+          const t = tabs.find((x) => x.id === key)!
+          if (t.to === null) setChildren(true)
+          else {
+            setChildren(false)
+            go(t.to)
+          }
+        }}
+      />
 
       <div className="ag-split-pane">
         {selected === 'children' && task !== null ? (
@@ -418,9 +413,7 @@ function AgHead({
       {task !== null && <AgParentLink task={task} />}
       <div className="ag-head-row">
         {task !== null ? (
-          <Chip tone={stateTone(task.state)} state={task.state}>
-            {task.state}
-          </Chip>
+          <StateMark state={task.state} />
         ) : (
           <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
         )}
@@ -428,9 +421,9 @@ function AgHead({
           {task === null ? taskId : agentName(task)}
         </h2>
         <span className="ag-head-actions">
-          <button type="button" className="ag-btn" onClick={copy}>
+          <Button onClick={copy}>
             Copy link
-          </button>
+          </Button>
           {copied !== null && (
             <span role="status" className="ag-head-copied">
               {copied === 'yes' ? 'copied' : 'could not copy'}

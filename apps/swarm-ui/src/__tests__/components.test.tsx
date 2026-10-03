@@ -37,11 +37,16 @@ import {
   StatTile,
   Table,
   Tabs,
+  Tag,
   Toaster,
   Tooltip,
   TOAST_MS,
+  TONE_MARK,
+  ToneMark,
+  toneOf,
   TypedConfirm,
   UsageBar,
+  UsageTrack,
   acknowledge,
   forgetToasts,
   parseDiff,
@@ -107,7 +112,9 @@ describe('the tokens are on :root, for light and dark', () => {
     expect(STYLES).toMatch(/--ctl-hatch: repeating-linear-gradient\([^;]*var\(--ctl-bd\)/)
     // And only the "not measured" forms use the hatch in the component sheet.
     const users = [...COMPONENTS_CSS.replace(/\/\*[\s\S]*?\*\//g, '').matchAll(/([^{}]+)\{[^{}]*var\(--ctl-hatch\)[^{}]*\}/g)].map((m) => m[1]!.trim())
-    expect(users).toEqual(['.c-bar.is-unmeasured', '.c-bar.is-unknown-ceiling > .c-h'])
+    // ProgressBar's unread steps (visual QA Q9) are counted but not measured:
+    // the hatch's one meaning, on the third form that has it.
+    expect(users).toEqual(['.c-bar.is-unmeasured', '.c-bar.is-unknown-ceiling > .c-h', '.c-bar.is-progress > .c-h'])
   })
 
   it('draws a control border with --ctl-bd and a card outline with the hairline', () => {
@@ -174,6 +181,69 @@ describe('Button', () => {
 // ---------------------------------------------------------------------------
 // States and park reasons
 // ---------------------------------------------------------------------------
+
+describe('ToneMark: a tone that is not a task state, in the brand marks', () => {
+  // It replaced the local `.ctl-chip` and `.ctl-dot` (#503 swap), whose marks
+  // were CSS shapes of their own. MUTATION: give two tones one mark, let an
+  // unknown tone fall through to a known one, or drop the word.
+  it('gives every tone its own silhouette, and healthy is grey', () => {
+    const tones = Object.keys(TONE_MARK) as (keyof typeof TONE_MARK)[]
+    expect(new Set(tones.map((t) => TONE_MARK[t].mark)).size).toBe(tones.length)
+    expect(TONE_MARK.ok.hue).toBe('neu')
+    expect(TONE_MARK.info.hue).toBe('neu')
+    expect(TONE_MARK.unknown.mark).toBe('queued')
+  })
+
+  it('reads every spelling the screens wrote, and anything else is the unknown ring', () => {
+    expect(toneOf('is-ok')).toBe('ok')
+    expect(toneOf('is-warn full')).toBe('warn')
+    expect(toneOf('wait')).toBe('warn')
+    expect(toneOf('ended')).toBe('info')
+    expect(toneOf('')).toBe('unknown')
+    expect(toneOf('is-wait-ish')).toBe('unknown')
+    const { container } = render(<ToneMark tone="bogus">who knows</ToneMark>)
+    const m = container.querySelector('.sk-st')!
+    expect(m.getAttribute('data-mark')).toBe('unknown')
+    expect(m.querySelector('svg circle')?.getAttribute('fill')).toBe('none')
+  })
+
+  it('keeps the word and the accessible name, and a bare mark is hidden', () => {
+    const { container } = render(
+      <>
+        <ToneMark tone="bad" label="Disabled by an operator" describedBy="why">
+          disabled
+        </ToneMark>
+        <ToneMark tone="ok" />
+      </>,
+    )
+    const [word, bare] = [...container.querySelectorAll('.sk-st')]
+    expect(word!.textContent).toBe('disabled')
+    expect(word!.getAttribute('aria-label')).toBe('Disabled by an operator')
+    expect(word!.getAttribute('aria-describedby')).toBe('why')
+    expect(word!.getAttribute('data-tone')).toBe('bad')
+    expect(bare!.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+describe('UsageTrack: the bare track keeps its four forms apart', () => {
+  // The local `UtilTrack`, moved into the canonical set (#503 swap).
+  it('hatches unmeasured, ticks a measured zero, and draws the excess past the ceiling', () => {
+    const { container } = render(
+      <>
+        <UsageTrack pct={null} />
+        <UsageTrack pct={0} zeroTitle="Measured: 0 of 4." />
+        <UsageTrack pct={125} tone="is-bad" />
+      </>,
+    )
+    const [none, zero, over] = [...container.querySelectorAll('.ctl-util-track')]
+    expect(none!.classList.contains('is-unknown')).toBe(true)
+    expect(none!.querySelector('.ctl-util-fill')).toBeNull()
+    expect(zero!.querySelector('.ctl-util-zero')).not.toBeNull()
+    expect(zero!.querySelector('.ctl-util-fill')).toBeNull()
+    expect(over!.querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    expect(over!.querySelector('.ctl-util-over')).not.toBeNull()
+  })
+})
 
 describe('StatePill and ParkPill', () => {
   it('draws every task state in all three forms, with its own mark and hue', () => {
@@ -291,6 +361,51 @@ describe('an unknown figure is a dash with its reason, never 0', () => {
     expect(off).toHaveBeenCalledOnce()
     expect(screen.getByRole('link', { name: 'pool:global' }).getAttribute('href')).toBe('/capacity/pools?pool=global')
   })
+
+  // The forms the section-local chips needed (#503 swap): `.wf-band-chip`,
+  // `.wf-chip.more`, `.count-chip` and `.ol-tag` are these now.
+  it('a pick chip is a toggle button that says whether it is picked, in its state tint', () => {
+    const pick = vi.fn()
+    render(
+      <>
+        <Chip tone="bad" pressed onClick={pick}>
+          impl-3
+        </Chip>
+        <Chip pressed={false} onClick={pick}>
+          impl-4
+        </Chip>
+      </>,
+    )
+    const on = screen.getByRole('button', { name: 'impl-3' })
+    expect(on.getAttribute('aria-pressed')).toBe('true')
+    expect(on.classList.contains('t-bad')).toBe(true)
+    expect(screen.getByRole('button', { name: 'impl-4' }).getAttribute('aria-pressed')).toBe('false')
+    fireEvent.click(on)
+    expect(pick).toHaveBeenCalledOnce()
+    // MUTATION: drop the pressed edge and the pick is carried by nothing.
+    expect(COMPONENTS_CSS).toMatch(/\.c-chip\.is-pick\[aria-pressed='true'\]\s*\{[^}]*border-color:\s*var\(--text\)/)
+    for (const t of ['live', 'park', 'bad']) {
+      expect(COMPONENTS_CSS, `no ${t} tint`).toMatch(new RegExp(`\\.c-chip\\.t-${t}\\s*\\{[^}]*background:\\s*var\\(--s-${t}b\\)`))
+    }
+  })
+
+  it('a bare Count is the figure, named by what it counts; a faint chip is quieter', () => {
+    const { container } = render(
+      <>
+        <Count n={12} label="files" bare />
+        <Chip faint>+2</Chip>
+        <Tag title="it is test data">declared</Tag>
+      </>,
+    )
+    const n = container.querySelector('.c-chip.is-n')!
+    expect(n.textContent).toBe('12')
+    expect(n.getAttribute('aria-label')).toBe('12 files')
+    expect(container.querySelector('.c-chip.is-faint')?.textContent).toBe('+2')
+    expect(container.querySelector('.c-tag')?.getAttribute('title')).toBe('it is test data')
+    // An unknown count stays a dash with its reason even when bare was asked for.
+    const { container: dash } = render(<Count n={null} label="files" why="not read" bare />)
+    expect(dash.querySelector('.c-chip.is-dash')?.textContent).toContain('\u2014')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -383,12 +498,75 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     expect(go).toHaveBeenCalledTimes(1)
   })
 
+  it('the tablist form is tab buttons, the selected one aria-selected, a count its reason in the title', () => {
+    // The agent split's panes (#503 swap of `.ag-tabs`): Children has no
+    // route, so the strip is a tablist that reports the key pressed.
+    // MUTATION: drop the `onSelect` branch and the strip renders links.
+    const pick = vi.fn()
+    render(
+      <Tabs
+        label="Agent panes"
+        current="attempts"
+        onSelect={pick}
+        tabs={[
+          { key: 'detail', label: 'Details' },
+          { key: 'attempts', label: 'Attempts', count: 2 },
+          { key: 'artifacts', label: 'Artifacts', count: null, why: 'not known yet' },
+        ]}
+      />,
+    )
+    const list = screen.getByRole('tablist', { name: 'Agent panes' })
+    expect(list.classList.contains('c-tabs')).toBe(true)
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false'])
+    expect(tabs[0]!.querySelector('em'), 'a tab with no count draws none').toBeNull()
+    expect(tabs[2]!.querySelector('em')?.textContent).toBe('—')
+    expect(tabs[2]!.querySelector('em')?.getAttribute('title')).toBe('not known yet')
+    expect(screen.queryByRole('link')).toBeNull()
+    fireEvent.click(tabs[2]!)
+    expect(pick).toHaveBeenCalledWith('artifacts')
+  })
+
   it('the segmented control is toggle buttons', () => {
     const pick = vi.fn()
     render(<Segmented label="Theme" value="light" onChange={pick} options={[{ key: 'light', label: 'Light' }, { key: 'dark', label: 'Dark' }]} />)
     expect(screen.getByRole('button', { name: 'Light' }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
     expect(pick).toHaveBeenCalledWith('dark')
+  })
+
+  it('the segmented control can press nothing, be disabled, or be a tablist', () => {
+    // The forms the local `.ctl-seg`s needed (#503 swap): Timeline's span
+    // while zoomed, the Workflows list's filter while loading, Accounts'
+    // Holding now | History.
+    const { container, unmount } = render(
+      <Segmented label="Span" value={null} disabled options={[{ key: '24h', label: '24h', title: 'a day', className: 'is-wide-only' }, { key: '7d', label: '7d' }]} />,
+    )
+    const buttons = [...container.querySelectorAll('button')]
+    expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false'])
+    expect(buttons.every((b) => b.disabled)).toBe(true)
+    expect(buttons[0]!.title).toBe('a day')
+    expect(buttons[0]!.classList.contains('is-wide-only')).toBe(true)
+    unmount()
+    const pick = vi.fn()
+    render(<Segmented role="tablist" label="Who holds it" value="history" onChange={pick} options={[{ key: 'now', label: 'Holding now' }, { key: 'history', label: 'History' }]} />)
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+    expect(tabs[0]!.getAttribute('aria-pressed')).toBeNull()
+    fireEvent.click(tabs[0]!)
+    expect(pick).toHaveBeenCalledWith('now')
+  })
+
+  it('the segmented control between addressed views is links, the current one aria-current', () => {
+    // Capacity's Ceilings | By runner profile (the 2026-10-03 swap of CapSeg).
+    // MUTATION: drop the link form and the views render as buttons again.
+    render(<Segmented label="Pools views" value="a" options={[{ key: 'a', label: 'Ceilings', href: '#capacity/pools' }, { key: 'b', label: 'By runner profile', href: '#capacity/profiles' }]} />)
+    const nav = screen.getByRole('navigation', { name: 'Pools views' })
+    const links = [...nav.querySelectorAll('a')]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['#capacity/pools', '#capacity/profiles'])
+    expect(links[0]!.getAttribute('aria-current')).toBe('page')
+    expect(links[1]!.getAttribute('aria-current')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
   })
 
   it('the breadcrumb links back and ends on the object, not a link', () => {

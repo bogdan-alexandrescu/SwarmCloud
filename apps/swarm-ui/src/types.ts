@@ -3773,7 +3773,7 @@ export function quotaReadingAge(
  * Accounts' five-cell bar the way claudeswitch's `miniBar` does -- round to the
  * nearest fifth, clamp -- which put a second proportion primitive beside
  * §6.4's one and rounded 42% to three cells. The owner's decision collapsed it
- * into the shared `UtilTrack` (primitives.tsx) at the exact percentage. What
+ * into the canonical `UsageTrack` (components/UsageBar.tsx) at the exact percentage. What
  * the table still shares with `cs status` is the figure, the `~` and the
  * window labels.
  */

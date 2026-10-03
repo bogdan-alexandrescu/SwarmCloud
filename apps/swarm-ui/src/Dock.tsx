@@ -6,6 +6,7 @@ import {
   useSyncExternalStore,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { Button, ToneMark } from './components'
 import { DataSourceCells } from './DataSources'
 import { probeSnapshot, subscribeProbes } from './fetch'
 import { nudgePane } from './focus'
@@ -228,9 +229,9 @@ export function Dock() {
           dot turns `is-bad` (the diamond) for the same state, but a dot is not
           a button. */}
       {s.expired && (
-        <button className="reauth" onClick={() => window.location.reload()}>
+        <Button kind="danger" full className="reauth" onClick={() => window.location.reload()}>
           Session expired — reload to sign in
-        </button>
+        </Button>
       )}
 
       <button
@@ -245,7 +246,7 @@ export function Dock() {
             diamond. The tone computed above is the dot's modifier as it
             stands: a clean strip is the neutral disc, failures the triangle,
             an expired session the diamond. */}
-        <i className={`ctl-dot ${tone}`} aria-hidden />
+        <ToneMark tone={tone} />
         <span className="ctl-dock-label">Reads</span>
         {/* EVERY FACT IS ONE UNWRAPPABLE UNIT, and the strip breaks BETWEEN
             them — F10 of `docs/audits/2026-09-23/overflow-inventory.md`.

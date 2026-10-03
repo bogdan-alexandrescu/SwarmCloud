@@ -19,13 +19,16 @@
 import SHEET from '../styles.css?raw'
 
 /**
- * EVERY SHEET THE APP LOADS: styles.css and each screen's own sheet under
- * src/styles/ (imported by its screen), in that order, so a rule a screen
- * moved into its own file is still in the cascade these helpers resolve.
+ * EVERY SHEET THE APP LOADS, IN THE BUNDLE'S ORDER: each screen's own sheet
+ * under src/styles/ (and the canonical components.css) FIRST, then
+ * styles.css. `main.tsx` imports App -- and through it every screen and its
+ * sheet -- before `./styles.css`, so a section rule wins over a styles.css
+ * rule of equal specificity only in a test that got the order backwards.
+ * This list had it backwards until the 2026-10-03 component swap measured it.
  */
 const STYLES = [
-  SHEET,
   ...Object.values(import.meta.glob<string>('../styles/*.css', { query: '?raw', import: 'default', eager: true })),
+  SHEET,
 ].join('\n')
 import { cascade, type CascadeEnv } from './cssgate'
 import { colour, resolveVars, tokenTables, type RGBA } from './spaceprobe'

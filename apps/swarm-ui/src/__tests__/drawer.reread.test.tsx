@@ -436,7 +436,7 @@ describe('the runner log is not in Details, so no Details poll reads it', () => 
 
     started = true
     await advance(DRAWER_POLL_MS)
-    expect(root.querySelector('.ctl-chip')?.textContent).toMatch(/RUNNING/i)
+    expect(root.querySelector('.sk-st')?.textContent).toMatch(/RUNNING/i)
     expect(api.loadAgentRun, 'the drawer did not re-read').toHaveBeenCalledTimes(2)
     expect(api.loadTaskLogs, 'a Details poll read the runner log').not.toHaveBeenCalled()
   })

@@ -38,6 +38,7 @@ import { clampPane, readPane, safeStorage, writePane, type PaneSpec } from './pa
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'
 import { useNow } from './useNow'
+import { Button } from './components'
 
 /**
  * THE LOG DOCK (viewers.html, pick A, 2026-10-02).
@@ -503,14 +504,14 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                 )}
               </label>
               {!full && (
-                <button type="button" className="ag-logdock-btn" onClick={() => setFull(true)}>
+                <Button size="sm" onClick={() => setFull(true)}>
                   Open full
-                </button>
+                </Button>
               )}
               {!full && (
-                <button type="button" className="ag-logdock-btn" aria-expanded={true} onClick={() => setOpen(false)}>
+                <Button size="sm" aria-expanded={true} onClick={() => setOpen(false)}>
                   Fold
-                </button>
+                </Button>
               )}
             </div>
 
@@ -542,15 +543,14 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                     : `${hitAt < 0 ? '–' : hitAt + 1} of ${targets.hits.length} · this window`}
                 </span>
               )}
-              <button type="button" className="ag-logdock-btn" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
+              <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
                 {follow ? 'Following' : 'Paused · Follow'} <kbd>F</kbd>
-              </button>
-              <button type="button" className="ag-logdock-btn" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
+              </Button>
+              <Button size="sm" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
                 Wrap <kbd>W</kbd>
-              </button>
-              <button
-                type="button"
-                className="ag-logdock-btn"
+              </Button>
+              <Button
+                size="sm"
                 disabled={targets.errors.length === 0}
                 aria-keyshortcuts="E"
                 onClick={() => jump(targets.errors)}
@@ -560,7 +560,7 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                   ? 'No error matched'
                   : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}{' '}
                 <kbd>E</kbd>
-              </button>
+              </Button>
             </div>
 
             <ul className="ctl-facts ag-logdock-facts">

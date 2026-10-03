@@ -4,7 +4,8 @@ import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
 import type { Result } from './fetch'
 import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure'
-import { MarkGlyph, type MarkHue, type MarkName } from './marks'
+import type { MarkHue, MarkName } from './marks'
+import { NamedMark, Segmented } from './components'
 import { Id } from './Shell'
 import {
   DEFAULT_SORT,
@@ -72,26 +73,15 @@ export interface StepLook {
  */
 export function WfStepMark({ look, word = false }: { look: Pick<StepLook, 'mark' | 'hue' | 'word'>; word?: boolean }) {
   return (
-    <span className={`sk-st is-${look.hue} wf-mk`} data-mark={look.mark} data-hue={look.hue}>
-      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
-        {look.mark === 'skipped' ? (
-          // THE DASHED CHECK (wide-workflows.html A): the step ended clean and
-          // its agent never ran, so it is not the solid check of work done.
-          <path
-            d="M2 6.4 4.8 9.1 10 3"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.6"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeDasharray="2 1.6"
-          />
-        ) : (
-          <MarkGlyph mark={look.mark === 'unknown' ? 'queued' : look.mark} />
-        )}
-      </svg>
-      {word ? <span className="sk-st-w">{look.word}</span> : <span className="sk-vh">{look.word}</span>}
-    </span>
+    <NamedMark
+      className="wf-mk"
+      mark={look.mark === 'unknown' ? 'queued' : look.mark}
+      dataMark={look.mark}
+      hue={look.hue}
+      word={look.word}
+      bare={!word}
+      title=""
+    />
   )
 }
 
@@ -154,8 +144,8 @@ export function SourceNote() {
 /**
  * Graph / Timeline / Table, for ONE open workflow.
  *
- * `.ctl-seg`, the same primitive as the board's Rows/Graph control and the
- * canvas's zoom -- §6.11's one segmented control, not a third kind of switch.
+ * The canonical `Segmented`, the same control as the canvas's zoom -- §6.11's
+ * one segmented control, not a third kind of switch.
  * The board's control sets every card at once; this one is how a reader who
  * opened a single row from Rows looks at its table without opening all ten.
  */
@@ -167,13 +157,13 @@ export function ViewControl({
   onChoose: (v: WorkflowView) => void
 }) {
   return (
-    <div className="ctl-seg wf-view-seg" role="group" aria-label="How to draw this workflow">
-      {WORKFLOW_VIEWS.map((v) => (
-        <button key={v} type="button" aria-pressed={view === v} onClick={() => onChoose(v)}>
-          {VIEW_LABEL[v]}
-        </button>
-      ))}
-    </div>
+    <Segmented
+      className="wf-view-seg"
+      label="How to draw this workflow"
+      value={view}
+      options={WORKFLOW_VIEWS.map((v) => ({ key: v, label: VIEW_LABEL[v] }))}
+      onChange={onChoose}
+    />
   )
 }
 
@@ -528,20 +518,21 @@ function AttemptsView({ cell, over }: { cell: Cell; over: number }) {
 }
 
 /** The columns, in order. `sort` is the key a head sorts on, or null for a
- *  column that is read rather than ranked. */
+ *  column that is read rather than ranked. Heads in sentence case, as every
+ *  table head is (components.html A; visual QA Q1, 2026-10-02). */
 const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null; num: boolean }> = [
-  { col: 'step', label: 'step', sort: 'step', num: false },
-  { col: 'state', label: 'state', sort: 'state', num: false },
+  { col: 'step', label: 'Step', sort: 'step', num: false },
+  { col: 'state', label: 'State', sort: 'state', num: false },
   // WHY IT IS NOT RUNNING, OR WHY IT FAILED (#106). Beside the state it
   // explains; read rather than ranked, as the Agents table's column is.
-  { col: 'why', label: 'why', sort: null, num: false },
-  { col: 'runner', label: 'runner', sort: null, num: false },
-  { col: 'waited', label: 'waited', sort: 'waited', num: true },
-  { col: 'ran', label: 'ran', sort: 'ran', num: true },
-  { col: 'attempts', label: 'attempts', sort: 'attempts', num: true },
-  { col: 'cost', label: 'cost', sort: 'cost', num: true },
-  { col: 'tokens', label: 'tokens', sort: null, num: true },
-  { col: 'inputs', label: 'inputs', sort: null, num: false },
+  { col: 'why', label: 'Why', sort: null, num: false },
+  { col: 'runner', label: 'Runner', sort: null, num: false },
+  { col: 'waited', label: 'Waited', sort: 'waited', num: true },
+  { col: 'ran', label: 'Ran', sort: 'ran', num: true },
+  { col: 'attempts', label: 'Attempts', sort: 'attempts', num: true },
+  { col: 'cost', label: 'Cost', sort: 'cost', num: true },
+  { col: 'tokens', label: 'Tokens', sort: null, num: true },
+  { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
 /**

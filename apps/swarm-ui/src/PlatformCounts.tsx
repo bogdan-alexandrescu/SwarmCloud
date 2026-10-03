@@ -3,10 +3,11 @@ import { loadMe, loadStats } from './api'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
 import { Mark } from './primitives'
-import { FrameAge, timeAgo, useClaimPageAge } from './Shell'
+import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
+import { Button } from './components'
 
 /**
  * Platform-wide task counts. Admin only, and deliberately behind a button.
@@ -147,28 +148,25 @@ export function PlatformCountsScreen() {
           24 reads` is one control whose name says what pressing it spends,
           so the price cannot wrap away from the press or be read as a fact
           about the last run. While a run is in flight the button says so
-          instead; the cost of that press is already being paid. No `?` on
-          the head (B7.4): the figure on the button is the cost. */}
-      <div className="head counts-head">
-        <h1>Platform counts</h1>
-        <button
-          type="button"
-          className={`counts-run-btn${run === null ? ' is-primary' : ''}`}
-          onClick={go}
-          disabled={busy}
-        >
-          {busy ? (
-            'Counting…'
-          ) : (
-            <>
-              {run === null ? 'Run the count' : 'Run it again'}
-              {' · '}
-              <span className="counts-cost">{queries} reads</span>
-            </>
-          )}
-        </button>
-      </div>
-      <p className="sub">{provenance}</p>
+          instead; the cost of that press is already being paid.
+
+          THE HEAD IS `PageHead` (#503, Q2): the title, the Admin section's
+          `?` by it, the run beside them, and what was read right-aligned on
+          the same row -- not a stacked `.sub` line under the title. */}
+      <PageHead
+        title="Platform counts"
+        action={
+          // The canonical button (components.html A): primary before the
+          // first run, plain for a re-run, busy while counting.
+          <Button className="counts-run" kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
+            {run === null ? 'Run the count' : 'Run it again'}
+            {' · '}
+            <span className="counts-cost">{queries} reads</span>
+          </Button>
+        }
+      >
+        {provenance}
+      </PageHead>
 
       {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
           figure slot: the page has its shape before the press, and an empty

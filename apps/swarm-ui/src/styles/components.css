@@ -68,6 +68,9 @@
 .c-btn:disabled,
 .c-btn[aria-disabled='true'] { opacity: .45; cursor: not-allowed; }
 .c-btn.is-busy { cursor: progress; }
+/* A TOGGLE (follow, wrap): `aria-pressed`, drawn as the segmented control's
+   on state, so pressed reads the same wherever it is. */
+.c-btn[aria-pressed='true'] { background: var(--sk-acs); border-color: var(--sk-ac); color: var(--sk-ac); }
 .c-spin { width: 13px; height: 13px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: c-spin .8s linear infinite; opacity: .9; flex: none; }
 @keyframes c-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .c-spin { animation: none; } }
@@ -80,6 +83,9 @@
 /* Phone: controls grow to 36px. */
 @media (max-width: 759px) {
   .c-btn { height: var(--h-lg); }
+  /* The full-width commit control of a form (Submit, Plan this issue) keeps
+     the 44px phone target the form's own button had (CH-8). */
+  .c-btn.is-full { height: auto; min-height: 44px; }
   .c-btn.is-icon { width: var(--h-lg); }
 }
 
@@ -101,6 +107,10 @@
   font-size: inherit;
 }
 .c-link:hover { text-decoration-color: currentColor; }
+/* The small text control beside a field or a list ("remove", "one more"):
+   Submit's `.sbf-mini` and the ledger's zoom controls since the #503 swap. */
+.c-link.is-sm { font-size: var(--t-micro); line-height: var(--lh-micro); }
+.c-link:disabled { opacity: .45; cursor: not-allowed; }
 .c-link.is-card { text-decoration: none; font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .c-link.is-card:hover { text-decoration: underline; }
 .c-idl { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-ac); text-decoration: underline dotted; text-underline-offset: 3px; }
@@ -146,6 +156,17 @@
 .c-chip.is-dash { color: var(--ctl-absent); cursor: help; }
 .c-chip.is-filter { background: var(--sk-acs); color: var(--sk-ac); padding-right: 3px; }
 .c-chip.is-link { color: var(--sk-ac); border-color: var(--sk-acl); background: none; text-decoration: underline; text-decoration-color: var(--sk-acl); text-underline-offset: 2px; }
+/* A pick chip is a toggle button in the chip's shape; the picked one takes the
+   text-ink edge, so the pick is not carried by colour alone. */
+.c-chip.is-pick { font: 500 var(--t-micro)/var(--lh-flush) var(--mono); margin: 0; cursor: pointer; }
+.c-chip.is-pick[aria-pressed='true'] { border-color: var(--text); }
+/* A chip naming a step in a state: the state's tint and a 45% edge (brand §3). */
+.c-chip.t-live { background: var(--s-liveb); border-color: color-mix(in srgb, var(--s-live) 45%, transparent); color: var(--text); }
+.c-chip.t-park { background: var(--s-parkb); border-color: color-mix(in srgb, var(--s-park) 45%, transparent); color: var(--text); }
+.c-chip.t-bad { background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); color: var(--text); }
+.c-chip.is-faint { background: none; color: var(--text-faint); }
+/* A bare count is a measured figure: tabular, so a column of them aligns. */
+.c-chip.is-n { font-variant-numeric: tabular-nums; }
 .c-x { border: 0; background: none; color: inherit; display: inline-flex; padding: 1px; border-radius: 50%; cursor: pointer; }
 .c-x .c-ic { width: 12px; height: 12px; }
 .c-tag { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 3px 6px; border-radius: var(--r-xs); border: 1px solid var(--line); color: var(--text-dim); white-space: nowrap; }
@@ -205,7 +226,7 @@
 .c-tfoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
 
 /* ---- tabs, segmented controls, breadcrumbs ----------------------------- */
-.c-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .c-tabs > a,
 .c-tabs > button { flex: none; padding: 8px 12px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; text-decoration: none; cursor: pointer; }
 .c-tabs > [aria-selected='true'],
@@ -214,7 +235,15 @@
 .c-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); height: var(--h-ctl); flex: none; align-self: flex-start; }
 .c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
 .c-seg > button:last-child { border-right: 0; }
+/* The link form: the same segment, for views that each have an address. */
+.c-seg > a { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; text-decoration: none; }
+.c-seg > a:last-child { border-right: 0; }
+.c-seg > a[aria-current='page'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.c-seg > a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.c-seg > button:hover:not(:disabled) { color: var(--text); }
+.c-seg > button:disabled { opacity: .45; cursor: not-allowed; }
 .c-seg > button[aria-pressed='true'],
+.c-seg > button[aria-selected='true'],
 .c-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .c-seg em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); }
 .c-crumb { display: flex; align-items: center; gap: 6px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; margin: 0; padding: 0; list-style: none; }
@@ -285,6 +314,7 @@
 .c-bar > i { display: block; height: 100%; }
 .c-bar > .c-f { background: var(--sk-ac); }
 .c-bar.is-warn > .c-f,
+.c-bar.is-nearly-full > .c-f,
 .c-bar.is-full > .c-f { background: var(--s-warn); }
 .c-bar.is-over { overflow: visible; }
 .c-bar.is-over > .c-f { background: var(--s-bad); }
@@ -293,6 +323,13 @@
 /* NOT MEASURED, and only that: the hatch, dashed, never an empty track. */
 .c-bar.is-unmeasured { background: var(--ctl-hatch); border: 1px dashed var(--ctl-absent); }
 .c-bar.is-unknown-ceiling > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
+/* Progress: done of total in a state's hue, unread steps hatched after it. */
+.c-bar.is-progress { display: inline-flex; width: 96px; flex: none; vertical-align: middle; }
+.c-bar.is-progress.is-live > .c-f { background: var(--s-live); }
+.c-bar.is-progress.is-park > .c-f { background: var(--s-park); }
+.c-bar.is-progress.is-bad > .c-f { background: var(--s-bad); }
+.c-bar.is-progress.is-neu > .c-f { background: var(--s-neu); }
+.c-bar.is-progress > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
 
 /* ---- empty, partial, failed, loading: four different things ------------ */
 .c-emp { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
@@ -322,3 +359,11 @@
 .c-ds .is-del { color: var(--s-bad); }
 .c-seg.is-sm { height: var(--h-sm); }
 .c-seg.is-sm > button { padding: 0 10px; }
+/* THE PHONE TARGET (CH-8), at the foot of the sheet so no base rule after it
+   wins: below 561px a segment is 44px tall, its type unchanged. It is what the
+   local `.ctl-seg` carried before every segmented control became this one. */
+@media (max-width: 560px) {
+  .c-seg { height: auto; }
+  .c-seg > button,
+  .c-seg > a { min-height: 44px; }
+}

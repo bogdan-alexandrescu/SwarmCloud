@@ -15,6 +15,7 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { painted } from './marks'
 import { cascade, gate } from './cssgate'
 
 const api = vi.hoisted(() => ({
@@ -292,7 +293,8 @@ describe('the list row marks partial dependencies (wide-workflows.html §6)', ()
     serve([workflow('wf_p', 'RUNNING', 'sam', [step('a', []), step('b', []), step('c', []), step('x', ['a', 'b'])])])
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_p']))
-    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wf-pchip')!
+    // The canonical chip (components.html A).
+    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wfl-shape .c-chip')!
     expect(chip.textContent).toBe('partial')
     expect(chip.getAttribute('title')).toBe('Some steps depend on part of the level above, not all of it')
   })
@@ -398,19 +400,23 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
     const onView = vi.fn()
     render(<Routed initial="wf=wf_broker" onView={onView} />)
     const tabs = await waitFor(() => {
-      const t = document.querySelector<HTMLElement>('nav.wf-tabs')
+      // The canonical underline tabs (components.html A): a link per view.
+      const t = document.querySelector<HTMLElement>('nav.c-tabs[aria-label="Views of this workflow"]')
       expect(t).toBeTruthy()
       return t!
     })
-    const buttons = [...tabs.querySelectorAll('button')]
+    const buttons = [...tabs.querySelectorAll('a')]
     expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table4', 'Timeline'])
     expect(buttons[0]!.getAttribute('aria-current')).toBe('page')
-    expect(tabs.querySelector('.wf-tab-n')!.textContent).toBe('4')
-    expect(document.querySelector('.wf-viewbar .ctl-seg'), 'the boxed Graph/Timeline/Table control is still in the card').toBeNull()
+    expect(buttons[1]!.getAttribute('href')).toMatch(/^\/workflows\/wf_broker\/table/)
+    expect(tabs.querySelector('em')!.textContent).toBe('4')
+    expect(document.querySelector('.wf-viewbar .c-seg'), 'the boxed Graph/Timeline/Table control is still in the card').toBeNull()
     fireEvent.click(buttons[1]!)
     expect(onView).toHaveBeenLastCalledWith('wf=wf_broker&tab=table')
     // Underlined, not boxed: the active tab carries a bottom border, the strip a hairline.
-    expect(at(buttons[0]!, 'border-bottom') ?? '').toMatch(/^2px solid/)
+    // The canonical tab's rule is in components.css, which `at` (this file's
+    // two-sheet cascade) does not read; `painted` reads every sheet.
+    expect(painted(buttons[0]!, 'border-bottom', { width: 1440 }) ?? '').toMatch(/^2px solid/)
   })
 })
 
@@ -513,7 +519,12 @@ describe('the steps Table fits its width (#503)', () => {
     })
     expect(at(t, 'table-layout')).toBe('fixed')
     expect(at(t, 'width')).toBe('100%')
-    expect(at(t.parentElement!, 'overflow-x')).toBe('visible')
+    // It scrolls inside its card only BELOW its minimum width (visual QA Q3),
+    // and that minimum fits the step card's column at 1440 (1440 less the
+    // 84px spine, the 236px panel and the page and card gutters), so at 1440
+    // there is still no sideways scroll.
+    expect(at(t.parentElement!, 'overflow-x')).toBe('auto')
+    expect(parseFloat(at(t, 'min-width') ?? '0')).toBeLessThanOrEqual(1000)
   })
 })
 
@@ -570,10 +581,13 @@ describe('a wide stage band: mix bar, slots held, named chips (wide-workflows.ht
       'mx-done',
     ])
     expect(band.querySelector('.wf-band-hold')!.textContent).toBe('holds 3 slots · 2 waiting hold none')
-    const chips = [...band.querySelectorAll<HTMLButtonElement>('button.wf-band-chip')]
+    const chips = [...band.querySelectorAll<HTMLButtonElement>('.wf-band-chips > button.c-chip.is-pick')]
     expect(chips.map((c) => c.textContent)).toEqual(['impl-6', 'impl-3', 'impl-4', 'impl-7', 'impl-5'])
     fireEvent.click(chips[1]!)
     await waitFor(() => expect(document.querySelector('.wf-inspect')!.getAttribute('aria-label')).toBe('Step impl-3 of wf_wave'))
+
+    // The named steps are the canonical pick Chip (#503 swap): a toggle, pressed when picked.
+    await waitFor(() => expect(document.querySelector('.wf-band-chips > button.c-chip[aria-pressed="true"]')?.textContent).toBe('impl-3'))
   })
 
   it('opens the Table filtered to the stage and state from a band count', async () => {

@@ -353,7 +353,7 @@ describe('#110: the workflow step inspector opens next to the picked step', () =
     const before = order()
     // Sort by step id until the order is the reverse of the one the table
     // starts in, so a remount (which resets the sort) would show.
-    const byStep = within(document.querySelector('.wf-table thead')!).getByRole('button', { name: /^step/ })
+    const byStep = within(document.querySelector('.wf-table thead')!).getByRole('button', { name: /^Step/ })
     fireEvent.click(byStep)
     if (order()[0] === before[0]) fireEvent.click(byStep)
     const sorted = order()

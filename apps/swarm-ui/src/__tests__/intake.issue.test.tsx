@@ -125,7 +125,8 @@ describe('step 1: the issue is read and shown before anything is created', () =>
     expect(visible(card)).toContain('See what a finished workflow cost.')
     expect(visible(card)).toContain('open')
     expect(visible(card)).toContain('4 comments')
-    const chips = [...card.querySelectorAll('.in-chip')].map(visible)
+    // The issue's labels are canonical tags: labels someone attached.
+    const chips = [...card.querySelectorAll('.c-tag')].map(visible)
     expect(chips).toEqual(['enhancement', 'ui'])
     const link = within(card).getByRole('link', { name: /example-org\/infra#512/ })
     expect(link.getAttribute('href')).toBe('https://github.com/example-org/infra/issues/512')

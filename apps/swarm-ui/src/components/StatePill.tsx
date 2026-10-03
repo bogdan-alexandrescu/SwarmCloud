@@ -17,11 +17,12 @@
  * tooltip. The three reasons that need a person (`PARK_NEEDS_A_PERSON`) carry
  * the amber flag, so they are found without reading every row.
  */
-import { MarkGlyph, StateMark, STATE_MARK } from '../marks'
+import { MarkGlyph, MarkIcon, NamedMark, StateMark, STATE_MARK, WarnMark, type MarkHue, type MarkName } from '../marks'
 import { PARK_NEEDS_A_PERSON, reasonCopy, type ParkReason, type TaskState } from '../types'
+import type { ReactNode } from 'react'
 import { WarnGlyph } from './glyphs'
 
-export { StateMark }
+export { MarkIcon, NamedMark, StateMark, WarnMark }
 
 /** The state as a word: lower case, `DEAD_LETTERED` as `dead-lettered`. */
 export function stateWord(state: TaskState): string {
@@ -90,5 +91,90 @@ export function ParkPill({ reason, until }: { reason: ParkReason | string | null
       )}
       {until != null && until !== '' && <span className="c-until">{until}</span>}
     </span>
+  )
+}
+
+/**
+ * A TONE THAT IS NOT A TASK STATE, DRAWN WITH THE BRAND MARKS (brand.html §3):
+ * a pool that is full or paused, a heartbeat that went silent, a route that
+ * answered, a pull request that is open. It replaced the local `.ctl-chip`
+ * and `.ctl-dot`, whose marks were CSS shapes of their own (#503 swap: "state
+ * marks must be the brand marks everywhere, never a local dot or glyph").
+ *
+ * Every tone keeps its own silhouette, so colour is never the only thing
+ * telling two apart (design-system.md §6.6, held by test_state_colour_
+ * discriminability.py and components.test.tsx):
+ *
+ *   ok       check          grey    healthy is quiet: never a hue
+ *   info     flat bar       grey    a fact, not a verdict
+ *   warn     triangle       amber   (`wait` is warn: a throttled state is
+ *                                    never drawn in the unknown grey)
+ *   bad      solid diamond  red
+ *   paused   pause bars     violet  an operator held it
+ *   live     haloed disc    teal
+ *   unknown  hollow ring    grey    nobody derived it -- and the mark of any
+ *                                    tone this list does not know, never a
+ *                                    healthy check by default
+ */
+export type MarkTone = 'ok' | 'info' | 'warn' | 'bad' | 'paused' | 'live' | 'unknown'
+
+export const TONE_MARK: Readonly<Record<MarkTone, { mark: MarkName | 'warn'; hue: MarkHue | 'warn' | 'unknown' }>> = {
+  ok: { mark: 'succeeded', hue: 'neu' },
+  info: { mark: 'cancelled', hue: 'neu' },
+  warn: { mark: 'warn', hue: 'warn' },
+  bad: { mark: 'failed', hue: 'bad' },
+  paused: { mark: 'parked', hue: 'park' },
+  live: { mark: 'running', hue: 'live' },
+  unknown: { mark: 'queued', hue: 'unknown' },
+}
+
+/**
+ * A tone word as the screens wrote it -- `ok`, `is-ok`, `is-warn full`, and
+ * the derived `wait` and `ended` -- as a `MarkTone`. Anything else is
+ * `unknown`: an underived state is the ring, never a filled healthy mark.
+ */
+export function toneOf(word: string | null | undefined): MarkTone {
+  const first = (word ?? '').trim().split(/\s+/)[0] ?? ''
+  const t = first.startsWith('is-') ? first.slice(3) : first
+  if (t === 'wait') return 'warn'
+  if (t === 'ended') return 'info'
+  return Object.prototype.hasOwnProperty.call(TONE_MARK, t) ? (t as MarkTone) : 'unknown'
+}
+
+export function ToneMark({
+  tone,
+  children,
+  title,
+  label,
+  describedBy,
+  hidden = false,
+  className,
+}: {
+  /** The tone, in any spelling `toneOf` reads. */
+  tone: string
+  /** The word. Omitted, the mark stands alone and is hidden: decoration beside words. */
+  children?: ReactNode
+  title?: string
+  label?: string
+  describedBy?: string
+  hidden?: boolean
+  /** Layout only. */
+  className?: string
+}) {
+  const t = toneOf(tone)
+  const { mark, hue } = TONE_MARK[t]
+  return (
+    <NamedMark
+      mark={mark}
+      hue={hue}
+      word={children}
+      title={title}
+      label={label}
+      describedBy={describedBy}
+      hidden={hidden || children === undefined}
+      className={className}
+      dataMark={t === 'unknown' ? 'unknown' : undefined}
+      dataTone={t}
+    />
   )
 }
