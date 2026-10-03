@@ -45,11 +45,6 @@
 }
 .in-meta > a { color: var(--sk-ac); }
 .in-chips { margin: 0; display: flex; gap: 6px; flex-wrap: wrap; }
-.in-chip {
-  display: inline-flex; align-items: center; min-height: 20px; padding: 0 8px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-pill);
-  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
-}
 /* The body AS SERVED, its line breaks kept; cut on screen until asked, never
    re-cut in the text itself. */
 .in-body {

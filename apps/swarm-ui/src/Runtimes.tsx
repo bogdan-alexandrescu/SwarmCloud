@@ -5,6 +5,7 @@ import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
 import './styles/capacity.css'
+import { Chip } from './components'
 import {
   humaniseUntil,
   overCeiling,
@@ -712,9 +713,9 @@ function RuntimeCard({
             ) : (
               <span className="rt-pool-chips">
                 {pools.map((p) => (
-                  <a key={p} className="rt-pool-chip mono" href="#capacity/pools" title={p}>
+                  <Chip key={p} href="#capacity/pools" title={p}>
                     {p}
-                  </a>
+                  </Chip>
                 ))}
               </span>
             )}

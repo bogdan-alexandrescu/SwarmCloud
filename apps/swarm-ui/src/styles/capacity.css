@@ -109,8 +109,6 @@
 .rt-cards { margin-bottom: var(--ctl-s5); }
 .rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
 .rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
-.rt-pool-chip { font-size: var(--t-micro); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; color: var(--info); text-decoration: none; }
-.rt-pool-chip:hover { border-color: var(--info); }
 /* SIZING FITS ITS CARD (#503): "Resolves from" lists every runtime that
    resolves to a class, and a nowrap list ran past the card's right edge. It
    is the one prose-shaped column in the table, so it wraps. */

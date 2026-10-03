@@ -109,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
-import { Button, NamedMark, ProgressBar, Tabs, TypedConfirm } from './components'
+import { Button, Chip, NamedMark, ProgressBar, Tabs, TypedConfirm } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -4549,9 +4549,7 @@ function WorkflowListRow({
         <StageGlyph steps={workflow.steps} taskById={taskById} />
         <Shape shape={shapeOf(workflow.steps)} />
         {partialDeps(workflow.steps) && (
-          <span className="wf-pchip" title="Some steps depend on part of the level above, not all of it">
-            partial
-          </span>
+          <Chip title="Some steps depend on part of the level above, not all of it">partial</Chip>
         )}
       </td>
       <td>
@@ -4808,12 +4806,10 @@ function WorkflowHead({
     <div className="wfp-head">
       <div className="wfp-chips">
         <WorkflowStateMark workflow={workflow} />
-        {pr !== null && <PullRequestLink pr={pr} className="wfp-chip" />}
-        <span className="wfp-chip">
-          on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}
-        </span>
-        <span className="wfp-chip wfp-cost">
-          {spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}
+        {pr !== null && <PullRequestLink pr={pr} className="c-chip is-link" />}
+        <Chip>on failure: {workflow.on_step_failure.toLowerCase() === 'continue' ? 'continue' : 'fail the workflow'}</Chip>
+        <span className="wfp-cost">
+          <Chip>{spend.usd === null ? <span className="wf-cell is-absent">cost not reported</span> : <Spend spend={spend} />}</Chip>
         </span>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}

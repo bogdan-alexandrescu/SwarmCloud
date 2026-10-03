@@ -47,12 +47,8 @@
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
 .wfl-shape { white-space: nowrap; }
 /* "partial": some step depends on part of the level above (§6), which the
-   text shape cannot say. A fact chip, not a state. */
-.wf-pchip {
-  display: inline-flex; margin-left: 6px; padding: 1px 8px;
-  border: 1px solid var(--line); border-radius: 999px;
-  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
-}
+   text shape cannot say. A fact chip (the canonical `Chip`), not a state. */
+.wfl-shape > .c-chip { margin-left: 6px; }
 
 /* THE STAGE-SHAPE GLYPH (wide-workflows.html §6): one 7px column per stage,
    its height log-scaled from the stage's width (`stageGlyph`), filled bottom

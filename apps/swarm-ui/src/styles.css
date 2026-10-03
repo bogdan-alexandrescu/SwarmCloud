@@ -10979,7 +10979,6 @@ span.sk-ttile { cursor: default; }
 .wfp-back:hover, .wfp-back:focus-visible { text-decoration: underline; }
 .wfp { display: flex; flex-direction: column; gap: var(--ctl-gutter); min-width: 0; }
 .wfp-chips { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-.wfp-chip { font-size: var(--t-micro); color: var(--text-dim); border: 1px solid var(--line-soft); border-radius: 999px; padding: 1px 8px; }
 .wfp-confirm { display: flex; flex-direction: column; gap: 8px; max-width: 34em; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--s-bad) 45%, transparent); border-radius: 10px; background: var(--s-badb); font-size: var(--t-meta); }
 .wfp-confirm p { margin: 0; }
 .wfp-confirm-err { color: var(--s-bad); }

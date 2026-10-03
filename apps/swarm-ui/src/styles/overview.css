@@ -22,7 +22,6 @@
 /* ---- page head: title, tenant chip, provenance on one line ---------------- */
 .ov-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .ov-head h1 { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); }
-.ov-chip { font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 2px 8px; border-radius: var(--ctl-radius-pill); background: var(--sk-hv); color: var(--text-dim); white-space: nowrap; }
 .ov-age { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-age .ctl-dot { margin-right: 4px; }
 .ov-refresh { font: inherit; color: var(--sk-ac); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }

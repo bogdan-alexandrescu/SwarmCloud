@@ -1,7 +1,7 @@
 import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
 import type { ApiError } from './fetch'
-import { Button, NamedMark, WarnMark } from './components'
+import { Button, NamedMark, Tag, WarnMark } from './components'
 import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
@@ -360,10 +360,6 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   )
 }
 
-/** A label as a pill chip (components.html A). Swappable for U0's chip by name. */
-function InChip({ children }: { children: string }) {
-  return <span className="in-chip">{children}</span>
-}
 
 /** What was read, as served: title, state, comments, labels, the body, the link. */
 function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
@@ -385,7 +381,7 @@ function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
         {' · '}read {time} with this tenant&rsquo;s forge credential
       </p>
       {issue.labels.length > 0 ? (
-        <p className="in-chips">{issue.labels.map((l) => <InChip key={l}>{l}</InChip>)}</p>
+        <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>
       ) : (
         <p className="sb-note">no labels</p>
       )}

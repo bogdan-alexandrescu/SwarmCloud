@@ -527,7 +527,7 @@ describe('#330: the page head links the pull request the run opened', () => {
     )
     return pageHead('wf_pr')
   }
-  const prChip = (h: HTMLElement) => [...h.querySelectorAll<HTMLElement>('.wfp-chip')].find((c) => /^PR #/.test(c.textContent ?? ''))
+  const prChip = (h: HTMLElement) => [...h.querySelectorAll<HTMLElement>('.c-chip')].find((c) => /^PR #/.test(c.textContent ?? ''))
 
   it('shows PR #N, linked, for the integrator’s pull request', async () => {
     const h = await head({ dispatch: dispatchAs('integrate', 'integrator'), result_summary: withPr('https://github.com/o/r/pull/412') })

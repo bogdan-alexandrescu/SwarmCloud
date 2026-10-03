@@ -293,7 +293,8 @@ describe('the list row marks partial dependencies (wide-workflows.html §6)', ()
     serve([workflow('wf_p', 'RUNNING', 'sam', [step('a', []), step('b', []), step('c', []), step('x', ['a', 'b'])])])
     render(<WorkflowsScreen />)
     await waitFor(() => expect(rowIds()).toEqual(['wf_p']))
-    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wf-pchip')!
+    // The canonical chip (components.html A).
+    const chip = document.querySelector<HTMLElement>('tr[data-workflow="wf_p"] .wfl-shape .c-chip')!
     expect(chip.textContent).toBe('partial')
     expect(chip.getAttribute('title')).toBe('Some steps depend on part of the level above, not all of it')
   })

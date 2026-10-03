@@ -163,7 +163,7 @@ export function OverviewScreen() {
         <h1>Overview</h1>
         {/* The section's `?`, by the title (Q2): there is no row above it now. */}
         {sectionHelp}
-        <span className="ov-chip">
+        <span className="c-meta ov-chip">
           {tasks.status === 'loading' ? (
             <span className="ov-reading">tenant reading…</span>
           ) : tenant === null ? (
