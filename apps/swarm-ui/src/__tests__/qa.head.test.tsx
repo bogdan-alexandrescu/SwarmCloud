@@ -89,12 +89,19 @@ describe('Q1: mono only for ids, values, code and timestamps', () => {
     expect(ph).not.toMatch(/--mono/)
   })
 
-  it('draws the honesty marks in the sans face', () => {
+  it('draws the honesty marks and the small labels in the sans face', () => {
     const host = document.createElement('div')
     host.className = 'app'
-    host.innerHTML = ['zero', 'absent', 'unread', 'partial', 'admin', 'pending']
-      .map((k) => `<i class="ctl-mark is-${k}">x</i>`)
-      .join('')
+    // The six honesty marks ("real zero", "not reported", "partial" ...), the
+    // fact keys ("attempt", "gen", "took", "exit", "cost", "serves"), the
+    // toolbar eyebrows ("same step"), the "reason" label, a metric's label
+    // and foot, and the empty state's "Checked just now." foot.
+    host.innerHTML =
+      ['zero', 'absent', 'unread', 'partial', 'admin', 'pending'].map((k) => `<i class="ctl-mark is-${k}">x</i>`).join('') +
+      '<ul class="ctl-facts"><li class="ctl-fact"><b>serves</b></li></ul>' +
+      '<span class="ctl-eyebrow wf-scrub-key">same step</span><span class="t-label">reason</span>' +
+      '<span class="ctl-metric-label">agents</span><span class="ctl-metric-foot">last read</span>' +
+      '<div class="ctl-empty"><span class="ctl-empty-foot">Checked just now.</span></div>'
     document.body.appendChild(host)
     try {
       expect(monoAmong([...host.children])).toEqual([])

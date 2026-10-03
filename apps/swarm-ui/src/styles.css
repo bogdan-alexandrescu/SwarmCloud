@@ -5460,7 +5460,7 @@ a.ctl-metric:focus-visible .ctl-metric-label,
 .ctl-metric-foot {
   display: block;
   margin-top: 2px;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 
@@ -6315,7 +6315,7 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 .ctl-empty-foot {
   display: block;
   margin-top: var(--ctl-s3);
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
 
