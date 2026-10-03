@@ -109,7 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { STATE_MARK, StateMark } from './marks'
-import { NamedMark, ProgressBar } from './components'
+import { Button, NamedMark, ProgressBar, TypedConfirm } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -4840,9 +4840,7 @@ function CopyLink() {
     }
   }
   return (
-    <button type="button" className="btn wfp-btn" onClick={copy}>
-      {copied ? 'Link copied' : 'Copy link'}
-    </button>
+    <Button onClick={copy}>{copied ? 'Link copied' : 'Copy link'}</Button>
   )
 }
 
@@ -4896,7 +4894,6 @@ export function CancelWorkflow({
 }) {
   const [phase, setPhase] = useState<'idle' | 'asking' | 'sending' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
-  const [typed, setTyped] = useState('')
   const derived = derivedStateOf(workflow)
   if (derived !== null && TERMINAL_STATES.has(derived)) return null
   if (cancelPending(workflow) && phase === 'idle') return null
@@ -4905,7 +4902,6 @@ export function CancelWorkflow({
   // on the exact workflow id. With nothing running, the two-click confirm
   // stays: cancelling work that has not started loses nothing.
   const typedConfirm = holdsCapacity(workflow, taskById)
-  const unlocked = !typedConfirm || typed === workflow.workflow_id
 
   const send = async () => {
     setPhase('sending')
@@ -4919,44 +4915,52 @@ export function CancelWorkflow({
     setPhase('failed')
   }
 
-  if (phase === 'idle') {
+  const trigger = (
+    <Button kind="danger" onClick={() => setPhase('asking')}>
+      Cancel workflow
+    </Button>
+  )
+  if (phase === 'idle') return trigger
+  const reset = () => {
+    setError(null)
+    setPhase('idle')
+  }
+  // WHILE A STEP RUNS: the canonical typed confirm (components.html A,
+  // states.html C §12), with this page's own account of what cancelling does.
+  if (typedConfirm) {
     return (
-      <button type="button" className="btn danger wfp-btn" onClick={() => setPhase('asking')}>
-        Cancel workflow
-      </button>
+      <>
+        {trigger}
+        <TypedConfirm
+          title="Cancel this workflow?"
+          name={workflow.workflow_id}
+          verb="Cancel the workflow"
+          keep="Keep it running"
+          onConfirm={() => void send()}
+          onClose={reset}
+          busy={phase === 'sending' ? 'Cancelling…' : false}
+          error={phase === 'failed' && error !== null ? `The cancel was not recorded: ${error}` : undefined}
+        >
+          <p>{cancelConsequence(workflow, taskById)}</p>
+        </TypedConfirm>
+      </>
     )
   }
   return (
     <div className="wfp-confirm" role="group" aria-label="Confirm cancelling this workflow">
       <p>{cancelConsequence(workflow, taskById)}</p>
-      {typedConfirm && <WfTypedConfirm expect={workflow.workflow_id} value={typed} onChange={setTyped} disabled={phase === 'sending'} />}
       {phase === 'failed' && error !== null && (
         <p className="wfp-confirm-err" role="alert">
           The cancel was not recorded: {error}
         </p>
       )}
       <span className="wfp-confirm-do">
-        <button
-          type="button"
-          className="btn danger wfp-btn"
-          disabled={phase === 'sending' || !unlocked}
-          onClick={() => {
-            if (unlocked) void send()
-          }}
-        >
-          {phase === 'sending' ? 'Cancelling…' : typedConfirm ? 'Cancel the workflow' : 'Yes, cancel the workflow'}
-        </button>
-        <button
-          type="button"
-          className="btn wfp-btn"
-          disabled={phase === 'sending'}
-          onClick={() => {
-            setTyped('')
-            setPhase('idle')
-          }}
-        >
+        <Button kind="danger-filled" busy={phase === 'sending' ? 'Cancelling…' : false} onClick={() => void send()}>
+          Yes, cancel the workflow
+        </Button>
+        <Button kind="ghost" disabled={phase === 'sending'} onClick={reset}>
           Keep it running
-        </button>
+        </Button>
       </span>
     </div>
   )
@@ -4970,37 +4974,3 @@ function holdsCapacity(workflow: Workflow, taskById: ReadonlyMap<string, Task> |
   })
 }
 
-/**
- * THE TYPED CONFIRM, LOCAL TO THIS SECTION (components.html A `.c-dlg` with
- * its typed variant; named `Wf` so a later pass can swap in the shared one):
- * "Type <id> to confirm", in the mono face, unlocking only on an exact match.
- */
-function WfTypedConfirm({
-  expect: want,
-  value,
-  onChange,
-  disabled,
-}: {
-  expect: string
-  value: string
-  onChange: (v: string) => void
-  disabled: boolean
-}) {
-  return (
-    <label className="wf-typed">
-      <span className="wf-typed-l">
-        Type <b className="mono">{want}</b> to confirm
-      </span>
-      <input
-        type="text"
-        className="mono"
-        autoComplete="off"
-        spellCheck={false}
-        value={value}
-        disabled={disabled}
-        aria-label={`Type ${want} to confirm`}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </label>
-  )
-}

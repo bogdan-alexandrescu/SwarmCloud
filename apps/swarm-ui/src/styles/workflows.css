@@ -181,17 +181,7 @@
 .wf-filter-x:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 
-/* ---- The typed confirm on Cancel workflow (states.html §12) -------------- */
 
-.wf-typed { display: flex; flex-direction: column; gap: 4px; }
-.wf-typed-l { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.wf-typed input {
-  height: 32px; padding: 0 10px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text);
-  font: var(--t-meta)/var(--lh-meta) var(--mono);
-}
-.wf-typed input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 
 /* ---- A wide stage's band (wide-workflows.html A) ------------------------- */
 

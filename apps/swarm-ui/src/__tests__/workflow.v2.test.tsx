@@ -344,7 +344,8 @@ describe('Cancel workflow', () => {
     render(<CancelWorkflow workflow={b.workflows[0]!} taskById={b.taskById} onDone={vi.fn()} cancel={cancel} />)
     fireEvent.click(screen.getByRole('button', { name: 'Cancel workflow' }))
     expect(cancel).not.toHaveBeenCalled()
-    const ask = screen.getByRole('group', { name: 'Confirm cancelling this workflow' })
+    // A step runs, so the ask is the canonical typed-confirm dialog (Overlay.tsx).
+    const ask = screen.getByRole('dialog')
     // It names what it cancels and what keeps running.
     expect(ask.textContent).toContain('1 step not started will never start')
     expect(ask.textContent).toContain('1 running step is asked to stop and keeps its slot until its worker exits')
