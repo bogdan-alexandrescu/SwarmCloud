@@ -265,6 +265,24 @@ describe('/runs/<id>: one run', () => {
     expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
   })
 
+  it('the CI states (#454) are named as the API names them, with a mark and what they mean', async () => {
+    const cases: [Record<string, unknown>, RegExp][] = [
+      [{ state: 'CHECKING', workflow_id: 'wf_8b21d0e4', pull_request: { number: 57, url: null, checks: 'pending' } },
+        /Holds no capacity: its CI is read/],
+      [{ state: 'FIXING', workflow_id: 'wf_8b21d0e4', ci_fix_round: 2, ci_fix_workflows: ['wf_a', 'wf_b'] },
+        /fix round 2 of 3/],
+    ]
+    for (const [over, line] of cases) {
+      serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run(over) } } : null)
+      const { container, unmount } = await mount('run=run_4c1e09d2')
+      await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain(String(over.state)), WAIT)
+      expect(container.querySelector('.rn-state [data-mark]'), `${over.state} has no mark`).not.toBeNull()
+      expect(visible(container.querySelector('.rn-state-t'))).toMatch(line)
+      expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
+      unmount()
+    }
+  })
+
   it('an unknown run is not found, not an empty page', async () => {
     serve(() => ({ status: 404, body: { code: 'not_found', message: "run 'run_x' not found" } }))
     await mount('run=run_x')

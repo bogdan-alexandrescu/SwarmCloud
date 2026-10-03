@@ -315,11 +315,19 @@ def status_phase(run: IssueRun) -> str:
         if checks == "red" or run.ci_fix_round:
             return "CI red, fixing"
         return "pull request opened"
+    if run.state == RunState.CHECKING:
+        if checks == "red":
+            return "CI red"
+        return "pull request opened, CI pending"
+    if run.state == RunState.FIXING:
+        return "CI red, fixing"
     if run.state == RunState.DONE:
         if pull.get("merged"):
             return "merged"
         if checks == "green":
             return "checks green, ready to merge"
+        if checks == "none":
+            return "pull request opened, no CI reported"
         return "done"
     if run.state == RunState.FAILED:
         return "failed"

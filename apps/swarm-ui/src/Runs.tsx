@@ -46,6 +46,10 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
   PLANNED: { mark: 'parked', hue: 'park' },
   APPROVED: { mark: 'starting', hue: 'live' },
   RUNNING: { mark: 'running', hue: 'live' },
+  // Waiting on CI, holding nothing (invariant 1): a park, like PLANNED.
+  CHECKING: { mark: 'parked', hue: 'park' },
+  // One continuation is fixing CI: a task working, as RUNNING.
+  FIXING: { mark: 'running', hue: 'live' },
   DONE: { mark: 'succeeded', hue: 'neu' },
   FAILED: { mark: 'failed', hue: 'bad' },
   REJECTED: { mark: 'cancelled', hue: 'neu' },
@@ -230,8 +234,14 @@ function stateLine(run: IssueRun): string {
       return 'Approved; the workflow is being submitted.'
     case 'RUNNING':
       return 'The workflow built from the approved plan is running.'
+    case 'CHECKING':
+      return 'The pull request is open. Holds no capacity: its CI is read until it is green or red.'
+    case 'FIXING':
+      return `CI was red: fix round ${run.ci_fix_round ?? 1} of ${run.fix_rounds} is pushing to the pull request.`
     case 'DONE':
-      return 'The workflow succeeded.'
+      return run.green_sha
+        ? 'Every required check is green on the pull request.'
+        : 'The workflow succeeded.'
     case 'FAILED':
       return 'The run failed.'
     case 'REJECTED':

@@ -9,7 +9,14 @@
       APPROVED   a person approved THE DIGEST THEY WERE SHOWN (D3), or the run
                  was created with `plan_approval: auto`.
       RUNNING    a NEW signed workflow, compiled from the approved plan.
-      DONE | FAILED | CANCELLED   what that workflow ended as.
+      CHECKING   the workflow SUCCEEDED and its integrator opened the pull
+                 request; CI is read at the pull request's head sha.
+      FIXING     CI was red: ONE `continues_task` continuation of the
+                 integrator is fixing it (a fix round), then CHECKING again.
+      DONE       every required check green at the head, pinned as `green_sha`.
+      FAILED     the planner, the workflow or a fix round failed; no pull
+                 request was opened; or CI was still red at `fix_rounds`.
+      CANCELLED  the planner, the workflow or a fix round was cancelled.
       REJECTED   the plan was turned down.
 
 WHY A WAITING RUN COSTS NOTHING (invariant 1). The planner is a task like any
@@ -63,7 +70,9 @@ run's `fix_rounds` (1-5, default 3) is the cap on review-then-fix rounds and
 travels in the workflow's metadata; ONE round is what the platform can
 compile today, because under `integrate` only the integrator may be gated and
 a second review needs a gated step that is not the publisher
-(docs/workflows.md, "What this does not do"). `auto_merge` -- a `single-pr`
+(docs/workflows.md, "What this does not do"). The same cap also bounds the
+CI loop's fix rounds after the pull request opens (`issueci`): one
+continuation per red reading, at most `fix_rounds` of them. `auto_merge` -- a `single-pr`
 chain ending in its own merge (#295) -- is phase 2 and is refused here naming
 #295 rather than compiled into something else.
 """
@@ -148,6 +157,8 @@ class RunState(str, Enum):
     PLANNED = "PLANNED"
     APPROVED = "APPROVED"
     RUNNING = "RUNNING"
+    CHECKING = "CHECKING"
+    FIXING = "FIXING"
     DONE = "DONE"
     FAILED = "FAILED"
     REJECTED = "REJECTED"
@@ -164,7 +175,17 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     # APPROVED lasts as long as one submission: RUNNING when the workflow is
     # stored, FAILED when it is refused.
     RunState.APPROVED: frozenset({RunState.RUNNING, RunState.FAILED}),
-    RunState.RUNNING: frozenset({RunState.DONE, RunState.FAILED, RunState.CANCELLED}),
+    # A workflow that SUCCEEDED opened a pull request whose CI is not read
+    # yet: CHECKING, never DONE. No pull request is FAILED, saying so.
+    RunState.RUNNING: frozenset({RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}),
+    # CI at the head: green -> DONE, red -> FIXING (a round submitted) or
+    # FAILED at the cap, pending -> stays.
+    RunState.CHECKING: frozenset(
+        {RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED}
+    ),
+    # The round's continuation ended: CHECKING to read CI at its new head,
+    # FAILED if it failed, CANCELLED if it was cancelled.
+    RunState.FIXING: frozenset({RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}),
     RunState.DONE: frozenset(),
     RunState.FAILED: frozenset(),
     RunState.REJECTED: frozenset(),
@@ -623,12 +644,32 @@ class IssueRun:
     plan_comment_id: int | None = None
     status_comment_id: int | None = None
     #: The run's pull request, `{number, url, head_sha}`, once one is opened;
-    #: the CI loop may add `checks` ("pending" | "green" | "red") and
-    #: `merged` (bool), which the status comment shows.
+    #: the CI loop adds `checks` ("pending" | "green" | "red" | "none"),
+    #: `merged` (bool), `checked_at` (its last CI read), `head_since` (when
+    #: it first saw this head) and `read_error` (its last failed read,
+    #: redacted); the status comment shows `checks` and `merged`.
     pull_request: dict[str, Any] | None = None
-    #: The CI fix round in progress, 0 before the first. Shown as "n of
-    #: fix_rounds"; the CI loop advances it.
+    #: The CI fix round in progress or last spent, 0 before the first. Shown
+    #: as "n of fix_rounds"; the CI loop advances it.
     ci_fix_round: int = 0
+    # -- the CI loop (`issueci`). All optional, so a run stored before them
+    # reads as one that has not reached CHECKING.
+    #: The task whose branch the pull request is on: the compiled workflow's
+    #: integrator (its `fix` step). Every fix round continues it.
+    pr_task_id: str | None = None
+    #: Each fix round's continuation workflow, in order; the last is the
+    #: round in progress while FIXING.
+    ci_fix_workflows: list[str] = field(default_factory=list)
+    #: The head sha the last round was submitted against: the next round
+    #: needs CI at a DIFFERENT head, the one that round pushed.
+    ci_round_sha: str | None = None
+    #: The head sha every required check was green at. What a later merge
+    #: must pin to; set only on DONE.
+    green_sha: str | None = None
+    #: The red checks' output -- summary, text, annotations, the job log's
+    #: tail -- redacted and bounded (`issueci.MAX_EXCERPT_BYTES`). The last
+    #: red reading's; what a fix round was given, and why a FAILED run failed.
+    failure_excerpt: str | None = None
     #: sha256 of the comment body last written, so a sync that would write
     #: the same text writes nothing (and reads no token).
     last_plan_posted: str | None = None
@@ -674,6 +715,11 @@ class IssueRun:
             "status_comment_id": self.status_comment_id,
             "pull_request": None if self.pull_request is None else dict(self.pull_request),
             "ci_fix_round": self.ci_fix_round,
+            "pr_task_id": self.pr_task_id,
+            "ci_fix_workflows": list(self.ci_fix_workflows),
+            "ci_round_sha": self.ci_round_sha,
+            "green_sha": self.green_sha,
+            "failure_excerpt": self.failure_excerpt,
             "last_plan_posted": self.last_plan_posted,
             "last_status_posted": self.last_status_posted,
             "forge_login": self.forge_login,
@@ -717,6 +763,11 @@ class IssueRun:
                 else None
             ),
             ci_fix_round=int(data.get("ci_fix_round") or 0),
+            pr_task_id=data.get("pr_task_id"),
+            ci_fix_workflows=[str(w) for w in data.get("ci_fix_workflows") or []],
+            ci_round_sha=data.get("ci_round_sha"),
+            green_sha=data.get("green_sha"),
+            failure_excerpt=data.get("failure_excerpt"),
             last_plan_posted=data.get("last_plan_posted"),
             last_status_posted=data.get("last_status_posted"),
             forge_login=data.get("forge_login"),
@@ -765,8 +816,17 @@ class IssueRun:
                 None if self.pull_request is None else {
                     "number": self.pull_request.get("number"),
                     "url": self.pull_request.get("url"),
+                    "head_sha": self.pull_request.get("head_sha"),
+                    "checks": self.pull_request.get("checks"),
                 }
             ),
+            # The CI loop: the rounds spent and their workflows, the sha CI
+            # was green at, and the red checks' redacted output.
+            "pr_task_id": self.pr_task_id,
+            "ci_fix_round": self.ci_fix_round,
+            "ci_fix_workflows": list(self.ci_fix_workflows),
+            "green_sha": self.green_sha,
+            "failure_excerpt": self.failure_excerpt,
         }
 
 
@@ -774,10 +834,14 @@ def _opt_int(value: Any) -> int | None:
     return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
-#: What `IssueRuns.patch` may write: the write-back's bookkeeping, and
-#: nothing that decides where a run goes.
+#: What `IssueRuns.patch` may write: the write-back's and the CI read's
+#: bookkeeping. One field here is read to decide a move: `ci_fix_workflows`,
+#: because a round's workflow id exists only AFTER the transition that
+#: claimed the round (`issueci` claims CHECKING -> FIXING first, so two
+#: readers cannot both submit, then submits, then records the id). The
+#: round number itself is written by that transition, never by a patch.
 PATCHABLE_FIELDS: frozenset[str] = frozenset({
-    "plan_comment_id", "status_comment_id", "pull_request", "ci_fix_round",
+    "plan_comment_id", "status_comment_id", "pull_request", "ci_fix_workflows",
     "last_plan_posted", "last_status_posted", "forge_login",
     "writeback_error", "writeback_failed_at", "writeback_attempt",
 })

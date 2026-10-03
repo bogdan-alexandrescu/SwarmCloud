@@ -274,7 +274,12 @@ def test_the_machine_is_the_one_454_names():
         RunState.PLANNED, RunState.APPROVED, RunState.REJECTED, RunState.CANCELLED,
     }
     assert RUN_TRANSITIONS[RunState.APPROVED] == {RunState.RUNNING, RunState.FAILED}
-    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.DONE, RunState.FAILED, RunState.CANCELLED}
+    # The workflow succeeding opens a pull request; CI decides DONE (issueci).
+    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
+    assert RUN_TRANSITIONS[RunState.CHECKING] == {
+        RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
+    }
+    assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
     assert TERMINAL_RUN_STATES == {
         RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED,
     }
@@ -521,13 +526,27 @@ def test_auto_approval_submits_the_workflow_as_soon_as_the_plan_arrives(client, 
     assert len(_docs(db, "workflows")) == 1
 
 
-def test_the_run_follows_its_workflow_to_done(client, db, objects):
+def _integrator_opened(db, workflow_id: str, number: int = 57) -> None:
+    """The workflow's `fix` step -- its integrator -- records the PR it opened."""
+    steps = db.docs[f"workflows/{workflow_id}"]["steps"]
+    (task_id,) = [s["task_id"] for s in steps if s["step_id"] == issueruns.FIX_STEP]
+    db.docs[f"tasks/{task_id}"]["result_summary"] = {"git": {"pull_request": {
+        "number": number, "url": f"https://github.com/saga-xyz/widgets/pull/{number}",
+    }}}
+
+
+def test_the_run_follows_its_workflow_to_checking_its_pull_request(client, db, objects):
+    """A workflow that succeeded is not CI that passed: test_issue_run_ci.py
+    holds CHECKING -> DONE."""
     run = _planned(client, db, objects)
     running = _approve(client, run["id"], run["plan_digest"]).json()["run"]
     for doc in _docs(db, "tasks").values():
         if doc.get("workflow_id") == running["workflow_id"]:
             doc["state"] = "SUCCEEDED"
-    assert _run(client, run["id"]).json()["run"]["state"] == "DONE"
+    _integrator_opened(db, running["workflow_id"])
+    read = _run(client, run["id"]).json()["run"]
+    assert read["state"] == "CHECKING"
+    assert read["pull_request"]["number"] == 57
 
 
 def test_the_run_follows_its_workflow_to_failed(client, db, objects):

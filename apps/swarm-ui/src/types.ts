@@ -4500,6 +4500,10 @@ export type IssueRunState =
   | 'PLANNED'
   | 'APPROVED'
   | 'RUNNING'
+  /** The workflow opened its pull request; its CI is being read at the head. */
+  | 'CHECKING'
+  /** CI was red: one continuation is fixing it (a fix round). */
+  | 'FIXING'
   | 'DONE'
   | 'FAILED'
   | 'REJECTED'
@@ -4626,6 +4630,27 @@ export interface IssueRun {
   history: RunTransition[]
   /** Null on runs created before the open-work read; absent from older servers. */
   open_work?: OpenWork | null
+  /** The run's pull request once its workflow opened one; absent from older servers. */
+  pull_request?: RunPullRequest | null
+  /** The CI loop (`issueci`): absent from servers before it. */
+  pr_task_id?: string | null
+  /** The fix round in progress or last spent, 0 before the first; capped by `fix_rounds`. */
+  ci_fix_round?: number
+  /** Each fix round's continuation workflow, in order. */
+  ci_fix_workflows?: string[]
+  /** The head sha every required check was green at; set on DONE. */
+  green_sha?: string | null
+  /** The red checks' output, redacted and bounded (8 KB) by the server. */
+  failure_excerpt?: string | null
+}
+
+/** `IssueRun.to_api().pull_request`. */
+export interface RunPullRequest {
+  number: number | null
+  url: string | null
+  head_sha?: string | null
+  /** The last CI reading at `head_sha`; null before the first. */
+  checks?: 'pending' | 'green' | 'red' | 'none' | null
 }
 
 /** `GET /v1/runs`: newest first, as the server orders them. */

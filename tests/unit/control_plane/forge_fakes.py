@@ -111,6 +111,16 @@ class GitHubWrites:
         self.status = status or {}
         self.comments: dict[int, dict[str, Any]] = {}
         self.pulls: dict[int, dict[str, Any]] = {}
+        # CI (#454's loop): the default branch's rules, the check runs and
+        # commit statuses at each sha, each check run's annotations, and the
+        # Actions job logs `locate` redirects to and `fetch` serves.
+        self.rules: list[dict[str, Any]] = []
+        self.check_runs: dict[str, list[dict[str, Any]]] = {}
+        self.statuses: dict[str, list[dict[str, Any]]] = {}
+        self.annotations: dict[int, list[dict[str, Any]]] = {}
+        self.job_logs: dict[int, bytes] = {}
+        self.located: list[tuple[str, dict[str, str]]] = []
+        self.fetched: list[tuple[str, dict[str, str]]] = []
         self.calls: list[tuple[str, str, dict[str, str], bytes | None]] = []
         self._next = 9000
 
@@ -162,4 +172,67 @@ class GitHubWrites:
             if method == "PATCH":
                 self.pulls[number]["body"] = payload["body"]
             return 200, json.dumps(self.pulls[number]).encode()
+        query = parse_qs(parsed.query)
+        page = int(query.get("page", ["1"])[0])
+        per_page = int(query.get("per_page", ["30"])[0])
+        if rest[:2] == ["rules", "branches"]:
+            return 200, json.dumps(self.rules).encode()
+        if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":
+            runs = self.check_runs.get(rest[1], [])
+            chunk = runs[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps({"total_count": len(runs), "check_runs": chunk}).encode()
+        if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "status":
+            return 200, json.dumps({"statuses": self.statuses.get(rest[1], [])}).encode()
+        if rest[:1] == ["check-runs"] and len(rest) == 3 and rest[2] == "annotations":
+            return 200, json.dumps(self.annotations.get(int(rest[1]), [])[:per_page]).encode()
         return 404, b"{}"
+
+    # -- the Actions job log: a redirect from api.github.com, then a token-less read
+
+    LOG_HOST = "https://pipelines.actions.githubusercontent.com/logs/"
+
+    def locate(self, url, headers, timeout):
+        self.located.append((url, dict(headers)))
+        parts = urlparse(url).path.strip("/").split("/")  # repos/o/r/actions/jobs/<id>/logs
+        job_id = int(parts[-2])
+        if job_id not in self.job_logs:
+            return 404, ""
+        return 302, f"{self.LOG_HOST}{job_id}?sig=signed"
+
+    def fetch(self, url, headers, timeout):
+        self.fetched.append((url, dict(headers)))
+        job_id = int(urlparse(url).path.rstrip("/").split("/")[-1])
+        return 200, self.job_logs[job_id]
+
+    # -- helpers for a test's CI
+
+    def open_pull(self, number: int, sha: str, *, ref: str = "swarm/x", body: str = "") -> None:
+        self.pulls[number] = {
+            "number": number, "html_url": f"https://github.com/saga-xyz/widgets/pull/{number}",
+            "head": {"sha": sha, "ref": ref}, "base": {"ref": "main"}, "body": body,
+            "state": "open", "merged": False,
+        }
+
+    def require(self, *contexts: str, app_id: int | None = 15368) -> None:
+        """The default branch requires `contexts`, pinned to `app_id` (None: unpinned)."""
+        self.rules = [{
+            "type": "required_status_checks",
+            "parameters": {"required_status_checks": [
+                {"context": c, **({"integration_id": app_id} if app_id is not None else {})}
+                for c in contexts
+            ]},
+        }]
+
+    def check(
+        self, sha: str, name: str, conclusion: str | None, *, status: str = "completed",
+        check_id: int | None = None, output: dict[str, Any] | None = None,
+        app_id: int = 15368, app_slug: str = "github-actions",
+    ) -> int:
+        self._next += 1
+        run_id = check_id or self._next
+        self.check_runs.setdefault(sha, []).append({
+            "id": run_id, "name": name, "head_sha": sha, "status": status,
+            "conclusion": conclusion, "app": {"id": app_id, "slug": app_slug},
+            "output": output or {"title": None, "summary": None, "text": None},
+        })
+        return run_id

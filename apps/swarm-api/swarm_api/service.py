@@ -418,7 +418,12 @@ class SubmissionService:
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
-            continuation = resolve_continuation(self._store, tenant.tenant_id, spec)
+            # A continuation-scoped account continues `direct-pr` tasks only;
+            # an integrate workflow's integrator is a member's (#454's CI loop).
+            continuation = resolve_continuation(
+                self._store, tenant.tenant_id, spec,
+                allow_integrator=ctx.member_scope != "continuation",
+            )
             repository_url = (
                 continuation.repository_url if continuation else spec.repository_url
             )

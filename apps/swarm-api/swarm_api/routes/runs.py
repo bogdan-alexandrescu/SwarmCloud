@@ -16,7 +16,10 @@ EVERY READ ADVANCES, as every workflow read derives (`routes/workflows.py`),
 AND SO DOES A TICK. A run's state is a consequence of its planner task and
 then its workflow: the read that finds the planner ended reads `plan.json`
 and moves the run to PLANNED, and the read that finds the workflow ended moves
-it to DONE, FAILED or CANCELLED. Reads alone left a run nobody watches -- and
+it to CHECKING (it succeeded and opened its pull request), FAILED or
+CANCELLED. From CHECKING the CI loop (`swarm_api.issueci`) reads the pull
+request's CI and moves it to DONE, to FIXING for a fix round and back, or to
+FAILED at the cap. Reads alone left a run nobody watches -- and
 every `plan_approval: auto` run, whose whole point is that nobody has to --
 where it was, so a Cloud Scheduler job per tenant calls
 POST /v1/admin/runs/advance (`advance_tenant_runs`, owner decision on #454)
@@ -28,7 +31,8 @@ transition, and the loser re-reads.
 AN AUTO APPROVAL SUBMITS AS THE RUN'S CREATOR, in the run's tenant, whoever
 or whatever advanced it (`run_owner_auth`): the approval was given when the
 run was created, by the member who created it, and the tick's own identity
-holds no tenant at all.
+holds no tenant at all. A CI fix round is submitted the same way, for the same
+reason: the run's creator asked for its pull request to be made green.
 
 The tenant on every route comes from `tenant_scope`, never from the body: a
 run is created in the caller's tenant (through `submit_tasks`, which runs
@@ -49,6 +53,7 @@ from swarm_common.states import TaskState
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
+from .. import issueci
 from ..forge import ForgeReadError, read_open_work
 from ..issueruns import (
     AUTO_APPROVER,
@@ -145,8 +150,10 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     return run
 
 
+#: What the compiled workflow's end moves a run to. SUCCEEDED is not DONE:
+#: it opened a pull request whose CI has not been read (`issueci`).
 _WORKFLOW_ENDS = {
-    TaskState.SUCCEEDED.value: RunState.DONE,
+    TaskState.SUCCEEDED.value: RunState.CHECKING,
     TaskState.FAILED.value: RunState.FAILED,
     TaskState.DEAD_LETTERED.value: RunState.FAILED,
     TaskState.CANCELLED.value: RunState.CANCELLED,
@@ -165,10 +172,12 @@ def _from_workflow(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     to = _WORKFLOW_ENDS.get(str(derived))
     if to is None:
         return run
-    patch = {} if to == RunState.DONE else {
-        "error": f"the run's workflow {run.workflow_id} ended {derived}"
-    }
-    return _runs(ctx).transition(tenant_id, run.id, to, by=SYSTEM, patch=patch)
+    if to == RunState.CHECKING:
+        return issueci.enter_checking(ctx, tenant_id, run, workflow)
+    return _runs(ctx).transition(
+        tenant_id, run.id, to, by=SYSTEM,
+        patch={"error": f"the run's workflow {run.workflow_id} ended {derived}"},
+    )
 
 
 def _approve(
@@ -279,6 +288,12 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 return _runs(ctx).get(tenant_id, run.id)
         if run.state == RunState.RUNNING:
             run = _from_workflow(ctx, tenant_id, run)
+        # A round that ended goes back to CHECKING, and CI at the head it
+        # pushed is read in the same visit.
+        if run.state == RunState.FIXING:
+            run = issueci.from_fix_round(ctx, tenant_id, run)
+        if run.state == RunState.CHECKING:
+            run = issueci.from_checks(ctx, tenant_id, run, owner_auth=run_owner_auth)
     except Conflict:
         # Another request moved it first; what it moved it to is the answer.
         return _runs(ctx).get(tenant_id, run.id)
@@ -321,10 +336,12 @@ def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> Advan
     quote a forge or store error, and nothing this route returns is passed
     through redaction a second time.
 
-    Reads and transitions only. A `required` run the planner has finished
-    moves to PLANNED and stops there with no task, workflow or lease
-    (invariant 1), and later ticks do not visit it; the only submission a
-    tick can make is an `auto` run's approved plan.
+    Reads and transitions, and two kinds of submission. A `required` run the
+    planner has finished moves to PLANNED and stops there with no task,
+    workflow or lease (invariant 1), and later ticks do not visit it; a tick
+    submits only an `auto` run's approved plan, and a CHECKING run's CI fix
+    round when its pull request's CI is red (`issueci`) -- each as the run's
+    creator, in the run's tenant (`run_owner_auth`).
     """
     rows, truncated = _runs(ctx).tickable(tenant_id, limit=limit)
     report = AdvanceReport(truncated=truncated)

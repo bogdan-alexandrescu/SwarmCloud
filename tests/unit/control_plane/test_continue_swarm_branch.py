@@ -15,9 +15,10 @@ What this file holds is the API's half, which is where the rules live:
   * Only a task in the caller's own tenant can be continued, and a task in
     another tenant is refused with the SAME words as one that does not exist.
     Anything else would be a cross-tenant push and an enumeration oracle.
-  * Only a `direct-pr` task has a branch to continue, only a `direct-pr`
-    workflow may continue it, and only with one step: two steps pushing to the
-    one branch race each other to a non-fast-forward.
+  * Only a `direct-pr` task, or an `integrate` workflow's INTEGRATOR (#454's
+    CI loop), has a branch to continue; only a `direct-pr` workflow may
+    continue it, and only with one step: two steps pushing to the one branch
+    race each other to a non-fast-forward.
   * A continuation of a continuation continues the ORIGINAL branch. The fix's
     own task id names a branch nothing ever pushed.
 
@@ -141,6 +142,76 @@ def test_a_workflow_that_continues_nothing_is_unchanged(client, db):
     assert response.status_code == 201, response.text
     assert "continues" not in _step_task(db, response)["metadata"]["dispatch"]
     assert "continues_task" not in response.json()["dispatch"]
+
+
+def _submit_integrate_workflow(client, user: str = "alice") -> dict[str, str]:
+    """A two-step `integrate` workflow: `build` contributes, `publish` integrates."""
+    response = client.post(
+        "/v1/workflows",
+        headers=auth_header(user),
+        json={
+            "steps": [
+                {"step_id": "build", "runner_profile": "mock"},
+                {"step_id": "publish", "runner_profile": "mock", "depends_on": ["build"]},
+            ],
+            "strategy": "integrate",
+            "repository_url": REPO,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return {s["step_id"]: s["task_id"] for s in response.json()["workflow"]["steps"]}
+
+
+def test_an_integrate_workflows_integrator_can_be_continued(client, db):
+    """#454's CI loop: an issue run's pull request is its integrator's, pushed
+    from `swarm/<integrator task id>` exactly as a `direct-pr` task pushes
+    `swarm/<its id>`, so a fix round continues the integrator's task."""
+    tasks = _submit_integrate_workflow(client)
+    integrator = tasks["publish"]
+    assert _task_doc(db, integrator)["metadata"]["dispatch"]["role"] == "integrator"
+
+    response = client.post(
+        "/v1/workflows", headers=auth_header("alice"), json=_fix_workflow(integrator)
+    )
+
+    assert response.status_code == 201, response.text
+    task = _step_task(db, response)
+    assert task["metadata"]["dispatch"]["continues"] == integrator
+    assert task["metadata"]["dispatch"]["strategy"] == "direct-pr"
+    assert task["repository_url"] == REPO
+    # A second round names the first round's task, and still continues the integrator.
+    first_fix = response.json()["workflow"]["steps"][0]["task_id"]
+    second = client.post(
+        "/v1/workflows", headers=auth_header("alice"), json=_fix_workflow(first_fix)
+    )
+    assert second.status_code == 201, second.text
+    assert _step_task(db, second)["metadata"]["dispatch"]["continues"] == integrator
+
+
+def test_an_integrate_contributor_cannot_be_continued(client):
+    """A contributor's branch is merged by its integrator and has no pull request."""
+    tasks = _submit_integrate_workflow(client)
+    refused = client.post(
+        "/v1/workflows", headers=auth_header("alice"), json=_fix_workflow(tasks["build"])
+    )
+    assert refused.status_code == 422, refused.text
+    assert refused.json()["code"] == "invalid_dispatch"
+    assert "integrator" in refused.json()["message"]
+
+
+def test_another_tenants_integrator_reads_as_missing(client):
+    tasks = _submit_integrate_workflow(client, user="alice")
+    theirs = client.post(
+        "/v1/workflows", headers=auth_header("bob"), json=_fix_workflow(tasks["publish"])
+    )
+    missing = client.post(
+        "/v1/workflows", headers=auth_header("bob"),
+        json=_fix_workflow("task_00000000000000000000"),
+    )
+    assert theirs.status_code == missing.status_code == 422
+    assert theirs.json()["message"].replace(tasks["publish"], "X") == missing.json()[
+        "message"
+    ].replace("task_00000000000000000000", "X")
 
 
 # --------------------------------------------------------------------------

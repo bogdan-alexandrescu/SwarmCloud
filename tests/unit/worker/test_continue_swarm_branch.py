@@ -267,3 +267,26 @@ def test_the_continued_branch_is_only_honoured_for_direct_pr():
         metadata = {DISPATCH_METADATA_KEY: {"strategy": strategy, "continues": ROOT}}
         with pytest.raises(WorkerError):
             continuation.clone_ref(metadata, "swarm/")
+
+
+def test_a_continued_integrator_is_the_branch_the_integrator_pushed():
+    """#454's CI loop continues an `integrate` workflow's INTEGRATOR, whose pull
+    request is the run's. The integrator publishes `<prefix><its own task id>`
+    (it carries no `continues`), and a fix naming it clones and pushes exactly
+    that branch -- so the fix lands on the integrator's pull request and the
+    worker needs no second rule for it."""
+    integrator = new_id("task")
+    contributor = new_id("task")
+    integrator_block = DispatchOptions(strategy="integrate").with_role(
+        "integrator", integrates=[contributor]
+    ).to_metadata()
+    pushed = continuation.publish_branch(
+        {DISPATCH_METADATA_KEY: integrator_block}, "swarm/", integrator
+    )
+    assert pushed == f"swarm/{integrator}"
+
+    fix = {DISPATCH_METADATA_KEY: DispatchOptions(
+        strategy="direct-pr", continues=integrator
+    ).to_metadata()}
+    assert continuation.clone_ref(fix, "swarm/") == pushed
+    assert continuation.publish_branch(fix, "swarm/", FIX) == pushed

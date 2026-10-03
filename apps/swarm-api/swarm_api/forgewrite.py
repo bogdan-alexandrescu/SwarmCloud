@@ -29,6 +29,20 @@ is a token that can push and open a pull request but was never given
 `issues: write`, and "GitHub answered 403" would send an operator looking
 everywhere else first.
 
+THE CI READS (#454's CI loop) are on the same wire: the default branch's
+rules, the check runs and commit statuses at the pull request's head, a
+check run's annotations -- each with its own 403 code, `checks_forbidden`,
+naming the read permission -- and, best-effort, the tail of a failed Actions
+job's log. That log is the one read that leaves api.github.com: GitHub
+answers `actions/jobs/{id}/logs` with a redirect to a signed URL on its log
+storage. The redirect is still never FOLLOWED with the token. `locate` makes
+the authenticated request and returns only the Location; `fetch` then reads
+that URL with NO Authorization header, only on an allow-listed log host
+(`is_log_host`), only over https, only its tail. The signed URL is itself a
+credential with an expiry, so it is never logged, stored or put in an error.
+A token that cannot read Actions, or any failure on the way, answers None:
+the check run's own output is still the excerpt.
+
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
 """
@@ -41,7 +55,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any, Callable
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from .errors import ApiError
 from .forge import (
@@ -49,6 +63,7 @@ from .forge import (
     MAX_RESPONSE_BYTES,
     TIMEOUT_SECONDS,
     _OPENER,
+    _USER_AGENT,
     github_headers,
     is_pinned_host,
 )
@@ -90,9 +105,30 @@ class ForgeWriteNotFound(ForgeWriteError):
     code = "writeback_not_found"
 
 
+class ChecksForbidden(ForgeWriteForbidden):
+    """A CI read refused: the credential cannot read checks, statuses or rules."""
+
+    code = "checks_forbidden"
+
+
 #: What each write needs, named in the 403's sentence.
 ISSUES_WRITE = "issues: write"
 PULLS_WRITE = "pull_requests: write"
+#: What each CI read needs.
+CHECKS_READ = "checks: read"
+STATUSES_READ = "statuses: read"
+RULES_READ = "metadata: read"
+
+#: Pages of check runs read at one sha. A head with more than 500 check runs
+#: is read as far as that, which is far past any repository's CI.
+MAX_CHECK_PAGES = 5
+#: Annotations read per failing check run: what the excerpt has room for.
+MAX_ANNOTATIONS = 50
+#: The most of a job log's tail read.
+MAX_LOG_TAIL_BYTES = 16 * 1024
+#: Where GitHub's Actions log redirect may point. The read carries no token,
+#: but a URL outside these is not GitHub's log storage and is not read.
+LOG_HOST_SUFFIXES = (".actions.githubusercontent.com", ".blob.core.windows.net")
 
 
 # --------------------------------------------------------------------------
@@ -123,6 +159,47 @@ def _urllib_send(
         return answer.code, raw
 
 
+#: `(url, headers, timeout) -> (status, Location or "")`: one authenticated GET
+#: on api.github.com whose redirect is reported, never followed.
+Locate = Callable[[str, dict[str, str], float], "tuple[int, str]"]
+#: `(url, headers, timeout) -> (status, body bytes)`: one GET with NO token.
+Fetch = Callable[[str, dict[str, str], float], "tuple[int, bytes]"]
+
+
+def is_log_host(url: str) -> bool:
+    """True only for an https URL on GitHub's Actions log storage."""
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    return parsed.scheme == "https" and any(host.endswith(s) for s in LOG_HOST_SUFFIXES)
+
+
+def _urllib_locate(url: str, headers: dict[str, str], timeout: float) -> tuple[int, str]:
+    if not is_pinned_host(url):
+        raise ForgeWriteError(
+            f"the forge client sends the tenant's credential to {GITHUB_API_HOST} only"
+        )
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return response.status, ""
+    except urllib.error.HTTPError as answer:
+        location = answer.headers.get("Location") if answer.headers else None
+        return answer.code, location or ""
+
+
+def _urllib_fetch(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    if not is_log_host(url) or any(k.lower() == "authorization" for k in headers):
+        raise ForgeWriteError("a job log is read from GitHub's log storage, without a credential")
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            # A store that ignores the Range answers 200 with the whole log:
+            # read as much as any forge answer is held, and keep its tail.
+            return response.status, response.read(MAX_RESPONSE_BYTES)
+    except urllib.error.HTTPError as answer:
+        return answer.code, b""
+
+
 @dataclass(frozen=True)
 class CommentRef:
     """One issue comment as GitHub answered it: its id, its page, its author."""
@@ -141,6 +218,8 @@ class PullSnapshot:
     body: str
     state: str
     merged: bool
+    #: The branch the pull request merges into: whose rules name the required checks.
+    base_ref: str = ""
 
 
 def _int(value: Any) -> int | None:
@@ -163,9 +242,18 @@ def _comment(data: Any, what: str) -> CommentRef:
 class GitHubWriter:
     """GitHub's issue-comment and pull-request routes on api.github.com."""
 
-    def __init__(self, *, send: WriteSend | None = None, timeout: float = TIMEOUT_SECONDS) -> None:
+    def __init__(
+        self,
+        *,
+        send: WriteSend | None = None,
+        timeout: float = TIMEOUT_SECONDS,
+        locate: Locate | None = None,
+        fetch: Fetch | None = None,
+    ) -> None:
         self._send = send or _urllib_send
         self._timeout = timeout
+        self._locate = locate or _urllib_locate
+        self._fetch = fetch or _urllib_fetch
 
     @staticmethod
     def _url(ref: IssueRef, path: str) -> str:
@@ -177,6 +265,7 @@ class GitHubWriter:
     def _call(
         self, method: str, url: str, token: str, what: str, *, needs: str,
         payload: dict[str, Any] | None = None, ok: tuple[int, ...] = (200,),
+        forbidden: type[ForgeWriteForbidden] = ForgeWriteForbidden,
     ) -> Any:
         """One request, its status mapped to a code, its JSON answer (or None)."""
         headers = github_headers(token)
@@ -200,7 +289,7 @@ class GitHubWriter:
                 "scripts/create-secrets.sh --stdin"
             )
         if status == 403:
-            raise ForgeWriteForbidden(
+            raise forbidden(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 403): "
                 f"the credential needs `{needs}` on the repository "
                 "(docs/multi-tenancy.md, \"What the forge credential must be allowed\")"
@@ -294,6 +383,7 @@ class GitHubWriter:
         if not isinstance(data, dict) or _int(data.get("number")) is None:
             raise ForgeWriteError(f"GitHub's answer for {what} is not a pull request")
         head = data.get("head") if isinstance(data.get("head"), dict) else {}
+        base = data.get("base") if isinstance(data.get("base"), dict) else {}
         url = data.get("html_url")
         body = data.get("body")
         state = data.get("state")
@@ -305,6 +395,7 @@ class GitHubWriter:
             body=body if isinstance(body, str) else "",
             state=state if state in ("open", "closed") else "open",
             merged=data.get("merged") is True,
+            base_ref=str(base.get("ref") or ""),
         )
 
     def edit_pull_body(self, ref: IssueRef, number: int, body: str, token: str) -> None:
@@ -313,3 +404,99 @@ class GitHubWriter:
             f"the body of {ref.repository}#{int(number)}", needs=PULLS_WRITE,
             payload={"body": body},
         )
+
+    # -- CI at a sha (#454's CI loop) ---------------------------------------------
+
+    def branch_rules(self, ref: IssueRef, branch: str, token: str) -> list[dict[str, Any]]:
+        """The rules that apply to `branch` (`rules/branches/{branch}`), as GitHub lists them."""
+        what = f"the rules of {ref.repository}@{branch}"
+        data = self._call(
+            "GET", self._url(ref, f"rules/branches/{quote(branch, safe='')}?per_page=100"),
+            token, what, needs=RULES_READ, forbidden=ChecksForbidden,
+        )
+        if not isinstance(data, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [rule for rule in data if isinstance(rule, dict)]
+
+    def check_runs(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+        """The LATEST check run of each name at `sha` (`filter=latest`), every page."""
+        what = f"the check runs at {ref.repository}@{sha[:12]}"
+        url = self._url(ref, f"commits/{quote(sha, safe='')}/check-runs")
+        runs: list[dict[str, Any]] = []
+        for page in range(1, MAX_CHECK_PAGES + 1):
+            data = self._call(
+                "GET", f"{url}?filter=latest&per_page={PAGE_SIZE}&page={page}", token, what,
+                needs=CHECKS_READ, forbidden=ChecksForbidden,
+            )
+            entries = data.get("check_runs") if isinstance(data, dict) else None
+            if not isinstance(entries, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list of check runs")
+            runs += [entry for entry in entries if isinstance(entry, dict)]
+            if len(entries) < PAGE_SIZE:
+                break
+        return runs
+
+    def commit_statuses(self, ref: IssueRef, sha: str, token: str) -> list[dict[str, Any]]:
+        """The latest commit status of each context at `sha` (the combined status)."""
+        what = f"the commit statuses at {ref.repository}@{sha[:12]}"
+        data = self._call(
+            "GET", self._url(ref, f"commits/{quote(sha, safe='')}/status?per_page={PAGE_SIZE}"),
+            token, what, needs=STATUSES_READ, forbidden=ChecksForbidden,
+        )
+        entries = data.get("statuses") if isinstance(data, dict) else None
+        if not isinstance(entries, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list of statuses")
+        return [entry for entry in entries if isinstance(entry, dict)]
+
+    def check_annotations(self, ref: IssueRef, check_run_id: int, token: str) -> list[dict[str, Any]]:
+        """Up to MAX_ANNOTATIONS annotations of one check run."""
+        what = f"the annotations of check run {int(check_run_id)}"
+        data = self._call(
+            "GET",
+            self._url(ref, f"check-runs/{int(check_run_id)}/annotations?per_page={MAX_ANNOTATIONS}"),
+            token, what, needs=CHECKS_READ, forbidden=ChecksForbidden,
+        )
+        if not isinstance(data, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+        return [entry for entry in data if isinstance(entry, dict)]
+
+    def job_log_tail(
+        self, ref: IssueRef, job_id: int, token: str, *, limit: int = MAX_LOG_TAIL_BYTES
+    ) -> str | None:
+        """The last `limit` bytes of an Actions job's log, or None.
+
+        None for every failure -- a token without `actions: read`, a job that
+        is not an Actions job, a redirect to anywhere but GitHub's log
+        storage, a transport error -- because the log only adds to the check
+        run's own output. The token goes to api.github.com only; the log
+        storage is read without it (module docstring).
+        """
+        limit = max(1, min(int(limit), MAX_LOG_TAIL_BYTES))
+        try:
+            status, location = self._locate(
+                self._url(ref, f"actions/jobs/{int(job_id)}/logs"), github_headers(token),
+                self._timeout,
+            )
+        except Exception as exc:
+            log.info("job %s log not located (%s)", int(job_id), type(exc).__name__)
+            return None
+        if status not in (301, 302, 303, 307, 308) or not location or not is_log_host(location):
+            return None
+        try:
+            status, raw = self._fetch(
+                location,
+                {"Range": f"bytes=-{limit}", "User-Agent": _USER_AGENT},
+                self._timeout,
+            )
+        except Exception as exc:
+            # The type only: the URL is signed and must not reach a log.
+            log.info("job %s log not read (%s)", int(job_id), type(exc).__name__)
+            return None
+        if status not in (200, 206) or not raw:
+            return None
+        cut = len(raw) > limit
+        text = raw[-limit:].decode("utf-8", errors="replace")
+        if cut and "\n" in text:
+            # A whole-file answer (no range support), cut mid-line: drop the partial line.
+            text = text.split("\n", 1)[1]
+        return text

@@ -44,7 +44,7 @@ from swarm_api.waker import NullWaker
 
 from . import forge_fakes
 from .conftest import api_settings
-from .test_issue_runs import PLAN, _create, _docs, _finish_planner, _run
+from .test_issue_runs import PLAN, _create, _docs, _finish_planner, _integrator_opened, _run
 
 SWEEPER = "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
 SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
@@ -139,16 +139,22 @@ def test_a_required_run_stops_at_planned_and_holds_nothing(client, db, objects):
     assert set(_docs(db, "leases")) == leases_before
 
 
-def test_a_running_run_follows_its_workflow_to_done_on_the_tick(client, db, objects):
+def test_a_running_run_follows_its_workflow_to_checking_on_the_tick(client, db, objects):
     run = _create(client, plan_approval="auto").json()["run"]
     _finish_planner(db, objects, run, PLAN)
     _tick(client)
     workflow_id = _stored(db, run["id"])["workflow_id"]
     for doc in _workflow_tasks(db, workflow_id):
         doc["state"] = "SUCCEEDED"
+    _integrator_opened(db, workflow_id)
 
     assert _tick(client).json()["report"]["moved"] == 1
-    assert _stored(db, run["id"])["state"] == "DONE"
+    # Its pull request's CI is the tick's to read from here (test_issue_run_ci.py).
+    assert _stored(db, run["id"])["state"] == "CHECKING"
+    assert "CHECKING" in [
+        s.value for s in issueruns.RunState
+        if s not in issueruns.TERMINAL_RUN_STATES and s != issueruns.RunState.PLANNED
+    ], "a CHECKING run is one the tick visits"
 
 
 def test_a_terminal_run_is_not_touched(client, db, objects, monkeypatch):

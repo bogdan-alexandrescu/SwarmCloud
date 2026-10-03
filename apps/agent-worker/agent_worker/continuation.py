@@ -15,6 +15,15 @@ caller chose. The push itself is unchanged: `push_branch` still refuses a
 branch outside the prefix and the default branch, and never forces, so a
 branch that moved while the fix ran is reported, not overwritten.
 
+WHICH TASKS CAN BE CONTINUED is swarm-api's rule, not this file's: a
+`direct-pr` task, or (since #454's CI loop) an `integrate` workflow's
+integrator. Nothing here needs to tell them apart, because both pushed
+`<prefix><their own task id>` through `publish_branch` below -- the
+integrator merges its contributors into that branch and opens the workflow's
+one pull request from it -- so the branch derived from the continued id is
+the branch that task pushed either way. What IS checked here is the
+continuation's OWN strategy: only a `direct-pr` step carries `continues`.
+
 Kept out of lifecycle.py on purpose; lifecycle calls two functions from here.
 """
 

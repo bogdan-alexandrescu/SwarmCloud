@@ -42,7 +42,17 @@ from swarm_api.waker import NullWaker
 
 from . import forge_fakes
 from .conftest import api_settings, auth_header
-from .test_issue_runs import PLAN, _approve, _create, _docs, _edit, _finish_planner, _planned, _run
+from .test_issue_runs import (
+    PLAN,
+    _approve,
+    _create,
+    _docs,
+    _edit,
+    _finish_planner,
+    _integrator_opened,
+    _planned,
+    _run,
+)
 
 CONSOLE = "https://console.example.test"
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -140,11 +150,15 @@ def test_the_status_comment_is_edited_in_place_through_approval_and_done(client,
     for doc in _docs(db, "tasks").values():
         if doc.get("workflow_id") == running["workflow_id"]:
             doc["state"] = "SUCCEEDED"
+    _integrator_opened(db, running["workflow_id"])
+    writes.open_pull(57, "e" * 40)
+    writes.require("unit")
+    writes.check("e" * 40, "unit", "success")
     done = _run(client, run["id"]).json()["run"]
-    assert done["state"] == "DONE"
+    assert done["state"] == "DONE" and done["green_sha"] == "e" * 40
     statuses = _bodies(writes, "status", run["id"])
     assert [c["id"] for c in statuses] == [status_id]
-    assert "### SwarmCloud: done" in statuses[0]["body"]
+    assert "### SwarmCloud: checks green, ready to merge" in statuses[0]["body"]
     assert f"{CONSOLE}/runs/{run['id']}" in statuses[0]["body"]
     assert f"{CONSOLE}/workflows/{running['workflow_id']}" in statuses[0]["body"]
     # The plan comment says who approved, by the address's local part only.
@@ -410,6 +424,11 @@ def test_the_status_comment_shows_the_pull_request_the_fix_round_and_the_failure
         ({"state": RunState.RUNNING, "pull_request": {"number": 1}}, "pull request opened"),
         ({"state": RunState.RUNNING, "pull_request": {"number": 1, "checks": "green"}}, "checks green"),
         ({"state": RunState.DONE, "pull_request": {"number": 1, "merged": True}}, "merged"),
+        ({"state": RunState.CHECKING, "pull_request": {"number": 1, "checks": "pending"}},
+         "pull request opened, CI pending"),
+        ({"state": RunState.FIXING, "pull_request": {"number": 1, "checks": "red"}}, "CI red, fixing"),
+        ({"state": RunState.DONE, "pull_request": {"number": 1, "checks": "green"}},
+         "checks green, ready to merge"),
         ({"state": RunState.REJECTED}, "plan rejected"),
     ],
 )
@@ -453,7 +472,10 @@ def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, obj
     stored = IssueRuns(db).get("eng", run["id"])
     after = issuesync.sync_pull_request(api_context, stored, 57, closes=False, unmet=["b"])
     assert after.pull_request["head_sha"] == "c" * 40
-    assert after.to_api()["pull_request"] == {"number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57"}
+    assert after.to_api()["pull_request"] == {
+        "number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57",
+        "head_sha": "c" * 40, "checks": None,
+    }
     assert "part of #42" in writes.pulls[57]["body"] and "Closes #42" not in writes.pulls[57]["body"]
     assert "#57" in _bodies(writes, "status", run["id"])[0]["body"]
 
