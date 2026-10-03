@@ -214,7 +214,8 @@ describe('#90: the overview names the workflow a failure came from', () => {
     ]
     const el = await mount({ loadTasks: page(tasks) })
     const p = problem(el, /failed task/)
-    expect(text(p.querySelector('.ov-att-t b'))).toMatch(/2 in workflow wf-nightly/)
+    // Named in the card's second line, under its short title (visual QA Q5).
+    expect(text(p.querySelector('.ov-att-ids'))).toMatch(/2 in workflow wf-nightly/)
   })
 
   /**
@@ -266,7 +267,8 @@ describe('#92: the overview’s attention items say which workers are silent and
       loadLeases: ok(leasePage([lease('tsk_quiet_a', 300), lease('tsk_quiet_b', 200), lease('tsk_fine', 10)])),
     })
     const p = problem(el, /silent/)
-    const headline = text(p.querySelector('.ov-att-t b'))
+    // The workers are named in the card's second line (visual QA Q5).
+    const headline = text(p.querySelector('.ov-att-ids'))
     expect(headline).toMatch(/tsk_quiet_a/)
     expect(headline).toMatch(/tsk_quiet_b/)
     expect(headline).not.toMatch(/tsk_fine/)
@@ -282,7 +284,7 @@ describe('#92: the overview’s attention items say which workers are silent and
       task({ id: 'tsk_f2', state: 'FAILED', updated_at: ago(120), completed_at: ago(120) }),
     ]
     const el = await mount({ loadTasks: page(tasks) })
-    expect(text(problem(el, /failed task/).querySelector('.ov-att-t b'))).toMatch(/newest 3m ago/)
+    expect(text(problem(el, /failed task/).querySelector('.ov-att-ids'))).toMatch(/newest 3m ago/)
   })
 
   /**

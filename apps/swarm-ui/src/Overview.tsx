@@ -793,17 +793,47 @@ function NeedsALook({ checks }: { checks: Check[] }) {
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
  * card's second line, clamped to two, and its whole text is the title.
  */
-function CheckCard({ problem: p }: { problem: Problem }) {
+export function CheckCard({ problem: p }: { problem: Problem }) {
+  // A SHORT TITLE, THEN TWO LINES OF REGULAR TEXT (visual QA Q5, 2026-10-02;
+  // O1's check card). The headline's first clause is the title; the clauses
+  // after it -- the age, the workflow and worker ids -- are the second line,
+  // one line, cut with an ellipsis and whole in its title; the detail is the
+  // third. The whole headline stays the card's accessible name.
+  const { title, ids } = splitHeadline(p.headline)
   return (
     <a className={`ov-att is-${p.severity}`} href={p.href} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
       <span className="ov-att-t">
-        <b>{p.headline}</b>
-        <small title={p.detail}>{p.detail}</small>
+        <b title={p.headline}>{title}</b>
+        {ids !== null && (
+          <small className="ov-att-ids" title={ids}>
+            {ids}
+          </small>
+        )}
+        <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
+          {p.detail}
+        </small>
       </span>
       <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
     </a>
   )
+}
+
+/**
+ * A check's headline as O1's title and its second line: the title is the
+ * first clause, up to the first ` · ` or `: `, and the rest -- where the
+ * ages and the ids live -- is the second line. A headline with no clause
+ * after it is all title.
+ */
+export function splitHeadline(headline: string): { title: string; ids: string | null } {
+  const cuts = [
+    { at: headline.indexOf(' · '), len: 3 },
+    { at: headline.indexOf(': '), len: 2 },
+  ].filter((c) => c.at > 0)
+  if (cuts.length === 0) return { title: headline, ids: null }
+  const cut = cuts.reduce((a, b) => (b.at < a.at ? b : a))
+  const rest = headline.slice(cut.at + cut.len).trim()
+  return rest === '' ? { title: headline, ids: null } : { title: headline.slice(0, cut.at), ids: rest }
 }
 
 /** The red diamond, for a problem whose severity is a failure. Not a state. */

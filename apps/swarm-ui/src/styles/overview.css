@@ -46,8 +46,14 @@
 .ov-att:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .ov-att > .sk-st { margin-top: 3px; }
 .ov-att-t { display: flex; flex-direction: column; flex: 1; min-width: 0; }
-.ov-att-t b { font-weight: 600; }
+/* O1's check card: a short title, two lines of regular text, a link (visual
+   QA Q5, 2026-10-02). The title was the whole headline -- ids and all --
+   wrapping in bold; it is one line now, and the ids are the second. */
+.ov-att-t b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.ov-att-t small.ov-att-ids,
+.ov-att-t small.is-one { -webkit-line-clamp: 1; }
+.ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
 
 /* ---- the lifecycle band: three figures, each broken down by state --------- */
