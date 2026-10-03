@@ -109,6 +109,7 @@ import {
 } from './stepviews'
 import type { Result } from './fetch'
 import { MarkGlyph, STATE_MARK, StateMark } from './marks'
+import { ProgressBar } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
@@ -1528,7 +1529,7 @@ function Mix({ steps }: { steps: WorkflowStep[] }) {
  * dollars for the same reason Overview uses them: a single attempt is routinely
  * worth $0.0312, and $0.03 loses a third of the figures on this board.
  */
-function Spend({ spend }: { spend: WorkflowSpend }) {
+function Spend({ spend, short = false }: { spend: WorkflowSpend; short?: boolean }) {
   if (spend.usd === null) {
     // `title` AND `aria-label`. The title was already here and was never the
     // only route -- the word `not reported` is on the surface, in the absent
@@ -1538,9 +1539,12 @@ function Spend({ spend }: { spend: WorkflowSpend }) {
       spend.joined === 0
         ? 'No task was joined for this workflow, so nothing could have reported a cost. This is an absent measurement, not $0.00.'
         : `None of the ${spend.joined} joined step${spend.joined === 1 ? '' : 's'} reported a cost. This is an absent measurement, not $0.00.`
+    // `short`: the list's narrow Cost column, where "not reported" was cut
+    // to "not re…" (visual QA Q9). The honest short form is a dash with the
+    // reason as its title and its name -- never a 0, never a cut word.
     return (
-      <span className="wf-spend absent" title={why} aria-label={why}>
-        not reported
+      <span className={`wf-spend absent${short ? ' c-dash' : ''}`} title={why} aria-label={why} role={short ? 'img' : undefined}>
+        {short ? '—' : 'not reported'}
       </span>
     )
   }
@@ -4581,8 +4585,8 @@ function WorkflowListRow({
       <td>
         <Mix steps={workflow.steps} />
       </td>
-      <td className="num">
-        <Spend spend={spend} />
+      <td className="num" data-col="cost">
+        <Spend spend={spend} short />
       </td>
       <td className="wfl-owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
@@ -4659,22 +4663,27 @@ function RowWhyLine({ why }: { why: RowWhy }) {
  * read turned into a width would be a measurement of a census that failed.
  */
 function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
+  const s = derivedStateOf(workflow)
+  const hue = s === null ? 'neu' : STATE_MARK[s].hue
   if (!roll.trustworthy) {
+    // DONE OF TOTAL EVEN WHEN THE CENSUS IS PARTIAL (visual QA Q9,
+    // 2026-10-02): every row drew the same whole grey hatch, whatever it had
+    // counted. What the census DID count is drawn as the fill; the steps it
+    // could not read are hatched after it; with no census at all the whole
+    // track is hatched. No figure is invented -- the fill is the steps the
+    // census read as succeeded, and the words still say it is unread.
+    const counted = workflow.rollup?.counts.SUCCEEDED ?? 0
+    const unread = workflow.rollup?.unreadable_steps.length ?? roll.total
     return (
       <span className="wfl-done" title={roll.why}>
-        <span className="wfl-bar is-unknown" aria-hidden />
+        <ProgressBar done={workflow.rollup ? counted : 0} total={workflow.rollup ? roll.total : 0} unread={unread} tone={hue} label={roll.why} />
         <small>{roll.text}</small>
       </span>
     )
   }
-  const s = derivedStateOf(workflow)
-  const hue = s === null ? 'neu' : STATE_MARK[s].hue
-  const pct = roll.total === 0 ? 0 : Math.round((100 * roll.done) / roll.total)
   return (
     <span className="wfl-done" title={roll.why}>
-      <span className={`wfl-bar t-${hue}`} role="img" aria-label={roll.why}>
-        <i style={{ width: `${pct}%` }} />
-      </span>
+      <ProgressBar done={roll.done} total={roll.total} tone={hue} label={roll.why} />
       <small>
         {roll.done}/{roll.total}
       </small>

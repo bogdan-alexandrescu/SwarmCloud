@@ -129,3 +129,41 @@ export function UsageBar({
     </div>
   )
 }
+
+/**
+ * PROGRESS, ON THE SAME 6px TRACK: `done` of `total`, in a state's hue
+ * (components.html A, "Progress and usage bars"; workflows.html's Steps
+ * done). A usage bar's amber "nearly full" would be wrong here -- a finished
+ * workflow is not a warning -- so progress is its own form of the one track.
+ *
+ * `unread` steps are drawn HATCHED after the fill: counted but not measured,
+ * which is the one thing hatching means. A census with nothing to count
+ * (`total === 0`) is the whole track hatched, never an empty bar that reads
+ * as 0 done. The words are the accessible name; the bar is their picture.
+ */
+export type ProgressTone = 'live' | 'park' | 'bad' | 'neu'
+
+export function ProgressBar({
+  done,
+  total,
+  unread = 0,
+  tone = 'neu',
+  label,
+}: {
+  done: number
+  total: number
+  /** Steps whose state could not be read: hatched, after the fill. */
+  unread?: number
+  tone?: ProgressTone
+  /** The sentence the bar draws, as its accessible name. */
+  label: string
+}) {
+  if (total <= 0) return <span className="c-bar is-progress is-unmeasured" role="img" aria-label={label} />
+  const pct = (n: number) => `${Math.round((100 * Math.max(0, Math.min(n, total))) / total)}%`
+  return (
+    <span className={`c-bar is-progress is-${tone}`} role="img" aria-label={label} data-done={done} data-total={total}>
+      <i className="c-f" style={{ width: pct(done) }} />
+      {unread > 0 && <i className="c-h" style={{ left: pct(done), width: pct(unread) }} />}
+    </span>
+  )
+}

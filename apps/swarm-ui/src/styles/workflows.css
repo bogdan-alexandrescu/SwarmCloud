@@ -29,15 +29,18 @@
   .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
   .wfl .wfl-table { table-layout: fixed; width: 100%; }
   .wfl .wfl-table th[data-col="state"] { width: 9%; }
-  .wfl .wfl-table th[data-col="workflow"] { width: 21%; }
+  .wfl .wfl-table th[data-col="workflow"] { width: 19%; }
   .wfl .wfl-table th[data-col="shape"] { width: 13%; }
   .wfl .wfl-table th[data-col="done"] { width: 9%; }
   .wfl .wfl-table th[data-col="runners"] { width: 14%; }
-  .wfl .wfl-table th[data-col="cost"] { width: 7%; }
+  .wfl .wfl-table th[data-col="cost"] { width: 9%; }
   .wfl .wfl-table th[data-col="owner"] { width: 9%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
   .wfl .wfl-table th[data-col="duration"] { width: 9%; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
+  /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
+     column holds "$12.3456 3/5"; an unreported cost is a dash. */
+  .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
   .wfl .wfl-name { min-width: 0; }
   .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }

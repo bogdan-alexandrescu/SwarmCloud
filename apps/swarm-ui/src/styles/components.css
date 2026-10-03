@@ -293,6 +293,13 @@
 /* NOT MEASURED, and only that: the hatch, dashed, never an empty track. */
 .c-bar.is-unmeasured { background: var(--ctl-hatch); border: 1px dashed var(--ctl-absent); }
 .c-bar.is-unknown-ceiling > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
+/* Progress: done of total in a state's hue, unread steps hatched after it. */
+.c-bar.is-progress { display: inline-flex; width: 96px; flex: none; vertical-align: middle; }
+.c-bar.is-progress.is-live > .c-f { background: var(--s-live); }
+.c-bar.is-progress.is-park > .c-f { background: var(--s-park); }
+.c-bar.is-progress.is-bad > .c-f { background: var(--s-bad); }
+.c-bar.is-progress.is-neu > .c-f { background: var(--s-neu); }
+.c-bar.is-progress > .c-h { position: absolute; top: 0; bottom: 0; background: var(--ctl-hatch); }
 
 /* ---- empty, partial, failed, loading: four different things ------------ */
 .c-emp { border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); padding: 12px 14px; display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }

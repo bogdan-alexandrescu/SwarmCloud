@@ -10943,12 +10943,6 @@ span.sk-ttile { cursor: default; }
 .wfl-why.is-warn { color: var(--s-warn); }
 .wfl-done { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
 .wfl-done small { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.wfl-bar { display: inline-flex; width: 96px; height: 6px; border-radius: 2px; overflow: hidden; background: var(--line-soft); }
-.wfl-bar > i { display: block; height: 100%; background: var(--s-neu); }
-.wfl-bar.t-live > i { background: var(--s-live); }
-.wfl-bar.t-park > i { background: var(--s-park); }
-.wfl-bar.t-bad > i { background: var(--s-bad); }
-.wfl-bar.is-unknown { background: repeating-linear-gradient(135deg, var(--line-soft) 0 3px, transparent 3px 6px); }
 .wfl-owner, .wfl-age { color: var(--text-dim); white-space: nowrap; }
 .wfl-none { margin: 0; color: var(--text-dim); display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .wfl-clear { font: inherit; border: 1px solid var(--ctl-bd); border-radius: 6px; background: var(--surface); color: var(--text); padding: 3px 10px; cursor: pointer; }
