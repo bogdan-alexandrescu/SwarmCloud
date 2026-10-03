@@ -5,7 +5,7 @@ import type { TopicId } from './help'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
 import './styles/capacity.css'
-import { Chip } from './components'
+import { Chip, ToneMark } from './components'
 import {
   humaniseUntil,
   overCeiling,
@@ -395,52 +395,27 @@ function BackendRow({
         <span className="rt-marks">
           {unread && <span className="ctl-mark is-unread">not read</span>}
           {!unread && pool === null && (
-            <span className="ctl-chip is-info" title={why}>
-              <i aria-hidden="true" />
-              uncapped
-            </span>
+            <ToneMark tone="is-info" title={why}>uncapped</ToneMark>
           )}
           {paused && (
-            <span className="ctl-chip is-paused" title="An operator paused this pool. It admits nothing until resumed, whatever its headroom says.">
-              <i aria-hidden="true" />
-              paused
-            </span>
+            <ToneMark tone="is-paused" title="An operator paused this pool. It admits nothing until resumed, whatever its headroom says.">paused</ToneMark>
           )}
           {over && (
-            <span
-              className="ctl-chip is-bad"
-              title={`${pool?.active} units are held against a ceiling of ${pool?.effective_limit}. Admission cannot produce that, so it is drift: a limit lowered under running work, or a slot never released. 'make pool-check' finds these.`}
-            >
-              <i aria-hidden="true" />
-              over ceiling
-            </span>
+            <ToneMark tone="is-bad"
+              title={`${pool?.active} units are held against a ceiling of ${pool?.effective_limit}. Admission cannot produce that, so it is drift: a limit lowered under running work, or a slot never released. 'make pool-check' finds these.`}>over ceiling</ToneMark>
           )}
           {shut && (
-            <span className="ctl-chip is-warn" title="The ceiling on this backend is zero, so nothing can start here however empty it looks.">
-              <i aria-hidden="true" />
-              admits nothing
-            </span>
+            <ToneMark tone="is-warn" title="The ceiling on this backend is zero, so nothing can start here however empty it looks.">admits nothing</ToneMark>
           )}
           {unset && (
-            <span
-              className="ctl-chip is-paused"
-              title="This backend's pool has no limit set, so its ceiling was never read and it admits nothing. Nobody set it to zero: somebody has to set a limit."
-            >
-              <i aria-hidden="true" />
-              no limit set
-            </span>
+            <ToneMark tone="is-paused"
+              title="This backend's pool has no limit set, so its ceiling was never read and it admits nothing. Nobody set it to zero: somebody has to set a limit.">no limit set</ToneMark>
           )}
           {full && (
-            <span className="ctl-chip is-warn">
-              <i aria-hidden="true" />
-              full
-            </span>
+            <ToneMark tone="is-warn">full</ToneMark>
           )}
           {pool !== null && !paused && !over && !shut && !unset && !full && (
-            <span className="ctl-chip is-ok">
-              <i aria-hidden="true" />
-              ok
-            </span>
+            <ToneMark tone="is-ok">ok</ToneMark>
           )}
         </span>
       </td>
@@ -609,10 +584,7 @@ function RuntimeCard({
             disabled chip shared its slot with a note that meant nothing like
             it. */}
         {off && (
-          <span className="ctl-chip is-bad" aria-describedby={runtime.disabled_reason ? reasonId : undefined}>
-            <i aria-hidden="true" />
-            disabled
-          </span>
+          <ToneMark tone="is-bad" describedBy={runtime.disabled_reason ? reasonId : undefined}>disabled</ToneMark>
         )}
       </div>
 
@@ -773,10 +745,7 @@ function Credential({ runtime }: { runtime: Runtime }) {
       /* Not "unknown", and not an em dash: em dash means "not measured", and
          this is measured. The answer is that it needs nothing. */
       <span className="rt-cred">
-        <span className="ctl-chip is-ok">
-          <i aria-hidden="true" />
-          none needed
-        </span>
+        <ToneMark tone="is-ok">none needed</ToneMark>
       </span>
     )
   }
@@ -936,13 +905,8 @@ function Sizing({
                            no runtime resolves to this class, so no caller can
                            reach it. `--info` is this sheet's tone for a fact
                            that is not a verdict. */
-                        <span
-                          className="ctl-chip is-info"
-                          title="No runtime in this catalogue resolves to this class, so no caller can reach it."
-                        >
-                          <i aria-hidden="true" />
-                          unreachable
-                        </span>
+                        <ToneMark tone="is-info"
+                          title="No runtime in this catalogue resolves to this class, so no caller can reach it.">unreachable</ToneMark>
                       ) : (
                         <span className="mono">{users.join(', ')}</span>
                       )}

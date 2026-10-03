@@ -111,8 +111,8 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     const row = rowOf(c, 'fix-heartbeat')
     const cells = [...row.children].map((el) => el.className.split(' ')[0])
     // Line one, in the drawn order: the mark, the name, the elapsed time.
-    expect(cells.slice(0, 3)).toEqual(['ctl-chip', 'agent', 'when'])
-    expect(row.querySelector('.ctl-chip')?.textContent).toContain('RUNNING')
+    expect(cells.slice(0, 3)).toEqual(['sk-st', 'agent', 'when'])
+    expect(row.querySelector('.sk-st')?.textContent).toMatch(/running/i)
     expect(row.querySelector('.cr-name b')?.textContent).toBe('fix-heartbeat')
     expect(row.querySelector('.when')?.textContent).toMatch(/\d/)
     // A lone task is named by the id prefix, with the whole id in its title.
@@ -191,7 +191,7 @@ describe('a strip row shows its agent on hover and on focus', () => {
     fireEvent.mouseEnter(row)
     const card = screen.getByRole('tooltip')
     expect(card.textContent).toContain('fix-heartbeat')
-    expect(card.textContent).toContain('RUNNING')
+    expect(card.textContent).toMatch(/running/i)
     expect(card.textContent).toContain('claude-code · sonnet')
     expect(card.textContent).toContain('alex')
     expect(card.querySelector('.ag-hovcard-when')?.textContent).toBe(row.querySelector('.when')?.textContent)

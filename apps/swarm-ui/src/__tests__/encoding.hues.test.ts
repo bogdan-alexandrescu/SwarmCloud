@@ -191,12 +191,11 @@ describe('a healthy or factual mark carries no state hue (CH-17)', () => {
   })
 
   const CASES: ReadonlyArray<{ what: string; selector: string; props: readonly string[]; pseudo?: string }> = [
-    { what: 'the ok dot', selector: '.ctl-dot.is-ok', props: ['background', 'background-color'] },
-    { what: "the ok dot's edge", selector: '.ctl-dot.is-ok', props: ['border-color', 'border'] },
-    { what: "the ok chip's mark", selector: '.ctl-chip.is-ok > i', props: ['background', 'background-color'] },
-    { what: 'the info dot', selector: '.ctl-dot.is-info', props: ['background', 'background-color'] },
-    { what: "the info dot's edge", selector: '.ctl-dot.is-info', props: ['border-color', 'border'] },
-    { what: "the info chip's mark", selector: '.ctl-chip.is-info > i', props: ['background', 'background-color'] },
+    // The ok and info marks are the canonical `ToneMark` (#503 swap): the
+    // brand glyph in the neutral hue (`TONE_MARK.ok/info.hue === 'neu'`,
+    // components.test.tsx), so the hue the sheet paints `.sk-st.is-neu` is
+    // the one both take.
+    { what: 'the ok and info marks', selector: '.sk-st.is-neu', props: ['color'] },
     {
       what: "the good metric's mark",
       selector: '.ctl-metric.is-good > .ctl-metric-label',
@@ -332,7 +331,10 @@ describe('the live pulse never fades a live mark under 3:1 (CH-19)', () => {
   )
 
   it('finds every live mark the pulse is on', () => {
-    expect(pulses.length, 'fewer live marks than the dot, the chip and the liveness badge').toBeGreaterThanOrEqual(3)
+    // The dot's and the chip's pulses went with `.ctl-dot` and `.ctl-chip`
+    // (#503 swap): the canonical live mark is the brand's haloed disc, which
+    // does not pulse. The liveness badge's rule is the one left to hold.
+    expect(pulses.length, 'no live mark carries the pulse, so the floor below is asked of nothing').toBeGreaterThanOrEqual(1)
   })
 
   for (const theme of THEMES) {

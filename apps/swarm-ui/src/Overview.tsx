@@ -18,7 +18,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { NamedMark, StateMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { NamedMark, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { PageHead, timeAgo } from './Shell'
 import {
@@ -180,7 +180,7 @@ export function OverviewScreen() {
             further down is one of those two. Its dot is the severity, its
             accessible name the sentence. */}
         <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
-          <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
+          <ToneMark tone={tallyTone(pending, refused, broken)} />
           <span className="ov-num">
             {landed}/{reads.length}
           </span>{' '}

@@ -40,8 +40,12 @@ import {
   Toaster,
   Tooltip,
   TOAST_MS,
+  TONE_MARK,
+  ToneMark,
+  toneOf,
   TypedConfirm,
   UsageBar,
+  UsageTrack,
   acknowledge,
   forgetToasts,
   parseDiff,
@@ -176,6 +180,69 @@ describe('Button', () => {
 // ---------------------------------------------------------------------------
 // States and park reasons
 // ---------------------------------------------------------------------------
+
+describe('ToneMark: a tone that is not a task state, in the brand marks', () => {
+  // It replaced the local `.ctl-chip` and `.ctl-dot` (#503 swap), whose marks
+  // were CSS shapes of their own. MUTATION: give two tones one mark, let an
+  // unknown tone fall through to a known one, or drop the word.
+  it('gives every tone its own silhouette, and healthy is grey', () => {
+    const tones = Object.keys(TONE_MARK) as (keyof typeof TONE_MARK)[]
+    expect(new Set(tones.map((t) => TONE_MARK[t].mark)).size).toBe(tones.length)
+    expect(TONE_MARK.ok.hue).toBe('neu')
+    expect(TONE_MARK.info.hue).toBe('neu')
+    expect(TONE_MARK.unknown.mark).toBe('queued')
+  })
+
+  it('reads every spelling the screens wrote, and anything else is the unknown ring', () => {
+    expect(toneOf('is-ok')).toBe('ok')
+    expect(toneOf('is-warn full')).toBe('warn')
+    expect(toneOf('wait')).toBe('warn')
+    expect(toneOf('ended')).toBe('info')
+    expect(toneOf('')).toBe('unknown')
+    expect(toneOf('is-wait-ish')).toBe('unknown')
+    const { container } = render(<ToneMark tone="bogus">who knows</ToneMark>)
+    const m = container.querySelector('.sk-st')!
+    expect(m.getAttribute('data-mark')).toBe('unknown')
+    expect(m.querySelector('svg circle')?.getAttribute('fill')).toBe('none')
+  })
+
+  it('keeps the word and the accessible name, and a bare mark is hidden', () => {
+    const { container } = render(
+      <>
+        <ToneMark tone="bad" label="Disabled by an operator" describedBy="why">
+          disabled
+        </ToneMark>
+        <ToneMark tone="ok" />
+      </>,
+    )
+    const [word, bare] = [...container.querySelectorAll('.sk-st')]
+    expect(word!.textContent).toBe('disabled')
+    expect(word!.getAttribute('aria-label')).toBe('Disabled by an operator')
+    expect(word!.getAttribute('aria-describedby')).toBe('why')
+    expect(word!.getAttribute('data-tone')).toBe('bad')
+    expect(bare!.getAttribute('aria-hidden')).toBe('true')
+  })
+})
+
+describe('UsageTrack: the bare track keeps its four forms apart', () => {
+  // The local `UtilTrack`, moved into the canonical set (#503 swap).
+  it('hatches unmeasured, ticks a measured zero, and draws the excess past the ceiling', () => {
+    const { container } = render(
+      <>
+        <UsageTrack pct={null} />
+        <UsageTrack pct={0} zeroTitle="Measured: 0 of 4." />
+        <UsageTrack pct={125} tone="is-bad" />
+      </>,
+    )
+    const [none, zero, over] = [...container.querySelectorAll('.ctl-util-track')]
+    expect(none!.classList.contains('is-unknown')).toBe(true)
+    expect(none!.querySelector('.ctl-util-fill')).toBeNull()
+    expect(zero!.querySelector('.ctl-util-zero')).not.toBeNull()
+    expect(zero!.querySelector('.ctl-util-fill')).toBeNull()
+    expect(over!.querySelector('.ctl-util-fill.is-bad')).not.toBeNull()
+    expect(over!.querySelector('.ctl-util-over')).not.toBeNull()
+  })
+})
 
 describe('StatePill and ParkPill', () => {
   it('draws every task state in all three forms, with its own mark and hue', () => {
@@ -420,6 +487,28 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     expect(screen.getByRole('button', { name: 'Light' }).getAttribute('aria-pressed')).toBe('true')
     fireEvent.click(screen.getByRole('button', { name: 'Dark' }))
     expect(pick).toHaveBeenCalledWith('dark')
+  })
+
+  it('the segmented control can press nothing, be disabled, or be a tablist', () => {
+    // The forms the local `.ctl-seg`s needed (#503 swap): Timeline's span
+    // while zoomed, the Workflows list's filter while loading, Accounts'
+    // Holding now | History.
+    const { container, unmount } = render(
+      <Segmented label="Span" value={null} disabled options={[{ key: '24h', label: '24h', title: 'a day', className: 'is-wide-only' }, { key: '7d', label: '7d' }]} />,
+    )
+    const buttons = [...container.querySelectorAll('button')]
+    expect(buttons.map((b) => b.getAttribute('aria-pressed'))).toEqual(['false', 'false'])
+    expect(buttons.every((b) => b.disabled)).toBe(true)
+    expect(buttons[0]!.title).toBe('a day')
+    expect(buttons[0]!.classList.contains('is-wide-only')).toBe(true)
+    unmount()
+    const pick = vi.fn()
+    render(<Segmented role="tablist" label="Who holds it" value="history" onChange={pick} options={[{ key: 'now', label: 'Holding now' }, { key: 'history', label: 'History' }]} />)
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['false', 'true'])
+    expect(tabs[0]!.getAttribute('aria-pressed')).toBeNull()
+    fireEvent.click(tabs[0]!)
+    expect(pick).toHaveBeenCalledWith('now')
   })
 
   it('the segmented control between addressed views is links, the current one aria-current', () => {

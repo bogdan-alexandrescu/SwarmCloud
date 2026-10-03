@@ -32,7 +32,7 @@ import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCa
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
 import { Icon, SkyShell, type SpineSection } from './Spine'
-import { routedClick, Segmented } from './components'
+import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
@@ -1809,10 +1809,7 @@ function RouteRow({ probe, now }: { probe: ProbeRecord; now: number }) {
       </th>
       <td role="cell" data-label="Last attempt">{timeAgo(probe.lastAttemptAt, now)}</td>
       <td role="cell" data-label="Outcome">
-        <span className={`ctl-chip ${outcome.tone}`}>
-          <i aria-hidden />
-          {outcome.label}
-        </span>
+        <ToneMark tone={outcome.tone}>{outcome.label}</ToneMark>
       </td>
       <td role="cell" data-label="Took" className="is-num ctl-ref-ms">{probe.lastLatencyMs}ms</td>
       <td role="cell" data-label="Newest payload">

@@ -467,51 +467,67 @@ def _shape_of(rules: list[Rule], selectors: tuple[str, ...]) -> dict[str, str]:
     return shape
 
 
-def test_every_chip_state_has_its_own_silhouette(rules):
+def _tone_marks() -> dict[str, tuple[str, str]]:
+    """`TONE_MARK` as components/StatePill.tsx declares it: tone -> (mark, hue).
+
+    THE CHIP AND THE DOT ARE THE CANONICAL `ToneMark` SINCE THE #503 SWAP. The
+    local `.ctl-chip` and `.ctl-dot` drew their marks as CSS shapes; the
+    canonical mark draws brand.html §3's glyphs (marks.tsx `MarkGlyph`), so a
+    tone's silhouette is the glyph its row in this table names. Read from the
+    shipped source, not restated here.
+    """
+    text = (UI_SRC / "components/StatePill.tsx").read_text()
+    table = re.search(r"export const TONE_MARK\b[^=]*=\s*\{(.*?)\n\}", text, re.S)
+    assert table, "components/StatePill.tsx declares no TONE_MARK table"
+    rows = {
+        tone: (mark, hue)
+        for tone, mark, hue in re.findall(
+            r"^\s*(\w+):\s*\{\s*mark:\s*'([\w-]+)',\s*hue:\s*'([\w-]+)'\s*\}", table.group(1), re.M
+        )
+    }
+    assert rows, "TONE_MARK has no rows this test can read"
+    return rows
+
+
+def _glyph_cases() -> set[str]:
+    """Every mark `MarkGlyph` draws a glyph for (marks.tsx)."""
+    return set(re.findall(r"case '([\w-]+)':", (UI_SRC / "marks.tsx").read_text()))
+
+
+def test_every_chip_state_has_its_own_silhouette():
     """Seven states, seven shapes.
 
     `.ctl-chip > i` used to be one 6px disc for every tone, so the chips were
-    separated by colour and by nothing else. Each state now overrides the
-    disc -- triangle, diamond, bar, two bars, hollow disc, haloed disc -- and
-    two states sharing a silhouette is a failure here.
+    separated by colour and by nothing else. Each state then got its own CSS
+    silhouette; since the #503 swap the chip and the dot are the canonical
+    `ToneMark`, and each tone names a brand glyph instead -- check, flat bar,
+    triangle, diamond, pause bars, haloed disc, ring. Two tones sharing a glyph
+    is a failure here, as two sharing a CSS shape was.
 
-    THE EXEMPTION MOVED FROM `is-ok` TO `is-unknown` (CP-14, owner decision
-    2026-09-25). The base mark used to be the filled disc, so `is-ok` equalled
-    the base and every other state had to move away from it -- which meant a
-    chip whose modifier matched no rule (`is-wait`, a typo, a state the API
-    added) drew the HEALTHY disc. The base is now the hollow ring, which is
-    `.ctl-dot`'s base too (design-system.md §6.6): a mark nobody derived is
-    drawn as an absence of information. So `is-unknown` is the one state that
-    may equal the base, and `is-ok` declares its filled disc like the rest.
+    THE EXEMPTION IS `unknown` (CP-14, owner decision 2026-09-25): the hollow
+    ring, an absence of information drawn as one -- and the mark `toneOf` falls
+    back to for a tone it does not know (asserted below and, behaviourally, in
+    components.test.tsx), so a typo or a new API state is never drawn healthy.
     """
-    shapes = {
-        state: _shape_of(rules, (".ctl-chip > i", f".ctl-chip.{state} > i"))
-        for state in CHIP_STATES
-    }
-    base = _shape_of(rules, (".ctl-chip > i",))
-    assert base, "`.ctl-chip > i` defines no shape at all"
+    marks = _tone_marks()
+    tones = {t.removeprefix("is-") for t in CHIP_STATES}
+    assert tones <= set(marks), f"TONE_MARK lacks a tone the chips drew: {sorted(tones - set(marks))}"
 
-    collisions = []
-    for a, b in itertools.combinations(CHIP_STATES, 2):
-        if shapes[a] == shapes[b]:
-            collisions.append(f"{a} and {b} are both drawn as {shapes[a]}")
+    collisions = [
+        f"{a} and {b} are both drawn as {marks[a][0]}"
+        for a, b in itertools.combinations(sorted(tones), 2)
+        if marks[a][0] == marks[b][0]
+    ]
     assert not collisions, (
         "two chip states are drawn as the same shape, so colour is again the "
         "only thing telling them apart:\n  " + "\n  ".join(collisions)
     )
-
-    # And the six that are not `is-unknown` must actually override the base,
-    # rather than passing the test above by accident of some unrelated
-    # property. The base is the unknown ring, so a state that inherits it is
-    # drawn as "nobody derived this".
-    not_overridden = [
-        state for state in CHIP_STATES
-        if state != "is-unknown" and shapes[state] == base
-    ]
-    assert not not_overridden, (
-        "these chip states inherit the base mark, the unknown ring, and so are "
-        "drawn as a state nobody derived: " + ", ".join(not_overridden)
-    )
+    missing = sorted(m for m, _ in marks.values() if m not in _glyph_cases())
+    assert not missing, f"TONE_MARK names marks MarkGlyph draws nothing for: {missing}"
+    # The unknown tone is the hollow ring, and nothing else is.
+    assert marks["unknown"][0] == "queued", "an underived state is not the hollow ring"
+    ring = re.search(r"case 'queued':\s*return (<circle[^>]*/>)", (UI_SRC / "marks.tsx").read_text())
+    assert ring and 'fill="none"' in ring.group(1), "the ring glyph is not hollow"
 
 
 def test_metric_tiles_mark_good_and_alert_with_a_shape(rules):
@@ -2082,106 +2098,63 @@ def test_a_projected_reading_is_not_drawn_in_the_absence_colour(sheet_scan, them
 # nobody derived. `.ctl-dot`'s base was already the ring (§6.6); the chip now
 # agrees with it.
 #
-# BOTH ARE ASKED OF THE SHEET, NOT OF A TABLE IN THIS FILE: every declaration
-# of the property in every sheet is matched against the element as the markup
-# draws it and put through the cascade (`_may_win`), then followed through
-# every `var()` in the theme. They were committed before the stylesheet change,
-# so the red run on the pull request is the proof they see the green disc and
-# the filled fallthrough.
-
-def _chip(*modifiers: str) -> _El:
-    """`<span class="ctl-chip ...">`, the chip as every screen writes it."""
-    return _El(tag="span", classes=frozenset({"ctl-chip", *modifiers}),
-               attrs=frozenset({"class"}), known=True)
-
-
-def _chip_mark(*modifiers: str) -> tuple[_El, ...]:
-    """The chip's mark, `<i aria-hidden="true" />`, inside `_chip(...)`."""
-    return (_El(tag="i", attrs=frozenset({"aria-hidden"}), known=True), _chip(*modifiers))
-
-
-def _dot(*modifiers: str) -> tuple[_El, ...]:
-    """`<i class="ctl-dot ...">`, the mark without the chip, in a plain parent.
-
-    The parent is KNOWN AND CLASSLESS on purpose. With an unknown parent, every
-    `X > i` rule in the sheet -- `.ctl-chip.is-warn > i`, `.liveness.live > i`,
-    `.pool .ctl-track > i` -- may reach an `<i>`, and this asked whether the
-    ok dot might be painted `--warn` by the chip's triangle rule. It failed on
-    exactly that on the first run after the stylesheet change (application
-    run 36136608375): a failure that was the test's own question, not the
-    product. The question here is what the PRIMITIVE paints
-    a bare ok dot; a screen that scopes a dot through its parent's class is not
-    that, and the fill guard above is where such a rule is looked for.
-    """
-    return (
-        _El(tag="i", classes=frozenset({"ctl-dot", *modifiers}),
-            attrs=frozenset({"class", "aria-hidden"}), known=True),
-        _El(tag="span", attrs=frozenset(), known=True),
-    )
+#: The brand's neutral state grey (brand.html §3): the hue the canonical marks
+#: draw SUCCEEDED, CANCELLED and QUEUED in, and the `ok` and `info` tones
+#: since the #503 swap. A grey, outside every verdict hue.
+NEUTRAL_MARK = "--s-neu"
 
 
 @pytest.mark.parametrize("theme", ["dark", "light"])
 def test_the_ok_mark_is_a_text_grey(sheet_scan, theme):
-    """The ok chip and the ok dot resolve to `--text-dim` or `--text-faint`, never a hue.
+    """The ok mark resolves to a grey, never a hue.
 
-    The chip's tone is `--chip-tone` on the chip, which its mark reads; the
-    dot paints its own fill and rim. Each declaration that may win is resolved
-    in the theme and must land on one of the two text greys' colours. A rule
-    that puts `--ok` back, or a more specific one that re-greens a chip on one
-    screen, fails here by name.
+    It was the ok chip's `--chip-tone` and the ok dot's fill and rim; both are
+    the canonical `ToneMark` since the #503 swap, whose `ok` row in TONE_MARK
+    is the neutral hue and whose colour is `.sk-st.is-neu`'s. That declaration,
+    put through the cascade and the theme, must land on a text grey or the
+    brand's neutral state grey -- never `--ok`, which is what this guards. A
+    rule that re-greens the mark, or a TONE_MARK row that gives `ok` a hue,
+    fails here by name.
     """
+    assert _tone_marks()["ok"][1] == "neu", "the ok tone is drawn in a hue, not the neutral grey"
+    assert _tone_marks()["info"][1] == "neu", "the info tone is drawn in a hue, not the neutral grey"
     tokens = _theme_tokens(sheet_scan.sheets, light=theme == "light")
-    greys = {name: _resolve_colour(f"var({name})", tokens) for name in sorted(TEXT_GREYS)}
-    assert all(greys.values()), f"a text grey does not resolve in the {theme} theme: {greys}"
+    allowed = {name: _resolve_colour(f"var({name})", tokens) for name in sorted(TEXT_GREYS | {NEUTRAL_MARK})}
+    assert all(allowed.values()), f"a grey does not resolve in the {theme} theme: {allowed}"
+    hues = {_resolve_colour(f"var({h})", tokens) for h in ("--ok", "--info", "--warn", "--bad", "--paused")}
 
+    mark = _El(tag="span", classes=frozenset({"sk-st", "is-neu"}), attrs=frozenset({"class"}), known=True)
     problems: list[str] = []
-    for what, chain, longhand in (
-        ("the ok chip's tone", (_chip("is-ok"),), "--chip-tone"),
-        ("the ok dot's fill", _dot("is-ok"), "background-color"),
-        ("the ok dot's rim", _dot("is-ok"), "border-color"),
-    ):
-        winners = _may_win(chain, _declared(sheet_scan.sheets, longhand))
-        if not any(reach == YES for _, reach in winners):
-            problems.append(f"{what}: no rule certainly sets `{longhand}` on it")
-        for paint, reach in winners:
-            hex_value = _resolve_colour(paint.value, tokens)
-            if hex_value not in greys.values():
-                problems.append(
-                    f"{what}: {_decl(paint)} {_how(reach)} it {hex_value or paint.value}, "
-                    f"which is not {' or '.join(sorted(TEXT_GREYS))}"
-                )
+    winners = _may_win((mark,), _declared(sheet_scan.sheets, "color"))
+    if not any(reach == YES for _, reach in winners):
+        problems.append("the ok mark: no rule certainly sets `color` on `.sk-st.is-neu`")
+    for paint, reach in winners:
+        hex_value = _resolve_colour(paint.value, tokens)
+        if hex_value not in allowed.values() or hex_value in hues:
+            problems.append(
+                f"the ok mark: {_decl(paint)} {_how(reach)} it {hex_value or paint.value}, "
+                f"which is not {' or '.join(sorted(allowed))}"
+            )
     assert not problems, (
         f"a healthy mark carries a hue in the {theme} theme:\n  " + "\n  ".join(problems)
     )
 
 
-def test_a_chip_whose_modifier_matches_nothing_draws_the_unknown_ring(sheet_scan):
-    """No modifier, or one no rule knows, is the hollow ring -- never a filled disc.
+def test_a_chip_whose_modifier_matches_nothing_draws_the_unknown_ring():
+    """No tone, or one nothing knows, is the hollow ring -- never a filled mark.
 
-    Asked of a bare `.ctl-chip` and of `.ctl-chip.is-wait`, the unmatched
-    modifier `CHIP_MOD` in Accounts.tsx exists to prevent. Every fill that may
-    reach the mark must be `transparent`, and a rule that certainly applies
-    must draw a solid rim, so the mark is present and hollow.
+    It was asked of a bare `.ctl-chip` and of `.ctl-chip.is-wait` through the
+    cascade. The chip is the canonical `ToneMark` since the #503 swap, and the
+    fallthrough is `toneOf`'s: anything it does not know is `unknown`, the
+    ring. `wait` is not unknown -- it is warn, the triangle a throttled state
+    takes (CH-22) -- so it must never fall through to the healthy check.
     """
-    problems: list[str] = []
-    for mods in ((), ("is-wait",)):
-        name = "`.ctl-chip" + "".join(f".{m}" for m in mods) + " > i`"
-        chain = _chip_mark(*mods)
-        fills = _may_win(chain, _declared(sheet_scan.sheets, "background-color"))
-        if not any(reach == YES for _, reach in fills):
-            problems.append(f"{name}: no rule certainly sets its fill")
-        for paint, reach in fills:
-            if paint.value not in ("transparent", "none"):
-                problems.append(
-                    f"{name}: {_decl(paint)} {_how(reach)} it, so an underived state is drawn "
-                    "as a filled disc rather than the unknown ring"
-                )
-        rims = _may_win(chain, _declared(sheet_scan.sheets, "border"))
-        if not any(
-            reach == YES and "solid" in paint.value and not paint.value.startswith("0")
-            for paint, reach in rims
-        ):
-            problems.append(f"{name}: no rule certainly draws its rim, so the ring is not drawn")
-    assert not problems, (
-        "a chip whose modifier matched nothing is not the unknown ring:\n  " + "\n  ".join(problems)
+    text = (UI_SRC / "components/StatePill.tsx").read_text()
+    body = re.search(r"export function toneOf\(.*?\n\}", text, re.S)
+    assert body, "components/StatePill.tsx declares no toneOf"
+    assert "if (t === 'wait') return 'warn'" in body.group(0), "`wait` is no longer the warn mark"
+    last = [ln for ln in body.group(0).splitlines() if ln.strip().startswith("return ")][-1]
+    assert last.rstrip().endswith(": 'unknown'"), (
+        "toneOf's fallthrough is not `unknown`, so an underived tone is drawn as a known one"
     )
+    assert _tone_marks()["unknown"][0] == "queued", "the unknown tone is not the hollow ring"

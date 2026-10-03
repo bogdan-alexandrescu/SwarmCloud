@@ -165,7 +165,10 @@ export function NamedMark({
   title,
   className,
   dataMark,
+  dataTone,
   hidden = false,
+  label,
+  describedBy,
 }: {
   mark: MarkName | 'warn' | 'skipped' | null
   hue: MarkHue | 'warn' | 'unknown'
@@ -174,8 +177,14 @@ export function NamedMark({
   title?: string
   className?: string
   dataMark?: string
+  /** The tone a `ToneMark` was asked for (`ok`, `warn` ...), for the tests. */
+  dataTone?: string
   /** Decoration beside words that already say it: hidden from assistive technology. */
   hidden?: boolean
+  /** The accessible name, when the word alone does not say enough. */
+  label?: string
+  /** The id of the element that explains it. */
+  describedBy?: string
 }) {
   const plain = typeof word === 'string' ? word : undefined
   return (
@@ -183,8 +192,11 @@ export function NamedMark({
       className={`sk-st is-${hue}${className === undefined ? '' : ` ${className}`}`}
       data-mark={dataMark ?? mark ?? 'none'}
       data-hue={hue}
+      data-tone={dataTone}
       title={title === undefined ? (bare ? plain : undefined) : title || undefined}
       aria-hidden={hidden || undefined}
+      aria-label={label}
+      aria-describedby={describedBy}
     >
       {mark !== null && <MarkIcon mark={mark} />}
       {word === undefined ? null : bare ? <span className="sk-vh">{word}</span> : <span className="sk-st-w">{word}</span>}

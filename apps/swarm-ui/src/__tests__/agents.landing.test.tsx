@@ -437,12 +437,12 @@ describe('the tab and the Recent state are addresses (OV-10)', () => {
   }
 
   const states = (c: HTMLElement) =>
-    [...c.querySelectorAll('.rows .row.clickable .ctl-chip')].map((n) => (n.textContent ?? '').trim())
+    [...c.querySelectorAll('.rows .row.clickable .sk-st')].map((n) => (n.textContent ?? '').trim())
 
   it('opens recent/failed on Recent with only the FAILED rows, though Live has one', async () => {
     const c = await landAt(MIXED, { list: { tab: 'recent', state: 'failed' } as const })
     expect(selectedTab()).toBe('Recent')
-    expect(states(c)).toEqual(['FAILED'])
+    expect(states(c)).toEqual(['failed'])
   })
 
   it('offers all, failed, cancelled and succeeded on Recent, counted from the loaded rows', async () => {
@@ -466,7 +466,7 @@ describe('the tab and the Recent state are addresses (OV-10)', () => {
     expect(states(c)).toHaveLength(3)
 
     fireEvent.click(buttons[2]!)
-    await waitFor(() => expect(states(c)).toEqual(['CANCELLED']))
+    await waitFor(() => expect(states(c)).toEqual(['cancelled']))
     // The click is reported, and the screen never writes the hash itself.
     expect(seen[seen.length - 1]).toEqual({ tab: 'recent', state: 'cancelled' })
 

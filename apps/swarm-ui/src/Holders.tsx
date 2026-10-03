@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { loadHolders, type HoldersBoard } from './api'
-import { Segmented } from './components'
+import { Segmented, ToneMark } from './components'
 import { HelpCard } from './HelpCard'
 import { StateMark, WarnMark } from './marks'
 import { Mark } from './primitives'
@@ -647,9 +647,6 @@ function Heartbeat({
   const tone = kind === 'presumed-dead' ? 'is-bad' : kind === 'silent' ? 'is-warn' : 'is-ok'
   const word = kind === 'presumed-dead' ? 'presumed dead' : kind === 'silent' ? 'silent' : 'beating'
   return (
-    <span className={`ctl-chip ${tone}`} title={copy}>
-      <i aria-hidden="true" />
-      {word} · {since}
-    </span>
+    <ToneMark tone={tone} title={copy}>{word} · {since}</ToneMark>
   )
 }

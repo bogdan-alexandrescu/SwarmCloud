@@ -7,7 +7,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, Chip, DRAWER_POLL_MS } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS } from './AgentDetail'
 import { agentName, backLabel } from './agentlist'
 import { loadTask } from './api'
 import type { TaskPane } from './App'
@@ -30,9 +30,9 @@ import {
 import { LogDock } from './LogDock'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { RESOURCE_UNITS, TERMINAL_STATES, stateTone, type Task } from './types'
+import { RESOURCE_UNITS, TERMINAL_STATES, type Task } from './types'
 import './styles/agents.css'
-import { Button, Tabs } from './components'
+import { Button, StateMark, Tabs } from './components'
 
 /**
  * ONE AGENT, IN THE SPLIT (agents.html V1, decided 2026-10-01; viewers.html A
@@ -413,9 +413,7 @@ function AgHead({
       {task !== null && <AgParentLink task={task} />}
       <div className="ag-head-row">
         {task !== null ? (
-          <Chip tone={stateTone(task.state)} state={task.state}>
-            {task.state}
-          </Chip>
+          <StateMark state={task.state} />
         ) : (
           <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
         )}

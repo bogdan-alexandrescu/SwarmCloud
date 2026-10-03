@@ -8,7 +8,7 @@ import { POOLS_POLL_MS, poolHref, useLinkedPool } from './capacityPoll'
 import { leaseCoverage } from './Holders'
 import { Screen } from './Shell'
 import './styles/capacity.css'
-import { Segmented, UsageTrack } from './components'
+import { Segmented, ToneMark, UsageTrack } from './components'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -675,10 +675,9 @@ function PoolMarks({ marks }: { marks: PoolClass }) {
   return (
     <>
       {marks.chips.map((c) => (
-        <span key={c.word} className={`ctl-chip ${c.cls}`} title={c.title}>
-          <i aria-hidden="true" />
+        <ToneMark key={c.word} tone={c.cls} title={c.title}>
           {c.word}
-        </span>
+        </ToneMark>
       ))}
     </>
   )

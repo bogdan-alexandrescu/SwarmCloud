@@ -297,7 +297,7 @@ describe('By runner profile draws a disabled profile as a condition (#503, brand
     render(<ProfilesScreen />)
     await waitFor(() => expect(document.querySelector('.cap-mx tbody tr')).not.toBeNull(), WAIT)
     const cell = document.querySelector('.cap-mx td[data-label="Can start"]')!
-    expect(cell.querySelector('.ctl-chip.is-bad'), 'disabled is drawn as a failure').toBeNull()
+    expect(cell.querySelector('.sk-st[data-tone="bad"]'), 'disabled is drawn as a failure').toBeNull()
     const mark = cell.querySelector('[data-mark]')
     expect(mark?.getAttribute('data-mark')).toBe('warn')
     expect(cell.textContent).toContain('disabled')
@@ -404,7 +404,7 @@ describe('Holders leads with the table, its filter, and drift per pool under it 
       const mark = c.querySelector('[data-mark]')
       expect(mark?.getAttribute('data-mark')).toBe('starting')
       expect(mark?.getAttribute('data-hue')).toBe('live')
-      expect(c.querySelector('.ctl-chip'), 'the old grey dot chip is still drawn').toBeNull()
+      expect(c.querySelectorAll('[data-mark]').length, 'a second mark, the old grey dot chip, is still drawn').toBe(1)
     }
     expect(cells.map((c) => c.textContent).sort()).toEqual(['awaiting', 'dispatched'])
   })

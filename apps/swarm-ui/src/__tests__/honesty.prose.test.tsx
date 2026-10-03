@@ -563,10 +563,10 @@ describe('Overview, with every help card closed', () => {
     // which is correct and is not what this test is about. Asserting without
     // waiting made it pass in isolation and fail under the full suite.
     await waitFor(() => expect(textOf(tally)).toContain('8/8'), WAIT)
-    // A landed-everything tally is the ok disc. The default `.ctl-dot` -- a
+    // A landed-everything tally is the ok disc. The unknown tone -- a
     // hollow ring -- means "still asking", and `is-bad` means a read failed;
     // the three must not be the same picture.
-    expect(tally!.querySelector('.ctl-dot.is-ok'), 'the tally drew no outcome').not.toBeNull()
+    expect(tally!.querySelector('.sk-st[data-tone="ok"]'), 'the tally drew no outcome').not.toBeNull()
     expect(tally!.getAttribute('aria-label')).toContain('8 of 8 reads landed')
   })
 
@@ -596,8 +596,8 @@ describe('Overview, with every help card closed', () => {
     )
     // The SHAPE, not only the hue: a diamond is the one mark with corners and
     // it survives the screenshot that a red pixel does not.
-    expect(tally!.querySelector('.ctl-dot.is-bad'), 'a failed read drew no mark').not.toBeNull()
-    expect(tally!.querySelector('.ctl-dot.is-ok'), 'a failed read drew the healthy mark').toBeNull()
+    expect(tally!.querySelector('.sk-st[data-tone="bad"]'), 'a failed read drew no mark').not.toBeNull()
+    expect(tally!.querySelector('.sk-st[data-tone="ok"]'), 'a failed read drew the healthy mark').toBeNull()
     expect(tally!.getAttribute('aria-label')).toContain('1 of 8 reads failed')
   })
 
@@ -1092,8 +1092,8 @@ describe('Runtimes, with every help card closed', () => {
       expect(head.querySelector('.ctl-card-note'), 'the head still repeats the backend the card lists under `runs on`').toBeNull()
     }
     const off = heads.find((h) => h.textContent?.includes('codex'))!
-    expect(off.querySelector('.ctl-chip.is-bad')?.textContent).toBe('disabled')
+    expect(off.querySelector('.sk-st[data-tone="bad"]')?.textContent).toBe('disabled')
     const on = heads.find((h) => h.textContent?.includes('claude-code'))!
-    expect(on.querySelector('.ctl-chip'), 'an available runtime carries a chip').toBeNull()
+    expect(on.querySelector('.sk-st'), 'an available runtime carries a chip').toBeNull()
   })
 })

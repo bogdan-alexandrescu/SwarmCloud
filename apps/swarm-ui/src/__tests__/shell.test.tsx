@@ -1715,7 +1715,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
     return r.winner?.value ?? null
   }
   const COMPACT =
-    '<div class="rows"><div class="row clickable is-compact"><span class="ctl-chip">RUNNING</span>' +
+    '<div class="rows"><div class="row clickable is-compact"><span class="sk-st is-live"><span class="sk-st-w">running</span></span>' +
     '<span class="agent cr-name"><b class="id">0961e42e</b></span><span class="when">waiting 99d 23h</span>' +
     '<span class="cr-sub"><span class="cr-try is-over">try 4/3</span></span></div></div>'
 
@@ -2348,8 +2348,8 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
 
   it('CP-20: the fixed provider and its chip are two words, not one', () => {
     // MUTATION: drop the chip's margin.
-    const f = fragment('<p class="acct-fixed mono">anthropic<span class="ctl-chip is-info"><i></i>fixed</span></p>')
-    expect(won(pick(f, '.ctl-chip'), ['margin-left', 'margin'], WIDE)).toBe('var(--ctl-s2)')
+    const f = fragment('<p class="acct-fixed mono">anthropic<span class="sk-st is-neu" data-tone="info"><span class="sk-st-w">fixed</span></span></p>')
+    expect(won(pick(f, '.sk-st'), ['margin-left', 'margin'], WIDE)).toBe('var(--ctl-s2)')
   })
 
   it('CP-22: the em dash is one face wherever it lands', () => {

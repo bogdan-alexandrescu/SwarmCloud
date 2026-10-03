@@ -17,13 +17,13 @@ import { act, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App, SECTIONS } from '../App'
-import { Chip } from '../AgentDetail'
+import { STATE_MARK } from '../marks'
+import { TONE_MARK, ToneMark, toneOf } from '../components'
 import { Dock } from '../Dock'
-import * as Workflows from '../Workflows'
 import { noteFixtureProbe, route } from '../fetch'
 import { stateTone, type Me } from '../types'
 import { declarations, flatRules, splitTop, type CascadeEnv } from './cssgate'
-import { build, painted, shapeOf } from './marks'
+import { painted } from './marks'
 import { noteProbe } from './probes'
 import { at, task } from './runfixture'
 
@@ -323,11 +323,18 @@ describe("CH-17: a read cell is a row in the dock's panel, not a box", () => {
     expect(won(pick(f, '.source.bad'), 'background-image', WIDE)).toContain('var(--bad)')
   })
 
-  it('keeps the ok disc and the info flat bar apart once the colour is gone', () => {
-    // Only the chips were covered before. MUTATION: `.ctl-dot.is-info` a disc.
-    const ok = shapeOf(build('.ctl-dot.is-ok', hosts), WIDE)
-    const info = shapeOf(build('.ctl-dot.is-info', hosts), WIDE)
-    expect(info, 'the ok dot and the info dot are one shape in greyscale').not.toBe(ok)
+  it('keeps the ok mark and the info flat bar apart once the colour is gone', () => {
+    // The bare dot is the canonical `ToneMark` now (#503 swap): brand glyphs,
+    // so the shape is the mark's. MUTATION: give `info` the ok mark.
+    const { container } = render(
+      <>
+        <ToneMark tone="ok" />
+        <ToneMark tone="info" />
+      </>,
+    )
+    const [ok, info] = [...container.querySelectorAll('.sk-st')]
+    expect(info!.getAttribute('data-mark'), 'the ok mark and the info mark are one shape in greyscale').not.toBe(ok!.getAttribute('data-mark'))
+    expect(info!.querySelector('svg')!.innerHTML).not.toBe(ok!.querySelector('svg')!.innerHTML)
   })
 
   it("draws the collapsed line's mark with the shared dot: an expired session is the diamond", () => {
@@ -336,18 +343,18 @@ describe("CH-17: a read cell is a row in the dock's panel, not a box", () => {
     noteProbe('/v1/capacity', 12, false, 'unauthenticated')
     const { container } = render(<Dock />)
     const line = container.querySelector('.ctl-dock-line')
-    expect(line?.querySelector('.ctl-dot.is-bad'), 'an expired session is not the failure diamond').not.toBeNull()
+    expect(line?.querySelector('.sk-st[data-tone="bad"][data-mark="failed"]'), 'an expired session is not the failure diamond').not.toBeNull()
     expect(container.querySelector('.ctl-dock-dot'), 'the private dock dot is back').toBeNull()
   })
 
-  it('draws a clean strip with the neutral disc and failures with the triangle', () => {
+  it('draws a clean strip with the neutral ok mark and failures with the triangle', () => {
     noteProbe('/v1/capacity', 12, true)
     const clean = render(<Dock />)
-    expect(clean.container.querySelector('.ctl-dock-line .ctl-dot.is-ok')).not.toBeNull()
+    expect(clean.container.querySelector('.ctl-dock-line .sk-st[data-tone="ok"][data-hue="neu"]')).not.toBeNull()
     clean.unmount()
     noteProbe('/v1/stats', 12, false, 'upstream_degraded')
     const failing = render(<Dock />)
-    expect(failing.container.querySelector('.ctl-dock-line .ctl-dot.is-warn')).not.toBeNull()
+    expect(failing.container.querySelector('.ctl-dock-line .sk-st[data-tone="warn"][data-mark="warn"]')).not.toBeNull()
   })
 })
 
@@ -367,39 +374,38 @@ describe('CH-22: a cancelled task ends, in the neutral flat bar', () => {
 
   it('draws a cancelled chip as the flat bar and a queued one as the wait mark', () => {
     // Agents drew CANCELLED as the caution TRIANGLE. MUTATION: map 'ended' to
-    // 'warn' in `chipTone`, or give it a modifier of its own.
+    // 'warn' in `toneOf`, or give it a mark of its own.
     const { container } = render(
       <>
-        <Chip tone={stateTone('CANCELLED')}>CANCELLED</Chip>
-        <Chip tone={stateTone('QUEUED')}>QUEUED</Chip>
+        <ToneMark tone={stateTone('CANCELLED')}>cancelled</ToneMark>
+        <ToneMark tone={stateTone('QUEUED')}>queued</ToneMark>
       </>,
     )
-    const [cancelled, queued] = [...container.querySelectorAll('.ctl-chip')]
-    expect(cancelled?.className, 'CANCELLED is not the one info modifier').toBe('ctl-chip is-info')
-    expect(queued?.className, 'QUEUED lost its wait mark').toBe('ctl-chip is-warn')
+    const [cancelled, queued] = [...container.querySelectorAll('.sk-st')]
+    expect(cancelled?.getAttribute('data-tone'), 'CANCELLED is not the one info tone').toBe('info')
+    expect(cancelled?.getAttribute('data-mark'), 'CANCELLED is not the flat bar').toBe('cancelled')
+    expect(queued?.getAttribute('data-tone'), 'QUEUED lost its wait mark').toBe('warn')
   })
 
-  it('makes the bare info dot the flat bar §6.6 specifies', () => {
+  it('makes the bare info mark the flat bar §6.6 specifies', () => {
     // It was a filled disc, so at 390 -- where the word is hidden -- a
-    // cancelled and a queued workflow were the same dot. MUTATION: the disc.
-    const dot = build('.ctl-dot.is-info', hosts)
-    const w = Number.parseFloat(won(dot, 'width', WIDE) ?? '')
-    const h = Number.parseFloat(won(dot, 'height', WIDE) ?? '')
-    expect(h, 'the flat bar is at most 3px tall').toBeLessThanOrEqual(3)
-    expect(w, 'the flat bar is wider than it is tall').toBeGreaterThan(h * 2)
-    expect(won(dot, ['border-width', 'border'], WIDE), 'the bar draws no ring').toMatch(/^(0|none)/)
+    // cancelled and a queued workflow were the same dot. It is CANCELLED's own
+    // brand glyph now, the flat bar. MUTATION: give `info` another mark.
+    expect(TONE_MARK.info.mark).toBe(STATE_MARK.CANCELLED.mark)
+    const { container } = render(<ToneMark tone="info" />)
+    const bar = container.querySelector('.sk-st svg rect, .sk-st svg path, .sk-st svg line')
+    expect(bar, 'the info mark draws no bar').not.toBeNull()
+    expect(container.querySelector('.sk-st svg circle'), 'the bar draws a ring').toBeNull()
   })
 
   it('draws a waiting workflow with the wait mark and a cancelled one with the ended bar', () => {
     // `dotClass` gave `wait` the info disc, which is now the ended bar -- so a
-    // queued workflow and a cancelled one would share it. MUTATION: `wait`
-    // back on `is-info`.
-    const dotClass = (Workflows as unknown as { dotClass?: (h: { tone: string; derived: boolean }) => string })
-      .dotClass
-    expect(typeof dotClass, 'Workflows.tsx exports no dotClass').toBe('function')
-    expect(dotClass!({ tone: stateTone('QUEUED'), derived: true })).toBe('ctl-dot is-warn')
-    expect(dotClass!({ tone: stateTone('CANCELLED'), derived: true })).toBe('ctl-dot is-info')
-    expect(dotClass!({ tone: stateTone('SUCCEEDED'), derived: true })).toBe('ctl-dot is-ok')
+    // queued workflow and a cancelled one would share it. The tones are the
+    // canonical `toneOf` now (#503 swap). MUTATION: `wait` back on `info`.
+    expect(toneOf(stateTone('QUEUED'))).toBe('warn')
+    expect(toneOf(stateTone('CANCELLED'))).toBe('info')
+    expect(toneOf(stateTone('SUCCEEDED'))).toBe('ok')
+    expect(TONE_MARK[toneOf(stateTone('QUEUED'))].mark).not.toBe(TONE_MARK[toneOf(stateTone('CANCELLED'))].mark)
   })
 })
 

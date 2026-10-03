@@ -195,8 +195,11 @@ function familyRow(name: string): HTMLElement {
 
 /** The state marks a Pools row or tile draws, as `word|modifier` pairs. */
 function chipsOf(el: Element): string[] {
-  return [...el.querySelectorAll('.ctl-chip')].map((c) => {
-    const mod = [...c.classList].find((k) => k.startsWith('is-')) ?? '(none)'
+  return [...el.querySelectorAll('.sk-st')].map((c) => {
+    // The tone the canonical `ToneMark` was asked for (#503 swap: its class is
+    // the brand hue, `is-park`, and the tone is `data-tone`).
+    const tone = c.getAttribute('data-tone')
+    const mod = tone === null ? '(none)' : `is-${tone}`
     return `${(c.textContent ?? '').trim()}|${mod}`
   })
 }
@@ -419,6 +422,6 @@ describe('a disabled runtime shows why (CP-17)', () => {
     const card = await runtimeCard('codex')
     // `textContent` holds what is drawn; an aria-label is not in it.
     expect(card.textContent).toContain(reason)
-    expect(card.querySelector('.ctl-chip.is-bad')?.textContent).toContain('disabled')
+    expect(card.querySelector('.sk-st[data-tone="bad"]')?.textContent).toContain('disabled')
   })
 })

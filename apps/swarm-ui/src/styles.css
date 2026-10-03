@@ -1196,7 +1196,7 @@ body {
    the one status encoding in this product now.
    `min-width: 0` so the chip's own `nowrap` truncates the column rather than
    pushing the name out of it. */
-.row > .ctl-chip { min-width: 0; overflow: hidden; }
+.row > .sk-st { min-width: 0; overflow: hidden; }
 /* `.row .meta` IS DELETED. Nothing has rendered a `.meta` cell in a task row
    since the row was rewritten; the two rules that referenced it -- this one and
    a `display: none` in the board's stray phone block -- were a selector pair
@@ -1238,7 +1238,7 @@ body {
    one at equal weight, so a failed row with an urgent reason is drawn as
    failed. */
 .row:has(.why.is-warn),
-.row:has(> .ctl-chip[data-hue='bad']) {
+.row:has(> .sk-st[data-hue='bad']) {
   background-repeat: no-repeat;
   background-position: left center;
 }
@@ -1246,7 +1246,7 @@ body {
   background-image: linear-gradient(var(--warn), var(--warn));
   background-size: 3px 46%;
 }
-.row:has(> .ctl-chip[data-hue='bad']) {
+.row:has(> .sk-st[data-hue='bad']) {
   background-image: linear-gradient(var(--bad), var(--bad));
   background-size: 3px 100%;
 }
@@ -1254,7 +1254,7 @@ body {
    and its 2px ink rule; the tone rule steps in beside it rather than under
    it, so an open failed row still says both things. */
 .row[aria-current]:not([aria-current='false']):has(.why.is-warn),
-.row[aria-current]:not([aria-current='false']):has(> .ctl-chip[data-hue='bad']) {
+.row[aria-current]:not([aria-current='false']):has(> .sk-st[data-hue='bad']) {
   background-position: 2px center;
 }
 
@@ -1815,7 +1815,6 @@ body {
    `running` and then `running 1m 32s` -- the same word twice and 18px of node
    height on every step in every graph. */
 .node-line { display: flex; align-items: baseline; gap: var(--ctl-s2); min-width: 0; }
-.node-line > .ctl-dot { align-self: center; }
 .node-line > .node-state { flex: none; }
 .node-line > .node-dur { margin-left: auto; text-align: right; }
 /* THE CARD IS A BUTTON THAT PICKS ITS STEP (WF-7). It was an `<a>` to the task
@@ -3761,7 +3760,7 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 .acct-fixed { margin: 0; font: var(--t-body)/var(--lh-body) var(--mono); color: var(--text); }
 /* `anthropic` and the `fixed` chip beside it had no space between them -- the
    markup has no whitespace there -- and read as one word (CP-20). */
-.acct-fixed > .ctl-chip { margin-left: var(--ctl-s2); }
+.acct-fixed > .sk-st { margin-left: var(--ctl-s2); }
 
 .acct-wide { width: 100%; max-width: 420px; }
 .acct-action input, #acct-label, #acct-lend {
@@ -4777,97 +4776,6 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   border-style: dotted;
 }
 
-/* -------------------------------------------------------------------------- */
-/* 13. The bare state dot                                                      */
-/* -------------------------------------------------------------------------- */
-/* THE CHIP'S SHAPE VOCABULARY, WITHOUT THE CHIP. `.ctl-chip` is a mark plus a
-   word in a bordered pill; a table cell, a DAG node and a dense row want the
-   mark alone, and the audit found four different state chips because there was
-   no way to get one without the other. Same seven silhouettes, same seven
-   tones, same meanings — a reader learns the vocabulary once and it holds
-   wherever a state is drawn.
-
-   THE DEFAULT IS UNKNOWN, AND THAT IS THE WHOLE POINT. Northflank's status dot
-   defaults to a neutral grey and green is an opt-in modifier, so a state nobody
-   derived renders as a fully-formed dot in a tone that is deliberately outside
-   the ok/warn/bad triad. It is present, legible, the same size as a healthy
-   one, and it cannot be mistaken for either a healthy state or a missing
-   element. A dot that is not drawn is a dot nobody can ask about. */
-.ctl-dot {
-  display: inline-block;
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: var(--ctl-radius-pill);
-  vertical-align: middle;
-  /* UNKNOWN by default: a hollow ring in the neutral tone. */
-  background: transparent;
-  border: 1.5px solid var(--text-faint);
-}
-/* OK AND INFO KEEP THEIR SHAPES AND LOSE THEIR HUE (CH-17, design-system.md
-   §6.6). On a state mark, hue is spent only on warn, bad, paused and live; a
-   healthy platform is a quiet grey screen. The ok mark is a filled disc in
-   `--text-faint` -- a disc, where the unknown default is a hollow ring.
-   CP-14 (#85) ruled first that healthy carries no hue and painted this disc
-   `--text-dim`; CH-17, decided after it, names this primitive and draws it in
-   `--text-faint`, so the later ruling sets the grey and CP-14's no-hue ruling
-   holds either way (`test_the_ok_mark_is_a_text_grey` accepts both greys).
-   THE INFO MARK IS THE FLAT BAR §6.6 SPECIFIES (CH-22), not the filled disc it
-   was: at 390, where the word is hidden, a cancelled and a queued workflow
-   were the same dot. It is the neutral "ended" mark CANCELLED takes and the
-   mark for a fact that is not a verdict -- ONE modifier, not a second one --
-   and it is the chip's own bar (`.ctl-chip.is-info > i`), 10 by 3. */
-.ctl-dot.is-ok     { background: var(--text-faint); border-color: var(--text-faint); }
-.ctl-dot.is-info {
-  width: 10px; height: 3px;
-  border: 0;
-  border-radius: 1px;
-  background: var(--text-faint);
-}
-.ctl-dot.is-paused { background: var(--paused); border-color: var(--paused); }
-/* Caution keeps the chip's triangle; failure keeps its diamond. */
-.ctl-dot.is-warn {
-  width: 10px; height: 9px;
-  border: 0;
-  border-radius: 0;
-  background: var(--warn);
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-}
-.ctl-dot.is-bad {
-  width: 7px; height: 7px;
-  border: 0;
-  border-radius: 1px;
-  background: var(--bad);
-  transform: rotate(45deg);
-}
-/* NOT DERIVED, which is a third thing again: the state exists, nobody computed
-   it. A ring with a bar through it — present, and struck out. Railway's legend
-   already means "present, not drawn" with a hollow ring; this is that ring
-   with the absence made explicit. */
-/* BROADCASTING. §6.6's table names `live` as "a disc with a halo" and the chip
-   half of it already shipped as `.ctl-chip.is-live > i`; the bare mark had no
-   way to say it, so a workflow board drew a RUNNING row and a QUEUED row as
-   two identical blue discs. Same halo, same 2s pulse, same token as the chip's
-   -- this is the chip's own declaration applied to the mark alone, not a
-   second treatment.
-   The halo is what survives `prefers-reduced-motion`, which stops the pulse
-   further down this file: live must not become pixel-identical to anything
-   when the motion is taken away. */
-.ctl-dot.is-live {
-  background: var(--info);
-  border-color: var(--info);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--info) 35%, transparent);
-  animation: ctl-live-pulse 2s ease-in-out infinite;
-}
-.ctl-dot.is-underived {
-  border-color: var(--text-faint);
-  background: linear-gradient(
-    90deg,
-    transparent 0 34%,
-    var(--text-faint) 34% 66%,
-    transparent 66% 100%
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /* 14. Absence occupies the space it would have occupied                       */
@@ -5843,189 +5751,12 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
 /* -------------------------------------------------------------------------- */
 /* 3. Status chip                                                              */
 /* -------------------------------------------------------------------------- */
-/* THE WORD IS MANDATORY; the mark repeats it as a SHAPE. A colour-only chip
-   fails for a colour-blind operator and in the greyscale screenshot that gets
-   pasted into an incident channel — which is where these screens are actually
-   read. The mark carries no meaning the text does not, so it stays aria-hidden
-   at the call site and this file never relies on it alone.
-
-   THE SHAPE VOCABULARY. `.ctl-chip.is-unknown` already argued this case and
-   won it — "UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour", so
-   its dot went hollow — and then the idiom was used exactly once. Every state
-   now has a silhouette, and it is the same vocabulary wherever a state is
-   drawn; the metric tile below reuses it rather than inventing a second one:
-
-     ok        a filled disc          present, and fine
-     warn      a triangle, apex up    the universal caution shape
-     bad       a diamond              a disc knocked off its axis
-     info      a bar                  flat: a fact, not a verdict
-     paused    two bars               the pause glyph
-     unknown   a hollow disc          an absence of information, drawn as one
-     live      a disc with a halo     a dot that is broadcasting
-
-   SOLID SHAPES, deliberately. A stroked glyph — an outlined tick, a drawn
-   "x" — needs sub-pixel strokes at 7px and turns to mush on a 1x display,
-   which is what an operator's second monitor usually is. A filled silhouette
-   survives any DPI and any greyscale conversion.
-
-   `prefers-reduced-motion` kills the live pulse (see the top of this file), so
-   `.is-live` cannot be told from `.is-ok` by motion alone. Its halo is what
-   keeps the two apart when the animation is off. */
-
-/* THE CHIP IS A MARK AND A WORD. IT IS NOT A BADGE.
-   ---------------------------------------------------------------------------
-   Measured, what shipped was 102x23px to say "running": a 1px border in
-   currentColor, a 999px radius, 600-weight 13px mono, .04em tracking,
-   UPPERCASE, and a dot. Four of them stacked in one card is 408px of chrome
-   spent saying one word four times, and twelve pill radii on the Overview is
-   as much of the "cartoonish" read as the numerals are.
-
-   VERCEL IS THE PRECISE ANSWER and it was measured in a browser rather than
-   guessed at, because Geist ships StatusDot as a documented component: a
-   10x10px solid circle with `border-width: 0`, no ring and no tint, and beside
-   it the state word in SENTENCE CASE at 14px/400 in primary ink -- even
-   "Error" is drawn in #171717. The hue never touches the word. Northflank
-   agrees (a small glyph, then "Job succeeded" in plain sentence case, no
-   border, no fill); so does Koyeb (a 14px check glyph beside the name, and a
-   6px round `ping` dot as their status indicator -- their one pill-shaped
-   element is METADATA in a grey hairline outline, which is how they keep a
-   pill from meaning "status"); so does Railway (a 6px legend dot and the row's
-   own ink).
-
-   SO: no border, no pill, no uppercase, no tracking. The word moves to
-   `--text` at `--t-body` in the SANS face, which is this sheet's own rule
-   (sec 2: mono means "an identifier or chrome"; sans at full strength means
-   "this is the datum", and a state word is a NAME -- sec 8.5, kind 1 -- not an
-   id). `lowercase` rather than sentence case because the states arrive from
-   the API already shouting (`RUNNING`, `REAUTH_REQUIRED`) and lowercase is
-   what `.wf-state` already renders on Workflows -- the one screen the owner
-   named as already correct. Matching it is the point.
-
-   THIS STRENGTHENS THE HONESTY INVARIANT RATHER THAN SPENDING IT, and that is
-   worth stating plainly because the change looks like a removal. Before:
-   colour on the word, colour on the border, a shape on the dot. After: the
-   word at FULL INK, legible and never competing with the datum beside it, and
-   the shape vocabulary untouched on the mark. Nothing that carried
-   information was removed -- what went was a duplicate of the tone channel
-   (the border) and three typographic amplifiers (case, weight, tracking). The
-   seven silhouettes below are still seven, and
-   `test_every_chip_state_has_its_own_silhouette` still holds them apart.
-
-   THE TONE MOVED OFF `color` AND ONTO `--chip-tone`, which is what lets the
-   word be `--text` while the mark stays hued. Every read of it carries a
-   fallback for the reason the dial block above gives at length:
-   `spaceprobe.ts` resolves this sheet against `:root` alone and throws on a
-   `var()` it cannot find there. */
-.ctl-chip {
-  --chip-tone: var(--text-faint);
-  display: inline-flex;
-  align-items: center;
-  gap: var(--ctl-s1);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  text-transform: lowercase;
-  white-space: nowrap;
-  /* The word is the datum. It is never the hue. */
-  color: var(--text);
-}
-/* 10px, no fill -- THE UNKNOWN RING, AND THE BASE ON PURPOSE (CP-14, #85).
-   The base mark was the filled disc, so a modifier no rule matched (`is-wait`
-   is the one Accounts nearly shipped, §12.2 of design-system.md) drew the
-   HEALTHY mark for a state nobody derived. It is now the hollow ring, which
-   is `.ctl-dot`'s base too (§6.6): a chip whose modifier did not match says
-   "unknown" rather than "fine", and every state below declares its own fill.
-   `.is-unknown` is the one state that equals this base.
-
-   10px because it is Geist's measured StatusDot: the mark carries the chip's
-   presence alone now that the border is gone, and 10px reads at arm's length
-   on the second monitor these screens are actually read on. */
-.ctl-chip > i {
-  width: 10px; height: 10px;
-  border-radius: 999px;
-  background: transparent;
-  border: 1.5px solid var(--chip-tone, var(--text-faint));
-  flex: none;
-}
-/* HEALTHY CARRIES NO HUE (owner rulings CP-14 and CH-17, 2026-09-25;
-   design-system §6.6-§6.7, redesign-v2 §5.5). `ok` and `info` are grey: the
-   disc and the flat bar keep the shape, the hue is spent only on warn, bad,
-   paused and live, and the ok word stays at full ink. The flat bar is also the
-   neutral "ended" mark CANCELLED takes (CH-22). Because this is the primitive,
-   every screen's ok mark goes grey with no screen edit. CP-14 painted the ok
-   tone `--text-dim`; CH-17, decided after it, names this primitive and paints
-   it `--text-faint`, so the later ruling sets the grey. The cost CP-14 asked to
-   have recorded: in greyscale the ok disc is told from warn and bad by its
-   silhouette alone (`--text-faint` is 1.01:1 from `--bad` in the dark theme
-   and 1.45:1 from `--warn` in the light one), which is what
-   `test_every_chip_state_has_its_own_silhouette` holds. `--ok` stays defined. */
-.ctl-chip.is-ok      { --chip-tone: var(--text-faint); }
-.ctl-chip.is-warn    { --chip-tone: var(--warn); }
-.ctl-chip.is-bad     { --chip-tone: var(--bad); }
-.ctl-chip.is-info    { --chip-tone: var(--text-faint); }
-.ctl-chip.is-paused  { --chip-tone: var(--paused); }
-
-/* The shapes. Each one declares its own fill over the ring and overrides the
-   disc; none of them changes the colour, so tone and shape stay independent
-   and a greyscale reader loses neither. */
-
-/* Present, and fine: the filled disc. */
-.ctl-chip.is-ok > i {
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-}
-/* Caution: a triangle, wider than it is tall so the base reads as a base. */
-.ctl-chip.is-warn > i {
-  width: 12px; height: 10px;
-  border-radius: 0;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  clip-path: polygon(50% 0%, 100% 100%, 0% 100%);
-}
-/* Failure: a diamond. Same area as the disc, off its axis — the one mark on
-   the screen with corners. */
-.ctl-chip.is-bad > i {
-  width: 8px; height: 8px;
-  border-radius: 1px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  transform: rotate(45deg);
-}
-/* A fact rather than a verdict: flat. */
-.ctl-chip.is-info > i {
-  width: 10px; height: 3px;
-  border-radius: 1px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-}
-/* Held, not running: the pause glyph. Two bars with a gap wide enough to
-   survive a 1x display. */
-.ctl-chip.is-paused > i {
-  width: 10px; height: 10px;
-  border-radius: 1px;
-  border: 0;
-  background: linear-gradient(
-    90deg,
-    var(--chip-tone, var(--text-faint)) 0 34%,
-    transparent 34% 66%,
-    var(--chip-tone, var(--text-faint)) 66% 100%
-  );
-}
-/* UNKNOWN IS NOT HEALTHY and must not borrow a healthy colour -- but the WORD
-   still goes at full ink, because "state not derived" is a fact the operator
-   has to be able to read, not a thing to whisper. Only the mark is faint. Its
-   mark is the base ring above, unchanged: `.is-unknown` needs no `> i` rule of
-   its own, and a chip whose modifier matched nothing draws the same thing. */
-.ctl-chip.is-unknown { --chip-tone: var(--text-faint); }
-/* Live work gets the only motion on the screen, and only while it is live —
-   plus a halo, which is what distinguishes it from `.is-ok` once
-   `prefers-reduced-motion` has stopped the pulse. */
-.ctl-chip.is-live { --chip-tone: var(--info); }
-.ctl-chip.is-live > i {
-  width: 8px; height: 8px;
-  background: var(--chip-tone, var(--text-faint));
-  border: 0;
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--chip-tone, var(--text-faint)) 35%, transparent);
-  animation: ctl-live-pulse 2s ease-in-out infinite;
-}
+/* THE STATUS CHIP AND THE BARE STATE DOT ARE THE CANONICAL `ToneMark` and
+   `StateMark` now (components/StatePill.tsx, `.sk-st`): the brand marks of
+   brand.html §3, one silhouette per tone, the word beside it. The local
+   `.ctl-chip` and `.ctl-dot` and their CSS-drawn shapes are gone (#503 swap:
+   "state marks must be the brand marks everywhere, never a local dot or
+   glyph"). */
 
 /* -------------------------------------------------------------------------- */
 /* 4. Table                                                                    */
@@ -8338,7 +8069,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
      `.scope`'s 10px of left margin is for sitting beside a heading; in a value
      column it only pushes the pill off the column's edge. */
   .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
-  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .sk-st,
   .is-stacked > table > tbody > tr > td[data-label] > .tag,
   .is-stacked > table > tbody > tr > td[data-label] > .scope {
     justify-self: start;
@@ -8490,7 +8221,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     grid-column: 2;
   }
   .is-stacked > table > tbody > tr > td[data-label] > .ctl-mark,
-  .is-stacked > table > tbody > tr > td[data-label] > .ctl-chip,
+  .is-stacked > table > tbody > tr > td[data-label] > .sk-st,
   .is-stacked > table > tbody > tr > td[data-label] > .tag,
   .is-stacked > table > tbody > tr > td[data-label] > .scope {
     justify-self: start;
@@ -10778,17 +10509,12 @@ span.sk-ttile { cursor: default; }
 .sk-st.is-bad { color: var(--s-bad); }
 .sk-st.is-warn { color: var(--s-warn); }
 .sk-st.is-neu { color: var(--s-neu); }
+/* NOBODY DERIVED IT: the hollow ring in the faint grey, outside every state's
+   hue (`ToneMark`'s unknown tone). */
+.sk-st.is-unknown { color: var(--text-faint); }
 .sk-st-w { color: var(--text); font-size: var(--t-micro); }
 .sk-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
-/* --- a task state's chip draws its brand mark (marks.tsx) ---------------- */
-.ctl-chip[data-mark][data-hue] > i { width: 12px; height: 12px; background: none; border: 0; border-radius: 0; box-shadow: none; animation: none; display: inline-flex; flex: none; }
-.ctl-chip[data-mark][data-hue] > i::before, .ctl-chip[data-mark][data-hue] > i::after { content: none; }
-.ctl-chip[data-mark][data-hue] > i > svg { width: 12px; height: 12px; }
-.ctl-chip[data-hue='live'] > i { color: var(--s-live); }
-.ctl-chip[data-hue='park'] > i { color: var(--s-park); }
-.ctl-chip[data-hue='bad'] > i { color: var(--s-bad); }
-.ctl-chip[data-hue='neu'] > i { color: var(--s-neu); }
 
 /* --- Overview O1: the lifecycle band, the pair, the task lists ------------ */
 .ov-band { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); gap: 8px; }

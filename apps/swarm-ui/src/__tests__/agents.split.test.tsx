@@ -105,7 +105,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
       expect(h?.querySelector('.ag-head-title')?.textContent).toBe('fix-heartbeat')
       return h!
     })
-    expect(head.querySelector('.ctl-chip')?.textContent).toContain('RUNNING')
+    expect(head.querySelector('.sk-st')?.textContent).toMatch(/running/i)
     expect(head.querySelector('.ag-head-sub')?.textContent).toBe(`${ID} · claude-code · standard · 1u · gen 1`)
     // Stop is in the header, once.
     expect(within(head).getByRole('button', { name: 'stop' })).toBeTruthy()

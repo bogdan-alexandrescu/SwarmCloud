@@ -442,7 +442,7 @@ describe('Agents, with every help card closed', () => {
 // ---------------------------------------------------------------------------
 //
 // NEW, AND IT PINS THE RESTRAINT PASS'S CHIP DECISION WHERE IT LANDS HARDEST.
-// design-system.md §6.6 rebuilt `.ctl-chip` as A MARK AND A WORD, and §11.2
+// design-system.md §6.6 rebuilt `.sk-st` as A MARK AND A WORD, and §11.2
 // names the screens' half of it: `{stateGlyph(state)} {state}` inside the chip
 // was a SECOND shape encoding of the same fact, which the pill was hiding. A
 // run list draws forty of these, so this is the screen where a regression
@@ -459,13 +459,13 @@ describe('Agents, with every help card closed', () => {
 describe('the run list draws a state once', () => {
   it('gives a row exactly one mark, and the word beside it', async () => {
     const container = await renderAgents()
-    const chip = container.querySelector('.row .ctl-chip')
+    const chip = container.querySelector('.row .sk-st')
     expect(chip, 'the run row draws no state chip').not.toBeNull()
 
-    // ONE MARK. The chip's own `<i>` is the mark; a second `<i>`, or a
+    // ONE MARK. The mark's own `<svg>` is the mark; a second one, or a
     // `stateGlyph` bullet rendered beside it, is the "decorative double dot"
     // the owner named and is what this assertion exists to catch.
-    expect(chip!.querySelectorAll('i').length, 'a second mark is drawn inside the chip').toBe(1)
+    expect(chip!.querySelectorAll('svg, i').length, 'a second mark is drawn inside the chip').toBe(1)
     expect(chip!.textContent, 'a bullet glyph survives beside the word').not.toMatch(
       /[●○✓✗⌀⏸]/,
     )
@@ -482,7 +482,7 @@ describe('the run list draws a state once', () => {
     // RUNNING holds a pool slot and costs money; SUCCEEDED does not. The two
     // must not resolve to the same silhouette, which is what would happen if a
     // screen mapped the tone by hand instead of through `stateTone`.
-    const live = container.querySelector('.row .ctl-chip')
+    const live = container.querySelector('.row .sk-st')
     expect(live!.classList.contains('is-live'), 'a RUNNING agent is not marked live').toBe(true)
     expect(live!.classList.contains('is-ok'), 'a RUNNING agent borrowed the healthy mark').toBe(
       false,
@@ -491,9 +491,9 @@ describe('the run list draws a state once', () => {
     // The `recent` tab holds the SUCCEEDED row, and it is the other half of
     // the same claim.
     fireEvent.click(screen.getByRole('tab', { name: /Recent/ }))
-    await waitFor(() => expect(container.querySelector('.row .ctl-chip.is-ok')).not.toBeNull())
+    await waitFor(() => expect(container.querySelector('.row .sk-st[data-mark="succeeded"]')).not.toBeNull())
     expect(
-      container.querySelector('.row .ctl-chip.is-live'),
+      container.querySelector('.row .sk-st[data-hue="live"]'),
       'a finished agent is still drawn as live',
     ).toBeNull()
   })
@@ -509,7 +509,7 @@ describe('the run list draws a state once', () => {
     await waitFor(() => expect(container.querySelector('.section.group')).not.toBeNull())
     const head = container.querySelector('.section.group > h2')
     expect(head!.querySelector('.roll'), 'the rollup is still a filled pill').toBeNull()
-    const rollChip = head!.querySelector('.ctl-chip')
+    const rollChip = head!.querySelector('.sk-st')
     expect(rollChip, 'the rollup lost its state word').not.toBeNull()
     expect(rollChip!.textContent?.trim()).toMatch(/^(running|succeeded|failed|waiting)$/)
   })

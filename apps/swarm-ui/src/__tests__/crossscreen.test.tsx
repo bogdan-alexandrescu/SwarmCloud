@@ -15,14 +15,14 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { App, crumbsOf, SECTIONS } from '../App'
-import { Chip } from '../AgentDetail'
+import { StateMark, TONE_MARK, toneOf } from '../components'
 import { MarkGlyph, STATE_MARK } from '../marks'
 import type { Result } from '../fetch'
 import { AGED_AFTER_MS, FrameAge, Screen } from '../Shell'
 import { scrollBand, TOP_AFTER_MIN_PX } from '../Spine'
 import { stateTone, type TaskState } from '../types'
 import type { CascadeEnv } from './cssgate'
-import { build, painted, shapeOf } from './marks'
+import { painted } from './marks'
 import { task as baseTask } from './runfixture'
 
 const WIDE: CascadeEnv = { width: 1440 }
@@ -55,15 +55,15 @@ const html = (node: React.ReactElement): string => renderToStaticMarkup(node)
 // ===========================================================================
 
 describe('#96: a failed run is a row form, not only a mark', () => {
-  // The rows as Agents draws them: the state chip first, its `data-hue` from
+  // The rows as Agents draws them: the state mark (`StateMark`) first, its `data-hue` from
   // `STATE_MARK`, and the reason line's `is-warn` from `whyNeedsAction`.
   const ROWS =
     '<div class="rows">' +
-    `<div class="row clickable" data-k="failed">${html(<Chip tone={stateTone('FAILED')} state="FAILED">FAILED</Chip>)}<span class="agent">a</span></div>` +
-    `<div class="row clickable" data-k="dead">${html(<Chip tone={stateTone('DEAD_LETTERED')} state="DEAD_LETTERED">DEAD_LETTERED</Chip>)}<span class="agent">b</span></div>` +
-    `<div class="row clickable" data-k="cancelled">${html(<Chip tone={stateTone('CANCELLED')} state="CANCELLED">CANCELLED</Chip>)}<span class="agent">c</span></div>` +
-    `<div class="row clickable" data-k="warn">${html(<Chip tone={stateTone('READY')} state="READY">READY</Chip>)}<span class="agent">d</span><span class="why is-warn">pool paused</span></div>` +
-    `<div class="row clickable" data-k="open" aria-current="true">${html(<Chip tone={stateTone('FAILED')} state="FAILED">FAILED</Chip>)}<span class="agent">e</span></div>` +
+    `<div class="row clickable" data-k="failed">${html(<StateMark state="FAILED" />)}<span class="agent">a</span></div>` +
+    `<div class="row clickable" data-k="dead">${html(<StateMark state="DEAD_LETTERED" />)}<span class="agent">b</span></div>` +
+    `<div class="row clickable" data-k="cancelled">${html(<StateMark state="CANCELLED" />)}<span class="agent">c</span></div>` +
+    `<div class="row clickable" data-k="warn">${html(<StateMark state="READY" />)}<span class="agent">d</span><span class="why is-warn">pool paused</span></div>` +
+    `<div class="row clickable" data-k="open" aria-current="true">${html(<StateMark state="FAILED" />)}<span class="agent">e</span></div>` +
     '</div>'
 
   const row = (f: HTMLElement, k: string) => pick(f, `.row[data-k="${k}"]`)
@@ -101,9 +101,8 @@ describe('#96: a failed run is a row form, not only a mark', () => {
 
   it('pins the hook the rule is keyed on: a failed chip says bad, a cancelled one does not', () => {
     // MUTATION: change `STATE_MARK`'s hue for FAILED, DEAD_LETTERED or
-    // CANCELLED, or stop `Chip` writing it.
-    const hue = (s: TaskState) =>
-      fragment(html(<Chip tone={stateTone(s)} state={s}>{s}</Chip>)).querySelector('.ctl-chip')!.getAttribute('data-hue')
+    // CANCELLED, or stop `StateMark` writing it.
+    const hue = (s: TaskState) => fragment(html(<StateMark state={s} />)).querySelector('.sk-st')!.getAttribute('data-hue')
     expect(hue('FAILED')).toBe('bad')
     expect(hue('DEAD_LETTERED')).toBe('bad')
     expect(hue('CANCELLED')).not.toBe('bad')
@@ -288,17 +287,18 @@ describe('#129: cancelled, queued and succeeded are three shapes once the word i
     expect(shared.sort()).toEqual(['DISPATCHED/LEASED/STARTING', 'QUEUED/SUBMITTED'])
   })
 
-  it('draws the bare dots for the three tones as three shapes at 390, the chip sharing the info bar', () => {
-    // MUTATION: `.ctl-dot.is-info` back to a disc (then it is the ok dot), or
+  it('draws the bare marks for the three tones as three shapes, the info one the flat bar', () => {
+    // The bare dot is the canonical `ToneMark` (#503 swap), whose shapes are
+    // the brand glyphs at every width. MUTATION: give `info` the ok mark, or
     // CANCELLED's tone back to `wait`.
-    const shapes = (['is-warn', 'is-info', 'is-ok'] as const).map((m) => shapeOf(build(`.ctl-dot.${m}`, hosts), PHONE))
-    expect(new Set(shapes).size).toBe(3)
+    const marks = (['warn', 'info', 'ok'] as const).map((t) => TONE_MARK[t].mark)
+    expect(new Set(marks).size).toBe(3)
     expect(stateTone('CANCELLED')).toBe('ended')
-    // The info silhouette is the flat bar §6.6 specifies (CH-22): wider than
-    // tall, the bar's 10 by 3 on the dot as on the chip.
-    const dot = build('.ctl-dot.is-info', hosts)
-    expect(painted(dot, 'width', PHONE)).toBe('10px')
-    expect(painted(dot, 'height', PHONE)).toBe('3px')
+    // The info silhouette is the flat bar §6.6 specifies (CH-22): CANCELLED's own.
+    expect(TONE_MARK[toneOf(stateTone('CANCELLED'))].mark).toBe(STATE_MARK.CANCELLED.mark)
+    const svg = fragment(renderToStaticMarkup(<MarkGlyph mark={TONE_MARK.info.mark} />))
+    const bar = svg.querySelector('rect')!
+    expect(Number(bar.getAttribute('width')), 'the flat bar is wider than it is tall').toBeGreaterThan(Number(bar.getAttribute('height')) * 2)
   })
 })
 

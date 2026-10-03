@@ -1332,22 +1332,6 @@ function PullRequestLink({ pr, className }: { pr: WorkflowPullRequest; className
 }
 
 /**
- * Which silhouette the row's state mark takes.
- *
- * FIVE TONES, SIX MARKS, because `unknown` is two different facts and the old
- * row drew them as one grey `?`:
- *
- *  - `derived: false` -- this API did not derive a state at all. The state
- *    EXISTS; nobody computed it. `.ctl-dot.is-underived`, a ring with a bar
- *    through it (design-system.md §6.6).
- *  - `derived: true` with an incomplete rollup -- the derivation was attempted
- *    and some steps could not be read. An absence of information, drawn as the
- *    default hollow ring.
- *
- * Neither is a filled mark, so neither can be read as a state the platform
- * holds -- which is the whole of the invariant, restated as a shape.
- */
-/**
  * A STEP'S BRAND MARK (marks.tsx), drawn on the graph's nodes and the stage
  * bands. The mark is the shape channel and the hue the second one; the state
  * word always sits beside it, so neither is the only signal. A step whose task
@@ -1369,31 +1353,6 @@ export function LookMark({ look }: { look: StepLook }) {
 /** The stage band's per-count modifier: `is-bad` for a failure, `is-unknown` for an unread step. */
 function bandClass(look: StepLook): string {
   return look.kind === 'unknown' ? 'is-unknown' : `is-${look.hue}`
-}
-
-export function dotClass(header: { tone: Tone | 'unknown'; derived: boolean }): string {
-  if (header.tone === 'unknown') {
-    return header.derived ? 'ctl-dot' : 'ctl-dot is-underived'
-  }
-  switch (header.tone) {
-    case 'ok':
-      return 'ctl-dot is-ok'
-    case 'bad':
-      return 'ctl-dot is-bad'
-    case 'live':
-      return 'ctl-dot is-live'
-    // QUEUED, PARKED, READY: THE WAIT MARK AGENTS ALREADY DRAWS (CH-22). This
-    // was `is-info`, argued as "a fact, not a verdict" -- and `is-info` is now
-    // the flat bar CANCELLED ends in, so a waiting workflow and a cancelled
-    // one would have shared it. Agents' chip draws `wait` as the caution
-    // triangle (`chipTone` in AgentDetail.tsx); the workflow row, its graph
-    // node and its band now draw the same.
-    case 'wait':
-      return 'ctl-dot is-warn'
-    // CANCELLED: the neutral flat bar, the one `is-info` modifier (CH-22).
-    case 'ended':
-      return 'ctl-dot is-info'
-  }
 }
 
 /**
@@ -3298,8 +3257,7 @@ function stageCause(steps: readonly WorkflowStep[], notes: ReadonlyMap<string, S
 /** How each of the three step-state kinds presents. Kept together so the
  *  difference between "not started" and "not read" stays deliberate.
  *
- *  `derived` is what `dotClass` reads to pick between the hollow ring and the
- *  ring-with-a-bar. At STEP level it is always true: a step whose task was not
+ *  `derived` says whether a state was computed at all. At STEP level it is always true: a step whose task was not
  *  in the read is an absence of information, not a state nobody computed --
  *  the distinction that needs the second mark exists one level up, on the
  *  workflow header, where an API without `rollup.py` derives nothing at all. */

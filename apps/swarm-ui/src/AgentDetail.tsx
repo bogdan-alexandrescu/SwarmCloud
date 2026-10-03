@@ -1,4 +1,4 @@
-import { MarkGlyph, STATE_MARK } from './marks'
+import { StateMark, ToneMark } from './components'
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
@@ -50,7 +50,6 @@ import {
   reasonCopy,
   restoredFrom,
   startedOf,
-  stateTone,
   usageOf,
   waitingLine,
   whyAgent,
@@ -67,7 +66,6 @@ import {
   type Task,
   type TaskEvent,
   type TaskInputCopy,
-  type TaskState,
   type Tone,
 } from './types'
 
@@ -372,23 +370,8 @@ export function Run({
 // ---------------------------------------------------------------------------
 
 /**
- * `.ctl-chip` tones are ok / warn / bad / info / paused / unknown / live.
- * `Tone` from types.ts has `wait`, which has no chip class -- mapping it to
- * `warn` rather than letting it fall through keeps a THROTTLED-shaped state
- * from silently rendering in the default grey, which is the colour reserved
- * for "we do not know".
- *
- * `ended` (CANCELLED, CH-22) is the flat bar: the ONE `is-info` modifier, not a
- * second one, grey since CH-17 -- a terminal state that is not a verdict.
- */
-export function chipTone(tone: ChipTone): string {
-  if (tone === 'wait') return 'warn'
-  if (tone === 'ended') return 'info'
-  return tone
-}
-
-/**
- * The tones a chip may take. `Tone` from types.ts is the derived one; the
+ * The tones a state mark may take (the canonical `ToneMark` draws them; `wait`
+ * is drawn as warn, `ended` as the flat bar). The tones a chip may take. `Tone` from types.ts is the derived one; the
  * other three are states a chip can be in that no task ever is -- an outcome
  * nobody recorded (`unknown`), a fact rather than a verdict (`info`), and work
  * an operator has held (`paused`).
@@ -419,52 +402,6 @@ export function parkedOutcome(a: AttemptRow): { label: string; tone: ChipTone } 
   return { label: a.error ? `parked · ${a.error}` : 'parked', tone: 'info' }
 }
 
-/**
- * A MARK AND A WORD, and the mark is the ONLY shape in it.
- *
- * design-system.md §6.6 rebuilt this primitive and §11.2 names the one thing
- * the screens still had to do: `{stateGlyph(state)} {state}` inside the chip
- * is a SECOND shape encoding of the fact the `<i>` already carries, and the
- * pill was the only reason it did not read as two dots. The pill is gone, so
- * the duplicate is gone with it -- here, in Agents.tsx and in AttemptTimeline.
- *
- * NOTHING THAT CARRIED INFORMATION LEFT. The shape channel is a TONE channel
- * (§6.6's table is ok/warn/bad/info/paused/unknown/live, not a state table)
- * and the `<i>` still carries all of it; the WORD, which §6.6 makes mandatory,
- * is what separates PARKED from READY from QUEUED and it is now at full ink
- * rather than in a mid-tone hue. The glyph was a third copy of a fact already
- * drawn twice.
- *
- * EXPORTED, because there were four state chips in this group and §9.3 asked
- * for one. Agents draws it forty times a screen; AttemptTimeline draws the
- * attempt outcome with it; this file draws the run's own state.
- */
-export function Chip({ tone, state, children }: { tone: ChipTone; state?: TaskState; children: ReactNode }) {
-  // A TASK STATE draws the brand mark (marks.tsx, rebrand 2026-10-01): one
-  // shape and one hue per state, the half disc, the haloed disc, the pause
-  // bars, the ring and so on. Any other chip keeps the tone's mark.
-  const brand = state === undefined ? null : STATE_MARK[state]
-  return (
-    <span
-      className={`ctl-chip is-${chipTone(tone)}`}
-      data-mark={brand?.mark}
-      data-hue={brand?.hue}
-    >
-      {/* Decoration only. The word beside it carries the meaning, because a
-          colour-only chip fails in a greyscale incident screenshot. */}
-      {brand === null ? (
-        <i aria-hidden />
-      ) : (
-        <i aria-hidden>
-          <svg viewBox="0 0 12 12" focusable="false">
-            <MarkGlyph mark={brand.mark} />
-          </svg>
-        </i>
-      )}
-      {children}
-    </span>
-  )
-}
 
 /** The em dash, as a token rather than a bare character, so "not measured" is
  *  styleable as a class of thing and never mistaken for a digit.
@@ -754,7 +691,7 @@ function Headline({
             state
             <HelpCard topic="capacity" />
           </b>
-          <Chip tone={stateTone(task.state)} state={task.state}>{task.state}</Chip>
+          <StateMark state={task.state} />
         </span>
         {/* THIS SCREEN'S ONE `?` (B7.4), for the state chip it qualifies, and
             drawn after the chip's key (AH-24, above).
@@ -1866,7 +1803,7 @@ function AttemptCard({
       <div className="ctl-card-head">
         <h2 className="ctl-card-title">
           {attemptLabel(ordinal, a.generation)}
-          <Chip tone={chip.tone}>{chip.label}</Chip>
+          <ToneMark tone={chip.tone}>{chip.label}</ToneMark>
           {/* `latest` IS METADATA, NOT A STATE, and it is the one place on
               these four screens where a hairline box is the right answer --
               Koyeb's rule, quoted in §6.6: their one pill-shaped element is
@@ -1874,7 +1811,7 @@ function AttemptCard({
               meaning "status". It stays a `.tag`; what changed is that the two
               STATES beside it stopped being one. */}
           {isLatest && <span className="tag">latest</span>}
-          {a.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
+          {a.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         {/* THE BACKEND IS A STRING THE API CHOSE, SO IT IS BROUGHT INTO THIS
             CONSOLE'S REGISTER RATHER THAN LEFT SHOUTING. `a.backend` arrives
@@ -3207,7 +3144,7 @@ function GitOutcome({
                 `ok`: it is a FACT about the branch, not a verdict that the run
                 went well (§1.3 -- the accent is a fact or a link, never a
                 verdict), and `is-info`'s flat bar is the mark that says so. */}
-            <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
+            <ToneMark tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</ToneMark>
             {pr.created === false && ' · reused'}
           </li>
         )}
@@ -3349,7 +3286,7 @@ function HandedOn({
           <a href={pr.url} target="_blank" rel="noreferrer">
             #{pr.number}
           </a>{' '}
-          <Chip tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</Chip>
+          <ToneMark tone={pr.state === 'open' ? 'info' : 'ok'}>{pr.state}</ToneMark>
           {integrator?.step_id ? ` · opened by ${integrator.step_id}` : ''}
         </p>
       )}

@@ -13,7 +13,7 @@ import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
-import { NamedMark, Segmented, UsageTrack, WarnMark } from './components'
+import { NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { AGE_TICK_MS, useNow } from './useNow'
@@ -2145,10 +2145,7 @@ function Lending({
         {/* The second `.tag` on this screen, collapsed into the same primitive
             for the same reason as the state chip above. */}
         {saved && (
-          <span className="ctl-chip is-ok">
-            <i aria-hidden="true" />
-            saved
-          </span>
+          <ToneMark tone="is-ok">saved</ToneMark>
         )}
       </span>
       {includesOwner && (
@@ -3408,13 +3405,8 @@ function AddAccount({
               with nothing on screen admitting it. */}
           <p className="acct-fixed mono">
             {SUBSCRIPTION_PROVIDER}
-            <span
-              className="ctl-chip is-info"
-              aria-label="Fixed. This is the only credential kind this pool handles, so there is nothing to choose between — but the form states the value it sends rather than hiding it."
-            >
-              <i aria-hidden="true" />
-              fixed
-            </span>
+            <ToneMark tone="is-info"
+              label="Fixed. This is the only credential kind this pool handles, so there is nothing to choose between — but the form states the value it sends rather than hiding it.">fixed</ToneMark>
           </p>
 
           <label className="t-label" htmlFor="acct-label">
@@ -3868,13 +3860,8 @@ function Remove({ account, reload }: { account: Account; reload: () => void }) {
                 have said "we could not read this", which is the opposite of
                 what the digit beside it means. */}
             {account.assigned > 0 && (
-              <span
-                className="ctl-chip is-warn"
-                aria-label={`${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`}
-              >
-                <i aria-hidden="true" />
-                in use
-              </span>
+              <ToneMark tone="is-warn"
+                label={`${account.assigned} agent${account.assigned === 1 ? '' : 's'} currently hold${account.assigned === 1 ? 's' : ''} this account. Move it to DRAINING first if you want them off it before it goes.`}>in use</ToneMark>
             )}
           </span>
         </li>

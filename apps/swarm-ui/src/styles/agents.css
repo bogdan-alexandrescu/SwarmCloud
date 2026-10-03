@@ -97,7 +97,7 @@
   padding-top: 6px;
   padding-bottom: 6px;
 }
-.row.is-compact > .ctl-chip { font-size: 0; }
+.row.is-compact > .sk-st > .sk-st-w { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .row.is-compact > .cr-name { grid-column: name; min-width: 0; }
 .row.is-compact > .cr-name b {
   display: block;
@@ -122,7 +122,6 @@
   color: var(--text-dim);
 }
 .cr-sub .id { font-family: var(--mono); }
-.cr-sub .ctl-chip { font-size: var(--t-micro); }
 .cr-try.is-over { color: var(--bad); font-weight: 600; }
 
 /* --- the 64px strip: the list folded by «, [ or the divider --------------- */
@@ -131,9 +130,8 @@
    wrapper, a child of `.work`; naming what goes is what keeps the marks and
    the » that brings the list back. */
 @media (min-width: 1100px) {
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.ctl-chip) { display: none; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > :not(.sk-st) { display: none; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact { grid-template-columns: 1fr; justify-items: center; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work .row.is-compact > .ctl-chip { font-size: 0; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-tabs,
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head > :not(.ag-collapse),
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-wait-group > h2,

@@ -21,7 +21,7 @@
 
 /* ---- page head: the canonical `PageHead` (.c-phead), as on every page ---- */
 .ov-page > .c-phead { margin: 0; }
-.ov-tally .ctl-dot { margin-right: 4px; }
+.ov-tally .sk-st { margin-right: 4px; }
 .ov-num { font-variant-numeric: tabular-nums; }
 .ov-reading { color: var(--text-faint); }
 

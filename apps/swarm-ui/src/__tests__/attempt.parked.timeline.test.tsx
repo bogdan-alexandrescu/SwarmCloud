@@ -51,7 +51,7 @@ async function mount(t: Task, attempts: AttemptRow[]): Promise<HTMLElement> {
 
 /** The outcome chip on the one attempt card. */
 function chip(el: HTMLElement): HTMLElement {
-  const c = el.querySelector<HTMLElement>('.att-card .ctl-card-title .ctl-chip')
+  const c = el.querySelector<HTMLElement>('.att-card .ctl-card-title .sk-st')
   expect(c, 'the attempt card draws no outcome chip').not.toBeNull()
   return c!
 }
@@ -70,8 +70,8 @@ describe('a parked attempt on the timeline', () => {
   it('draws the attempt in the neutral tone, never the failure tone', async () => {
     const el = await mount(task({ state: 'PARKED', started_at: at(1) }), [parked])
     const c = chip(el)
-    expect(c.classList.contains('is-bad'), 'a park drawn as a failure').toBe(false)
-    expect(c.classList.contains('is-info')).toBe(true)
+    expect(c.getAttribute('data-tone') === 'bad', 'a park drawn as a failure').toBe(false)
+    expect(c.getAttribute('data-tone') === 'info').toBe(true)
   })
 
   it('keeps the park reason out of the red stderr block and says it in words', async () => {
@@ -87,7 +87,7 @@ describe('a parked attempt on the timeline', () => {
     const el = await mount(task({ state: 'FAILED', started_at: at(1) }), [failed])
     const c = chip(el)
     expect(c.textContent).toBe('exit 1')
-    expect(c.classList.contains('is-bad')).toBe(true)
+    expect(c.getAttribute('data-tone') === 'bad').toBe(true)
     expect(el.querySelector('.att-card pre.err')?.textContent).toBe('Traceback: boom')
   })
 })
@@ -119,8 +119,8 @@ describe('a parked attempt on the Details tab', () => {
     const el = await details(task({ state: 'PARKED', started_at: at(1), last_error: null }), [parked])
     const c = chip(el)
     expect(c.textContent).toBe('parked · PROVIDER_QUOTA_EXHAUSTED')
-    expect(c.classList.contains('is-bad'), 'a park drawn as a failure').toBe(false)
-    expect(c.classList.contains('is-info')).toBe(true)
+    expect(c.getAttribute('data-tone') === 'bad', 'a park drawn as a failure').toBe(false)
+    expect(c.getAttribute('data-tone') === 'info').toBe(true)
     expect(el.querySelector('.att-card pre.err'), 'the park reason printed as a failure').toBeNull()
   })
 
@@ -129,6 +129,6 @@ describe('a parked attempt on the Details tab', () => {
     const el = await details(task({ state: 'FAILED', started_at: at(1), last_error: null }), [failed])
     const c = chip(el)
     expect(c.textContent).toBe('exit 1')
-    expect(c.classList.contains('is-bad')).toBe(true)
+    expect(c.getAttribute('data-tone') === 'bad').toBe(true)
   })
 })

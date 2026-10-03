@@ -1,5 +1,6 @@
 import { useCallback } from 'react'
-import { Chip, Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { Em, Mark, attemptLabel, isParked, parkedOutcome, type ChipTone } from './AgentDetail'
+import { ToneMark } from './components'
 import { loadAgentDetail, loadAttempts } from './api'
 import { instant, spanText } from './duration'
 import { eventKind, isTerminalEvent } from './events'
@@ -317,8 +318,8 @@ function AttemptCard({
             state two panes away. */}
         <h2 className="ctl-card-title">
           {g.label}
-          {out && <Chip tone={out.tone}>{out.label}</Chip>}
-          {a?.oom_near_miss && <Chip tone="bad">OOM near miss</Chip>}
+          {out && <ToneMark tone={out.tone}>{out.label}</ToneMark>}
+          {a?.oom_near_miss && <ToneMark tone="bad">OOM near miss</ToneMark>}
         </h2>
         <span className="ctl-card-note">
           {g.events.length} ev{a !== null && ` · ${a.backend}`}

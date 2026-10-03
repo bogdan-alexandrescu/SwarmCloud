@@ -10,7 +10,8 @@ import {
   type ReactElement,
   type ReactNode,
 } from 'react'
-import { Chip, DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
+import { DRAWER_SETTLE_MS, Em, Mark, MaskedNote } from './AgentDetail'
+import { ToneMark } from './components'
 import {
   ARTIFACT_PAGE_LIMIT,
   artifactRawUrl,
@@ -841,7 +842,7 @@ function AnswerNote({ a }: { a: TaskAnswer }) {
       )}
       {a.is_error === true && (
         <>
-          <Chip tone="bad">the agent reported an error</Chip>{' '}
+          <ToneMark tone="bad">the agent reported an error</ToneMark>{' '}
         </>
       )}
       {a.source === 'runner_summary' && (
@@ -2026,7 +2027,7 @@ function StepRowBody({
             {typeof m.subtype === 'string' ? ` · ${m.subtype}` : ''}
             {turns !== null ? ` · ${turns} turns` : ''}
           </span>{' '}
-          {m.is_error === true && <Chip tone="bad">the agent reported an error</Chip>} {capped}
+          {m.is_error === true && <ToneMark tone="bad">the agent reported an error</ToneMark>} {capped}
           {text(step.text)}
           {record}
         </li>

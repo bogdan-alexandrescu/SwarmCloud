@@ -313,7 +313,7 @@ describe('O1: Running now', () => {
     const mark = row.querySelector('td:first-child .sk-st')!
     expect(mark.getAttribute('data-mark')).toBe('running')
     expect(mark.getAttribute('data-hue')).toBe('live')
-    expect(el.querySelector('#ov-running .ctl-chip'), 'the old chip dot is still drawn').toBeNull()
+    expect(el.querySelector('#ov-running .sk-st[data-tone]'), 'the old chip dot is still drawn').toBeNull()
     expect(text(row)).toContain('claude-code')
   })
 

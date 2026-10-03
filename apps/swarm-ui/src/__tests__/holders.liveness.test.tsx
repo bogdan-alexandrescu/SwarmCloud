@@ -99,11 +99,11 @@ describe('#92: holders, the overview silent-workers link’s destination, has a 
       return c!
     }
     expect(text(cell('tsk_beating'))).toBe('beating · 30s')
-    expect(cell('tsk_beating').querySelector('.ctl-chip.is-ok')).not.toBeNull()
+    expect(cell('tsk_beating').querySelector('.sk-st[data-tone="ok"]')).not.toBeNull()
     expect(text(cell('tsk_quiet'))).toBe('silent · 6m 40s')
-    expect(cell('tsk_quiet').querySelector('.ctl-chip.is-warn')).not.toBeNull()
+    expect(cell('tsk_quiet').querySelector('.sk-st[data-tone="warn"]')).not.toBeNull()
     expect(text(cell('tsk_gone'))).toBe('presumed dead · 15m 0s')
-    expect(cell('tsk_gone').querySelector('.ctl-chip.is-bad')).not.toBeNull()
+    expect(cell('tsk_gone').querySelector('.sk-st[data-tone="bad"]')).not.toBeNull()
     // Never beaten: the age counts from the lease's creation, and says so.
     expect(text(cell('tsk_never'))).toBe('beating · never beat, 45s')
   })

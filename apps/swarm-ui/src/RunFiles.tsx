@@ -1,5 +1,6 @@
 import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Chip, Em } from './AgentDetail'
+import { Em } from './AgentDetail'
+import { ToneMark } from './components'
 import { loadCheckpoints } from './api'
 import { CheckpointBrowser } from './CheckpointBrowser'
 import { Absent, Mark } from './primitives'
@@ -785,7 +786,7 @@ function CheckpointRow({
     <tr role="row">
       <th role="rowheader" scope="row">
         <span className="mono">{record.checkpoint_id}</span>{' '}
-        {record.is_latest_pointer && <Chip tone="info">latest</Chip>}{' '}
+        {record.is_latest_pointer && <ToneMark tone="info">latest</ToneMark>}{' '}
         <button type="button" className="copy" aria-expanded={browsing} onClick={onBrowse}>
           files
         </button>
