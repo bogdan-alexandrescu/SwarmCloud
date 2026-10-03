@@ -59,6 +59,9 @@ anywhere compiles to stages -- independent steps run side by side, the review
 waits for every one of them -- because eight multi-hour steps over unrelated
 files took most of a day as a chain. A plan that states it nowhere compiles to
 the chain above, unchanged, so its digest and its workflow are what they were.
+A step that joins several dependencies starts from the last one's branch with
+the others' diffs applied, so it may add code using their work but must not
+edit it -- see `_compile_staged` for why, and for what would lift the limit.
 """
 
 from __future__ import annotations
@@ -414,7 +417,14 @@ def planner_prompt(ref: IssueRef) -> str:
         "[]. Steps that edit the SAME file must be in one dependency line -- each "
         "depending, directly or through others, on the one before it -- because two "
         "parallel steps editing one file overwrite each other when their work is "
-        'integrated. If you leave "depends_on" out of every step, the steps run one after '
+        "integrated. A step that depends on several steps starts from the branch of the "
+        "LAST of them in plan order and has the others' work applied as patches, so it may "
+        "only ADD code that uses what those other steps wrote, never change it: a step "
+        "that must CHANGE code another step wrote lists that step as its last dependency "
+        "(or sits on its line), or the integration conflicts and the pull request misses "
+        "work. If you state \"depends_on\" on any step, state it on every step -- a step "
+        "without it starts at once. "
+        'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
         "No other keys. A person reads this plan and approves it before any step runs."
     )
@@ -557,8 +567,22 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
     that joins several builds on the LAST of them in plan order and has the
     diff of every other step its work needs -- each ancestor that branch does
     not already carry -- staged by parent, because one checkout can start from
-    only one branch. Every implementer is an `integrate` contributor, so the
-    fix (the integrator) still merges every branch into the one pull request.
+    only one branch. Every implementer is an `integrate` contributor, and the
+    fix (the integrator) merges every branch into the one pull request.
+
+    THE JOIN'S LIMIT. A staged diff is re-applied as the join's own commit,
+    so the join's branch shares no history with that dependency's branch. If
+    the join EDITS lines the staged dependency added, the integrator's 3-way
+    merge of the dependency's branch conflicts, is aborted and listed as
+    conflicted, and the pull request misses that work. The planner prompt
+    therefore keeps a step that changes another step's code on that step's
+    line (its last dependency), and lets a join only add code that uses what
+    its other dependencies wrote. Removing the limit for real needs a
+    multi-parent `builds_on`, a frozen-contract change.
+
+    In a plan that states `depends_on` anywhere, a step that omits it is a
+    root and starts at once -- it does NOT follow the previous step. The
+    planner prompt asks for the key on every step for that reason.
 
     The review depends on EVERY implementer, so it starts only once all of
     them have ended, and sees each one's diff. It builds on the last step in
@@ -621,9 +645,11 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
                 f"{plan['summary']}\n\nThe plan's steps ran in {len(plan_stages(plan))} stages, "
                 "some side by side on separate branches, and the pull request will carry ALL "
                 "of their work together. This branch holds the last step's line of work; "
-                "each step's own diff is staged as "
+                "each step's diff is staged as "
                 + ", ".join(f"{sid}/{PATCH_FILE}" for sid in impl)
-                + ". Review the integrated change -- every diff together, including where "
+                + " (a step that joined several also carries, in its own diff, the diffs of "
+                "the dependencies it applied, so the same change can appear twice). Review "
+                "the integrated change -- every diff together, including where "
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
                 '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]}.'

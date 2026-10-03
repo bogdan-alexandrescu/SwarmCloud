@@ -779,6 +779,25 @@ def test_the_planner_prompt_asks_for_real_dependencies_and_one_line_per_file():
     assert "earlier" in prompt
 
 
+def test_the_planner_prompt_keeps_a_join_from_editing_what_its_dependencies_wrote():
+    # A join re-applies its non-base dependencies' diffs as its own commit; an
+    # edit to those lines conflicts when the integrator merges the dependency's
+    # branch, so the prompt routes a step that CHANGES another's code onto its line.
+    prompt = issueruns.planner_prompt(parse_issue_ref(REF))
+    assert "only ADD code that uses what those other steps wrote, never change it" in prompt
+    assert "must CHANGE code another step wrote lists that step as its last dependency" in prompt
+    assert 'If you state \"depends_on\" on any step, state it on every step' in prompt
+    assert "THE JOIN'S LIMIT" in (issueruns._compile_staged.__doc__ or "")
+
+
+def test_the_staged_review_is_told_a_join_carries_its_dependencies_diffs():
+    spec = compile_plan(_stored_run(plan=STAGED_PLAN, plan_digest=plan_digest(STAGED_PLAN)))
+    review = next(s for s in spec.steps if s.step_id == "review")
+    assert "also carries, in its own diff, the diffs of the dependencies it applied" in (
+        review.input["prompt"]
+    )
+
+
 # --------------------------------------------------------------------------
 # the tenant boundary
 # --------------------------------------------------------------------------
