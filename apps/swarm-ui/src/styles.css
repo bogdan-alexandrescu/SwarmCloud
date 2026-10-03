@@ -8580,15 +8580,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   outline-offset: -2px;
 }
 
-/* The drawer's ✕. It had `:hover` and nothing else, and it is the control a
-   keyboard reader reaches first when the inspector opens over the list. */
-.drawer-close:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-
-/* The two buttons a failed read renders, and the one the dock renders for an
-   expired session. These are the controls on the screens where something has
-   already gone wrong, which is the worst place to make someone hunt for focus. */
-.retry:focus-visible,
-.reauth:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+/* The drawer's ✕, the failed read's retry and the dock's reauth take the
+   canonical Button's focus ring (components.css) since the #503 swap: these
+   are the controls a keyboard reader reaches first when something has gone
+   wrong, and they now ring exactly as every other button does. */
 
 /* `refresh` / `paused 12s`, in the summary line under every screen title. It
    is on all fifteen routes, which makes it the most-tabbed control in the app
