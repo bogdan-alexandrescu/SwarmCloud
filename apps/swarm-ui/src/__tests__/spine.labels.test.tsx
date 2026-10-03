@@ -97,3 +97,22 @@ describe('Help names each screen as the panel does (#131)', () => {
     }
   })
 })
+
+describe('the Work panel lists every Work page (visual QA Q7, 2026-10-02)', () => {
+  // Runs (/runs, intake-tenants.html 1A) was a tab in SECTIONS and a route,
+  // and the panel never drew it: the only way in was a submit's redirect.
+  // MUTATION: drop the `runs` row from PANEL_PAGES.work and this goes red.
+  it('draws a panel row for each Work tab that is not a Submit form', () => {
+    const work = SECTIONS.find((s) => s.id === 'work')!
+    const pages = work.tabs.map((t) => t.id).filter((id) => !id.startsWith('new'))
+    const rows = new Set(PANEL_PAGES.work.flatMap((p) => [p.key === 'agents' ? 'running' : p.key, ...(p.kids ?? []).map((k) => k.key)]))
+    expect(pages.filter((id) => !rows.has(id))).toEqual([])
+  })
+
+  it('lights Runs when /runs is open', () => {
+    window.history.pushState(null, '', '/runs')
+    render(<App />)
+    const on = document.querySelector('.sk-panel .sk-pk.is-on .sk-pl')
+    expect(on?.textContent).toBe('Runs')
+  })
+})

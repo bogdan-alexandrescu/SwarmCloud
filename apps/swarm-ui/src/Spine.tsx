@@ -68,6 +68,10 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
       kids: AGENT_TABS.map((t) => ({ key: t, label: AGENT_LABEL[t], to: `work/running/${t}` })),
     },
     { key: 'workflows', label: 'Workflows', icon: 'workflows', to: 'work/workflows' },
+    // ISSUE RUNS (intake-tenants.html 1A): a route and a SECTIONS tab since
+    // #523, and missing here, so /runs was reachable only from a submit's
+    // redirect (visual QA Q7, 2026-10-02).
+    { key: 'runs', label: 'Runs', icon: 'runs', to: 'work/runs' },
     { key: 'timeline', label: 'Timeline', icon: 'timeline', to: 'work/timeline' },
   ],
   capacity: [
@@ -503,6 +507,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
       <circle cx="6" cy="18" r="2.2" />
       <circle cx="18" cy="12" r="2.2" />
       <path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8" />
+    </>
+  ),
+  runs: (
+    <>
+      <circle cx="6" cy="6" r="1.8" />
+      <circle cx="6" cy="12" r="1.8" />
+      <circle cx="6" cy="18" r="1.8" />
+      <path d="M10 6h9M10 12h9M10 18h9" />
     </>
   ),
   timeline: (
