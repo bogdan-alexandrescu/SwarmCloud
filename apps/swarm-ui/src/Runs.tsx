@@ -5,7 +5,7 @@ import { runAddress } from './IssueSubmit'
 import type { MarkHue, MarkName } from './marks'
 import { Button, NamedMark, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
-import type { IssueRun, IssueRunPage, IssueRunState, RunPlan } from './types'
+import type { IssueRun, IssueRunPage, IssueRunState, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
 import './styles/intake.css'
 
@@ -394,8 +394,8 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
               <p className="sb-note">
                 revision {run.plan_revision}
                 {run.plan_edited_by !== null && <> · edited by {run.plan_edited_by}</>}
-                {' · '}{run.plan.steps.length === 1 ? '1 step' : `${run.plan.steps.length} steps`}, then a review and a fix
-                gated on its verdict · every step runs as claude-code
+                {' · '}{run.plan_shape ?? `${run.plan.steps.length === 1 ? '1 step' : `${run.plan.steps.length} steps`}, then a review and a fix`}
+                {' '}gated on its verdict · every step runs as claude-code
               </p>
               <p className="rn-summary">{run.plan.summary}</p>
               <ol className="rn-steps">
@@ -403,6 +403,11 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
                   <li key={s.step_id} className="rn-step">
                     <b>{i + 1} · {s.title}</b>
                     <span className="mono sb-note">{s.step_id}</span>
+                    {s.depends_on !== undefined && (
+                      <span className="sb-note rn-deps">
+                        {s.depends_on.length === 0 ? 'starts at once' : <>after <span className="mono">{s.depends_on.join(', ')}</span></>}
+                      </span>
+                    )}
                     <p className="rn-prompt">{s.prompt}</p>
                   </li>
                 ))}
@@ -518,7 +523,11 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
   plan: RunPlan; busy: boolean; onCancel: () => void; onSave: (plan: RunPlan) => void
 }) {
   const [summary, setSummary] = useState(plan.summary)
-  const [steps, setSteps] = useState(plan.steps.map((s) => ({ step_id: s.step_id, title: s.title, prompt: s.prompt })))
+  // `depends_on` is carried through untouched: dropping it would turn a staged plan back into a chain on save.
+  const [steps, setSteps] = useState<PlanStepDoc[]>(plan.steps.map((s) => ({
+    step_id: s.step_id, title: s.title, prompt: s.prompt,
+    ...(s.depends_on !== undefined ? { depends_on: [...s.depends_on] } : {}),
+  })))
   const blank = summary.trim() === '' || steps.some((s) => s.title.trim() === '' || s.prompt.trim() === '')
   const set = (i: number, key: 'title' | 'prompt', value: string) =>
     setSteps((all) => all.map((s, j) => (j === i ? { ...s, [key]: value } : s)))

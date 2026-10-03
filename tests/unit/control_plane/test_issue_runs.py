@@ -542,6 +542,263 @@ def test_the_digest_is_of_the_plan_and_order_of_keys_does_not_change_it():
 
 
 # --------------------------------------------------------------------------
+# parallel stages: the plan's `depends_on`
+# --------------------------------------------------------------------------
+
+#: Two independent roots, a step on one of them, and a step that joins both:
+#: stages {api, ui} then {docs, wire}.
+STAGED_PLAN = {
+    "summary": "Expose widget sorting through the API and the UI.",
+    "steps": [
+        {"step_id": "api", "title": "Sort in the API", "prompt": "Add ?sort=name to GET /widgets."},
+        {"step_id": "ui", "title": "Sort header", "prompt": "Add a sortable Name header."},
+        {"step_id": "docs", "title": "Document it", "prompt": "Document ?sort.",
+         "depends_on": ["api"]},
+        {"step_id": "wire", "title": "Wire UI to API", "prompt": "Call ?sort from the header.",
+         "depends_on": ["api", "ui"]},
+    ],
+}
+
+#: What `compile_plan` emitted for PLAN on 2026-10-03, before `depends_on`
+#: existed. A plan with no `depends_on` anywhere must still compile to exactly
+#: this, so a plan approved before the change runs the workflow it was shown.
+CHAIN_AS_BEFORE = {
+    "steps": [
+        {
+            "step_id": "impl-sort-key",
+            "runner_profile": "claude-code",
+            "input": {
+                "prompt": (
+                    "You are doing step 1 of 2 of the approved plan for GitHub issue "
+                    "saga-xyz/widgets#42 (https://github.com/saga-xyz/widgets/issues/42); the "
+                    "issue file named below holds the issue.\n\nThe plan: Make the widget list "
+                    "sortable by name.\n\nThis step -- Add a sort key:\nAdd a name sort key to "
+                    "WidgetList.\n\nDo this step only."
+                ),
+                "issue": 42,
+            },
+        },
+        {
+            "step_id": "impl-ui",
+            "runner_profile": "claude-code",
+            "input": {
+                "prompt": (
+                    "You are doing step 2 of 2 of the approved plan for GitHub issue "
+                    "saga-xyz/widgets#42 (https://github.com/saga-xyz/widgets/issues/42); the "
+                    "issue file named below holds the issue.\n\nThe plan: Make the widget list "
+                    "sortable by name.\n\nThis step -- Wire the header:\nMake the Name header "
+                    "toggle the sort.\n\nThe earlier steps' work is already on this branch. "
+                    "Do this step only."
+                ),
+                "issue": 42,
+            },
+            "depends_on": ["impl-sort-key"],
+            "builds_on": "impl-sort-key",
+        },
+        {
+            "step_id": "review",
+            "runner_profile": "claude-code",
+            "input": {
+                "issue": 42,
+                "prompt": (
+                    "Review the change on this branch for GitHub issue saga-xyz/widgets#42 "
+                    "against the approved plan: Make the widget list sortable by name.\n\n"
+                    "swarm-work.patch holds the last step's diff; the whole change is this "
+                    "branch against the default branch. Do not edit files. Write "
+                    "$SWARM_ARTIFACTS_DIR/verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", "
+                    "\"findings\": [\"one blocker per entry\"]}."
+                ),
+            },
+            "depends_on": ["impl-ui"],
+            "input_from": {"impl-ui": "swarm-work.patch"},
+            "builds_on": "impl-ui",
+        },
+        {
+            "step_id": "fix",
+            "runner_profile": "claude-code",
+            "input": {
+                "issue": 42,
+                "prompt": (
+                    "Fix every finding in verdict.json for GitHub issue saga-xyz/widgets#42. "
+                    "Change nothing else."
+                ),
+            },
+            "depends_on": ["review"],
+            "input_from": {"review": "verdict.json"},
+            "when": {"step": "review", "verdict_in": ["NOT_YET"]},
+            "builds_on": "impl-ui",
+        },
+    ],
+    "metadata": {
+        "issue_run": {
+            "run_id": "run_x",
+            "issue": "saga-xyz/widgets#42",
+            "plan_digest": plan_digest(PLAN),
+            "fix_rounds": 3,
+            "review_rounds_compiled": 1,
+        }
+    },
+    "strategy": "integrate",
+    "repository_url": "https://github.com/saga-xyz/widgets",
+}
+
+
+def _with_steps(*steps) -> dict:
+    return {"summary": "x", "steps": [
+        {"step_id": sid, "title": "t", "prompt": "p",
+         **({"depends_on": deps} if deps is not None else {})}
+        for sid, deps in steps
+    ]}
+
+
+def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
+    # The plan reads back exactly as written -- no `depends_on: null` appears in
+    # it -- so the digest a person approved before this change is unchanged.
+    assert issueruns.parse_plan(PLAN) == PLAN
+    assert plan_digest(issueruns.parse_plan(PLAN)) == plan_digest(PLAN)
+    spec = compile_plan(_stored_run())
+    assert spec.model_dump(mode="json", exclude_defaults=True) == CHAIN_AS_BEFORE
+
+
+def test_dependencies_compile_to_parallel_stages():
+    spec = compile_plan(_stored_run(plan=STAGED_PLAN, plan_digest=plan_digest(STAGED_PLAN)))
+    by_id = {s.step_id: s for s in spec.steps}
+    assert list(by_id) == ["impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix"]
+    # The roots start at once, from the default branch.
+    for root in ("impl-api", "impl-ui"):
+        assert by_id[root].depends_on == [] and by_id[root].builds_on is None
+        assert "already on this branch" not in by_id[root].input["prompt"]
+    # One dependency: built on it, as in the chain.
+    assert by_id["impl-docs"].depends_on == ["impl-api"]
+    assert by_id["impl-docs"].builds_on == "impl-api"
+    # A join: built on its last dependency, the other's diff staged by parent.
+    assert by_id["impl-wire"].depends_on == ["impl-api", "impl-ui"]
+    assert by_id["impl-wire"].builds_on == "impl-ui"
+    assert by_id["impl-wire"].input_from == {"impl-api": "swarm-work.patch"}
+    assert by_id["impl-wire"].metadata == {"input_layout": "by_parent"}
+    assert "impl-api/swarm-work.patch" in by_id["impl-wire"].input["prompt"]
+    # Signed fields that do not depend on the shape are unchanged.
+    assert spec.strategy == "integrate"
+    assert all(s.runner_profile == "claude-code" for s in spec.steps)
+    assert spec.metadata["issue_run"]["plan_digest"] == plan_digest(STAGED_PLAN)
+    assert issueruns.plan_stages(STAGED_PLAN) == [["api", "ui"], ["docs", "wire"]]
+
+
+def test_the_review_depends_on_every_implementation_step_and_the_fix_stays_gated():
+    spec = compile_plan(_stored_run(plan=STAGED_PLAN, plan_digest=plan_digest(STAGED_PLAN)))
+    by_id = {s.step_id: s for s in spec.steps}
+    impl = ["impl-api", "impl-ui", "impl-docs", "impl-wire"]
+    assert by_id["review"].depends_on == impl
+    assert by_id["review"].input_from == {sid: "swarm-work.patch" for sid in impl}
+    assert by_id["review"].metadata == {"input_layout": "by_parent"}
+    assert by_id["review"].builds_on == "impl-wire"
+    for sid in impl:
+        assert f"{sid}/swarm-work.patch" in by_id["review"].input["prompt"]
+    assert by_id["fix"].depends_on == ["review"]
+    assert by_id["fix"].when.step == "review" and by_id["fix"].when.verdict_in == ["NOT_YET"]
+    assert by_id["fix"].input_from == {"review": "verdict.json"}
+    assert by_id["fix"].builds_on == "impl-wire"
+
+
+def test_a_staged_plan_is_accepted_by_the_workflow_validator_on_approval(client, db, objects):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, STAGED_PLAN)
+    read = _run(client, run["id"]).json()["run"]
+    assert read["state"] == "PLANNED", read
+    assert read["plan_shape"] == "4 steps in 2 stages (2 → 2), then review and fix"
+    approved = _approve(client, run["id"], read["plan_digest"])
+    assert approved.status_code == 200, approved.text
+    workflow = _docs(db, "workflows")[f"workflows/{approved.json()['run']['workflow_id']}"]
+    assert [s["step_id"] for s in workflow["steps"]] == [
+        "impl-api", "impl-ui", "impl-docs", "impl-wire", "review", "fix",
+    ]
+
+
+def test_the_shape_names_steps_and_stages():
+    assert issueruns.plan_shape(PLAN) == "2 steps in 2 stages, then review and fix"
+    assert issueruns.plan_shape(STAGED_PLAN) == "4 steps in 2 stages (2 → 2), then review and fix"
+    assert issueruns.plan_shape(_with_steps(("a", None))) == "1 step in 1 stage, then review and fix"
+    assert issueruns.plan_shape(None) is None
+    assert issueruns.plan_shape({"summary": "x"}) is None
+    assert _stored_run(plan=STAGED_PLAN).to_api()["plan_shape"] == (
+        "4 steps in 2 stages (2 → 2), then review and fix"
+    )
+
+
+def test_an_empty_depends_on_starts_at_once():
+    plan = _with_steps(("a", []), ("b", None))
+    assert issueruns.plan_stages(plan) == [["a", "b"]]
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    assert [s.depends_on for s in spec.steps[:2]] == [[], []]
+
+
+@pytest.mark.parametrize(
+    "plan,why",
+    [
+        (_with_steps(("a", None), ("b", ["nope"])), "'nope', which is not a step in this plan"),
+        (_with_steps(("a", ["b"]), ("b", None)), "'b', a later step"),
+        (_with_steps(("a", ["a"])), "cycle: a -> a"),
+        (_with_steps(("a", ["b"]), ("b", ["a"])), "cycle: a -> b -> a"),
+        (_with_steps(("a", None), ("b", ["a", "a"])), "names 'a' twice"),
+    ],
+)
+def test_a_bad_depends_on_is_refused_with_a_plan_error(client, db, objects, plan, why):
+    with pytest.raises(issueruns.InvalidPlan, match="depends_on") as caught:
+        issueruns.parse_plan(plan)
+    assert why in str(caught.value)
+    # The run page shows it: the run fails with the same reason, nothing submitted.
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, plan)
+    read = _run(client, run["id"]).json()["run"]
+    assert read["state"] == "FAILED"
+    assert why in read["error"]
+    assert not _docs(db, "workflows")
+
+
+def test_parallel_width_is_capped_at_the_workflow_validators_limit(monkeypatch):
+    # The review depends on every implementation step, so its fan-in -- and any
+    # stage's width -- must fit `WorkflowStepCreate.depends_on`.
+    from swarm_api.schemas import WorkflowStepCreate
+
+    limit = next(
+        m.max_length for m in WorkflowStepCreate.model_fields["depends_on"].metadata
+        if getattr(m, "max_length", None) is not None
+    )
+    assert issueruns.MAX_PARALLEL_STEPS == limit
+    monkeypatch.setattr(issueruns, "MAX_PARALLEL_STEPS", 2)
+    issueruns.parse_plan(_with_steps(("a", []), ("b", []), ("c", ["a"])))
+    with pytest.raises(issueruns.InvalidPlan, match="3 steps in parallel"):
+        issueruns.parse_plan(_with_steps(("a", []), ("b", []), ("c", [])))
+
+
+def test_the_planner_prompt_asks_for_real_dependencies_and_one_line_per_file():
+    prompt = issueruns.planner_prompt(parse_issue_ref(REF))
+    assert '"depends_on"' in prompt
+    assert "SAME file" in prompt
+    assert "one dependency line" in prompt
+    assert "earlier" in prompt
+
+
+def test_the_planner_prompt_keeps_a_join_from_editing_what_its_dependencies_wrote():
+    # A join re-applies its non-base dependencies' diffs as its own commit; an
+    # edit to those lines conflicts when the integrator merges the dependency's
+    # branch, so the prompt routes a step that CHANGES another's code onto its line.
+    prompt = issueruns.planner_prompt(parse_issue_ref(REF))
+    assert "only ADD code that uses what those other steps wrote, never change it" in prompt
+    assert "must CHANGE code another step wrote lists that step as its last dependency" in prompt
+    assert 'If you state \"depends_on\" on any step, state it on every step' in prompt
+    assert "THE JOIN'S LIMIT" in (issueruns._compile_staged.__doc__ or "")
+
+
+def test_the_staged_review_is_told_a_join_carries_its_dependencies_diffs():
+    spec = compile_plan(_stored_run(plan=STAGED_PLAN, plan_digest=plan_digest(STAGED_PLAN)))
+    review = next(s for s in spec.steps if s.step_id == "review")
+    assert "also carries, in its own diff, the diffs of the dependencies it applied" in (
+        review.input["prompt"]
+    )
+
+
+# --------------------------------------------------------------------------
 # the tenant boundary
 # --------------------------------------------------------------------------
 
@@ -581,3 +838,22 @@ def test_the_list_is_the_callers_tenant_newest_first_and_paged(client, db):
     ).json()
     assert [r["id"] for r in second["runs"]] == [ids[0]]
     assert second["next_page_token"] is None
+
+
+def test_a_join_stages_every_ancestor_its_base_branch_does_not_carry(client, db, objects):
+    # d joins c (its base: the later of its dependencies) and b; b built on a,
+    # so both a's and b's diffs are staged, in plan order, and d depends on both.
+    plan = _with_steps(("a", []), ("b", ["a"]), ("c", []), ("d", ["c", "b"]))
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    d = {s.step_id: s for s in spec.steps}["impl-d"]
+    assert d.builds_on == "impl-c"
+    assert d.input_from == {"impl-a": "swarm-work.patch", "impl-b": "swarm-work.patch"}
+    assert set(d.depends_on) == {"impl-a", "impl-b", "impl-c"}
+    prompt = d.input["prompt"]
+    assert prompt.index("impl-a/swarm-work.patch") < prompt.index("impl-b/swarm-work.patch")
+    assert issueruns.plan_shape(plan) == "4 steps in 3 stages (2 → 1 → 1), then review and fix"
+    # And the workflow validator accepts the shape.
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, plan)
+    read = _run(client, run["id"]).json()["run"]
+    assert _approve(client, run["id"], read["plan_digest"]).status_code == 200
