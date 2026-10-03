@@ -225,8 +225,8 @@
    first run and plain after it, when it is a re-run -- except the radius:
    A's 8px is off spacing.test.tsx's corner scale (0, 2, 6, 10, 14, 999), so
    the control takes the scale's control radius, 6px. */
-.counts-head > .c-btn { align-self: center; }
-.counts-head .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+.c-phead .counts-run { align-self: center; }
+.counts-run .counts-cost { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 /* BEFORE THE FIRST RUN (#135): both cards drawn, each with the neutral
    `not measured` mark and the words `not run yet`, so the page has its shape
    before the press. Not a task-state mark: nothing here is a task. */

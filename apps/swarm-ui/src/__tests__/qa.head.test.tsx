@@ -112,7 +112,12 @@ describe('Q1: mono only for ids, values, code and timestamps', () => {
 })
 
 describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
-  const PAGES = ['/capacity/pools', '/workflows', '/admin/limits', '/timeline', '/capacity/accounts', '/submit', '/submit/task', '/runs']
+  // Every section page with a page head (review of #503: /admin/counts kept
+  // its own stacked head and lost the Admin `?`, and nothing here visited it).
+  const PAGES = [
+    '/capacity/pools', '/workflows', '/admin/limits', '/timeline', '/capacity/accounts', '/submit', '/submit/task', '/runs',
+    '/admin/counts', '/capacity/holders', '/capacity/runtimes', '/admin/tenants', '/overview', '/agents',
+  ]
 
   it('draws no breadcrumb row, and the title, its ? and the freshness share one head', async () => {
     const visited: string[] = []
@@ -135,6 +140,22 @@ describe('Q2/Q10: one page head, no breadcrumb row on a section page', () => {
     window.location.hash = '#work/task/t-1'
     render(<App />)
     await waitFor(() => expect(document.querySelector('nav[aria-label="Breadcrumb"]')).not.toBeNull(), WAIT)
+  })
+
+  it('keeps the breadcrumb inside an open workflow and an open run, and names the object last', async () => {
+    // MUTATION: guard `Head` on `taskId` alone again -- an open workflow is
+    // an object too, and lost its trail back to the list (review of #503).
+    for (const [path, id] of [['/workflows/wf_broker', 'wf_broker'], ['/runs/run_4c1e09d2', 'run_4c1e09d2']] as const) {
+      const { unmount } = at(path)
+      await waitFor(() => expect(document.querySelector('.ctl-crumb'), path).not.toBeNull(), WAIT)
+      expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.textContent, path).toBe(id)
+      unmount()
+    }
+    // And the list the workflow was opened from still draws none.
+    const { unmount } = at('/workflows')
+    await screen.findByRole('heading', { level: 1 }, WAIT)
+    expect(document.querySelector('.ctl-crumb')).toBeNull()
+    unmount()
   })
 
   it('lays the freshness out as inline text, so the spaces before refresh survive', () => {

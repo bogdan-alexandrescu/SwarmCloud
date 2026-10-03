@@ -621,10 +621,13 @@ export function PageHead({
   help,
   meta,
   headingId,
+  action,
   children,
 }: {
   title: string
   help?: TopicId
+  /** The page's one action, drawn by the title (Platform counts' billed run). */
+  action?: ReactNode
   /** The `<h1>`'s id, for a region that is labelled by it. */
   headingId?: string
   /** What was read, as a fact: a mono chip beside the title ("37 · none hold capacity"). */
@@ -648,6 +651,7 @@ export function PageHead({
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). */}
         {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}
+        {action}
       </div>
       <p className="sub">
         {meta !== undefined && meta !== null && meta !== '' && (

@@ -19,12 +19,9 @@
 
 .ov-page { display: flex; flex-direction: column; gap: 16px; padding-bottom: 28px; }
 
-/* ---- page head: title, tenant chip, provenance on one line ---------------- */
-.ov-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.ov-head h1 { margin: 0; font: 600 var(--t-title)/var(--lh-title) var(--font); }
-.ov-age { margin-left: auto; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
-.ov-age .ctl-dot { margin-right: 4px; }
-.ov-refresh { font: inherit; color: var(--sk-ac); background: none; border: 0; padding: 0; cursor: pointer; text-decoration: underline; text-underline-offset: 2px; }
+/* ---- page head: the canonical `PageHead` (.c-phead), as on every page ---- */
+.ov-page > .c-phead { margin: 0; }
+.ov-tally .ctl-dot { margin-right: 4px; }
 .ov-num { font-variant-numeric: tabular-nums; }
 .ov-reading { color: var(--text-faint); }
 
@@ -168,8 +165,8 @@
    aside -- visually, never from the outline: a screen reader still lands on
    it. */
 @media (max-width: 759px) {
-  .ov-head h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
-  .ov-age { margin-left: 0; }
+  .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .ov-page > .c-phead .c-age { margin-left: 0; }
 }
 @media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }

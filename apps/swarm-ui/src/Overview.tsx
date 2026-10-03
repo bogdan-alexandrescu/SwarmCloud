@@ -1,6 +1,6 @@
 import './styles/overview.css'
 import { LifecycleBand, RecentFailures, WaitingWhy, failuresOf, waitGroups } from './OverviewRegions'
-import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
   loadCapacity,
@@ -20,7 +20,7 @@ import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
 import { NamedMark, StateMark, WarnMark } from './components'
 import { Absent, Mark, UtilTrack, type TrackTone } from './primitives'
-import { SectionHelp, timeAgo } from './Shell'
+import { PageHead, timeAgo } from './Shell'
 import {
   CONCURRENCY_STATES,
   bindingWindow,
@@ -147,7 +147,6 @@ export function OverviewScreen() {
       ),
     [capacity, tasks, leases, providers, accounts, workflows, stats],
   )
-  const sectionHelp = useContext(SectionHelp)
   const tenant = dataOf(tasks)?.tenant_id ?? null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
@@ -159,12 +158,13 @@ export function OverviewScreen() {
           not decoration: `/v1/stats` and `/v1/tasks` are tenant-scoped while
           the `global` pool is platform-wide. Still reading is not missing
           (OV-9): the dash is for a read that landed without a tenant. */}
-      <div className="ov-head">
-        <h1>Overview</h1>
-        {/* The section's `?`, by the title (Q2): there is no row above it now. */}
-        {sectionHelp}
-        <span className="c-meta">
-          {tasks.status === 'loading' ? (
+      {/* THE CANONICAL PAGE HEAD (`PageHead`, #503 Q2): the title, the
+          section's `?` by it, the tenant as its meta chip, and the tally,
+          the poll and refresh right-aligned on the same row. */}
+      <PageHead
+        title="Overview"
+        meta={
+          tasks.status === 'loading' ? (
             <span className="ov-reading">tenant reading…</span>
           ) : tenant === null ? (
             <>
@@ -172,29 +172,30 @@ export function OverviewScreen() {
             </>
           ) : (
             `tenant ${tenant}`
-          )}
+          )
+        }
+      >
+        {/* THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
+            the reads behind the cards below did not land, and every em dash
+            further down is one of those two. Its dot is the severity, its
+            accessible name the sentence. */}
+        <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
+          <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
+          <span className="ov-num">
+            {landed}/{reads.length}
+          </span>{' '}
+          reads
+          <HelpCard topic="absent-vs-zero" />
         </span>
-        <span className="ov-age">
-          {/* THE TALLY SAYS HOW MUCH OF THIS PAGE IS REAL: `6/8` means two of
-              the reads behind the cards below did not land, and every em dash
-              further down is one of those two. Its dot is the severity, its
-              accessible name the sentence. */}
-          <span className="ov-tally" aria-label={readTally(reads.length, landed, pending, refused, broken)}>
-            <i className={`ctl-dot ${tallyTone(pending, refused, broken)}`} aria-hidden />
-            <span className="ov-num">
-              {landed}/{reads.length}
-            </span>{' '}
-            reads
-            <HelpCard topic="absent-vs-zero" />
-          </span>
-          <span aria-label={`re-read every ${POLL_MS / 1000} seconds`}>
-            poll <span className="ov-num">{POLL_MS / 1000}s</span>
-          </span>
-          <button className="ov-refresh" onClick={refresh}>
-            refresh
-          </button>
+        {' · '}
+        <span aria-label={`re-read every ${POLL_MS / 1000} seconds`}>
+          poll <span className="ov-num">{POLL_MS / 1000}s</span>
         </span>
-      </div>
+        {' · '}
+        <button className="ov-refresh" onClick={refresh}>
+          refresh
+        </button>
+      </PageHead>
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />

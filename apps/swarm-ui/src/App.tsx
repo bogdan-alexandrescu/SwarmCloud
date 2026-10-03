@@ -1272,7 +1272,7 @@ function Head({
   // meta, freshness and `?` are one row (`PageHead`), and a breadcrumb above
   // a page the panel already lights was a second, underlined copy of the nav.
   // The trail is drawn only inside an open object, where it is the way back.
-  if (at.taskId === null) return null
+  if (openObjectOf(at) === null) return null
 
   return (
     <div className="ctl-head">
@@ -1369,13 +1369,30 @@ export function crumbsOf({
   closeTo: string
 }): Crumb[] {
   const out: Crumb[] = []
-  const open = at.taskId !== null
+  const object = openObjectOf(at)
+  const open = object !== null
   if (open || head !== title) out.push({ key: 'section', label: head, to: home })
   if (tab !== null && tabs > 1 && (open || tab.label !== title)) {
-    out.push({ key: 'tab', label: tab.label, to: open ? closeTo : `${at.sectionId}/${tab.id}` })
+    out.push({ key: 'tab', label: tab.label, to: at.taskId !== null ? closeTo : `${at.sectionId}/${tab.id}` })
   }
-  if (open) out.push({ key: 'object', label: at.taskId!, to: null })
+  if (object !== null) out.push({ key: 'object', label: object, to: null })
   return out
+}
+
+/**
+ * THE OBJECT AN ADDRESS HAS OPEN, if any (#503, Q2): an agent (`taskId`), a
+ * workflow (`/workflows/<id>`, `wf=<id>` on the list's query) or an issue run
+ * (`/runs/<id>`, `run=<id>`). Only inside one does the head draw a breadcrumb:
+ * there it is the way back; on a section page the panel already says where
+ * you are.
+ */
+export function openObjectOf(at: Route): string | null {
+  if (at.taskId !== null) return at.taskId
+  if (at.sectionId === WORK && (at.tab === 'workflows' || at.tab === 'runs') && at.view) {
+    const id = new URLSearchParams(at.view).get(at.tab === 'workflows' ? 'wf' : 'run')
+    if (id !== null && id !== '') return id
+  }
+  return null
 }
 
 /**

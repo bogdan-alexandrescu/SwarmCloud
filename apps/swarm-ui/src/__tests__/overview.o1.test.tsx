@@ -393,7 +393,7 @@ describe('O1 at 390', () => {
   /** MUTATION: let the h1 show at phone width, or drop the compact list. */
   it('says Overview once: the h1 steps aside for the phone header', async () => {
     const el = await mount()
-    const h1 = el.querySelector('.ov-head h1')!
+    const h1 = el.querySelector('.ov-page > .c-phead h1')!
     expect(cascade(SHEET, h1, 'position', { width: 390 }).winner?.value).toBe('absolute')
     expect(cascade(SHEET, h1, 'position', { width: 1440 }).winner?.value ?? 'static').not.toBe('absolute')
   })
