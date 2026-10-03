@@ -147,6 +147,32 @@ the reconciler asks for the attempt's Job by name:
   `list`.
 * **Another 403** changes nothing.
 
+Unreadability is judged per backend. An unreadable GKE namespace, or GKE as a
+whole, holds only findings that could be on GKE. A task whose runner profile
+resolves to Cloud Run Jobs is judged on Cloud Run alone (`namespace: null` in
+`suppressed[]`). If such a lease is held, the cause is on Cloud Run, not in the
+GKE `namespace unreadable` lines next to it.
+
+**An ended execution is positive proof.** A lease past its TTL whose execution
+Cloud Run lists as over (`completionTime` set, nothing running, not
+reconciling) is a lost worker. The reconciler fences it, releases it and
+requeues it, or fails it once its attempts are spent, with no GET by name.
+Proof of absence is still required for an execution that is **missing**: the
+GET must answer 404 (#450). On 2026-10-03 task_8fce64316ad14fc981fb was held
+for five hours because its failed execution counted only as "not active". The
+lease then waited on a GET that never answered.
+
+Executions under a `swarm-` job that carry no task id and no attempt id (CI's
+`gcloud run jobs execute` runs) are not the platform's. They are logged once
+each (`carries no attempt id`), they are excluded, and they never make Cloud Run
+count as unreadable.
+
+**A hold is never silent.** A lease left past its TTL for longer than
+`HELD_LEASE_ALERT_MINUTES` (15) is logged at ERROR as `lease held past its TTL;
+capacity is not being returned`, once per lease per hour, with `why`. Every
+pass lists it under `held_past_ttl` in the pass report, and `/readyz` reports
+`last_pass_held_past_ttl`.
+
 Fix the namespace or the binding. **Do not add a ClusterRole to make the error
 go away.** When the reconciler finishes a task whose cancel was requested, it
 finishes it as CANCELLED in the same pass.

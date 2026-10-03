@@ -286,6 +286,16 @@ class ReconcilerConfig:
     #: FAILED (security review, PR #290).
     startup_refund_limit: int = 3
 
+    #: Minutes an unreleased lease may sit past its TTL -- held back for want
+    #: of proof, or because its repair keeps failing -- before the pass says
+    #: so at ERROR (once per lease per hour) and lists it in the persisted
+    #: pass as `held_past_ttl`. Fifteen: a healthy reclaim of a dead worker
+    #: completes within a few one-minute passes of the TTL, so a quarter of an
+    #: hour past it is never routine, and it is half the thirty minutes the
+    #: suppressed-lease alert waits. On 2026-10-03 a lease was held past its
+    #: TTL for five hours with only a per-pass WARNING to show for it.
+    held_lease_alert_minutes: int = 15
+
     max_findings_per_pass: int = 200
     dry_run: bool = False
     enable_gke: bool = True
@@ -386,6 +396,7 @@ class ReconcilerConfig:
             startup_refund_limit=min(
                 STARTUP_REFUND_LIMIT_MAX, max(0, _int("STARTUP_REFUND_LIMIT", 3))
             ),
+            held_lease_alert_minutes=_int("HELD_LEASE_ALERT_MINUTES", 15),
             max_findings_per_pass=_int("MAX_FINDINGS_PER_PASS", 200),
             dry_run=_bool("RECONCILER_DRY_RUN", False),
             enable_gke=_bool("ENABLE_GKE_AUTOPILOT", settings.enable_gke_autopilot),

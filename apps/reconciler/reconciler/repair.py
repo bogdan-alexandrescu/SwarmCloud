@@ -33,6 +33,7 @@ from typing import Any, Protocol
 from urllib.parse import urlparse
 
 from swarm_common.models import EndCause, utcnow
+from swarm_common.profiles import RUNNER_PROFILES, resolve_backend
 from swarm_common.states import CONCURRENCY_STATES, EventType, TaskState
 
 from .backends import (
@@ -88,6 +89,17 @@ from .store import ControlStore
 #: pass that nobody was watching.
 BACKEND_UNAVAILABLE = "backend unavailable; skipping its findings"
 NOT_REPAIRING = "not repairing: the backend that would hold this execution was unreadable"
+
+#: The line written when an unreleased lease has been past its TTL for longer
+#: than `held_lease_alert_minutes`, at ERROR, once per lease per hour
+#: (`HELD_ALERT_REPEAT_SECONDS`). Spelled once, here, for the same reason as
+#: the two above. On 2026-10-03 task_8fce64316ad14fc981fb's lease was held for
+#: five hours behind a per-pass WARNING; a hold must never be silent again.
+HELD_PAST_TTL = "lease held past its TTL; capacity is not being returned"
+#: How often HELD_PAST_TTL repeats for the same lease. Once an hour is loud
+#: enough to page on and quiet enough that one stuck lease does not drown the
+#: log at the one-minute tick.
+HELD_ALERT_REPEAT_SECONDS = 3600
 
 #: The line written once per eviction -- a stuck attempt fenced, or a Job left
 #: running terminated -- so an operator can find every one with a single
@@ -319,6 +331,11 @@ class ReconcileReport:
     #: holds none of our attempts is noise (a registered tenant whose namespace
     #: was never provisioned); one that does also appears in `errors`.
     unreadable_namespaces: dict[str, dict[str, str]] = field(default_factory=dict)
+    #: Unreleased leases past their TTL for longer than
+    #: `held_lease_alert_minutes`, with why this pass did not release them.
+    #: Empty on a healthy pass. Persisted with the pass, so a hold is on the
+    #: record even on a pass that logged no ERROR for it (see HELD_PAST_TTL).
+    held_past_ttl: list[dict[str, Any]] = field(default_factory=list)
     outcomes: list[RepairOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -348,6 +365,7 @@ class ReconcileReport:
                 backend: dict(namespaces)
                 for backend, namespaces in self.unreadable_namespaces.items()
             },
+            "held_past_ttl": [dict(entry) for entry in self.held_past_ttl],
             "slots_released": sum(1 for o in self.outcomes if o.released),
             "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
@@ -416,6 +434,10 @@ class Reconciler:
         self._holds: HoldReleaser | None = (
             BrokerHoldReleaser.from_env() if hold_releaser is _FROM_ENV else hold_releaser
         )
+        #: lease id -> when HELD_PAST_TTL was last logged for it, so it is
+        #: logged once per lease per hour. Per instance: a cold instance logs a
+        #: still-held lease once more, which errs toward being heard.
+        self._held_alerted: dict[str, datetime] = {}
         if self._holds is None:
             # Said once, here, because the per-fence path returns silently: a
             # deployment missing QUOTA_BROKER_URL would otherwise look exactly
@@ -513,6 +535,8 @@ class Reconciler:
             if kills and finding.lease_id and not outcome.terminated and not self._config.dry_run:
                 unstopped.add(finding.lease_id)
 
+        self._watch_holds(snapshot, report)
+
         if self._config.enable_gc:
             self._collect_garbage(snapshot, sight, report)
 
@@ -557,6 +581,77 @@ class Reconciler:
             report.errors.append(f"record_pass: {exc}")
 
         return report
+
+    # ------------------------------------------------------------------
+    # Holding
+    # ------------------------------------------------------------------
+    def _watch_holds(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Say, loudly, which leases have been past their TTL too long and why.
+
+        Every unreleased lease this pass did not release, whatever the reason
+        -- held back for want of proof, a repair that failed, a kill that was
+        not confirmed, or no rule that matched it at all. A hold is the right
+        answer to "I cannot prove it is dead"; a hold nobody hears about is how
+        five hours of capacity went missing on 2026-10-03.
+
+        The TTL is the lease's `expires_at`, and for a lease that never
+        heartbeated the later of that and its dispatch deadline, which is the
+        clock `detect_stale_leases` itself judges such a lease by.
+        """
+        threshold = max(0, int(self._config.held_lease_alert_minutes)) * 60
+        now = snapshot.taken_at
+        released = {o.lease_id for o in report.outcomes if o.released and o.lease_id}
+        why: dict[str, list[str]] = {}
+        for held in report.suppressed:
+            if held.lease_id:
+                why.setdefault(held.lease_id, []).append(
+                    f"{held.kind}: held back, the backend that would prove it was unreadable"
+                    + (f" ({held.backend})" if held.backend else "")
+                )
+        for outcome in report.outcomes:
+            if outcome.lease_id and not outcome.released:
+                why.setdefault(outcome.lease_id, []).append(
+                    f"{outcome.kind}: not released"
+                    + (f" ({outcome.skipped})" if outcome.skipped else "")
+                )
+        still_held: set[str] = set()
+        for lease in snapshot.leases.values():
+            if lease.is_released or lease.lease_id in released:
+                continue
+            due = lease.expires_at
+            if lease.heartbeat_at is None and lease.dispatch_deadline is not None:
+                due = max(due, lease.dispatch_deadline) if due else lease.dispatch_deadline
+            if due is None:
+                continue
+            past = (now - due).total_seconds()
+            if past <= threshold:
+                continue
+            still_held.add(lease.lease_id)
+            reasons = why.get(lease.lease_id) or ["no repair was attempted on this pass"]
+            entry = {
+                "lease_id": lease.lease_id,
+                "task_id": lease.task_id,
+                "tenant_id": lease.tenant_id,
+                "past_ttl_seconds": round(past, 1),
+                "why": reasons,
+            }
+            report.held_past_ttl.append(entry)
+            last = self._held_alerted.get(lease.lease_id)
+            if last is not None and (now - last).total_seconds() < HELD_ALERT_REPEAT_SECONDS:
+                continue
+            self._held_alerted[lease.lease_id] = now
+            self._log.error(
+                HELD_PAST_TTL,
+                lease_id=lease.lease_id,
+                task_id=lease.task_id,
+                tenant_id=lease.tenant_id,
+                past_ttl_minutes=round(past / 60, 1),
+                alert_after_minutes=threshold // 60,
+                why=reasons,
+            )
+        for lease_id in list(self._held_alerted):
+            if lease_id not in still_held:
+                del self._held_alerted[lease_id]
 
     # ------------------------------------------------------------------
     # Seeing
@@ -988,9 +1083,10 @@ class Reconciler:
             # while the drain, which scans only READY, never looked at it
             # again.
             return True
-        # An attempt exists but names no backend we can read. Something may
-        # genuinely be running, so the anti-duplicate rule holds everywhere.
-        return self._everything_visible_for(finding, sight)
+        # No attempt names a backend. Something may genuinely be running, so
+        # the anti-duplicate rule holds -- on every backend the task's runner
+        # profile could have been dispatched to, and on no other.
+        return self._everything_visible_for(finding, sight, snapshot)
 
     def _attempt_visible(self, attempt: AttemptView, sight: _Sight) -> bool:
         if attempt.backend not in sight.readable:
@@ -1005,10 +1101,49 @@ class Reconciler:
         # this pass never asked about proves nothing about what runs in it.
         return namespace is not None and namespace in listing.readable
 
-    def _everything_visible_for(self, finding: Finding, sight: _Sight) -> bool:
-        if len(sight.readable) != len(self._backends):
+    @staticmethod
+    def _profile_backend(finding: Finding, snapshot: ControlSnapshot) -> str | None:
+        """The one backend this finding's task can run on, by its runner profile.
+
+        The scheduler picks the backend with `resolve_backend` of the task's
+        profile and nothing else (`scheduler.loop`), so a task whose profile
+        resolves to Cloud Run Jobs was never put on GKE. None when the task or
+        its profile is unknown -- then every backend is a candidate.
+        """
+        task = snapshot.tasks.get(finding.task_id or "")
+        profile = RUNNER_PROFILES.get(task.runner_profile) if task is not None else None
+        if profile is None:
+            return None
+        try:
+            return resolve_backend(profile).value
+        except Exception:
+            return None
+
+    def _everything_visible_for(
+        self, finding: Finding, sight: _Sight, snapshot: ControlSnapshot | None = None
+    ) -> bool:
+        """Every backend that could hold this finding's execution was readable.
+
+        AN UNREADABLE GKE NAMESPACE HOLDS ONLY WHAT COULD BE ON GKE. A task
+        whose runner profile resolves to Cloud Run Jobs is judged on Cloud Run
+        alone: GKE's 403s say nothing about it, and holding it on them is how
+        a GKE outage strands Cloud Run capacity (2026-10-03, where `namespace
+        unreadable; findings that depend on it are held` sat beside every held
+        Cloud Run lease).
+        """
+        only = self._profile_backend(finding, snapshot) if snapshot is not None else None
+        candidates = (
+            [b for b in self._backends if b.name == only] if only is not None else self._backends
+        )
+        if not candidates:
+            # The profile's backend is not configured here, so nothing of this
+            # task can be running on a backend this service could see.
+            candidates = self._backends
+        if any(b.name not in sight.readable for b in candidates):
             return False
         for name, listing in sight.namespaced.items():
+            if only is not None and name != only:
+                continue
             if not listing.unreadable:
                 continue
             if not finding.tenant_id:

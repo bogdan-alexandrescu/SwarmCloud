@@ -494,6 +494,10 @@ class CloudRunBackend:
         self._jobs = jobs_client
         self._tasks = tasks_client
         self._log = logger
+        #: Unattributed executions already logged by this instance, so each is
+        #: logged ONCE rather than on every one-minute pass. Pruned to what the
+        #: latest listing returned, so it never outgrows the listing itself.
+        self._reported_unattributed: set[str] = set()
 
     @property
     def parent(self) -> str:
@@ -555,8 +559,30 @@ class CloudRunBackend:
 
     # -- reads ----------------------------------------------------------
     def list_executions(self) -> list[ExecutionView]:
+        """Every execution under a managed `swarm-` job that the scheduler created.
+
+        AN EXECUTION WITH NO TASK ID AND NO ATTEMPT ID IS NOT OURS, and is left
+        out of what this returns. The scheduler sets both on every execution it
+        creates; one with neither was started by something else -- CI's
+        acceptance and verify runs (`gcloud run jobs execute`) run under the
+        very same `swarm-job-<tenant>-<profile>` jobs. No rule may act on one
+        (`detect_orphan_executions` already skipped them) and no lease is its,
+        so leaving it out changes no verdict. It is logged once per execution
+        per instance, never per pass: on 2026-10-03 three CI executions wrote
+        a warning every minute for five hours beside a held lease, and the
+        noise was read as the reason for the hold.
+
+        An execution carrying a TASK id but no attempt id is kept: #372's live
+        claude-code execution came back exactly so, and the orphan rule's
+        stand-aside for it, and the obsolete-generation rule's kill of an old
+        one, both need to see it. It is logged once too.
+
+        Neither kind can make this backend unreadable. Logging one is wrapped:
+        a failure there is logged and the listing goes on, because a listing
+        that raised would hold every Cloud Run lease on the platform.
+        """
         views: list[ExecutionView] = []
-        unattributed: set[str] = set()
+        listed: set[str] = set()
         for job in self._list_jobs():
             job_name = getattr(job, "name", "")
             if not self._is_managed(job):
@@ -570,10 +596,24 @@ class CloudRunBackend:
                 view = self._execution_view(
                     execution, job_name, job_tenant=str(owner) if owner else None
                 )
-                views.append(view)
-                if not view.attempt_id and view.name not in unattributed:
-                    unattributed.add(view.name)
-                    self._log_unattributed(execution, view, job_name)
+                if view.attempt_id:
+                    views.append(view)
+                    continue
+                listed.add(view.name)
+                if view.name not in self._reported_unattributed:
+                    self._reported_unattributed.add(view.name)
+                    try:
+                        self._log_unattributed(execution, view, job_name)
+                    except Exception as exc:
+                        if self._log is not None:
+                            self._log.warning(
+                                "could not describe an unattributed cloud run execution",
+                                execution=view.name,
+                                error=_short(f"{type(exc).__name__}: {exc}"),
+                            )
+                if view.task_id:
+                    views.append(view)
+        self._reported_unattributed &= listed
         return views
 
     def _log_unattributed(self, execution: Any, view: ExecutionView, job_name: str) -> None:
@@ -586,7 +626,8 @@ class CloudRunBackend:
         written -- is what this line exists to show next time, so it names each
         identifier that neither the environment nor a label supplied.
 
-        Once per execution per listing, and so once per pass. It never carries
+        Once per execution for as long as listings keep returning it (see
+        `list_executions`), not once per pass. It never carries
         an environment VALUE other than the swarm ids already on the view: the
         template's environment holds the worker's whole configuration.
         """
@@ -741,6 +782,9 @@ class CloudRunBackend:
             parent=job_name,
             # What the ended-at-startup rule measures its grace from (#198).
             completed_at=completion,
+            # The same test a confirmed stop passes, so a lease is never
+            # released on a weaker reading of "over" than a kill is.
+            ended=execution_is_finished(execution),
         )
 
     @staticmethod

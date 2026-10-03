@@ -139,6 +139,10 @@ def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) 
             "status": "ok",
             "last_pass_at": last.started_at.isoformat() if last else None,
             "last_pass_findings": last.findings if last else None,
+            # Leases past their TTL for longer than HELD_LEASE_ALERT_MINUTES on
+            # the last pass: anything but 0 is capacity being held on purpose
+            # that somebody should look at (repair.HELD_PAST_TTL).
+            "last_pass_held_past_ttl": len(last.held_past_ttl) if last else None,
         }
 
     @app.post("/reconcile")
