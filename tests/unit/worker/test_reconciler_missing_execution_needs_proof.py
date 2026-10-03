@@ -16,7 +16,7 @@ The owner's expected behaviour, recorded on the issue, and pinned here:
        recorded execution, read BY NAME, is reported absent -- an ACTIVE answer
        repairs nothing, an UNREADABLE one holds the finding back;
   M-3  a listed execution under a `swarm-` job whose attempt id cannot be read
-       is logged, once per listing, with its name and the identifiers that
+       is logged, once per execution, with its name and the identifiers that
        were missing (never an environment value), and does not by itself
        produce a fence.
 """
@@ -302,7 +302,7 @@ def _lines(stream: io.StringIO) -> list[dict[str, Any]]:
 UNATTRIBUTED = "cloud run execution under a swarm- job carries no attempt id"
 
 
-def test_a_listed_execution_with_no_attempt_id_is_logged_once_per_listing():
+def test_a_listed_execution_with_no_attempt_id_is_logged_once_per_execution():
     stream = io.StringIO()
     unattributed = run_execution(
         name=EXECUTION,
@@ -324,9 +324,11 @@ def test_a_listed_execution_with_no_attempt_id_is_logged_once_per_listing():
     assert line["task_id"] == "task_1"
     assert "value-that-must-not-be-logged" not in stream.getvalue()
 
+    # Once per execution, not once per pass (2026-10-03: three CI executions
+    # warned every minute for five hours beside a held lease).
     backend.list_executions()
     again = [line for line in _lines(stream) if line["message"] == UNATTRIBUTED]
-    assert len(again) == 2, "one line per listing, i.e. once per pass"
+    assert len(again) == 1, "logged again on the next pass"
 
 
 def test_an_execution_with_a_task_but_no_attempt_id_does_not_fence_its_live_task(db, config):
