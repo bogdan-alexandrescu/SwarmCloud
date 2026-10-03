@@ -70,7 +70,10 @@
 #   scripts/register-tenant.sh --tenant eng --add-provider git
 #   scripts/register-tenant.sh --group eng@saga.xyz --add-provider openai --dry-run
 # `git` (here or in --providers) also lets swarm-api read that one -git secret,
-# for the issue preview; see FORGE_READER_ID below.
+# for the issue preview and an issue run's write-back to its issue (which needs
+# the token to hold `issues: write` and `pull_requests: write`, plus
+# `checks: read` and `actions: read`: docs/multi-tenancy.md, "What the forge
+# credential must be allowed"); see FORGE_READER_ID below.
 #
 # A GitHub App key (#295, docs/merge-step.md) is never the worker's to read.
 # `--add-provider git-review` binds the post-verdict account to the review App's

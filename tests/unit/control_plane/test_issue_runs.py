@@ -27,7 +27,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from swarm_api import forge, issueruns
+from swarm_api import forge, forgewrite, issueruns
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -95,6 +95,9 @@ def api_context(db, tokens, group_map, objects, github, forge_tokens):
         objects=objects,
         forge_tokens=forge_tokens,
         forge=forge.GitHubIssues(send=github),
+        # The write-back to the issue, in memory: test_issue_writeback.py
+        # holds what it writes; here it only keeps the network out.
+        forge_writer=forgewrite.GitHubWriter(send=forge_fakes.GitHubWrites()),
     )
 
 
@@ -737,7 +740,9 @@ def test_the_open_work_is_read_with_the_tenants_token_and_stored_on_the_run(
     client, db, github, forge_tokens
 ):
     run = _create(client).json()["run"]
-    assert forge_tokens.asked == ["swarm-tenant-eng-git"]
+    # The open-work read, then the status comment's write-back: both the
+    # caller's own tenant's secret, and no other (test_issue_writeback.py).
+    assert set(forge_tokens.asked) == {"swarm-tenant-eng-git"}
     token = forge_tokens.issued["swarm-tenant-eng-git"]
     assert github.calls and all(
         headers["Authorization"] == f"Bearer {token}" for _, headers in github.calls

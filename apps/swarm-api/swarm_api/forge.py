@@ -226,9 +226,24 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
 _OPENER = urllib.request.build_opener(_NoRedirects)
 
 
-def _urllib_send(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+def is_pinned_host(url: str) -> bool:
+    """True only for an https URL on GITHUB_API_HOST: the one place a token may go."""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or (parsed.hostname or "").lower() != GITHUB_API_HOST:
+    return parsed.scheme == "https" and (parsed.hostname or "").lower() == GITHUB_API_HOST
+
+
+def github_headers(token: str) -> dict[str, str]:
+    """The headers of every request that carries the tenant's token, read or write."""
+    return {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+        "User-Agent": _USER_AGENT,
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def _urllib_send(url: str, headers: dict[str, str], timeout: float) -> tuple[int, bytes]:
+    if not is_pinned_host(url):
         # The URL is built from the constant, so this cannot fire; it is here
         # so that a change to how the URL is built cannot send the token
         # anywhere else either.
@@ -299,12 +314,7 @@ class GitHubIssues:
 
     @staticmethod
     def _headers(token: str) -> dict[str, str]:
-        return {
-            "Accept": "application/vnd.github+json",
-            "Authorization": f"Bearer {token}",
-            "User-Agent": _USER_AGENT,
-            "X-GitHub-Api-Version": "2022-11-28",
-        }
+        return github_headers(token)
 
     def _get(self, url: str, token: str, what: str) -> bytes:
         """One GET, its status mapped to a code. `what` names the read in the error."""

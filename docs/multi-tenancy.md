@@ -286,6 +286,43 @@ level; a re-run that finds the binding adds nothing. It never extends to
 accessors (`docs/merge-step.md` §1.3), and swarm-api never needs to sign as an
 App. Without this grant the preview answers `no_access` for every tenant.
 
+#### What the forge credential must be allowed
+
+`swarm-tenant-<tenant>-git` is no longer only the token an agent pushes with.
+An issue run (#454) also **writes back to the issue** with it, from swarm-api
+(`swarm_api/forgewrite.py`, `swarm_api/issuesync.py`): the plan as a comment,
+one status comment edited in place, and the `Closes #N` / `part of #N` block
+in the pull request's body. The owner decided on 2026-10-01 that these writes
+use the tenant's own credential, not a platform-wide bot, so that a tenant can
+only ever write where its own token can; the CI loop then reads the pull
+request's checks with it. On the repositories a tenant submits issues from,
+the token therefore needs:
+
+| permission (fine-grained name) | what uses it |
+|---|---|
+| `Contents: Read and write` | the agents' pushes (unchanged) |
+| `Pull requests: Read and write` | opening the pull request (unchanged), reading its head sha, writing its body's keyword block |
+| `Issues: Read and write` | the plan comment and the status comment |
+| `Checks: Read` | the CI loop reading the required checks at the head sha |
+| `Actions: Read` | the CI loop reading a failing run's log excerpt |
+
+A classic token's `repo` scope carries all five. **Without `Issues: write` the
+run still runs**: the write-back never fails or blocks a run, because the run's
+truth is its Firestore document, not the comment. The failure is recorded on
+the run as `writeback_error` — code `writeback_forbidden`, with a sentence
+naming the missing permission and never the token — logged by its code, and
+not retried for five minutes unless what it would write changes. Fix the
+token and store a new version with `scripts/create-secrets.sh --stdin`; the
+next read of the run posts what was missed. Nothing about how the secret is
+stored changes: the same name, the same `--stdin`, the same two readers.
+
+The comments are posted as whoever the token belongs to, on a repository that
+may be public, so they carry nothing the token's owner would not post: every
+text an agent or the issue wrote is redacted with the token as a known
+literal, its `@`-mentions are broken so nobody is paged, its closing keywords
+are turned into `refs` so it cannot close an issue, and an approver is named by
+the local part of their address only.
+
 The plaintext key exists only as a local variable during `put_credential`, is
 registered with the logger for redaction the moment a worker reads it, and
 reaches the agent through the child's environment only — never argv, never the

@@ -615,6 +615,33 @@ class IssueRun:
     #: The repository's open issues and pull requests when the run was created
     #: (`forge.read_open_work`), masked. None on runs created before the read.
     open_work: dict[str, Any] | None = None
+    # -- the write-back to GitHub (`issuesync`). Bookkeeping, not state: a
+    # run's truth is this document, never the comment, so none of these is
+    # read to decide where a run goes. All optional, so a run stored before
+    # them reads with nothing posted, and the next sync posts.
+    #: The plan comment and the ONE status comment on the issue, by GitHub id.
+    plan_comment_id: int | None = None
+    status_comment_id: int | None = None
+    #: The run's pull request, `{number, url, head_sha}`, once one is opened;
+    #: the CI loop may add `checks` ("pending" | "green" | "red") and
+    #: `merged` (bool), which the status comment shows.
+    pull_request: dict[str, Any] | None = None
+    #: The CI fix round in progress, 0 before the first. Shown as "n of
+    #: fix_rounds"; the CI loop advances it.
+    ci_fix_round: int = 0
+    #: sha256 of the comment body last written, so a sync that would write
+    #: the same text writes nothing (and reads no token).
+    last_plan_posted: str | None = None
+    last_status_posted: str | None = None
+    #: The author GitHub reported for this run's comments: a comment found by
+    #: its marker is adopted only if it is theirs.
+    forge_login: str | None = None
+    #: The last write-back failure, redacted (`failure_text`), when, and the
+    #: digest of what it was trying to write -- the same write is not retried
+    #: inside `issuesync.RETRY_SECONDS`. Cleared by the next write that works.
+    writeback_error: str | None = None
+    writeback_failed_at: datetime | None = None
+    writeback_attempt: str | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -643,6 +670,16 @@ class IssueRun:
             "error": self.error,
             "history": [dict(entry) for entry in self.history],
             "open_work": self.open_work,
+            "plan_comment_id": self.plan_comment_id,
+            "status_comment_id": self.status_comment_id,
+            "pull_request": None if self.pull_request is None else dict(self.pull_request),
+            "ci_fix_round": self.ci_fix_round,
+            "last_plan_posted": self.last_plan_posted,
+            "last_status_posted": self.last_status_posted,
+            "forge_login": self.forge_login,
+            "writeback_error": self.writeback_error,
+            "writeback_failed_at": self.writeback_failed_at,
+            "writeback_attempt": self.writeback_attempt,
         }
 
     @classmethod
@@ -673,6 +710,19 @@ class IssueRun:
             error=data.get("error"),
             history=[dict(entry) for entry in data.get("history") or []],
             open_work=data.get("open_work"),
+            plan_comment_id=_opt_int(data.get("plan_comment_id")),
+            status_comment_id=_opt_int(data.get("status_comment_id")),
+            pull_request=(
+                dict(data["pull_request"]) if isinstance(data.get("pull_request"), Mapping)
+                else None
+            ),
+            ci_fix_round=int(data.get("ci_fix_round") or 0),
+            last_plan_posted=data.get("last_plan_posted"),
+            last_status_posted=data.get("last_status_posted"),
+            forge_login=data.get("forge_login"),
+            writeback_error=data.get("writeback_error"),
+            writeback_failed_at=data.get("writeback_failed_at"),
+            writeback_attempt=data.get("writeback_attempt"),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -707,7 +757,30 @@ class IssueRun:
                 None if self.open_work is None
                 else {**self.open_work, "read_at": _iso(self.open_work.get("read_at"))}
             ),
+            # The write-back: the comment ids and the pull request's link
+            # only. The digests, the author and the error are bookkeeping.
+            "plan_comment_id": self.plan_comment_id,
+            "status_comment_id": self.status_comment_id,
+            "pull_request": (
+                None if self.pull_request is None else {
+                    "number": self.pull_request.get("number"),
+                    "url": self.pull_request.get("url"),
+                }
+            ),
         }
+
+
+def _opt_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+#: What `IssueRuns.patch` may write: the write-back's bookkeeping, and
+#: nothing that decides where a run goes.
+PATCHABLE_FIELDS: frozenset[str] = frozenset({
+    "plan_comment_id", "status_comment_id", "pull_request", "ci_fix_round",
+    "last_plan_posted", "last_status_posted", "forge_login",
+    "writeback_error", "writeback_failed_at", "writeback_attempt",
+})
 
 
 def _encode_cursor(moment: datetime) -> str:
@@ -832,6 +905,36 @@ class IssueRuns:
             "issue run %s tenant=%s -> %s by=%s", run_id, tenant_id, to.value, by
         )
         return result
+
+    def patch(self, tenant_id: str, run_id: str, patch: Patch) -> IssueRun:
+        """Bookkeeping that is not a state change, in one transaction.
+
+        Re-checks the tenant like every read, leaves `state`, `history` and
+        `updated_at` alone, and refuses any key outside PATCHABLE_FIELDS: a
+        patch that could move a run would be a transition without the
+        machine's check.
+        """
+        ref = self._ref(run_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> IssueRun:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                raise self._not_found(run_id)
+            run = IssueRun.from_firestore(data)
+            changes = dict(patch(run) if callable(patch) else patch)
+            refused = sorted(set(changes) - PATCHABLE_FIELDS)
+            if refused:
+                raise ValueError(f"IssueRuns.patch may not write {', '.join(refused)}")
+            if changes:
+                txn.update(ref, changes)
+            merged = dict(data)
+            merged.update(changes)
+            return IssueRun.from_firestore(merged)
+
+        return _apply(transaction)
 
 
 def failure_text(message: str) -> str:

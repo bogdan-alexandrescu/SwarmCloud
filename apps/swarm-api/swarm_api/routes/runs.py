@@ -7,6 +7,11 @@
     POST /v1/runs/{run_id}/plan:edit      {"plan_digest", "plan"}
     POST /v1/runs/{run_id}/plan:reject    {"plan_digest"?, "reason"?}
 
+EVERY MOVE IS WRITTEN BACK to the issue (`issuesync.sync_issue`): the plan
+comment once there is a plan, edited when it changes, and the one status
+comment, edited in place. A write-back failure is recorded on the run and
+never fails the request or the run.
+
 EVERY READ ADVANCES, as every workflow read derives (`routes/workflows.py`). A
 run's state is a consequence of its planner task and then its workflow, and
 there is no background writer for it: the read that finds the planner ended
@@ -50,6 +55,7 @@ from ..issueruns import (
     planner_task,
     refuse_auto_merge,
 )
+from ..issuesync import sync_issue
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
 
@@ -189,6 +195,17 @@ def _approve(
 
 
 def _advance(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> IssueRun:
+    """Move `run` as far as its tasks say it has gone, then write it back to the issue.
+
+    One sync after the last move, not one per move: the comments show where
+    the run IS, and an intermediate state (APPROVED for the length of one
+    submission) is not worth a write. A sync whose text is unchanged writes
+    nothing.
+    """
+    return sync_issue(ctx, _advance_state(ctx, auth, tenant_id, run))
+
+
+def _advance_state(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone. Never raises for a race."""
     try:
         if run.state == RunState.PLANNING:
@@ -271,7 +288,7 @@ def create_run(
         )
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
-    return {"run": run.to_api()}
+    return {"run": sync_issue(ctx, run).to_api()}
 
 
 @router.get("")
@@ -323,8 +340,18 @@ def approve_plan(
             f"run {run_id!r} is {run.state.value}; only a PLANNED run's plan can be approved",
             detail={"state": run.state.value},
         )
-    run = _approve(ctx, auth, tenant_id, run, digest=body.plan_digest, by=auth.email)
-    return {"run": run.to_api()}
+    try:
+        run = _approve(ctx, auth, tenant_id, run, digest=body.plan_digest, by=auth.email)
+    except ApiError:
+        # A submission refused after the claim left the run FAILED: the
+        # issue is told before the caller is. The caller's error is the one
+        # raised, whatever this read does.
+        try:
+            sync_issue(ctx, _runs(ctx).get(tenant_id, run_id))
+        except ApiError:
+            pass
+        raise
+    return {"run": sync_issue(ctx, run).to_api()}
 
 
 @router.post("/{run_id}/plan:edit")
@@ -348,7 +375,7 @@ def edit_plan(
             "plan_edited_by": auth.email,
         },
     )
-    return {"run": run.to_api()}
+    return {"run": sync_issue(ctx, run).to_api()}
 
 
 @router.post("/{run_id}/plan:reject")
@@ -364,4 +391,4 @@ def reject_plan(
         from_states=_PLANNED_ONLY,
         patch={"rejected_by": auth.email, "rejection_reason": body.reason},
     )
-    return {"run": run.to_api()}
+    return {"run": sync_issue(ctx, run).to_api()}

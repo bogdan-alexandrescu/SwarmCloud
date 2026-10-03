@@ -32,6 +32,7 @@ from .auth import (
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
 from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
 from .metrics import ApiMetrics
@@ -84,6 +85,10 @@ class AppContext:
     #: `create_app()` still needs no credentials; tests inject fakes.
     forge_tokens: ForgeTokens | None = None
     forge: GitHubIssues | None = None
+    #: An issue run's writes back to GitHub -- its plan and status comments,
+    #: its pull request's keyword block (`issuesync`) -- with the same
+    #: tenant token, the same pinned host and no redirects.
+    forge_writer: GitHubWriter | None = None
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -136,6 +141,7 @@ def build_context(
     # Manager and api.github.com unless injected; neither builds a client here.
     forge_tokens: ForgeTokens | None = None,
     forge: GitHubIssues | None = None,
+    forge_writer: GitHubWriter | None = None,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -207,6 +213,7 @@ def build_context(
         outcomes=outcomes,
         forge_tokens=forge_tokens or SecretManagerForgeTokens(settings.project_id),
         forge=forge or GitHubIssues(),
+        forge_writer=forge_writer or GitHubWriter(),
         now=now,
     )
 
