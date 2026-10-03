@@ -277,17 +277,8 @@
   cursor: pointer;
 }
 .tl-name:hover { color: var(--info); text-decoration: underline; }
-.tl-retry {
-  align-self: flex-start;
-  padding: 0;
-  border: 0;
-  background: none;
-  color: var(--info);
-  font: inherit;
-  font-size: var(--t-micro);
-  text-decoration: underline;
-  cursor: pointer;
-}
+/* The canonical link-button (`.c-link`), placed in the label column. */
+.tl-retry { align-self: flex-start; font-size: var(--t-micro); }
 .tl-row.is-group .tl-lab,
 .tl-row.is-group .tl-trk { background: var(--surface-2); }
 .tl-row.is-group .tl-lab b { font-weight: 650; }

@@ -10324,20 +10324,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 }
 .diff-name-main { color: var(--text); font: 600 var(--t-body)/var(--lh-body) var(--mono); overflow-wrap: anywhere; }
 .diff-meta { color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--mono); }
-.diff-btn {
-  padding: 2px var(--ctl-s2);
-  border: 1px solid var(--ctl-bd);
-  border-radius: var(--ctl-radius-sm);
-  background: var(--surface-2);
-  color: var(--text);
-  font: 500 var(--t-meta)/var(--lh-meta) var(--font);
-  text-decoration: none;
-  display: inline-block;
-  cursor: pointer;
-}
-.diff-btn:disabled { color: var(--text-faint); cursor: default; }
-.diff-btn[aria-pressed='true'] { box-shadow: inset 0 -2px 0 var(--text); font-weight: 600; }
-.diff-btn:focus-visible,
 .diff-back:focus-visible,
 .diff-file:focus-visible,
 .diff-filter:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }

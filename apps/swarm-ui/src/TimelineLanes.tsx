@@ -969,7 +969,7 @@ function LaneRow({
         </b>
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>
         {events?.status === 'error' && !lane.neverRan && (
-          <button type="button" className="tl-retry" onClick={() => onRetry(lane.taskId)}>
+          <button type="button" className="c-link tl-retry" onClick={() => onRetry(lane.taskId)}>
             read its events again
           </button>
         )}

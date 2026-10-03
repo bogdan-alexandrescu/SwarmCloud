@@ -73,6 +73,7 @@ import {
   type Row,
 } from './rows'
 import { rememberedViewMode, rememberViewMode, type ViewMode } from './storage'
+import { Button, ButtonLink } from '../components'
 
 export type FileSide = 'old' | 'new'
 
@@ -223,21 +224,21 @@ function Bar({
       {note}
       <span className="diff-bar-end">
         {layout}
-        <button type="button" className="diff-btn" onClick={copyPatch} aria-live="polite">
+        <Button size="sm" onClick={copyPatch} aria-live="polite">
           {copy === 'done' ? 'Copied' : copy === 'failed' ? 'Copy failed' : copyLabel}
-        </button>
+        </Button>
         {downloadFrom === undefined ? (
-          <button type="button" className="diff-btn" onClick={download}>
+          <Button size="sm" onClick={download}>
             Download
-          </button>
+          </Button>
         ) : 'href' in downloadFrom ? (
-          <a className="diff-btn" href={downloadFrom.href} download={fileName}>
+          <ButtonLink size="sm" href={downloadFrom.href} download={fileName}>
             Download
-          </a>
+          </ButtonLink>
         ) : (
-          <button type="button" className="diff-btn" disabled title={downloadFrom.refused}>
+          <Button size="sm" disabled title={downloadFrom.refused}>
             Download
-          </button>
+          </Button>
         )}
       </span>
     </div>
@@ -490,12 +491,12 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
   // Split is OFFERED only where it fits: under 700px there is no toggle at all.
   const layout = narrow ? null : (
     <span className="diff-seg" role="group" aria-label="Layout">
-      <button type="button" className="diff-btn" aria-pressed={mode === 'unified'} onClick={() => choose('unified')}>
+      <Button size="sm" aria-pressed={mode === 'unified'} onClick={() => choose('unified')}>
         Unified
-      </button>
-      <button type="button" className="diff-btn" aria-pressed={mode === 'split'} onClick={() => choose('split')}>
+      </Button>
+      <Button size="sm" aria-pressed={mode === 'split'} onClick={() => choose('split')}>
         Split
-      </button>
+      </Button>
     </span>
   )
 
@@ -583,24 +584,22 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
             <span className="diff-find-count" data-testid="diff-find-count" aria-live="polite">
               {found.query === '' ? '' : found.matches.length === 0 ? 'no matches' : `${current + 1} of ${found.matches.length}`}
             </span>
-            <button
-              type="button"
-              className="diff-btn"
+            <Button
+              size="sm"
               aria-label="Previous match"
               disabled={found.matches.length === 0}
               onClick={() => stepMatch(-1)}
             >
               ‹
-            </button>
-            <button
-              type="button"
-              className="diff-btn"
+            </Button>
+            <Button
+              size="sm"
               aria-label="Next match"
               disabled={found.matches.length === 0}
               onClick={() => stepMatch(1)}
             >
               ›
-            </button>
+            </Button>
           </div>
           <div
             ref={scrollRef}
@@ -681,15 +680,14 @@ function Picker({
   const next = order[at + 1]
   return (
     <div className="diff-picker" role="group" aria-label="File">
-      <button
-        type="button"
-        className="diff-btn"
+      <Button
+        size="sm"
         aria-label="Previous file"
         disabled={prev === undefined}
         onClick={() => prev !== undefined && onOpen(prev)}
       >
         ‹
-      </button>
+      </Button>
       <span className="diff-picker-at">
         <span className="diff-picker-pos" data-testid="diff-picker-pos">
           file {at + 1} of {order.length}
@@ -697,15 +695,14 @@ function Picker({
         <span className="diff-fname">{f.path}</span>
         <span className="diff-plus">+{f.additions}</span> <span className="diff-minus">−{f.deletions}</span>
       </span>
-      <button
-        type="button"
-        className="diff-btn"
+      <Button
+        size="sm"
         aria-label="Next file"
         disabled={next === undefined}
         onClick={() => next !== undefined && onOpen(next)}
       >
         ›
-      </button>
+      </Button>
     </div>
   )
 }
@@ -889,9 +886,9 @@ function GapBody({
   return (
     <>
       {state?.status === 'failed' ? <span>context not read: {state.message}</span> : null}
-      <button type="button" className="diff-btn" aria-label={label} onClick={() => onExpand(fi, gap)}>
+      <Button size="sm" aria-label={label} onClick={() => onExpand(fi, gap)}>
         {state?.status === 'failed' ? 'Retry' : hidden === null ? 'Expand to end of file' : `Expand ${what}`}
-      </button>
+      </Button>
     </>
   )
 }

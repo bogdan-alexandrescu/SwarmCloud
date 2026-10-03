@@ -7,6 +7,7 @@ import { FrameAge, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
+import { Button } from './components'
 
 /**
  * Platform-wide task counts. Admin only, and deliberately behind a button.
@@ -151,22 +152,13 @@ export function PlatformCountsScreen() {
           the head (B7.4): the figure on the button is the cost. */}
       <div className="head counts-head">
         <h1>Platform counts</h1>
-        <button
-          type="button"
-          className={`counts-run-btn${run === null ? ' is-primary' : ''}`}
-          onClick={go}
-          disabled={busy}
-        >
-          {busy ? (
-            'Counting…'
-          ) : (
-            <>
-              {run === null ? 'Run the count' : 'Run it again'}
-              {' · '}
-              <span className="counts-cost">{queries} reads</span>
-            </>
-          )}
-        </button>
+        {/* The canonical button (components.html A): primary before the first
+            run, plain for a re-run, busy while counting. */}
+        <Button kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
+          {run === null ? 'Run the count' : 'Run it again'}
+          {' · '}
+          <span className="counts-cost">{queries} reads</span>
+        </Button>
       </div>
       <p className="sub">{provenance}</p>
 
