@@ -70,8 +70,17 @@
 .cap-pools thead th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* The pool's id and its scope share the line under its name (CP-2): one
    sub-line, not a second row of height. */
-.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.cap-sub .ctl-sub { display: inline; }
+/* A ROW TITLE OVER ONE SANS LINE (visual QA Q8, 2026-10-02; capacity.html):
+   the name was an underlined bold link -- a <th> is bold by default -- and
+   the mono sublabel wrapped "global / global / · platform" over three lines
+   in the 23% column. The name is the row's title at normal weight, still the
+   link to Holders (underlined on hover); the sublabel holds one line and
+   ellipses, its whole text in the cell's title. */
+.cap-pools tbody th[scope='row'] { font-weight: 400; }
+.cap-pools tbody th[scope='row'] > .ctl-link { color: var(--text); text-decoration: none; }
+.cap-pools tbody th[scope='row'] > .ctl-link:hover { text-decoration: underline; }
+.cap-sub { display: block; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cap-sub .ctl-sub { display: inline; font: inherit; color: inherit; }
 .cap-scope { color: var(--text-faint); }
 
 /* THE USE CELL: the bar shrinks, the figure does not. The figure's track is
