@@ -364,7 +364,7 @@ describe('the drawer has four panes: Details, Attempts, Artifacts, Checkpoints',
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     }, WAIT)
-    expect(tabs.map((t) => t.querySelector('.ag-tab-label')?.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(tabs[2]!.getAttribute('aria-selected')).toBe('true')
     for (const title of ['Inputs', 'Outputs', 'Log']) await sectionReady(title, /./)
   })

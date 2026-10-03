@@ -211,7 +211,7 @@
 .c-tfoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
 
 /* ---- tabs, segmented controls, breadcrumbs ----------------------------- */
-.c-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .c-tabs > a,
 .c-tabs > button { flex: none; padding: 8px 12px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; text-decoration: none; cursor: pointer; }
 .c-tabs > [aria-selected='true'],

@@ -32,7 +32,7 @@ import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
 import { RESOURCE_UNITS, TERMINAL_STATES, stateTone, type Task } from './types'
 import './styles/agents.css'
-import { Button } from './components'
+import { Button, Tabs } from './components'
 
 /**
  * ONE AGENT, IN THE SPLIT (agents.html V1, decided 2026-10-01; viewers.html A
@@ -326,30 +326,24 @@ export function AgentSplit({
           segmented control with none). A count the task document does not
           carry is a dash with its reason in the title, never a 0. The ids and
           addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
-      <div className="ag-tabs" role="tablist" aria-label="Agent panes">
-        {tabs.map((t) => (
-          <button
-            key={t.id}
-            role="tab"
-            type="button"
-            aria-selected={selected === t.id}
-            onClick={() => {
-              if (t.to === null) setChildren(true)
-              else {
-                setChildren(false)
-                go(t.to)
-              }
-            }}
-          >
-            <span className="ag-tab-label">{t.label}</span>
-            {t.id !== 'detail' && (
-              <span className="ag-tab-count" title={t.say ?? undefined}>
-                {t.count === null ? '—' : t.count}
-              </span>
-            )}
-          </button>
-        ))}
-      </div>
+      <Tabs
+        className="ag-split-tabs"
+        label="Agent panes"
+        current={selected}
+        tabs={tabs.map((t) => ({
+          key: t.id,
+          label: t.label,
+          ...(t.id === 'detail' ? {} : { count: t.count, why: t.say ?? undefined }),
+        }))}
+        onSelect={(key) => {
+          const t = tabs.find((x) => x.id === key)!
+          if (t.to === null) setChildren(true)
+          else {
+            setChildren(false)
+            go(t.to)
+          }
+        }}
+      />
 
       <div className="ag-split-pane">
         {selected === 'children' && task !== null ? (

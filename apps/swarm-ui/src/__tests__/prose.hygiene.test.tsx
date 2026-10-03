@@ -277,13 +277,14 @@ describe("a chart with nothing measured says so in §6.9's shape", () => {
 // ---------------------------------------------------------------------------
 
 describe("the agent's panes are underline tabs with counts (agents.html V1)", () => {
-  it('renders Details / Attempts / Artifacts / Checkpoints as `.ag-tabs`, not a boxed segmented control', () => {
+  it('renders Details / Attempts / Artifacts / Checkpoints as the canonical Tabs, not a boxed segmented control', () => {
     // #503 measured the panes as a boxed `.ctl-seg` with no counts; V1 draws
     // underline tabs with counts. BREAK IT: put `ctl-seg` back on the strip.
-    const m = /<div className="([^"]*)" role="tablist" aria-label="Agent panes">/.exec(SPLIT)
-    expect(m, 'AgentSplit.tsx no longer renders the Agent panes tablist this test knows').not.toBeNull()
-    expect(m![1]!.split(/\s+/)).toContain('ag-tabs')
-    expect(m![1]!.split(/\s+/)).not.toContain('ctl-seg')
+    // The strip is the canonical `Tabs` in its tablist form (#503 swap).
+    const m = /<Tabs\b[^>]*?label="Agent panes"/.exec(SPLIT)
+    expect(m, 'AgentSplit.tsx no longer renders the Agent panes Tabs this test knows').not.toBeNull()
+    expect(m![0]).not.toMatch(/ctl-seg/)
+    expect(SPLIT, 'a local tablist is back').not.toMatch(/role="tablist"/)
     expect(APP, 'App.tsx draws a pane strip of its own again').not.toMatch(/aria-label="Agent panes"/)
   })
 

@@ -228,46 +228,10 @@
 .ag-split-pane .head { display: none; }
 
 /* --- underline tabs with counts ------------------------------------------ */
-/* The tabs scroll sideways when they do not fit the split (Q4), rather than
-   wrapping or being cut ("Details Children 0 Att…"). */
-.ag-tabs {
-  display: flex;
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: thin;
-  gap: var(--ctl-s3);
-  border-bottom: 1px solid var(--line);
-  margin: var(--ctl-s2) 0 var(--ctl-s3);
-}
-.ag-tabs > button {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 2px;
-  border: 0;
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  background: none;
-  color: var(--text-dim);
-  font: 500 var(--t-body)/var(--lh-body) var(--font);
-  cursor: pointer;
-}
-.ag-tabs > button[aria-selected='true'] { color: var(--text); border-bottom-color: var(--sk-ac); font-weight: 600; }
-.ag-tabs > button:hover { color: var(--text); }
-.ag-tabs > button:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-.ag-tab-count {
-  min-width: 20px;
-  padding: 0 6px;
-  border-radius: 999px;
-  background: var(--surface-2);
-  color: var(--text-dim);
-  font-size: var(--t-micro);
-  line-height: var(--lh-micro);
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
+/* The canonical `Tabs` in its tablist form (components.html A). It scrolls
+   sideways when it does not fit the split (Q4), rather than wrapping or being
+   cut ("Details Children 0 Att…"); here it only takes its place in the column. */
+.ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
 
 /* --- the log dock --------------------------------------------------------- */
 /* STICKY TO THE BOTTOM OF THE DETAIL COLUMN, which is the drawer's scroller:

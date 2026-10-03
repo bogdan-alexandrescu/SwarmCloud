@@ -76,7 +76,7 @@ function tab(name: string): HTMLElement {
   const list = screen.getByRole('tablist', { name: 'Agent panes' })
   const t = within(list)
     .getAllByRole('tab')
-    .find((b) => b.querySelector('.ag-tab-label')?.textContent === name)
+    .find((b) => b.querySelector('.c-tab-label')?.textContent === name)
   expect(t, `no ${name} tab`).toBeTruthy()
   return t!
 }
@@ -132,19 +132,19 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
 })
 
 describe('underline tabs with counts, and an unknown count is a dash with its reason', () => {
-  it('draws the four panes as `.ag-tabs`, Attempts counted from the task, the rest a dash until known', async () => {
+  it('draws the four panes as the canonical `Tabs` (tablist form), Attempts counted from the task, the rest a dash until known', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     render(split('attempts'))
     const list = screen.getByRole('tablist', { name: 'Agent panes' })
-    expect(list.classList.contains('ag-tabs')).toBe(true)
+    expect(list.classList.contains('c-tabs'), 'the strip is not the canonical Tabs').toBe(true)
     expect(list.classList.contains('ctl-seg'), 'the boxed segmented control is back').toBe(false)
-    await waitFor(() => expect(tab('Attempts').querySelector('.ag-tab-count')?.textContent).toBe('2'))
+    await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
     expect(tab('Attempts').getAttribute('aria-selected')).toBe('true')
-    const artifacts = tab('Artifacts').querySelector('.ag-tab-count')!
+    const artifacts = tab('Artifacts').querySelector('.c-tabs em')!
     expect(artifacts.textContent).toBe('—')
     expect(artifacts.getAttribute('title')).toMatch(/not known/)
-    expect(tab('Checkpoints').querySelector('.ag-tab-count')?.textContent).toBe('—')
-    expect(tab('Details').querySelector('.ag-tab-count')).toBeNull()
+    expect(tab('Checkpoints').querySelector('.c-tabs em')?.textContent).toBe('—')
+    expect(tab('Details').querySelector('.c-tabs em')).toBeNull()
   })
 
   it('counts the files once the manifest is written', async () => {
@@ -152,7 +152,7 @@ describe('underline tabs with counts, and an unknown count is a dash with its re
       ok(agent({ state: 'SUCCEEDED', result_summary: { artifacts: [{ name: 'a.md', bytes: 1, uri: 'gs://x/a.md' }, { name: 'b.md', bytes: 1, uri: 'gs://x/b.md' }] } })),
     )
     render(split())
-    await waitFor(() => expect(tab('Artifacts').querySelector('.ag-tab-count')?.textContent).toBe('2'))
+    await waitFor(() => expect(tab('Artifacts').querySelector('.c-tabs em')?.textContent).toBe('2'))
   })
 })
 
@@ -221,8 +221,8 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
   it('offers no Children tab for an API that sends no parent field', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     render(split())
-    await waitFor(() => expect(tab('Attempts').querySelector('.ag-tab-count')?.textContent).toBe('2'))
-    const names = [...document.querySelectorAll('.ag-tabs .ag-tab-label')].map((t) => t.textContent)
+    await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
+    const names = [...document.querySelectorAll('.c-tabs[role="tablist"] .c-tab-label')].map((t) => t.textContent)
     expect(names).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(api.loadChildren).not.toHaveBeenCalled()
   })
@@ -243,7 +243,7 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
       } satisfies TaskPage),
     )
     render(split())
-    await waitFor(() => expect(tab('Children').querySelector('.ag-tab-count')?.textContent).toBe('3'))
+    await waitFor(() => expect(tab('Children').querySelector('.c-tabs em')?.textContent).toBe('3'))
     fireEvent.click(tab('Children'))
     const pane = await screen.findByRole('region', { name: 'Children' })
     expect(tab('Children').getAttribute('aria-selected')).toBe('true')
@@ -267,7 +267,7 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
     // An API without the filter answers the tenant's newest tasks, with no parent field.
     api.loadChildren.mockResolvedValue(ok({ tasks: [runTask({ id: 'task_unrelated' })] } satisfies TaskPage))
     render(split())
-    await waitFor(() => expect(tab('Children').querySelector('.ag-tab-count')?.textContent).toBe('—'))
+    await waitFor(() => expect(tab('Children').querySelector('.c-tabs em')?.textContent).toBe('—'))
     fireEvent.click(tab('Children'))
     const pane = await screen.findByRole('region', { name: 'Children' })
     await waitFor(() => expect(pane.textContent).toMatch(/not served/))

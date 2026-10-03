@@ -84,7 +84,7 @@ describe('Q4: the detail header and tabs fit the split', () => {
 
   it('scrolls the tabs sideways rather than cutting or wrapping them', async () => {
     const s = await split()
-    const tabs = s.querySelector('.ag-tabs')!
+    const tabs = s.querySelector('.c-tabs[role="tablist"]')!
     expect(painted(tabs, 'flex-wrap', WIDE)).toBe('nowrap')
     expect(painted(tabs, ['overflow-x', 'overflow'], WIDE)).toBe('auto')
     expect(painted(tabs.querySelector('button')!, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)

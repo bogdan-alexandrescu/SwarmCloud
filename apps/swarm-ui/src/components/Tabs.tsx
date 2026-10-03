@@ -6,6 +6,12 @@
  * (/agents/live/<id>/attempts), so each tab is a link that opens in a new
  * tab. A tab with nothing behind it shows a dash, not 0.
  *
+ * THE TABLIST FORM (`onSelect`) is the same strip for panes that live inside
+ * one region rather than at an address of their own -- the agent split's
+ * Details / Children / Attempts / Artifacts / Checkpoints, whose Children
+ * pane has no route. Buttons with `role="tab"` and `aria-selected`, drawn
+ * exactly as the link form is. It replaced the split's local `.ag-tabs`.
+ *
  * THE SEGMENTED CONTROL filters a list. It is a group of toggle buttons
  * (`aria-pressed`), not a tablist: nothing behind it is a separate view.
  *
@@ -17,9 +23,17 @@ import { Fragment, type MouseEvent, type ReactNode } from 'react'
 export interface TabDef {
   key: string
   label: string
-  href: string
+  /** The tab's address. Not read by the tablist form. */
+  href?: string
   /** The count behind the tab. `null` is unknown and draws a dash; omitted, nothing. */
   count?: number | null
+  /** Why the count is what it is (a dash's reason), as the count's title. */
+  why?: string
+}
+
+function TabCount({ t }: { t: TabDef }) {
+  if (t.count === undefined) return null
+  return <em title={t.why}>{t.count === null ? '—' : t.count}</em>
 }
 
 /** A plain left click a router should take; anything else is the browser's. */
@@ -27,22 +41,51 @@ export function routedClick(e: MouseEvent): boolean {
   return !(e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey)
 }
 
-export function Tabs({ tabs, current, label, onGo }: { tabs: readonly TabDef[]; current: string; label: string; onGo?: (href: string) => void }) {
+export function Tabs({
+  tabs,
+  current,
+  label,
+  onGo,
+  onSelect,
+  className,
+}: {
+  tabs: readonly TabDef[]
+  current: string
+  label: string
+  onGo?: (href: string) => void
+  /** Set, the strip is a `tablist` of buttons and this is told the key pressed. */
+  onSelect?: (key: string) => void
+  /** Layout only (margins in the region that holds it); never a restyle. */
+  className?: string
+}) {
+  const cls = className === undefined ? 'c-tabs' : `c-tabs ${className}`
+  if (onSelect !== undefined) {
+    return (
+      <div className={cls} role="tablist" aria-label={label}>
+        {tabs.map((t) => (
+          <button key={t.key} role="tab" type="button" aria-selected={t.key === current} onClick={() => onSelect(t.key)}>
+            <span className="c-tab-label">{t.label}</span>
+            <TabCount t={t} />
+          </button>
+        ))}
+      </div>
+    )
+  }
   return (
-    <nav className="c-tabs" aria-label={label}>
+    <nav className={cls} aria-label={label}>
       {tabs.map((t) => (
         <a
           key={t.key}
           href={t.href}
           aria-current={t.key === current ? 'page' : undefined}
           onClick={(e) => {
-            if (onGo === undefined || !routedClick(e)) return
+            if (onGo === undefined || t.href === undefined || !routedClick(e)) return
             e.preventDefault()
             onGo(t.href)
           }}
         >
-          {t.label}
-          {t.count !== undefined && <em>{t.count === null ? '—' : t.count}</em>}
+          <span className="c-tab-label">{t.label}</span>
+          <TabCount t={t} />
         </a>
       ))}
     </nav>

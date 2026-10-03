@@ -385,6 +385,35 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     expect(go).toHaveBeenCalledTimes(1)
   })
 
+  it('the tablist form is tab buttons, the selected one aria-selected, a count its reason in the title', () => {
+    // The agent split's panes (#503 swap of `.ag-tabs`): Children has no
+    // route, so the strip is a tablist that reports the key pressed.
+    // MUTATION: drop the `onSelect` branch and the strip renders links.
+    const pick = vi.fn()
+    render(
+      <Tabs
+        label="Agent panes"
+        current="attempts"
+        onSelect={pick}
+        tabs={[
+          { key: 'detail', label: 'Details' },
+          { key: 'attempts', label: 'Attempts', count: 2 },
+          { key: 'artifacts', label: 'Artifacts', count: null, why: 'not known yet' },
+        ]}
+      />,
+    )
+    const list = screen.getByRole('tablist', { name: 'Agent panes' })
+    expect(list.classList.contains('c-tabs')).toBe(true)
+    const tabs = screen.getAllByRole('tab')
+    expect(tabs.map((t) => t.getAttribute('aria-selected'))).toEqual(['false', 'true', 'false'])
+    expect(tabs[0]!.querySelector('em'), 'a tab with no count draws none').toBeNull()
+    expect(tabs[2]!.querySelector('em')?.textContent).toBe('—')
+    expect(tabs[2]!.querySelector('em')?.getAttribute('title')).toBe('not known yet')
+    expect(screen.queryByRole('link')).toBeNull()
+    fireEvent.click(tabs[2]!)
+    expect(pick).toHaveBeenCalledWith('artifacts')
+  })
+
   it('the segmented control is toggle buttons', () => {
     const pick = vi.fn()
     render(<Segmented label="Theme" value="light" onChange={pick} options={[{ key: 'light', label: 'Light' }, { key: 'dark', label: 'Dark' }]} />)
