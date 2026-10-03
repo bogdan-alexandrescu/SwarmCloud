@@ -80,7 +80,7 @@
 .ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
 .ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 10px; }
 .ov-card .ctl-card-title { flex: none; }
-.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-card .ov-link { margin-left: auto; color: var(--sk-ac); font-size: var(--t-micro); white-space: nowrap; text-decoration: none; }
 
 /* ---- tables: 32px rows, sentence-case heads, flat in a card --------------- */

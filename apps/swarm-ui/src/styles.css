@@ -4304,14 +4304,15 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
   font-weight: 600;
   color: var(--text);
 }
-/* THE QUALIFIER SLOT. Muted, right-aligned, mono, and it does not wrap: it is
+/* THE QUALIFIER SLOT. Muted, right-aligned, and it does not wrap: it is
    a fact about the card, so it reads as chrome and never competes with the
-   title. `flex: none` is what keeps it on the title's line — a qualifier that
+   title. SANS, NOT MONO (visual QA Q1, review of #503): "6 accounts" is a
+   meta line, and mono is for ids, values, code and timestamps only. `flex: none` is what keeps it on the title's line — a qualifier that
    wraps under the title has become a subtitle, which is a paragraph with
    better manners. */
 .ctl-card-note {
   flex: none;
-  font: var(--t-micro)/var(--lh-micro) var(--mono);
+  font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
   white-space: nowrap;
   text-align: right;

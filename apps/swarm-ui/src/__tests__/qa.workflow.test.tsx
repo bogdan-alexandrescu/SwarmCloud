@@ -55,6 +55,15 @@ describe('Q3: the Steps table has real column widths', () => {
     const widths = COLS.map((c) => [c, painted(h.querySelector(`th[data-col="${c}"]`)!, 'width', WIDE)] as const)
     expect(widths.filter(([c, w]) => c !== 'why' && w === null).map(([c]) => c)).toEqual([])
     expect(widths.find(([c]) => c === 'why')![1]).toBeNull()
+
+    // And the slack is the largest share: the others leave why more than any
+    // one of them takes (review of #503: they summed to 88%, why was 12%).
+    const pct = widths.filter(([c]) => c !== 'why').map(([c, w]) => {
+      expect(w, `${c} width is not a share`).toMatch(/^\d+(?:\.\d+)?%$/)
+      return parseFloat(w!)
+    })
+    const slack = 100 - pct.reduce((a, b) => a + b, 0)
+    expect(slack, 'why is not the widest column').toBeGreaterThan(Math.max(...pct))
   })
 
   it('never breaks a word, never wraps a head or a figure, and keeps why inside its cell', () => {

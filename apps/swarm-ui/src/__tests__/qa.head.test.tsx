@@ -101,10 +101,13 @@ describe('Q1: mono only for ids, values, code and timestamps', () => {
       '<ul class="ctl-facts"><li class="ctl-fact"><b>serves</b></li></ul>' +
       '<span class="ctl-eyebrow wf-scrub-key">same step</span><span class="t-label">reason</span>' +
       '<span class="ctl-metric-label">agents</span><span class="ctl-metric-foot">last read</span>' +
-      '<div class="ctl-empty"><span class="ctl-empty-foot">Checked just now.</span></div>'
+      '<div class="ctl-empty"><span class="ctl-empty-foot">Checked just now.</span></div>' +
+      // A card's qualifier ("6 accounts") and Overview's card notes (review of #503).
+      '<span class="ctl-card-note">6 accounts</span>' +
+      '<div class="ov-card"><span class="ctl-card-note">2 waiting</span></div>'
     document.body.appendChild(host)
     try {
-      expect(monoAmong([...host.children])).toEqual([])
+      expect(monoAmong([...host.children, ...host.querySelectorAll('.ov-card > *')])).toEqual([])
     } finally {
       host.remove()
     }

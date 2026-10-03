@@ -127,15 +127,19 @@
   .wf-card .ctl-table.wf-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td { white-space: normal; }
   .wf-card .ctl-table.wf-table td.is-num { white-space: nowrap; }
-  .wf-card .ctl-table.wf-table [data-col="step"] { width: 12%; }
-  .wf-card .ctl-table.wf-table [data-col="state"] { width: 11%; }
-  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 10%; }
+  /* WHY GETS THE SLACK (Q3): the other columns take 71%, so why is the widest
+     column at 29% -- a sentence, where every other column holds a word or a
+     figure. At the 1000px minimum a 7% column is 70px: "attempts" and
+     "$12.3456" fit, and a head that does not is cut with an ellipsis. */
+  .wf-card .ctl-table.wf-table [data-col="step"] { width: 10%; }
+  .wf-card .ctl-table.wf-table [data-col="state"] { width: 9%; }
+  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 9%; }
   .wf-card .ctl-table.wf-table [data-col="waited"],
   .wf-card .ctl-table.wf-table [data-col="attempts"],
-  .wf-card .ctl-table.wf-table [data-col="cost"],
-  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 9%; }
-  .wf-card .ctl-table.wf-table [data-col="ran"] { width: 8%; }
-  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 11%; }
+  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 7%; }
+  .wf-card .ctl-table.wf-table [data-col="cost"] { width: 8%; }
+  .wf-card .ctl-table.wf-table [data-col="ran"] { width: 6%; }
+  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 8%; }
 }
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
