@@ -645,7 +645,8 @@ CHAIN_AS_BEFORE = {
 
 def _with_steps(*steps) -> dict:
     return {"summary": "x", "steps": [
-        {"step_id": sid, "title": "t", "prompt": "p", **({"depends_on": deps} if deps is not None else {})}
+        {"step_id": sid, "title": "t", "prompt": "p",
+         **({"depends_on": deps} if deps is not None else {})}
         for sid, deps in steps
     ]}
 
@@ -818,3 +819,22 @@ def test_the_list_is_the_callers_tenant_newest_first_and_paged(client, db):
     ).json()
     assert [r["id"] for r in second["runs"]] == [ids[0]]
     assert second["next_page_token"] is None
+
+
+def test_a_join_stages_every_ancestor_its_base_branch_does_not_carry(client, db, objects):
+    # d joins c (its base: the later of its dependencies) and b; b built on a,
+    # so both a's and b's diffs are staged, in plan order, and d depends on both.
+    plan = _with_steps(("a", []), ("b", ["a"]), ("c", []), ("d", ["c", "b"]))
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    d = {s.step_id: s for s in spec.steps}["impl-d"]
+    assert d.builds_on == "impl-c"
+    assert d.input_from == {"impl-a": "swarm-work.patch", "impl-b": "swarm-work.patch"}
+    assert set(d.depends_on) == {"impl-a", "impl-b", "impl-c"}
+    prompt = d.input["prompt"]
+    assert prompt.index("impl-a/swarm-work.patch") < prompt.index("impl-b/swarm-work.patch")
+    assert issueruns.plan_shape(plan) == "4 steps in 3 stages (2 → 1 → 1), then review and fix"
+    # And the workflow validator accepts the shape.
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, plan)
+    read = _run(client, run["id"]).json()["run"]
+    assert _approve(client, run["id"], read["plan_digest"]).status_code == 200
