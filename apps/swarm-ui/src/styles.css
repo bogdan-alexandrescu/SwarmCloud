@@ -8080,14 +8080,6 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
 .sbf-send .ctl-fact { justify-content: space-between; gap: var(--ctl-s3); }
 .sbf-send .ctl-fact > b { flex: none; }
 .sbf-send .warn-text { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
-/* THE ONE CONTROL ON EITHER FORM THAT COMMITS ANYTHING. Its fill is the
-   accent, and pale when disabled, from styles/submit.css (`.sb-go`,
-   submit.html F1/G1); this keeps its size. */
-.sbf-go {
-  width: 100%; min-height: 34px;
-  justify-content: center;
-  font-weight: 600;
-}
 
 /* ==========================================================================
    The workflow plan — stages, not a list
@@ -9816,8 +9808,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   .ctl-seg > button { min-height: 44px; }
 
   .limit-edit input,
-  .limit-edit button,
-  .sbf-go {
+  .limit-edit button {
     min-height: 44px;
   }
 

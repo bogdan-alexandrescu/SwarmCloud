@@ -32,6 +32,7 @@ import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
 import { RESOURCE_UNITS, TERMINAL_STATES, stateTone, type Task } from './types'
 import './styles/agents.css'
+import { Button } from './components'
 
 /**
  * ONE AGENT, IN THE SPLIT (agents.html V1, decided 2026-10-01; viewers.html A
@@ -428,9 +429,9 @@ function AgHead({
           {task === null ? taskId : agentName(task)}
         </h2>
         <span className="ag-head-actions">
-          <button type="button" className="ag-btn" onClick={copy}>
+          <Button onClick={copy}>
             Copy link
-          </button>
+          </Button>
           {copied !== null && (
             <span role="status" className="ag-head-copied">
               {copied === 'yes' ? 'copied' : 'could not copy'}

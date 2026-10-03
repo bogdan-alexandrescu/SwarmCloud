@@ -28,7 +28,6 @@
   font-size: var(--t-meta); line-height: var(--lh-meta);
 }
 .in-ref:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
-.in-ask .sb-btn:disabled { opacity: .45; cursor: not-allowed; }
 .in-ask + .sb-note { margin-top: 8px; }
 .in-reading { display: grid; gap: 8px; margin-top: 12px; }
 
@@ -140,7 +139,7 @@
 }
 /* A plan a poll brought in while the reader looked at another: offered, not swapped. */
 .rn-held { flex-wrap: wrap; }
-.rn-held > .sb-btn { margin-left: auto; }
+.rn-held > .c-btn { margin-left: auto; }
 
 /* ---- the list: 32px rows --------------------------------------------------- */
 .rn-list { display: grid; gap: 12px; min-width: 0; }
@@ -202,7 +201,6 @@
 .rn-overlaps .sb-note, .rn-plan .sb-note { margin: 0; }
 
 .rn-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.rn-actions .sb-btn:disabled { opacity: .45; cursor: not-allowed; }
 
 .rn-history ol { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
 .rn-history li {

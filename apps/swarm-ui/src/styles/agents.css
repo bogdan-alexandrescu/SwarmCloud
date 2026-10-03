@@ -203,7 +203,6 @@
 .ag-head-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); margin-inline-start: auto; flex: none; }
 .ag-head-sub { margin: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
-.ag-btn,
 .ag-head-stop .stop-btn {
   display: inline-flex;
   align-items: center;
@@ -217,9 +216,7 @@
   cursor: pointer;
 }
 .ag-head-stop .stop-btn { color: var(--bad-ink); border-color: color-mix(in srgb, var(--bad) 55%, var(--line)); }
-.ag-btn:hover,
 .ag-head-stop .stop-btn:hover { background: var(--surface-2); }
-.ag-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
@@ -349,8 +346,7 @@
 }
 .ag-logdock-head h2 { margin: 0; font: 600 var(--t-body)/var(--lh-body) var(--font); }
 .ag-logdock-streams { display: inline-flex; gap: 2px; }
-.ag-logdock-streams > button,
-.ag-logdock-btn {
+.ag-logdock-streams > button {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -363,11 +359,8 @@
   font: var(--t-meta)/var(--lh-meta) var(--font);
   cursor: pointer;
 }
-.ag-logdock-streams > button[aria-pressed='true'],
-.ag-logdock-btn[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
-.ag-logdock-btn:disabled { opacity: .6; cursor: default; }
-.ag-logdock-streams > button:focus-visible,
-.ag-logdock-btn:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-logdock-streams > button[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
+.ag-logdock-streams > button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ag-logdock-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
 .ag-logdock-attempt select {
   min-height: 28px;

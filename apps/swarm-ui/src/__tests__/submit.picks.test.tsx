@@ -26,6 +26,7 @@ import { SubmitScreen } from '../Submit'
 import { SubmitChooser } from '../SubmitChooser'
 import { SubmitWorkflowScreen } from '../SubmitWorkflow'
 import SUBMIT_CSS from '../styles/submit.css?raw'
+import COMPONENTS_CSS from '../styles/components.css?raw'
 import STYLES from '../styles.css?raw'
 import { flatRules, gate } from './cssgate'
 
@@ -185,10 +186,12 @@ describe('the task form is F1', () => {
     expect(visible(lands!)).toContain('READY or PARKED · costs nothing')
     expect(visible(panel)).toContain('Nothing runs until the scheduler admits it into every pool it needs.')
     const go = within(panel).getByRole('button', { name: 'Submit one task' })
-    expect(go.classList.contains('sb-go')).toBe(true)
-    const css = rules(SUBMIT_CSS)
-    expect(css).toMatch(/\.sbf-send \.sb-go\s*\{[^}]*background:\s*var\(--sk-ac\)/)
-    expect(css).toMatch(/\.sbf-send \.sb-go:disabled\s*\{[^}]*opacity/)
+    // The canonical primary button (components.html A): the accent fill, and
+    // ONE disabled treatment that pales it.
+    expect(go.className).toContain('c-btn is-primary')
+    const css = rules(COMPONENTS_CSS)
+    expect(css).toMatch(/\.c-btn\.is-primary\s*\{[^}]*background:\s*var\(--sk-ac\)/)
+    expect(css).toMatch(/\.c-btn:disabled,\s*\.c-btn\[aria-disabled='true'\]\s*\{[^}]*opacity/)
   })
 })
 

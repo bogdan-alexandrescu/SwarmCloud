@@ -100,17 +100,6 @@
 /* ---- the send panel (F1, G1) -------------------------------------------- */
 /* THE PRIMARY ACTION IS THE ACCENT, and disabled it is the pale accent the
    frame draws (`.btn.pri.dis`), not a grey bar (#503). */
-.sbf-send .sb-go {
-  min-height: 32px;
-  border-radius: var(--ctl-radius-sm);
-  background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg);
-}
-.sbf-send .sb-go:not(:disabled):hover {
-  background: color-mix(in srgb, var(--sk-ac) 85%, var(--text));
-  border-color: color-mix(in srgb, var(--sk-ac) 85%, var(--text));
-  color: var(--bg);
-}
-.sbf-send .sb-go:disabled { opacity: .45; cursor: not-allowed; }
 .sb-note { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* ---- the workflow form (G1) ---------------------------------------------- */
@@ -180,18 +169,6 @@
   fill: none; stroke: var(--sk-ac); stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
 }
 .sb-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.sb-btn {
-  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
-  min-height: 32px; padding: 0 12px;
-  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
-  background: var(--surface); color: var(--text);
-  font: 600 var(--t-meta)/var(--lh-meta) var(--font);
-  cursor: pointer;
-}
-.sb-btn:hover { border-color: var(--text-faint); }
-.sb-btn.is-pri { background: var(--sk-ac); border-color: var(--sk-ac); color: var(--bg); }
-.sb-btn.is-pri:hover { background: color-mix(in srgb, var(--sk-ac) 85%, var(--text)); }
-.sb-btn:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .sb-kbd {
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
@@ -213,5 +190,5 @@
 @media (max-width: 560px) {
   .sbf-runners.is-cards { grid-template-columns: minmax(0, 1fr); }
   .sb-kbd, .sb-foot { display: none; }
-  .sb-btn, .sbf-send .sb-go, .sb-runner-select, .sb-prio > input { min-height: 44px; }
+  .sb-runner-select, .sb-prio > input { min-height: 44px; }
 }

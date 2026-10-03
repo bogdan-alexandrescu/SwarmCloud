@@ -28,6 +28,7 @@ import {
   type Task,
 } from './types'
 import './styles/submit.css'
+import { Button } from './components'
 
 /**
  * Submit one task -- and the honest constraints on doing so.
@@ -1063,9 +1064,9 @@ function Form({ capacity }: { capacity: Capacity }) {
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
-          <button type="submit" className="sbf-go sb-go" disabled={outcome.kind === 'sending' || blocked}>
+          <Button type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
             {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
-          </button>
+          </Button>
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {outcome.kind === 'refused' && outcome.unattributed && (
             <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>

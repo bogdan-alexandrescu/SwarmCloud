@@ -32,6 +32,7 @@ import AGENTS_CSS from '../styles/agents.css?raw'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 
+import { painted } from './marks'
 import { App } from '../App'
 import { Tabs } from '../components'
 import { HelpScreen } from '../HelpSection'
@@ -2078,7 +2079,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
         '<div class="ctl-seg"><button>Live</button></div>' +
         '<span class="limit-edit"><input type="number"><button>save</button></span>' +
         '<button class="ol-table-toggle">Table</button>' +
-        '<button class="sbf-go">Send</button>' +
+        '<button class="c-btn is-primary is-full">Send</button>' +
         '<button class="ctl-q-glyph">?</button><button class="ov-refresh">refresh</button>' +
         '<a class="ov-link" href="#x">open</a><button class="sbf-mini">remove</button>' +
         '</div>',
@@ -2092,9 +2093,13 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '.limit-edit input',
       '.limit-edit button',
       '.ol-table-toggle',
-      '.sbf-go',
+      // The forms' commit control is the canonical full-width primary now.
+      '.c-btn.is-primary.is-full',
     ]) {
-      expect(px(won(pick(f, sel), 'min-height', PHONE)), `${sel} at 390`).toBeGreaterThanOrEqual(44)
+      // The canonical button's rules are in its own sheet, which `won` (this
+      // file's styles.css-only cascade) does not read: `painted` reads all.
+      const h = sel.startsWith('.c-btn') ? painted(pick(f, sel), 'min-height', PHONE) : won(pick(f, sel), 'min-height', PHONE)
+      expect(px(h), `${sel} at 390`).toBeGreaterThanOrEqual(44)
     }
     // The segment keeps its desktop size: the target is a phone rule.
     expect(px(won(pick(f, '.ctl-seg > button'), 'min-height', WIDE))).toBeLessThan(44)

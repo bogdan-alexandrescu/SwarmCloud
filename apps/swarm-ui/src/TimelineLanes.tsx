@@ -64,7 +64,7 @@ import {
   type LanesView,
 } from './lanes'
 import { STATE_MARK, type MarkName } from './marks'
-import { MarkIcon, StateMark } from './components'
+import { Button, ButtonLink, MarkIcon, StateMark } from './components'
 import { DEFAULT_VIEW, outcomesQuery, viewerZone, type Outcomes } from './outcomes'
 import { PageHead, timeAgo } from './Shell'
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
@@ -1180,9 +1180,9 @@ function LaneDetail({
           </dd>
         </dl>
         <p className="tl-acts">
-          <a className="tl-btn is-pri" href={href}>
+          <ButtonLink kind="primary" href={href}>
             Open in Agents ›
-          </a>
+          </ButtonLink>
         </p>
       </div>
       <div className="tl-card">
@@ -1210,9 +1210,9 @@ function LaneDetail({
           </ol>
         )}
         {events?.status === 'ok' && events.next !== null && (
-          <button type="button" className="tl-btn" onClick={onOlder} disabled={events.older === 'reading'}>
+          <Button onClick={onOlder} disabled={events.older === 'reading'}>
             {events.older === 'reading' ? 'Reading…' : 'Older events ›'}
-          </button>
+          </Button>
         )}
         {events?.status === 'ok' && typeof events.older === 'string' && events.older !== 'idle' && events.older !== 'reading' && (
           <p className="tl-q">{events.older}</p>

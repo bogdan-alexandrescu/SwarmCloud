@@ -24,6 +24,7 @@ import {
   type Workflow,
 } from './types'
 import './styles/submit.css'
+import { Button } from './components'
 
 /**
  * Build a multi-step workflow -- the only WRITE screen in this UI besides
@@ -666,9 +667,9 @@ function Form({ sources }: { sources: FormSources }) {
               ))}
             </p>
           )}
-          <button type="button" className="sbf-go sb-go" disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
+          <Button kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
             {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
-          </button>
+          </Button>
         </div>
       </aside>
     </div>

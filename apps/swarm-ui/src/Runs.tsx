@@ -3,7 +3,7 @@ import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
 import type { MarkHue, MarkName } from './marks'
-import { NamedMark, WarnMark } from './components'
+import { Button, NamedMark, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { IssueRun, IssueRunPage, IssueRunState, RunPlan } from './types'
 import { useNow } from './useNow'
@@ -199,9 +199,9 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
       {older.error !== null && <FailedPanel error={older.error} onRetry={() => void more()} />}
       {older.next !== null && (
         <p className="rn-more">
-          <button type="button" className="sb-btn" disabled={older.reading} onClick={() => void more()}>
+          <Button disabled={older.reading} onClick={() => void more()}>
             {older.reading ? 'Reading older runs…' : 'Show older runs'}
-          </button>
+          </Button>
         </p>
       )}
     </div>
@@ -363,7 +363,7 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
               {held.plan_edited_by !== null && <> (edited by {held.plan_edited_by})</>}. The actions below still name the
               plan shown, so the API will refuse them.
             </span>
-            <button type="button" className="sb-btn" disabled={busy} onClick={showHeld}>Show the plan now</button>
+            <Button disabled={busy} onClick={showHeld}>Show the plan now</Button>
           </div>
         )}
 
@@ -426,12 +426,12 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
                 onReject={(reason) => void act('reject', () => rejectPlan(run.id, digest, reason))} />
             ) : (
               <>
-                <button type="button" className="sb-btn is-pri" disabled={busy}
+                <Button kind="primary" disabled={busy}
                   onClick={() => void act('approve', () => approvePlan(run.id, digest!))}>
                   {acting.kind === 'busy' && acting.what === 'approve' ? 'Approving…' : 'Approve and run'}
-                </button>
-                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</button>
-                <button type="button" className="sb-btn" disabled={busy} onClick={() => setOpen({ kind: 'reject' })}>Reject</button>
+                </Button>
+                <Button disabled={busy} onClick={() => setOpen({ kind: 'edit', digest: digest! })}>Edit plan</Button>
+                <Button disabled={busy} onClick={() => setOpen({ kind: 'reject' })}>Reject</Button>
               </>
             )}
           </div>
@@ -546,8 +546,8 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
       ))}
       <p className="sb-note">Saving sends the digest of the plan you opened; an edit made by someone else since is refused.</p>
       <div className="rn-actions">
-        <button type="submit" className="sb-btn is-pri" disabled={busy || blank}>Save the plan</button>
-        <button type="button" className="sb-btn" disabled={busy} onClick={onCancel}>Cancel</button>
+        <Button type="submit" kind="primary" disabled={busy || blank}>Save the plan</Button>
+        <Button disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>
     </form>
   )
@@ -565,8 +565,8 @@ function RejectForm({ busy, onCancel, onReject }: { busy: boolean; onCancel: () 
         <textarea value={reason} rows={2} maxLength={1024} onChange={(e) => setReason(e.target.value)} />
       </label>
       <div className="rn-actions">
-        <button type="submit" className="sb-btn" disabled={busy}>Reject this plan</button>
-        <button type="button" className="sb-btn" disabled={busy} onClick={onCancel}>Keep it</button>
+        <Button type="submit" disabled={busy}>Reject this plan</Button>
+        <Button disabled={busy} onClick={onCancel}>Keep it</Button>
       </div>
     </form>
   )
