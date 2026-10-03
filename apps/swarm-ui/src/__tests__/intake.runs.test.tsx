@@ -12,6 +12,9 @@
 //     stays the one Approve and Edit name, an editor saves with the digest it
 //     opened on, and a notice offers the new plan;
 //   * Reject sends the shown digest and the reason;
+//   * a staged plan shows the API's plan_shape and each step's depends_on, and
+//     an edit carries every depends_on through, so saving never turns it back
+//     into a chain;
 //   * what the run document does not serve -- the PR, the plan and status
 //     comments, overlaps, cost -- is a dash with its reason, never hidden and
 //     never invented; a workflow not yet created is "none yet".
@@ -253,6 +256,43 @@ describe('/runs/<id>: one run', () => {
       plan_digest: DIGEST_A,
       plan: { summary: 'A shorter plan.', steps: run().plan.steps },
     })
+  })
+
+  const STAGED = { summary: 'Two independent halves, then the wiring.', steps: [
+    { step_id: 'api', title: 'api: sum step spend', prompt: 'Add the sum.', depends_on: [] },
+    { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw it.', depends_on: [] },
+    { step_id: 'wire', title: 'wire the column to the sum', prompt: 'Wire it.', depends_on: ['api', 'ui'] },
+  ] }
+
+  it('a staged plan states its shape and each step\'s dependencies', async () => {
+    serve((m, url) => (url === '/v1/runs/run_4c1e09d2' && m === 'GET'
+      ? { status: 200, body: { run: run({ plan: STAGED,
+          plan_shape: '3 steps in 2 stages (2 → 1), then review and fix' }) } }
+      : null))
+    await mount('run=run_4c1e09d2')
+    const plan = await screen.findByRole('region', { name: 'The plan' }, WAIT)
+    await waitFor(() => expect(visible(plan)).toContain('3 steps in 2 stages (2 → 1), then review and fix gated on its verdict'), WAIT)
+    expect(visible(plan)).not.toContain('then a review and a fix')
+    const steps = plan.querySelectorAll('.rn-step')
+    expect(visible(steps.item(0))).toContain('starts at once')
+    expect(visible(steps.item(2))).toContain('after api, ui')
+  })
+
+  it('Edit keeps every step\'s depends_on, so a staged plan does not become a chain', async () => {
+    const calls = serve((m, url) => {
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: STAGED }) } }
+      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan: STAGED, plan_digest: DIGEST_B, plan_revision: 2 }) } }
+      return null
+    })
+    await mount('run=run_4c1e09d2')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.change(screen.getByLabelText('Summary'), { target: { value: 'A shorter plan.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
+    const post = calls.find((c) => c.url.endsWith('plan:edit'))!
+    expect(post.body).toEqual({ plan_digest: DIGEST_A, plan: { summary: 'A shorter plan.', steps: STAGED.steps } })
+    expect((post.body as { plan: { steps: { depends_on?: string[] }[] } }).plan.steps.map((s) => s.depends_on))
+      .toEqual([[], [], ['api', 'ui']])
   })
 
   it('a FAILED run says why, and offers no action', async () => {

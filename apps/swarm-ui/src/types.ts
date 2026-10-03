@@ -4536,11 +4536,13 @@ export interface IssuePreviewRead {
   tenant_id: string
 }
 
-/** `issueruns.PlanStep`: an id, a title and a prompt. Nothing else (invariant 10). */
+/** `issueruns.PlanStep`: an id, a title, a prompt and the earlier steps it needs. Nothing else (invariant 10). */
 export interface PlanStepDoc {
   step_id: string
   title: string
   prompt: string
+  /** Earlier step ids this step builds on. Absent in a plan that runs as a chain; the digest covers it. */
+  depends_on?: string[]
 }
 
 /** `issueruns.PlanSpec`. */
@@ -4573,6 +4575,8 @@ export interface IssueRun {
   plan_digest: string | null
   plan_revision: number
   plan_edited_by: string | null
+  /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
+  plan_shape?: string | null
   /** Null until approval creates the workflow. */
   workflow_id: string | null
   created_by: string
