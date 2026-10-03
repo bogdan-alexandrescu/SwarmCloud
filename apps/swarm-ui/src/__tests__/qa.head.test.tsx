@@ -24,6 +24,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
+import { familyOf } from './faces'
 import { painted } from './marks'
 
 const WIDE: CascadeEnv = { width: 1440 }
@@ -34,21 +35,6 @@ afterEach(() => {
   window.history.replaceState(null, '', '/')
 })
 
-/**
- * The face the cascade gives `el`: the nearest `font-family` or `font`
- * declaration on it or an ancestor (the cascade does not model inheritance,
- * so this walks up), classified as mono or not. `inherit` keeps walking.
- */
-export function familyOf(el: Element, env: CascadeEnv): 'mono' | 'sans' {
-  for (let node: Element | null = el; node !== null; node = node.parentElement) {
-    const v = painted(node, ['font-family', 'font'], env)
-    if (v === null || /^\s*inherit\s*$/.test(v)) continue
-    // A `font` shorthand that names no family (`font: inherit` handled above)
-    // is not a statement about the face; every one in this sheet names one.
-    return /--mono\b|monospace|DM Mono/.test(v) ? 'mono' : 'sans'
-  }
-  return 'sans'
-}
 
 function at(path: string) {
   window.history.replaceState(null, '', path)

@@ -528,20 +528,21 @@ function AttemptsView({ cell, over }: { cell: Cell; over: number }) {
 }
 
 /** The columns, in order. `sort` is the key a head sorts on, or null for a
- *  column that is read rather than ranked. */
+ *  column that is read rather than ranked. Heads in sentence case, as every
+ *  table head is (components.html A; visual QA Q1, 2026-10-02). */
 const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null; num: boolean }> = [
-  { col: 'step', label: 'step', sort: 'step', num: false },
-  { col: 'state', label: 'state', sort: 'state', num: false },
+  { col: 'step', label: 'Step', sort: 'step', num: false },
+  { col: 'state', label: 'State', sort: 'state', num: false },
   // WHY IT IS NOT RUNNING, OR WHY IT FAILED (#106). Beside the state it
   // explains; read rather than ranked, as the Agents table's column is.
-  { col: 'why', label: 'why', sort: null, num: false },
-  { col: 'runner', label: 'runner', sort: null, num: false },
-  { col: 'waited', label: 'waited', sort: 'waited', num: true },
-  { col: 'ran', label: 'ran', sort: 'ran', num: true },
-  { col: 'attempts', label: 'attempts', sort: 'attempts', num: true },
-  { col: 'cost', label: 'cost', sort: 'cost', num: true },
-  { col: 'tokens', label: 'tokens', sort: null, num: true },
-  { col: 'inputs', label: 'inputs', sort: null, num: false },
+  { col: 'why', label: 'Why', sort: null, num: false },
+  { col: 'runner', label: 'Runner', sort: null, num: false },
+  { col: 'waited', label: 'Waited', sort: 'waited', num: true },
+  { col: 'ran', label: 'Ran', sort: 'ran', num: true },
+  { col: 'attempts', label: 'Attempts', sort: 'attempts', num: true },
+  { col: 'cost', label: 'Cost', sort: 'cost', num: true },
+  { col: 'tokens', label: 'Tokens', sort: null, num: true },
+  { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
 /**

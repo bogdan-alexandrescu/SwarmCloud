@@ -1840,7 +1840,12 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    It painted `--ok`, the graph's last healthy green. */
 .node.bad  { border-left-color: var(--bad); }
 .node.live { border-left-color: var(--info); }
-.node-id { font: 600 var(--t-body)/var(--lh-body) var(--mono); }
+/* THE CARD'S WORDS ARE SANS (visual QA Q3, 2026-10-02; wide-workflows.html
+   A): the step's name is the card's title, not a value, and the mono line
+   read as cramped code. Figures in `.node-num dd` stay mono. The size is
+   unchanged, so `dag.ts`'s row heights hold; sans is narrower than the mono
+   advance its widths are derived from, so every width bound still holds. */
+.node-id { font: 600 var(--t-body)/var(--lh-body) var(--font); }
 /* `.node-id a` WAS THE LINK AND THERE IS NO LONGER AN ANCHOR IN HERE: the card
    around it is the anchor. `.node-name` is what that anchor's text used to be,
    and it is deliberately NOT underlined on hover -- one affordance per target,
@@ -1851,7 +1856,7 @@ button.node:focus-visible { outline: 2px solid var(--info); outline-offset: 2px;
    all. A step that has not started HAS NO DURATION; `0s` would be a claim that
    it ran instantly. Waiting (queued or parked) is not working, so it is drawn
    in the waiting colour rather than the running one. */
-.node-dur { font: var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal; color: var(--text-dim); }
+.node-dur { font: var(--t-micro)/var(--lh-micro) var(--font); font-variant-numeric: tabular-nums; font-style: normal; color: var(--text-dim); }
 .node-dur.is-ran { color: var(--text-dim); }
 .node-dur.is-running { color: var(--info-ink); }
 .node-dur.is-queued, .node-dur.is-parked { color: var(--warn-ink); }

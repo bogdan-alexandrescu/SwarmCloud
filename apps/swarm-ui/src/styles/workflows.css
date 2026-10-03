@@ -132,26 +132,33 @@
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
-/* THE STEP TABLE FITS ITS COLUMN (#503): 1465px of content in a 618px
-   wrapper beside the inspector, six of ten columns behind a scroll, and the
-   last column clipped under the graph. Fixed layout at the column's width,
-   cells that wrap; below 900 the phone form keeps its sideways scroll. */
+/* THE STEP TABLE HAS REAL COLUMN WIDTHS (visual QA Q3, 2026-10-02). #503
+   fitted it to its column with fixed percentages and `overflow-wrap:
+   anywhere`, which broke values inside a word ("not reporte / d", "attempt /
+   s") and left the why line -- 40ch, one line -- wider than its 15% column,
+   so it ran over `runner`. Now every column but `why` has a width, `why`
+   takes the slack and ellipses inside it (its full text is its title), heads
+   and figures never wrap, nothing breaks inside a word, and below its
+   minimum width the table scrolls inside its card. Below 900 the phone form
+   keeps its sideways scroll. */
 @media (min-width: 900px) {
-  .wf-card .ctl-table.wf-table { overflow-x: visible; }
-  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; }
-  .wf-card .ctl-table.wf-table th,
-  .wf-card .ctl-table.wf-table td { white-space: normal; overflow-wrap: anywhere; }
-  .wf-card .ctl-table.wf-table [data-col="step"] { width: 15%; }
-  .wf-card .ctl-table.wf-table [data-col="state"] { width: 12%; }
-  .wf-card .ctl-table.wf-table [data-col="why"] { width: 15%; }
-  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 9%; }
+  .wf-card .ctl-table.wf-table { overflow-x: auto; }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; }
+  .wf-card .ctl-table.wf-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-card .ctl-table.wf-table td { white-space: normal; }
+  .wf-card .ctl-table.wf-table td.is-num { white-space: nowrap; }
+  .wf-card .ctl-table.wf-table [data-col="step"] { width: 12%; }
+  .wf-card .ctl-table.wf-table [data-col="state"] { width: 11%; }
+  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 10%; }
   .wf-card .ctl-table.wf-table [data-col="waited"],
-  .wf-card .ctl-table.wf-table [data-col="ran"],
+  .wf-card .ctl-table.wf-table [data-col="attempts"],
   .wf-card .ctl-table.wf-table [data-col="cost"],
-  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 8%; }
-  .wf-card .ctl-table.wf-table [data-col="attempts"] { width: 7%; }
-  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 10%; }
+  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 9%; }
+  .wf-card .ctl-table.wf-table [data-col="ran"] { width: 8%; }
+  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 11%; }
 }
+/* The why line fits the cell it is in, whatever that cell's width. */
+.wf-table .wf-why { display: block; max-width: 100%; }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
 
 /* THE STAGE FILTER A BAND COUNT OPENED, as a removable filter chip. */

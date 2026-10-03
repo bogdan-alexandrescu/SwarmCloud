@@ -11,6 +11,7 @@ import { useState } from 'react'
 import type { Result } from '../fetch'
 import type { CancelWorkflowResult, WorkflowBoard, WorkflowUsage } from '../api'
 import type { Task, TaskDispatch, TaskState, Workflow, WorkflowStep } from '../types'
+import { painted } from './marks'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -663,12 +664,51 @@ describe('the list row: shape, runners and spend', () => {
   }
 
   // Was 'what a workflow has cost' on the board row.
-  it('says "not reported" when nothing reported one, and prints no zero', async () => {
+  // THE LIST'S COST COLUMN IS NARROW, so an unreported cost is the honest
+  // short form: a dash, with the reason as its title and its name (visual QA
+  // Q9, 2026-10-02: "not re…" cut the word). The full words stay in the step
+  // table and the inspector. MUTATION: print `not reported` here again.
+  it('draws a dash with its reason when nothing reported one, and prints no zero', async () => {
     const cell = await spendCell([null, null])
-    expect(cell.textContent).toBe('not reported')
+    expect(cell.textContent).toBe('—')
     expect(cell.textContent, 'an unreported cost rendered a figure').not.toMatch(/\d/)
     expect(cell.className).toContain('absent')
     expect(cell.getAttribute('title')).toContain('not $0.00')
+    expect(cell.getAttribute('aria-label')).toContain('not $0.00')
+  })
+
+  it('never cuts the cost column with an ellipsis (Q9)', () => {
+    const host = document.createElement('div')
+    host.innerHTML = '<div class="wfl"><table class="wfl-table"><tbody><tr><td class="num" data-col="cost"><span class="wf-spend">x</span></td></tr></tbody></table></div>'
+    document.body.appendChild(host)
+    try {
+      const td = host.querySelector('td')!
+      expect(painted(td, 'text-overflow', { width: 1440 }) ?? 'clip').toBe('clip')
+      expect(painted(td, 'white-space', { width: 1440 })).toBe('nowrap')
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('draws Steps done as done of total, so two workflows at different points differ (Q9)', async () => {
+    const ok = (id: string, _state: TaskState) => step(id, [])
+    const a = workflow('wf_a', 'RUNNING', 'priya', [ok('s1', 'SUCCEEDED'), ok('s2', 'RUNNING'), ok('s3', 'READY'), ok('s4', 'READY')])
+    a.rollup = { ...a.rollup!, counts: { SUCCEEDED: 1, RUNNING: 1, READY: 2 } }
+    const b = workflow('wf_b', 'RUNNING', 'priya', [ok('s1', 'SUCCEEDED'), ok('s2', 'SUCCEEDED'), ok('s3', 'SUCCEEDED'), ok('s4', 'RUNNING')])
+    b.rollup = { ...b.rollup!, counts: { SUCCEEDED: 3, RUNNING: 1 } }
+    // A census that could not read two steps still draws what it counted,
+    // and the two it could not read hatched -- never a whole grey track.
+    const c = workflow('wf_c', 'RUNNING', 'priya', [ok('s1', 'SUCCEEDED'), ok('s2', 'SUCCEEDED'), ok('s3', 'RUNNING'), ok('s4', 'RUNNING')])
+    c.rollup = { ...c.rollup!, complete: false, counts: { SUCCEEDED: 2 }, unreadable_steps: ['s3', 's4'] }
+    serve([a, b, c])
+    await listRow('wf_c')
+    const bar = (id: string) => document.querySelector<HTMLElement>(`tr[data-workflow="${id}"] .c-bar`)!
+    const fill = (id: string) => bar(id).querySelector<HTMLElement>('.c-f')?.style.width ?? null
+    expect(fill('wf_a')).toBe('25%')
+    expect(fill('wf_b')).toBe('75%')
+    expect(fill('wf_c')).toBe('50%')
+    expect(bar('wf_c').querySelector<HTMLElement>('.c-h')?.style.width, 'the unread steps are not hatched').toBe('50%')
+    expect(bar('wf_a').getAttribute('aria-label')).toMatch(/1 of 4 steps done/)
   })
 
   it('prints a REPORTED zero as a number, because that one was measured', async () => {

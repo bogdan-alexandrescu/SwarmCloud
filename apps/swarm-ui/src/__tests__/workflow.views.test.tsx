@@ -1553,7 +1553,7 @@ describe('#106: every workflow view says why a step is not running', () => {
     const c = cardOf('wf_new')
     const th = c.querySelector<HTMLElement>('.wf-table th[data-col="why"]')
     expect(th, 'the table has no why column').toBeTruthy()
-    expect(th!.textContent).toBe('why')
+    expect(th!.textContent).toBe('Why')
     // A parked step: the task's own reason, in the words the Agents list uses.
     const { board: b } = board()
     const scan = b.taskById!.get('t_scan')!

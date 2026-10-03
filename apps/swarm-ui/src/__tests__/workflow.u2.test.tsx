@@ -513,7 +513,12 @@ describe('the steps Table fits its width (#503)', () => {
     })
     expect(at(t, 'table-layout')).toBe('fixed')
     expect(at(t, 'width')).toBe('100%')
-    expect(at(t.parentElement!, 'overflow-x')).toBe('visible')
+    // It scrolls inside its card only BELOW its minimum width (visual QA Q3),
+    // and that minimum fits the step card's column at 1440 (1440 less the
+    // 84px spine, the 236px panel and the page and card gutters), so at 1440
+    // there is still no sideways scroll.
+    expect(at(t.parentElement!, 'overflow-x')).toBe('auto')
+    expect(parseFloat(at(t, 'min-width') ?? '0')).toBeLessThanOrEqual(1000)
   })
 })
 
