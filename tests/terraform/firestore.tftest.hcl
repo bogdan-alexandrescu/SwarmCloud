@@ -396,3 +396,37 @@ run "issue_runs_have_a_tenant_leading_index" {
     error_message = "issue runs are listed by tenant_id ASC, created_at DESC"
   }
 }
+
+# POST /v1/admin/runs/advance (#454), the per-tenant tick, reads the tenant's
+# movable runs oldest first (swarm_api.issueruns.IssueRuns.tickable) in two
+# queries. Without these indexes the tick fails on every call.
+run "the_issue_run_tick_has_its_indexes" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/firestore"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-state-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[1].field_path == "state" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[2].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-state-created"].fields[2].order == "ASCENDING"
+    )
+    error_message = "the tick reads issue runs by tenant_id, state, created_at ASC"
+  }
+
+  assert {
+    condition = (
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].collection == "issue_runs" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[0].field_path == "tenant_id" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[1].field_path == "state" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[2].field_path == "plan_approval" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[3].field_path == "created_at" &&
+      google_firestore_index.this["issue-runs-tenant-state-approval-created"].fields[3].order == "ASCENDING"
+    )
+    error_message = "the tick reads PLANNED auto runs by tenant_id, state, plan_approval, created_at ASC"
+  }
+}

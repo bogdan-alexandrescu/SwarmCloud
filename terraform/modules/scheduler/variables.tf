@@ -105,8 +105,10 @@ variable "api_audience" {
 
 variable "rollup_tenant_ids" {
   description = <<-EOT
-    The registered tenants whose workflows are swept, one Cloud Scheduler job
-    each (POST /v1/admin/workflows/rollup?tenant_id=<t>). The root passes the
+    The registered tenants whose workflows are swept and whose issue runs
+    are advanced, one Cloud Scheduler job of each kind per tenant
+    (POST /v1/admin/workflows/rollup?tenant_id=<t> and
+    POST /v1/admin/runs/advance?tenant_id=<t>). The root passes the
     keys of var.tenants: a set the configuration knows at plan, so the
     for_each never depends on a value that exists only after apply.
   EOT
@@ -129,6 +131,23 @@ variable "workflow_rollup_schedule" {
   EOT
   type        = string
   default     = "*/15 * * * *"
+}
+
+variable "issue_run_advance_schedule" {
+  description = <<-EOT
+    How often each tenant's issue runs (#454) are advanced without a reader.
+
+    Every minute. This one IS reader-visible, unlike the workflow rollup: an
+    `auto` run waits on it between its planner finishing and its workflow
+    being submitted, and every run's GitHub status comment waits on it when
+    nobody has the console open. A minute matches the platform's own safety
+    tick and is short next to a planner or a workflow, which run for many
+    minutes. A tick that finds nothing to move costs two Firestore queries
+    per registered tenant and writes nothing; a PLANNED run waiting for a person
+    is not even read (swarm_api.issueruns.IssueRuns.tickable).
+  EOT
+  type        = string
+  default     = "* * * * *"
 }
 
 variable "tick_service_account" {

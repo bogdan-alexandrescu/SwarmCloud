@@ -12,14 +12,23 @@ comment once there is a plan, edited when it changes, and the one status
 comment, edited in place. A write-back failure is recorded on the run and
 never fails the request or the run.
 
-EVERY READ ADVANCES, as every workflow read derives (`routes/workflows.py`). A
-run's state is a consequence of its planner task and then its workflow, and
-there is no background writer for it: the read that finds the planner ended
-reads `plan.json` and moves the run to PLANNED, and the read that finds the
-workflow ended moves it to DONE, FAILED or CANCELLED. A healthy run that has
-not moved costs one task or workflow read and writes nothing. Each move is a
-transaction that re-checks the state it moves from, so two readers racing
-produce one transition, and the loser re-reads.
+EVERY READ ADVANCES, as every workflow read derives (`routes/workflows.py`),
+AND SO DOES A TICK. A run's state is a consequence of its planner task and
+then its workflow: the read that finds the planner ended reads `plan.json`
+and moves the run to PLANNED, and the read that finds the workflow ended moves
+it to DONE, FAILED or CANCELLED. Reads alone left a run nobody watches -- and
+every `plan_approval: auto` run, whose whole point is that nobody has to --
+where it was, so a Cloud Scheduler job per tenant calls
+POST /v1/admin/runs/advance (`advance_tenant_runs`, owner decision on #454)
+and the same `advance_run` moves it. A healthy run that has not moved costs
+one task or workflow read and writes nothing. Each move is a transaction that
+re-checks the state it moves from, so a reader and the tick racing produce one
+transition, and the loser re-reads.
+
+AN AUTO APPROVAL SUBMITS AS THE RUN'S CREATOR, in the run's tenant, whoever
+or whatever advanced it (`run_owner_auth`): the approval was given when the
+run was created, by the member who created it, and the tick's own identity
+holds no tenant at all.
 
 The tenant on every route comes from `tenant_scope`, never from the body: a
 run is created in the caller's tenant (through `submit_tasks`, which runs
@@ -29,9 +38,11 @@ run is created in the caller's tenant (through `submit_tasks`, which runs
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
+from swarm_common.identity import Principal
 from swarm_common.models import new_id
 from swarm_common.states import TaskState
 
@@ -194,25 +205,71 @@ def _approve(
     )
 
 
-def _advance(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> IssueRun:
+def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
+    """The submitter of an AUTO approval: the run's creator, in the run's tenant.
+
+    Built from the run document and the tenant document, never from the
+    caller, so whatever advanced the run -- a member's read or the tick's
+    service account -- the workflow lands in `run.tenant_id` and nowhere else.
+    The same shape as a child task's submission (`swarm_api.children`), the
+    other path that submits on a tenant's behalf with no person on the call:
+    the tenant from the store, the submitter from the work it descends from.
+
+    NOTHING WIDER than the member who created the run held. `is_admin`,
+    `member_scope` and `tenant_member` are the ordinary member's empty values
+    (a continuation-scoped account cannot reach POST /v1/runs, so no run was
+    created by one), and `tenant_principal` is the STORED one, so
+    `SubmissionService.tenant_for` runs its collision, secret-admin and
+    disabled checks against the tenant as registered.
+    """
+    tenant = ctx.store.get_tenant(run.tenant_id)
+    if tenant is None:
+        raise NotFound(f"tenant {run.tenant_id!r} not found")
+    email = run.created_by
+    return AuthContext(
+        principal=Principal(
+            email=email,
+            # Not a token subject: this context was never authenticated, and
+            # the subject names the run it was derived from instead.
+            subject=f"issue-run:{run.id}",
+            domain=email.rsplit("@", 1)[-1],
+            groups=(),
+        ),
+        tenant_id=run.tenant_id,
+        is_admin=False,
+        tenant_principal=tenant.principal,
+    )
+
+
+def advance_run(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone, then write it back to the issue.
 
     One sync after the last move, not one per move: the comments show where
     the run IS, and an intermediate state (APPROVED for the length of one
     submission) is not worth a write. A sync whose text is unchanged writes
     nothing.
+
+    A run that is not `tenant_id`'s answers as missing, as every read does,
+    before anything is read or moved.
     """
-    return sync_issue(ctx, _advance_state(ctx, auth, tenant_id, run))
+    if run.tenant_id != tenant_id:
+        raise NotFound(f"run {run.id!r} not found")
+    return sync_issue(ctx, _advance_state(ctx, tenant_id, run))
 
 
-def _advance_state(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) -> IssueRun:
+def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone. Never raises for a race."""
     try:
         if run.state == RunState.PLANNING:
             run = _from_planner(ctx, tenant_id, run)
+        # Only an `auto` run is ever submitted here: a `required` run stays
+        # PLANNED, holding nothing (invariant 1), until a person approves it.
         if run.state == RunState.PLANNED and run.plan_approval == "auto" and run.plan_digest:
             try:
-                run = _approve(ctx, auth, tenant_id, run, digest=run.plan_digest, by=AUTO_APPROVER)
+                run = _approve(
+                    ctx, run_owner_auth(ctx, run), tenant_id, run,
+                    digest=run.plan_digest, by=AUTO_APPROVER,
+                )
             except Conflict:
                 raise
             except ApiError as refused:
@@ -226,6 +283,64 @@ def _advance_state(ctx: AppContext, auth: AuthContext, tenant_id: str, run: Issu
         # Another request moved it first; what it moved it to is the answer.
         return _runs(ctx).get(tenant_id, run.id)
     return run
+
+
+@dataclass
+class AdvanceReport:
+    """What one tick did: how many runs it read, moved and could not advance."""
+
+    visited: int = 0
+    moved: int = 0
+    failed: int = 0
+    #: More live runs than one tick visits; the next tick reaches them.
+    truncated: bool = False
+    failures: list[dict[str, str]] = field(default_factory=list)
+
+    def to_api(self) -> dict:
+        return {
+            "visited": self.visited,
+            "moved": self.moved,
+            "failed": self.failed,
+            "truncated": self.truncated,
+        }
+
+
+def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> AdvanceReport:
+    """Advance up to `limit` of ONE tenant's live runs, oldest first.
+
+    "Live" less the PLANNED runs waiting for a person, which only that person
+    moves (`IssueRuns.tickable` says why they are left out).
+
+    Every run comes from a query filtered on `tenant_id` and is advanced under
+    that same tenant (`advance_run` refuses any other), so a tick for one
+    tenant reads, moves and submits nothing of another's.
+
+    ONE RUN'S FAILURE IS ONE RUN'S. Each run is advanced in its own
+    try/except and counted; the rest of the page is still advanced. A failure
+    is reported by the run id and the exception's TYPE only -- its message may
+    quote a forge or store error, and nothing this route returns is passed
+    through redaction a second time.
+
+    Reads and transitions only. A `required` run the planner has finished
+    moves to PLANNED and stops there with no task, workflow or lease
+    (invariant 1), and later ticks do not visit it; the only submission a
+    tick can make is an `auto` run's approved plan.
+    """
+    rows, truncated = _runs(ctx).tickable(tenant_id, limit=limit)
+    report = AdvanceReport(truncated=truncated)
+    for run in rows:
+        report.visited += 1
+        try:
+            advanced = advance_run(ctx, tenant_id, run)
+        except Exception as exc:
+            report.failed += 1
+            code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+            report.failures.append({"run_id": run.id, "error": code})
+            log.warning("issue run %s tenant=%s not advanced by the tick (%s)", run.id, tenant_id, code)
+            continue
+        if advanced.state != run.state:
+            report.moved += 1
+    return report
 
 
 # --------------------------------------------------------------------------
@@ -296,7 +411,6 @@ def list_runs(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     tenant_id: str = Depends(tenant_scope),
-    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     rows, next_token = _runs(ctx).list(
@@ -306,7 +420,7 @@ def list_runs(
     for run in rows:
         if run.state not in TERMINAL_RUN_STATES:
             try:
-                run = _advance(ctx, auth, tenant_id, run)
+                run = advance_run(ctx, tenant_id, run)
             except ApiError as exc:
                 # One run's read failing must not hide the page; the row is
                 # served as stored, and its own GET reports the failure.
@@ -319,11 +433,10 @@ def list_runs(
 def get_run(
     run_id: str,
     tenant_id: str = Depends(tenant_scope),
-    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     run = _runs(ctx).get(tenant_id, run_id)
-    return {"run": _advance(ctx, auth, tenant_id, run).to_api()}
+    return {"run": advance_run(ctx, tenant_id, run).to_api()}
 
 
 @router.post("/{run_id}/plan:approve")

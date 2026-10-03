@@ -43,6 +43,7 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
+from .runs import advance_tenant_runs
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -652,6 +653,42 @@ def rollup_workflows(
             for r in results
             if r.drift["agrees"] is not True
         ],
+    }
+
+
+@router.post("/runs/advance")
+def advance_runs(
+    tenant_id: str = Query(..., min_length=1),
+    limit: int | None = Query(default=None, ge=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Advance one tenant's live issue runs (#454) -- the Cloud Scheduler tick.
+
+    Modelled on POST /v1/admin/workflows/rollup, for the same reasons, and
+    called the same way: one job per registered tenant, as the rollup
+    sweeper (terraform/modules/scheduler/jobs.tf, `issue_run_advance`).
+
+    WHY THIS EXISTS beside the advance every run read already does (owner
+    decision on #454, "Advancing runs: swarm-api, on a Cloud Scheduler
+    tick"): a run moves on a read, so a run nobody is watching never moved,
+    and a `plan_approval: auto` run -- whose point is that nobody watches --
+    never got its plan approved or its issue written back.
+
+    TENANT IS EXPLICIT, not the caller's own, which for the sweeper is a
+    personal tenant nobody has. Each run is read under it and an auto
+    approval submits in the run's own tenant as the run's creator
+    (`routes.runs.run_owner_auth`), never as the caller. Bounded by the page
+    size per tick, oldest first; truncation is reported, as the rollup does.
+    """
+    report = advance_tenant_runs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="run_advance").inc()
+    return {
+        "tenant_id": tenant_id,
+        "report": report.to_api(),
+        # Only the runs that could not be advanced, by id and error code. A
+        # healthy tick returns an empty list, which is an answer.
+        "failures": report.failures,
     }
 
 

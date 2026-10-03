@@ -810,11 +810,22 @@ holds no project role. Its one grant is `roles/run.invoker` on swarm-api
 (`rollup_sweeper_invokes_api` in `terraform/infra/main.tf`), because in prod
 `api_invokers` names only the tenant groups and Cloud Run's edge would refuse
 the job before the application saw it. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
-set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup` and to
-nothing else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
+set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup`, to
+the issue-run tick `POST /v1/admin/runs/advance` (#454, below), and to nothing
+else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
 `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an admin
 because admin is one boolean that opens every `/v1/admin` route, including the
 one that disables a tenant.
+
+The same account calls `POST /v1/admin/runs/advance?tenant_id=<t>` for the same
+tenants every minute (`google_cloud_scheduler_job.issue_run_advance`, named
+`swarm-issue-run-advance-<tenant>`). It moves the tenant's issue runs as far as
+their planner and workflow say, as a read of the run would, so a run nobody is
+watching -- and every `plan_approval: auto` run -- still advances and is
+written back to its issue. A PLANNED run waiting for a person is not read and
+nothing is created for it (invariant 1). An `auto` approval is submitted in the
+run's own tenant as the member who created the run (`routes/runs.py`
+`run_owner_auth`), never as the sweeper, which holds no tenant.
 
 So the stored copy of a workflow nobody reads lags its steps by at most one
 schedule interval plus a sweep, and a reader never sees the lag at all. Two

@@ -498,7 +498,9 @@ module "scheduler" {
 
   # D17: one workflow-rollup job per registered tenant, calling swarm-api as
   # the module's rollup-sweeper account. The audience is the service URL, the
-  # same value verify.tf gives its own direct caller of swarm-api.
+  # same value verify.tf gives its own direct caller of swarm-api. The same
+  # tenants get the #454 issue-run tick (`issue_run_advance`), as the same
+  # account, on var.issue_run_advance_schedule's default of every minute.
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
@@ -530,7 +532,8 @@ module "scheduler" {
   depends_on = [module.project_services]
 }
 
-# The workflow-rollup jobs (D17) call swarm-api directly, so Cloud Run's edge
+# The workflow-rollup jobs (D17), and the issue-run tick (#454) that runs as
+# the same account, call swarm-api directly, so Cloud Run's edge
 # must let their identity through before the app's ROLLUP_SWEEPER_ROUTES check
 # is ever reached. `api_invokers` is not that grant: dev sets it to allUsers,
 # prod to the tenant groups, and the sweeper is in neither -- so without this

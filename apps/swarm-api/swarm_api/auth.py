@@ -746,9 +746,17 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: `PUT /v1/admin/tenants/{tenant_id}/limits`, which disables a tenant.
 #: tests/unit/control_plane/test_rollup_sweeper_is_narrow.py holds this set
 #: equal to the decided one and sweeps every authenticated route against it.
+#:
+#: And the issue-run tick (#454, terraform jobs.tf `issue_run_advance`): it
+#: moves one tenant's live issue runs as far as their tasks say, which a run
+#: nobody reads -- and an `auto` run's approval -- otherwise waits on for
+#: ever. What it can submit is bounded by the run documents, not the caller:
+#: only an `auto` run's own stored plan, in the run's own tenant, as the
+#: member who created it (`routes.runs.run_owner_auth`).
 ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/v1/admin/workflows/rollup"),
+        ("POST", "/v1/admin/runs/advance"),
     }
 )
 

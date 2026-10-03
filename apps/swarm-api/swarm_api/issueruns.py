@@ -852,6 +852,53 @@ class IssueRuns:
             next_token = _encode_cursor(rows[-1].created_at)
         return rows, next_token
 
+    def tickable(self, tenant_id: str, *, limit: int) -> tuple[list[IssueRun], bool]:
+        """Up to `limit` of the tenant's runs a tick can move, OLDEST first, and
+        whether there were more. For POST /v1/admin/runs/advance.
+
+        Every non-terminal run EXCEPT a PLANNED run waiting for a person
+        (`plan_approval: required`): nothing but that person moves it, so a
+        tick has nothing to do for it -- and leaving it in would be worse
+        than wasted reads. It stays PLANNED for as long as nobody decides,
+        and oldest-first over a set that includes it would let a tenant's
+        undecided plans fill every tick and starve the runs behind them. A
+        PLANNED `auto` run is still visited: its approval is the tick's job.
+
+        Oldest first because a run leaves this set when it moves on: newer
+        runs are reached as older ones finish, where newest-first would leave
+        the oldest unvisited for as long as new runs kept arriving.
+
+        Two queries, each tenant-scoped, then the filters again in the
+        application, as `list` does. Indexes: issue-runs-tenant-state-created
+        and issue-runs-tenant-state-approval-created.
+        """
+        moving = sorted(
+            s.value for s in RunState
+            if s not in TERMINAL_RUN_STATES and s != RunState.PLANNED
+        )
+        runs = self._db.collection(RUNS_COLLECTION)
+        queries = [
+            runs.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "in", moving)),
+            runs.where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "==", RunState.PLANNED.value))
+            .where(filter=FieldFilter("plan_approval", "==", "auto")),
+        ]
+        rows: list[IssueRun] = []
+        for query in queries:
+            query = query.order_by("created_at", direction=firestore.Query.ASCENDING)
+            rows += [
+                IssueRun.from_firestore(snap.to_dict()) for snap in query.limit(limit + 1).stream()
+            ]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id
+            and row.state not in TERMINAL_RUN_STATES
+            and not (row.state == RunState.PLANNED and row.plan_approval != "auto")
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id))
+        return rows[:limit], len(rows) > limit
+
     def transition(
         self,
         tenant_id: str,

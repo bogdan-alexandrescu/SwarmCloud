@@ -233,6 +233,70 @@ run "the_workflow_rollup_runs_per_tenant_as_its_own_identity" {
   }
 }
 
+# #454, owner decision "Advancing runs: swarm-api, on a Cloud Scheduler tick".
+# A run moved only when somebody read it, so a run nobody watched -- and every
+# `plan_approval: auto` run -- never moved. One job per registered tenant, as
+# the rollup sweeper, which swarm-api admits to POST /v1/admin/runs/advance by
+# name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES).
+run "the_issue_run_tick_runs_per_tenant_every_minute_as_the_sweeper" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.issue_run_advance)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one issue-run tick, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.issue_run_advance["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/runs/advance?tenant_id=eng"
+    error_message = "the tick must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.issue_run_advance["research"].http_target[0].http_method == "POST"
+    error_message = "the advance route is a POST"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.issue_run_advance :
+      job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+      && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
+    ])
+    error_message = "the issue-run tick presents the rollup-sweeper identity, for the API's own URL, never the platform tick"
+  }
+
+  # An auto run waits on this between its planner and its workflow.
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.issue_run_advance : job.schedule == "* * * * *"
+    ]) && output.issue_run_advance_schedule == "* * * * *"
+    error_message = "issue runs advance every minute by default"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.issue_run_advance :
+      startswith(job.description, "managed-by=swarm-terraform;")
+    ])
+    error_message = "every issue-run tick carries managed-by=swarm-terraform in its description"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-issue-run-advance-eng") && contains(output.scheduler_job_names, "swarm-issue-run-advance-research")
+    error_message = "scheduler_job_names must list every issue-run tick"
+  }
+}
+
 run "no_registered_tenant_means_no_rollup_job" {
   command = plan
 
@@ -243,6 +307,11 @@ run "no_registered_tenant_means_no_rollup_job" {
   assert {
     condition     = length(google_cloud_scheduler_job.workflow_rollup) == 0
     error_message = "a rollup job for a tenant nobody registered sweeps nothing"
+  }
+
+  assert {
+    condition     = length(google_cloud_scheduler_job.issue_run_advance) == 0
+    error_message = "an issue-run tick for a tenant nobody registered advances nothing"
   }
 }
 

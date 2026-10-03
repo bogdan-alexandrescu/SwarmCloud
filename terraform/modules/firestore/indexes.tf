@@ -331,6 +331,36 @@ locals {
       ]
     }
 
+    # POST /v1/admin/runs/advance -- the per-tenant Cloud Scheduler tick
+    # (swarm_api.issueruns.IssueRuns.tickable): the tenant's runs in a state a
+    # tick can move, OLDEST first so none is starved.
+    #   issue_runs where tenant_id == T and state in [...] order by created_at
+    "issue-runs-tenant-state-created" = {
+      collection  = "issue_runs"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
+    # The same tick's second query: the PLANNED runs whose approval is `auto`,
+    # which the tick approves. A PLANNED `required` run waits for a person and
+    # is deliberately not read.
+    #   issue_runs where tenant_id == T and state == PLANNED
+    #     and plan_approval == auto order by created_at
+    "issue-runs-tenant-state-approval-created" = {
+      collection  = "issue_runs"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "plan_approval", order = "ASCENDING" },
+        { field_path = "created_at", order = "ASCENDING" },
+      ]
+    }
+
     # ---- workflows ----------------------------------------------------------
     "workflows-tenant-state-created" = {
       collection  = "workflows"
