@@ -1481,7 +1481,7 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
             type="button"
             className={`sk-kid sk-recent-kid${w.id === open ? ' is-on' : ''}`}
             aria-current={w.id === open ? 'page' : undefined}
-            title={w.id}
+            title={w.name !== null ? `${w.name} · ${w.id}` : w.id}
             onClick={() => nav(`work/workflows?wf=${encodeURIComponent(w.id)}`)}
           >
             <span className="sk-recent-row">

@@ -250,7 +250,8 @@ describe('the links the frame draws itself', () => {
       window.location.hash = '#work/task/task_0123456789abcdef0123'
       window.dispatchEvent(new HashChangeEvent('hashchange'))
     })
-    const close = document.querySelector<HTMLButtonElement>('.ctl-drawer > button.drawer-close')
+    // The ✕ is in the agent header's action row (walkthrough B, 2026-10-03).
+    const close = document.querySelector<HTMLButtonElement>('.ctl-drawer .ag-head-actions > button.drawer-close')
     expect(close, 'the drawer did not open').not.toBeNull()
     await act(async () => {
       close!.click()

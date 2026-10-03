@@ -51,6 +51,11 @@
 .ov-att-t small.is-one { -webkit-line-clamp: 1; }
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
 .ov-att-go { font-size: var(--t-micro); color: var(--sk-ac); white-space: nowrap; }
+/* The skeleton of a check card, while the checks read: the card's own box
+   and rhythm, its lines as the canonical skeleton bars (walkthrough F). */
+.ov-att.is-skel { cursor: default; }
+.ov-att.is-skel:hover { border-color: var(--line); }
+.ov-att.is-skel > .ov-att-t { gap: 8px; padding: 2px 0; }
 
 /* ---- the lifecycle band: three figures, each broken down by state --------- */
 .ov-life { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); overflow: hidden; }
@@ -69,7 +74,10 @@
 .ov-lc-foot { font-size: var(--t-micro); color: var(--text-faint); }
 
 /* ---- the card grids: Running beside Cost, Waiting beside Headroom --------- */
-.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
+/* BALANCED ROWS (walkthrough F, owner 2026-10-03): the two cards of a row
+   stretch to the row's height, so the shorter one leaves no hole under it.
+   Each card's content stays at its top. */
+.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
 @media (min-width: 1100px) {
   /* O1's 1.7 : 1. The table and the grouped list take the width; Cost and
      Headroom are a figure and three short stacks. */

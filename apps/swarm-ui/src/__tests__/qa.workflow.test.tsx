@@ -51,19 +51,20 @@ describe('Q3: the Steps table has real column widths', () => {
   })
 
   it('gives every column but why a width, so why takes the slack', () => {
+    // WALKTHROUGH A (2026-10-03): the shares overprinted at the table's real
+    // width, so the widths are px sized to the measured figures, and their
+    // sum leaves why the slack inside the table's minimum width
+    // (walk.steps.test.tsx models where every cell's text then lands).
     const h = table()
     const widths = COLS.map((c) => [c, painted(h.querySelector(`th[data-col="${c}"]`)!, 'width', WIDE)] as const)
     expect(widths.filter(([c, w]) => c !== 'why' && w === null).map(([c]) => c)).toEqual([])
     expect(widths.find(([c]) => c === 'why')![1]).toBeNull()
-
-    // And the slack is the largest share: the others leave why more than any
-    // one of them takes (review of #503: they summed to 88%, why was 12%).
-    const pct = widths.filter(([c]) => c !== 'why').map(([c, w]) => {
-      expect(w, `${c} width is not a share`).toMatch(/^\d+(?:\.\d+)?%$/)
+    const px = widths.filter(([c]) => c !== 'why').map(([c, w]) => {
+      expect(w, `${c} width is not a px width`).toMatch(/^\d+px$/)
       return parseFloat(w!)
     })
-    const slack = 100 - pct.reduce((a, b) => a + b, 0)
-    expect(slack, 'why is not the widest column').toBeGreaterThan(Math.max(...pct))
+    const min = parseFloat(painted(h.querySelector('table')!, 'min-width', WIDE)!)
+    expect(min - px.reduce((a, b) => a + b, 0), 'why has no slack at the minimum width').toBeGreaterThanOrEqual(90)
   })
 
   it('never breaks a word, never wraps a head or a figure, and keeps why inside its cell', () => {

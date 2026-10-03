@@ -8,7 +8,7 @@ import { createPortal } from 'react-dom'
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Em, Mark, type ChipTone } from './AgentDetail'
-import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, workflowHref, type AgentList, type RecentState } from './agentlist'
+import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
@@ -112,10 +112,6 @@ function landingTab(counts: Readonly<Record<Tab, number>>): Tab {
  * Ids are `<prefix>_<20 hex>` (swarm_common/models.py `new_id`); one without an
  * underscore is shown from its start, never from its end.
  */
-function shortTaskId(id: string): string {
-  const cut = id.indexOf('_')
-  return (cut === -1 ? id : id.slice(cut + 1)).slice(0, 8)
-}
 
 /**
  * HOW OFTEN THIS LIST IS WORTH RE-READING, from what the last read held.
@@ -1027,7 +1023,9 @@ function CompactRow({
   // is not presented as run time without saying what it spans.
   const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
   const tries = attemptsUsed(task)
-  const name = task.step_id ?? shortTaskId(task.id)
+  // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
+  // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
+  const name = agentName(task)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
   const live = tabOf(task) === 'live'
@@ -1077,13 +1075,15 @@ function CompactRow({
     >
       <StateMark state={task.state} />
       <span className="agent cr-name">
-        {task.step_id ? (
-          <b title={task.id}>{name}</b>
-        ) : (
-          <b className="id" title={task.id}>
-            {name}
-          </b>
-        )}
+        {/* The whole id is the name's hover; a lone task's short id is
+            the id treatment, as a step's is on line two. */}
+        <b title={task.id}>
+          {task.step_id ?? (
+            <>
+              {agentKind(task.runner_profile)} · <span className="id" title={task.id}>{shortTaskId(task.id)}</span>
+            </>
+          )}
+        </b>
         {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
       <span

@@ -112,37 +112,57 @@
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
-/* THE STEP TABLE HAS REAL COLUMN WIDTHS (visual QA Q3, 2026-10-02). #503
-   fitted it to its column with fixed percentages and `overflow-wrap:
-   anywhere`, which broke values inside a word ("not reporte / d", "attempt /
-   s") and left the why line -- 40ch, one line -- wider than its 15% column,
-   so it ran over `runner`. Now every column but `why` has a width, `why`
-   takes the slack and ellipses inside it (its full text is its title), heads
-   and figures never wrap, nothing breaks inside a word, and below its
-   minimum width the table scrolls inside its card. Below 900 the phone form
-   keeps its sideways scroll. */
+/* THE STEP TABLE IS A FIXED TABLE WITH PX COLUMNS (walkthrough A, owner
+   2026-10-03, at 1440). Q3's shares overprinted at the table's real width:
+   Tokens ran into Inputs ("656 in · 1084.2k"), Ran and Attempts touched
+   ("45m 40s2 of 3"), Runner broke at its hyphen ("claude-/code") and Inputs
+   stacked one word per line. Now every column but Why is a px width sized to
+   the widest figure it was measured holding, Why takes the slack, every cell
+   is one line that clips with an ellipsis rather than running into its
+   neighbour, figures are 12px mono right-aligned, and 6px of padding a side
+   holds any two cells' text 12px apart. The minimum is 1000px: the table's
+   box at 1440 with the panel open is 1020 (1440 - 84 spine - 236 panel -
+   2 x 32 gutter - the card's 16px padding and borders), less a classic
+   scrollbar's 15, so it scrolls inside its card only below that. The widths
+   sum to 852, which leaves Why 148px at the minimum and 384px with the panel
+   collapsed. Below 900 the phone form keeps its sideways scroll. */
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
-  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; }
-  .wf-card .ctl-table.wf-table th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .wf-card .ctl-table.wf-table td { white-space: normal; }
-  .wf-card .ctl-table.wf-table td.is-num { white-space: nowrap; }
-  /* WHY GETS THE SLACK (Q3): the other columns take 71%, so why is the widest
-     column at 29% -- a sentence, where every other column holds a word or a
-     figure. At the 1000px minimum a 7% column is 70px: "attempts" and
-     "$12.3456" fit, and a head that does not is cut with an ellipsis. */
-  .wf-card .ctl-table.wf-table [data-col="step"] { width: 10%; }
-  .wf-card .ctl-table.wf-table [data-col="state"] { width: 9%; }
-  .wf-card .ctl-table.wf-table [data-col="runner"] { width: 9%; }
-  .wf-card .ctl-table.wf-table [data-col="waited"],
-  .wf-card .ctl-table.wf-table [data-col="attempts"],
-  .wf-card .ctl-table.wf-table [data-col="tokens"] { width: 7%; }
-  .wf-card .ctl-table.wf-table [data-col="cost"] { width: 8%; }
-  .wf-card .ctl-table.wf-table [data-col="ran"] { width: 6%; }
-  .wf-card .ctl-table.wf-table [data-col="inputs"] { width: 8%; }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; font-size: var(--t-meta); }
+  .wf-card .ctl-table.wf-table th,
+  .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 104px; }
+  .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
+  .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
+  .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
+  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 64px; }
+  .wf-card .ctl-table.wf-table th[data-col="attempts"],
+  .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
+  .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 80px; }
+  .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 156px; }
+  /* The files a step reads, in the row under it: wrapping text, the row's width. */
+  .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
 }
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
+/* THE TABLE'S HEAD ROW, inside the card: its title, and the sampling mark
+   right-aligned (walkthrough A: the mark floated in a strip above the card). */
+.wf-table-head { display: flex; align-items: center; gap: var(--ctl-s3); min-height: 32px; margin: 0 0 var(--ctl-s2); }
+.wf-table-head > .wf-table-title { margin: 0; font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text); }
+.wf-table-head > .wf-table-marks { margin-left: auto; display: inline-flex; align-items: center; gap: var(--ctl-s2); }
+/* The Inputs count: a quiet text control, and its files under the row. */
+.wf-table .wf-inputs-toggle {
+  margin: 0; padding: 0; border: 0; background: none; cursor: pointer;
+  font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac);
+  text-decoration: underline; text-decoration-color: var(--line); text-underline-offset: 2px;
+}
+.wf-table .wf-inputs-toggle[aria-expanded='true'] { color: var(--text); }
+.wf-table .wf-inputs-toggle.is-unread { color: var(--warn); }
+.wf-table .wf-inputs-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.wf-table tr.wf-xrow > td { background: var(--surface-2); }
+.wf-xinputs { display: flex; align-items: baseline; gap: var(--ctl-s3); font: var(--t-micro)/var(--lh-micro) var(--mono); }
+.wf-xinputs-h { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
 
 /* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */

@@ -10550,7 +10550,6 @@ span.sk-ttile { cursor: default; }
 .wfp-confirm-err { color: var(--s-bad); }
 .wfp-confirm-do { display: flex; flex-wrap: wrap; gap: 8px; }
 .wfp-steps { display: flex; flex-direction: column; gap: 6px; margin-top: var(--ctl-gutter); }
-.wfp-eyb { margin: 0; font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
 .wfp-missing { color: var(--text-dim); }
 
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */

@@ -7,8 +7,8 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS } from './AgentDetail'
-import { agentName, backLabel } from './agentlist'
+import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy } from './AgentDetail'
+import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadTask } from './api'
 import type { TaskPane } from './App'
 import { ArtifactsScreen } from './Artifacts'
@@ -30,7 +30,8 @@ import {
 import { LogDock } from './LogDock'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { RESOURCE_UNITS, TERMINAL_STATES, type Task } from './types'
+import { RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
+import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/agents.css'
 import { Button, CIcon, StateMark, Tabs } from './components'
 
@@ -316,11 +317,10 @@ export function AgentSplit({
       <button type="button" className="ctl-agent-back" onClick={close} aria-label={`Back to ${backLabel(closeTo)}`}>
         ‹ {backLabel(closeTo)}
       </button>
-      <Button iconOnly icon={<CIcon name="close" />} className="drawer-close" onClick={close}>
-        Close
-      </Button>
-
-      <AgHead taskId={taskId} task={task} read={head.state.status} reload={reload} />
+      {/* THE ✕ IS IN THE HEADER'S ACTION ROW, after Copy link (walkthrough
+          B, 2026-10-03): a sticky band of its own on the column, it was
+          drawn over Copy link. */}
+      <AgHead taskId={taskId} task={task} read={head.state.status} reload={reload} onClose={close} />
 
       {/* UNDERLINE TABS WITH COUNTS (agents.html V1; #503 measured a boxed
           segmented control with none). A count the task document does not
@@ -373,9 +373,13 @@ function artifactCount(task: Task | null): number | null {
 const COPY_SAID_MS = 4000
 
 /**
- * THE DETAIL'S HEADER ROW (agents.html V1; #503 measured none): the state
- * pill, the agent's name -- its step, or its id when it stands alone -- the
- * id, profile, class and units under it, and Copy link and Stop at the end.
+ * THE DETAIL'S HEADER BLOCK (agents.html V1), AND THE ONE PLACE ITS
+ * METADATA IS SAID (walkthrough B, owner 2026-10-03). The state pill, the
+ * agent's name -- its step, or what it is when it stands alone -- and Copy
+ * link, Stop and ✕ in the action row; under it the whole id with its copy,
+ * profile · class · units · gen, and the facts: started / ended, the account,
+ * the tenant and the workflow. The Details pane said these again in two other
+ * shapes; it now draws only what this does not (`Headline` with `headed`).
  * A child carries its parent's link above the title (agent-detail-2.html A2).
  */
 function AgHead({
@@ -383,12 +387,15 @@ function AgHead({
   task,
   read,
   reload,
+  onClose,
 }: {
   taskId: string
   task: Task | null
   read: string
   reload: () => void
+  onClose: () => void
 }) {
+  const now = useNow(AGE_TICK_MS)
   const [copied, setCopied] = useState<'yes' | 'no' | null>(null)
   useEffect(() => {
     if (copied === null) return
@@ -408,6 +415,11 @@ function AgHead({
     )
   }
   const units = task === null ? undefined : RESOURCE_UNITS[task.resource_class]
+  const name = task === null ? taskId : agentName(task)
+  // The breadcrumb has the id and no task: it names the agent with this.
+  useEffect(() => {
+    if (task !== null) rememberAgentName(task)
+  }, [task])
   return (
     <header className="ag-head">
       {task !== null && <AgParentLink task={task} />}
@@ -417,8 +429,10 @@ function AgHead({
         ) : (
           <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
         )}
-        <h2 className="ag-head-title" title={taskId}>
-          {task === null ? taskId : agentName(task)}
+        {/* TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN THE TOOLTIP
+            (walkthrough C): a long step name ran off the column. */}
+        <h2 className="ag-head-title" title={name}>
+          {name}
         </h2>
         <span className="ag-head-actions">
           <Button onClick={copy}>
@@ -434,19 +448,63 @@ function AgHead({
               <StopRun task={task} what="this agent" reload={reload} />
             </span>
           )}
+          <Button iconOnly icon={<CIcon name="close" />} className="drawer-close ag-head-close" onClick={onClose}>
+            Close
+          </Button>
         </span>
       </div>
-      <p className="ag-head-sub mono">
-        {taskId}
-        {task !== null && (
-          <>
-            {' · '}
-            {task.runner_profile} · {task.resource_class}
-            {units !== undefined && ` · ${units}u`}
-            {task.current_generation !== null && task.current_generation !== undefined && ` · gen ${task.current_generation}`}
-          </>
-        )}
+      <p className="ag-head-id">
+        <IdCopy value={taskId} />
       </p>
+      {task !== null && <AgHeadFacts task={task} units={units} now={now} />}
     </header>
+  )
+}
+
+/**
+ * Profile · class · units · gen, then when it started and ended, the account,
+ * the tenant and the workflow -- each keyed once, in the facts-strip treatment
+ * the Details pane uses, with the same formatters (`startedOf`, `clockTime`,
+ * `accountText`) so the header and the attempt cards never print one instant
+ * two ways. An account not read is a dash with its reason, never blank.
+ */
+function AgHeadFacts({ task, units, now }: { task: Task; units: number | undefined; now: number }) {
+  const start = startedOf(task, now)
+  const ended = clockTime(task.completed_at, now)
+  const account = accountText(task.account)
+  return (
+    <ul className="ctl-facts ag-head-facts">
+      <li className="ctl-fact ag-head-shape mono">
+        {task.runner_profile} · {task.resource_class}
+        {units !== undefined && ` · ${units}u`}
+        {task.current_generation !== null && task.current_generation !== undefined && ` · gen ${task.current_generation}`}
+      </li>
+      <li className="ctl-fact" title={start.title}>
+        <b>started</b>
+        {start.text}
+      </li>
+      {ended !== null && (
+        <li className="ctl-fact" title={`ended ${ended.title}`}>
+          <b>ended</b>
+          {ended.text}
+        </li>
+      )}
+      <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
+        <b>account</b>
+        <span className="mono">{account.text}</span>
+      </li>
+      <li className="ctl-fact">
+        <b>tenant</b>
+        <span className="mono">{task.tenant_id}</span>
+      </li>
+      {task.workflow_id !== null && (
+        <li className="ctl-fact">
+          <b>workflow</b>
+          <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
+            {task.workflow_id}
+          </a>
+        </li>
+      )}
+    </ul>
   )
 }

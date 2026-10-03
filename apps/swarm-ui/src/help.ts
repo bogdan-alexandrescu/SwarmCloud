@@ -125,6 +125,8 @@ export type TopicId =
   | 'repository-url'
   | 'requests-are-ceilings'
   | 'room-unknown-not-zero'
+  | 'runner-unavailable'
+  | 'recent-submissions'
   | 'runner-profile-by-name'
   | 'runtime-needs-no-provider'
   | 'second-browser-application'
@@ -924,6 +926,29 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A stage on Submit a workflow is a default for what a step waits for: a step in a later stage waits for every step in the stage before it, unless it is narrowed to a chosen set of earlier steps. The platform receives only the dependencies; stages are how the form lays them out.',
       'A step becomes eligible when every step it depends on has succeeded. Until then it holds no capacity and costs nothing. Steps whose dependencies have all succeeded run at the same time, within the ceilings of the pools they need.',
       'When a step fails for good, its retries spent, the platform cancels every step that depends on it, directly or through another step, because none of them could ever start. A step that does not depend on the failed one is not touched and runs to its own end.',
+    ],
+  },
+
+  'runner-unavailable': {
+    group: 'submitting-work',
+    title: 'Why a runner is unavailable',
+    short:
+      'A runner is held back when the platform has not enabled it for this tenant, when its credential was refused, or when the form decides the runner itself: an issue run always plans and builds with one fixed runner. Hover a runner for the platform’s own reason.',
+    long: [
+      'The forms show the runners you can use and fold the rest under “Other runners”, each with a one-line reason. The platform’s own reason, as it wrote it, is that line’s tooltip.',
+      'An issue run takes no runner: the request that creates it has no field for one, and the API plans and builds every step with the same runner. The form shows that runner and holds the others back for that reason, not because they are broken.',
+      'A runner the platform disables carries the platform’s reason, which may name work still to land before it is enabled. Nothing on the form can enable it; an administrator of the platform can.',
+    ],
+  },
+
+  'recent-submissions': {
+    group: 'submitting-work',
+    title: 'Why there are no recent submissions',
+    short:
+      'Starting again from something you submitted needs the API to keep a short list, per person, of what each of us submitted: task or workflow, name, settings and when. It does not keep one yet, so the card stays empty rather than guessing from the agent list.',
+    long: [
+      'The agent list is not that list: it holds everyone’s agents, not your submissions, and a workflow is many agents. A card filled from it would offer things you never submitted.',
+      'When the API keeps the list, the card fills from it, newest first.',
     ],
   },
 
@@ -1800,6 +1825,14 @@ const GUIDE: Record<TopicId, { subject: string; act: HelpAct }> = {
   'workflow-stages': {
     subject: 'Workflow stages',
     act: { say: 'Open a workflow to see which stage each step is in and what a failure cancelled.', at: 'work/workflows' },
+  },
+  'runner-unavailable': {
+    subject: 'An unavailable runner',
+    act: { say: 'Pick a runner you can use; ask a platform administrator to enable another.', at: 'capacity/profiles' },
+  },
+  'recent-submissions': {
+    subject: 'Recent submissions',
+    act: { say: 'Start a new task, workflow or issue run from the cards above.', at: 'submit' },
   },
   'room-unknown-not-zero': {
     subject: 'Unknown room',

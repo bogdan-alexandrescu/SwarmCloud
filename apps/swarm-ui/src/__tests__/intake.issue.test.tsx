@@ -222,10 +222,14 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     await mount()
     const group = screen.getByRole('radiogroup', { name: 'runner' })
     const cc = group.querySelector<HTMLInputElement>('input[value="claude-code"]')!
-    const codex = group.querySelector<HTMLInputElement>('input[value="codex"]')!
     expect(cc.checked).toBe(true)
-    expect(codex.disabled).toBe(true)
-    expect(visible(codex.closest('label'))).toMatch(/plans and builds with claude-code/)
+    // ONLY THE USABLE CHOICE (walkthrough D): the rest are behind "Other
+    // runners", each with a one-line reason, and none is a radio.
+    expect(group.querySelector('input[value="codex"]')).toBeNull()
+    const more = document.querySelector('details.sbf-runners-more')!
+    const codex = [...more.querySelectorAll('li')].find((li) => li.querySelector('.sbf-runner-name')?.textContent === 'codex')!
+    expect(codex, 'codex is not listed as unavailable').toBeTruthy()
+    expect(codex.querySelector('.sbf-runner-why')?.textContent).toMatch(/^(Issue runs always use claude-code|Not enabled yet\. Use claude-code)$/)
   })
 
   it('plan approval defaults to Required; auto-merge is off and disabled until #295; fix rounds 3 in 1-5', async () => {
@@ -238,7 +242,9 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
     expect(merge.checked).toBe(false)
     expect(merge.disabled).toBe(true)
-    expect(visible(merge.closest('.in-merge'))).toContain('not available until #295')
+    // No issue number on the form (walkthrough E): the why is the line's tooltip.
+    expect(visible(merge.closest('.in-merge'))).toContain('Not available yet')
+    expect(merge.closest('.in-merge')!.querySelector('small')!.getAttribute('title')).toMatch(/merge chain has not shipped/)
     const rounds = screen.getByLabelText('Fix rounds when checks go red') as HTMLInputElement
     expect(rounds.value).toBe('3')
     expect(rounds.min).toBe('1')
@@ -255,7 +261,7 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(side()).toContain('example-org/infra#512')
     expect(side()).toContain('claude-code')
     expect(side()).toContain('waits for approval')
-    expect(side()).toContain('off · not available until #295')
+    expect(side()).toContain('off · not available yet')
     expect(side()).toContain('up to 3')
     fireEvent.click(screen.getByRole('radio', { name: /Auto/ }))
     fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '5' } })

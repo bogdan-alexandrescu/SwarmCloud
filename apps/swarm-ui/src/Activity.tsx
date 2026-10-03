@@ -784,7 +784,7 @@ function LedgerSection({
           aria-label={`${orphans} terminal tasks carry no completed_at. Every writer that moves a task terminal sets it, so this is a data bug; these tasks cannot be placed on this axis and are in no bucket.`}
         >
           <Mark kind="partial" say={`${orphans} terminal tasks carry no completed_at and are on no bucket.`} /> {orphans}{' '}
-          terminal tasks carry no <code>completed_at</code>
+          finished tasks carry no end time
           <a href={helpHref('outcome-buckets')}>Why &rarr;</a>
         </p>
       ) : null}

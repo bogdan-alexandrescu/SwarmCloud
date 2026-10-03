@@ -16,6 +16,7 @@
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
+import { agentName } from './agentlist'
 import type { Result } from './fetch'
 import { StateMark } from './marks'
 import { reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
@@ -261,8 +262,8 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
                 <StateMark state={t.state} />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href}>
-                  {t.step_id ?? t.id}
+                <a className="ov-name" href={href} title={`${agentName(t)} · ${t.id}`}>
+                  {agentName(t)}
                 </a>
                 {why !== '' && <span className="ov-sub">{why}</span>}
               </th>

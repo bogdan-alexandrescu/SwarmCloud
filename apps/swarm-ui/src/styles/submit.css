@@ -92,7 +92,28 @@
 .sbf-runners.is-cards .sbf-runner-room {
   font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
 }
-.sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--warn-ink); }
+.sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+
+/* THE RUNNERS A LIST HOLDS BACK (walkthrough D): one quiet disclosure under
+   the usable cards, "Other runners (N unavailable)", and inside it one row
+   per runner -- its name and a one-line reason, the platform's own words in
+   the row's tooltip. Not orange: an unavailable runner is not a warning about
+   anything the submitter did. */
+.sbf-runners-more { margin: 0 0 12px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sbf-runners-more > summary {
+  display: inline-flex; align-items: center; min-height: 32px; padding: 0 2px;
+  cursor: pointer; color: var(--text-dim); font: 500 var(--t-meta)/var(--lh-meta) var(--font);
+}
+.sbf-runners-more > summary:hover { color: var(--text); }
+.sbf-runners-more > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.sbf-runners-more > .sbf-runners-why { display: inline-flex; align-items: center; gap: 4px; margin: 0 0 6px; }
+.sbf-runners-more > ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.sbf-runners-more li {
+  display: flex; align-items: baseline; gap: 8px; min-height: 28px; padding: 4px 10px;
+  border: 1px solid var(--line-soft); border-radius: var(--ctl-radius-sm);
+}
+.sbf-runners-more li > .sbf-runner-name { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.sbf-runners-more li > .sbf-runner-why { color: var(--text-dim); }
 /* A MISSING KEY IS THE ONE FACT ON A CARD SOMEBODY HAS TO ACT ON: a task
    under it is parked until the key is registered. */
 .sbf-runner-miss { color: var(--warn-ink); }
@@ -176,6 +197,7 @@
   color: var(--text-dim);
 }
 .sb-card-h { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.sb-card-hr { display: flex; align-items: center; gap: 6px; }
 .sb-empty {
   display: flex; gap: 10px; align-items: flex-start;
   margin: 0; padding: 6px 0;

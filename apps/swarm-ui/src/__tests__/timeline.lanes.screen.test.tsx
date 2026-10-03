@@ -230,15 +230,16 @@ describe('Lanes: every honest state', () => {
   it('loading: says what it is reading, and draws nothing', () => {
     api.loadAttemptsPage.mockReturnValue(new Promise(() => {}))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
-    expect(screen.getByText(/Reading \/v1\/attempts/)).toBeTruthy()
+    // No route in the copy (walkthrough E): it says what it reads, in words.
+    expect(screen.getByText(/Reading attempts for/)).toBeTruthy()
     expect(lanes()).toHaveLength(0)
   })
 
-  it('error: names the route and its status, and draws no bar under a failure', async () => {
+  it('error: names its status, and draws no bar under a failure', async () => {
     api.loadAttemptsPage.mockResolvedValue(failed(503, 'unavailable'))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('/v1/attempts answered 503')
+    expect(alert.textContent).toContain('the read answered 503')
     expect(alert.textContent).toMatch(/Nothing is drawn, because nothing was read/)
     expect(lanes()).toHaveLength(0)
     fireEvent.click(within(alert).getByRole('button', { name: /try again/i }))
@@ -297,12 +298,12 @@ describe('Lanes: the outcome strip', () => {
       api.loadOutcomes.mockReturnValue(new Promise(() => {}))
       render(<TimelineLanesScreen view={null} onView={() => {}} />)
       await waitFor(() => expect(lanes().length).toBeGreaterThan(0))
-      expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Reading \/v1\/outcomes/)
+      expect(document.querySelector('.tl-strip')?.textContent).toMatch(/Reading outcomes…/)
       await act(async () => {
         vi.advanceTimersByTime(STRIP_DEADLINE_MS + 1)
       })
       const text = document.querySelector('.tl-strip')?.textContent ?? ''
-      expect(text).not.toMatch(/Reading \/v1\/outcomes/)
+      expect(text).not.toMatch(/Reading outcomes…/)
       expect(text).toMatch(/Outcomes not read/)
       expect(text).toMatch(/no answer after \d+ s/)
       expect(text).toMatch(/lanes below are unaffected/)
@@ -413,3 +414,31 @@ describe('Lanes: span and zoom', () => {
     expect(within(nav).getByRole('link', { name: 'Outcomes' }).getAttribute('href')).toBe('/timeline/outcomes')
   })
 })
+
+describe('walkthrough G: a lane label leads with its name, state and duration', () => {
+  it('draws `<step> <mark> · <duration>`, with the task id in the tooltip and nowhere in the label or its note', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    const row = await waitFor(() => {
+      const r = document.querySelector<HTMLElement>('.tl-row[data-lane="task_plan"]')
+      expect(r?.querySelector('.tl-dur')).toBeTruthy()
+      return r!
+    })
+    const lab = row.querySelector('.tl-lab b')!
+    const name = lab.querySelector<HTMLElement>('.tl-name')!
+    expect(name.textContent).toBe('plan')
+    expect(name.getAttribute('title')).toBe('plan · task_plan')
+    // The name, then the state mark, then the time its attempt held capacity
+    // (240 → 160 minutes ago: 1h 20m).
+    const order = [...lab.children].map((c) => (c.classList.contains('tl-name') ? 'name' : c.classList.contains('tl-dur') ? 'dur' : c.hasAttribute('data-mark') || c.querySelector('[data-mark]') ? 'mark' : c.className))
+    expect(order).toEqual(['name', 'mark', 'dur'])
+    expect(lab.querySelector('.tl-dur')!.textContent).toBe(' · 1h 20m')
+    expect(row.querySelector('.tl-lab small')!.textContent).not.toContain('task_plan')
+    // A lone task is named from what it is, not by its id.
+    const solo = document.querySelector<HTMLElement>('.tl-row[data-lane="task_solo"] .tl-name')!
+    expect(solo.textContent).toBe('claude-code task · solo')
+    // A lane that never ran has no duration: there is nothing it held.
+    const never = document.querySelector<HTMLElement>('.tl-row[data-lane="task_publish"]')
+    if (never !== null) expect(never.querySelector('.tl-dur')).toBeNull()
+  })
+})
+

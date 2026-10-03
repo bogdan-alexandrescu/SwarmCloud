@@ -13,7 +13,7 @@
 // the whole stream; drop the transcript's `is_error` from the error targets;
 // draw the mask as plain text; compare a read with itself for the gap.
 
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -397,16 +397,23 @@ describe('output missing between two reads', () => {
 })
 
 describe('the dock folds to a line, and on a phone is a sheet', () => {
-  it('folds to its newest line, remembered per viewer, and opens again', async () => {
+  it('folds to its newest line and opens again; open while running, folded once finished', async () => {
     api.loadTranscript.mockResolvedValue(ok(transcript([step(1, { text: 'first' }), step(2, { text: 'the newest line' })])))
     const { unmount } = render(<LogDock task={running()} />)
     await waitFor(() => expect(dock().textContent).toContain('the newest line'))
     fireEvent.click(within(dock()).getByRole('button', { name: 'Fold' }))
     const line = within(dock()).getByRole('button', { expanded: false })
     expect(line.textContent).toContain('the newest line')
+    fireEvent.click(line)
+    expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
     unmount()
+    // WALKTHROUGH B (2026-10-03): whether it opens is the agent's state, not
+    // one remembered choice for every agent. A running agent opens with its
+    // log open; a finished one with its log folded to its newest line.
     render(<LogDock task={running()} />)
-    expect(within(dock()).getByRole('button', { expanded: false })).toBeTruthy()
+    expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
+    cleanup()
+    render(<LogDock task={running({ state: 'SUCCEEDED', completed_at: new Date().toISOString() })} />)
     fireEvent.click(within(dock()).getByRole('button', { expanded: false }))
     expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
   })
