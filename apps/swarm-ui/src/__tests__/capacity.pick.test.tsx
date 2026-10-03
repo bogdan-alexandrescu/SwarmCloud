@@ -157,7 +157,8 @@ function profile(over: Partial<RunnerProfile> = {}): RunnerProfile {
 describe('Pools is one page with an in-page Ceilings | By runner profile strip (#503)', () => {
   it('draws the strip on Ceilings, with Ceilings as the current view', async () => {
     await renderPools()
-    const strip = document.querySelector('nav.cap-seg')
+    // The canonical segmented control, in its link form.
+    const strip = document.querySelector('.cap-seg nav.c-seg[aria-label="Pools views"]')
     expect(strip, 'Ceilings has no in-page view strip').not.toBeNull()
     const links = [...strip!.querySelectorAll('a')]
     expect(links.map((a) => a.textContent)).toEqual(['Ceilings', 'By runner profile'])
@@ -172,7 +173,7 @@ describe('Pools is one page with an in-page Ceilings | By runner profile strip (
     render(<ProfilesScreen />)
     await waitFor(() => expect(document.querySelector('.cap-mx')).not.toBeNull(), WAIT)
     expect(screen.getByRole('heading', { level: 1 }).textContent).toContain('Pools')
-    const links = [...document.querySelectorAll('nav.cap-seg a')]
+    const links = [...document.querySelectorAll('.cap-seg nav.c-seg a')]
     expect(links.map((a) => a.textContent)).toEqual(['Ceilings', 'By runner profile'])
     expect(links[1]!.getAttribute('aria-current')).toBe('page')
     expect(links[0]!.getAttribute('href')).toBe('#capacity/pools')

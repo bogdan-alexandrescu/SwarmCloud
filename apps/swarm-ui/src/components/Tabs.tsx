@@ -53,13 +53,41 @@ export interface SegOption<K extends string> {
   key: K
   label: ReactNode
   count?: number | null
+  /**
+   * The option's own address. Set on every option, the control is NAVIGATION
+   * between views that each have a route (Capacity's Ceilings | By runner
+   * profile): links in a labelled `nav`, the current one `aria-current`,
+   * drawn exactly as the toggle form is.
+   */
+  href?: string
 }
 
-export function Segmented<K extends string>({ options, value, onChange, label, small = false }: { options: readonly SegOption<K>[]; value: K; onChange: (k: K) => void; label: string; small?: boolean }) {
+export function Segmented<K extends string>({ options, value, onChange, label, small = false }: { options: readonly SegOption<K>[]; value: K; onChange?: (k: K) => void; label: string; small?: boolean }) {
+  if (options.length > 0 && options.every((o) => o.href !== undefined)) {
+    return (
+      <nav className={`c-seg${small ? ' is-sm' : ''}`} aria-label={label}>
+        {options.map((o) => (
+          <a
+            key={o.key}
+            href={o.href}
+            aria-current={o.key === value ? 'page' : undefined}
+            onClick={(e) => {
+              if (onChange === undefined || !routedClick(e)) return
+              e.preventDefault()
+              onChange(o.key)
+            }}
+          >
+            {o.label}
+            {o.count !== undefined && <em>{o.count === null ? '—' : o.count}</em>}
+          </a>
+        ))}
+      </nav>
+    )
+  }
   return (
     <div className={`c-seg${small ? ' is-sm' : ''}`} role="group" aria-label={label}>
       {options.map((o) => (
-        <button key={o.key} type="button" aria-pressed={o.key === value} onClick={() => onChange(o.key)}>
+        <button key={o.key} type="button" aria-pressed={o.key === value} onClick={() => onChange?.(o.key)}>
           {o.label}
           {o.count !== undefined && <em>{o.count === null ? '—' : o.count}</em>}
         </button>

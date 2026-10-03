@@ -393,6 +393,18 @@ describe('Tabs, Segmented and Breadcrumb', () => {
     expect(pick).toHaveBeenCalledWith('dark')
   })
 
+  it('the segmented control between addressed views is links, the current one aria-current', () => {
+    // Capacity's Ceilings | By runner profile (the 2026-10-03 swap of CapSeg).
+    // MUTATION: drop the link form and the views render as buttons again.
+    render(<Segmented label="Pools views" value="a" options={[{ key: 'a', label: 'Ceilings', href: '#capacity/pools' }, { key: 'b', label: 'By runner profile', href: '#capacity/profiles' }]} />)
+    const nav = screen.getByRole('navigation', { name: 'Pools views' })
+    const links = [...nav.querySelectorAll('a')]
+    expect(links.map((a) => a.getAttribute('href'))).toEqual(['#capacity/pools', '#capacity/profiles'])
+    expect(links[0]!.getAttribute('aria-current')).toBe('page')
+    expect(links[1]!.getAttribute('aria-current')).toBeNull()
+    expect(screen.queryByRole('button')).toBeNull()
+  })
+
   it('the breadcrumb links back and ends on the object, not a link', () => {
     render(<Breadcrumb crumbs={[{ key: 'w', label: 'Work', href: '/agents' }, { key: 'a', label: 'Agents', href: '/agents/live' }, { key: 'o', label: 'task_01JB', href: null, id: true }]} />)
     expect(screen.getAllByRole('link').map((a) => a.textContent)).toEqual(['Work', 'Agents'])

@@ -220,6 +220,11 @@
 .c-seg { display: inline-flex; border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface); height: var(--h-ctl); flex: none; align-self: flex-start; }
 .c-seg > button { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 0; border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; cursor: pointer; }
 .c-seg > button:last-child { border-right: 0; }
+/* The link form: the same segment, for views that each have an address. */
+.c-seg > a { padding: 0 12px; font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border-right: 1px solid var(--line); display: flex; gap: 6px; align-items: center; white-space: nowrap; text-decoration: none; }
+.c-seg > a:last-child { border-right: 0; }
+.c-seg > a[aria-current='page'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.c-seg > a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
 .c-seg > button[aria-pressed='true'],
 .c-seg > button[aria-checked='true'] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
 .c-seg em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); }

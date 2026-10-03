@@ -18,35 +18,8 @@
 /* -- Pools, Runtimes, Holders, Provider quota ----------------------------- */
 
 /* The in-page view strip under the Pools heading (capacity.html C1, frames 0
-   and 3): Ceilings | By runner profile. components.html A's segmented control
-   -- one bordered pill-ended group, 32px tall, the current view in the
-   accent's soft fill -- drawn locally until the shared one lands. */
-.cap-seg {
-  display: inline-flex;
-  align-self: flex-start;
-  gap: var(--ctl-s1);
-  padding: var(--ctl-s1);
-  margin: 0 0 var(--ctl-s3);
-  /* A control's own boundary, so --line (3:1 on the page), not the nav
-     hairline --sk-ln (1.2-1.4:1). The segments sit 4px apart rather than
-     touching, so no rule between them is needed. */
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  overflow: hidden;
-  background: var(--surface);
-}
-.cap-seg a {
-  display: inline-flex;
-  align-items: center;
-  min-height: 32px;
-  padding: 0 12px;
-  font-size: var(--t-micro);
-  color: var(--text-dim);
-  text-decoration: none;
-  border-radius: 2px;
-}
-.cap-seg a[aria-current="page"] { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
-.cap-seg a:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
+   and 3): the canonical segmented control's link form; this only spaces it. */
+.cap-seg { display: flex; margin: 0 0 var(--ctl-s3); }
 
 /* Ceilings: "Needs action" leads (the pools a person has to act on), in the
    warning hue's soft surface. */

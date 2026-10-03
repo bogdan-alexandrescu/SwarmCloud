@@ -9,6 +9,7 @@ import { leaseCoverage } from './Holders'
 import { UtilTrack } from './primitives'
 import { Screen } from './Shell'
 import './styles/capacity.css'
+import { Segmented } from './components'
 import {
   FAMILY_TITLE,
   POOL_FAMILY_ORDER,
@@ -114,15 +115,18 @@ export function CapacityScreen() {
  * control, named for this section until the shared one lands.
  */
 export function CapSeg({ view }: { view: 'ceilings' | 'profiles' }) {
+  // The canonical segmented control's link form (components.html A).
   return (
-    <nav className="cap-seg" aria-label="Pools views">
-      <a href="#capacity/pools" aria-current={view === 'ceilings' ? 'page' : undefined}>
-        Ceilings
-      </a>
-      <a href="#capacity/profiles" aria-current={view === 'profiles' ? 'page' : undefined}>
-        By runner profile
-      </a>
-    </nav>
+    <div className="cap-seg">
+      <Segmented
+        label="Pools views"
+        value={view}
+        options={[
+          { key: 'ceilings', label: 'Ceilings', href: '#capacity/pools' },
+          { key: 'profiles', label: 'By runner profile', href: '#capacity/profiles' },
+        ]}
+      />
+    </div>
   )
 }
 
