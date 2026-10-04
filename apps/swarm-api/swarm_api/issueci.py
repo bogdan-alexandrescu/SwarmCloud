@@ -83,7 +83,8 @@ A write of the block that FAILS is not left there: `keyword_written` is
 recorded on the pull request only by a write that worked, every CHECKING
 visit writes the block again while it is missing, and a green run stays
 CHECKING until it is written (`keyword_pending`) -- otherwise one failed
-write would leave the worker's "Fixes #N" title to close the issue on merge.
+write would leave an agent's closing keyword (or an older worker's "Fixes #N"
+title) to close the issue on merge. The worker's own title says "part of #N".
 An unmet requirement the gated `fix` step went on to address is still named:
 nothing confirmed it.
 

@@ -171,11 +171,13 @@ def _review_writes(db, objects, workflow_id: str, content: str | None) -> None:
     }]}
 
 
-def _checking(client, db, objects, writes, verdict, *, body: str = "", title: str = "") -> dict:
+def _checking(
+    client, db, objects, writes, verdict, *, body: str = "", title: str = "", plan=FULL_PLAN
+) -> dict:
     created = _create(client)
     assert created.status_code == 201, created.text
     run = created.json()["run"]
-    _finish_planner(db, objects, run, FULL_PLAN)
+    _finish_planner(db, objects, run, plan)
     planned = _run(client, run["id"]).json()["run"]
     running = _approve(client, run["id"], planned["plan_digest"]).json()["run"]
     writes.open_pull(PR, SHA_A, body=body)
@@ -338,3 +340,57 @@ def test_a_written_keyword_is_not_written_again_on_every_read(client, db, object
     _read(client, clock, running["id"])
 
     assert [c for c in writes.calls if c[0] == "PATCH" and "/pulls/" in c[1]] == patches
+
+
+# --------------------------------------------------------------------------
+# a staged plan: the CI loop still finds the integrator and the review
+# --------------------------------------------------------------------------
+
+#: FULL_PLAN's requirements over stages: two independent roots, then a step
+#: joining both -- `depends_on` compiles it to {sort-key, ui} then {wire}.
+STAGED_FULL_PLAN = {
+    **FULL_PLAN,
+    "steps": [
+        {"step_id": "sort-key", "title": "Add a sort key",
+         "prompt": "Add a name sort key to WidgetList.", "depends_on": []},
+        {"step_id": "ui", "title": "Draw the header",
+         "prompt": "Add a sortable Name header.", "depends_on": []},
+        {"step_id": "wire", "title": "Wire the header",
+         "prompt": "Make the Name header toggle the sort.", "depends_on": ["sort-key", "ui"]},
+    ],
+}
+
+
+def test_a_staged_plan_compiles_to_one_review_after_every_step_and_one_integrator():
+    # `issueci` finds the review and the integrator by step id in the
+    # compiled workflow; stages (#540) must keep exactly one of each, with the
+    # review waiting for every implementer and the fix gated on it.
+    workflow = compile_plan(_bare_run(
+        plan=STAGED_FULL_PLAN, plan_digest=issueruns.plan_digest(STAGED_FULL_PLAN),
+    ))
+    by_id = {step.step_id: step for step in workflow.steps}
+    assert [s.step_id for s in workflow.steps].count(issueruns.REVIEW_STEP) == 1
+    assert [s.step_id for s in workflow.steps].count(issueruns.FIX_STEP) == 1
+    impl = ["impl-sort-key", "impl-ui", "impl-wire"]
+    assert sorted(by_id[issueruns.REVIEW_STEP].depends_on) == sorted(impl)
+    assert by_id[issueruns.FIX_STEP].depends_on == [issueruns.REVIEW_STEP]
+    assert issueruns.plan_stages(issueruns.parse_plan(STAGED_FULL_PLAN)) == [
+        ["sort-key", "ui"], ["wire"],
+    ]
+
+
+def test_a_staged_run_reads_its_integrators_pull_request_and_its_reviews_verdict(
+    client, db, objects, writes, clock
+):
+    running = _checking(client, db, objects, writes, _verdict(True, True), plan=STAGED_FULL_PLAN)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "CHECKING", run.get("error")
+    integrator = _step_task(db, running["workflow_id"], issueruns.FIX_STEP)
+    assert run["pr_task_id"] == integrator["id"]
+    assert run["pull_request"]["number"] == PR
+    # The verdict was read from the review task the stages compiled: all met.
+    assert run["requirements_met"] is True, run.get("requirements_note")
+    assert run["requirements_unmet"] == []
+    assert "Closes #42" in _block(writes.pulls[PR]["body"], run["id"])

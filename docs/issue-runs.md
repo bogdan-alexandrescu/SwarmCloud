@@ -292,9 +292,13 @@ agent wrote in a commit message or `pr-body.md` would close the issue on merge
 whatever the review found. A requirement the gated fix went on to address is
 still named as left: nothing confirmed it.
 
-**A failed write of the block is written again, and holds the run.** The
-worker titles a pull request for a step with an `issue` input "Fixes #N", and
-only this write neutralises it. So it is not left to one attempt:
+**A failed write of the block is written again, and holds the run.** Until
+the block lands, nothing on the pull request may close the issue. The worker
+titles a pull request for a step with an `issue` input "<the work> (part of
+#N)" -- the issue's title or the step's label, never "Fixes #N", which it
+used to write and which a squash merge would carry onto the default branch --
+and every compiled prompt forbids the agent a closing keyword. The block is
+still the only place that says `Closes #N`, so it is not left to one attempt:
 `pull_request.keyword_written` is recorded only by a write that worked, every
 CHECKING visit writes the block again while it is missing, and a run whose CI
 is green stays CHECKING until it is written (`issueci.keyword_pending`). A pull

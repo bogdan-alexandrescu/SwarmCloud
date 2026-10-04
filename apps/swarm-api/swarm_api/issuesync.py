@@ -249,7 +249,8 @@ def sync_pull_request(
     THE KEYWORD IS RECORDED ONLY WHEN IT WAS WRITTEN. A write that worked
     stores `pull_request.keyword_written` as `keyword_mark(closes)`; a write
     that failed clears it. Until it reads right, the pull request may still
-    carry the worker's "Fixes #N" title, which closes the issue on a squash
+    carry a closing keyword an agent wrote (or, from a worker older than
+    this change, the "Fixes #N" title), which closes the issue on a squash
     merge whatever the review found, so the CI loop writes the block again
     on every CHECKING visit and does not call a run DONE before it is
     written (`issueci.keyword_pending`).
@@ -262,12 +263,12 @@ def sync_pull_request(
         pull = writer.read_pull(run.issue, number, token)
         block = keyword_block(run, closes=closes, unmet=unmet, literals=(token,))
         body = apply_keyword_block(pull.body, run, block)
-        # The title cannot close the issue either. The worker titles a pull
-        # request for a step with an `issue` input "Fixes #N" when it has no
-        # issue title (`agent_worker.lifecycle._title_from_issue_input`), and
-        # a squash merge writes the title into a commit on the base branch,
-        # which GitHub reads for closing keywords. Only issue runs are
-        # retitled; the worker's fallback is left as it is for everyone else.
+        # The title cannot close the issue either. The worker's own title
+        # says "part of #N" (`agent_worker.lifecycle._title_from_issue_input`;
+        # a worker before that change wrote "Fixes #N"), but an agent's
+        # `pr-title.txt` may carry a keyword, and a squash merge writes the
+        # title into a commit on the base branch, which GitHub reads for
+        # closing keywords. Only issue runs are retitled here.
         title = neutralise_closing_keywords(pull.title)
         if body != pull.body or title != pull.title:
             writer.edit_pull_body(

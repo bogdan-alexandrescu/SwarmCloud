@@ -293,8 +293,8 @@ An issue run (#454) also **writes back to the issue** with it, from swarm-api
 (`swarm_api/forgewrite.py`, `swarm_api/issuesync.py`): the plan as a comment,
 one status comment edited in place, and the `Closes #N` / `part of #N` block
 in the pull request's body (and, when the title carries a closing keyword --
-the worker's "Fixes #N" fallback -- the title, so a squash merge cannot close
-the issue the block did not). The owner decided on 2026-10-01 that these writes
+an agent's own `pr-title.txt`; the worker's title says "part of #N" -- the
+title, so a squash merge cannot close the issue the block did not). The owner decided on 2026-10-01 that these writes
 use the tenant's own credential, not a platform-wide bot, so that a tenant can
 only ever write where its own token can; the CI loop then reads the pull
 request's checks with it. On the repositories a tenant submits issues from,
