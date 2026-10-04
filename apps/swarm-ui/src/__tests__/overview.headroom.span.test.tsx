@@ -60,7 +60,8 @@ describe('the overview Headroom card', () => {
     const headroom = card()
     for (const width of [390, 1100, 1440]) {
       expect(won(headroom.querySelector('.ov-hps')!, 'grid-template-columns', width)).toBe('repeat(auto-fill, minmax(92px, 1fr))')
-      expect(won(headroom.querySelector('.ov-pl')!, 'grid-template-columns', width)).toBe('minmax(0, 118px) minmax(0, 1fr) auto')
+      // Name and figure on a line, the bar under both (browser QA D17, 2026-10-04).
+      expect(won(headroom.querySelector('.ov-pl')!, 'grid-template-columns', width)).toBe('minmax(0, 1fr) auto')
     }
     const name = headroom.querySelector('.ov-pl .ov-idc')!
     expect(won(name, 'text-overflow', 1440)).toBe('ellipsis')
