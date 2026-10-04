@@ -353,6 +353,22 @@ def render_status_comment(
             f"- **Pull request:** #{int(pull['number'])}"
             + (f" at `{neutral(sha, 12, one_line=True)}`" if sha else "")
         )
+        if run.requirements_met is not None:
+            # Which keyword the pull request's body carries, and why. An
+            # issue comment closes nothing, so the keyword is safe to quote.
+            number = int(run.issue.number)
+            if run.requirements_met:
+                out.append(
+                    f"- **Keyword:** `Closes #{number}` -- the review confirmed every "
+                    "planned requirement"
+                )
+            else:
+                left = len(run.requirements_unmet)
+                out.append(
+                    f"- **Keyword:** `part of #{number}` -- "
+                    + (f"{left} planned requirement(s) not confirmed by the review"
+                       if left else "no planned requirement could be confirmed")
+                )
     if run.ci_fix_round:
         out.append(f"- **CI fix round:** {run.ci_fix_round} of {run.fix_rounds}")
     if run.state == RunState.PLANNED and run.plan_digest:

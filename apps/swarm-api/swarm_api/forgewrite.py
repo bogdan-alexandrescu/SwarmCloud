@@ -220,6 +220,9 @@ class PullSnapshot:
     merged: bool
     #: The branch the pull request merges into: whose rules name the required checks.
     base_ref: str = ""
+    #: Its title: a squash merge makes it a commit message on the base branch,
+    #: where a closing keyword in it closes the issue (`issuesync`).
+    title: str = ""
 
 
 def _int(value: Any) -> int | None:
@@ -386,6 +389,7 @@ class GitHubWriter:
         base = data.get("base") if isinstance(data.get("base"), dict) else {}
         url = data.get("html_url")
         body = data.get("body")
+        title = data.get("title")
         state = data.get("state")
         return PullSnapshot(
             number=int(data["number"]),
@@ -396,13 +400,18 @@ class GitHubWriter:
             state=state if state in ("open", "closed") else "open",
             merged=data.get("merged") is True,
             base_ref=str(base.get("ref") or ""),
+            title=title if isinstance(title, str) else "",
         )
 
-    def edit_pull_body(self, ref: IssueRef, number: int, body: str, token: str) -> None:
+    def edit_pull_body(
+        self, ref: IssueRef, number: int, body: str, token: str, *, title: str | None = None
+    ) -> None:
+        """The pull request's body, and its title too when `title` is given."""
+        payload = {"body": body} if title is None else {"body": body, "title": title}
         self._call(
             "PATCH", self._url(ref, f"pulls/{int(number)}"), token,
             f"the body of {ref.repository}#{int(number)}", needs=PULLS_WRITE,
-            payload={"body": body},
+            payload=payload,
         )
 
     # -- CI at a sha (#454's CI loop) ---------------------------------------------

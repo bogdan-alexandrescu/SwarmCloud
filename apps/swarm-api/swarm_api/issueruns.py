@@ -72,9 +72,19 @@ compile today, because under `integrate` only the integrator may be gated and
 a second review needs a gated step that is not the publisher
 (docs/workflows.md, "What this does not do"). The same cap also bounds the
 CI loop's fix rounds after the pull request opens (`issueci`): one
-continuation per red reading, at most `fix_rounds` of them. `auto_merge` -- a `single-pr`
-chain ending in its own merge (#295) -- is phase 2 and is refused here naming
-#295 rather than compiled into something else.
+continuation per red reading, at most `fix_rounds` of them.
+
+THE REVIEW ANSWERS EACH REQUIREMENT. Its prompt numbers the plan's
+`requirements` and asks for `requirements: [{index, met, note}]` in
+verdict.json, beside the `verdict` and `findings` the fix step's gate reads
+(the gate ignores other keys). `requirements_finding` checks that list
+strictly; only a complete one with every entry met lets the pull request say
+`Closes #N` (`issueci.evaluate_requirements`). Every compiled prompt tells
+its agent not to write a closing keyword itself (`NO_CLOSING_KEYWORD`).
+
+`auto_merge` -- a `single-pr` chain ending in its own merge (#295) -- is
+phase 2 and is refused here naming #295 rather than compiled into something
+else.
 """
 
 from __future__ import annotations
@@ -146,6 +156,23 @@ IMPLEMENT_PREFIX = "impl-"
 
 #: The review rounds `compile_plan` emits, whatever the cap (module docstring).
 COMPILED_REVIEW_ROUNDS = 1
+
+#: The most of the review's `verdict.json` read for its requirements: the
+#: worker's own bound on a verdict file (`agent_worker.verdict`).
+MAX_VERDICT_BYTES = 256 * 1024
+#: A review's note on one requirement, as kept on the run and shown in `part of`.
+MAX_REQUIREMENT_NOTE_CHARS = 300
+
+#: In every prompt this module and the CI loop compile. Only the pull
+#: request's keyword block, written by the API from the review's per-
+#: requirement verdict, may close the issue (owner decision on #454): a
+#: closing keyword an agent wrote in a commit message or `pr-body.md` would
+#: close it on merge whatever the review found.
+NO_CLOSING_KEYWORD = (
+    "Do not write a closing keyword (Closes, Fixes or Resolves followed by an issue "
+    "reference) in any commit message, pr-title.txt or pr-body.md: SwarmCloud decides "
+    "whether the pull request closes the issue, from the review."
+)
 
 
 # --------------------------------------------------------------------------
@@ -509,6 +536,106 @@ def _requirements_text(plan: Mapping[str, Any]) -> str:
     )
 
 
+def _requirements_shape(plan: Mapping[str, Any]) -> str:
+    """The verdict's `requirements` key, as the review prompt asks for it.
+
+    In verdict.json itself, beside `verdict` and `findings`: the worker's
+    verdict reader takes those two keys and ignores the rest
+    (`agent_worker.verdict.read_verdict`), so the fix step's gate reads the
+    same file unchanged (docs/workflows.md, "The verdict is a file the
+    review writes").
+    """
+    count = len(plan.get("requirements") or [])
+    if not count:
+        return ', "requirements": []'
+    return (
+        ', "requirements": [{"index": n, "met": true or false, "note": "why, one line"}] '
+        f"-- exactly one entry for each numbered requirement above, n from 1 to {count}; "
+        "met is true only for a requirement this branch delivers in full"
+    )
+
+
+class _VerdictRefused(ValueError):
+    pass
+
+
+def _review_requirements(document: Any, count: int) -> dict[int, tuple[bool, str]]:
+    """`{index: (met, note)}` from a parsed verdict, or `_VerdictRefused` naming why."""
+    if not isinstance(document, dict):
+        raise _VerdictRefused(f"{VERDICT_FILE} is not a JSON object")
+    entries = document.get("requirements")
+    if not isinstance(entries, list):
+        raise _VerdictRefused(f"{VERDICT_FILE} has no `requirements` list")
+    found: dict[int, tuple[bool, str]] = {}
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise _VerdictRefused("a `requirements` entry is not an object")
+        extra = sorted(set(entry) - {"index", "met", "note"})
+        if extra:
+            raise _VerdictRefused(
+                "a `requirements` entry has extra key(s) " + ", ".join(map(repr, extra[:5]))
+            )
+        index = entry.get("index")
+        if not isinstance(index, int) or isinstance(index, bool) or not 1 <= index <= count:
+            raise _VerdictRefused(
+                f"a `requirements` entry's index is not a number from 1 to {count}"
+            )
+        if index in found:
+            raise _VerdictRefused(f"requirement {index} is answered more than once")
+        met = entry.get("met")
+        if not isinstance(met, bool):
+            raise _VerdictRefused(f"requirement {index}'s `met` is not true or false")
+        note = entry.get("note", "")
+        if note is None:
+            note = ""
+        if not isinstance(note, str):
+            raise _VerdictRefused(f"requirement {index}'s note is not text")
+        found[index] = (met, " ".join(note.split())[:MAX_REQUIREMENT_NOTE_CHARS])
+    missing = [n for n in range(1, count + 1) if n not in found]
+    if missing:
+        raise _VerdictRefused(
+            "the review did not answer requirement " + ", ".join(map(str, missing[:10]))
+        )
+    return found
+
+
+def requirements_finding(
+    plan: Mapping[str, Any] | None, content: str | None, *, problem: str | None = None
+) -> tuple[bool, list[str], str | None]:
+    """`(all_met, unmet, why_not)` from the review's verdict.json text.
+
+    `all_met` is True ONLY when the plan lists requirements and the verdict
+    answers every one of them, exactly once, with `met: true`. Anything else
+    is not all met: the pull request says `part of #N` (owner decision on
+    #454: never claim Closes without evidence). `unmet` names what is left --
+    each requirement the review marked unmet, with its note; or, when the
+    verdict could not be read or checked, every requirement, because none
+    was confirmed. `why_not` says why nothing could be confirmed (no verdict,
+    a malformed one, a plan with no requirements), else None.
+
+    `content` None with a `problem` is a verdict that could not be read.
+    """
+    requirements = [str(r) for r in ((plan or {}).get("requirements") or [])]
+    if not requirements:
+        return False, [], "the plan listed no requirements, so none could be confirmed"
+    if content is None:
+        return False, list(requirements), problem or f"the review wrote no {VERDICT_FILE}"
+    try:
+        try:
+            document = json.loads(content)
+        except ValueError:
+            raise _VerdictRefused(f"{VERDICT_FILE} is not JSON") from None
+        found = _review_requirements(document, len(requirements))
+    except _VerdictRefused as refused:
+        return False, list(requirements), str(refused)
+    unmet = [
+        text + (f" ({found[n][1]})" if found[n][1] else "")
+        for n, text in enumerate(requirements, start=1)
+        if not found[n][0]
+    ]
+    return not unmet, unmet, None
+
+
 def compile_plan(run: "IssueRun") -> WorkflowCreate:
     """The approved plan as a workflow: implementers in a chain, review, gated fix.
 
@@ -537,7 +664,7 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
                 "The earlier steps' work is already on this branch. "
                 if previous is not None else ""
             )
-            + "Do this step only."
+            + "Do this step only. " + NO_CLOSING_KEYWORD
         )
         spec: dict[str, Any] = {
             "step_id": step_id,
@@ -565,7 +692,8 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]}.'
+                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]'
+                + _requirements_shape(plan) + "}. " + NO_CLOSING_KEYWORD
             ),
         },
     })
@@ -580,7 +708,7 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
             "issue": ref.number,
             "prompt": (
                 f"Fix every finding in {VERDICT_FILE} for GitHub issue {ref.short}. "
-                "Change nothing else."
+                "Change nothing else. " + NO_CLOSING_KEYWORD
             ),
         },
     })
@@ -670,6 +798,17 @@ class IssueRun:
     #: tail -- redacted and bounded (`issueci.MAX_EXCERPT_BYTES`). The last
     #: red reading's; what a fix round was given, and why a FAILED run failed.
     failure_excerpt: str | None = None
+    # -- the pull request's keyword (`issueci.evaluate_requirements`), read
+    # from the review's verdict.json when the pull request opens and again
+    # after every CI fix round. All optional: None is "not read yet".
+    #: True only when the review confirmed EVERY planned requirement: what
+    #: `Closes #N` needs. False on anything else, including no evidence.
+    requirements_met: bool | None = None
+    #: What is left, as the `part of #N` block names it.
+    requirements_unmet: list[str] = field(default_factory=list)
+    #: Why nothing could be confirmed (no verdict, a malformed one, no
+    #: requirements in the plan), redacted; None when the verdict was read.
+    requirements_note: str | None = None
     #: sha256 of the comment body last written, so a sync that would write
     #: the same text writes nothing (and reads no token).
     last_plan_posted: str | None = None
@@ -720,6 +859,9 @@ class IssueRun:
             "ci_round_sha": self.ci_round_sha,
             "green_sha": self.green_sha,
             "failure_excerpt": self.failure_excerpt,
+            "requirements_met": self.requirements_met,
+            "requirements_unmet": list(self.requirements_unmet),
+            "requirements_note": self.requirements_note,
             "last_plan_posted": self.last_plan_posted,
             "last_status_posted": self.last_status_posted,
             "forge_login": self.forge_login,
@@ -768,6 +910,11 @@ class IssueRun:
             ci_round_sha=data.get("ci_round_sha"),
             green_sha=data.get("green_sha"),
             failure_excerpt=data.get("failure_excerpt"),
+            requirements_met=(
+                data["requirements_met"] if isinstance(data.get("requirements_met"), bool) else None
+            ),
+            requirements_unmet=[str(r) for r in data.get("requirements_unmet") or []],
+            requirements_note=data.get("requirements_note"),
             last_plan_posted=data.get("last_plan_posted"),
             last_status_posted=data.get("last_status_posted"),
             forge_login=data.get("forge_login"),
@@ -827,6 +974,10 @@ class IssueRun:
             "ci_fix_workflows": list(self.ci_fix_workflows),
             "green_sha": self.green_sha,
             "failure_excerpt": self.failure_excerpt,
+            # The pull request's keyword: `Closes #N` only when this is true.
+            "requirements_met": self.requirements_met,
+            "requirements_unmet": list(self.requirements_unmet),
+            "requirements_note": self.requirements_note,
         }
 
 
@@ -835,7 +986,8 @@ def _opt_int(value: Any) -> int | None:
 
 
 #: What `IssueRuns.patch` may write: the write-back's and the CI read's
-#: bookkeeping. One field here is read to decide a move: `ci_fix_workflows`,
+#: bookkeeping, and the review's requirements finding (which decides the
+#: pull request's keyword, never where the run goes). One field here is read to decide a move: `ci_fix_workflows`,
 #: because a round's workflow id exists only AFTER the transition that
 #: claimed the round (`issueci` claims CHECKING -> FIXING first, so two
 #: readers cannot both submit, then submits, then records the id). The
@@ -844,6 +996,7 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "plan_comment_id", "status_comment_id", "pull_request", "ci_fix_workflows",
     "last_plan_posted", "last_status_posted", "forge_login",
     "writeback_error", "writeback_failed_at", "writeback_attempt",
+    "requirements_met", "requirements_unmet", "requirements_note",
 })
 
 

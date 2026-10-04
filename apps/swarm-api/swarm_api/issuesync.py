@@ -53,6 +53,7 @@ from .issuecomments import (
     body_digest,
     keyword_block,
     marker,
+    neutralise_closing_keywords,
     render_plan_comment,
     render_status_comment,
 )
@@ -245,8 +246,17 @@ def sync_pull_request(
         pull = writer.read_pull(run.issue, number, token)
         block = keyword_block(run, closes=closes, unmet=unmet, literals=(token,))
         body = apply_keyword_block(pull.body, run, block)
-        if body != pull.body:
-            writer.edit_pull_body(run.issue, number, body, token)
+        # The title cannot close the issue either. The worker titles a pull
+        # request for a step with an `issue` input "Fixes #N" when it has no
+        # issue title (`agent_worker.lifecycle._title_from_issue_input`), and
+        # a squash merge writes the title into a commit on the base branch,
+        # which GitHub reads for closing keywords. Only issue runs are
+        # retitled; the worker's fallback is left as it is for everyone else.
+        title = neutralise_closing_keywords(pull.title)
+        if body != pull.body or title != pull.title:
+            writer.edit_pull_body(
+                run.issue, number, body, token, title=title if title != pull.title else None
+            )
         record = {
             **(run.pull_request or {}),
             "number": pull.number,

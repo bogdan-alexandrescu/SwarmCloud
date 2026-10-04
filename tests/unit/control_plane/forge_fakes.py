@@ -170,7 +170,9 @@ class GitHubWrites:
             if number not in self.pulls:
                 return 404, b"{}"
             if method == "PATCH":
-                self.pulls[number]["body"] = payload["body"]
+                for key in ("body", "title"):
+                    if key in payload:
+                        self.pulls[number][key] = payload[key]
             return 200, json.dumps(self.pulls[number]).encode()
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0])

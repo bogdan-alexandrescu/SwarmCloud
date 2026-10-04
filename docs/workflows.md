@@ -526,7 +526,12 @@ What each step does, and why each field is there:
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
   and surrounding spaces. The file name is yours: the gate reads whatever the
-  gated step stages from `when.step`.
+  gated step stages from `when.step`. Any other key is ignored by the gate,
+  which is what lets an issue run's review (#454) put
+  `"requirements": [{"index", "met", "note"}]` in the same file: swarm-api
+  reads that list when the pull request opens, and the pull request says
+  `Closes #N` only when every planned requirement is answered `met: true`
+  (`swarm_api/issueci.py`, `evaluate_requirements`).
 * **`when` gates the AGENT, not the step.** The gated step runs whatever the
   verdict, because it is the step that publishes: if it were skipped on
   MERGE, the reviewed work would never reach a pull request. When the verdict
