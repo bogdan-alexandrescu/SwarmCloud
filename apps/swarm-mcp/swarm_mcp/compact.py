@@ -492,12 +492,13 @@ def watch_progress(
             progress.append(f"[{label}] stopped following: {clip(abandoned, 160)}")
         else:
             line, key = progress_line(client, task, stamp)
-            if link is not None and (first_call or task.get("terminal")):
-                # WHERE TO WATCH IT, on the row's FIRST line and its LAST: the
-                # link the API served, as served (owner decision 2026-10-01).
-                # Not on every line between -- each written line is re-read on
-                # every later turn of the row -- and not part of `key`, so a
-                # link never makes an unchanged line news.
+            if link is not None:
+                # WHERE TO WATCH IT, on EVERY line the row writes: the link the
+                # API served, as served (owner decisions 2026-10-01 and
+                # 2026-10-04). Once only on the first line and the last, which
+                # left a row parked or running for an hour showing no link where
+                # the person looked. Not part of `key`, so a link never makes
+                # an unchanged line news: a row still writes only on a change.
                 line = f"{line} · console: {link}"
             if key != keys.get(task_id) or first_call:
                 progress.append(line)
