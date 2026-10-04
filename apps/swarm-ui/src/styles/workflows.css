@@ -162,9 +162,9 @@
    (`tableColumns`), and the step column takes its room; Ran fits
    "23h 59m so far" and Cost "not reported"; and below the table's minimum
    width the rows STACK (the container query below) instead of scrolling.
-   The px columns sum to 940, so Why keeps 20px at the 960px minimum and
-   56px at 1440 (the box is 996px there), cut with its whole reason in its
-   title.
+   The px columns sum to 920 (Step gave 20px: its name is cut with its
+   title anyway), so Why keeps 60px at the 980px minimum and 76px at 1440
+   (the box is 996px there), cut with its whole reason in its title.
    BROWSER QA N1 (owner, 2026-10-04): the minimum WAS 1000px and the stacked
    form below it -- and the box is 996px at a 1440 viewport, so every desktop
    got the stacked rows, pinned at 30px by `.ctl-table tbody tr`, and each
@@ -177,11 +177,11 @@
 .wf-card .wf-table-box { container: wf-steps / inline-size; }
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
-  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 960px; font-size: var(--t-meta); }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 980px; font-size: var(--t-meta); }
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
-  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 124px; }
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 104px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
   .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
@@ -202,7 +202,7 @@
 /* BELOW THE MINIMUM WIDTH THE ROWS STACK (D12): the name and the state on a
    line, then each figure under its own label, wrapping; no sideways scroll,
    no second border inside the card. Phone and the docked step card alike. */
-@container wf-steps (max-width: 959px) {
+@container wf-steps (max-width: 979px) {
   .wf-card .ctl-table.wf-table.is-scroll { border: 0; overflow-x: visible; }
   .wf-card .ctl-table.wf-table.is-scroll > table { display: block; min-width: 0; width: 100%; }
   .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }

@@ -322,10 +322,9 @@
   .acct-hist td:last-child { display: none; }
 }
 .acct-hist th { text-align: left; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
-.acct-hist td { height: 32px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; }
+.acct-hist td { height: 32px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acct-hist tr:last-child td { border-bottom: 0; }
 .acct-hist .is-num { text-align: right; font-variant-numeric: tabular-nums; }
-.acct-hist td { overflow: hidden; text-overflow: ellipsis; }
 .acct-hist-bar { position: relative; display: block; min-width: 96px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .acct-hist-bar > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--sk-ac); }
 
