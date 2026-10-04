@@ -40,6 +40,7 @@ CHECKPOINTING = DOCS / "checkpointing.md"
 DESIGN = DOCS / "design" / "dispatch-and-integration.md"
 UI_README = DOCS / "web-ui" / "README.md"
 REDESIGN = DOCS / "web-ui" / "redesign-v2.md"
+UI_AUDIT = DOCS / "web-ui" / "ui-audit-and-build-prompt.md"
 DISPATCH = REPO / "apps" / "scheduler" / "scheduler" / "dispatch.py"
 
 TOUCHED = (BUILD_PROMPT, BACKENDS, TENANCY, CHECKPOINTING, DESIGN, UI_README, REDESIGN)
@@ -378,3 +379,38 @@ def test_every_cited_line_exists(doc: Path):
         assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
         lines = target.read_text(encoding="utf-8").count("\n") + 1
         assert int(line) <= lines, f"{doc.name} cites {path}:{line}, past its end ({lines})"
+
+
+# --------------------------------------------------------------------------
+# #72: spend is recorded on every exit, and `coverage` is the route's shape
+# --------------------------------------------------------------------------
+
+_CLEAN_EXIT_ONLY = ("clean-exit path only", "`lifecycle.py:694`")
+
+
+@pytest.mark.parametrize("doc", (REDESIGN, UI_AUDIT), ids=lambda p: p.name)
+def test_no_web_ui_doc_says_spend_is_recorded_on_the_clean_exit_path_only(doc: Path):
+    """The worker records spend in `_upload_outputs` ("SPEND FIRST") on every
+    exit that writes a terminal or parked state, and again in `_cleanup`. A doc
+    still saying a park or a crash records nothing sends the History screen to
+    explain a gap that is no longer there. The old claim may survive only as
+    the history inside a correction note, which says so on the same line."""
+    stale = [
+        f"{doc.name}:{n}: {line.strip()}"
+        for n, line in enumerate(_text(doc).splitlines(), start=1)
+        if any(claim in line for claim in _CLEAN_EXIT_ONLY) and "Corrected for #72" not in line
+    ]
+    assert not stale, "still says spend is recorded on the clean exit only:\n" + "\n".join(stale)
+
+
+def test_ui_audit_attempts_coverage_shape_matches_the_route():
+    """ui-audit §S3's `GET /v1/attempts` fence is the shape a History screen
+    is built against; its `coverage` keys are read here from the route itself,
+    so a counter added, renamed or dropped there fails until the spec follows."""
+    from swarm_api.routes.attempts import spend_coverage
+
+    fence = _section(_text(UI_AUDIT), "### S3 ").split("```")[1]
+    block = re.search(r'"coverage":\s*\{(.*?)\}', fence, flags=re.S)
+    assert block, "ui-audit §S3's GET /v1/attempts fence has no coverage block"
+    documented = set(re.findall(r'"(\w+)"\s*:', block.group(1)))
+    assert documented == set(spend_coverage([], {}))

@@ -69,9 +69,13 @@ usage; the rest predate the capture, so any total would understate.`
 
 **Consequence for the build.** Visualisation #16 (cost and tokens) is no longer
 blocked. It moves into the first buildable batch. The coverage caveats in
-`redesign-v2.md` §Panel 7 all still hold and are restated in §B6.4 — in
-particular that `record_spend` runs on the clean-exit path only, so a parked or
-crashed attempt records nothing, and those are the expensive ones.
+`redesign-v2.md` §Panel 7 were corrected for #72 (2026-10-04) and are restated
+in §B6.4's "Spend coverage" note. The worker now records spend on every
+terminal or parked exit (`lifecycle.py` `_upload_outputs`, backstopped by
+`_cleanup`), so a park or a crash is no longer silent by construction. The gap
+that remains is a CLI runner killed on SIGTERM, which writes no usage for the
+worker to record. `GET /v1/attempts` counts it in `coverage.not_recorded`
+(§B9.S3), and that is the N in "not recorded for N of M attempts".
 
 ### A0.2 The log and checkpoint routes LANDED, and no screen calls them.
 

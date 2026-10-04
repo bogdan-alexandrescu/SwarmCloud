@@ -691,13 +691,21 @@ data supports it directly.
 
 Three coverage gaps the panel must **state**, not smooth over:
 
-- **`record_spend` is called from the clean-exit path only.** It has exactly one
-  caller, `lifecycle.py:694`, and the comment fourteen lines above it reads: "The
-  ONLY call that passes `publish=True`. The agent exited on its own here; the other
-  five call sites are parks and crashes." A quota park, a cancel, a SIGTERM, a crash
-  and a generation fence all record **no spend** — and those are precisely the
-  expensive attempts. A run parked at hour two burned two hours of tokens and reports
-  nothing.
+- **Spend is recorded on every exit, but only what the runner reported.**
+  *Corrected for #72 (2026-10-04).* This bullet first said `record_spend` ran on the clean-exit path only, from `lifecycle.py:694`, so that a quota park, a cancel, a SIGTERM, a crash and a generation fence all recorded no spend.
+  The worker has since changed, and that is no longer true. `lifecycle.py`
+  `_upload_outputs` records spend "SPEND FIRST" on every exit that writes a
+  terminal or parked state: the clean finish, the three parks, the
+  cancellation, the SIGTERM and the crash handler. `_cleanup` records it again
+  for the two exits that cannot reach `_upload_outputs`: a crash while the
+  runner is still alive, and a mid-run fence. What is still a gap is that the
+  worker can record only what the runner wrote. A CLI runner killed on SIGTERM
+  writes no usage (`agent_worker/runners/mock.py`), and that run is the
+  expensive one. The panel must still say *"not recorded for N of M
+  attempts"*, and N is `GET /v1/attempts` `coverage.not_recorded`. N is an
+  **upper bound** on the runs that spent and recorded nothing: a fenced attempt,
+  or one parked before its runner made a call, ended on a reporting profile
+  with no usage because it spent nothing.
 - **Only `claude-code` and `codex` emit a usage block at all.** `mock`, `generic` and
   `browser` report nothing. `types.ts:592-593` already states the rule: "NOTHING IS
   NOT ZERO. Render an em dash, never $0.00."
@@ -810,7 +818,7 @@ drops it, and the fix is five lines.
 | 13 | **Task state distribution** | `/v1/stats` → `tasks_by_state`, `platform_tasks_by_state` | Horizontal bars, tenant and platform in **separate blocks** | That the two scopes are comparable in one row (`PlatformCounts.tsx:18-22`). That `QUEUED`/`PARKED`/`READY` are demand — only `LEASED`/`DISPATCHED`/`STARTING`/`RUNNING` create infrastructure demand (CONTRACT invariant 1). |
 | 14 | **Outcome mix over history** | `/v1/tasks` → `state` | Stacked bar by day | That failed and cancelled are the same thing. They currently render identically in greyscale (§1.5) and must not. |
 | 15 | **Duration across retries** | `/v1/tasks/{id}/attempts` → per-attempt `started_at`, `completed_at` | Lollipop, one per attempt, with the summed total stated separately | That `task.started_at` is the task's start — it is overwritten per attempt (`control.py:410-413`). Only the sum of per-attempt intervals is agent work. |
-| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the task and to the workflow | That `null` is `$0.00`. That a parked or crashed attempt was free — `record_spend` runs on the clean-exit path only, so the most expensive attempts report nothing and the chart must say *"not recorded for N of M attempts"*. That a `mock` or `generic` runner spent nothing — it reports nothing. |
+| 16 | **Cost and tokens, rolled up** **[F0]** | `/v1/tasks/{id}/attempts` → `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_usd` | Stacked bar per attempt (input / output / cache-read / cache-create), summed to the task and to the workflow | That `null` is `$0.00`. That a run with no cost was free — spend is recorded on every terminal or parked exit (`_upload_outputs`, `_cleanup`; corrected for #72), but a CLI runner killed on SIGTERM reports nothing, so the chart must say *"not recorded for N of M attempts"*, with N from `GET /v1/attempts` `coverage.not_recorded` (an upper bound). That a `mock` or `generic` runner spent nothing — it reports nothing. |
 
 Two rows of that table (#4, #6) depend on the event page not truncating, and one
 (#3) is actively dangerous without seam S1: a two-hour run emits roughly 6 lifecycle
