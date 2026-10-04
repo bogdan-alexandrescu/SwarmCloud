@@ -898,10 +898,17 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const kinds = tokenKinds(task, attempts)
   const kindTotal = tokenTotal(kinds)
   const withTokens = attempts.filter((a) => reportedTokens(a) || a.attempt_id === kinds.fromSummary).length
-  const tokenLine =
-    kindTotal === null
-      ? null
-      : `${tokenCount(kindTotal)} tokens${withTokens === attempts.length ? '' : ` · ${withTokens} of ${attempts.length} reported`}`
+  // THE HEADLINE IS ALL FOUR KINDS, THE CAPTION EACH ONE (#322, owner
+  // decision 2026-09-29): `1.41M tokens`, then `in 52 · out 9,955 · cache
+  // read 1.34M · write 59.7k` under it. Coverage only when it is not whole.
+  const tokenLine: ReactNode =
+    kindTotal === null ? null : (
+      <>
+        {tokenCount(kindTotal)} tokens
+        {withTokens === attempts.length ? '' : ` · ${withTokens} of ${attempts.length} attempts reported`}
+        <span className="dt-sc-k">{tokenKindsNote(kinds)}</span>
+      </>
+    )
   if (!reports) {
     // NO MODEL CALL IS A FACT, NOT A GAP (owner decision, 2026-09-29).
     cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost' })
@@ -920,10 +927,10 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       label: 'Cost',
       value: usd(cost),
       sub: (
-        <span title={tokenLine === null ? undefined : tokenKindsNote(kinds)}>
+        <>
+          {spent.length !== attempts.length && `cost ${spent.length} of ${attempts.length} reported · `}
           {tokenLine ?? 'tokens not reported'}
-          {spent.length !== attempts.length && ` · cost ${spent.length} of ${attempts.length} reported`}
-        </span>
+        </>
       ),
       // A gap that is only the open attempt is pending; an ended attempt with no figure is a hole.
       tone:
