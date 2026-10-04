@@ -162,6 +162,14 @@ GET must answer 404 (#450). On 2026-10-03 task_8fce64316ad14fc981fb was held
 for five hours because its failed execution counted only as "not active". The
 lease then waited on a GET that never answered.
 
+**A worker that never started is evidence too, after a wait.** If the lease
+never heartbeated and the attempt never recorded a start, the reconciler repairs
+it once the lease is `NEVER_STARTED_RELEASE_SECONDS` (20 minutes) old. It does
+this even when the execution cannot be read or will not cancel. The fence is
+written in the same transaction as the release, so a container that starts late
+exits without running anything. Until then, the hold's `why` gives the time
+left. A fenced generation whose lease is still held is named as such (#560).
+
 Executions under a `swarm-` job that carry no task id and no attempt id (CI's
 `gcloud run jobs execute` runs) are not the platform's. They are logged once
 each (`carries no attempt id`), they are excluded, and they never make Cloud Run

@@ -9,7 +9,9 @@ Two responsibilities, kept apart on purpose:
   service nothing, exactly as invariant 1 requires.
 
 * **Writing** exposes precisely four mutations: invalidate a generation, release
-  a lease, repair a task's state, record an event. Every one of them runs in a
+  a lease, repair a task's state, record an event -- and `fence_release_repair`,
+  which commits the first three in ONE transaction, so a repair never leaves a
+  fenced generation behind a held lease (#560). Every one of them runs in a
   transaction and re-reads what it is about to change, so a reconciler racing a
   live worker loses rather than corrupts.
 
@@ -20,6 +22,7 @@ allowed to touch `pool.active`.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Callable, Iterable
 
@@ -101,6 +104,33 @@ def _withhold(snapshot: ControlSnapshot, task_ids: set[str]) -> None:
             continue
         snapshot.tasks.pop(task_id, None)
         snapshot.unreadable_tasks.add(task_id)
+
+
+@dataclass(frozen=True)
+class RepairPlan:
+    """What `fence_release_repair` moves the task to, by `repair_task_state`'s rules."""
+
+    to_state: TaskState
+    expected_lease_id: str | None
+    error: str | None = None
+    next_eligible_at: datetime | None = None
+    failed_cause: EndCause = EndCause.LOST_WORKER
+    #: The ended-at-startup refund (#67), judged against this transaction's
+    #: own fence. None: no refund.
+    startup_refund_limit: int | None = None
+
+
+@dataclass(frozen=True)
+class OneRepair:
+    """What one `fence_release_repair` transaction committed."""
+
+    #: The generation this transaction fenced the task to; None if it did not.
+    new_generation: int | None
+    released: bool
+    repaired_to: TaskState | None
+    #: The release (and with it the repair) was refused because the task
+    #: still holds the lease at its generation.
+    release_refused: bool = False
 
 
 class ControlStore:
@@ -378,31 +408,15 @@ class ControlStore:
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
-            try:
-                state = TaskState(data.get("state"))
-            except (ValueError, TypeError):
+            new_generation = self._fence_decision(
+                data,
+                task_id,
+                expected_generation,
+                only_from=only_from,
+                unless_holding_lease=unless_holding_lease,
+            )
+            if new_generation is None:
                 return None
-            if state in TERMINAL_STATES:
-                return None          # nothing left to fence
-            if only_from is not None and state not in only_from:
-                return None          # moved on since the snapshot
-            if (
-                unless_holding_lease is not None
-                and state in CONCURRENCY_STATES
-                and (data.get("current_lease_id") or None) == unless_holding_lease
-            ):
-                self._log.warning(
-                    "refusing to fence a task that still holds the lease the finding "
-                    "called orphaned",
-                    task_id=task_id,
-                    lease_id=unless_holding_lease,
-                    state=state.value,
-                )
-                return None
-            current = int(data.get("current_generation", 0))
-            if current != expected_generation:
-                return None
-            new_generation = current + 1
             txn.update(
                 task_ref,
                 {
@@ -413,6 +427,47 @@ class ControlStore:
             return new_generation
 
         return self._txn.run(_apply)
+
+    def _fence_decision(
+        self,
+        data: dict[str, Any],
+        task_id: str,
+        expected_generation: int,
+        *,
+        only_from: tuple[TaskState, ...] | None,
+        unless_holding_lease: str | None,
+    ) -> int | None:
+        """The generation a fence would write onto this task document, or None.
+
+        The whole of `invalidate_generation`'s judgement, on a document read in
+        the caller's transaction, so `fence_release_repair` applies exactly
+        the same rule without a second copy of it.
+        """
+        try:
+            state = TaskState(data.get("state"))
+        except (ValueError, TypeError):
+            return None
+        if state in TERMINAL_STATES:
+            return None          # nothing left to fence
+        if only_from is not None and state not in only_from:
+            return None          # moved on since the snapshot
+        if (
+            unless_holding_lease is not None
+            and state in CONCURRENCY_STATES
+            and (data.get("current_lease_id") or None) == unless_holding_lease
+        ):
+            self._log.warning(
+                "refusing to fence a task that still holds the lease the finding "
+                "called orphaned",
+                task_id=task_id,
+                lease_id=unless_holding_lease,
+                state=state.value,
+            )
+            return None
+        current = int(data.get("current_generation", 0))
+        if current != expected_generation:
+            return None
+        return current + 1
 
     def release_lease(
         self,
@@ -461,7 +516,13 @@ class ControlStore:
         task_snap = _snapshot(txn.get(self._db.collection("tasks").document(task_id)))
         if not task_snap.exists:
             return False
-        task = task_snap.to_dict() or {}
+        return self._holds(task_snap.to_dict() or {}, lease, lease_id, task_id)
+
+    def _holds(
+        self, task: dict[str, Any], lease: dict[str, Any], lease_id: str, task_id: str
+    ) -> bool:
+        """The task document holds this lease: a concurrency state, naming it,
+        at its generation. See `release_lease` for why each part is needed."""
         try:
             state = TaskState(task.get("state"))
         except (ValueError, TypeError):
@@ -546,111 +607,278 @@ class ControlStore:
             if not snap.exists:
                 return None
             data = snap.to_dict() or {}
-            try:
-                current = TaskState(data.get("state"))
-            except (ValueError, TypeError):
+            decided = self._repair_decision(
+                data,
+                task_id,
+                to_state=to_state,
+                expected_lease_id=expected_lease_id,
+                error=error,
+                next_eligible_at=next_eligible_at,
+                only_from=only_from,
+                failed_cause=failed_cause,
+                startup_refund_limit=startup_refund_limit,
+                fenced_generation=fenced_generation,
+            )
+            if decided is None:
                 return None
-            if current in TERMINAL_STATES:
-                return None
-            if only_from is not None and current not in only_from:
-                self._log.info(
-                    "refusing to repair a task that has left the states the finding was about",
-                    task_id=task_id,
-                    state=current.value,
-                    expected=[s.value for s in only_from],
-                )
-                return None
-            held = data.get("current_lease_id") or None
-            if held is not None and held != expected_lease_id:
-                self._log.info(
-                    "refusing to repair a task that has moved to another lease",
-                    task_id=task_id,
-                    holds_lease=held,
-                    finding_lease=expected_lease_id,
-                    state=current.value,
-                )
-                return None
-            target = to_state
-            if target in (TaskState.READY, TaskState.FAILED) and data.get("cancel_requested"):
-                # Re-read here, not taken from the snapshot: the API sets the
-                # flag with a plain update, so a cancel pressed after this pass
-                # read the task still lands on the right terminal state. READY
-                # would be a second hop -- the scheduler's drain cancels a READY
-                # task with the flag set -- and a hop that depends on another
-                # service being healthy is how a requested cancel sat ignored for
-                # hours on 2026-09-24. FAILED, from a worker that could not
-                # start, would record a task somebody stopped as having failed.
-                target = TaskState.CANCELLED
-            counting: dict[str, Any] = {}
-            message = error
-            if target is TaskState.READY and startup_refund_limit is not None:
-                # The ended-at-startup requeue: refund first, then decide
-                # whether the attempts are spent, from the same re-read (#67).
-                metadata = data.get("metadata")
-                fenced_here = fenced_generation is not None and int(
-                    data.get("current_generation", 0)
-                ) == int(fenced_generation)
-                counted = count_startup_end(
-                    int(data.get("attempt_count", 0)),
-                    int(data.get("max_attempts", 3)),
-                    startup_refunds_used(metadata),
-                    max(0, int(startup_refund_limit)) if fenced_here else 0,
-                )
-                if counted.refunded:
-                    counting["attempt_count"] = counted.attempt_count
-                    counting["metadata"] = {
-                        **(metadata if isinstance(metadata, dict) else {}),
-                        STARTUP_REFUNDS_KEY: counted.refunds_used,
-                    }
-                if counted.exhausted:
-                    target = TaskState.FAILED
-                message = f"{error}; {counted.tail}" if error else counted.tail
-            elif target is TaskState.READY:
-                # ONLY a READY target is ever downgraded. A CANCELLED target is
-                # the user's decision and survives exhausted attempts: recording
-                # a task someone stopped as FAILED would misreport why it ended,
-                # and a workflow's derived state settles on its WORST terminal
-                # step (swarm_api.rollup), so the whole run would read FAILED.
-                #
-                # The shared predicate, not a second copy of the comparison.
-                # This path had the rule and the scheduler's dispatch-failure
-                # path did not, which is how a task reached 83 attempts against
-                # a cap of 3 on 2026-09-23.
-                if retries_exhausted(
-                    int(data.get("attempt_count", 0)),
-                    int(data.get("max_attempts", 3)),
-                ):
-                    target = TaskState.FAILED
-            if current is target:
-                return None
-            if not can_transition(current, target):
-                self._log.warning(
-                    "refusing an illegal repair transition",
-                    task_id=task_id,
-                    frm=current.value,
-                    to=target.value,
-                )
-                return None
-            payload: dict[str, Any] = {
-                "state": target.value,
-                "updated_at": utcnow(),
-                "current_lease_id": None,
-                **counting,
-            }
-            if message:
-                payload["last_error"] = message[:2000]
-            if next_eligible_at is not None and target is not TaskState.CANCELLED:
-                # A retry time means nothing on a task that will never run again.
-                payload["next_eligible_at"] = next_eligible_at
-            if target in TERMINAL_STATES:
-                payload["completed_at"] = utcnow()
-                payload["end_cause"] = (
-                    cancel_end_cause(data.get("metadata"))
-                    if target is TaskState.CANCELLED
-                    else failed_cause
-                ).value
+            target, payload = decided
             txn.update(task_ref, payload)
             return target
+
+        return self._txn.run(_apply)
+
+    def _repair_decision(
+        self,
+        data: dict[str, Any],
+        task_id: str,
+        *,
+        to_state: TaskState,
+        expected_lease_id: str | None,
+        error: str | None,
+        next_eligible_at: datetime | None,
+        only_from: tuple[TaskState, ...] | None,
+        failed_cause: EndCause,
+        startup_refund_limit: int | None,
+        fenced_generation: int | None,
+    ) -> tuple[TaskState, dict[str, Any]] | None:
+        """`repair_task_state`'s judgement on a document read in the caller's
+        transaction: the state it moves to and the payload, or None to refuse.
+        Shared with `fence_release_repair`, so there is one copy of the rule."""
+        try:
+            current = TaskState(data.get("state"))
+        except (ValueError, TypeError):
+            return None
+        if current in TERMINAL_STATES:
+            return None
+        if only_from is not None and current not in only_from:
+            self._log.info(
+                "refusing to repair a task that has left the states the finding was about",
+                task_id=task_id,
+                state=current.value,
+                expected=[s.value for s in only_from],
+            )
+            return None
+        held = data.get("current_lease_id") or None
+        if held is not None and held != expected_lease_id:
+            self._log.info(
+                "refusing to repair a task that has moved to another lease",
+                task_id=task_id,
+                holds_lease=held,
+                finding_lease=expected_lease_id,
+                state=current.value,
+            )
+            return None
+        target = to_state
+        if target in (TaskState.READY, TaskState.FAILED) and data.get("cancel_requested"):
+            # Re-read here, not taken from the snapshot: the API sets the
+            # flag with a plain update, so a cancel pressed after this pass
+            # read the task still lands on the right terminal state. READY
+            # would be a second hop -- the scheduler's drain cancels a READY
+            # task with the flag set -- and a hop that depends on another
+            # service being healthy is how a requested cancel sat ignored for
+            # hours on 2026-09-24. FAILED, from a worker that could not
+            # start, would record a task somebody stopped as having failed.
+            target = TaskState.CANCELLED
+        counting: dict[str, Any] = {}
+        message = error
+        if target is TaskState.READY and startup_refund_limit is not None:
+            # The ended-at-startup requeue: refund first, then decide
+            # whether the attempts are spent, from the same re-read (#67).
+            metadata = data.get("metadata")
+            fenced_here = fenced_generation is not None and int(
+                data.get("current_generation", 0)
+            ) == int(fenced_generation)
+            counted = count_startup_end(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+                startup_refunds_used(metadata),
+                max(0, int(startup_refund_limit)) if fenced_here else 0,
+            )
+            if counted.refunded:
+                counting["attempt_count"] = counted.attempt_count
+                counting["metadata"] = {
+                    **(metadata if isinstance(metadata, dict) else {}),
+                    STARTUP_REFUNDS_KEY: counted.refunds_used,
+                }
+            if counted.exhausted:
+                target = TaskState.FAILED
+            message = f"{error}; {counted.tail}" if error else counted.tail
+        elif target is TaskState.READY:
+            # ONLY a READY target is ever downgraded. A CANCELLED target is
+            # the user's decision and survives exhausted attempts: recording
+            # a task someone stopped as FAILED would misreport why it ended,
+            # and a workflow's derived state settles on its WORST terminal
+            # step (swarm_api.rollup), so the whole run would read FAILED.
+            #
+            # The shared predicate, not a second copy of the comparison.
+            # This path had the rule and the scheduler's dispatch-failure
+            # path did not, which is how a task reached 83 attempts against
+            # a cap of 3 on 2026-09-23.
+            if retries_exhausted(
+                int(data.get("attempt_count", 0)),
+                int(data.get("max_attempts", 3)),
+            ):
+                target = TaskState.FAILED
+        if current is target:
+            return None
+        if not can_transition(current, target):
+            self._log.warning(
+                "refusing an illegal repair transition",
+                task_id=task_id,
+                frm=current.value,
+                to=target.value,
+            )
+            return None
+        payload: dict[str, Any] = {
+            "state": target.value,
+            "updated_at": utcnow(),
+            "current_lease_id": None,
+            **counting,
+        }
+        if message:
+            payload["last_error"] = message[:2000]
+        if next_eligible_at is not None and target is not TaskState.CANCELLED:
+            # A retry time means nothing on a task that will never run again.
+            payload["next_eligible_at"] = next_eligible_at
+        if target in TERMINAL_STATES:
+            payload["completed_at"] = utcnow()
+            payload["end_cause"] = (
+                cancel_end_cause(data.get("metadata"))
+                if target is TaskState.CANCELLED
+                else failed_cause
+            ).value
+        return target, payload
+
+    def fence_release_repair(
+        self,
+        task_id: str | None,
+        *,
+        expected_generation: int | None,
+        lease_id: str | None,
+        release_reason: str,
+        repair: RepairPlan | None = None,
+        only_from: tuple[TaskState, ...] | None = None,
+        unless_holding_lease: str | None = None,
+        refuse_while_task_holds_it: bool = False,
+    ) -> OneRepair:
+        """Fence, release and repair in ONE transaction (#560).
+
+        These were three transactions, and the reconciler committed the first
+        before it knew whether it could do the other two. When the kill between
+        them was not confirmed it returned with the fence written and the lease
+        held, and from then on every rule saw a superseded lease whose
+        execution belonged to some other rule: four leases held for ten hours
+        on 2026-10-04, with one cancel pressed on them and never honoured. Now
+        the caller does whatever must precede the release -- the kill -- first,
+        and only then are all three written together, or none of them.
+
+        Each step keeps exactly the rule it had on its own -- these call the
+        same decisions `invalidate_generation`, `release_lease` and
+        `repair_task_state` make -- and each is still optional and refusable on
+        its own: a fence somebody else already wrote is not written again, and
+        the release and the repair still go ahead behind it. What is new:
+
+        * every read precedes every write, as Firestore requires, so the
+          release and the repair judge the task as the fence leaves it -- what
+          they saw when the fence had committed in a transaction before theirs;
+        * a release refused because the task still holds the lease (at its
+          generation, in a concurrency state) also refuses the repair: moving a
+          task off a lease that stays held is how capacity was leaked. With
+          `refuse_while_task_holds_it` that is how a repair that has no proof
+          its execution stopped is made safe -- it releases only once THIS
+          transaction's fence (or an earlier one) has superseded the lease.
+
+        The ended-at-startup refund (#67) is decided against this
+        transaction's own fence, as it was against the fence the pass had just
+        written.
+        """
+        task_ref = self._db.collection("tasks").document(task_id) if task_id else None
+        lease_ref = self._db.collection("leases").document(lease_id) if lease_id else None
+
+        def _apply(txn: Any) -> OneRepair:
+            # ---- every read, before any write -------------------------
+            task: dict[str, Any] | None = None
+            if task_ref is not None:
+                snap = _snapshot(txn.get(task_ref))
+                task = (snap.to_dict() or {}) if snap.exists else None
+            lease: dict[str, Any] | None = None
+            if lease_ref is not None:
+                snap = _snapshot(txn.get(lease_ref))
+                lease = (snap.to_dict() or {}) if snap.exists else None
+            # The task the LEASE names, which the release guard judges. The
+            # finding's own task in every case this was written for; read
+            # separately should the two ever differ.
+            lease_task: dict[str, Any] | None = None
+            lease_task_id = (lease or {}).get("task_id") or None
+            if refuse_while_task_holds_it and lease is not None and lease_task_id:
+                if lease_task_id != task_id:
+                    snap = _snapshot(
+                        txn.get(self._db.collection("tasks").document(lease_task_id))
+                    )
+                    lease_task = (snap.to_dict() or {}) if snap.exists else None
+
+            # ---- decisions ---------------------------------------------
+            new_generation: int | None = None
+            if task is not None and task_id and expected_generation is not None:
+                new_generation = self._fence_decision(
+                    task,
+                    task_id,
+                    expected_generation,
+                    only_from=only_from,
+                    unless_holding_lease=unless_holding_lease,
+                )
+            after = (
+                {**task, "current_generation": new_generation}
+                if task is not None and new_generation is not None
+                else task
+            )
+            refused = False
+            if refuse_while_task_holds_it and lease is not None and lease_id and lease_task_id:
+                judged = after if lease_task_id == task_id else lease_task
+                refused = judged is not None and self._holds(
+                    judged, lease, lease_id, lease_task_id
+                )
+            decided: tuple[TaskState, dict[str, Any]] | None = None
+            if repair is not None and after is not None and task_id and not refused:
+                decided = self._repair_decision(
+                    after,
+                    task_id,
+                    to_state=repair.to_state,
+                    expected_lease_id=repair.expected_lease_id,
+                    error=repair.error,
+                    next_eligible_at=repair.next_eligible_at,
+                    only_from=only_from,
+                    failed_cause=repair.failed_cause,
+                    startup_refund_limit=repair.startup_refund_limit,
+                    fenced_generation=(
+                        new_generation if repair.startup_refund_limit is not None else None
+                    ),
+                )
+
+            # ---- writes --------------------------------------------------
+            # The frozen release reads the lease and its pools before it
+            # writes anything, so it goes first: nothing of ours has been
+            # written yet when it reads.
+            released = False
+            if lease_id and lease is not None and not refused:
+                released = bool(
+                    release_lease_in_transaction(
+                        txn, db=self._db, lease_id=lease_id, reason=release_reason
+                    )
+                )
+            update: dict[str, Any] = {}
+            if new_generation is not None:
+                update.update(current_generation=new_generation, updated_at=utcnow())
+            if decided is not None:
+                update.update(decided[1])
+            if update and task_ref is not None:
+                txn.update(task_ref, update)
+            return OneRepair(
+                new_generation=new_generation,
+                released=released,
+                repaired_to=decided[0] if decided is not None else None,
+                release_refused=refused,
+            )
 
         return self._txn.run(_apply)
 

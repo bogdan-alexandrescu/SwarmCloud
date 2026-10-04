@@ -334,7 +334,7 @@ def test_an_execution_that_exited_69_at_startup_requeues_its_task_in_the_pass_th
 
 
 def test_the_generation_is_fenced_before_the_lease_is_released_and_the_task_requeued(db):
-    """Invariant 5, then 2: the same order every other repair keeps."""
+    """Invariants 5 and 2, committed together, as every other repair does."""
     seed(db)
 
     reconcile(db, execution=cloud_run_execution())
@@ -342,7 +342,10 @@ def test_the_generation_is_fenced_before_the_lease_is_released_and_the_task_requ
     fenced = _write_index(db, f"tasks/{TASK}", "current_generation")
     released = _write_index(db, f"leases/{LEASE}", "released_at")
     requeued = _write_index(db, f"tasks/{TASK}", "state")
-    assert fenced < released < requeued, (fenced, released, requeued)
+    # One transaction since #560: the frozen release writes first (it must
+    # read the pools before anything is written), and the fence and the
+    # new state are the one task write that commits with it.
+    assert released < fenced == requeued, (fenced, released, requeued)
     assert db.event_types(TASK) == [
         EventType.GENERATION_FENCED.value,
         EventType.LEASE_RELEASED.value,
