@@ -70,8 +70,16 @@ usage; the rest predate the capture, so any total would understate.`
 **Consequence for the build.** Visualisation #16 (cost and tokens) is no longer
 blocked. It moves into the first buildable batch. The coverage caveats in
 `redesign-v2.md` §Panel 7 all still hold and are restated in §B6.4 — in
-particular that `record_spend` runs on the clean-exit path only, so a parked or
-crashed attempt records nothing, and those are the expensive ones.
+particular that a run whose runner reported no usage records nothing, and those
+are the expensive ones. *(Corrected for #72: this paragraph first said spend was
+recorded on the clean-exit path only, so a parked or crashed attempt recorded
+nothing. No longer true of the worker.)* `lifecycle.py` `_upload_outputs`
+records spend on every exit that writes a terminal or parked state, and
+`_cleanup` records it again for a crash with a live runner and for a mid-run
+fence. The worker can only record what the runner reported: a CLI runner killed
+on SIGTERM writes no usage (`agent_worker/runners/mock.py`), and a hard-killed
+worker (OOM, SIGKILL, node loss) records nothing at all. `GET /v1/attempts`
+`coverage.not_recorded` is the N in "not recorded for N of M attempts".
 
 ### A0.2 The log and checkpoint routes LANDED, and no screen calls them.
 

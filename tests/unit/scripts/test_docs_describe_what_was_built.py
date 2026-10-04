@@ -40,6 +40,7 @@ CHECKPOINTING = DOCS / "checkpointing.md"
 DESIGN = DOCS / "design" / "dispatch-and-integration.md"
 UI_README = DOCS / "web-ui" / "README.md"
 REDESIGN = DOCS / "web-ui" / "redesign-v2.md"
+UI_AUDIT = DOCS / "web-ui" / "ui-audit-and-build-prompt.md"
 DISPATCH = REPO / "apps" / "scheduler" / "scheduler" / "dispatch.py"
 
 TOUCHED = (BUILD_PROMPT, BACKENDS, TENANCY, CHECKPOINTING, DESIGN, UI_README, REDESIGN)
@@ -362,6 +363,40 @@ def test_contract_amendments_section_records_gvisor_and_the_account_pool():
     # The account pool: one account held per attempt, no mid-run swap in the worker.
     assert "`apps/agent-worker/agent_worker/accountlease.py:3`" in body
     assert "lend" in body
+
+
+# --------------------------------------------------------------------------
+# #72: spend is recorded on every exit, and the coverage shape is the route's
+# --------------------------------------------------------------------------
+
+_STALE_SPEND_CLAIMS = ("clean-exit path only", "`lifecycle.py:694`")
+
+
+def test_no_web_ui_doc_says_spend_is_recorded_on_the_clean_exit_path_only():
+    """`_upload_outputs` records spend on every exit that writes a terminal or
+    parked state, and `_cleanup` records again for a crash with a live runner
+    and a mid-run fence. A paragraph may quote the old claim only beside the
+    note that corrects it."""
+    docs = sorted((DOCS / "web-ui").glob("*.md"))
+    assert docs, "no docs under docs/web-ui"
+    stale = []
+    for doc in docs:
+        for paragraph in re.split(r"\n[ \t]*\n", _text(doc)):
+            if "Corrected for #72" in paragraph:
+                continue
+            stale += [f"{doc.name}: {c}" for c in _STALE_SPEND_CLAIMS if c in paragraph]
+    assert not stale, f"the clean-exit-only spend claim is still stated: {stale}"
+
+
+def test_ui_audit_attempts_coverage_shape_matches_the_route():
+    from swarm_api.routes.attempts import spend_coverage
+
+    fences = re.findall(r"^```[^\n]*\n(.*?)^```", _text(UI_AUDIT), flags=re.M | re.S)
+    fence = next(f for f in fences if "GET /v1/attempts?" in f)
+    block = re.search(r'"coverage":\s*\{(.*?)\}', fence, flags=re.S)
+    assert block, "the GET /v1/attempts shape carries no coverage block"
+    keys = set(re.findall(r'"(\w+)":', block.group(1)))
+    assert keys == set(spend_coverage([], {}).keys())
 
 
 # --------------------------------------------------------------------------
