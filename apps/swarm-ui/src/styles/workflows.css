@@ -28,16 +28,27 @@
 @media (min-width: 900px) {
   .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
   .wfl .wfl-table { table-layout: fixed; width: 100%; }
-  .wfl .wfl-table th[data-col="state"] { width: 9%; }
-  .wfl .wfl-table th[data-col="workflow"] { width: 19%; }
-  .wfl .wfl-table th[data-col="shape"] { width: 13%; }
-  .wfl .wfl-table th[data-col="done"] { width: 9%; }
-  .wfl .wfl-table th[data-col="runners"] { width: 14%; }
-  .wfl .wfl-table th[data-col="cost"] { width: 9%; }
-  .wfl .wfl-table th[data-col="owner"] { width: 9%; }
+  /* THREE COLUMNS ARE SIZED TO WHAT THEY HOLD (browser QA D8, 2026-10-04):
+     at 9% each, "9/10" was clipped behind its bar, a state read "succeeded…"
+     and a duration "4h 12m so …". State fits "dead-lettered" beside its mark,
+     Steps done a 24px bar and "10/10", Duration "23h 59m so far"; the name
+     takes what is left and is cut with its title, as the shape is. */
+  .wfl .wfl-table th[data-col="state"] { width: 136px; }
+  .wfl .wfl-table th[data-col="shape"] { width: 10%; }
+  .wfl .wfl-table th[data-col="done"] { width: 92px; }
+  .wfl .wfl-table th[data-col="runners"] { width: 11%; }
+  .wfl .wfl-table th[data-col="cost"] { width: 8%; }
+  .wfl .wfl-table th[data-col="owner"] { width: 8%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
-  .wfl .wfl-table th[data-col="duration"] { width: 9%; }
+  .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
+  .wfl .wfl-table td[data-col="state"],
+  .wfl .wfl-table td[data-col="done"],
+  .wfl .wfl-table td[data-col="duration"] { text-overflow: clip; white-space: nowrap; }
+  .wfl .wfl-table td[data-col="shape"] { white-space: nowrap; }
+  .wfl .wfl-done { display: flex; }
+  .wfl .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
+  .wfl .wfl-done > small { flex: none; }
   /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
      column holds "$12.3456 3/5"; an unreported cost is a dash. */
   .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }

@@ -241,10 +241,13 @@ describe('the list table fits 1440 with no sideways scroll (#503)', () => {
       'Started',
       'Duration',
     ])
+    // Browser QA D8 (2026-10-04): State, Steps done and Duration are px wide,
+    // sized to what they hold; the name takes what the rest leave at 1056px.
     const widths = heads.map((h) => at(h, 'width') ?? '')
-    for (const w of widths) expect(w, `a head with no width: ${widths.join(', ')}`).toMatch(/%$/)
-    const total = widths.reduce((t, w) => t + Number.parseFloat(w), 0)
-    expect(total).toBeCloseTo(100, 5)
+    const named = heads.map((h, i) => [h.getAttribute('data-col'), widths[i]!] as const).filter(([c]) => c !== 'workflow')
+    for (const [c, w] of named) expect(w, `${c} has no width: ${widths.join(', ')}`).toMatch(/(%|px)$/)
+    const used = named.reduce((t, [, w]) => t + (w.endsWith('%') ? (Number.parseFloat(w) / 100) * 1056 : Number.parseFloat(w)), 0)
+    expect(1056 - used, 'the name column at 1056px').toBeGreaterThanOrEqual(200)
   })
 
   it('prints the owner as the name before the @, with the address whole in its title', async () => {
