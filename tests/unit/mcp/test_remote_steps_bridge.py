@@ -1242,7 +1242,7 @@ def test_a_tool_call_that_blocks_does_not_hold_the_next_one(monkeypatch):
     every call waits behind all of them."""
     released = threading.Event()
 
-    def _call(client, name, arguments):  # noqa: ARG001
+    def _call(client, name, arguments, **_served):  # noqa: ARG001
         if name == "hold":
             return "released" if released.wait(timeout=3) else "held the loop"
         released.set()

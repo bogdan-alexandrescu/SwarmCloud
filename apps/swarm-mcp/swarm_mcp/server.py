@@ -2036,7 +2036,12 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     return json.dumps(runs.summary(client, run), indent=2, default=str)
 
 
-def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bool = False) -> str:
+    """One tool call's answer. `keepalive` says the caller is sending the host
+    progress notifications for as long as this runs (`_Keepalive`), so a
+    progress hold may take its full `compact.MAX_WAIT_SECONDS`; without it the
+    hold stops at `compact.SILENT_MAX_WAIT_SECONDS`, inside the host's idle
+    timeout."""
     _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch" and args.get("tasks") is not None:
         beside = sorted(k for k in _SINGLE_TASK_ARGS if args.get(k) is not None)
@@ -2181,6 +2186,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                 wait_seconds=_int_arg(args, "wait_seconds", 0),
                 step_id=expected_step.strip() if isinstance(expected_step, str) else None,
                 parents=[p.strip() for p in parents] if parents else None,
+                max_wait=compact.MAX_WAIT_SECONDS if keepalive else compact.SILENT_MAX_WAIT_SECONDS,
             ),
             separators=(",", ":"),
             ensure_ascii=False,
@@ -2649,6 +2655,75 @@ _WRITE_LOCK = threading.Lock()
 MAX_CONCURRENT_CALLS = 32
 
 
+#: How often a running tool call tells the host it is alive. Claude Code
+#: (2.1.283) aborts a call that sent no response and no progress notification
+#: for its idle timeout -- `CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT`, else 1,800,000
+#: ms for a stdio server, 300,000 ms otherwise -- checked every 30 s, and its
+#: `onprogress` handler resets that clock. A row's parent hold is one silent
+#: call of up to thirty minutes, and lane U12's rows were cut there on
+#: 2026-10-04. Once a minute is a fifth of the shortest default and a few
+#: dozen bytes; it does not extend `MCP_TOOL_TIMEOUT`, the hard limit, which
+#: Claude Code says progress never does.
+KEEPALIVE_SECONDS = 60.0
+
+
+class _Keepalive:
+    """`notifications/progress` for one call, every `KEEPALIVE_SECONDS`, until
+    `stop()` -- which returns only once the last one is written, so none can
+    follow the call's answer.
+
+    Only for a call whose request carried `_meta.progressToken`: Claude Code
+    sets it (the request id) on every call it makes with an `onprogress`, and
+    drops a notification whose token it does not know, so the token is echoed
+    exactly as it came. `progress` rises by one each time, as the protocol
+    requires; there is no `total`, because a hold has no known length.
+    """
+
+    def __init__(self, token: Any) -> None:
+        self._token = token
+        self._done = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="swarm-mcp-keepalive", daemon=True)
+
+    def start(self) -> "_Keepalive":
+        self._thread.start()
+        return self
+
+    def _run(self) -> None:
+        sent = 0
+        began = time.monotonic()
+        while not self._done.wait(KEEPALIVE_SECONDS):
+            sent += 1
+            elapsed = int(time.monotonic() - began)
+            _notify("notifications/progress", {
+                "progressToken": self._token,
+                "progress": sent,
+                "message": f"still holding after {elapsed}s",
+            })
+
+    def stop(self) -> None:
+        self._done.set()
+        self._thread.join()
+
+
+def _progress_token(params: dict[str, Any]) -> Any:
+    meta = params.get("_meta")
+    if not isinstance(meta, dict):
+        return None
+    token = meta.get("progressToken")
+    # The protocol's token is a string or an integer; anything else is not
+    # one a host could match, and a bool is not an integer here.
+    if isinstance(token, bool) or not isinstance(token, (str, int)):
+        return None
+    return token
+
+
+def _notify(method: str, params: dict[str, Any]) -> None:
+    line = json.dumps({"jsonrpc": "2.0", "method": method, "params": params}) + "\n"
+    with _WRITE_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
 def _respond(message_id: Any, result: Any) -> None:
     line = json.dumps({"jsonrpc": "2.0", "id": message_id, "result": result}) + "\n"
     with _WRITE_LOCK:
@@ -2692,8 +2767,17 @@ def serve(stdin=None, stdout=None) -> int:
             return held["client"]
 
     def _answer(message_id: Any, params: dict[str, Any]) -> None:
+        token = _progress_token(params)
+        alive = _Keepalive(token).start() if token is not None else None
         try:
-            text = _call(_client(), params.get("name", ""), params.get("arguments") or {})
+            try:
+                text = _call(
+                    _client(), params.get("name", ""), params.get("arguments") or {},
+                    keepalive=alive is not None,
+                )
+            finally:
+                if alive is not None:
+                    alive.stop()
             _respond(message_id, {"content": [{"type": "text", "text": text}]})
         except SwarmError as exc:
             # isError, not a JSON-RPC error: the CALL failed, the protocol
