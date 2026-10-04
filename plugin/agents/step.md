@@ -1,6 +1,6 @@
 ---
 name: step
-description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes and making a single call while the step's parents run, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
+description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes, making a single call while the step's parents run and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -48,7 +48,9 @@ that have not finished, or says `none`.
   "<step_id>"`, `format: "progress"`, `wait_seconds: 1800` and `parents:
   [<each id from parent_task_ids>]`. This ONE call holds while the parents
   run — up to thirty minutes — and returns when they have finished or your
-  task stops waiting on them. A step that has not started does not poll.
+  task stops waiting on them. A step that has not started does not poll. If
+  this call returns an error -- Claude Code's own MCP timeout included --
+  section 2's error rule says what to do: repeat it, unchanged.
 
 Every id is copied from your prompt, character for character. Write ONE short
 line: the reply's `progress` line, as given — for example `PARKED · waiting
@@ -83,11 +85,13 @@ Call `swarm_follow` again with `task_ids: [<task_id>]`, `step_id:
 `since` string the previous call returned, copied unchanged. Every call uses
 the same `wait_seconds: 1800`, whatever the task's state: the bridge holds the
 call until the task's STATE changes — waiting, parked, running, finished — or
-it finishes, or thirty minutes pass. Progress inside one state does not end a
-call, so a long-running step is a few calls, not dozens.
+it finishes, or thirty minutes pass (twenty, when this session's Claude Code
+sent the bridge no progress token to keep the call alive with). Progress
+inside one state does not end a call, so a long-running step is a few calls,
+not dozens.
 If the previous reply carried `parents` and any parent in it is not yet
 `SUCCEEDED`, `FAILED`, `CANCELLED` or `DEAD_LETTERED` — its parents outran one
-thirty-minute hold — pass the same `parents` again, beside `since`.
+hold — pass the same `parents` again, beside `since`.
 
 After each reply: if `changed` is `true`, write ONE short line — the
 reply's `progress` line, and any `transitions` before it on the same line,
@@ -100,14 +104,22 @@ ends with the same `· console: <link>` as every line before it.
 
 **Turn budget.** This row has `maxTurns: 60`, and Claude Code's own cutoff at
 that cap answers nothing -- it is a hard stop, not a chance to report. So
-count your own `swarm_follow` calls in this section, and after the 56th one
-whose reply still has `stop: false`, stop calling it and go to section 2a
-instead of section 3, well inside the budget rather than at its edge. Your own
+count every `swarm_follow` call this row makes -- section 1's, this
+section's, and every repeat after an error -- and after the 56th one, unless
+its reply has `stop: true`, stop calling it and go to section 2a instead of
+section 3, well inside the budget rather than at its edge. Your own
 follow-call cap is 56 calls (owner decision, #230 comment, 2026-09-26),
-leaving 4 of the row's 60 turns for its first call and its report, not 20 --
-a real remote task can take hours, and this row must not report `running`
-long before a chance to finish. At up to 1800 s a call, 56 calls cover more
-than a day.
+leaving 4 of the row's 60 turns for its report, not 20 -- a real remote task
+can take hours, and a step can wait hours on its parents, and this row must
+not report `running` long before a chance to finish. The bridge keeps every
+held call alive with progress notifications, so a call holds up to 1800 s:
+56 calls cover 28 hours. When this session's Claude Code sends no progress
+token the bridge ends each hold at 1200 s instead, before Claude Code would
+cut a silent call, and you simply make the next call: 56 of them cover 18
+hours. Each state change your step makes once its parents are done -- ready,
+running, finished -- takes one call of those 56. A repeated hold is not a
+poll -- while nothing changes it is one call per hold, three an hour at most,
+each answered by the bridge, not by you.
 
 The bridge stops a row that can never finish: a task it cannot read (a 404 or
 403 at once, other failures after three calls in a row), or a task that is not
@@ -117,8 +129,15 @@ and null or empty for everything else. Answer the same way if
 `tasks[0].step_id` is present and is not your `step_id`, with `last_error`
 `task <task_id> is step <its step_id>, not <your step_id>`.
 
-If a call itself returns any other error, make the same call again with the
-same `since`. When the error says the `since` token fails its checksum, the
+If a call itself returns any other error -- in section 1 or here -- make the
+same call again: the same `since` (none, for section 1's call), the same
+`parents` when it passed them, every argument unchanged. That includes an MCP
+timeout from Claude Code itself, such as `MCP server timeout: swarm_follow
+call exceeded idle timeout while waiting for parent tasks` or `sent no
+response or progress for ...`: Claude Code gave up on the CALL, and the task
+runs on regardless, so an idle timeout is not the end of the row and not a
+reason to answer `UNKNOWN` -- it is one call error, counted below like any
+other. When the error says the `since` token fails its checksum, the
 token was changed on the way: copy `since` again from the previous reply,
 character for character, and make the call with that. After five errors in a
 row — or three replies in a row whose `tasks[0].read` is `failed` — stop and
