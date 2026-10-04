@@ -32,7 +32,7 @@ import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
-import type { LogStream, Task, TaskLogs, TaskTranscript } from '../types'
+import type { LogStream, Task, TaskLogs, TaskTranscript, TranscriptStep } from '../types'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { attempt, task as runTask } from './runfixture'
@@ -57,6 +57,7 @@ const { AgentSplit, HOLD_SCROLL_MS } = await import('../AgentSplit')
 const { AgentLogs, LogLastLine } = await import('../AgentLogs')
 const { resetListSnap } = await import('../listSnap')
 const { isErrorLine } = await import('../logLines')
+const { stepIsError } = await import('../logMarks')
 const { Markdown } = await import('../ArtifactViewer')
 const { CHECKPOINTS_POLL_MS, CheckpointsPane } = await import('../CheckpointsPane')
 
@@ -389,6 +390,30 @@ describe('JUMP: the error matcher', () => {
     })
     const title = button.getAttribute('title') ?? ''
     for (const word of ['is_error', 'error', 'exception', 'failed', 'Traceback', 'non-zero exit']) expect(title).toContain(word)
+  })
+})
+
+describe('JUMP: a final result marked is_error is a jump target', () => {
+  it('counts a result step with meta.is_error and neutral text, and lands on it', async () => {
+    const t = transcript('all done')
+    const resultStep = {
+      id: 's2', kind: 'result', role: null, text: 'stopped after the turn limit', tool: null, tool_result: null,
+      meta: { subtype: 'error_max_turns', is_error: true, num_turns: 40 }, raw: null, truncated_fields: [],
+    }
+    ;(t as unknown as { steps: unknown[] }).steps.push(resultStep)
+    expect(stepIsError(resultStep as unknown as TranscriptStep)).toBe(true)
+    expect(stepIsError({ ...resultStep, meta: { subtype: 'success', is_error: false } } as unknown as TranscriptStep)).toBe(false)
+    api.loadTranscript.mockResolvedValue(ok(t))
+    api.loadTaskLogs.mockResolvedValue(ok(logs([stream('stdout', 'starting\n')])))
+    render(<AgentLogs task={running({ runner_profile: 'claude-code' })} />)
+    const region = screen.getByRole('region', { name: 'Logs' })
+    const button = await waitFor(() => {
+      const b = within(region).getByRole('button', { name: /^Error/ })
+      expect((b as HTMLButtonElement).disabled).toBe(false)
+      return b
+    })
+    fireEvent.click(button)
+    await waitFor(() => expect(region.querySelector('[data-log-key="step:s2"]')?.className).toContain('is-current'))
   })
 })
 

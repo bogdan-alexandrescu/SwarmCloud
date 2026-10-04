@@ -38,9 +38,15 @@ export function stepText(step: TranscriptStep): string {
   return [step.text, step.tool?.name, step.tool?.input, step.tool_result?.content].filter((x) => typeof x === 'string').join('\n')
 }
 
-/** A step is an error when its tool result says so, or the console-side pattern matches its text. */
+/**
+ * A step is an error when its tool result says so, when it is the run's final
+ * `result` and that result is marked `is_error` (e.g. `error_max_turns`, which
+ * the transcript view draws as "the agent reported an error"), or when the
+ * console-side pattern matches its text.
+ */
 export function stepIsError(step: TranscriptStep, result?: TranscriptStep | null): boolean {
   if (step.tool_result?.is_error === true || result?.tool_result?.is_error === true) return true
+  if (step.kind === 'result' && step.meta?.is_error === true) return true
   return isErrorLine(stepText(step)) || (result !== undefined && result !== null && isErrorLine(stepText(result)))
 }
 

@@ -137,9 +137,11 @@ describe('the chooser draws the three picked cards', () => {
     expect(recent.querySelector('button[aria-label^="Help: "]'), 'the why is not behind a `?`').not.toBeNull()
     expect(container.querySelector(OLD_SK('recent-empty'))).toBeNull()
     await waitFor(() => expect(recent.querySelector('[aria-busy="true"]')).toBeNull())
-    // Each listed submission is a link to its page; an empty list says so.
+    // The fixture's caller has submissions: each is listed as a link to its
+    // page, and the empty line is not drawn beside them.
     const rows = [...recent.querySelectorAll('.sb-recent-i')]
-    if (rows.length === 0) expect(visible(recent.querySelector('.sb-empty'))).toMatch(/^(None of yours|Not read)/)
+    expect(rows.length, 'the fixture caller has recent submissions').toBeGreaterThan(0)
+    expect(recent.querySelector('.sb-empty')).toBeNull()
     for (const r of rows) expect(r.querySelector('a[href]')).not.toBeNull()
   })
 })
