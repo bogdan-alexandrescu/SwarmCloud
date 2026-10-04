@@ -422,18 +422,12 @@ function AgHead({
   }, [task])
   return (
     <header className="ag-head">
-      {task !== null && <AgParentLink task={task} />}
-      <div className="ag-head-row">
-        {task !== null ? (
-          <StateMark state={task.state} />
-        ) : (
-          <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
-        )}
-        {/* TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN THE TOOLTIP
-            (walkthrough C): a long step name ran off the column. */}
-        <h2 className="ag-head-title" title={name}>
-          {name}
-        </h2>
+      {/* THE ACTIONS HAVE A ROW OF THEIR OWN (lane U9 item 2, owner
+          2026-10-03): sharing the title's line, the ✕ was drawn over Stop on
+          a running agent. The parent link, when there is one, takes the
+          row's left; the actions are packed to its right and wrap. */}
+      <div className="ag-head-bar">
+        {task !== null && <AgParentLink task={task} />}
         <span className="ag-head-actions">
           <Button onClick={copy}>
             Copy link
@@ -452,6 +446,18 @@ function AgHead({
             Close
           </Button>
         </span>
+      </div>
+      <div className="ag-head-row">
+        {task !== null ? (
+          <StateMark state={task.state} />
+        ) : (
+          <span className="ag-head-state">{read === 'error' ? 'not read' : 'reading'}</span>
+        )}
+        {/* TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN THE TOOLTIP
+            (walkthrough C): a long step name ran off the column. */}
+        <h2 className="ag-head-title" title={name}>
+          {name}
+        </h2>
       </div>
       <p className="ag-head-id">
         <IdCopy value={taskId} />

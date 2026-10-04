@@ -4543,12 +4543,41 @@ export interface PlanStepDoc {
   prompt: string
   /** Earlier step ids this step builds on. Absent in a plan that runs as a chain; the digest covers it. */
   depends_on?: string[]
+  /**
+   * What a plan MAY say about a step beyond `issueruns.PlanStep` -- the files
+   * it touches, the tests it adds, how long it should take. Today's schema
+   * refuses extra keys, so no served plan has them; the run page draws each
+   * only when it is there (lane U9 item 5) and never invents one.
+   */
+  files?: string[]
+  tests?: string[]
+  estimate?: string
 }
 
 /** `issueruns.PlanSpec`. */
 export interface RunPlan {
   summary: string
   steps: PlanStepDoc[]
+  /** Drawn when a plan has them (see `PlanStepDoc.files`); absent from today's schema. */
+  overlaps?: string[]
+  risks?: string[]
+}
+
+/**
+ * `IssueRun.issue_read`: what the issue said when the run was created -- the
+ * preview's read (`forge.preview`), masked and with the body bounded to the
+ * preview's length, kept on the run at submission (lane U9 item 4).
+ */
+export interface IssueReadDoc {
+  title: string
+  labels: string[]
+  state: 'open' | 'closed'
+  comments: number
+  url: string
+  body: string
+  body_truncated: boolean
+  body_redacted: boolean
+  read_at: string | null
 }
 
 /** One transition, as `IssueRun.history` serves it. */
@@ -4589,6 +4618,10 @@ export interface IssueRun {
   rejection_reason: string | null
   error: string | null
   history: RunTransition[]
+  /** Null when the read failed (`issue_read_error`), absent or null on a run created before runs kept it. */
+  issue_read?: IssueReadDoc | null
+  /** The forge read that failed at submission: its code and the API's message. */
+  issue_read_error?: { code: string; message: string } | null
 }
 
 /** `GET /v1/runs`: newest first, as the server orders them. */
