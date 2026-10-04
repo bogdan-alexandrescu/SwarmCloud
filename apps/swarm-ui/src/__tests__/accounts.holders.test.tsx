@@ -218,9 +218,12 @@ describe('history', () => {
     expect(screen.getByText('3 other agents in this window')).toBeTruthy()
     expect(screen.queryByText('another tenant')).toBeNull()
     expect(screen.getByText('task not recorded')).toBeTruthy()
-    expect(screen.getByText(/for 30m · released/)).toBeTruthy()
+    // One table row per hold since browser QA D24: held for, then how it ended.
+    const first = document.querySelector('.acct-hist tbody tr')!
+    expect(first.textContent).toMatch(/30m/)
+    expect(first.textContent).toMatch(/released/)
     // Exactly the two own spans are listed; the others are a count, not rows.
-    expect(document.querySelectorAll('.acct-spans li').length).toBe(2)
+    expect(document.querySelectorAll('.acct-hist tbody tr').length).toBe(2)
 
     fireEvent.click(screen.getByRole('button', { name: 'Older' }))
     await screen.findByText('3 other agents in this window', undefined, WAIT)
@@ -246,7 +249,7 @@ describe('history', () => {
     fireEvent.click(await screen.findByRole('tab', { name: 'History' }, WAIT))
 
     expect(await screen.findByText('1 other agent in this window', undefined, WAIT)).toBeTruthy()
-    expect(document.querySelectorAll('.acct-spans li').length).toBe(1)
+    expect(document.querySelectorAll('.acct-hist tbody tr').length).toBe(1)
     expect(screen.queryByRole('button', { name: 'Older' })).toBeNull()
   })
 

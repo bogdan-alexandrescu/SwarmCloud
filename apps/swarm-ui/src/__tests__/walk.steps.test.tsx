@@ -93,7 +93,8 @@ describe('A: the Steps table is a fixed table whose cells never overlap', () => 
       const { width, cols } = fixedColumns(t, container, WIDE)
       // Why takes the slack, and there is slack to take.
       const why = cols.find((c) => c.col === 'why')!
-      expect(why.end - why.start, `why is ${why.end - why.start}px at ${width}`).toBeGreaterThanOrEqual(90)
+      // 60px since browser QA D12 (2026-10-04): Ran and Cost grew to what they hold.
+      expect(why.end - why.start, `why is ${why.end - why.start}px at ${width}`).toBeGreaterThanOrEqual(60)
       for (const row of rows) {
         // What the row draws today ...
         const drawn = boxesOf(row, styles, cols, (_c, cell) => cell.textContent ?? '')
@@ -178,6 +179,10 @@ describe('A: the sampling chip is in the table head row, inside the card', () =>
       return h!
     }, WAIT)
     expect(head.querySelector('h3')?.textContent).toBe('Steps')
-    expect(head.nextElementSibling?.classList.contains('wf-table')).toBe(true)
+    // The table sits in the box its stacked form asks about (D12), and that
+    // box is the head row's next sibling: nothing is drawn between them.
+    const box = head.nextElementSibling
+    expect(box?.classList.contains('wf-table-box')).toBe(true)
+    expect(box?.firstElementChild?.classList.contains('wf-table')).toBe(true)
   })
 })

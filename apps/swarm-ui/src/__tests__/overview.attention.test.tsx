@@ -225,9 +225,9 @@ describe('#90: the overview names the workflow a failure came from', () => {
    */
   it('marks a running agent with the workflow it is a step of, linked', async () => {
     const el = await mount({ loadTasks: page([running(1, { workflow_id: 'wf-nightly', step_id: 'build' })]) })
-    const link = el.querySelector<HTMLAnchorElement>('.ov-running a[href^="#work/workflows"]')
+    const link = el.querySelector<HTMLAnchorElement>('.ov-running a[href^="/workflows/"]')
     expect(link, 'the running row names no workflow').not.toBeNull()
-    expect(link!.getAttribute('href')).toBe('#work/workflows?wf=wf-nightly')
+    expect(link!.getAttribute('href')).toBe('/workflows/wf-nightly')
     expect(text(link)).toMatch(/wf-nightly/)
   })
 })
@@ -250,7 +250,7 @@ describe('#91: the overview shows how much work is waiting, and says waiting cos
     expect(text(cell!.querySelector('.ov-lc-n'))).toBe('21')
     // The wording on the surface says waiting creates no demand.
     expect(text(cell!.querySelector('.ov-lc-h small'))).toBe('costs nothing')
-    expect(el.querySelector('#ov-waiting .ctl-card-head a')?.getAttribute('href')).toBe('#work/running/waiting')
+    expect(el.querySelector('#ov-waiting .ctl-card-head a')?.getAttribute('href')).toBe('/agents/waiting')
   })
 })
 

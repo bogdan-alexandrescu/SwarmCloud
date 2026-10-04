@@ -26,7 +26,8 @@ export const SUBMIT_ADDRESS = 'submit'
 export const REFERENCE_ADDRESS = 'reference'
 
 /** Address -> path for the panes that are one fixed path each. */
-const FIXED: Readonly<Record<string, string>> = {
+/** Exported for the not-found page, which offers the nearest of these (NotFound.tsx). */
+export const FIXED: Readonly<Record<string, string>> = {
   'overview/now': '/overview',
   'work/running': '/agents',
   'work/workflows': '/workflows',

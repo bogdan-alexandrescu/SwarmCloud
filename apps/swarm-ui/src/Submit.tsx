@@ -742,7 +742,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
  * to the button. Drawn in flow, not floated: inside a 370px workflow step a
  * popover would clip or cover the step below.
  */
-function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
+export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
   idPrefix: string
   offers: Suggestion[]
   onAdd: (s: Suggestion) => void
@@ -756,14 +756,16 @@ function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
     document.getElementById(buttonId)?.focus()
   }
   return (
-    <div className="sbf-addset">
+    // ESCAPE CLOSES FROM ANYWHERE IN THE CONTROL (browser QA D34, 2026-10-04):
+    // it was handled on the list alone, so with focus still on the button --
+    // where a click leaves it -- Escape did nothing.
+    <div className="sbf-addset" onKeyDown={(e) => { if (open && e.key === 'Escape') { e.preventDefault(); close() } }}>
       <button type="button" id={buttonId} className="sbf-addset-btn" aria-expanded={open}
         aria-controls={listId} onClick={() => setOpen(!open)}>
         + Add setting <span aria-hidden="true">▾</span>
       </button>
       {open && (
-        <div id={listId} className="sbf-addset-list" role="group" aria-label="settings to add"
-          onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); close() } }}>
+        <div id={listId} className="sbf-addset-list" role="group" aria-label="settings to add">
           {offers.map((s) => (
             <button type="button" key={s.name} className="sbf-addset-item" onClick={() => { onAdd(s); setOpen(false) }}>
               <span className="mono">{s.name}</span>

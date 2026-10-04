@@ -279,7 +279,9 @@ function PickButton({
       onClick={() => onPick(row.step.step_id)}
     >
       {withDot && <WfStepMark look={row.look} />}
-      <span className="wf-pick-id">{row.step.step_id}</span>
+      <span className="wf-pick-id" title={row.step.step_id}>
+        {row.step.step_id}
+      </span>
     </button>
   )
 }
@@ -535,6 +537,11 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
+/** The columns a table draws: every one, less Why when no row has a why (D12). */
+export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
+  return rows.some((r) => r.why !== null) ? COLUMNS : COLUMNS.filter((c) => c.col !== 'why')
+}
+
 /**
  * The `waited` cell: the QUEUE, from the last parent's finish to the start
  * (#107), with the time spent on the parents in its note. A step still waiting
@@ -742,6 +749,10 @@ export function WorkflowTable({
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
   const more = useMoreRight<HTMLDivElement>()
+  // AN EMPTY COLUMN IS NOT DRAWN (browser QA D12, 2026-10-04): with no step
+  // waiting on a reason or failed, Why was ~110px of blank while ten long step
+  // names were squeezed beside it. The step column takes that room instead.
+  const columns = tableColumns(rows)
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -760,12 +771,15 @@ export function WorkflowTable({
     {/* `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
         so below 900px it scrolls with the step column held in view rather
         than stacking (design-system.md §7.3). `has-more` is the right-edge
-        fade while columns are off that edge (#109). */}
-    <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}`}>
+        fade while columns are off that edge (#109). The box around it is the
+        size container its stacked form asks about: a container query matches
+        only descendants, so the table's own border could not answer it (D12). */}
+    <div className="wf-table-box">
+    <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}${columns.length < COLUMNS.length ? ' no-why' : ''}`}>
       <table>
         <thead>
           <tr>
-            {COLUMNS.map((c) => (
+            {columns.map((c) => (
               <th
                 key={c.col}
                 data-col={c.col}
@@ -809,26 +823,28 @@ export function WorkflowTable({
                   <WfStepMark look={r.look} word />
                 </span>
               </td>
-              <td data-col="why">
-                <WhyCell why={r.why} />
-              </td>
-              <td data-col="runner">{r.step.runner_profile}</td>
-              <td data-col="waited" className="is-num">
+              {columns.length === COLUMNS.length && (
+                <td data-col="why" data-label="Why">
+                  <WhyCell why={r.why} />
+                </td>
+              )}
+              <td data-col="runner" data-label="Runner">{r.step.runner_profile}</td>
+              <td data-col="waited" data-label="Waited" className="is-num">
                 <CellView cell={waitedCell(r.times)} />
               </td>
-              <td data-col="ran" className="is-num">
+              <td data-col="ran" data-label="Ran" className="is-num">
                 <CellView cell={r.ran} />
               </td>
-              <td data-col="attempts" className="is-num">
+              <td data-col="attempts" data-label="Attempts" className="is-num">
                 <AttemptsView cell={r.attempts} over={r.attemptsOver} />
               </td>
-              <td data-col="cost" className="is-num">
+              <td data-col="cost" data-label="Cost" className="is-num">
                 <CellView cell={r.cost} pending={r.pending} from={r.costFrom} />
               </td>
-              <td data-col="tokens" className="is-num">
+              <td data-col="tokens" data-label="Tokens" className="is-num">
                 <CellView cell={r.tokens} pending={r.pending} from={r.tokensFrom} />
               </td>
-              <td data-col="inputs">
+              <td data-col="inputs" data-label="Inputs">
                 <InputsSummary
                   inputs={r.inputs}
                   open={opened.has(r.step.step_id)}
@@ -839,7 +855,7 @@ export function WorkflowTable({
             </tr>
             {opened.has(r.step.step_id) && inputsCount(r.inputs) + r.inputs.malformed > 0 && (
               <tr className="wf-xrow">
-                <td colSpan={COLUMNS.length}>
+                <td colSpan={columns.length}>
                   <div id={inputsRowId(r.step.step_id)} className="wf-xinputs">
                     <span className="wf-xinputs-h">Reads</span>
                     <InputsCell inputs={r.inputs} />
@@ -849,7 +865,7 @@ export function WorkflowTable({
             )}
             {detail !== null && picked === r.step.step_id && (
               <tr className="wf-inline-row">
-                <td colSpan={COLUMNS.length}>
+                <td colSpan={columns.length}>
                   <div className="wf-inline">{detail}</div>
                 </td>
               </tr>
@@ -858,6 +874,7 @@ export function WorkflowTable({
           ))}
         </tbody>
       </table>
+    </div>
     </div>
     </>
   )
@@ -1281,24 +1298,30 @@ export function StepInspector({
         onKeyDown={scrubKeys(hasNewer ? () => onSibling(-1) : null, hasOlder ? () => onSibling(1) : null)}
       >
         <span className="ctl-eyebrow wf-scrub-key">same step</span>
-        <ScrubButton
-          buttonRef={newerRef}
-          label="Same step, newer workflow"
-          glyph="◀"
-          onPress={hasNewer ? () => onSibling(-1) : null}
-        />
-        <span className="wf-scrub-pos">
-          workflow {siblingIndex + 1} of {siblings.length}
+        {/* ◀ POSITION ▶ ARE ONE UNIT THAT NEVER WRAPS (browser QA D30,
+            2026-10-04): the shape sat between the position and ▶, and a long
+            shape pushed the arrow onto a line of its own. The shape follows
+            the unit and is cut, whole in its title. */}
+        <span className="wf-scrub-nav">
+          <ScrubButton
+            buttonRef={newerRef}
+            label="Same step, newer workflow"
+            glyph="◀"
+            onPress={hasNewer ? () => onSibling(-1) : null}
+          />
+          <span className="wf-scrub-pos">
+            workflow {siblingIndex + 1} of {siblings.length}
+          </span>
+          <ScrubButton
+            buttonRef={olderRef}
+            label="Same step, older workflow"
+            glyph="▶"
+            onPress={hasOlder ? () => onSibling(1) : null}
+          />
         </span>
         <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
           {shape.text} · {shape.steps} step{shape.steps === 1 ? '' : 's'}
         </span>
-        <ScrubButton
-          buttonRef={olderRef}
-          label="Same step, older workflow"
-          glyph="▶"
-          onPress={hasOlder ? () => onSibling(1) : null}
-        />
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader
             -- the position above is the fact, and each workflow's state is one

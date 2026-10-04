@@ -64,7 +64,9 @@ describe('Q3: the Steps table has real column widths', () => {
       return parseFloat(w!)
     })
     const min = parseFloat(painted(h.querySelector('table')!, 'min-width', WIDE)!)
-    expect(min - px.reduce((a, b) => a + b, 0), 'why has no slack at the minimum width').toBeGreaterThanOrEqual(90)
+    // Browser QA D12 (2026-10-04): Ran and Cost grew to what they hold, and Why
+    // is cut with its title (or not drawn when empty), so it keeps 60px here.
+    expect(min - px.reduce((a, b) => a + b, 0), 'why has no slack at the minimum width').toBeGreaterThanOrEqual(60)
   })
 
   it('never breaks a word, never wraps a head or a figure, and keeps why inside its cell', () => {

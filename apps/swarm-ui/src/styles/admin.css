@@ -195,14 +195,19 @@
   table.ten-table > thead > tr > th,
   table.ten-table > tbody > tr > th,
   table.ten-table > tbody > tr > td { white-space: normal; overflow-wrap: anywhere; }
+  /* A HEAD IS ONE LINE IN THE HEADS' FACE (browser QA D16, 2026-10-04): the
+     rule above let "Configured" break as "Configure / d", and `table.pools
+     .n` drew the two figure heads bold mono beside sans ones. A head never
+     wraps -- it is cut, whole in its column's name -- and every head is sans. */
+  table.ten-table > thead > tr > th { white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
   table.ten-table > colgroup > col.ten-col-tenant { width: 11%; }
   table.ten-table > colgroup > col.ten-col-status { width: 10%; }
   table.ten-table > colgroup > col.ten-col-kind { width: 7%; }
   table.ten-table > colgroup > col.ten-col-principal { width: 19%; }
   table.ten-table > colgroup > col.ten-col-enforced { width: 8%; }
-  table.ten-table > colgroup > col.ten-col-configured { width: 9%; }
+  table.ten-table > colgroup > col.ten-col-configured { width: 10%; }
   table.ten-table > colgroup > col.ten-col-credentials { width: 14%; }
-  table.ten-table > colgroup > col.ten-col-identity { width: 22%; }
+  table.ten-table > colgroup > col.ten-col-identity { width: 21%; }
   .ten-ident-row { display: flex; flex-wrap: wrap; }
   .ten-ident {
     display: block;
@@ -231,3 +236,8 @@
    `not measured` mark and the words `not run yet`, so the page has its shape
    before the press. Not a task-state mark: nothing here is a task. */
 .counts-notrun .ctl-card-body { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; color: var(--text-dim); font-size: var(--t-meta); }
+
+/* The figure heads keep their right alignment and take the heads' sans (D16),
+   at every width: `table.pools .n` is the cells' mono. */
+table.ten-table > thead > tr > th.n { font-family: var(--font); }
+.adm-setby-cfg { color: var(--text-faint); }

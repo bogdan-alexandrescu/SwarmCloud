@@ -16,10 +16,24 @@
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
-import { agentName } from './agentlist'
+import { agentName, type AgentTab } from './agentlist'
 import type { Result } from './fetch'
 import { StateMark } from './marks'
-import { reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
+import { addressToPath } from './paths'
+import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
+
+/**
+ * The path of one agent, under the list it actually sits in (browser QA,
+ * 2026-10-04). A legacy `#work/task/<id>` resolved through the redirect to
+ * `/agents/live/<id>` whatever the state, so a cancelled agent opened from
+ * Recent failures landed on Live while the list beside it said otherwise.
+ * The tabs are Agents' own: a slot-holding state is Live, a terminal one
+ * Recent, anything else Waiting.
+ */
+export function agentPath(t: Pick<Task, 'id' | 'state'>): string {
+  const tab: AgentTab = CONCURRENCY_STATES.has(t.state) ? 'live' : TERMINAL_STATES.has(t.state) ? 'recent' : 'waiting'
+  return addressToPath(`work/task/${encodeURIComponent(t.id)}`, tab)
+}
 
 function rows(tasks: Result<TaskPage>): Task[] | null {
   return tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data.tasks : null
@@ -251,10 +265,20 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
   const { rows: failed } = failuresOf(all, now)
   if (failed.length === 0) return <p className="ctl-em">None among the {all.length} newest.</p>
   return (
-    <table className="ov-tbl">
+    // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
+    // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
+    // card and pushed the age and Open off it. The name takes what the three
+    // narrow columns leave; the error clamps to two lines, whole in its title.
+    <table className="ov-tbl ov-fails">
+      <colgroup>
+        <col className="ov-fc-mark" />
+        <col className="ov-fc-name" />
+        <col className="ov-fc-age" />
+        <col className="ov-fc-open" />
+      </colgroup>
       <tbody>
         {failed.slice(0, 6).map((t) => {
-          const href = `#work/task/${encodeURIComponent(t.id)}`
+          const href = agentPath(t)
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
           return (
             <tr key={t.id}>
@@ -265,7 +289,11 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
                 <a className="ov-name" href={href} title={`${agentName(t)} · ${t.id}`}>
                   {agentName(t)}
                 </a>
-                {why !== '' && <span className="ov-sub">{why}</span>}
+                {why !== '' && (
+                  <span className="ov-sub ov-why" title={why}>
+                    {why}
+                  </span>
+                )}
               </th>
               <td className="is-num">{timeAgo(t.completed_at ?? t.updated_at, now)}</td>
               <td className="is-num">
