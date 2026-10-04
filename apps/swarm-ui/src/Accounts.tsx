@@ -1568,11 +1568,11 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
         <table className="acct-hist">
           <thead>
             <tr>
-              <th scope="col">Holder</th>
-              <th scope="col">Started</th>
-              <th scope="col" className="is-num">Held</th>
-              <th scope="col">Ended</th>
-              <th scope="col" title={`From ${clockOf(new Date(lo).toISOString())} to ${h?.to ? clockOf(h.to) : 'now'}`}>
+              <th scope="col" data-col="holder">Holder</th>
+              <th scope="col" data-col="started">Started</th>
+              <th scope="col" data-col="held" className="is-num">Held</th>
+              <th scope="col" data-col="ended">Ended</th>
+              <th scope="col" data-col="when" title={`From ${clockOf(new Date(lo).toISOString())} to ${h?.to ? clockOf(h.to) : 'now'}`}>
                 When, from {clockOf(new Date(lo).toISOString())}
               </th>
             </tr>
@@ -1585,7 +1585,11 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
               const span = Number.isFinite(a) && Number.isFinite(b) ? ((b - a) / scale) * 100 : 0
               return (
                 <tr key={i}>
-                  <td className="acct-hist-who">
+                  {/* CUT, WHOLE IN ITS TITLE (browser QA D24, 2026-10-04). */}
+                  <td
+                    className="acct-hist-who"
+                    title={[s.task_id, typeof s.attempt === 'number' ? `attempt ${s.attempt}` : null, s.tenant].filter(Boolean).join(' · ') || undefined}
+                  >
                     {s.mine ? <HoldWork h={s} /> : <span className="mono">{s.tenant}</span>}
                     {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
                     {!s.mine && h?.viewer === 'platform' && s.task_id && (
@@ -1597,7 +1601,7 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
                   </td>
                   <td>{s.since ? clockOf(s.since) : <span className="muted">start not recorded</span>}</td>
                   <td className="is-num">{s.since ? heldFor(b - a) : '—'}</td>
-                  <td>{s.end ?? <span className="muted">holding</span>}</td>
+                  <td title={s.end ?? 'holding'}>{s.end ?? <span className="muted">holding</span>}</td>
                   <td>
                     <span className="acct-hist-bar" aria-hidden="true">
                       <i

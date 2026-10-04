@@ -10531,7 +10531,13 @@ span.sk-ttile { cursor: default; }
 .wfl-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
 .wfl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
 .wfl-row.is-failed td { background: var(--s-badb); }
-.wfl-name { display: flex; flex-direction: column; gap: 2px; min-width: 14em; }
+/* THE NAME CELL IS A TABLE CELL (browser QA N8, 2026-10-04). It was a flex
+   column, which takes a <td> out of the table: the browser wrapped it in an
+   anonymous cell and its own box was 37px in a 56px row, so its bottom border
+   floated ~20px above the row's. Its pieces stack as blocks instead. */
+.wfl-name { min-width: 14em; }
+.wfl-name > a, .wfl-name > .id, .wfl-name > .wfl-why { display: block; }
+.wfl-name > * + * { margin-top: 2px; }
 .wfl-name > a { color: var(--text); font-weight: 600; text-decoration: none; }
 .wfl-name > a:hover, .wfl-name > a:focus-visible { text-decoration: underline; }
 .wfl-why { font-size: var(--t-micro); color: var(--text-dim); }

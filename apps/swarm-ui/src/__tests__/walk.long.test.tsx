@@ -83,14 +83,17 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
     expectTitled(title, 'the agent title')
   })
 
-  it('draws each Headroom tile’s profile name whole, on up to two lines, in the sans face', async () => {
+  // BROWSER QA D17 (owner, 2026-10-04): two lines broke `claude-code-` /
+  // `review` at its hyphen. One line, never broken, in a tile wide enough
+  // for it (qa.u11b.overview.test.tsx), cut with its title past that.
+  it('draws each Headroom tile’s profile name on one line, never hyphen-broken, in the sans face', async () => {
     const tile = await page('/', '.ov-hp > .ov-idc')
     const names = [...document.querySelectorAll('.ov-hp > .ov-idc')]
     expect(names.length).toBeGreaterThan(0)
     for (const n of names) {
-      expectClamped(n, 'a Headroom tile name')
+      expect(painted(n, 'white-space', WIDE), 'a Headroom tile name wraps').toBe('nowrap')
       expectTitled(n, 'a Headroom tile name')
-      expect(painted(n, 'text-overflow', WIDE) ?? 'clip', 'a Headroom tile name is cut to one line').not.toBe('ellipsis')
+      expect(painted(n, 'text-overflow', WIDE), 'a Headroom tile name is cut without an ellipsis').toBe('ellipsis')
       expect(familyOf(n, WIDE), 'a Headroom tile name is mono').toBe('sans')
     }
     expect(tile).toBeTruthy()

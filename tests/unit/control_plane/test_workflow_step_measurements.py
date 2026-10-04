@@ -651,7 +651,8 @@ def _overview_grids() -> list[tuple[str, int, int]]:
     O1 (overview.html, the owner's pick; built 2026-10-02) draws two `.ov-g21`
     grids -- Running now beside Cost so far, then Waiting, and why beside
     Headroom -- each TWO panels in two tracks, so no row ends with a panel
-    alone. The grids' rules live in the screen's own sheet,
+    alone. The pools are a full-width card of their own after the second
+    grid (browser QA N17), outside both. The grids' rules live in the screen's own sheet,
     `styles/overview.css`. What is read is the markup's panel count and the
     sheet's widest track count, so adding a third panel to either grid -- the
     change that brings the orphan back -- fails here until something spans it.
@@ -661,8 +662,15 @@ def _overview_grids() -> list[tuple[str, int, int]]:
     opener = '<div className="ov-g21">'
     first = ov.find(opener)
     second = ov.find(opener, first + 1)
-    # The Recent failures section's own opening tag, which carries the id.
-    end = ov.rfind("<section", 0, ov.find('id="ov-failures"'))
+    # The second grid ends at the first full-width card after it: Pools (its
+    # own row since browser QA N17, 2026-10-04) or Recent failures. Each
+    # section's own opening tag carries its id.
+    def opening(section_id: str) -> int:
+        at = ov.find(f'id="{section_id}"')
+        return ov.rfind("<section", 0, at) if at > -1 else -1
+
+    after = [p for p in (opening("ov-pools"), opening("ov-failures")) if p > second]
+    end = min(after) if after else -1
     assert -1 < first < second < end, "Overview.tsx no longer draws two .ov-g21 grids before Recent failures"
 
     def panels(block: str) -> int:

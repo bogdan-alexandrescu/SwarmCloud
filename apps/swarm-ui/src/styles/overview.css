@@ -32,8 +32,11 @@
 .ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
 /* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
    column made 345px cards that cut the title ("25 failed tasks among the 200
-   mo…") and both detail lines. Two across on a desktop, one on a phone. */
-.ov-atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 10px; }
+   mo…") and both detail lines. Two across on a desktop, one on a phone.
+   AUTO-FIT, NOT AUTO-FILL (browser QA D18 again, 2026-10-04): one card took
+   one of two tracks, ~520px, with the other half of the row empty. An empty
+   track collapses now, so the cards share the whole row. */
+.ov-atts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 400px), 1fr)); gap: 10px; }
 .ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
 .ov-att:hover { border-color: var(--sk-acl); }
 /* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (#96): the table row's edge
@@ -154,13 +157,20 @@
 
 /* ---- Headroom: profile tiles, pool rows, the account line, one column ---- */
 .ov-sub2 { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); margin: 2px 0 0; }
-.ov-hps { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; }
+/* A TILE HOLDS "claude-code-review" ON ONE LINE (browser QA D17, 2026-10-04:
+   at 92px it broke at its hyphen). 140px is that name in the sans face plus
+   the tile's padding; a longer one is cut, whole in its title. */
+.ov-hps { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.ov-hp b.ov-hp-off { font: 600 var(--t-meta)/var(--lh-meta) var(--font); color: var(--s-warn); }
 .ov-hp { display: flex; flex-direction: column; min-width: 0; padding: 6px 8px; border-radius: var(--ctl-radius-sm); background: var(--sk-hv); }
 .ov-hp b { font: 650 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .ov-hp b.is-zero { color: var(--s-warn); }
 .ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ov-pls { display: flex; flex-direction: column; gap: 5px; }
+/* THE POOLS CARD SPANS THE PAGE (browser QA N17): its rows are laid across
+   it, as many columns as 280px allows, so fourteen pools are a few lines. */
+.ov-pools .ov-pls { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 8px 24px; }
 /* NAME AND FIGURE ON ONE LINE, THE BAR UNDER BOTH (browser QA D17,
    2026-10-04): a 118px name column cut "provider:anthro…" three times with no
    tooltip, and each bar stopped where its own figure began, so no two ended

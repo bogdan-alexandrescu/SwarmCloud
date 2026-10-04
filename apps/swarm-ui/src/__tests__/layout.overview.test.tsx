@@ -189,7 +189,7 @@ describe('the landing screen is a lead, a band and five panels', () => {
    *
    * MUTATION: add or drop a panel, or split Headroom into groups again.
    */
-  it('holds five panels in O1’s order', async () => {
+  it('holds six panels in O1’s order, the pools a row of their own (browser QA N17)', async () => {
     const el = await mountOverview()
     const panels = [...el.querySelectorAll('.ctl-card')].filter((c) => c.parentElement?.closest('.ctl-card') == null)
     const titles = panels.map((p) => {
@@ -197,7 +197,7 @@ describe('the landing screen is a lead, a band and five panels', () => {
       for (const n of [...clone.querySelectorAll('[data-help-description], button')]) n.remove()
       return (clone.textContent ?? '').trim()
     })
-    expect(titles).toEqual(['Running now', 'Cost so far', 'Waiting, and why', 'Headroom', 'Recent failures'])
+    expect(titles).toEqual(['Running now', 'Cost so far', 'Waiting, and why', 'Headroom', 'Pools', 'Recent failures'])
     expect(el.querySelectorAll('.ov-headroom .ov-group').length).toBe(0)
   })
 })
@@ -370,7 +370,10 @@ describe('a card says what it opens, and a count is not a verdict', () => {
    *
    * MUTATION: print the task's age in a not-started row's Runtime cell.
    */
-  it('prints a not-started agent’s Runtime as its state word, with no duration', async () => {
+  // BROWSER QA N6 (owner, 2026-10-04): the state word here repeated the
+  // State column. A not-started row is timed from its lease, and with no
+  // lease read it is a dash that says so -- still never the task's age.
+  it('prints a not-started agent’s Runtime as a dash when no lease dates it, never a duration or the state word', async () => {
     const leased = liveTask({ id: 'task_leased00000000000000', state: 'LEASED', started_at: null })
     const el = await mountOverview({
       tasks: { tasks: [leased], next_page_token: null },
@@ -382,7 +385,8 @@ describe('a card says what it opens, and a count is not a verdict', () => {
     const at = heads.indexOf('Runtime')
     expect(at, 'the running table has no Runtime column').toBeGreaterThan(-1)
     const cell = [...table!.querySelector('tbody tr')!.children][at]!
-    expect(cell.textContent ?? '').toBe(elapsed(leased, Date.now()).text)
+    expect(cell.textContent ?? '').not.toBe(elapsed(leased, Date.now()).text)
+    expect(cell.querySelector('.c-dash')?.getAttribute('title') ?? '').toMatch(/lease/)
     expect(cell.textContent ?? '', 'a not-started row claims a duration').not.toMatch(/\d/)
   })
 })

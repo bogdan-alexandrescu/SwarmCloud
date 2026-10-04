@@ -57,17 +57,18 @@
 }
 
 /* A HEADROOM TILE'S PROFILE NAME, WHOLE (walkthrough F): `claude-code-…` was
-   cut to one mono line. It is a name a person reads, so it is the sans face,
-   and it wraps to a second line before it is cut. */
+   cut to one mono line. It is a name a person reads, so it is the sans face.
+   ONE LINE, NEVER BROKEN (browser QA D17, 2026-10-04): wrapping it broke
+   `claude-code-` / `review` at its hyphen, which reads as two names. The tile
+   is wide enough for it (overview.css `.ov-hps`); a longer one is cut with an
+   ellipsis, whole in its title. */
 .ov-hp > span.ov-idc {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  display: block;
   overflow: hidden;
-  white-space: normal;
-  text-overflow: clip;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  hyphens: manual;
   font: 500 var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text);
 }
