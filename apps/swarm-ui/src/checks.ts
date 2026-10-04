@@ -468,7 +468,7 @@ function failureCheck(tasks: Result<TaskPage>, now: number): Check {
         // failures in another voice.
         headline:
           `${failed.length} failed task${failed.length === 1 ? '' : 's'} among the ${rows.length} most recent` +
-          newestClause(failed, now) +
+          newestFailureClause(failed, now) +
           workflowClause(failed),
         detail:
           exhausted.length > 0
@@ -502,14 +502,15 @@ function namesOf(ids: string[]): string {
 }
 
 /**
- * ` · newest 3m ago`, from the newest failure's completion (its last update
- * where none was recorded). Empty when no failed task carries a readable time:
- * an age nobody recorded is not "just now".
+ * ` · newest 3m ago`, from the newest failure's END. Empty when no failed task
+ * carries a recorded end: an age nobody recorded is not "just now", and the
+ * document's last write is not its end (browser QA N4, 2026-10-04: a later
+ * write made failures ~9h old read "58m ago").
  */
-function newestClause(failed: Task[], now: number): string {
+export function newestFailureClause(failed: Task[], now: number): string {
   let newest: number | null = null
   for (const t of failed) {
-    const v = new Date(t.completed_at ?? t.updated_at).getTime()
+    const v = t.completed_at === null ? NaN : new Date(t.completed_at).getTime()
     if (Number.isFinite(v) && (newest === null || v > newest)) newest = v
   }
   return newest === null ? '' : ` · newest ${timeAgo(newest, now)}`

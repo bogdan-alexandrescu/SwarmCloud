@@ -34,13 +34,15 @@
      Steps done a 24px bar and "10/10", Duration "23h 59m so far"; the name
      takes what is left and is cut with its title, as the shape is. */
   .wfl .wfl-table th[data-col="state"] { width: 136px; }
-  .wfl .wfl-table th[data-col="shape"] { width: 10%; }
+  .wfl .wfl-table th[data-col="shape"] { width: 9%; }
   .wfl .wfl-table th[data-col="done"] { width: 92px; }
   /* Runners holds one whole "claude-code ×20" chip (browser QA N7: at 11%
      it held 96px, so a one-profile workflow folded to a bare "+1"). */
   .wfl .wfl-table th[data-col="runners"] { width: 148px; }
   .wfl .wfl-table th[data-col="cost"] { width: 8%; }
-  .wfl .wfl-table th[data-col="owner"] { width: 8%; }
+  /* Shape and Owner gave a point each to Runners' 148px (N7), so the name
+     keeps its 200px at 1056. */
+  .wfl .wfl-table th[data-col="owner"] { width: 7%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
   .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }

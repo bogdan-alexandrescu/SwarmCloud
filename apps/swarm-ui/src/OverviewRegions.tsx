@@ -18,6 +18,7 @@
  */
 import { agentName, type AgentTab } from './agentlist'
 import type { Result } from './fetch'
+import { Dash } from './components/Chip'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
@@ -251,6 +252,21 @@ export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; n
   return { rows, note }
 }
 
+/**
+ * HOW LONG AGO A FAILURE ENDED (browser QA N4, 2026-10-04). The age was
+ * `completed_at ?? updated_at`, and a later write -- a reconciler pass, an
+ * account event -- bumps `updated_at`: tasks that ended ~9h earlier read
+ * "58m ago". `completed_at` is the end every terminal writer records; a task
+ * with none has no recorded end, and that is a dash with its reason, never
+ * the time of the last write.
+ */
+function EndedAgo({ task: t, now }: { task: Task; now: number }) {
+  if (t.completed_at === null || !Number.isFinite(new Date(t.completed_at).getTime())) {
+    return <Dash why={`No end time was recorded for this task; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
+  }
+  return <>{timeAgo(t.completed_at, now)}</>
+}
+
 /** "Recent failures": mark, agent and why, age, Open (O1). */
 export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
@@ -282,8 +298,11 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
           return (
             <tr key={t.id}>
+              {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
+                  overprinted the name in this 28px column. The word is the
+                  mark's title and its accessible name. */}
               <td>
-                <StateMark state={t.state} />
+                <StateMark state={t.state} bare />
               </td>
               <th scope="row">
                 <a className="ov-name" href={href} title={`${agentName(t)} · ${t.id}`}>
@@ -295,7 +314,9 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
                   </span>
                 )}
               </th>
-              <td className="is-num">{timeAgo(t.completed_at ?? t.updated_at, now)}</td>
+              <td className="is-num">
+                <EndedAgo task={t} now={now} />
+              </td>
               <td className="is-num">
                 <a className="ov-open" href={href}>
                   Open

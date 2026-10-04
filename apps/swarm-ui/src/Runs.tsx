@@ -1,10 +1,11 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
-import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
+import { approvePlan, editPlan, loadRun, loadRuns, loadWorkflow, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Banner, Button, Card, Chip, CodeBlock, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
+import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
 import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
@@ -131,6 +132,24 @@ export function RunStateMark({ state }: { state: IssueRunState }) {
       </svg>
       {runStateWord(state)}
     </span>
+  )
+}
+
+/**
+ * A PLANNER'S TEXT WITH ITS INLINE CODE DRAWN AS CODE (browser QA N18,
+ * 2026-10-04): the lead, the prompts and the requirements printed their
+ * backticks (`Closes #N`, `apps/...`). Only a backtick pair is read -- React
+ * elements, never HTML -- so the text cannot inject anything; an unpaired
+ * backtick is left as it was written.
+ */
+export function RnText({ text }: { text: string }) {
+  const parts = text.split(/(`[^`\n]+`)/g)
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.length > 2 && p.startsWith('`') && p.endsWith('`') ? <code key={i}>{p.slice(1, -1)}</code> : <Fragment key={i}>{p}</Fragment>,
+      )}
+    </>
   )
 }
 
@@ -435,6 +454,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
   }
 
   const digest = run.plan_digest
+  const wfPr = useWorkflowPullRequest(run)
   return (
     <div className="rn-page">
       <section className="rn-main">
@@ -533,12 +553,12 @@ function RunPage({ run: served, reread, go, onHeading }: {
           )}
         </section>
 
-        <CiCard run={run} go={go} />
+        <CiCard run={run} go={go} wfPr={wfPr} />
         {textList(run.plan?.risks) !== null && (
           <section className="rn-risks" aria-label="Risks">
             <h3>Risks the planner named</h3>
             <ul className="rn-list-items">
-              {textList(run.plan?.risks)!.map((r, i) => <li key={i}>{r}</li>)}
+              {textList(run.plan?.risks)!.map((r, i) => <li key={i}><RnText text={r} /></li>)}
             </ul>
           </section>
         )}
@@ -591,22 +611,22 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className="ctl-fact">
               <b>Planner</b>
               {run.planner_task_id === ''
-                ? <i className="ctl-em">&mdash; not recorded</i>
+                ? <i className="ctl-em" title="The run records no planner task.">&mdash; not recorded</i>
                 : <InApp go={go} to={`work/task/${encodeURIComponent(run.planner_task_id)}`}
                   href={`/agents/recent/${encodeURIComponent(run.planner_task_id)}`}>{run.planner_task_id}</InApp>}
             </li>
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>
               {run.workflow_id === null
-                ? <i className="ctl-em">none yet · created on approval</i>
+                ? <i className="ctl-em" title="None yet: the workflow is created when the plan is approved.">none yet · created on approval</i>
                 : <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: run.workflow_id }).toString()}`}
                   href={`/workflows/${encodeURIComponent(run.workflow_id)}`}>{run.workflow_id}</InApp>}
             </li>
-            <PullRequestFact run={run} />
+            <PullRequestFact run={run} wfPr={wfPr} />
           </ul>
         </section>
         <IssueReadCard run={run} now={now} />
-        <section className="rn-card" aria-label="Chosen at submission">
+        <section className="rn-card rn-chosen" aria-label="Chosen at submission">
           <h3>Chosen at submission</h3>
           <ul className="ctl-facts">
             <li className="ctl-fact"><b>plan approval</b>{run.plan_approval}</li>
@@ -694,9 +714,19 @@ export function planLead(summary: string): { lead: string; cut: boolean } {
   lead = lead.trim()
   if (lead.length > PLAN_LEAD_CHARS) {
     const at = lead.lastIndexOf(' ', PLAN_LEAD_CHARS - 1)
-    return { lead: `${lead.slice(0, at > 0 ? at : PLAN_LEAD_CHARS - 1)}…`, cut: true }
+    return { lead: oneEllipsis(lead.slice(0, at > 0 ? at : PLAN_LEAD_CHARS - 1)), cut: true }
   }
-  return { lead, cut: lead.length < text.length }
+  const cut = lead.length < text.length
+  return { lead: cut ? oneEllipsis(lead) : lead, cut }
+}
+
+/**
+ * ONE ELLIPSIS AT THE END OF A CUT LEAD (browser QA N18): a lead the planner
+ * had already ended in `…` or `...` got a second one, "… …". Whatever trailing
+ * dots or ellipsis it has become exactly one.
+ */
+function oneEllipsis(lead: string): string {
+  return `${lead.replace(/[\s.…]+$/u, '').trimEnd()}…`
 }
 
 /**
@@ -710,8 +740,7 @@ function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
   return (
     <>
       <p className="rn-summary">
-        {lead}
-        {cut && !lead.endsWith('…') ? ' …' : ''}
+        <RnText text={lead} />
       </p>
       <Requirements plan={plan} unmet={unmet} />
       <ol className="rn-steps">
@@ -721,7 +750,7 @@ function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
       </ol>
       <details className="rn-raw">
         <summary>Show the full plan</summary>
-        <p className="rn-full">{plan.summary}</p>
+        <p className="rn-full"><RnText text={plan.summary} /></p>
         <pre className="rn-raw-json">{JSON.stringify(plan, null, 2)}</pre>
       </details>
     </>
@@ -734,7 +763,7 @@ function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
   const estimate = typeof step.estimate === 'string' && step.estimate.trim() !== '' ? step.estimate : null
   return (
     <li className="rn-step">
-      <b className="rn-step-h">{n} · {step.title}</b>
+      <b className="rn-step-h">{n} · <RnText text={step.title} /></b>
       <span className="rn-step-id sb-note">
         <span className="mono">{step.step_id}</span>
         {step.depends_on !== undefined && (
@@ -753,7 +782,7 @@ function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
       )}
       <details className="rn-prompt-d">
         <summary>Prompt</summary>
-        <p className="rn-prompt">{step.prompt}</p>
+        <p className="rn-prompt"><RnText text={step.prompt} /></p>
       </details>
     </li>
   )
@@ -966,7 +995,7 @@ function Requirements({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
       <ol className="rn-reqs">
         {reqs.map((r, i) => (
           <li key={`${i}-${r}`} className={open.has(r) ? 'is-unmet' : undefined}>
-            {r}{open.has(r) && <i className="sbf-bad"> · not confirmed by the review</i>}
+            <RnText text={r} />{open.has(r) && <i className="sbf-bad"> · not confirmed by the review</i>}
           </li>
         ))}
       </ol>
@@ -979,23 +1008,64 @@ function CommentFact({ label, name, url, absent }: { label: string; name: string
   return (
     <li className={url === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
       <b>{label}</b>
-      {url === null ? <i className="ctl-em">{absent}</i> : <a href={url} target="_blank" rel="noreferrer">{name}</a>}
+      {url === null ? <i className="ctl-em" title={absent}>{absent}</i> : <a href={url} target="_blank" rel="noreferrer" title={url}>{name}</a>}
     </li>
   )
 }
 
+/**
+ * THE PULL REQUEST THE RUN'S WORKFLOW OPENED, READ FROM ITS INTEGRATOR STEP
+ * (browser QA N15, 2026-10-04). A run created before the CI loop records no
+ * `pull_request` of its own, and its page said "none yet · the workflow opens
+ * it" under a Done run whose workflow had opened PR #545. When the run has
+ * none, the workflow is read once and its integrator's
+ * `result_summary.git.pull_request` is the answer (`workflowPullRequest`, the
+ * same reading the Workflows screen draws). Null until read, or when the run
+ * names its own PR or no workflow.
+ */
+function useWorkflowPullRequest(run: IssueRun): WorkflowPullRequest | null {
+  const [found, setFound] = useState<{ wf: string; pr: WorkflowPullRequest | null } | null>(null)
+  const wf = (run.pull_request ?? null) === null ? run.workflow_id : null
+  useEffect(() => {
+    if (wf === null || found?.wf === wf) return
+    let live = true
+    void loadWorkflow(wf).then((r) => {
+      if (!live) return
+      const data = r.status === 'ok' || r.status === 'stale' ? r.data : null
+      const pr = data === null ? null : workflowPullRequest(data.workflow, new Map(data.tasks.map((t) => [t.id, t])))
+      setFound({ wf, pr })
+    })
+    return () => {
+      live = false
+    }
+  }, [wf])
+  return wf !== null && found?.wf === wf ? found.pr : null
+}
+
 /** The run's pull request: a link once the workflow opened one. */
-function PullRequestFact({ run }: { run: IssueRun }) {
+function PullRequestFact({ run, wfPr }: { run: IssueRun; wfPr: WorkflowPullRequest | null }) {
   const pr = run.pull_request ?? null
   const url = githubLink(pr?.url)
   const label = pr?.number === null || pr?.number === undefined ? 'pull request' : `#${pr.number}`
+  if (pr === null && wfPr !== null) {
+    const title = `#${wfPr.number}, read from the workflow's integrator result (step ${wfPr.stepId}); the run itself records no pull request.`
+    return (
+      <li className="ctl-fact">
+        <b>Pull request</b>
+        {wfPr.href === null
+          ? <span className="mono" title={title}>#{wfPr.number}</span>
+          : <a href={wfPr.href} target="_blank" rel="noreferrer" className="mono" title={title}>#{wfPr.number}</a>}
+      </li>
+    )
+  }
+  const none = run.terminal ? 'none recorded' : 'none yet · the workflow opens it'
   return (
     <li className={pr === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
       <b>Pull request</b>
       {pr === null
-        ? <i className="ctl-em">none yet · the workflow opens it</i>
-        : url === null ? <span className="mono">{label}</span>
-          : <a href={url} target="_blank" rel="noreferrer" className="mono">{label}</a>}
+        ? <i className="ctl-em" title={run.terminal ? 'Neither the run nor its workflow recorded a pull request.' : 'None yet: the workflow opens it.'}>{none}</i>
+        : url === null ? <span className="mono" title={label}>{label}</span>
+          : <a href={url} target="_blank" rel="noreferrer" className="mono" title={url}>{label}</a>}
     </li>
   )
 }
@@ -1013,8 +1083,22 @@ function hasCi(run: IssueRun): boolean {
  * keyword the requirements finding chose, and a FAILED run's excerpt -- the
  * server's redacted text, drawn as text.
  */
-function CiCard({ run, go }: { run: IssueRun; go: (to: string) => void }) {
-  if (!hasCi(run)) return null
+function CiCard({ run, go, wfPr }: { run: IssueRun; go: (to: string) => void; wfPr: WorkflowPullRequest | null }) {
+  if (!hasCi(run)) {
+    // A FINISHED RUN DRAWS THE CARD ANYWAY (browser QA N15): no card at all
+    // read as "nothing to say", on a run whose workflow opened a PR. The CI
+    // loop records checks on the run; a run it never read says so.
+    if (!run.terminal) return null
+    return (
+      <Card level={3} className="rn-ci" title="Pull request and checks">
+        <p className="sb-note">
+          No CI recorded for this run: the CI loop never read its pull request
+          {wfPr !== null ? ` (#${wfPr.number}, opened by the workflow)` : ''}, which is how a run created before the CI
+          loop ends.
+        </p>
+      </Card>
+    )
+  }
   const pr = run.pull_request ?? null
   const round = run.ci_fix_round ?? 0
   const fixes = run.ci_fix_workflows ?? []

@@ -59,7 +59,7 @@ describe('the overview Headroom card', () => {
   it('lets every track inside it shrink, and ellipsises a long name', () => {
     const headroom = card()
     for (const width of [390, 1100, 1440]) {
-      expect(won(headroom.querySelector('.ov-hps')!, 'grid-template-columns', width)).toBe('repeat(auto-fill, minmax(92px, 1fr))')
+      expect(won(headroom.querySelector('.ov-hps')!, 'grid-template-columns', width)).toBe('repeat(auto-fill, minmax(140px, 1fr))')
       // Name and figure on a line, the bar under both (browser QA D17, 2026-10-04).
       expect(won(headroom.querySelector('.ov-pl')!, 'grid-template-columns', width)).toBe('minmax(0, 1fr) auto')
     }
