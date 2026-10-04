@@ -54,6 +54,7 @@ import {
   stageCensus,
   stageFitsAt,
   stepDuration,
+  stripSavingAt,
   type DagLayout,
   type ZoomTier,
 } from '../dag'
@@ -1120,7 +1121,8 @@ describe('semantic zoom', () => {
     // dependency levels). So it stays a band at every tier -- exactly as
     // thirteen and forty do below -- and opening it draws every card at that
     // tier's real width rather than folding them into extra rows.
-    expect(autoTier(seven.w.steps)).toBe('figures')
+    // At Details since browser QA D29 (2026-10-04): a band never sends Auto to the tallest tier.
+    expect(autoTier(seven.w.steps)).toBe('details')
     const b = card(seven.w, seven.tasks)
     expect(b.container.querySelector('.wf-band')).toBeTruthy()
     expect(b.container.querySelectorAll('.node')).toHaveLength(2)
@@ -1140,7 +1142,7 @@ describe('semantic zoom', () => {
     // AND THE BAND STILL DOES ITS JOB PAST ONE SCREEN. Forty steps stay one
     // band at every tier too -- the claim stage collapsing exists for.
     const forty = wideStage(40)
-    expect(autoTier(forty.w.steps)).toBe('figures')
+    expect(autoTier(forty.w.steps)).toBe('details')
     const d = card(forty.w, forty.tasks)
     expect(d.container.querySelector('.wf-band')).toBeTruthy()
     expect(d.container.querySelectorAll('.node')).toHaveLength(2)
@@ -1285,7 +1287,8 @@ describe('semantic zoom', () => {
     // A minimap of a canvas you can see all of is chrome for its own sake.
     expect(container.querySelector('.wf-minimap')).toBeNull()
 
-    // Opened, it is 3,671px against a 1,054px column, and the map appears.
+    // Opened, it is 2,228px against a 1,054px column (at Details, where Auto
+    // draws a band since browser QA D29; 3,671px at Figures), and the map appears.
     expect(openEveryBand(container)).toBe(1)
     const map = container.querySelector<HTMLElement>('.wf-minimap')!
     expect(map).toBeTruthy()
@@ -1295,7 +1298,7 @@ describe('semantic zoom', () => {
     // the wrapper's own scroll and the tab order through the nodes.
     expect(map.getAttribute('role')).toBe('img')
     expect(map.tagName).not.toBe('BUTTON')
-    expect(map.getAttribute('aria-label')).toContain('3671 pixels wide')
+    expect(map.getAttribute('aria-label')).toContain('2228 pixels wide')
     // One rectangle per drawn node, plus the band, so the map is of the canvas
     // rather than of the viewport.
     expect(map.querySelectorAll('.wf-mini-node')).toHaveLength(15)
@@ -2174,11 +2177,13 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     expect(node.contains(full), 'the full note is inside the card, so it is read as its name too').toBe(false)
     expect(node.textContent).not.toContain(COLLISION('join.md').split('\n')[1] ?? '\u0000')
     // COUNTED: the slot is the height `heightOf` gives a node with that line.
-    const layout = layoutOf(w.steps, new Set<number>(), autoTier(w.steps), new Set(['join']))
+    // Every terminal step is SETTLED and reserves no stop strip (browser QA D29).
+    const settled = new Set(w.steps.filter((s) => s.task_id != null && ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED'].includes(tasks.get(s.task_id)?.state ?? '')).map((s) => s.step_id))
+    const layout = layoutOf(w.steps, new Set<number>(), autoTier(w.steps, undefined, new Set(['join']), true, settled), new Set(['join']), undefined, settled)
     const placed = layout.nodes.find((n) => n.step.step_id === 'join')!
     expect(Number.parseFloat(slotOf(container, 'join').style.height)).toBe(placed.h)
-    expect(placed.h).toBe(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, true))
-    expect(placed.h).toBeGreaterThan(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW))
+    expect(placed.h).toBe(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, true, settled.has('join')))
+    expect(placed.h).toBeGreaterThan(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, false, settled.has('join')))
     // A node that succeeded carries no line and is not made taller for one.
     expect(nodeNamed(container, 'plan').querySelector('.node-note')).toBeNull()
     expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt(layout.tier))
@@ -2441,7 +2446,8 @@ describe('#330 item 4: smaller Graph nodes', () => {
     expect(stop, 'a running card keeps its stop control at Names').toBeTruthy()
     expect(cascade(STYLES, stop, 'bottom', { width: 1440 }).winner?.value).toBe('4px')
     // The slot is given exactly the height the tier claims.
-    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt('names'))
+    // `plan` succeeded, so it is settled and gives back its strip (browser QA D29).
+    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt('names') - stripSavingAt('names'))
   })
 
   it('fits a 3-step chain on one screen, at the tier that keeps the most fields', () => {
@@ -2501,7 +2507,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
     // this (WF-9 already proves it scrolls an opened band; this is the Names
     // case #330 item 4 added).
     const { w, tasks } = fan(13, false)
-    expect(autoTier(w.steps)).toBe('figures')
+    expect(autoTier(w.steps)).toBe('details')
     const l = layoutOf(w.steps, new Set([1]), 'names')
     expect(l.wide[1]).toBe(true)
     expect(l.width, 'thirteen cards at Names still overflow the column').toBeGreaterThan(
@@ -2537,7 +2543,7 @@ describe('#330 item 4: smaller Graph nodes', () => {
       const into = l.edges.filter((e) => e.from === 'plan')
       expect(new Set(into.map((e) => kinds.get(`${e.from}->${e.to}`))).size, tier).toBe(1)
     }
-    expect(autoTier(w.steps)).toBe('figures')
+    expect(autoTier(w.steps)).toBe('details')
 
     const { container } = card(w, tasks)
     expect(openEveryBand(container)).toBe(1)

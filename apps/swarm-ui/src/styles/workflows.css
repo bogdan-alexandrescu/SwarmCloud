@@ -431,3 +431,11 @@
 .wf-ph-name { font-weight: 600; overflow-wrap: anywhere; }
 .wf-ph-state { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-ph-more { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); }
+
+/* A SETTLED STEP'S CARD RESERVES NO STOP STRIP (browser QA D29, 2026-10-04):
+   its task is terminal, so no Stop control can appear on it, and the 42px
+   strip was 40-65px of blank under every finished card. The card keeps its
+   tier's top padding under its last row instead. `stripSavingAt` in dag.ts
+   is the same arithmetic: 42 - 10 and 34 - 6. */
+.wf-canvas .node.is-settled { padding-bottom: 10px; }
+.wf-canvas .node.zoom-names.is-settled { padding-bottom: 6px; }

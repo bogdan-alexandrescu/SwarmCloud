@@ -2533,6 +2533,16 @@ function WorkflowGraph({
     if (n !== null) notes.set(s.step_id, n)
   }
   const noted = new Set(notes.keys())
+  // A SETTLED STEP RESERVES NO STOP STRIP (browser QA D29): its task is
+  // terminal, so `StopRun` can never draw on its card again.
+  const settled = new Set(
+    workflow.steps
+      .filter((s) => {
+        const st = stepState(s, taskById)
+        return st.kind === 'state' && TERMINAL_STATES.has(st.task.state)
+      })
+      .map((s) => s.step_id),
+  )
   // THE DETAILS PANEL TAKES ITS COLUMN FROM THE GRAPH (#330 item 5). While a
   // step is picked the panel stands on the right, so under Auto the graph is
   // laid out for what is left beside it rather than scrolling sideways under
@@ -2540,15 +2550,15 @@ function WorkflowGraph({
   // keeps its full-width layout, and one without is laid out with `band`
   // false, so no stage -- the picked step's included -- vanishes into a band
   // because the panel opened. A tier the reader chose is left as chosen.
-  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted)
+  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled)
   const beside =
     picked !== null &&
     zoom === 'auto' &&
-    !layoutOf(workflow.steps, undefined, fullAuto, noted).wide.some(Boolean)
+    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled).wide.some(Boolean)
   const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
-  const auto = beside ? autoTier(workflow.steps, column, noted, false) : fullAuto
+  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled) : fullAuto
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
-  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column)
+  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column, settled)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -3623,7 +3633,7 @@ function StepNode({
     <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
       <button
         type="button"
-        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}`}
+        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}${state.kind === 'state' && TERMINAL_STATES.has(state.task.state) ? ' is-settled' : ''}`}
         data-step={step.step_id}
         title={p.title}
         aria-pressed={picked}
