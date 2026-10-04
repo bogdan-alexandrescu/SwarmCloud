@@ -82,11 +82,13 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
   it('counts Live and Waiting from /v1/stats, LEASED through RUNNING and QUEUED through PARKED', async () => {
     // The fixture: LEASED 1, DISPATCHED 1, STARTING 1, RUNNING 2 -> 5 live;
     // QUEUED 0, READY 1, PARKED 1 -> 2 waiting. MUTATION: count RUNNING only.
-    const c = await at('/agents/live')
-    await waitFor(() => {
-      const kids = Object.fromEntries([...c.querySelectorAll('.sk-panel .sk-kid')].map((k) => [k.querySelector('span')?.textContent, k.querySelector('.sk-cnt')?.textContent ?? null]))
-      expect(kids).toEqual({ Live: '5', Waiting: '2', Recent: null })
-    })
+    // Asked of `panelCounts` with no list on screen: on the Agents page the
+    // panel counts the list's own read instead (U10a D27,
+    // qa.u10a.shell.test.tsx).
+    const { loadStats } = await import('../api')
+    const stats = await loadStats({ frame: true })
+    const counts = panelCounts(stats, { status: 'loading', since: Date.now() })
+    expect([counts.live?.n, counts.waiting?.n]).toEqual([5, 2])
   })
 
   it('draws the Workflows count as a dash with its reason: no route serves it', async () => {

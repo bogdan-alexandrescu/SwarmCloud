@@ -310,16 +310,28 @@ function Topic({
  * so and leaves the link on screen to be copied by hand
  * (`clipboard-secure-context`).
  */
+/** How long `copied` stays, as on the agent header's Copy link (AgentSplit.tsx). */
+const COPY_SAID_MS = 4000
+
 function TopicAnchor({ id }: { id: TopicId }) {
   const t = HELP[id]
   const [said, setSaid] = useState('')
+  // THE SAME CONFIRMATION AS THE AGENT HEADER'S COPY LINK (U10a, owner QA
+  // 2026-10-04): `copied` beside the control, gone after the same 4s, and
+  // the button itself says it while it shows -- the reader is looking at
+  // the button they clicked, not at the line beside it.
+  useEffect(() => {
+    if (said === '') return
+    const id = setTimeout(() => setSaid(''), COPY_SAID_MS)
+    return () => clearTimeout(id)
+  }, [said])
   const copy = () => {
     const url = `${window.location.origin}${addressToPath(t.anchor)}`
     const c = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (c === undefined) return setSaid('copy refused; select the link instead')
+    if (c === undefined) return setSaid('could not copy; select the link instead')
     c.writeText(url).then(
-      () => setSaid('link copied'),
-      () => setSaid('copy refused; select the link instead'),
+      () => setSaid('copied'),
+      () => setSaid('could not copy; select the link instead'),
     )
   }
   // In the card's head beside its name, as H1 draws it: `#<id> · copy link`.
@@ -327,7 +339,7 @@ function TopicAnchor({ id }: { id: TopicId }) {
     <span className="help-topic-anchor">
       <a href={`#${t.anchor}`}>#{id}</a>
       <button type="button" onClick={copy} aria-label={`Copy a link to ${t.subject}`}>
-        copy link
+        {said === 'copied' ? 'copied ✓' : 'copy link'}
       </button>
       <span role="status">{said}</span>
     </span>

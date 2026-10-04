@@ -42,7 +42,7 @@ const OLD_SK = (tail: string) => `.sk-${tail}`
 // ---------------------------------------------------------------------------
 
 describe('/submit is a page of its own in the frame', () => {
-  it('names Submit in the head, says it reads nothing, and lights Work', async () => {
+  it('names Submit in the head, says it reads nothing, and lights Submit', async () => {
     window.history.replaceState(null, '', '/submit')
     render(<App />)
     await screen.findByRole('heading', { name: 'Submit' }, WAIT)
@@ -51,8 +51,12 @@ describe('/submit is a page of its own in the frame', () => {
     expect(visible(head), 'the head fell through to the API reads label').not.toContain('API reads')
     // MUTATION: drop SUBMIT from ScreenAge's "reads nothing" branch.
     expect(visible(head.querySelector('.ctl-head-age'))).toBe('reads nothing')
+    // SUBMIT IS THE PLACE (U10a D25, owner QA 2026-10-04): it lit Work, and
+    // the panel lit Agents › Live, so Submit never read as where you were.
+    const cta = document.querySelector<HTMLElement>('.sk-spine .sk-cta')!
+    expect(cta.getAttribute('aria-current'), 'Submit is not lit on /submit').toBe('page')
     const work = document.querySelector<HTMLElement>('.sk-spine [data-sec="work"]')!
-    expect(work.getAttribute('aria-current'), 'no spine section is lit on /submit').toBe('page')
+    expect(work.getAttribute('aria-current'), 'Work is lit on /submit').toBeNull()
   })
 
   it('gives the two forms a trail back to the chooser', async () => {

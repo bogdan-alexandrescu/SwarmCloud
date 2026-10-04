@@ -7,6 +7,7 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react'
+import { createPortal } from 'react-dom'
 
 import { DRAWER_SETTLE_MS, Mark } from './AgentDetail'
 import { loadAttempts, loadTaskLogs, loadTranscript } from './api'
@@ -38,6 +39,7 @@ import { clampPane, readPane, writePane, type PaneSpec } from './panes'
 import { attemptLine, useRead } from './RunFiles'
 import { TERMINAL_STATES, type AttemptRow, type LogStream, type Task } from './types'
 import { useNow } from './useNow'
+import { useEscapeLayer } from './escape'
 import { Button } from './components'
 
 /**
@@ -72,8 +74,15 @@ import { Button } from './components'
  *    slid -- otherwise it says "about".
  */
 
-/** The dock's height, remembered per viewer: 120px to 70% of the window, as the frames say. */
-const LOG_DOCK: PaneSpec = { key: 'swarm.agents.logdock.h', min: 120, max: 720, initial: 300 }
+/**
+ * The dock's height, remembered per viewer: 120px to 70% of the window, as the
+ * frames say. 400 BY DEFAULT, SO AN OPEN DOCK SHOWS AT LEAST 15 LINES (U10a
+ * D13, owner QA 2026-10-04): at 300 the controls took ~175px and the log body
+ * kept 124px, about five lines. The controls are one 40px row now, and 400
+ * leaves the body ~345px -- 16 lines at the log's 21px line.
+ * `logdock.room.test.tsx` holds the arithmetic against the shipped sheet.
+ */
+export const LOG_DOCK: PaneSpec = { key: 'swarm.agents.logdock.h', min: 120, max: 720, initial: 400 }
 /**
  * OPEN WHILE THE AGENT RUNS, FOLDED TO ITS ONE LINE ONCE IT HAS FINISHED
  * (walkthrough B, owner 2026-10-03). A live log is what people open an agent
@@ -146,8 +155,37 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const dragging = useRef(false)
   const autoScroll = useRef(false)
   const root = useRef<HTMLElement | null>(null)
+  /** Which control gets focus back when the full view closes (D1). */
+  const restore = useRef<'open-full' | 'sheet' | null>(null)
+  const finished = TERMINAL_STATES.has(task.state)
 
   const setOpen = useCallback((next: boolean) => setOpenState(next), [])
+
+  // OPEN FULL IS A LAYER OVER THE WHOLE APP (U10a D1, owner QA 2026-10-04).
+  // It was `position: fixed; inset: 0` inside the split, whose column is a
+  // size container (`container-type: inline-size`) and a sticky z-index 1:
+  // the container became its containing block and its stacking context, so
+  // the "full" log drew 630px tall behind the spine and the panel, and its
+  // `‹ Agent` sat under the Hive logo. It is portalled to <body> now (below),
+  // above the shell; Escape and `‹ Agent` close it, and focus goes back to
+  // the control that opened it.
+  const enterFull = useCallback((from: 'open-full' | 'sheet') => {
+    restore.current = from
+    setFull(true)
+  }, [])
+  const exitFull = useCallback(() => setFull(false), [])
+  useEffect(() => {
+    if (!full) {
+      const to = restore.current
+      restore.current = null
+      if (to !== null) root.current?.querySelector<HTMLElement>(`[data-restore="${to}"]`)?.focus()
+      return
+    }
+    root.current?.querySelector<HTMLElement>('.ag-logdock-back')?.focus()
+  }, [full])
+  // Escape leaves the full view, and only it: escape.ts stops the key before
+  // the split's own Escape, which would close the agent under it.
+  useEscapeLayer(full, exitFull)
 
   // A different agent opened in the same split starts over: its own default
   // stream, its latest attempt, nothing searched.
@@ -326,7 +364,12 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
     [current],
   )
 
-  const toggleFollow = useCallback(() => setFollow((f) => !f), [])
+  // NOTHING TO FOLLOW ON A FINISHED AGENT (owner QA 2026-10-04): the button
+  // stayed `Paused · Follow` on a final record, offering a tail that will not
+  // move again. It is disabled there, and F does nothing.
+  const toggleFollow = useCallback(() => {
+    if (!finished) setFollow((f) => !f)
+  }, [finished])
 
   // THE KEYS: F follow, W wrap, E next error, / search. `[` stays the list
   // toggle (listSnap.ts). Never inside a field, never with a modifier, and
@@ -403,13 +446,19 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
   const cls = ['ag-logdock', expanded ? 'is-open' : 'is-strip', full ? 'is-full' : '', phone ? 'is-phone' : '']
     .filter(Boolean)
     .join(' ')
+  const followWord = finished ? 'Final record' : follow ? 'Following' : 'Paused'
+  const followSay = finished
+    ? 'This agent has finished: its log is the final record, and nothing more will arrive to follow.'
+    : undefined
 
-  return (
+  const dock = (
     <LogMarksContext.Provider value={marks}>
       <section
         ref={root}
         className={cls}
         aria-label="Log"
+        // THE FULL VIEW IS A DIALOG OVER THE APP (D1); docked, a region.
+        {...(full ? { role: 'dialog', 'aria-modal': true } : {})}
         style={expanded && !full ? { height } : undefined}
         data-follow={follow ? 'on' : 'off'}
       >
@@ -443,19 +492,31 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
         {!expanded ? (
           // THE ONE-LINE STRIP, and on a phone the bottom sheet: the newest
           // line, and a tap opens the log.
-          <button type="button" className="ag-logdock-line" aria-expanded={false} onClick={() => (phone ? setFull(true) : setOpen(true))}>
+          <button
+            type="button"
+            className="ag-logdock-line"
+            aria-expanded={false}
+            data-restore="sheet"
+            onClick={() => (phone ? enterFull('sheet') : setOpen(true))}
+          >
             <span className="ag-logdock-src">{source === 'live' ? 'live' : (source ?? 'log')}</span>
             <b>Log</b>
             <span className="ag-logdock-last mono">{lastLine ?? (held.state.status === 'loading' ? 'reading…' : 'no line in this window')}</span>
             <span className="ag-logdock-facts">
-              {follow ? 'Following' : 'Paused'} · errors {targets.errors.length} · masked {masked ?? '—'}
+              {followWord} · errors {targets.errors.length} · masked {masked ?? '—'}
             </span>
           </button>
         ) : (
           <>
-            <div className="ag-logdock-head">
+            {/* ONE ROW OF CONTROLS (U10a D13, owner QA 2026-10-04). Two
+                wrapping rows took ~175px of a 300px dock and four rows at the
+                50% split; the log kept five lines. The row does not wrap: the
+                stream pills scroll sideways inside it, the search gives way,
+                and what is used least -- the attempt picker, wrap, open full
+                and the read's facts -- is under More. */}
+            <div className="ag-logdock-bar">
               {full && (
-                <button type="button" className="ag-logdock-back" onClick={() => setFull(false)}>
+                <button type="button" className="ag-logdock-back" onClick={exitFull}>
                   ‹ Agent
                 </button>
               )}
@@ -467,47 +528,6 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                   </button>
                 ))}
               </div>
-              <label className="ag-logdock-attempt">
-                Attempt{' '}
-                <select
-                  value={attemptId ?? ''}
-                  onChange={(e) => {
-                    setAttemptId(e.target.value === '' ? null : e.target.value)
-                    setCurrent(null)
-                  }}
-                  aria-label="Attempt, by generation"
-                >
-                  <option value="">latest</option>
-                  {(attemptRows ?? [])
-                    .slice()
-                    .sort((a, b) => b.generation - a.generation)
-                    .map((a) => (
-                      <option key={a.attempt_id} value={a.attempt_id}>
-                        gen {a.generation} · {a.attempt_id} · {attemptEnd(a)}
-                      </option>
-                    ))}
-                </select>
-                {attempts.state.status === 'error' && (
-                  <span className="ctl-sub">
-                    {' '}
-                    <Mark kind="unread" say="The attempt list did not load, so only the latest attempt can be picked." /> attempts
-                    not read
-                  </span>
-                )}
-              </label>
-              {!full && (
-                <Button size="sm" onClick={() => setFull(true)}>
-                  Open full
-                </Button>
-              )}
-              {!full && (
-                <Button size="sm" aria-expanded={true} onClick={() => setOpen(false)}>
-                  Fold
-                </Button>
-              )}
-            </div>
-
-            <div className="ag-logdock-tools">
               <label className="ag-logdock-search">
                 <input
                   ref={search}
@@ -535,11 +555,15 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                     : `${hitAt < 0 ? '–' : hitAt + 1} of ${targets.hits.length} · this window`}
                 </span>
               )}
-              <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" onClick={toggleFollow}>
-                {follow ? 'Following' : 'Paused · Follow'} <kbd>F</kbd>
-              </Button>
-              <Button size="sm" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
-                Wrap <kbd>W</kbd>
+              <Button
+                size="sm"
+                aria-pressed={follow}
+                aria-keyshortcuts="F"
+                disabled={finished}
+                title={followSay}
+                onClick={toggleFollow}
+              >
+                {finished ? 'Final record' : follow ? 'Following' : 'Paused · Follow'} <kbd>F</kbd>
               </Button>
               <Button
                 size="sm"
@@ -553,43 +577,91 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                   : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}{' '}
                 <kbd>E</kbd>
               </Button>
-            </div>
-
-            <ul className="ctl-facts ag-logdock-facts">
-              {logs !== null && (logs.attempt.status === 'latest' || logs.attempt.status === 'requested') && (
-                <li className="ctl-fact">
-                  <b>attempt</b>
-                  {attemptLine(logs).toLowerCase()}
-                  {picked !== null && <span className="mono"> · {picked.attempt_id}</span>}
-                </li>
+              {/* A MASK IS A WARNING, so it is never only under More. */}
+              {masked !== null && masked > 0 && (
+                <span className="art-masked is-warn ag-logdock-maskchip">masked {masked}</span>
               )}
-              {/* FACTS ONLY FOR A WINDOW THAT WAS READ (#222): no source and no
-                  masked count over an object that does not exist -- the view
-                  below says absent, not applicable or not read in words. */}
-              {source !== null && (
-                <li className="ctl-fact">
-                  <b>source</b>
-                  {source === 'live' ? 'live tail' : source === 'final' ? 'final record' : 'the artifact'}
-                  {!follow && frozen !== null && (
-                    <span className="ctl-sub"> · paused {new Date(frozen.at).toLocaleTimeString()}</span>
+              {attempts.state.status === 'error' && (
+                <span className="ctl-sub ag-logdock-unread">
+                  <Mark kind="unread" say="The attempt list did not load, so only the latest attempt can be picked." /> attempts not
+                  read
+                </span>
+              )}
+              <details className="ag-logdock-more">
+                <summary>More</summary>
+                <div className="ag-logdock-menu">
+                  <label className="ag-logdock-attempt">
+                    Attempt{' '}
+                    <select
+                      value={attemptId ?? ''}
+                      onChange={(e) => {
+                        setAttemptId(e.target.value === '' ? null : e.target.value)
+                        setCurrent(null)
+                      }}
+                      aria-label="Attempt, by generation"
+                    >
+                      <option value="">latest</option>
+                      {(attemptRows ?? [])
+                        .slice()
+                        .sort((a, b) => b.generation - a.generation)
+                        .map((a) => (
+                          <option key={a.attempt_id} value={a.attempt_id}>
+                            gen {a.generation} · {a.attempt_id} · {attemptEnd(a)}
+                          </option>
+                        ))}
+                    </select>
+                  </label>
+                  <Button size="sm" aria-pressed={wrap} aria-keyshortcuts="W" onClick={() => setWrap((w) => !w)}>
+                    Wrap <kbd>W</kbd>
+                  </Button>
+                  {!full && (
+                    <Button size="sm" data-restore="open-full" onClick={() => enterFull('open-full')}>
+                      Open full
+                    </Button>
                   )}
-                </li>
+                  <ul className="ctl-facts ag-logdock-facts">
+                    {logs !== null && (logs.attempt.status === 'latest' || logs.attempt.status === 'requested') && (
+                      <li className="ctl-fact">
+                        <b>attempt</b>
+                        {attemptLine(logs).toLowerCase()}
+                        {picked !== null && <span className="mono"> · {picked.attempt_id}</span>}
+                      </li>
+                    )}
+                    {/* FACTS ONLY FOR A WINDOW THAT WAS READ (#222): no source and no
+                        masked count over an object that does not exist -- the view
+                        below says absent, not applicable or not read in words. */}
+                    {source !== null && (
+                      <li className="ctl-fact">
+                        <b>source</b>
+                        {source === 'live' ? 'live tail' : source === 'final' ? 'final record' : 'the artifact'}
+                        {!follow && frozen !== null && (
+                          <span className="ctl-sub"> · paused {new Date(frozen.at).toLocaleTimeString()}</span>
+                        )}
+                      </li>
+                    )}
+                    {masked !== null && (
+                      <li className="ctl-fact">
+                        <b>masked</b>
+                        <span className={`art-masked${masked > 0 ? ' is-warn' : ''}`}>{masked} in this window</span>
+                      </li>
+                    )}
+                    {logs !== null && (
+                      <li className="ctl-fact">
+                        <b>masking</b>
+                        <span className={`art-masked${logs.redaction.applied_at_read_time ? '' : ' is-warn'}`}>
+                          {logs.redaction.applied_at_read_time ? 'at read time' : 'not applied at read time'}
+                        </span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              </details>
+              {!full && (
+                <Button size="sm" aria-expanded={true} onClick={() => setOpen(false)}>
+                  Fold
+                </Button>
               )}
-              {masked !== null && (
-                <li className="ctl-fact">
-                  <b>masked</b>
-                  <span className={`art-masked${masked > 0 ? ' is-warn' : ''}`}>{masked} in this window</span>
-                </li>
-              )}
-              {logs !== null && (
-                <li className="ctl-fact">
-                  <b>masking</b>
-                  <span className={`art-masked${logs.redaction.applied_at_read_time ? '' : ' is-warn'}`}>
-                    {logs.redaction.applied_at_read_time ? 'at read time' : 'not applied at read time'}
-                  </span>
-                </li>
-              )}
-            </ul>
+            </div>
 
             <div className={`ag-logdock-body${wrap ? ' is-wrap' : ''}`} ref={body} onScroll={onScroll} aria-label={`${viewLabel} log`}>
               {view === 'transcript' && <GapNotice name="transcript" />}
@@ -603,7 +675,7 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
               )}
             </div>
 
-            {!follow && arrived !== null && arrived.lines > 0 && (
+            {!follow && !finished && arrived !== null && arrived.lines > 0 && (
               <button type="button" className="ag-logdock-arrived" onClick={() => setFollow(true)}>
                 ↓ {arrived.exact ? '' : 'about '}
                 {arrived.lines} new {view === 'transcript' ? 'step' : 'line'}
@@ -615,4 +687,6 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
       </section>
     </LogMarksContext.Provider>
   )
+  // THE FULL VIEW LEAVES THE SPLIT (D1): see `enterFull`.
+  return full && typeof document !== 'undefined' ? createPortal(dock, document.body) : dock
 }

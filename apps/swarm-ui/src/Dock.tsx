@@ -271,15 +271,17 @@ export function Dock() {
             moving punctuation into generated content would change what those
             read without changing what the screen says. */}
         <span className="ctl-dock-facts">
-          <span className="ctl-dock-fact">
+          {/* `is-wide`: not drawn on a phone, where the strip is one line
+              (U10a D39). Each carries its own separator, so none dangles. */}
+          <span className="ctl-dock-fact is-wide">
             {s.routes} route{s.routes === 1 ? '' : 's'}
+            {' · '}
           </span>
-          {' · '}
           {/* An em dash, never a 0: no sample is not a fast response. */}
-          <span className="ctl-dock-fact">
+          <span className="ctl-dock-fact is-wide">
             {s.p95Ms === null ? <span className="ctl-em">p95 &mdash;</span> : `p95 ${s.p95Ms}ms`}
+            {' · '}
           </span>
-          {' · '}
           <span className={`ctl-dock-fact${s.failed > 0 ? ' ctl-dock-bad' : ''}`}>
             {s.failed} failed
           </span>

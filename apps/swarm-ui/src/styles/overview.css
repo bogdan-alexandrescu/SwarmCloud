@@ -175,6 +175,12 @@
 @media (max-width: 759px) {
   .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .ov-page > .c-phead .c-age { margin-left: 0; }
+  /* THE `?` AND THE TENANT CHIP SHARE THE LINE (U10a D39, owner QA at 390px,
+     2026-10-04): with the h1 stepped aside the head held only the `?`, and
+     the row wrapped it onto a line of its own above the chip. The row does
+     not wrap; the provenance wraps inside its own half when it must. */
+  .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; }
+  .ov-page > .c-phead > .sub { flex: 1 1 0; min-width: 0; }
 }
 @media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }

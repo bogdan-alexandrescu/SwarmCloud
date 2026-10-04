@@ -18,6 +18,7 @@
 // the log dock on the pane.
 
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -64,12 +65,26 @@ function agent(over: Partial<Task> = {}): Task {
   })
 }
 
-function split(pane: 'detail' | 'attempts' | 'artifacts' | 'checkpoints' = 'detail') {
+type Pane = 'detail' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+const PANES: readonly Pane[] = ['children', 'attempts', 'artifacts', 'checkpoints']
+
+/** The split under a router of its own: a tab's address is the pane it opens (U10a D36). */
+function Routed({ start, onGo }: { start: Pane; onGo?: (to: string) => void }) {
+  const [pane, setPane] = useState<Pane>(start)
+  const go = (to: string) => {
+    onGo?.(to)
+    const last = to.split('/').pop() as Pane
+    setPane(PANES.includes(last) ? last : 'detail')
+  }
   return (
     <div className="app has-inspector">
-      <AgentSplit taskId={ID} pane={pane} artifact={null} closeTo="work/running/live" go={() => {}} base={`work/task/${ID}`} />
+      <AgentSplit taskId={ID} pane={pane} artifact={null} closeTo="work/running/live" go={go} base={`work/task/${ID}`} />
     </div>
   )
+}
+
+function split(pane: Pane = 'detail', onGo?: (to: string) => void) {
+  return <Routed start={pane} onGo={onGo} />
 }
 
 function tab(name: string): HTMLElement {

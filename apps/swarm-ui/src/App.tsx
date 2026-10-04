@@ -631,10 +631,10 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'attempts' | 'artifacts' | 'checkpoints'
+export type TaskPane = 'detail' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['attempts', 'artifacts', 'checkpoints']
+const PANE_SEGMENTS: readonly TaskPane[] = ['children', 'attempts', 'artifacts', 'checkpoints']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -1056,7 +1056,7 @@ export function App() {
     // the spine it cut the avatar off at 1440x900 (#503).
     <div className="ctl-frame">
         <SkyShell
-          section={spineOf(at.sectionId)}
+          section={spineOf(at.sectionId, at.tab)}
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}
@@ -1169,13 +1169,15 @@ function here(): string {
 
 /** The spine section a route belongs to. Submit lights Work, as its two
  *  forms do (submit.html M2: every frame lights Work). */
-function spineOf(sectionId: string): SpineSection {
+/** The spine section a route lights; null is Submit (U10a D25: /submit and its forms are Submit, not Work). */
+export function spineOf(sectionId: string, tab = ''): SpineSection {
   switch (sectionId) {
     case 'overview':
       return 'overview'
-    case WORK:
     case SUBMIT:
-      return 'work'
+      return null
+    case WORK:
+      return tab === 'new' || tab === 'new-workflow' || tab === 'new-issue' ? null : 'work'
     case CAPACITY:
       return 'capacity'
     case ADMIN_SECTION:

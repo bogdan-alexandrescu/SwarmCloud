@@ -145,7 +145,8 @@ function running(over: Partial<Task> = {}): Task {
 }
 
 function dock(): HTMLElement {
-  return screen.getByRole('region', { name: 'Log' })
+  // Open full, the log is a dialog over the app (U10a D1); docked, a region.
+  return screen.queryByRole('dialog', { name: 'Log' }) ?? screen.getByRole('region', { name: 'Log' })
 }
 
 function chooseStream(label: string) {
