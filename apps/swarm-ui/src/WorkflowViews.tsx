@@ -279,7 +279,9 @@ function PickButton({
       onClick={() => onPick(row.step.step_id)}
     >
       {withDot && <WfStepMark look={row.look} />}
-      <span className="wf-pick-id">{row.step.step_id}</span>
+      <span className="wf-pick-id" title={row.step.step_id}>
+        {row.step.step_id}
+      </span>
     </button>
   )
 }
@@ -535,6 +537,11 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
+/** The columns a table draws: every one, less Why when no row has a why (D12). */
+export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
+  return rows.some((r) => r.why !== null) ? COLUMNS : COLUMNS.filter((c) => c.col !== 'why')
+}
+
 /**
  * The `waited` cell: the QUEUE, from the last parent's finish to the start
  * (#107), with the time spent on the parents in its note. A step still waiting
@@ -742,6 +749,10 @@ export function WorkflowTable({
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
   const more = useMoreRight<HTMLDivElement>()
+  // AN EMPTY COLUMN IS NOT DRAWN (browser QA D12, 2026-10-04): with no step
+  // waiting on a reason or failed, Why was ~110px of blank while ten long step
+  // names were squeezed beside it. The step column takes that room instead.
+  const columns = tableColumns(rows)
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -761,11 +772,11 @@ export function WorkflowTable({
         so below 900px it scrolls with the step column held in view rather
         than stacking (design-system.md §7.3). `has-more` is the right-edge
         fade while columns are off that edge (#109). */}
-    <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}`}>
+    <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}${columns.length < COLUMNS.length ? ' no-why' : ''}`}>
       <table>
         <thead>
           <tr>
-            {COLUMNS.map((c) => (
+            {columns.map((c) => (
               <th
                 key={c.col}
                 data-col={c.col}
@@ -809,26 +820,28 @@ export function WorkflowTable({
                   <WfStepMark look={r.look} word />
                 </span>
               </td>
-              <td data-col="why">
-                <WhyCell why={r.why} />
-              </td>
-              <td data-col="runner">{r.step.runner_profile}</td>
-              <td data-col="waited" className="is-num">
+              {columns.length === COLUMNS.length && (
+                <td data-col="why" data-label="Why">
+                  <WhyCell why={r.why} />
+                </td>
+              )}
+              <td data-col="runner" data-label="Runner">{r.step.runner_profile}</td>
+              <td data-col="waited" data-label="Waited" className="is-num">
                 <CellView cell={waitedCell(r.times)} />
               </td>
-              <td data-col="ran" className="is-num">
+              <td data-col="ran" data-label="Ran" className="is-num">
                 <CellView cell={r.ran} />
               </td>
-              <td data-col="attempts" className="is-num">
+              <td data-col="attempts" data-label="Attempts" className="is-num">
                 <AttemptsView cell={r.attempts} over={r.attemptsOver} />
               </td>
-              <td data-col="cost" className="is-num">
+              <td data-col="cost" data-label="Cost" className="is-num">
                 <CellView cell={r.cost} pending={r.pending} from={r.costFrom} />
               </td>
-              <td data-col="tokens" className="is-num">
+              <td data-col="tokens" data-label="Tokens" className="is-num">
                 <CellView cell={r.tokens} pending={r.pending} from={r.tokensFrom} />
               </td>
-              <td data-col="inputs">
+              <td data-col="inputs" data-label="Inputs">
                 <InputsSummary
                   inputs={r.inputs}
                   open={opened.has(r.step.step_id)}
@@ -839,7 +852,7 @@ export function WorkflowTable({
             </tr>
             {opened.has(r.step.step_id) && inputsCount(r.inputs) + r.inputs.malformed > 0 && (
               <tr className="wf-xrow">
-                <td colSpan={COLUMNS.length}>
+                <td colSpan={columns.length}>
                   <div id={inputsRowId(r.step.step_id)} className="wf-xinputs">
                     <span className="wf-xinputs-h">Reads</span>
                     <InputsCell inputs={r.inputs} />
@@ -849,7 +862,7 @@ export function WorkflowTable({
             )}
             {detail !== null && picked === r.step.step_id && (
               <tr className="wf-inline-row">
-                <td colSpan={COLUMNS.length}>
+                <td colSpan={columns.length}>
                   <div className="wf-inline">{detail}</div>
                 </td>
               </tr>

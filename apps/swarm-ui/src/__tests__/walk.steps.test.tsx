@@ -93,7 +93,8 @@ describe('A: the Steps table is a fixed table whose cells never overlap', () => 
       const { width, cols } = fixedColumns(t, container, WIDE)
       // Why takes the slack, and there is slack to take.
       const why = cols.find((c) => c.col === 'why')!
-      expect(why.end - why.start, `why is ${why.end - why.start}px at ${width}`).toBeGreaterThanOrEqual(90)
+      // 60px since browser QA D12 (2026-10-04): Ran and Cost grew to what they hold.
+      expect(why.end - why.start, `why is ${why.end - why.start}px at ${width}`).toBeGreaterThanOrEqual(60)
       for (const row of rows) {
         // What the row draws today ...
         const drawn = boxesOf(row, styles, cols, (_c, cell) => cell.textContent ?? '')
