@@ -13,7 +13,8 @@ nothing beyond its base, or whose pull request the forge refuses, ends FAILED
 with `last_error` "published_nothing: ...", and is NOT retried (it is
 deterministic). Every other step that changes nothing still SUCCEEDS: a
 contributor, a reader, a `collect` step. An unreachable forge is not a
-refusal and is left as it was.
+refusal: one that stays down past the in-process retry fails the pull-request
+step's ATTEMPT retryably (F1, 2026-10-04), with its capacity released.
 
 And contract request 29 (applied 2026-10-02): the credential scan's and the
 refused title's failures end, once their attempts are spent, with
@@ -138,8 +139,10 @@ def test_an_integrator_whose_pull_request_is_refused_fails_naming_the_refusal(
 def test_an_unreachable_forge_is_not_a_refusal(
     db, worker_factory, monkeypatch, origin, local_urls, forge
 ):
-    """The boundary of the refusal: an outage pushed the branch and says so,
-    as before. Only the forge's answer "no" is a fact a retry would meet."""
+    """The boundary of the refusal: a forge error that is neither an answer
+    "no" nor a classified outage (`ForgeUnavailable`, which fails the attempt
+    retryably -- see the F1 tests below) pushed the branch and says so, as
+    before. Only the forge's answer "no" is a fact a retry would meet."""
     def unreachable(**_kwargs):
         raise forge_mod.ForgeError("could not open a pull request (502): Bad Gateway")
 
@@ -310,3 +313,140 @@ def test_a_pull_request_whose_open_blips_once_is_retried_in_process_and_opened(
     assert git["pull_request"]["number"] == 1, git
     assert len(forge.pulls) == 1
     assert slept, "the blips were not retried"
+
+
+# -- F1: a forge that stays down at publish fails the ATTEMPT, retryably -------
+
+INTEGRATOR = {"strategy": "integrate", "role": "integrator", "integrates": ["t-gone"]}
+
+
+def _capacity_released(db) -> bool:
+    lease = db.doc("leases/lease_1")
+    pools = [db.doc(name if name.startswith("pools/") else f"pools/{name}")
+             for name in lease["pools"]]
+    return lease.get("released_at") is not None and all(int(p["active"]) < 1 for p in pools)
+
+
+def _down(calls: list[str], name: str, retry_after: int | None = None):
+    def call(**_kwargs):
+        calls.append(name)
+        raise forge_mod.ForgeUnavailable(
+            "could not reach api.github.com: timed out", retry_after_seconds=retry_after
+        )
+    return call
+
+
+def test_a_pull_request_whose_forge_stays_down_fails_the_attempt_retryably(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """The review's major (F1): the branch was pushed, every try at opening
+    the pull request timed out, and the step used to end SUCCEEDED with no
+    pull request. It now goes back to READY with `forge_unreachable`, its
+    capacity released, waiting the forge's own Retry-After."""
+    calls: list[str] = []
+    monkeypatch.setattr(lifecycle, "open_pull_request", _down(calls, "open", retry_after=90))
+    worker = _run(db, worker_factory, monkeypatch, origin, dispatch=INTEGRATOR,
+                  task_input=TITLED)
+    slept: list[float] = []
+    worker.forge_sleep = slept.append
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task.get("last_error")
+    assert task["last_error"].startswith(f"{lifecycle.FORGE_UNREACHABLE}: "), task["last_error"]
+    assert task.get("end_cause") is None
+    assert task.get("next_eligible_at") is not None
+    retried = _retried(db)
+    assert len(retried) == 1, retried
+    assert lifecycle.FORGE_UNREACHABLE in str(retried[0])
+    assert _capacity_released(db), db.doc("leases/lease_1")
+    assert calls, "the pull request was never asked for"
+    assert forge.pulls == []
+    git = task["result_summary"]["git"]
+    assert git["published"] is True, git
+    assert "pull_request_refused" not in git
+    assert git[lifecycle.PUBLISH_UNREACHABLE_FIELD]["tries"] == len(calls)
+    assert git[lifecycle.PUBLISH_UNREACHABLE_FIELD]["retry_after_seconds"] == 90
+
+
+def _probe_down_at_publish(db, worker_factory, monkeypatch, origin, calls: list[str]):
+    """A run whose carrier probes answer and whose publish probe meets an outage."""
+    worker = _run(db, worker_factory, monkeypatch, origin, dispatch=INTEGRATOR,
+                  task_input=TITLED)
+    worker.forge_sleep = lambda _seconds: None
+    real_publish = worker._publish_git
+
+    def publish(**kwargs):
+        monkeypatch.setattr(lifecycle, "probe_repository", _down(calls, "probe"))
+        return real_publish(**kwargs)
+
+    monkeypatch.setattr(worker, "_publish_git", publish)
+    return worker
+
+
+def test_a_publish_probe_whose_forge_stays_down_fails_the_attempt_retryably(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    calls: list[str] = []
+    worker = _probe_down_at_publish(db, worker_factory, monkeypatch, origin, calls)
+    # The mock agent commits nothing, which `_published_nothing` fails for
+    # first (the next test); set aside here so the probe's outage is what the
+    # finish meets, as it is for an agent that did commit.
+    monkeypatch.setattr(worker, "_published_nothing", lambda _summary: None)
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.READY.value, task.get("last_error")
+    assert task["last_error"].startswith(f"{lifecycle.FORGE_UNREACHABLE}: ")
+    assert len(calls) == worker.cfg.forge_read_attempts, calls
+    assert _capacity_released(db)
+    git = task["result_summary"]["git"]
+    assert git["published"] is False
+    assert git[lifecycle.PUBLISH_UNREACHABLE_FIELD]["tries"] == len(calls)
+
+
+def test_a_step_that_changed_nothing_is_published_nothing_even_when_the_forge_is_down(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """No commit beyond the base is a local fact a retry would meet again, so
+    it ends the step for good whatever the forge was doing at the time."""
+    worker = _probe_down_at_publish(db, worker_factory, monkeypatch, origin, [])
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task["state"]
+    assert task["last_error"].startswith("published_nothing: "), task["last_error"]
+    assert _retried(db) == []
+
+
+def test_a_publish_outage_on_the_last_attempt_ends_outputs_missing(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """Attempts spent: FAILED, the step's deliverable missing -- never
+    INPUTS_UNAVAILABLE, and never SUCCEEDED."""
+    monkeypatch.setattr(lifecycle, "open_pull_request", _down([], "open"))
+    worker = _run(db, worker_factory, monkeypatch, origin, dispatch=INTEGRATOR,
+                  task_input=TITLED, attempt_count=3)
+    worker.forge_sleep = lambda _seconds: None
+
+    assert worker.run() == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task["state"]
+    assert task["end_cause"] == "outputs_missing", task["end_cause"]
+    assert task["last_error"].startswith(f"{lifecycle.FORGE_UNREACHABLE}: ")
+    assert _capacity_released(db)
+
+
+def test_only_a_step_that_owes_a_pull_request_is_failed_for_a_publish_outage(worker_factory):
+    """A contributor's or reader's deliverable is its branch or its artifacts;
+    an outage at the forge's API after the push does not undo either."""
+    marker = {"reason": "could not reach api.github.com: timed out", "tries": 4,
+              "retry_after_seconds": None}
+    summary = {"git": {"published": True, lifecycle.PUBLISH_UNREACHABLE_FIELD: marker}}
+    worker, _, _ = worker_factory()
+    worker._task = {"metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    assert worker._publish_unreachable(summary) == marker
+    worker._task = {"metadata": {"dispatch": {"strategy": "integrate", "role": "contributor"}}}
+    assert worker._publish_unreachable(summary) is None
+    worker._task = {"metadata": {"dispatch": {"strategy": "direct-pr"}}}
+    assert worker._publish_unreachable({"git": {"published": True}}) is None

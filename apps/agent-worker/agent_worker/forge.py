@@ -166,6 +166,13 @@ class RetryPolicy:
     request timeout. A wait (backoff or `Retry-After`) that would end past the
     budget is not slept at all; the failure goes to the caller, which ends the
     attempt retryably with the forge's `Retry-After` as the retry's delay.
+
+    The budget is checked before each WAIT, not before each try, so the last
+    try can run up to one request timeout (`_TIMEOUT`, or the issue fetch's
+    own) past it. Deliberate: a budget that also reserved a request timeout
+    would leave a 45 s budget room for one retry of a 30 s timeout at most,
+    which is the blip this retry exists for. The overshoot is bounded by that
+    one timeout.
     """
 
     attempts: int = DEFAULT_READ_ATTEMPTS
@@ -191,7 +198,7 @@ class RetryPolicy:
         return cls(attempts=max(1, int(attempts)), budget_seconds=budget, sleep=sleep, log=log)
 
 
-def _loggable(text: str) -> str:
+def loggable(text: str) -> str:
     """A failure's text for a log line: no query string, bounded."""
     return _QUERY.sub("", text)[:300]
 
@@ -227,7 +234,7 @@ def retry_transient(call: Callable[[], _T], *, policy: RetryPolicy | None, what:
                     attempt=attempt,
                     attempts=policy.attempts,
                     wait_seconds=wait,
-                    reason=_loggable(str(exc)),
+                    reason=loggable(str(exc)),
                 )
             policy.sleep(wait)
             attempt += 1
@@ -388,7 +395,7 @@ def _request(
             raise ForgeUnavailable(
                 f"the forge answered {exc.code} to {urlparse(url).path}"
                 + (f": {message}" if message else ""),
-                retry_after_seconds=_retry_after(headers),
+                retry_after_seconds=retry_after_from_headers(headers),
             ) from None
         return exc.code, parsed
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
@@ -762,7 +769,10 @@ def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], byte
         raise ForgeUnavailable(f"could not reach the forge: {type(exc).__name__}") from None
 
 
-def _retry_after(headers: Mapping[str, str], *, now: float | None = None) -> int | None:
+def retry_after_from_headers(
+    headers: Mapping[str, str], *, now: float | None = None
+) -> int | None:
+    """The forge's own wait, in seconds: `retry-after`, else until `x-ratelimit-reset`."""
     lowered = {k.lower(): v for k, v in headers.items()}
     raw = lowered.get("retry-after")
     if raw is not None and str(raw).strip().isdigit():
@@ -848,7 +858,7 @@ class PinnedForgeClient:
             raise ForgeUnavailable(
                 f"the forge answered {status} to {path}"
                 + (f": {_message_of(data)}" if _message_of(data) else ""),
-                retry_after_seconds=_retry_after(headers),
+                retry_after_seconds=retry_after_from_headers(headers),
             )
         return ForgeResponse(status=status, data=data, headers=headers)
 

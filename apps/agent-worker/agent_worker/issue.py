@@ -77,8 +77,8 @@ from .forge import (
     ForgeUnavailable,
     RepoRef,
     RetryPolicy,
-    _retry_after,
     parse_repo,
+    retry_after_from_headers,
     retry_transient,
     transient_network_error,
     transient_status,
@@ -257,10 +257,14 @@ def _open(req: urllib.request.Request) -> tuple[int, Any, Mapping[str, str]]:
         except json.JSONDecodeError:
             parsed = {"message": raw[:300]}
         return exc.code, parsed, (dict(exc.headers.items()) if exc.headers else {})
-    except json.JSONDecodeError as exc:
-        raise IssueUnavailable(
+    except json.JSONDecodeError:
+        # A success whose body is not JSON is not GitHub's answer about the
+        # issue: it is a proxy's page or a body cut short in transit. Retried
+        # like a blip (`IssueUnreachable`) rather than ending the task
+        # INPUTS_UNAVAILABLE for an issue nobody said was missing.
+        raise IssueUnreachable(
             f"{urlparse(req.full_url).hostname} answered with text that is not JSON"
-        ) from exc
+        ) from None
     except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
         # A timeout, a reset or DNS is a blip (`IssueUnreachable`, retried);
         # a certificate the host could not prove is not, and stays a refusal.
@@ -297,7 +301,7 @@ def _refusal(
         return IssueUnreachable(
             f"could not fetch {what}: the forge is unavailable or rate-limited "
             f"({status}{detail})",
-            retry_after_seconds=_retry_after(headers or {}),
+            retry_after_seconds=retry_after_from_headers(headers or {}),
         )
     if status == 404:
         why = (

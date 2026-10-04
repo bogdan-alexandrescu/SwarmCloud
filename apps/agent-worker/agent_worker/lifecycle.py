@@ -394,6 +394,14 @@ _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 #: Held to the forge's wording by tests/unit/worker/test_published_nothing.py.
 PULL_REQUEST_REFUSED = "the forge refused the pull request"
 
+#: The `result_summary.git` key `_publish_git` sets when the forge stayed
+#: unreachable past the in-process retry (`forge.retry_transient`) while
+#: probing the repository or opening the pull request (F1, 2026-10-04). Read
+#: by `_publish_unreachable`: a pull-request step that ends with it fails its
+#: ATTEMPT retryably rather than SUCCEEDING with no pull request -- the shape
+#: that turned release 37017777271's acceptance red on 2026-10-02.
+PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
+
 #: The files an agent leaves in `$SWARM_ARTIFACTS_DIR` to write its own pull
 #: request's title and body (#214), so a platform pull request can say what it
 #: closes. Read without following a link, scrubbed, bounded, and refused -- in
@@ -2252,6 +2260,9 @@ class Worker:
             nothing = self._published_nothing(summary)
             if nothing is not None:
                 return self._fail_for_published_nothing(nothing, summary, exit_code=0)
+            unreachable = self._publish_unreachable(summary)
+            if unreachable is not None:
+                return self._fail_for_publish_unreachable(unreachable, summary, exit_code=0)
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -4163,6 +4174,83 @@ class Worker:
             )
         return None
 
+    def _publish_unreachable(self, summary: dict[str, Any]) -> dict[str, Any] | None:
+        """The forge outage that kept a pull-request step from opening its pull
+        request, or None (F1, 2026-10-04).
+
+        Set by `_publish_git` only for a `ForgeUnavailable` that outlasted
+        `retry_transient` -- a timeout, reset, DNS failure, 429, 5xx or
+        rate-limit 403 at the probe or at `open_pull_request`. A forge that
+        ANSWERED (a 422 refusal, a 404, a plain 403) is not here: the refusal
+        is `_published_nothing`'s, and the rest stay the publish's recorded
+        reason. Only a step that owes a pull request (`_opens_pull_request`)
+        is failed for it; any other step's deliverable is its branch or its
+        artifacts, which an outage at the forge's API does not touch.
+        """
+        if not self._opens_pull_request():
+            return None
+        git = summary.get("git")
+        if not isinstance(git, dict):
+            return None
+        marker = git.get(PUBLISH_UNREACHABLE_FIELD)
+        return marker if isinstance(marker, dict) else None
+
+    def _unreachable_marker(self, exc: forge_mod.ForgeUnavailable) -> dict[str, Any]:
+        """What `_publish_git` records of an outage: scrubbed, bounded, no query string."""
+        return {
+            "reason": str(self._scrub(forge_mod.loggable(str(exc)))),
+            "tries": int(exc.tries),
+            "retry_after_seconds": exc.retry_after_seconds,
+        }
+
+    def _fail_for_publish_unreachable(
+        self, marker: dict[str, Any], summary: dict[str, Any], *, exit_code: int
+    ) -> Outcome:
+        """Fail this ATTEMPT, retryably, because the forge stayed down at publish.
+
+        The same path `_fail_issue_unreachable` takes before the agent runs:
+        `fail_retryably` with cause `forge_unreachable`, so the task goes back
+        to READY while it has attempts left, its lease and its pool capacity
+        are released, and the scheduler admits it again after the forge's own
+        `Retry-After` or `FORGE_UNREACHABLE_RETRY_DELAY_SECONDS`, whichever is
+        longer. Not `finish(SUCCEEDED)`: a pull-request step with no pull
+        request has not delivered. Not `_fail_for_published_nothing`: that is
+        for a forge that answered "no", which a retry would meet again; an
+        outage may be over by then. The branch, if it was pushed, stays; the
+        next attempt resumes from the final checkpoint, pushes the same branch
+        and adopts any pull request this attempt opened before losing the
+        answer (`open_pull_request`'s 422). Once attempts are spent it ends
+        OUTPUTS_MISSING, as `_fail_for_published_nothing` does: the step's
+        promised deliverable does not exist.
+        """
+        reason = str(marker.get("reason") or "the forge did not answer")
+        tries = marker.get("tries")
+        retry_after = marker.get("retry_after_seconds")
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: the step was to open a pull request, and the "
+            f"forge did not answer after {tries} tries: {reason}. The attempt is "
+            "retried while the task has attempts left."
+        )
+        state = self.control.fail_retryably(
+            exit_code=exit_code,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=max(
+                FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+                int(retry_after) if isinstance(retry_after, int) else 0,
+            ),
+            detail={"publish": "pull_request", "tries": tries},
+            end_cause=EndCause.OUTPUTS_MISSING,
+        )
+        self.log.warning(
+            "the forge did not answer at publish; failing the attempt retryably",
+            cause=FORGE_UNREACHABLE,
+            tries=tries,
+            task_state=state.value,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
     def _fail_for_published_nothing(
         self, reason: str, summary: dict[str, Any], *, exit_code: int
     ) -> Outcome:
@@ -5526,7 +5614,11 @@ class Worker:
         if not token:
             return "no credential"
         try:
-            access = probe_repository(url=url, token=token)
+            access = forge_mod.retry_transient(
+                lambda: probe_repository(url=url, token=token),
+                policy=self._forge_retry(),
+                what="the carrier target probe",
+            )
         except ForgeError as exc:
             return f"could not reach the forge: {self._scrub(str(exc)[:300])}"
         if access is None:
@@ -6885,10 +6977,13 @@ class Worker:
                 what="the publish probe",
             )
         except ForgeError as exc:
-            return {
+            out = {
                 "published": False,
                 "publish_reason": f"could not reach the forge: {self._scrub(str(exc)[:300])}",
             }
+            if isinstance(exc, forge_mod.ForgeUnavailable):
+                out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc)
+            return out
         if access is None:
             return {
                 "published": False,
@@ -7366,8 +7461,14 @@ class Worker:
                 # 422, e.g. "No commits between main and swarm/..."): a fact
                 # about this branch that a retry would meet again, so the
                 # finish fails the step for it (`_published_nothing`). An
-                # unreachable forge is not a refusal and is left as it was.
+                # unreachable forge is not a refusal.
                 out["pull_request_refused"] = message
+            elif isinstance(exc, forge_mod.ForgeUnavailable):
+                # An outage that outlasted the in-process retry: the finish
+                # fails the ATTEMPT retryably for it (`_publish_unreachable`),
+                # and the next attempt's 422 adopts a pull request this one
+                # may have opened before its answer was lost.
+                out[PUBLISH_UNREACHABLE_FIELD] = self._unreachable_marker(exc)
             return out
 
         updated = bool(getattr(pr, "updated", False))

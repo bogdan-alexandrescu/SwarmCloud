@@ -292,6 +292,35 @@ def test_an_issue_fetch_that_cannot_reach_the_forge_is_transient_not_an_unavaila
     assert "api.github.com" in str(raised.value)
 
 
+class _Answer(io.BytesIO):
+    status = 200
+    headers: Any = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc: Any) -> None:
+        self.close()
+
+
+class _AnsweringOpener:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def open(self, req, timeout=None):  # noqa: ANN001
+        return _Answer(self.body)
+
+
+def test_a_success_whose_body_is_not_json_is_transient_not_an_unavailable_input(monkeypatch):
+    """A proxy's page or a body cut short is not GitHub saying the issue is
+    missing: retried, then the attempt fails retryably."""
+    monkeypatch.setattr(issue_mod, "_OPENER", _AnsweringOpener(b"<html>Bad gateway</html>"))
+    with pytest.raises(issue_mod.IssueUnreachable) as raised:
+        issue_mod.fetch_issue(repository_url=REPO, number=72, token=None)
+    assert not isinstance(raised.value, InputUnavailable)
+    assert "not JSON" in str(raised.value)
+
+
 def _answering(monkeypatch, status: int, data: Any, headers: dict[str, str] | None = None):
     monkeypatch.setattr(issue_mod, "_open", lambda req: (status, data, headers or {}))
 
