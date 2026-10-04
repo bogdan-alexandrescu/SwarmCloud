@@ -268,11 +268,15 @@ function section(root: HTMLElement, title: string): HTMLElement | undefined {
  * The Elapsed tile's figure. The run's length has one home since #102 -- the
  * Headline's `run` fact printed the same `elapsed()` text a row above it.
  */
-function elapsedFigure(root: HTMLElement): string | undefined {
-  const tile = [...root.querySelectorAll<HTMLElement>('.ctl-metric')].find(
-    (el) => el.querySelector('.ctl-metric-label')?.textContent?.startsWith('Elapsed'),
+function elapsedCell(root: HTMLElement): HTMLElement | undefined {
+  return [...root.querySelectorAll<HTMLElement>('.dt-sc')].find((el) =>
+    el.querySelector('.dt-sc-l')?.textContent?.startsWith('Elapsed'),
   )
-  return tile?.querySelector('.ctl-metric-value')?.textContent ?? undefined
+}
+
+/** The strip's Elapsed figure (agent-details-v3.html A). */
+function elapsedFigure(root: HTMLElement): string | undefined {
+  return elapsedCell(root)?.querySelector('.dt-sc-v')?.textContent ?? undefined
 }
 
 // Every count below starts from zero, whatever an earlier test in this file
@@ -403,7 +407,8 @@ describe('a checkpoint written while the drawer is open is not drawn as lost', (
     expect(listings).toBe(1)
     await advance(DRAWER_POLL_MS)
     expect(listings, 'the checkpoint listing was not re-read with the drawer').toBe(2)
-    expect(root.textContent).toContain('1 written, 1 kept')
+    // The leading card's checkpoint fact: written, then what the bucket keeps.
+    expect(root.querySelector('.dt-now')?.textContent).toMatch(/Checkpoints\s*1\b.*· 1 kept/)
     expect(section(root, 'Checkpoints'), 'Details drew the Checkpoints tab\'s panel').toBeUndefined()
   })
 })
@@ -436,7 +441,9 @@ describe('the runner log is not in Details, so no Details poll reads it', () => 
 
     started = true
     await advance(DRAWER_POLL_MS)
-    expect(root.querySelector('.sk-st')?.textContent).toMatch(/RUNNING/i)
+    // The re-read landed: the strip times a run now (the state pill is the
+    // split header's; this pane draws none of its own).
+    expect(elapsedCell(root)?.querySelector('.dt-sc-s')?.textContent).toMatch(/^since /)
     expect(api.loadAgentRun, 'the drawer did not re-read').toHaveBeenCalledTimes(2)
     expect(api.loadTaskLogs, 'a Details poll read the runner log').not.toHaveBeenCalled()
   })

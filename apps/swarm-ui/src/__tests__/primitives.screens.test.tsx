@@ -255,8 +255,9 @@ function track(r: Element): Element {
 
 /** The one tile whose label reads `label`. */
 function tile(label: string): Element {
-  const found = [...document.querySelectorAll('.ctl-metric')].find(
-    (t) => (t.querySelector('.ctl-metric-label')?.childNodes[0]?.textContent ?? '').trim() === label,
+  // `.dt-sc` is the agent Details tab's stat strip (agent-details-v3.html A).
+  const found = [...document.querySelectorAll('.ctl-metric, .dt-sc')].find(
+    (t) => (t.querySelector('.ctl-metric-label, .dt-sc-l')?.childNodes[0]?.textContent ?? '').trim() === label,
   )
   expect(found, `no tile is labelled ${label}`).toBeTruthy()
   return found!
@@ -466,7 +467,7 @@ describe('AgentDetail draws requested-vs-utilised through the shared track', () 
     await mountRun(agentRun({ attempts: null, attemptsDetail: 'HTTP 503' }))
     const peak = tile('Peak memory')
     expect(peak.classList.contains('is-unread')).toBe(true)
-    expect(peak.querySelector('.ctl-metric-value')?.textContent).not.toMatch(/\d/)
+    expect(peak.querySelector('.dt-sc-v')?.textContent).not.toMatch(/\d/)
     const failed = document.querySelector('.ctl-empty.is-failed')
     expect(failed?.querySelector('.ctl-mark.is-unread')?.textContent).toBe('not read')
     expect(failed?.getAttribute('role')).toBe('status')
