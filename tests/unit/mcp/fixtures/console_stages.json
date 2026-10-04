@@ -1,0 +1,21 @@
+{
+  "_why": "Specs whose step rows in Claude Code must read exactly as the console's Steps table reads them: the same `stage N` (the step's DAG level + 1, from apps/swarm-ui/src/dag.ts levelsOf) and the same order (level by level, spec order within a level, stepviews.ts stepOrder). test_plugin_rows_match_console.py derives the console's answer by running dag.ts's own levelsOf, never a restatement of it.",
+  "chain": {
+    "label": "implement, review, fix",
+    "steps": [
+      {"step_id": "implement", "prompt": "implement it"},
+      {"step_id": "review", "prompt": "review it", "depends_on": ["implement"]},
+      {"step_id": "fix", "prompt": "fix it", "depends_on": ["review"]}
+    ]
+  },
+  "parallel": {
+    "label": "scan, join, report",
+    "steps": [
+      {"step_id": "scan-01", "prompt": "scan a"},
+      {"step_id": "report", "prompt": "report", "depends_on": ["join"], "stage": "Report"},
+      {"step_id": "scan-02", "prompt": "scan b"},
+      {"step_id": "join", "prompt": "join", "depends_on": ["scan-01", "scan-02"]},
+      {"step_id": "scan-03", "prompt": "scan c", "stage": "Scans"}
+    ]
+  }
+}
