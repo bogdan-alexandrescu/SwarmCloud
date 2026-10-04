@@ -64,6 +64,7 @@
 .dt-now { border-left: 3px solid var(--s-live); gap: 9px; }
 .dt-now.is-warn { border-left-color: var(--s-warn); }
 .dt-now.is-ok { border-left-color: var(--s-live); }
+.dt-now.is-neu { border-left-color: var(--s-neu); }
 .dt-now.is-bad { border-left-color: var(--s-bad); background: linear-gradient(90deg, var(--s-badb), var(--surface) 70%); }
 .dt-now.is-bad > .dt-card-head > b { color: var(--s-bad); }
 .dt-phases { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }

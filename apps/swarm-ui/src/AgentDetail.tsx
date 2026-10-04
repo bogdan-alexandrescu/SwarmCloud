@@ -679,7 +679,9 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
         : 'Failed'
   const text = task.last_error
   return (
-    <section className="dt-card dt-now is-bad" data-lead="failed">
+    // A CANCEL IS NOT A FAILURE: it leads the same way, on the neutral rule,
+    // so an operator's own Stop does not read as the platform's fault.
+    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead="failed">
       <DtCardHead title={heading}>
         <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
           Attempts
