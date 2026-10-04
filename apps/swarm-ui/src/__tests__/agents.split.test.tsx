@@ -65,8 +65,8 @@ function agent(over: Partial<Task> = {}): Task {
   })
 }
 
-type Pane = 'detail' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
-const PANES: readonly Pane[] = ['children', 'attempts', 'artifacts', 'checkpoints']
+type Pane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+const PANES: readonly Pane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
 
 /** The split under a router of its own: a tab's address is the pane it opens (U10a D36). */
 function Routed({ start, onGo }: { start: Pane; onGo?: (to: string) => void }) {
@@ -221,17 +221,17 @@ describe('the divider has a handle, snaps to three stops, and remembers per devi
   })
 })
 
-describe('the log docks under the detail column and stays open across the tabs', () => {
-  it('is in the split on Details and on Checkpoints, and keeps what the reader typed', async () => {
+describe('the log is a tab, not a dock across the tabs (U11a, owner decision 2026-10-04)', () => {
+  it('draws the log on Logs only, and keeps what the reader typed while the agent stays open there', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
-    const { rerender } = render(split('detail'))
-    const dock = await screen.findByRole('region', { name: 'Log' })
-    expect(dock.closest('.ag-split'), 'the dock is not in the detail column').not.toBeNull()
-    fireEvent.change(within(dock).getByRole('searchbox', { name: 'Search this window' }), { target: { value: 'lease' } })
-    rerender(split('checkpoints'))
-    const again = screen.getByRole('region', { name: 'Log' })
-    expect(again).toBe(dock)
-    expect((within(again).getByRole('searchbox', { name: 'Search this window' }) as HTMLInputElement).value).toBe('lease')
+    render(split('logs'))
+    const logs = await screen.findByRole('region', { name: 'Logs' })
+    expect(logs.closest('.ag-split-pane'), 'the log is not in the pane').not.toBeNull()
+    fireEvent.change(within(logs).getByRole('searchbox', { name: 'Search this window' }), { target: { value: 'lease' } })
+    fireEvent.click(tab('Checkpoints'))
+    expect(screen.queryByRole('region', { name: 'Logs' }), 'the log is drawn on another tab').toBeNull()
+    fireEvent.click(tab('Logs'))
+    expect(screen.getByRole('region', { name: 'Logs' })).toBeTruthy()
   })
 })
 
@@ -241,7 +241,7 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
     render(split())
     await waitFor(() => expect(tab('Attempts').querySelector('.c-tabs em')?.textContent).toBe('2'))
     const names = [...document.querySelectorAll('.c-tabs[role="tablist"] .c-tab-label')].map((t) => t.textContent)
-    expect(names).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(names).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(api.loadChildren).not.toHaveBeenCalled()
   })
 

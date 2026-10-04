@@ -143,7 +143,7 @@ describe('B2: the attempt timeline is a view mode, not a screen', () => {
     const panes = [...drawer!.querySelectorAll('[role="tab"] .c-tab-label')].map((b) => b.textContent?.trim())
     // #184: `Details` (was `Detail`) and a third pane, `Artifacts`; the
     // rebrand (agents.html V1, 2026-10-01) adds `Checkpoints` as the fourth.
-    expect(panes).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(panes).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
     expect(
       drawer!.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent?.trim(),
     ).toBe('Attempts')

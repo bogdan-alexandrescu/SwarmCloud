@@ -138,11 +138,21 @@ export function ArtifactViewer({
   // looked like nothing happened: it is scrolled into view as it opens.
   // Escape closes it (escape.ts: before the split's own Escape, which would
   // close the agent), and focus goes back to what opened it.
+  //
+  // ITS TOP, IN ITS OWN PANE (U11a, owner QA 2026-10-04). `block: 'nearest'`
+  // brought the viewer's still-reading 200px to the foot of the window, at y
+  // 763-971 under the log strip, and the content that landed after grew below
+  // the fold; and `scrollIntoView` scrolls every ancestor, the page included.
+  // Inside the agent's pane only the pane scrolls, to put the viewer's top at
+  // the pane's top, as it opens and once more when its first read lands.
   const box = useRef<HTMLDivElement>(null)
   const opener = useRef<Element | null>(null)
+  const landed = state.kind !== 'loading'
+  useEffect(() => {
+    if (box.current !== null) revealTop(box.current)
+  }, [landed])
   useEffect(() => {
     opener.current = typeof document === 'undefined' ? null : document.activeElement
-    box.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
     return () => {
       const back = opener.current
       if (back instanceof HTMLElement && back.isConnected && back !== document.body) back.focus()
@@ -1439,4 +1449,18 @@ function pickText(row: Record<string, unknown>): string {
     return parts.join('\n')
   }
   return ''
+}
+
+/**
+ * Brings `el`'s top to the top of the agent pane that scrolls it, moving only
+ * that pane; outside the split it falls back to `scrollIntoView`.
+ */
+export function revealTop(el: HTMLElement): void {
+  const pane = el.closest<HTMLElement>('.ag-split-pane')
+  if (pane === null) {
+    el.scrollIntoView?.({ block: 'start', behavior: 'smooth' })
+    return
+  }
+  const offset = el.getBoundingClientRect().top - pane.getBoundingClientRect().top
+  pane.scrollTop = Math.max(0, pane.scrollTop + offset - 8)
 }

@@ -1,19 +1,21 @@
-// THE LOG DOCK (viewers.html, pick A, 2026-10-02).
+// THE LOGS TAB (owner decision 2026-10-04; it replaced viewers.html pick A's
+// bottom dock).
 //
-// The log docks under the agent's detail column and stays open across the
-// tabs; it reads the attempt the reader picks, by attempt_id; it follows and
-// pauses, counting what arrived while paused; it searches "this window",
-// wraps, jumps to the next error (a transcript tool result's is_error plus a
-// console-side pattern, and says it can miss), counts what the server masked
-// and draws the mask as ********, and says when output fell out of the live
-// tail between two reads.
+// The log is a tab of the agent; it reads the attempt the reader picks, by
+// attempt_id; it follows and pauses, counting what arrived while paused; it
+// searches "this window", wraps, jumps to the next error (a transcript tool
+// result's is_error plus a console-side pattern, and says it can miss),
+// counts what the server masked and draws the mask as ********, and says
+// when output fell out of the live tail between two reads. Details carries
+// its one newest line, which opens the tab.
 //
-// MUTATIONS, one per block: drop `attemptId` from the dock's reads or from
-// the stdout view's; let a paused dock show the newest read; count hits over
+// MUTATIONS, one per block: drop `attemptId` from the tab's reads or from
+// the stdout view's; let a paused log show the newest read; count hits over
 // the whole stream; drop the transcript's `is_error` from the error targets;
-// draw the mask as plain text; compare a read with itself for the gap.
+// draw the mask as plain text; compare a read with itself for the gap; drop
+// the last line or its Open logs.
 
-import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
@@ -31,7 +33,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { LogDock, defaultView } = await import('../LogDock')
+const { AgentLogs, LogLastLine, defaultView } = await import('../AgentLogs')
 
 const ID = 'task_0123456789abcdef0123'
 const MASK = '*'.repeat(8)
@@ -145,14 +147,12 @@ function running(over: Partial<Task> = {}): Task {
 }
 
 function dock(): HTMLElement {
-  // Open full, the log is a dialog over the app (U10a D1); docked, a region.
-  return screen.queryByRole('dialog', { name: 'Log' }) ?? screen.getByRole('region', { name: 'Log' })
+  return screen.getByRole('region', { name: 'Logs' })
 }
 
 function chooseStream(label: string) {
-  const b = within(dock()).getAllByRole('button').find((x) => x.textContent === label)
-  expect(b, `no ${label} stream button`).toBeTruthy()
-  fireEvent.click(b!)
+  const group = within(dock()).getByRole('group', { name: 'Which log' })
+  fireEvent.click(within(group).getByRole('button', { name: label }))
 }
 
 beforeEach(() => {
@@ -166,7 +166,7 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-describe('the dock opens on the stream the runner has', () => {
+describe('the tab opens on the stream the runner has', () => {
   it('opens on Transcript for an agent CLI, and on Runner for a runner with none', () => {
     expect(defaultView('claude-code')).toBe('transcript')
     expect(defaultView('codex')).toBe('transcript')
@@ -175,9 +175,10 @@ describe('the dock opens on the stream the runner has', () => {
   })
 
   it('offers Transcript, Agent stdout, Agent stderr and Runner', async () => {
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     const group = within(dock()).getByRole('group', { name: 'Which log' })
-    expect(within(group).getAllByRole('button').map((b) => b.textContent)).toEqual([
+    // By the name a reader hears: a narrow bar draws a short label beside it.
+    expect(within(group).getAllByRole('button').map((b) => b.querySelector('.ag-logs-long')?.textContent ?? b.textContent)).toEqual([
       'Transcript',
       'Agent stdout',
       'Agent stderr',
@@ -189,7 +190,7 @@ describe('the dock opens on the stream the runner has', () => {
 
 describe('the attempt picker reads the picked attempt, by attempt_id', () => {
   it('labels each attempt by generation and passes its id to every log read', async () => {
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     const picker = await waitFor(() => {
       const s = within(dock()).getByRole('combobox', { name: 'Attempt, by generation' }) as HTMLSelectElement
       expect(s.options.length).toBe(3)
@@ -217,13 +218,13 @@ describe('search covers this window, and wrap and the keys work', () => {
     api.loadTaskLogs.mockResolvedValue(
       ok(logs([stream('agent_stderr', { content: 'Traceback one\nok\ntraceback two\n' }), stream('stdout'), stream('stderr')])),
     )
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(3))
     fireEvent.change(within(dock()).getByRole('searchbox', { name: 'Search this window' }), { target: { value: 'traceback' } })
-    await waitFor(() => expect(dock().querySelector('.ag-logdock-count .ag-logdock-long')?.textContent).toBe('– of 2 · this window'))
+    await waitFor(() => expect(dock().querySelector('.ag-logs-count .ag-logs-long')?.textContent).toBe('– of 2 · this window'))
     fireEvent.keyDown(within(dock()).getByRole('searchbox', { name: 'Search this window' }), { key: 'Enter' })
-    await waitFor(() => expect(dock().querySelector('.ag-logdock-count .ag-logdock-long')?.textContent).toBe('1 of 2 · this window'))
+    await waitFor(() => expect(dock().querySelector('.ag-logs-count .ag-logs-long')?.textContent).toBe('1 of 2 · this window'))
     expect(dock().querySelector('.ag-logline.is-current')?.textContent).toContain('Traceback one')
     expect(dock().querySelectorAll('.ag-logline mark')).toHaveLength(2)
 
@@ -261,7 +262,7 @@ describe('jump to error: a transcript is_error and a console-side pattern', () =
         ]),
       ),
     )
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     const button = await waitFor(() => {
       const b = within(dock()).getByRole('button', { name: /^Error/ })
       expect(b.textContent).toContain('of 2')
@@ -289,10 +290,10 @@ describe('the masked count is the server’s, and a masked value is ********', (
         ]),
       ),
     )
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelector('.ag-mask')?.textContent).toBe(MASK))
-    const facts = dock().querySelector('.ag-logdock-facts')!
+    const facts = dock().querySelector('.ag-logs-facts')!
     expect(facts.textContent).toContain('1 in this window')
     expect(facts.textContent).toMatch(/masking\s*at read time/)
   })
@@ -311,7 +312,7 @@ describe('follow and pause', () => {
         tail_window: { object_offset: objectOffset, stream_size: objectOffset + content.length, published_at: new Date().toISOString() },
       })
     api.loadTaskLogs.mockResolvedValue(ok(logs([tail(0, 'a\nb\n'), stream('stdout'), stream('stderr')])))
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(2))
     const follow = within(dock()).getByRole('button', { name: /^Following/ })
@@ -324,7 +325,7 @@ describe('follow and pause', () => {
       vi.advanceTimersByTime(5_000)
     })
     const pill = await waitFor(() => {
-      const p = dock().querySelector('.ag-logdock-arrived')
+      const p = dock().querySelector('.ag-logs-arrived')
       expect(p).not.toBeNull()
       return p!
     })
@@ -333,7 +334,7 @@ describe('follow and pause', () => {
     expect(dock().querySelectorAll('.ag-logline')).toHaveLength(2)
     fireEvent.click(pill)
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(5))
-    expect(dock().querySelector('.ag-logdock-arrived')).toBeNull()
+    expect(dock().querySelector('.ag-logs-arrived')).toBeNull()
   })
 })
 
@@ -350,7 +351,7 @@ describe('output missing between two reads', () => {
         tail_window: { object_offset: objectOffset, stream_size: objectOffset + content.length, published_at: at },
       })
     api.loadTaskLogs.mockResolvedValue(ok(logs([tail(1_000_000, 'x'.repeat(100), '2026-10-02T14:02:11Z'), stream('stdout'), stream('stderr')])))
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(1))
     expect(dock().querySelector('.ag-gap'), 'a gap drawn off one read').toBeNull()
@@ -383,7 +384,7 @@ describe('output missing between two reads', () => {
         tail_window: { object_offset: objectOffset, stream_size: objectOffset + content.length, published_at: at },
       })
     api.loadTaskLogs.mockResolvedValue(ok(logs([tail(1_000_000, 'x'.repeat(100), '2026-10-02T14:02:11Z'), stream('stdout'), stream('stderr')])))
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(1))
     api.loadTaskLogs.mockResolvedValue(
@@ -397,35 +398,25 @@ describe('output missing between two reads', () => {
   })
 })
 
-describe('the dock folds to a line, and on a phone is a sheet', () => {
-  it('folds to its newest line and opens again; open while running, folded once finished', async () => {
+describe('Details carries the newest log line, and it opens the Logs tab', () => {
+  it('draws the newest line of the default stream and switches to the tab on a click', async () => {
     api.loadTranscript.mockResolvedValue(ok(transcript([step(1, { text: 'first' }), step(2, { text: 'the newest line' })])))
-    const { unmount } = render(<LogDock task={running()} />)
-    await waitFor(() => expect(dock().textContent).toContain('the newest line'))
-    fireEvent.click(within(dock()).getByRole('button', { name: 'Fold' }))
-    const line = within(dock()).getByRole('button', { expanded: false })
-    expect(line.textContent).toContain('the newest line')
-    fireEvent.click(line)
-    expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
-    unmount()
-    // WALKTHROUGH B (2026-10-03): whether it opens is the agent's state, not
-    // one remembered choice for every agent. A running agent opens with its
-    // log open; a finished one with its log folded to its newest line.
-    render(<LogDock task={running()} />)
-    expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
-    cleanup()
-    render(<LogDock task={running({ state: 'SUCCEEDED', completed_at: new Date().toISOString() })} />)
-    fireEvent.click(within(dock()).getByRole('button', { expanded: false }))
-    expect(within(dock()).getByRole('group', { name: 'Which log' })).toBeTruthy()
+    const open = vi.fn()
+    render(<LogLastLine task={running()} onOpen={open} />)
+    const strip = screen.getByRole('button', { name: /^Last log line/ })
+    await waitFor(() => expect(strip.textContent).toContain('the newest line'))
+    expect(strip.textContent).toContain('Open logs')
+    fireEvent.click(strip)
+    expect(open).toHaveBeenCalledTimes(1)
+    // A line, never an overlay: nothing it draws is a dialog or is fixed.
+    expect(screen.queryByRole('dialog')).toBeNull()
   })
 
-  it('opens full screen from the phone sheet, with a way back', async () => {
-    render(<LogDock task={running()} phone />)
-    const sheet = within(dock()).getByRole('button', { expanded: false })
-    fireEvent.click(sheet)
-    expect(dock().classList.contains('is-full')).toBe(true)
-    fireEvent.click(within(dock()).getByRole('button', { name: '‹ Agent' }))
-    expect(dock().classList.contains('is-full')).toBe(false)
+  it('says a read in flight is reading, never that the log is empty', () => {
+    api.loadTranscript.mockReturnValue(new Promise(() => {}))
+    api.loadTaskLogs.mockReturnValue(new Promise(() => {}))
+    render(<LogLastLine task={running()} onOpen={() => {}} />)
+    expect(screen.getByRole('button', { name: /^Last log line/ }).textContent).toContain('reading…')
   })
 })
 
@@ -433,14 +424,14 @@ describe('honest forms', () => {
   it('says a read in flight is reading, never an empty log', () => {
     api.loadTranscript.mockReturnValue(new Promise(() => {}))
     api.loadTaskLogs.mockReturnValue(new Promise(() => {}))
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     expect(dock().querySelector('.art-loading')).not.toBeNull()
     expect(dock().querySelector('.ag-logline')).toBeNull()
   })
 
   it('says the attempt list did not load, and still reads the latest', async () => {
     api.loadAttempts.mockResolvedValue({ status: 'error', error: { kind: 'unreachable', httpStatus: null, code: null, message: 'down' } })
-    render(<LogDock task={running()} />)
+    render(<AgentLogs task={running()} />)
     await waitFor(() => expect(dock().textContent).toContain('attempts not read'))
     await waitFor(() => expect(dock().textContent).toContain('step 1'))
   })

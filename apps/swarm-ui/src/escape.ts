@@ -3,9 +3,9 @@ import { useEffect, useRef } from 'react'
 /**
  * ESCAPE CLOSES THE INNERMOST LAYER, AND ONLY IT (U10a, owner QA 2026-10-04).
  *
- * The agent split closes on Escape (AgentSplit's own `onKeyDown`). Two things
- * open inside it and must close first: the log's full view (D1) and an
- * artifact's viewer. Each registers here while it is open; one listener, in
+ * The agent split closes on Escape (AgentSplit's own `onKeyDown`). What opens
+ * inside it must close first: an artifact's viewer (the log's full view was
+ * the other, until the log became a tab). Each registers here while it is open; one listener, in
  * the CAPTURE phase on the window, closes the most recently opened and stops
  * the key there -- before React's listener at the app root, so the split
  * never sees an Escape a layer above it already used.

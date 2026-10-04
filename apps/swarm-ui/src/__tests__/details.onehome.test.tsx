@@ -173,7 +173,7 @@ describe('#102 (b): checkpoints are listed once, in the Checkpoints tab', () => 
     expect(card.querySelector('.att-ckpt-line')?.textContent).toMatch(/2 written/)
     // The listing HAS landed -- the tile reads it -- so an absent panel is
     // not a panel still loading.
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written · 2 in bucket'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written, 2 kept'))
     const panel = [...el.querySelectorAll<HTMLElement>('section')].find(
       (s) => s.querySelector('h2')?.textContent === 'Checkpoints',
     )
@@ -248,12 +248,12 @@ describe('#103: the Tokens tile says what it leaves out', () => {
 })
 
 describe('#103: the Checkpoints tile says what is still in the bucket', () => {
-  it('reads "N written · M in bucket", marked partial when they differ', async () => {
+  it('reads "N written, M kept", marked partial when they differ', async () => {
     const el = await mount(
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001', 'ckpt-00002'] })] }),
       Promise.resolve(ok(page([]))),
     )
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written · 0 in bucket'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written, 0 kept'))
     expect(tile(el, 'Checkpoints').querySelector('.ctl-mark.is-partial')).not.toBeNull()
   })
 
@@ -262,7 +262,7 @@ describe('#103: the Checkpoints tile says what is still in the bucket', () => {
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001'] })] }),
       Promise.resolve(ok(page(['ckpt-00001']))),
     )
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('1 written · 1 in bucket'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('1 written, 1 kept'))
     expect(tile(el, 'Checkpoints').querySelector('.ctl-mark.is-partial')).toBeNull()
   })
 
@@ -271,7 +271,7 @@ describe('#103: the Checkpoints tile says what is still in the bucket', () => {
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001'] })] }),
       new Promise(() => {}),
     )
-    expect(tile(el, 'Checkpoints').textContent).not.toMatch(/in bucket/)
+    expect(tile(el, 'Checkpoints').textContent).not.toMatch(/ kept/)
   })
 })
 

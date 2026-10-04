@@ -359,7 +359,7 @@ export function Run({
           and the browser that opens one are the agent's Checkpoints tab
           (`CheckpointsPane`, which draws `RunFiles`); a second copy here was a
           drawer inside a drawer. `listing` above is still read, once, for the
-          Checkpoints tile's "N written · M in bucket" (#103). The runner's log
+          Checkpoints tile's "N written, M kept" (#103; U11a D21). The runner's log
           lives in Artifacts › Logs only (#184, owner decision of 2026-09-25). */}
       <Input run={run} readAt={reading?.fetchedAt ?? null} />
       <Timeline task={task} events={events} detail={run.eventsDetail} attempts={run.attempts} />
@@ -1027,7 +1027,7 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
             ckpts === 0 ? undefined : `across ${attempts.length}`
           ) : (
             <>
-              {ckpts} written · {bucket.total_found} in bucket
+              {ckpts} written, {bucket.total_found} kept
               {(bucketCut || bucket.total_found !== ckpts) && (
                 <>
                   {' '}
@@ -1035,8 +1035,8 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
                     kind="partial"
                     say={
                       bucketCut
-                        ? `The attempt records name ${ckpts} checkpoints written. The listing was cut before its end, so ${bucket.total_found} in the bucket is only what it reached.`
-                        : `The attempt records name ${ckpts} checkpoints written and the listing, read to its end, finds ${bucket.total_found} in the bucket. The Checkpoints tab lists what the bucket holds.`
+                        ? `The attempt records name ${ckpts} checkpoints written. The listing was cut before its end, so ${bucket.total_found} kept is only what it reached.`
+                        : `The attempt records name ${ckpts} checkpoints written and the listing, read to its end, finds ${bucket.total_found} kept in the bucket. The Checkpoints tab lists what the bucket keeps.`
                     }
                   />
                 </>

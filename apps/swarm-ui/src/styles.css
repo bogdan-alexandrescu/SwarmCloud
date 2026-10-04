@@ -10398,6 +10398,13 @@ span.sk-ttile { cursor: default; }
 @media (max-width: 759px) {
   .c-phead { flex-wrap: wrap; }
   .c-phead > .sub { flex-wrap: wrap; }
+  /* A `?` NEVER STANDS ALONE (U11a D39, owner QA at 390px, 2026-10-04).
+     Where the phone header names the page, a page head whose title steps
+     aside (Overview's, overview.css) was left holding a bare `?` that opened
+     the section's whole explanation with nothing to say what it explained.
+     The glyph steps aside with its title; the explanation is still the rail's
+     Help section, one tap from the menu. */
+  .ov-page > .c-phead > .head > :not(h1) { display: none; }
 }
 /* THE SAME PILL IN BOTH THEMES (U10a D40, owner QA 2026-10-04): the fill
    is `--surface-2`, which in light (#eef4fa) is all but the page's own

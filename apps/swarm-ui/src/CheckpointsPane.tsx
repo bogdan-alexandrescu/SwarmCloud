@@ -37,15 +37,44 @@ export async function loadCheckpointsRead(taskId: string): Promise<Result<Checkp
 }
 
 /**
- * `onCount` hears the listing's checkpoint count, for the tab's badge (U10a
- * D21): the tab said `–` beside a pane that said `found 1 of 1`. Only a
- * listing read to its end is a count; a cut or paged one, a failed one and
- * one still reading are null, which the tab draws as a dash with its reason.
+ * WHAT THE TAB AND THE PANE SAY ABOUT ONE READ (U10a D21, U11a): how many the
+ * attempt records say were WRITTEN and how many the bucket listing KEEPS.
+ * `kept` is null for a listing that was cut, paged, failed or is still
+ * reading -- never a count; `written` is null when the attempt records could
+ * not be read.
+ */
+export interface CheckpointCount {
+  kept: number | null
+  written: number | null
+}
+
+/** `1 written, 0 kept`: the words Details, the tab and the pane all use. */
+export function checkpointsLine(c: CheckpointCount): string | null {
+  if (c.kept === null || c.written === null) return null
+  return `${c.written} written, ${c.kept} kept`
+}
+
+/** The Checkpoints tab count's reason: why it is a dash, or what it counts. */
+export function checkpointsSay(c: CheckpointCount | null): string {
+  if (c === null) return 'The checkpoint listing has not answered yet, so the count is not known.'
+  if (c.kept === null) return 'The bucket listing was cut, paged or not read, so how many checkpoints it keeps is not known.'
+  const line = checkpointsLine(c)
+  if (line === null) return `${c.kept} kept in the bucket. The attempt records were not read, so how many were written is not known.`
+  return c.written === c.kept
+    ? `${line}: the count is what the bucket keeps.`
+    : `${line}: the count is what the bucket keeps. The attempt records name ${c.written} written; a checkpoint the platform reclaimed is no longer kept.`
+}
+
+/**
+ * `onCount` hears the read's count for the tab's badge (U10a D21): the tab
+ * said `–` beside a pane that said `found 1 of 1`. Only a listing read to its
+ * end is a kept count; a cut or paged one, a failed one and one still
+ * reading are null, which the tab draws as a dash with its reason.
  *
  * `ag-ckpts` scopes the stacked table's layout in this tab (agents.css):
  * Size and Age side by side, and the objects button beside the size.
  */
-export function CheckpointsPane({ taskId, onCount }: { taskId: string; onCount?: (n: number | null) => void }) {
+export function CheckpointsPane({ taskId, onCount }: { taskId: string; onCount?: (c: CheckpointCount | null) => void }) {
   // One function per agent, so the Screen does not re-read on every render.
   const load = useCallback(() => loadCheckpointsRead(taskId), [taskId])
   return (
@@ -69,14 +98,26 @@ function Listed({
 }: {
   read: CheckpointsRead
   readAt: number
-  onCount: ((n: number | null) => void) | undefined
+  onCount: ((c: CheckpointCount | null) => void) | undefined
 }) {
   const listing = useCheckpointListing(read.task, read.attempts, readAt)
   const page = listing.state.status === 'ok' || listing.state.status === 'stale' ? listing.state.data : null
   const whole = page !== null && page.listed && !page.truncated && page.next_page_token === null
-  const n = whole ? page.count : null
+  const kept = whole ? page.count : null
+  const written = read.attempts === null ? null : read.attempts.reduce((t, a) => t + a.checkpoints.length, 0)
+  const answered = listing.state.status !== 'loading'
   useEffect(() => {
-    onCount?.(n)
-  }, [n, onCount])
-  return <RunFiles task={read.task} attempts={read.attempts} listing={listing} now={null} />
+    onCount?.(answered ? { kept, written } : null)
+  }, [answered, kept, written, onCount])
+  const line = answered ? checkpointsLine({ kept, written }) : null
+  return (
+    <>
+      {line !== null && (
+        <p className="ctl-sub ag-ckpts-sum" title={checkpointsSay({ kept, written })}>
+          {line}
+        </p>
+      )}
+      <RunFiles task={read.task} attempts={read.attempts} listing={listing} now={null} />
+    </>
+  )
 }

@@ -180,7 +180,7 @@ interface ArtifactsView {
 }
 
 /**
- * The streams the log dock reads in one `/logs` call. The agent's stdout is
+ * The streams the Logs tab reads in one `/logs` call. The agent's stdout is
  * read only while its view is open: it is the one stream that can be large,
  * and the transcript already serves it parsed.
  */
@@ -250,8 +250,8 @@ async function loadView(taskId: string, prev: ArtifactsView | null): Promise<Res
   //
   // IT USED TO WAIT FOR THE TRANSCRIPT. This pane read the transcript every
   // poll and asked for the answer only once a `result` step had shown up in
-  // it. The transcript and the logs live in the log dock under the detail now
-  // (viewers.html A, picked 2026-10-02), which reads them for the attempt the
+  // it. The transcript and the logs live in the agent's Logs tab now
+  // (AgentLogs.tsx, owner decision 2026-10-04), which reads them for the attempt the
   // reader picked; reading them here as well was the same two requests twice
   // per poll. So the answer is asked for in the transcript's place -- one
   // request per poll either way -- and stops once it is in.
@@ -296,9 +296,9 @@ export function artifactsPoll(v: ArtifactsView | null, now: number = Date.now())
 
 function Body({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
   // NO LOGS SECTION (viewers.html A, picked 2026-10-02). The transcript and
-  // the agent's and runner's streams are the log dock under the detail
-  // (LogDock.tsx), which stays open across every tab and reads the attempt
-  // the reader picks; a second copy here read the latest attempt only.
+  // the agent's and runner's streams are the agent's Logs tab (AgentLogs.tsx,
+  // owner decision 2026-10-04), which reads the attempt the reader picks; a
+  // second copy here read the latest attempt only.
   return (
     <div className="run-stack arts">
       <Inputs v={v} reading={reading} />
@@ -1335,7 +1335,7 @@ export interface LogFeed {
  * THE AGENT'S LOGS: its transcript as steps, its own stdout and stderr, and
  * -- behind the last choice, because it is the platform's and not the agent's
  * -- the runner process's streams, which the Details pane used to present as
- * the agent's output. The log dock (LogDock.tsx) picks the view; this draws it.
+ * the agent's output. The Logs tab (AgentLogs.tsx) picks the view; this draws it.
  *
  * EACH LOG'S OBJECT LOCATION IS HERE, beside its view (owner decision,
  * 2026-09-26, on #184): every stream row carries its object's `gs://` uri and
@@ -1483,9 +1483,9 @@ export function StreamsFrom({
         drawn(r) && r.stream !== null && r.stream.content !== null ? (
           <div key={r.name} className="rf-window">
             <span className="ctl-eyebrow">{r.name}</span>
-            {/* THE DOCK'S MARKS (logMarks.tsx): numbered lines, search hits,
+            {/* THE LOGS TAB'S MARKS (logMarks.tsx): numbered lines, search hits,
                 error lines and the server's mask, and a gap in the tail at
-                the top of the window it precedes. Outside the dock nothing
+                the top of the window it precedes. Outside the tab nothing
                 is marked and this is the window as written. */}
             <GapNotice name={r.name} />
             <LogText name={r.name} content={r.stream.content} />

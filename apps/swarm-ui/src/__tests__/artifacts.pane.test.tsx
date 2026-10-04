@@ -308,13 +308,24 @@ function drawer(): HTMLElement {
   return el!
 }
 
+/** Selects one of the agent's tabs, by its label, unless it is selected already. */
+function choose(label: string): void {
+  const t = [...drawer().querySelectorAll<HTMLButtonElement>('[role="tab"]')].find((x) => x.querySelector('.c-tab-label')?.textContent === label)
+  expect(t, `no ${label} tab`).toBeTruthy()
+  if (t!.getAttribute('aria-selected') !== 'true') fireEvent.click(t!)
+}
+
 function section(title: string): HTMLElement {
-  // A FINISHED AGENT'S LOG OPENS FOLDED to its one line (walkthrough B,
-  // 2026-10-03): unfold it, as a reader would, before reading it.
+  // THE LOG IS A TAB (U11a, owner decision 2026-10-04): the reader opens it,
+  // and the Artifacts pane's own sections are on the Artifacts tab.
   if (title === 'Log') {
-    const folded = drawer().querySelector<HTMLButtonElement>('.ag-logdock button.ag-logdock-line[aria-expanded="false"]')
-    if (folded !== null) fireEvent.click(folded)
+    choose('Logs')
+    const logs = drawer().querySelector<HTMLElement>('section.ag-logs')
+    expect(logs, 'no Logs tab content in the drawer').not.toBeNull()
+    return logs!
   }
+  // Back from the Logs tab to the pane these sections are on.
+  if (drawer().querySelector('section.ag-logs') !== null) choose('Artifacts')
   const s = [...drawer().querySelectorAll<HTMLElement>('section')].find((x) => x.querySelector('h2')?.textContent === title)
   expect(s, `no ${title} section in the drawer`).toBeTruthy()
   return s!
@@ -346,7 +357,7 @@ afterEach(() => {
 })
 
 /**
- * A RUNNER WITH NO AGENT CLI OPENS THE DOCK ON ITS RUNNER LOG (viewers.html A:
+ * A RUNNER WITH NO AGENT CLI OPENS THE LOG ON ITS RUNNER LOG (viewers.html A:
  * "opens on Transcript for claude-code and codex, and on Runner for runners
  * with no agent CLI"). The transcript view is one click away; this takes it.
  */
@@ -362,16 +373,16 @@ async function openTranscriptOfNoCliRunner(): Promise<void> {
 // The tabs and the address
 // ---------------------------------------------------------------------------
 
-describe('the drawer has four panes: Details, Attempts, Artifacts, Checkpoints', () => {
-  it('names them so, and #work/task/<id>/artifacts opens the third of four', async () => {
+describe('the drawer has five panes: Details, Logs, Attempts, Artifacts, Checkpoints', () => {
+  it('names them so, and #work/task/<id>/artifacts opens the fourth of five', async () => {
     await openPane(finishedRoutes())
     const tabs = await waitFor(() => {
       const list = drawer().querySelector('[role="tablist"][aria-label="Agent panes"]')
       expect(list).not.toBeNull()
       return [...list!.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
     }, WAIT)
-    expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Attempts', 'Artifacts', 'Checkpoints'])
-    expect(tabs[2]!.getAttribute('aria-selected')).toBe('true')
+    expect(tabs.map((t) => t.querySelector('.c-tab-label')?.textContent?.trim())).toEqual(['Details', 'Logs', 'Attempts', 'Artifacts', 'Checkpoints'])
+    expect(tabs[3]!.getAttribute('aria-selected')).toBe('true')
     for (const title of ['Inputs', 'Outputs', 'Log']) await sectionReady(title, /./)
   })
 
@@ -1016,7 +1027,7 @@ describe('Logs: the transcript as steps, the agent’s streams, the runner’s',
     await openPane(finishedRoutes())
     const logsSection = await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
-      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => x.textContent === label)
+      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
       expect(b, `no ${label} choice`).toBeTruthy()
       fireEvent.click(b!)
     }
@@ -1226,6 +1237,9 @@ describe('live: every 5 s while the task runs, with each read’s age, and not a
       }
     }
     await advance(0)
+    // The log is read on its own tab (U11a): open it, as a reader would.
+    section('Log')
+    await advance(0)
     const transcripts = `/v1/tasks/${REF}/transcript`
     const logReads = `/v1/tasks/${REF}/logs`
     expect(api.count(transcripts)).toBe(1)
@@ -1293,7 +1307,7 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
     expect(ages().length, 'the transcript shows no age').toBeGreaterThan(0)
     for (const a of ages()) expect(shownAt(a, { width: 390 }), `${a.textContent} is hidden at 390`).toBe(true)
 
-    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.textContent === 'Agent stderr')
+    const stderr = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((b) => b.querySelector('.ag-logs-long')?.textContent === 'Agent stderr')
     fireEvent.click(stderr!)
     // #172: a live stream's Age cell leads with how long ago the tail object
     // changed, with `live` on the line under it.
@@ -1320,8 +1334,10 @@ describe('the pane holds at 390 wide and in the dark theme', () => {
   it('draws every table as the stacked record the inspector uses below 900px', async () => {
     await openPane(finishedRoutes())
     await sectionReady('Outputs', /bundle\.tar/)
-    await sectionReady('Log', /recorded only its final result/)
+    // The Artifacts tab's tables, then the Logs tab's (U11a: a tab of its own).
     const tables = [...drawer().querySelectorAll('table')]
+    await sectionReady('Log', /recorded only its final result/)
+    tables.push(...drawer().querySelectorAll('table'))
     expect(tables.length).toBeGreaterThan(0)
     for (const t of tables) {
       expect(t.parentElement?.classList.contains('ctl-table') && t.parentElement.classList.contains('is-stacked'), 'a table would scroll sideways at 390').toBe(true)
@@ -1380,7 +1396,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     // row now, a `.ctl-facts` strip, which wraps at any width.
     await openPane(finishedRoutes())
     const logsSection = await sectionReady('Log', /masking/)
-    const facts = logsSection.querySelector<HTMLElement>('ul.ctl-facts.ag-logdock-facts')
+    const facts = logsSection.querySelector<HTMLElement>('ul.ctl-facts.ag-logs-facts')
     expect(facts, 'no facts row in the log dock').not.toBeNull()
     expect(facts!.textContent).toMatch(/attempt/)
     expect(facts!.textContent).toMatch(/masking\s*at read time/)
@@ -1494,7 +1510,7 @@ describe('the drawer findings of the post-deploy QA (#222)', () => {
     await openPane(finishedRoutes())
     const logsSection = await sectionReady('Log', /Transcript/)
     const choose = (label: string) => {
-      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => x.textContent === label)
+      const b = [...logsSection.querySelectorAll<HTMLButtonElement>('[aria-label="Which log"] button')].find((x) => (x.querySelector('.ag-logs-long')?.textContent ?? x.textContent) === label)
       fireEvent.click(b!)
     }
     choose('Runner')

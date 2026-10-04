@@ -11,14 +11,13 @@
  * Now the header block says it ONCE -- state pill, title, the id with copy,
  * profile · class · units · gen, started / ended, account, tenant, workflow
  * link -- with Copy link and ✕ in their own places in its action row; the
- * pane repeats none of it; and the log is the bottom dock of viewers.html A:
- * the column does not scroll, the pane above the dock does, so the dock never
- * covers it; it is folded to its one line when the agent has finished and
- * open while it runs, and its height is remembered per device.
+ * pane repeats none of it. The log was the bottom dock of viewers.html A; it
+ * is the Logs tab now (U11a, owner decision 2026-10-04): a running agent
+ * opens on it, a finished one on Details, and nothing is drawn under the pane.
  *
  * MUTATIONS: put the summary back on the pane's Screen, the started / account
- * / id facts back in Details, the ✕ back on the column, or `position: sticky`
- * back on the dock -- each turns a case red.
+ * / id facts back in Details, the ✕ back on the column, or a log element
+ * after the pane -- each turns a case red.
  */
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -46,8 +45,8 @@ async function split(id: string): Promise<HTMLElement> {
     expect(s).not.toBeNull()
     // The header has the task, and the Details pane has its run.
     expect(s!.querySelector('.ag-head-facts')).not.toBeNull()
-    expect(s!.querySelector('.ag-split-pane .run-stack')).not.toBeNull()
-    expect(s!.querySelector('.ag-logdock')).not.toBeNull()
+    // A finished agent opens on Details, a running one on its log (U11a).
+    expect(s!.querySelector(id === RUNNING ? '.ag-split-pane > .ag-logs' : '.ag-split-pane .run-stack')).not.toBeNull()
     return s!
   }, WAIT)
 }
@@ -71,7 +70,9 @@ describe('B: the metadata is said once, in the header block', () => {
     // under the header, and the title names the agent -- item G).
     expect(painted(pane.querySelector('.head')!, 'display', WIDE)).toBe('none')
     const shown = s.cloneNode(true) as HTMLElement
-    for (const el of shown.querySelectorAll('.ag-split-pane .head, .ag-head-title')) el.remove()
+    // A tab not on screen is not printed (the Checkpoints pane is mounted
+    // hidden, for its count -- U11a D21).
+    for (const el of shown.querySelectorAll('.ag-split-pane .head, .ag-head-title, [hidden]')) el.remove()
     expect(times(shown, FINISHED), 'the id is printed more than once').toBe(1)
     // The facts the header owns, keyed once; the pane keys none of them.
     const keys = (root: Element) => [...root.querySelectorAll('.ctl-fact > b')].map((b) => (b.textContent ?? '').trim())
@@ -102,36 +103,26 @@ describe('B: Copy link and the close ✕ each have their own space', () => {
   })
 })
 
-describe('B: the log is the bottom dock of the detail column', () => {
-  it('scrolls the pane above it and never the column, so the dock covers nothing', async () => {
-    const s = await split(RUNNING)
+describe('B: the log is a tab, and nothing is drawn under the pane', () => {
+  it('scrolls the pane and never the column, and puts nothing after the pane', async () => {
+    const s = await split(FINISHED)
     const pane = s.querySelector(':scope > .ag-split-pane')!
-    const dock = s.querySelector(':scope > .ag-logdock')!
-    expect([...s.children].indexOf(dock)).toBeGreaterThan([...s.children].indexOf(pane))
-    expect(painted(s, ['overflow-y', 'overflow'], WIDE), 'the column scrolls, so the dock floats over it').toBe('hidden')
+    expect(s.lastElementChild, 'something is docked under the pane').toBe(pane)
+    expect(painted(s, ['overflow-y', 'overflow'], WIDE), 'the column scrolls').toBe('hidden')
     expect(painted(pane, ['overflow-y', 'overflow'], WIDE)).toBe('auto')
     expect(painted(pane, 'min-height', WIDE)).toBe('0')
     expect(painted(pane, ['flex', 'flex-grow'], WIDE)).toMatch(/^1\b/)
-    expect(painted(dock, 'position', WIDE) ?? 'static', 'the dock is laid over the pane').toBe('static')
-    expect(painted(dock, ['flex', 'flex-shrink'], WIDE)).toMatch(/^(none|0)\b/)
+    // Details' one log line is in the pane's flow, at its top.
+    expect(pane.firstElementChild?.classList.contains('ag-loglast')).toBe(true)
   })
 
-  it('is open while the agent runs and folded to its one line once it has finished', async () => {
+  it('opens a running agent on Logs and a finished one on Details', async () => {
     let s = await split(RUNNING)
-    expect(s.querySelector('.ag-logdock')!.classList.contains('is-open'), 'a running agent opens folded').toBe(true)
+    expect(s.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent).toBe('Logs')
     window.location.hash = ''
     document.body.innerHTML = ''
     s = await split(FINISHED)
-    const dock = s.querySelector('.ag-logdock')!
-    expect(dock.classList.contains('is-strip'), 'a finished agent opens with its log open').toBe(true)
-    expect(dock.querySelector('button.ag-logdock-line[aria-expanded="false"]')).not.toBeNull()
-  })
-
-  it('remembers its height per device, through the drag handle', async () => {
-    localStorage.setItem('swarm.agents.logdock.h', '420')
-    const s = await split(RUNNING)
-    const dock = s.querySelector<HTMLElement>('.ag-logdock')!
-    expect(dock.style.height).toBe('420px')
-    expect(dock.querySelector('[role="separator"][aria-label="Resize the log"]')).not.toBeNull()
+    expect(s.querySelector('[role="tab"][aria-selected="true"] .c-tab-label')?.textContent).toBe('Details')
+    expect(s.querySelector('.ag-logs'), 'a finished agent opens on its log').toBeNull()
   })
 })

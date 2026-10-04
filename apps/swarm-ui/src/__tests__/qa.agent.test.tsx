@@ -2,16 +2,15 @@
  * VISUAL QA Q4 (owner, 2026-10-02): the agent split.
  *
  *   * The log dock drew at the TOP of the Details tab whenever the tab was
- *     short or still reading, and was cut off at the right: viewers.html A
- *     docks it under the detail column, above the API-reads strip, the full
- *     width of the detail. The column is now a full-height flex column whose
- *     pane takes the slack, so the dock is at its foot whatever the pane
- *     holds, and the dock cannot be wider than the column.
+ *     short or still reading, and was cut off at the right. The column is a
+ *     full-height flex column whose pane takes the slack. The dock itself is
+ *     gone (U11a, owner decision 2026-10-04): the log is the Logs tab, which
+ *     fills that pane and is never wider than it.
  *   * The header was clipped at the split's width ("task_0064264e0630462…"
  *     cut, the tabs "Details Children 0 Att…" cut): the title ellipses and the
  *     actions keep their width; the tabs scroll sideways if they do not fit.
  *
- * MUTATIONS: drop `margin-top: auto` from the dock or the column's height,
+ * MUTATIONS: drop the pane's `flex: 1` or the column's height,
  * let the title wrap, or let the tabs wrap -- each turns a case red.
  */
 import { render, waitFor } from '@testing-library/react'
@@ -34,24 +33,22 @@ async function split(): Promise<HTMLElement> {
   return waitFor(() => {
     const s = document.querySelector<HTMLElement>('.ag-split')
     expect(s).not.toBeNull()
-    expect(s!.querySelector('.ag-logdock')).not.toBeNull()
+    // A running agent opens on its log (U11a).
+    expect(s!.querySelector('.ag-split-pane > .ag-logs')).not.toBeNull()
     return s!
   })
 }
 
-describe('Q4: the log dock is at the foot of the detail column', () => {
-  it('comes after the pane, and the column pushes it to its foot at any pane height', async () => {
+describe('Q4: the open tab takes the column to its foot', () => {
+  it('is the column’s last row, and the column is the viewport’s height at any pane height', async () => {
     const s = await split()
-    const kids = [...s.children]
     const pane = s.querySelector(':scope > .ag-split-pane')!
-    const dock = s.querySelector(':scope > .ag-logdock')!
-    expect(kids.indexOf(dock), 'the dock is not after the pane').toBeGreaterThan(kids.indexOf(pane))
+    expect(s.lastElementChild, 'something is docked under the pane').toBe(pane)
     expect(painted(s, 'display', WIDE)).toBe('flex')
     expect(painted(s, 'flex-direction', WIDE)).toBe('column')
     expect(painted(pane, ['flex', 'flex-grow'], WIDE)).toMatch(/^1\b/)
-    expect(painted(dock, ['margin-top', 'margin'], WIDE)).toBe('auto')
-    // A column with only a max-height is as short as a short pane: the dock
-    // would sit under the tabs. In the grid it is the viewport's height.
+    // A column with only a max-height is as short as a short pane. In the
+    // grid it is the viewport's height.
     const host = document.createElement('div')
     host.innerHTML = '<div class="app has-inspector"><main class="work"></main><div class="drawer ctl-drawer ag-split"></div></div>'
     document.body.appendChild(host)
@@ -62,11 +59,11 @@ describe('Q4: the log dock is at the foot of the detail column', () => {
     }
   })
 
-  it('is never wider than the column it docks under', async () => {
+  it('draws the log no wider than the pane it fills', async () => {
     const s = await split()
-    const dock = s.querySelector(':scope > .ag-logdock')!
-    expect(painted(dock, 'min-width', WIDE)).toBe('0')
-    expect(painted(dock, 'max-width', WIDE)).toBe('100%')
+    const logs = s.querySelector('.ag-split-pane > .ag-logs')!
+    expect(painted(logs, 'min-width', WIDE)).toBe('0')
+    expect(painted(logs.querySelector('.ag-logs-bar')!, 'min-width', WIDE)).toBe('0')
   })
 })
 

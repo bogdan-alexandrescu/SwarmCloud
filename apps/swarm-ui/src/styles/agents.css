@@ -1,5 +1,5 @@
 /* ==========================================================================
-   AGENTS: the list, the split detail, the log dock (lane U1, 2026-10-02)
+   AGENTS: the list, the split detail, the Logs tab (lane U1, 2026-10-02)
    --------------------------------------------------------------------------
    agents.html V1, agent-detail-2.html A and viewers.html A, styled to
    components.html A as built: 32px rows and controls, radius 8 on controls
@@ -62,7 +62,7 @@
 .ag-sort:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 .ag-sort[aria-pressed='true'] { border-color: var(--sk-ac); }
 .ag-collapse kbd,
-.ag-logdock kbd {
+.ag-logs kbd {
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   border: 1px solid var(--line-soft);
   border-radius: 2px;
@@ -138,7 +138,35 @@
   :root[data-agent-list='strip'] .app.has-inspector > .work .section.group > h2,
   :root[data-agent-list='strip'] .app.has-inspector > .work .group-why,
   :root[data-agent-list='strip'] .app.has-inspector > .work .ctl-empty { display: none; }
-  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head { justify-content: center; padding: 0; }
+  /* THE STRIP SHOWS ITS ONE CONTROL, CLEANLY (U11a D28, owner QA
+     2026-10-04). At 64px the list's head scrolled away with the rows,
+     leaving no way to bring the list back without scrolling up, and the
+     breadcrumb was squeezed into the strip and drawn half off its top. The
+     breadcrumb steps aside (kept for a screen reader, as the page head is);
+     the head, which holds only », sticks to the top of the scrollport on the
+     page's own ground, and » fits the strip without its key hint (its title
+     says `[`). */
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-list-head {
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    justify-content: center;
+    margin: 0;
+    padding: var(--ctl-s2) 0;
+    background: var(--bg);
+  }
+  :root[data-agent-list='strip'] .app.has-inspector > .work > .ctl-head {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    min-height: 0;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse { padding: 0 8px; }
+  :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse > kbd { display: none; }
 }
 
 /* THE DIVIDER HAS A HANDLE YOU CAN SEE (#503: a transparent 6px grip). The
@@ -244,20 +272,12 @@
    cut ("Details Children 0 Att…"); here it only takes its place in the column. */
 .ag-split-tabs { margin: var(--ctl-s2) 0 var(--ctl-s3); scrollbar-width: thin; }
 
-/* --- the log dock --------------------------------------------------------- */
-/* STICKY TO THE BOTTOM OF THE DETAIL COLUMN, which is the drawer's scroller:
-   it stays put while the tab above it scrolls, and spans this column only. */
-/* AT THE FOOT OF THE COLUMN WHATEVER THE PANE HOLDS (visual QA Q4,
-   2026-10-02; viewers.html A). The column is a full-height flex column whose
-   pane takes the slack, so a short or still-reading Details tab no longer
-   leaves the dock under the tabs; and the dock is never wider than the
-   column (it was cut off at the right). */
-/* THE COLUMN DOES NOT SCROLL; THE PANE ABOVE THE DOCK DOES (walkthrough B,
-   owner 2026-10-03). The column was the scroller and the dock was sticky at
-   its foot, so it floated over the pane's last screen and covered it
-   ("requested vs utilised" was under it). Now the header and tabs keep their
-   height, the pane takes the slack and scrolls inside it, and the dock is the
-   last row of the column -- in the flow, so nothing is ever under it. */
+/* --- the column: header, tabs, and the open tab -------------------------- */
+/* THE COLUMN DOES NOT SCROLL; ITS PANE DOES (walkthrough B, owner
+   2026-10-03). The header and tabs keep their height and the pane takes the
+   slack and scrolls inside it. Nothing is drawn under or over the pane: the
+   log that used to dock at the column's foot is the Logs tab (U11a, owner
+   decision 2026-10-04). */
 .ag-split.ctl-drawer { display: flex; flex-direction: column; overflow: hidden; padding-bottom: 0; }
 .ag-split > * { flex: none; }
 .ag-split > .ag-split-pane { flex: 1 1 0; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; }
@@ -266,10 +286,10 @@
    2026-10-04). It was `100vh - dock-h` tall and sticky at top 0, but the
    page's `.app` has 16px of top padding (styles.css, `.sk-main > .ctl-scroll
    > .app`), so at scroll top the column started 16px down and its last 16px
-   -- the log strip, or the foot of an open dock -- was under the API-reads
-   line; focusing the dock's search scrolled the page 16px to reach it. It
+   -- the foot of whatever it held -- was under the API-reads line, and
+   focusing a control there scrolled the page 16px to reach it. It
    sticks 16px down and is 16px shorter, so at every scroll offset its foot is
-   the scrollport's foot. qa.u10a.dock.test.tsx holds the two 16px together. */
+   the scrollport's foot. qa.u11a.logs.test.tsx holds the two 16px together. */
 @media (min-width: 1100px) {
   .app.has-inspector > .ctl-drawer.ag-split {
     top: 16px;
@@ -277,72 +297,37 @@
     max-height: calc(100vh - var(--dock-h, 28px) - 16px);
   }
 }
-.ag-logdock {
-  position: static;
+/* --- the Logs tab (U11a, owner decision 2026-10-04) ---------------------- */
+/* THE WHOLE DETAIL AREA UNDER THE HEADER, AND NOTHING BENEATH IT. The pane
+   that holds it does not scroll; the log's own body does, so the page and
+   the column never move when the log follows its tail. AgentLogs.tsx. */
+.ag-split > .ag-split-pane.is-logs { display: flex; flex-direction: column; overflow: hidden; }
+/* WHERE THE AGENT COVERS THE LIST (below 1100px, a phone's full screen) the
+   column ends above the API-reads line, as it does in the grid (D7): the
+   log's foot is its last line, never under that line. */
+@media (max-width: 1099px) {
+  .ag-split.ctl-drawer { bottom: var(--dock-h, 28px); }
+}
+.ag-logs {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-  max-width: 100%;
-  margin-top: auto;
+  margin-bottom: var(--ctl-s3);
   border: 1px solid var(--line);
-  border-radius: var(--radius) var(--radius) 0 0;
+  border-radius: var(--radius);
   background: var(--surface);
-  box-shadow: var(--ctl-shadow-pop);
 }
-.ag-logdock.is-strip { height: auto; }
-/* An open dock never takes more than 70% of the column (the frames' ceiling),
-   whatever height was remembered on a taller window. */
-.ag-split > .ag-logdock.is-open { max-height: 70%; }
-.ag-logdock-grip {
-  height: 8px;
-  flex: none;
-  cursor: row-resize;
-  touch-action: none;
-  position: relative;
-}
-.ag-logdock-grip::after {
-  content: '';
-  position: absolute;
-  left: 50%;
-  top: 2px;
-  width: 40px;
-  height: 4px;
-  margin-left: -20px;
-  border-radius: 999px;
-  background: var(--line);
-}
-.ag-logdock-grip:focus-visible { outline: 2px solid var(--info); outline-offset: -2px; }
-.ag-logdock-line {
-  display: flex;
-  align-items: center;
-  gap: var(--ctl-s2);
-  width: 100%;
-  min-height: 32px;
-  padding: 0 var(--ctl-s3);
-  border: 0;
-  background: none;
-  color: var(--text);
-  font: var(--t-meta)/var(--lh-meta) var(--font);
-  text-align: left;
-  cursor: pointer;
-}
-.ag-logdock-src { padding: 0 6px; border-radius: 999px; background: var(--s-liveb); color: var(--s-live); font-size: var(--t-micro); }
-.ag-logdock-last { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
-.ag-logdock-line .ag-logdock-facts { color: var(--text-faint); font-size: var(--t-micro); white-space: nowrap; }
-/* ONE ROW OF CONTROLS (U10a D13, owner QA 2026-10-04): the head and the
-   tools were two wrapping rows, ~175px of a 300px dock, four rows at the 50%
-   split. One row that never wraps: the stream pills scroll sideways inside
-   it, the search gives way to its floor, everything else keeps its width,
-   and the least-used controls are under More. qa.u10a.dock.test.tsx.
-   THE ROW FITS ITS WIDTH (review of D13): the bar is a size container, so
-   under 720px its labels take their short forms and the key hints go, and
-   under 480px (a phone's full log) the heading leaves the row and the back
-   button is its chevron. While the row still overflows, LogDock.tsx moves
-   controls into More (`BAR_SPILL`); past the last of them it wraps
-   (`.is-wrap`) rather than leave a control past the edge. The bar is its own
-   stacking layer at 5, the z its More menu used to carry. */
-.ag-logdock-bar {
+/* ONE ROW OF CONTROLS (U10a D13; U11a N11 at the 380px split). The four
+   streams are a segmented control that never scrolls or spills; the search
+   gives way to its floor; everything else keeps its width. The bar is a size
+   container: under 720px the labels take their short forms (the streams drop
+   `Agent`, their whole name stays their title) and the key hints go. While the row still overflows,
+   AgentLogs.tsx moves controls into More (`BAR_SPILL`); past the last of them
+   it wraps (`.is-wrap`) rather than leave a control past the edge. The bar is
+   its own stacking layer at 5, for its More menu. */
+.ag-logs-bar {
   container: ag-logbar / inline-size;
   position: relative;
   z-index: 5;
@@ -355,11 +340,12 @@
   padding: 4px var(--ctl-s3);
   flex: none;
 }
-.ag-logdock-bar.is-wrap { flex-wrap: wrap; }
-.ag-logdock-bar > * { flex: none; }
-.ag-logdock-short { display: none; }
+.ag-logs-bar.is-wrap { flex-wrap: wrap; }
+.ag-logs-bar > * { flex: none; }
+.ag-logs-short { display: none; }
 @container ag-logbar (max-width: 720px) {
-  .ag-logdock-bar > * > .ag-logdock-long {
+  .ag-logs-bar > * > .ag-logs-long,
+  .ag-logs-bar .ag-logs-attempt-k {
     position: absolute;
     width: 1px;
     height: 1px;
@@ -367,40 +353,30 @@
     clip-path: inset(50%);
     white-space: nowrap;
   }
-  .ag-logdock-bar > * > .ag-logdock-short { display: inline; }
-  .ag-logdock-bar > .c-btn > kbd { display: none; }
+  .ag-logs-bar > * > .ag-logs-short { display: inline; }
+  .ag-logs-bar > .c-btn > kbd,
+  .ag-logs-search > kbd { display: none; }
+  .ag-logs-streams > button > .ag-logs-long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ag-logs-streams > button > .ag-logs-short { display: inline; }
 }
+.ag-logs-bar > .ag-logs-streams { align-self: center; }
+/* ON A PHONE THE STREAMS ARE A LINE OF THEIR OWN (390px): the four of them
+   are the width of the screen, and the controls are one row under them. */
 @container ag-logbar (max-width: 480px) {
-  .ag-logdock-bar > h2 {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    overflow: hidden;
-    clip-path: inset(50%);
-    white-space: nowrap;
-  }
+  .ag-logs-bar { flex-wrap: wrap; }
+  .ag-logs-bar > .ag-logs-streams { flex: 1 0 100%; }
+  .ag-logs-bar > .ag-logs-streams > button { flex: 1 1 auto; justify-content: center; }
 }
-.ag-logdock-bar h2 { margin: 0; font: 600 var(--t-body)/var(--lh-body) var(--font); }
-.ag-logdock-streams { display: inline-flex; gap: 2px; }
-.ag-logdock-bar > .ag-logdock-streams { flex: 0 1 auto; min-width: 64px; overflow-x: auto; scrollbar-width: none; }
-.ag-logdock-streams > button { flex: none; }
-.ag-logdock-streams > button {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--ctl-bd);
-  border-radius: 999px;
-  background: none;
-  color: var(--text-dim);
-  font: var(--t-meta)/var(--lh-meta) var(--font);
-  cursor: pointer;
-}
-.ag-logdock-streams > button[aria-pressed='true'] { color: var(--text); border-color: var(--sk-ac); background: var(--sk-acs); }
-.ag-logdock-streams > button:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.ag-logdock-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
-.ag-logdock-attempt select {
+.ag-logs-attempt { display: inline-flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-meta); }
+.ag-logs-attempt select {
+  max-width: 220px;
   min-height: 28px;
   border: 1px solid var(--ctl-bd);
   border-radius: var(--ctl-radius-sm);
@@ -408,9 +384,9 @@
   color: var(--text);
   font: var(--t-meta)/var(--lh-meta) var(--mono);
 }
-.ag-logdock-search { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 180px; min-width: 0; }
-.ag-logdock-bar > .ag-logdock-search { flex: 1 1 160px; min-width: 72px; }
-.ag-logdock-search > input {
+.ag-logs-search { display: inline-flex; align-items: center; gap: 4px; flex: 1 1 180px; min-width: 0; }
+.ag-logs-bar > .ag-logs-search { flex: 1 1 160px; min-width: 56px; }
+.ag-logs-search > input {
   flex: 1;
   min-width: 0;
   min-height: 28px;
@@ -421,12 +397,22 @@
   color: var(--text);
   font: var(--t-meta)/var(--lh-meta) var(--font);
 }
-.ag-logdock-count { font-size: var(--t-micro); color: var(--text-dim); white-space: nowrap; }
-.ag-logdock-maskchip { font-size: var(--t-micro); white-space: nowrap; }
-/* MORE: the attempt picker, wrap, open full and the read's facts. A popover
-   under its summary, so opening it moves nothing in the row. */
-.ag-logdock-more { position: relative; }
-.ag-logdock-more > summary {
+.ag-logs-count { font-size: var(--t-micro); color: var(--text-dim); white-space: nowrap; }
+.ag-logs-maskchip { font-size: var(--t-micro); white-space: nowrap; }
+/* A FINISHED AGENT HAS NOTHING TO FOLLOW: a chip that says so, not a control. */
+.ag-logs-final {
+  padding: 2px 8px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--text-dim);
+  font-size: var(--t-micro);
+  line-height: var(--lh-micro);
+  white-space: nowrap;
+}
+/* MORE: what spilled from the row, and the read's facts. A popover under its
+   summary, so opening it moves nothing in the row. */
+.ag-logs-more { position: relative; }
+.ag-logs-more > summary {
   display: inline-flex;
   align-items: center;
   min-height: 28px;
@@ -438,13 +424,13 @@
   cursor: pointer;
   list-style: none;
 }
-.ag-logdock-more > summary::-webkit-details-marker { display: none; }
-.ag-logdock-more > summary::after { content: '▾'; margin-inline-start: 6px; color: var(--text-faint); }
-.ag-logdock-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
-.ag-logdock-menu {
+.ag-logs-more > summary::-webkit-details-marker { display: none; }
+.ag-logs-more > summary::after { content: '▾'; margin-inline-start: 6px; color: var(--text-faint); }
+.ag-logs-more > summary:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-logs-menu {
   position: absolute;
   right: 0;
-  bottom: calc(100% + 6px);
+  top: calc(100% + 6px);
   z-index: 5;
   display: flex;
   flex-direction: column;
@@ -458,15 +444,16 @@
   background: var(--surface);
   box-shadow: var(--ctl-shadow-pop);
 }
-.ag-logdock-menu > .ag-logdock-facts { margin: 0; }
-.ag-logdock-body {
+.ag-logs-menu > .ag-logs-facts { margin: 0; }
+.ag-logs-body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 var(--ctl-s3) var(--ctl-s2);
   border-top: 1px solid var(--line);
 }
-.ag-logdock-arrived {
+.ag-logs-arrived {
   align-self: center;
   margin: 4px 0;
   min-height: 28px;
@@ -478,42 +465,45 @@
   font: var(--t-meta)/var(--lh-meta) var(--font);
   cursor: pointer;
 }
-.ag-logdock-back {
-  border: 0;
-  background: none;
-  color: var(--info);
-  font: var(--t-body)/var(--lh-body) var(--font);
-  cursor: pointer;
-}
-/* OPEN FULL, and a phone's full-screen log: the whole viewport, OVER THE
-   SHELL (U10a D1). Portalled to <body> (LogDock.tsx), so no ancestor's
-   container or stacking context holds it; 90 is above the spine (10), the
-   panel's flyouts and scrim (20-47), the snap readout (50) and the toasts
-   (60), and under a help card (200), which may still open over it. In the
-   full view the More menu opens downward: there is no row above the bar. */
-.ag-logdock.is-full {
-  position: fixed;
-  inset: 0;
-  z-index: 90;
-  height: auto;
-  max-height: none;
-  margin: 0;
-  border-radius: 0;
-}
-.ag-logdock.is-full .ag-logdock-menu { bottom: auto; top: calc(100% + 6px); }
-/* THE STREAM'S METADATA IN THE DOCK IS FOLDED (D13): stdout and stderr
-   opened on a card of gs paths and sizes with no line in view. Artifacts.tsx
-   `StreamsFrom` folds it under a one-line summary when every stream has
-   lines to show, and the window below is flush with the dock's body. */
+/* THE STREAM'S METADATA IS FOLDED (D13): stdout and stderr opened on a card
+   of gs paths and sizes with no line in view. Artifacts.tsx `StreamsFrom`
+   folds it under a one-line summary when every stream has lines to show, and
+   the window below is flush with the log's body. */
 .ag-logmeta { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ag-logmeta > summary { cursor: pointer; padding: 2px 0; }
-.ag-logdock-body .logwin-body { max-height: none; }
+.ag-logs-body .logwin-body { max-height: none; }
+
+/* THE DETAILS TAB'S ONE LOG LINE: the newest line and `Open logs`, which
+   switches to the Logs tab. In the pane's flow, at its top: nothing is drawn
+   over the details. AgentLogs.tsx `LogLastLine`. */
+.ag-loglast {
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s2);
+  width: 100%;
+  min-height: 32px;
+  margin: 0 0 var(--ctl-s3);
+  padding: 0 var(--ctl-s3);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font: var(--t-meta)/var(--lh-meta) var(--font);
+  text-align: left;
+  cursor: pointer;
+}
+.ag-loglast:hover { background: var(--surface-2); }
+.ag-loglast:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.ag-loglast > b { flex: none; font-weight: 600; }
+.ag-loglast-line { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-dim); }
+.ag-loglast-line.is-absent { color: var(--text-faint); }
+.ag-loglast-open { flex: none; color: var(--info); }
 
 /* THE LINES. Numbered, the server's mask in amber, a search hit marked, an
    error line tinted, the jump target outlined. No wrap unless asked. */
 .ag-logtext { white-space: pre; overflow-x: auto; }
 .ag-logtext.is-wrap,
-.ag-logdock-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ag-logs-body.is-wrap .ag-logtext { white-space: pre-wrap; overflow-wrap: anywhere; }
 .ag-logline { display: block; }
 .ag-logno { display: inline-block; min-width: 4ch; margin-inline-end: 1ch; color: var(--text-faint); text-align: right; user-select: none; }
 .ag-logline.is-err { background: var(--s-badb); }
@@ -630,21 +620,13 @@
      foot: 44px, and 36px while `.sk-app.is-scrolled` compacts the header. */
   .ag-list-tabs { position: sticky; top: 44px; z-index: 2; padding-top: 4px; }
   .sk-app.is-scrolled .ag-list-tabs { top: 36px; }
-  /* THE LOG IS A BOTTOM SHEET: its newest line, and a tap for the full log. */
-  .ag-logdock.is-phone.is-strip {
-    position: fixed;
-    left: 0;
-    right: 0;
-    bottom: var(--dock-h, 28px);
-    z-index: 30;
-    margin: 0;
-  }
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
-  /* The sheet's one line is fixed over the foot of the screen: the pane
-     scrolls its last line clear of it. */
-  .ag-split > .ag-split-pane { padding-bottom: 56px; }
+  /* THE AGENT'S TABS WRAP (U11a D39, owner QA at 390px): the strip
+     scrolled sideways and was cut at `Chi`, and the fade that said so was
+     missed. On a phone every tab is on screen, on as many lines as it takes. */
+  .c-tabs.ag-split-tabs { flex-wrap: wrap; overflow-x: visible; }
 }
 
 /* --- U10a (owner QA, 2026-10-04) ----------------------------------------- */
@@ -724,7 +706,6 @@
   line-clamp: none;
 }
 .app.has-inspector > .work .c-phead > .sub { flex: 1 1 0; min-width: 0; flex-wrap: nowrap; overflow: hidden; }
-.app.has-inspector > .work .c-phead .c-age { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
 /* AT THE 64px STRIP THE PAGE HEAD IS NOT DRAWN (D28): its fragments --
    `? 2 read just` -- stayed in the strip and the `?` lay over the meta. It
@@ -741,6 +722,31 @@
     white-space: nowrap;
   }
 }
+
+/* THE PROVENANCE KEEPS ITS CONTROL (U11a N10, owner QA 2026-10-04): beside
+   an open agent the list head's `.c-age` was cut with an ellipsis and its
+   `refresh` with it. Its words (`.c-age-say`, Shell.tsx `AgeLine`) give way
+   and keep their title; the control after them keeps its width. The meta
+   chip gives way first and carries its whole text as its title. */
+.app.has-inspector > .work .c-phead .c-age {
+  display: flex;
+  align-items: baseline;
+  gap: 0 4px;
+  flex: 1 0 auto;
+  justify-content: flex-end;
+  overflow: visible;
+}
+.app.has-inspector > .work .c-phead .c-age > * { flex: none; }
+.app.has-inspector > .work .c-phead .c-age > .c-age-say {
+  flex: 1 1 auto;
+  width: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+.app.has-inspector > .work .c-phead .c-meta { flex: 0 1 auto; }
 
 /* A CANCELLED RUN'S SPAN IS A MARK WITH ITS SENTENCE AS ITS TITLE (D20). */
 .cr-sub .when-note { text-decoration: underline dotted; text-underline-offset: 2px; cursor: help; }
