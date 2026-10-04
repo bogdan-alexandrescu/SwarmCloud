@@ -156,6 +156,11 @@ async function tableWithCard(): Promise<{ split: HTMLElement; wrap: HTMLElement;
 }
 
 describe('item 1: the Steps table with the step card open', () => {
+  // Since browser QA D12 (2026-10-04) the rows STACK below the minimum width,
+  // by a container query on the table's box (qa.u10b.workflows.test.tsx asks
+  // it with a container width). This case models no container, so it asks
+  // the fallback a browser without container queries draws: a scroll inside
+  // the card, never a column pushing the card.
   it('scrolls inside its card below its minimum width, and its column never pushes the card', async () => {
     const { split, wrap, t } = await tableWithCard()
     const container = besideCard(split)
@@ -185,7 +190,10 @@ describe('item 1: the Steps table with the step card open', () => {
     expect(visited).toBe(LONG.length * 2)
   })
 
-  it('wraps the whole name in its own cell, and draws the pill only in the State cell', async () => {
+  // Browser QA D12 (2026-10-04) reversed item 1's wrap: ten names wrapped to
+  // two and three lines at their hyphens. A name is one line now, cut, with
+  // the whole id as its title (and in the step card it opens).
+  it('keeps the whole name in its own cell, one line, and draws the pill only in the State cell', async () => {
     const { t } = await tableWithCard()
     const rows = longRows(t)
     for (const row of rows) {
@@ -196,7 +204,9 @@ describe('item 1: the Steps table with the step card open', () => {
     }
     const cell = rows[0]!.querySelector('td[data-col="step"]')!
     expect(nameFits(cell), 'a long name neither wraps nor ellipsizes in its own cell').toBe(true)
-    // It wraps: an id cut with an ellipsis cannot be read or pasted.
-    expect(painted(cell.querySelector('.wf-pick-id')!, 'text-overflow', WIDE) ?? 'clip').not.toBe('ellipsis')
+    const id = cell.querySelector('.wf-pick-id')!
+    expect(painted(id, 'text-overflow', WIDE)).toBe('ellipsis')
+    // The clone keeps its prototype's title; qa.u10b.workflows.test.tsx holds it to the id.
+    expect(id.getAttribute('title')).toBeTruthy()
   })
 })

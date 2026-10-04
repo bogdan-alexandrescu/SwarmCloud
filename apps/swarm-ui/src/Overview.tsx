@@ -1,6 +1,7 @@
 import './styles/overview.css'
 import './styles/names.css'
-import { LifecycleBand, RecentFailures, WaitingWhy, failuresOf, waitGroups } from './OverviewRegions'
+import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, waitGroups } from './OverviewRegions'
+import { addressToPath } from './paths'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -208,7 +209,7 @@ export function OverviewScreen() {
           <RunningCard tasks={tasks} stats={stats} leases={leases} />
         </section>
         <section className="ctl-card ov-card ov-spend" id="ov-spend">
-          <CardHead title="Cost so far" href="#work/timeline" cta="Timeline" explain="token-cost" />
+          <CardHead title="Cost so far" href="/timeline" cta="Timeline" explain="token-cost" />
           <SpendBody state={spend} tasks={tasks} />
         </section>
       </div>
@@ -218,13 +219,13 @@ export function OverviewScreen() {
           <CardHead
             title="Waiting, and why"
             note={waiting === null ? undefined : `${waiting.reduce((n, g) => n + g.n, 0)} · none cost anything`}
-            href="#work/running/waiting"
+            href="/agents/waiting"
             cta="All waiting"
           />
           <WaitingWhy tasks={tasks} />
         </section>
         <section className="ctl-card ov-card ov-headroom" id="ov-headroom">
-          <CardHead title="Headroom" href="#capacity/pools" cta="Pools" explain="pools-all-at-once" />
+          <CardHead title="Headroom" href="/capacity/pools" cta="Pools" explain="pools-all-at-once" />
           <HeadroomBody capacity={capacity} accounts={accounts} />
         </section>
       </div>
@@ -233,7 +234,7 @@ export function OverviewScreen() {
         <CardHead
           title="Recent failures"
           note={failures === null ? undefined : failures.note}
-          href="#work/running/recent/failed"
+          href="/agents/recent?state=failed"
           cta="All recent"
         />
         <RecentFailures tasks={tasks} />
@@ -815,7 +816,7 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // third. The whole headline stays the card's accessible name.
   const { title, ids } = splitHeadline(p.headline)
   return (
-    <a className={`ov-att is-${p.severity}`} href={p.href} aria-label={`${p.headline}. ${p.detail}`}>
+    <a className={`ov-att is-${p.severity}`} href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
       <span className="ov-att-t">
         <b title={p.headline}>{title}</b>
@@ -839,6 +840,15 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
  * ages and the ids live -- is the second line. A headline with no clause
  * after it is all title.
  */
+/**
+ * A check's link as a path. checks.ts still names its destinations in the
+ * old hash grammar, which the router redirects; a path is the one the address
+ * bar ends on, so the card links there directly (browser QA, 2026-10-04).
+ */
+export function toPath(href: string): string {
+  return href.startsWith('#') ? addressToPath(href.slice(1)) : href
+}
+
 export function splitHeadline(headline: string): { title: string; ids: string | null } {
   const cuts = [
     { at: headline.indexOf(' · '), len: 3 },
@@ -1039,7 +1049,7 @@ function ProfileTile({
  * figure says so rather than `/ 0`. Units, never agents: admission counts a
  * resource class's weight.
  */
-function PoolRow({ pool: p }: { pool: Pool }) {
+export function PoolRow({ pool: p }: { pool: Pool }) {
   const limit = p.effective_limit
   const known = limit !== null && limit > 0
   const ratio = known ? p.active / limit : 0
@@ -1054,7 +1064,9 @@ function PoolRow({ pool: p }: { pool: Pool }) {
   const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${paused ? ', paused' : ''}`
   return (
     <div className="ov-pl" title={say}>
-      <span className="ov-idc">{p.name}</span>
+      <span className="ov-idc" title={p.name}>
+        {p.name}
+      </span>
       <UsageTrack
         pct={known ? ratio * 100 : null}
         tone={tone}
@@ -1120,7 +1132,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
-      <a className="ctl-link ov-link" href="#capacity/accounts">
+      <a className="ctl-link ov-link" href="/capacity/accounts">
         Accounts &rarr;
       </a>
     </div>
@@ -1172,7 +1184,7 @@ function RunningCard({
     <CardHead
       title="Running now"
       note={page === null ? undefined : `${running.length} hold capacity`}
-      href="#work/running"
+      href="/agents/live"
       cta="All live"
     />
   )
@@ -1302,7 +1314,7 @@ function RunningCard({
         {running.map((t) => (
           <li key={t.id}>
             <StateMark state={t.state} />
-            <a className="ov-prun-n" href={`#work/task/${encodeURIComponent(t.id)}`} title={`${agentName(t)} · ${t.id}`}>
+            <a className="ov-prun-n" href={agentPath(t)} title={`${agentName(t)} · ${t.id}`}>
               {agentName(t)}
             </a>
             <em>
@@ -1330,7 +1342,7 @@ export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number
       </td>
       <th scope="row">
         {/* NAMED BY ITS STEP (#94), else its id; the profile under it. */}
-        <a className="ov-name" href={`#work/task/${encodeURIComponent(task.id)}`} title={`${agentName(task)} · ${task.id}`}>
+        <a className="ov-name" href={agentPath(task)} title={`${agentName(task)} · ${task.id}`}>
           {agentName(task)}
         </a>
         {/* SILENT, ON THE ROW ITSELF (#92), from the lease's heartbeat age. */}
@@ -1345,7 +1357,7 @@ export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number
               {' · '}
               <a
                 className="ctl-link ov-wf"
-                href={`#work/workflows?wf=${encodeURIComponent(task.workflow_id)}`}
+                href={`/workflows/${encodeURIComponent(task.workflow_id)}`}
                 title={task.step_id ? `step ${task.step_id} of ${task.workflow_id}` : task.workflow_id}
               >
                 {task.workflow_id}

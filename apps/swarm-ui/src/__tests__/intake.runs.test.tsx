@@ -103,8 +103,8 @@ describe('/runs: the tenant\'s runs, newest first as served', () => {
       return r
     }, WAIT)
     expect(visible(rows[0]!)).toContain('run_new')
-    expect(visible(rows[0]!)).toContain('RUNNING')
-    expect(visible(rows[1]!)).toContain('REJECTED')
+    expect(visible(rows[0]!)).toContain('Running')
+    expect(visible(rows[1]!)).toContain('Rejected')
     expect(rows[0]!.querySelector('[data-mark]'), 'a state with no mark').not.toBeNull()
     fireEvent.click(within(rows[0]!).getByRole('link', { name: 'run_new' }))
     expect(go).toHaveBeenCalledWith('work/runs?run=run_new')
@@ -149,7 +149,7 @@ describe('/runs/<id>: one run', () => {
       expect(el).not.toBeNull()
       return el!
     }, WAIT)
-    expect(visible(container.querySelector('.rn-state'))).toContain('PLANNED')
+    expect(visible(container.querySelector('.rn-state'))).toContain('Planned')
     expect(visible(plan)).toContain('Sum step spend into the workflow read')
     expect(visible(plan)).toContain('api: sum step spend')
     expect(visible(plan)).toContain('ui: the cost column')
@@ -192,7 +192,7 @@ describe('/runs/<id>: one run', () => {
     })
     const { container } = await mount('run=run_4c1e09d2')
     fireEvent.click(await screen.findByRole('button', { name: 'Approve and run' }, WAIT))
-    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('RUNNING'), WAIT)
+    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Running'), WAIT)
     const post = calls.find((c) => c.url.endsWith('plan:approve'))!
     expect(post.method).toBe('POST')
     expect(post.body).toEqual({ plan_digest: DIGEST_A })
@@ -235,7 +235,7 @@ describe('/runs/<id>: one run', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Reject' }, WAIT))
     fireEvent.change(screen.getByLabelText('Why (optional)'), { target: { value: 'wrong repo' } })
     fireEvent.click(screen.getByRole('button', { name: 'Reject this plan' }))
-    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('REJECTED'), WAIT)
+    await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain('Rejected'), WAIT)
     const post = calls.find((c) => c.url.endsWith('plan:reject'))!
     expect(post.body).toEqual({ plan_digest: DIGEST_A, reason: 'wrong repo' })
   })

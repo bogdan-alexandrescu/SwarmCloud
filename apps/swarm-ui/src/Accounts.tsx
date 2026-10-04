@@ -1539,7 +1539,11 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
   const spans = h?.spans ?? []
   const from = Date.parse(h?.from ?? '') || now - 7 * 86_400_000
   const to = Date.parse(h?.to ?? '') || now
-  const width = Math.max(1, to - from)
+  // The bar's scale: the first hold shown to the window's end, never the
+  // whole seven days a few short holds would be slivers in (D24).
+  const starts = spans.map((x) => Date.parse(x.since ?? '')).filter((t) => Number.isFinite(t))
+  const lo = starts.length === 0 ? from : Math.max(from, Math.min(...starts))
+  const scale = Math.max(1, to - lo)
   const five = readingOf(account, FIVE_HOUR)
   return (
     <div className="acct-holders">
@@ -1557,60 +1561,58 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
       {spans.length === 0 ? (
         <p className="muted small">No holds recorded in this window.</p>
       ) : (
-        <ul className="acct-holder-list acct-spans">
-          {spans.map((s, i) => {
-            const a = Date.parse(s.since ?? '')
-            const b = s.until ? Date.parse(s.until) : now
-            const left = Number.isFinite(a) ? ((a - from) / width) * 100 : 0
-            const span = Number.isFinite(a) && Number.isFinite(b) ? ((b - a) / width) * 100 : 0
-            return (
-              <li key={i}>
-                <span
-                  className="acct-span-bar"
-                  aria-hidden="true"
-                  style={{
-                    display: 'inline-block',
-                    position: 'relative',
-                    width: '8rem',
-                    height: '0.5rem',
-                    background: 'var(--line, currentColor)',
-                    opacity: 0.6,
-                    verticalAlign: 'middle',
-                    marginRight: '0.5rem',
-                  }}
-                >
-                  <span
-                    style={{
-                      position: 'absolute',
-                      top: 0,
-                      bottom: 0,
-                      left: `${Math.max(0, Math.min(100, left))}%`,
-                      width: `${Math.max(1, Math.min(100, span))}%`,
-                      background: 'var(--text, currentColor)',
-                    }}
-                  />
-                </span>
-                {s.mine ? (
-                  <HoldWork h={s} />
-                ) : (
-                  <span className="mono">{s.tenant}</span>
-                )}
-                {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
-                {!s.mine && h?.viewer === 'platform' && s.task_id && (
-                  <>
-                    {' '}
-                    <HoldWork h={s} />
-                  </>
-                )}
-                <span className="muted">
-                  {' '}
-                  {s.since ? `${clockOf(s.since)} for ${heldFor(b - a)}` : 'start not recorded'}
-                  {s.end ? ` · ${s.end}` : ' · holding'}
-                </span>
-              </li>
-            )
-          })}
-        </ul>
+        // THE PICKED TABLE (browser QA D24, 2026-10-04; components.html A): it
+        // was a bulleted list whose 8rem bars drew a seven-day window, so a
+        // 30-minute hold was a 1px sliver. The bar is scaled to the holds shown
+        // -- the first one's start to now -- and its head says so.
+        <table className="acct-hist">
+          <thead>
+            <tr>
+              <th scope="col">Holder</th>
+              <th scope="col">Started</th>
+              <th scope="col" className="is-num">Held</th>
+              <th scope="col">Ended</th>
+              <th scope="col" title={`From ${clockOf(new Date(lo).toISOString())} to ${h?.to ? clockOf(h.to) : 'now'}`}>
+                When, from {clockOf(new Date(lo).toISOString())}
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {spans.map((s, i) => {
+              const a = Date.parse(s.since ?? '')
+              const b = s.until ? Date.parse(s.until) : now
+              const left = Number.isFinite(a) ? ((a - lo) / scale) * 100 : 0
+              const span = Number.isFinite(a) && Number.isFinite(b) ? ((b - a) / scale) * 100 : 0
+              return (
+                <tr key={i}>
+                  <td className="acct-hist-who">
+                    {s.mine ? <HoldWork h={s} /> : <span className="mono">{s.tenant}</span>}
+                    {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
+                    {!s.mine && h?.viewer === 'platform' && s.task_id && (
+                      <>
+                        {' '}
+                        <HoldWork h={s} />
+                      </>
+                    )}
+                  </td>
+                  <td>{s.since ? clockOf(s.since) : <span className="muted">start not recorded</span>}</td>
+                  <td className="is-num">{s.since ? heldFor(b - a) : '—'}</td>
+                  <td>{s.end ?? <span className="muted">holding</span>}</td>
+                  <td>
+                    <span className="acct-hist-bar" aria-hidden="true">
+                      <i
+                        style={{
+                          left: `${Math.max(0, Math.min(100, left))}%`,
+                          width: `${Math.max(1, Math.min(100, span))}%`,
+                        }}
+                      />
+                    </span>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
       )}
       {h?.viewer === 'borrower' && (h.others ?? 0) > 0 && (
         <p className="muted small">

@@ -91,7 +91,7 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
     expect(familyOrder('Runner profiles')).toEqual(['runner:zeta', 'runner:beta', 'runner:gamma', 'runner:alpha'])
   })
 
-  it('draws a utilisation track and a % on every row, and Set by only where it is not configured', async () => {
+  it('draws a utilisation track and a % on every row, and Set by on every row', async () => {
     const data = board()
     data.pools.push(pool('tenant:eng', 2, 4, { hard_limit: 10, adaptive_target: 4 }))
     await renderPools(data)
@@ -101,7 +101,8 @@ describe('Pools puts the abnormal row first and measures every row (#125)', () =
       expect(r.querySelector('.cap-use-pct')!.textContent).toMatch(/%$/)
     }
     expect(rowOf('runner:zeta').querySelector('.cap-use-pct')!.textContent).toBe('100%')
-    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('')
+    // Never blank since browser QA D32 (2026-10-04): the configured case says so, faint.
+    expect(rowOf('global').querySelector('td[data-label="Set by"]')!.textContent).toBe('configured')
     expect(rowOf('tenant:eng').querySelector('td[data-label="Set by"]')!.textContent).toBe('AIMD back-off')
   })
 })

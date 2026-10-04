@@ -2533,6 +2533,16 @@ function WorkflowGraph({
     if (n !== null) notes.set(s.step_id, n)
   }
   const noted = new Set(notes.keys())
+  // A SETTLED STEP RESERVES NO STOP STRIP (browser QA D29): its task is
+  // terminal, so `StopRun` can never draw on its card again.
+  const settled = new Set(
+    workflow.steps
+      .filter((s) => {
+        const st = stepState(s, taskById)
+        return st.kind === 'state' && TERMINAL_STATES.has(st.task.state)
+      })
+      .map((s) => s.step_id),
+  )
   // THE DETAILS PANEL TAKES ITS COLUMN FROM THE GRAPH (#330 item 5). While a
   // step is picked the panel stands on the right, so under Auto the graph is
   // laid out for what is left beside it rather than scrolling sideways under
@@ -2540,15 +2550,15 @@ function WorkflowGraph({
   // keeps its full-width layout, and one without is laid out with `band`
   // false, so no stage -- the picked step's included -- vanishes into a band
   // because the panel opened. A tier the reader chose is left as chosen.
-  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted)
+  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled)
   const beside =
     picked !== null &&
     zoom === 'auto' &&
-    !layoutOf(workflow.steps, undefined, fullAuto, noted).wide.some(Boolean)
+    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled).wide.some(Boolean)
   const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
-  const auto = beside ? autoTier(workflow.steps, column, noted, false) : fullAuto
+  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled) : fullAuto
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
-  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column)
+  const layout = layoutOf(workflow.steps, expandedStages, tier, noted, column, settled)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -3623,7 +3633,7 @@ function StepNode({
     <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
       <button
         type="button"
-        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}`}
+        className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}${state.kind === 'state' && TERMINAL_STATES.has(state.task.state) ? ' is-settled' : ''}`}
         data-step={step.step_id}
         title={p.title}
         aria-pressed={picked}
@@ -4480,11 +4490,16 @@ function WorkflowListRow({
   const dur = workflowDuration(workflow, taskById, now)
   return (
     <tr className={`wfl-row${failed ? ' is-failed' : ''}`} data-workflow={workflow.workflow_id}>
-      <td className="wfl-state">
+      {/* EVERY CELL NAMES ITS COLUMN (browser QA D8): the sheet sizes State,
+          Steps done and Duration to what they hold, and cuts the name and the
+          shape with their whole text as the title. */}
+      <td className="wfl-state" data-col="state">
         <WorkflowStateMark workflow={workflow} />
       </td>
-      <td className="wfl-name">
-        <a href={workflowHref(workflow.workflow_id, query)}>{label ?? workflow.workflow_id}</a>
+      <td className="wfl-name" data-col="workflow">
+        <a href={workflowHref(workflow.workflow_id, query)} title={label ?? workflow.workflow_id}>
+          {label ?? workflow.workflow_id}
+        </a>
         {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
@@ -4495,29 +4510,29 @@ function WorkflowListRow({
         {why !== null && <RowWhyLine why={why} />}
         {cancelPending(workflow) && <span className="tag wait">cancel requested</span>}
       </td>
-      <td className="wfl-shape">
+      <td className="wfl-shape" data-col="shape" title={shapeOf(workflow.steps).label}>
         <StageGlyph steps={workflow.steps} taskById={taskById} />
         <Shape shape={shapeOf(workflow.steps)} />
         {partialDeps(workflow.steps) && (
           <Chip title="Some steps depend on part of the level above, not all of it">partial</Chip>
         )}
       </td>
-      <td>
+      <td data-col="done">
         <StepsDone workflow={workflow} roll={roll} />
       </td>
-      <td>
+      <td data-col="runners">
         <Mix steps={workflow.steps} />
       </td>
       <td className="num" data-col="cost">
         <Spend spend={spend} short />
       </td>
-      <td className="wfl-owner" title={workflow.submitted_by ?? undefined}>
+      <td className="wfl-owner" data-col="owner" title={workflow.submitted_by ?? undefined}>
         {ownerShort(workflow.submitted_by)}
       </td>
-      <td className="wfl-started" title={started.title}>
+      <td className="wfl-started" data-col="started" title={started.title}>
         {started.text}
       </td>
-      <td className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}`} title={dur.title}>
+      <td className={`num wfl-dur${dur.ms === null ? ' is-absent' : ''}`} data-col="duration" title={dur.title}>
         {dur.text}
       </td>
     </tr>

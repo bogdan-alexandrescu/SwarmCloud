@@ -28,16 +28,27 @@
 @media (min-width: 900px) {
   .wfl > .table-wrap.wfl-scroll { overflow-x: visible; }
   .wfl .wfl-table { table-layout: fixed; width: 100%; }
-  .wfl .wfl-table th[data-col="state"] { width: 9%; }
-  .wfl .wfl-table th[data-col="workflow"] { width: 19%; }
-  .wfl .wfl-table th[data-col="shape"] { width: 13%; }
-  .wfl .wfl-table th[data-col="done"] { width: 9%; }
-  .wfl .wfl-table th[data-col="runners"] { width: 14%; }
-  .wfl .wfl-table th[data-col="cost"] { width: 9%; }
-  .wfl .wfl-table th[data-col="owner"] { width: 9%; }
+  /* THREE COLUMNS ARE SIZED TO WHAT THEY HOLD (browser QA D8, 2026-10-04):
+     at 9% each, "9/10" was clipped behind its bar, a state read "succeeded…"
+     and a duration "4h 12m so …". State fits "dead-lettered" beside its mark,
+     Steps done a 24px bar and "10/10", Duration "23h 59m so far"; the name
+     takes what is left and is cut with its title, as the shape is. */
+  .wfl .wfl-table th[data-col="state"] { width: 136px; }
+  .wfl .wfl-table th[data-col="shape"] { width: 10%; }
+  .wfl .wfl-table th[data-col="done"] { width: 92px; }
+  .wfl .wfl-table th[data-col="runners"] { width: 11%; }
+  .wfl .wfl-table th[data-col="cost"] { width: 8%; }
+  .wfl .wfl-table th[data-col="owner"] { width: 8%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
-  .wfl .wfl-table th[data-col="duration"] { width: 9%; }
+  .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
+  .wfl .wfl-table td[data-col="state"],
+  .wfl .wfl-table td[data-col="done"],
+  .wfl .wfl-table td[data-col="duration"] { text-overflow: clip; white-space: nowrap; }
+  .wfl .wfl-table td[data-col="shape"] { white-space: nowrap; }
+  .wfl .wfl-done { display: flex; }
+  .wfl .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
+  .wfl .wfl-done > small { flex: none; }
   /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
      column holds "$12.3456 3/5"; an unreported cost is a dash. */
   .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
@@ -110,6 +121,10 @@
 }
 .wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
+   it shrinks and is cut, whole in its title. */
+.wf-scrub > .wf-scrub-nav { display: inline-flex; align-items: center; gap: var(--ctl-s2); flex: none; white-space: nowrap; }
+.wf-scrub > .wf-scrub-shape { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
 /* THE STEP TABLE IS A FIXED TABLE WITH PX COLUMNS (walkthrough A, owner
@@ -133,30 +148,63 @@
    box, so the cell's ellipsis never reached it and the clip cut it mid-id;
    it now wraps inside its own cell (below), whole, because a cut id cannot
    be pasted. walk.steps.inspector.test.tsx. */
+/* BROWSER QA D12 (owner, 2026-10-04, an issue run's ten long step names):
+   the names wrapped to two and three lines of bold mono with hyphen breaks
+   while an empty Why took ~110px; Ran and Cost held 94-101px of text in 64px
+   cells ("9m 55s…", "not repo…"); with the step card open everything after
+   Waited was behind a sideways scroll; on a phone the table was ~300px in
+   nested borders. So: a name is ONE line, cut with an ellipsis and whole in
+   its title (and in the step card); Why is not drawn when no step has one
+   (`tableColumns`), and the step column takes its room; Ran fits
+   "23h 59m so far" and Cost "not reported"; and below the table's minimum
+   width the rows STACK (the container query below) instead of scrolling.
+   The px columns sum to 940, so Why keeps 60px at the 1000px minimum and is
+   cut there with its whole reason in its title. */
+/* The box AROUND the table is the container its stacked form asks about, at
+   any width. Not the table's own box: a container query matches descendants
+   only, so the border and overflow below would never apply to it (D12). */
+.wf-card .wf-table-box { container: wf-steps / inline-size; }
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
   .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; font-size: var(--t-meta); }
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
-  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 140px; }
-  .wf-card .ctl-table.wf-table td[data-col="step"] { white-space: normal; }
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 124px; }
+  .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
   .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
-  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 64px; }
-  .wf-card .ctl-table.wf-table th[data-col="attempts"],
+  .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 114px; }
+  .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 70px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
-  .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 80px; }
+  .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 156px; }
   /* The files a step reads, in the row under it: wrapping text, the row's width. */
   .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
 }
-/* A STEP'S NAME WRAPS INSIDE ITS CELL, at any width (item 1 above): the
-   button is the cell's width at most and breaks the id anywhere, so the next
-   column's state pill is never drawn over it. */
-.wf-table td[data-col="step"] > .wf-pick { display: flex; max-width: 100%; white-space: normal; }
-.wf-table td[data-col="step"] .wf-pick-id { min-width: 0; overflow-wrap: anywhere; }
+/* A STEP'S NAME IS ONE LINE (D12): the button is the cell's width at most and
+   the id inside it is cut with an ellipsis, its whole text in its title, so
+   the next column's state pill is never drawn over it and no hyphen breaks it. */
+.wf-table td[data-col="step"] > .wf-pick { display: flex; max-width: 100%; white-space: nowrap; }
+.wf-table td[data-col="step"] .wf-pick-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* BELOW THE MINIMUM WIDTH THE ROWS STACK (D12): the name and the state on a
+   line, then each figure under its own label, wrapping; no sideways scroll,
+   no second border inside the card. Phone and the docked step card alike. */
+@container wf-steps (max-width: 999px) {
+  .wf-card .ctl-table.wf-table.is-scroll { border: 0; overflow-x: visible; }
+  .wf-card .ctl-table.wf-table.is-scroll > table { display: block; min-width: 0; width: 100%; }
+  .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }
+  .wf-card .ctl-table.wf-table.is-scroll > table > tbody { display: block; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; padding: 6px 4px; border-bottom: 1px solid var(--line-soft); }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; white-space: normal; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-label]::before { content: attr(data-label) ' '; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
+  .wf-card .ctl-table.wf-table.is-scroll tr.wf-xrow,
+  .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; }
+}
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
 /* THE TABLE'S HEAD ROW, inside the card: its title, and the sampling mark
@@ -389,3 +437,22 @@
 .wf-ph-name { font-weight: 600; overflow-wrap: anywhere; }
 .wf-ph-state { margin-left: auto; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .wf-ph-more { font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--sk-ac); }
+
+/* A SETTLED STEP'S CARD RESERVES NO STOP STRIP (browser QA D29, 2026-10-04):
+   its task is terminal, so no Stop control can appear on it, and the 42px
+   strip was 40-65px of blank under every finished card. The card keeps its
+   tier's top padding under its last row instead. `stripSavingAt` in dag.ts
+   is the same arithmetic: 42 - 10 and 34 - 6. */
+.wf-canvas .node.is-settled { padding-bottom: 10px; }
+.wf-canvas .node.zoom-names.is-settled { padding-bottom: 6px; }
+
+/* THE TIMELINE THINS ITS LABELS BY ITS OWN WIDTH (browser QA D38, 2026-10-04).
+   The phone rule in styles.css asks the VIEWPORT, so with the step card open
+   at 1440 the track was ~290px and "+3h" "+4h" all but touched. The scale is
+   its own container, and below 420px -- six seven-character labels at 59px --
+   it prints every other label exactly as the phone rule does: counted back
+   from the last, `0` and the last always printed, every rule line kept. */
+.wf-timeline > .wf-tl-scale { container: wf-tl-scale / inline-size; }
+@container wf-tl-scale (max-width: 420px) {
+  .wf-tl-scale > .wf-tl-tick:nth-last-of-type(even):not(:first-of-type) > .wf-tl-tick-label { visibility: hidden; }
+}

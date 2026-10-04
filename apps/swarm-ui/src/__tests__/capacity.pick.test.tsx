@@ -185,7 +185,8 @@ describe('the family tables are the frame’s seven columns (#503)', () => {
     await renderPools()
     for (const table of document.querySelectorAll('.cap-families table')) {
       const heads = [...table.querySelectorAll('thead th')].map((th) => (th.textContent ?? '').trim())
-      expect(heads).toEqual(['Pool', 'Leased (units)', 'Ceiling (units)', 'Use', 'State', 'Set by', ''])
+      // The links column has a head since browser QA D32 (2026-10-04).
+      expect(heads).toEqual(['Pool', 'Leased (units)', 'Ceiling (units)', 'Use', 'State', 'Set by', 'Open'])
     }
   })
 

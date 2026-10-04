@@ -2,8 +2,8 @@ import { Fragment, useEffect, useRef, useState } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
-import type { MarkHue, MarkName } from './marks'
-import { Button, NamedMark, WarnMark } from './components'
+import { MarkGlyph, type MarkHue, type MarkName } from './marks'
+import { Button, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { IssueRun, IssueRunPage, IssueRunState, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
@@ -59,10 +59,27 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
   CANCELLED: { mark: 'cancelled', hue: 'neu' },
 }
 
-/** A run's state, as the API names it, with its mark. */
+/** A run's state in words: sentence case, never the API's capitals (PICKS.md, no all-caps). */
+export function runStateWord(state: IssueRunState): string {
+  return state.charAt(0) + state.slice(1).toLowerCase()
+}
+
+/**
+ * A run's state as the canonical state pill (components.html A, `c-pill`):
+ * the brand mark and the state in sentence case. It was the mark beside the
+ * API's word in capitals -- "RUNNING", "DONE" -- against the no-all-caps rule
+ * (browser QA D11, 2026-10-04). The API's spelling stays its title.
+ */
 export function RunStateMark({ state }: { state: IssueRunState }) {
   const { mark, hue } = RUN_MARK[state] ?? { mark: 'queued', hue: 'neu' }
-  return <NamedMark mark={mark} hue={hue} word={state} />
+  return (
+    <span className={`c-pill is-${hue}`} data-mark={mark} data-hue={hue} title={state}>
+      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+        <MarkGlyph mark={mark} />
+      </svg>
+      {runStateWord(state)}
+    </span>
+  )
 }
 
 /** `sha256:9f2c41…e7`: enough to compare by eye; the whole digest is its title. */
@@ -79,8 +96,9 @@ function runOf(view: string | null): string | null {
 
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
 function InApp({ to, href, go, children }: { to: string; href: string; go: (to: string) => void; children: string }) {
+  // Its whole text is its title: an id cut to its card says what it was (D3).
   return (
-    <a href={href} className="mono" onClick={(e) => {
+    <a href={href} className="mono" title={children} onClick={(e) => {
       if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
       e.preventDefault()
       go(to)
@@ -106,8 +124,10 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
       setNotice(why)
       setReloads((n) => n + 1)
     }
+    // A heading with no space is a reference or an id: one line, cut, never
+    // broken at the owner's hyphen (browser QA D11). A title wraps as prose.
     return (
-      <>
+      <div className={/\s/.test(pageTitle) ? 'rn-run' : 'rn-run is-ref'}>
         <a className="rn-back" href="/runs" onClick={(e) => {
           if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
           e.preventDefault()
@@ -135,7 +155,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
             />
           )}
         </Screen>
-      </>
+      </div>
     )
   }
 
@@ -184,30 +204,42 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
   return (
     <div className="rn-list">
       <div className="rn-table-wrap">
+        {/* FIXED COLUMNS (browser QA D11): the table was 1085px in a 1056px
+            card and cut the By column mid-address. Each id and name is one
+            line, cut, whole in its title; the issue leads with its title. */}
         <table className="rn-table">
           <thead>
             <tr>
-              <th scope="col">Run</th>
-              <th scope="col">Issue</th>
-              <th scope="col">State</th>
-              <th scope="col">Plan approval</th>
-              <th scope="col">Workflow</th>
-              <th scope="col">Created</th>
-              <th scope="col">By</th>
+              <th scope="col" data-col="run">Run</th>
+              <th scope="col" data-col="issue">Issue</th>
+              <th scope="col" data-col="state">State</th>
+              <th scope="col" data-col="approval">Plan approval</th>
+              <th scope="col" data-col="workflow">Workflow</th>
+              <th scope="col" data-col="created">Created</th>
+              <th scope="col" data-col="by">By</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} className="rn-row">
-                <td data-label="Run"><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></td>
-                <td data-label="Issue"><span className="mono">{r.issue.ref}</span></td>
+                <td data-label="Run" className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></td>
+                <td data-label="Issue">
+                  {r.issue_read?.title ? (
+                    <>
+                      <span className="rn-cut rn-issue-t" title={r.issue_read.title}>{r.issue_read.title}</span>
+                      <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}>{r.issue.ref}</span>
+                    </>
+                  ) : (
+                    <span className="mono rn-cut" title={r.issue.ref}>{r.issue.ref}</span>
+                  )}
+                </td>
                 <td data-label="State"><RunStateMark state={r.state} /></td>
                 <td data-label="Plan approval">{r.plan_approval}</td>
                 <td data-label="Workflow">
-                  {r.workflow_id === null ? <i className="ctl-em">none yet</i> : <span className="mono">{r.workflow_id}</span>}
+                  {r.workflow_id === null ? <i className="ctl-em">none yet</i> : <span className="mono rn-cut" title={r.workflow_id}>{r.workflow_id}</span>}
                 </td>
                 <td data-label="Created" title={r.created_at}>{timeAgo(r.created_at, now)}</td>
-                <td data-label="By">{r.created_by || <i className="ctl-em">&mdash; not recorded</i>}</td>
+                <td data-label="By">{r.created_by ? <span className="rn-cut" title={r.created_by}>{r.created_by}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
               </tr>
             ))}
           </tbody>
@@ -648,21 +680,18 @@ function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
 function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
   const read = run.issue_read ?? null
   const failed = run.issue_read_error ?? null
+  // ONE SHORT LINE FOR WHAT WAS NOT KEPT (browser QA D11): the reason was
+  // printed under each of five keys, a column of the same sentence.
   const why =
     failed !== null
-      ? `not read at submission: ${failed.message}`
-      : 'not kept: this run was created before runs kept what the issue said'
-  const absent = (key: string) => (
-    <li key={key} className="ctl-fact is-absent"><b>{key}</b><i className="ctl-em">&mdash; {why}</i></li>
-  )
+      ? `Not read at submission: ${failed.message}`
+      : 'Not kept: this run is older than the issue snapshot.'
   return (
     <section className="rn-card rn-read" aria-label="Read from the issue">
       <h3>Read from the issue</h3>
       <ul className="ctl-facts">
         <li className="ctl-fact"><b>issue</b><IssueLink run={run} /></li>
-        {read === null ? (
-          ['title', 'state', 'labels', 'body', 'comments'].map(absent)
-        ) : (
+        {read === null ? null : (
           <>
             <li className="ctl-fact"><b>title</b><span className="rn-read-v">{read.title}</span></li>
             <li className="ctl-fact"><b>state</b><span>{read.state}</span></li>
@@ -683,6 +712,11 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
           </>
         )}
       </ul>
+      {read === null && (
+        <p className="ctl-em rn-read-none" title="Title, state, labels, body and comments are not on this run.">
+          {why}
+        </p>
+      )}
       {read !== null && read.body !== '' && (
         <details className="rn-read-body">
           <summary>Show the body</summary>
