@@ -139,7 +139,23 @@
 /* ---- the list: 32px rows --------------------------------------------------- */
 .rn-list { display: grid; gap: 12px; min-width: 0; }
 .rn-table-wrap { overflow-x: auto; }
-.rn-table { width: 100%; border-collapse: collapse; }
+/* FIXED COLUMNS (browser QA D11, 2026-10-04): auto layout made the table
+   1085px in a 1056px card and cut "bogdan@saga." in By. Ids, names and the
+   issue are one line each, cut with an ellipsis and whole in their titles. */
+.rn-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.rn-table th[data-col='run'] { width: 17%; }
+.rn-table th[data-col='state'] { width: 112px; }
+.rn-table th[data-col='approval'] { width: 104px; }
+.rn-table th[data-col='workflow'] { width: 15%; }
+.rn-table th[data-col='created'] { width: 88px; }
+.rn-table th[data-col='by'] { width: 15%; }
+.rn-cut { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rn-issue-ref { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+/* The run page wraps its frame (`.rn-run`) only to say whether its heading is
+   a reference: it draws nothing of its own. */
+.rn-run { display: contents; }
+.rn-run.is-ref .c-phead h1 { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; min-width: 0; }
+.rn-read-none { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
 .rn-table th {
   text-align: left; padding: 6px 10px;
   border-bottom: 1px solid var(--line);
@@ -203,10 +219,16 @@
 }
 
 .rn-side { display: grid; gap: 12px; min-width: 0; }
+/* A CARD SHRINKS TO ITS TRACK (browser QA D3, 2026-10-04): a grid item's
+   min-width is its content's, so one nowrap id widened the card past the
+   300px column (x1448 in a card ending at 1408). Each id is one line, cut,
+   whole in its title -- never broken mid-name and never over the edge. */
+.rn-side > .rn-card { min-width: 0; overflow: hidden; }
 .rn-card .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
-.rn-card .ctl-fact { justify-content: space-between; gap: 12px; }
+.rn-card .ctl-fact { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
 .rn-card .ctl-fact > b { flex: none; }
-.rn-card a { color: var(--sk-ac); overflow-wrap: anywhere; }
+.rn-card a { color: var(--sk-ac); }
+.rn-card .ctl-fact > a { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* The plan editor and the rejection, in place of the plan and the actions. */
 .rn-edit, .rn-reject { display: grid; gap: 10px; }
