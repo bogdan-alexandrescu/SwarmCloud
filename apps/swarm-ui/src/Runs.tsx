@@ -718,7 +718,7 @@ function oneEllipsis(lead: string): string {
  * disclosure. On a phone the plan was one paragraph with no end.
  */
 function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
-  const { lead, cut } = planLead(plan.summary)
+  const { lead } = planLead(plan.summary)
   return (
     <>
       <p className="rn-summary">
