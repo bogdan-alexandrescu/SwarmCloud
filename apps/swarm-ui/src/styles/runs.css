@@ -1,0 +1,54 @@
+/* ==========================================================================
+   WORK › RUNS, ONE RUN -- what lane U9 added to /runs/<id> (owner,
+   2026-10-03, after a walkthrough of run_d13a2f1b7e1e4eafabfb at 1440 and
+   390). The page's frame, its cards and the list stay in styles/intake.css,
+   which both intake screens import; this sheet holds the plan drawn from its
+   schema (item 5), the issue as the run read it (item 4) and the reference
+   that never breaks (item 6). Classes are `rn-`, so a later pass can swap
+   each for lane U0's components by name.
+
+   TO components.html A until U0's canonical set lands: 32px rows, radius 8 for
+   a control and 12 for a card (the live tokens), pill chips. TYPE: the 12px
+   floor, sentence case, no letter-spacing (PICKS.md).
+   ========================================================================== */
+
+/* ---- item 6: owner/repo#N on one line ------------------------------------- */
+/* 'bogdan- / alexandrescu/SwarmCloud#454' broke at the owner's hyphen under
+   `.rn-card a`'s `overflow-wrap: anywhere`. One line, cut with an ellipsis
+   where the card is narrower than the reference, the whole of it in the
+   link's title. `min-width: 0` lets it shrink beside its key in the fact row. */
+.rn-card .rn-ref {
+  display: inline-block; min-width: 0; max-width: 100%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; overflow-wrap: normal;
+  vertical-align: bottom;
+}
+
+/* ---- item 5: the plan from its schema -------------------------------------- */
+/* The lead is a few sentences (`planLead`); the steps are numbered cards with
+   their prompts folded; the raw plan is behind "Show the full plan". */
+.rn-step-h { font-weight: 600; color: var(--text); }
+.rn-step-id, .rn-step-meta { display: flex; flex-wrap: wrap; gap: 0 8px; margin: 0; }
+.rn-step-id > .mono { overflow-wrap: anywhere; }
+.rn-step-meta code { font: var(--t-micro)/var(--lh-micro) var(--mono); overflow-wrap: anywhere; }
+.rn-prompt-d, .rn-raw, .rn-read-body { min-width: 0; }
+.rn-prompt-d > summary, .rn-raw > summary, .rn-read-body > summary {
+  display: inline-flex; align-items: center; min-height: 32px;
+  cursor: pointer; color: var(--sk-ac);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.rn-prompt-d > summary:focus-visible,
+.rn-raw > summary:focus-visible,
+.rn-read-body > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.rn-full { margin: 0 0 8px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.rn-raw-json {
+  margin: 0; padding: 8px 10px; max-height: 360px; overflow: auto;
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface-2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text);
+  white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.rn-list-items { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+
+/* ---- item 4: what the issue said at submission ------------------------------ */
+/* A title or a label set is prose, so it wraps -- at spaces -- under its key. */
+.rn-read .rn-read-v { min-width: 0; text-align: right; overflow-wrap: break-word; }

@@ -646,8 +646,16 @@ body {
 
    `overflow-x` follows `overflow-y` to `auto` per the spec once one axis is
    not `visible`, which matches what the document used to do with a too-wide
-   table: scroll, rather than clip a column off. */
+   table: scroll, rather than clip a column off.
+
+   `position: relative` MAKES THE SCROLLER EVERY PAGE BOX'S CONTAINING BLOCK
+   (lane U9 item 3, owner 2026-10-03). The visually hidden words (`.sk-vh`,
+   a compact row's `.sk-st-w`) are absolute; with no positioned ancestor
+   inside the scroller they were laid out against `.sk-app`, at a static
+   position thousands of pixels down the page, and the WINDOW scrolled past
+   the frame into blank grey to reach them. frame.overscroll.test.tsx. */
 .ctl-scroll {
+  position: relative;
   min-height: 0;
   min-width: 0;
   overflow: auto;

@@ -202,7 +202,19 @@
   overflow-wrap: anywhere;
 }
 .ag-head-state { color: var(--text-faint); font-size: var(--t-meta); }
-.ag-head-actions { display: inline-flex; align-items: center; flex-wrap: nowrap; gap: var(--ctl-s2); margin-inline-start: auto; flex: none; }
+/* THE ACTIONS' OWN ROW (lane U9 item 2, owner 2026-10-03): on a running
+   agent the ✕ was drawn over Stop ("st" showed). Copy link, Stop and ✕ are a
+   row over the pill and the title now, packed to the right; the parent link
+   takes the left. The row WRAPS -- an opened Stop confirm, or a column
+   narrower than the three, starts a line rather than running one control
+   under another -- and each control keeps its width.
+   agent.header.actions.test.tsx. */
+.ag-head-bar { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); min-width: 0; }
+.ag-head-bar > .ag-parent { flex: 1 1 auto; min-width: 0; }
+.ag-head-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: var(--ctl-s2); margin-inline-start: auto; flex: 0 1 auto; min-width: 0; }
+.ag-head-actions > *, .ag-head-stop > .c-btn { flex: none; }
+/* An opened Stop confirm is never wider than the column: it wraps inside it. */
+.ag-head-actions > .ag-head-stop { max-width: 100%; }
 .ag-head-id { display: flex; align-items: center; flex-wrap: wrap; gap: var(--ctl-s2); margin: 0; min-width: 0; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .ag-head-id > .ad-id-text { min-width: 0; overflow-wrap: anywhere; }
 .ag-head-facts { margin: 2px 0 0; }
@@ -212,6 +224,11 @@
 .ag-head-actions > .drawer-close { position: static; margin: 0; flex: none; }
 .ag-head-copied { font-size: var(--t-micro); color: var(--text-dim); }
 .ag-head-stop .stop-confirm { flex-basis: 100%; }
+/* NO STICKY HEADER BAND IN THE SPLIT. `.drawer::before` is a 50px strip of
+   `--bg` at z-index 3, there to seat a sticky ✕ over a drawer whose content
+   scrolls under it. This column does not scroll (its pane does) and its ✕
+   is in the actions row above, so the band only covered the header's top. */
+.ag-split.ctl-drawer::before { display: none; }
 .ag-parent { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* ONE TITLE, IN THE HEADER ROW (#503: "the title is the task id", and a band

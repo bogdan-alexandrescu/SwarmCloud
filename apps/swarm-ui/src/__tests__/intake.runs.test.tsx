@@ -160,8 +160,8 @@ describe('/runs/<id>: one run', () => {
     expect(within(links).getByRole('link', { name: /example-org\/infra#512/ }).getAttribute('href'))
       .toBe('https://github.com/example-org/infra/issues/512')
     expect(visible(links)).toMatch(/Workflow.*none yet/)
-    expect(visible(links)).toMatch(/Pull request.*not served/)
-    expect(visible(links)).toMatch(/Plan comment.*not served/)
+    expect(visible(links)).toMatch(/Pull request.*GitHub write-back is not built yet \(#454\)/)
+    expect(visible(links)).toMatch(/Plan comment.*GitHub write-back is not built yet \(#454\)/)
     // Overlaps are not on the run document: a region that says so.
     expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/not served/)
   })

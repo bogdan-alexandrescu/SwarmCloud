@@ -27,12 +27,13 @@ import logging
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
-from swarm_common.models import new_id
+from swarm_common.models import Tenant, new_id
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
+from ..forge import ForgeReadError, preview
 from ..issueruns import (
     AUTO_APPROVER,
     MAX_PLAN_BYTES,
@@ -44,6 +45,7 @@ from ..issueruns import (
     RunState,
     compile_plan,
     failure_text,
+    issue_read_from_preview,
     parse_plan,
     plan_digest,
     planner_task,
@@ -211,6 +213,43 @@ def _advance(ctx: AppContext, auth: AuthContext, tenant_id: str, run: IssueRun) 
 
 
 # --------------------------------------------------------------------------
+# what the issue said at submission
+# --------------------------------------------------------------------------
+
+def _read_issue(
+    ctx: AppContext, auth: AuthContext, tenant_id: str, ref
+) -> tuple[dict | None, dict | None]:
+    """The issue as the preview reads it, for the run to keep; or why it could not be read.
+
+    THE SAME READ AS `GET /v1/issues/preview` (lane U9 item 4): the caller's
+    tenant's forge token, `forge.preview`'s masking and body bound. The token
+    lives inside `preview` only; nothing about it is returned or logged here.
+    A failure does not refuse the run -- the planner reads the issue itself,
+    on the worker -- it is kept as `issue_read_error`, so the run page says
+    why its card is empty instead of pretending the issue had nothing in it.
+    """
+    if ctx.forge_tokens is None or ctx.forge is None:
+        return None, {"code": "read_failed", "message": "this API has no forge reader configured"}
+    tenant = ctx.store.get_tenant(tenant_id) or Tenant(
+        tenant_id=tenant_id,
+        kind="group",
+        principal=auth.tenant_principal or auth.email,
+        created_at=ctx.now(),
+    )
+    try:
+        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+    except ForgeReadError as refused:
+        log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
+        return None, {"code": refused.code, "message": refused.message}
+    except Exception as exc:  # noqa: BLE001 -- the run is created either way
+        # The type only: an exception's text can quote a request.
+        log.warning("issue run read tenant=%s issue=%s failed (%s)", tenant_id, ref.short, type(exc).__name__)
+        return None, {"code": "read_failed", "message": f"the issue could not be read ({type(exc).__name__})"}
+    log.info("issue run read tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
+    return issue_read_from_preview(read, ctx.now()), None
+
+
+# --------------------------------------------------------------------------
 # routes
 # --------------------------------------------------------------------------
 
@@ -230,6 +269,9 @@ def create_run(
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id)])
     planner = submission.tasks[0]
+    # After the planner, in the tenant `submit_tasks` resolved: what the run
+    # page shows under "Read from the issue".
+    issue_read, issue_read_error = _read_issue(ctx, auth, planner.tenant_id, ref)
     now = ctx.now()
     run = _runs(ctx).create(
         IssueRun(
@@ -244,6 +286,8 @@ def create_run(
             auto_merge=body.auto_merge,
             fix_rounds=body.fix_rounds,
             planner_task_id=planner.id,
+            issue_read=issue_read,
+            issue_read_error=issue_read_error,
         )
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"
