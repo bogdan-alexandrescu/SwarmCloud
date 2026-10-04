@@ -432,6 +432,16 @@
   gap: 12px;
   margin-bottom: var(--ctl-s5);
 }
+/* Drawn under the lane that was clicked (browser QA D10), as a band of the
+   chart rather than a section at the page's foot. A phone keeps its sheet. */
+@media (min-width: 641px) {
+  .tl > .tl-detail {
+    margin: 0;
+    padding: 10px 12px;
+    border-top: 1px solid var(--line-soft);
+    background: var(--surface-2);
+  }
+}
 .tl-card {
   display: flex;
   flex-direction: column;
