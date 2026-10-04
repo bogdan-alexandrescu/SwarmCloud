@@ -21,8 +21,11 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
 
 With no `pr-body.md` the generated body is unchanged. NO TITLE IS INVENTED
 (owner decisions, 2026-09-28): the only title the platform writes is the
-step's `issue` input, as "<issue title> (#N)" or "Fixes #N", with a zero-width
-joiner after every `@` in the issue's title. With no usable `pr-title.txt` and
+step's `issue` input, as "<issue title> (part of #N)" or "Work on issue #N
+(part of #N)" -- never a closing keyword, which a
+squash merge would carry into the base branch and close the issue with
+(review of #545) -- with a zero-width joiner after every `@` in the issue's
+title. With no usable `pr-title.txt` and
 no `issue` input the branch is pushed and no pull request is opened, and
 `_title_owed` makes `pr-title.txt` an expected output so the attempt fails
 retryably before it gets that far. An agent title carrying a task id is
@@ -34,6 +37,7 @@ pages anyone and no text is refused for a mention (owner decision, 2026-09-29).
 
 from __future__ import annotations
 
+import re
 import shutil
 from pathlib import Path
 
@@ -359,10 +363,10 @@ def test_the_worker_asks_for_the_update_only_when_the_agent_wrote_text(
 @pytest.mark.parametrize(
     ("issue", "expected"),
     [
-        (42, "Fixes #42"),
-        ("42", "Fixes #42"),
+        (42, "Work on issue #42 (part of #42)"),
+        ("42", "Work on issue #42 (part of #42)"),
         ({"number": 42, "title": "The widget accepts a negative size"},
-         "The widget accepts a negative size (#42)"),
+         "The widget accepts a negative size (part of #42)"),
     ],
     ids=["number", "numeric-string", "with-title"],
 )
@@ -394,7 +398,43 @@ def test_a_mention_in_an_issue_title_is_neutralised(
         task_input={"issue": {"number": 8, "title": mentioned}}, with_title=False,
     )
     pull = _only_pull(forge)
-    assert pull["title"] == f"{mentioned.replace('@', '@' + chr(0x200D))} (#8)", pull["title"]
+    assert pull["title"] == f"{mentioned.replace('@', '@' + chr(0x200D))} (part of #8)", pull["title"]
+
+
+#: A closing keyword as GitHub reads one in a squash-merge commit subject.
+_CLOSING_RE = re.compile(r"\b(close[sd]?|fix(e[sd])?|resolve[sd]?)\b\s*:?\s*#\d", re.IGNORECASE)
+
+
+@pytest.mark.parametrize(
+    "issue", [42, "42", {"number": 42}, {"number": 42, "title": "Widgets cannot be sorted"}],
+    ids=["number", "numeric-string", "mapping-without-title", "mapping-with-title"],
+)
+def test_a_platform_title_never_carries_a_closing_keyword(
+    worker_factory, monkeypatch, origin, local_urls, forge, issue
+):
+    """The worker does not decide that a pull request closes its issue. A
+    "Fixes #N" title closed the issue on a squash merge whatever the review
+    found, and for an issue run one failed GitHub write left it there (review
+    of #545). The title says `part of #N`; the body's block says the rest."""
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-no-close", files={},
+        task_input={"issue": issue}, with_title=False,
+    )
+    title = _only_pull(forge)["title"]
+    assert _CLOSING_RE.search(title) is None, title
+    assert title.endswith("(part of #42)"), title
+
+
+def test_without_the_issue_title_the_number_names_the_work_whatever_the_label(
+    worker_factory, monkeypatch, origin, local_urls, forge
+):
+    # `metadata.label` is not covered by the step-spec signature, so the
+    # worker does not read it for the title.
+    _publish(
+        worker_factory, monkeypatch, origin, task_id="t-pr-label", files={},
+        task_input={"issue": 42}, label="Sort the widget list", with_title=False,
+    )
+    assert _only_pull(forge)["title"] == "Work on issue #42 (part of #42)"
 
 
 def test_the_prompt_alone_opens_no_pull_request(
@@ -439,7 +479,7 @@ def test_an_agent_title_carrying_a_task_id_is_treated_as_absent(
         task_input={"prompt": "Make the widget refuse negatives. More.", "issue": 77},
     )
     pull = _only_pull(forge)
-    assert pull["title"] == "Fixes #77", pull["title"]
+    assert pull["title"] == "Work on issue #77 (part of #77)", pull["title"]
     assert config.task_id not in pull["title"]
     assert out["pull_request_text"]["title"] == "platform", out
 

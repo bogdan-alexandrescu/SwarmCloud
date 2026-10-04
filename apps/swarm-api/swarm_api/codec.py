@@ -93,6 +93,17 @@ def workflow_console_url(origin: str | None, workflow_id: str | None) -> str | N
     return f"{base}/workflows/{quote(workflow_id, safe=_URI_COMPONENT_SAFE)}"
 
 
+def run_console_url(origin: str | None, run_id: str | None) -> str | None:
+    """`<origin>/runs/<run_id>` (an issue run, #454), or None with no origin or no run.
+
+    paths.ts spells one run as `/runs/${encodeURIComponent(run)}`.
+    """
+    base = console_origin(origin)
+    if base is None or not run_id:
+        return None
+    return f"{base}/runs/{quote(run_id, safe=_URI_COMPONENT_SAFE)}"
+
+
 def as_datetime(value: Any) -> datetime | None:
     if value is None:
         return None

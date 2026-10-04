@@ -19,6 +19,15 @@
 #   scripts/create-secrets.sh --list [--tenant eng]
 #   scripts/create-secrets.sh --child-key
 #
+# The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
+# read by the tenant's workers AND by swarm-api, which writes an issue run's
+# plan and status comments and its pull request's keyword with it (#454). On
+# the repositories the tenant works in it needs contents and pull_requests
+# write, issues write, checks read and actions read (a classic token's `repo`
+# scope carries all of them): docs/multi-tenancy.md, "What the forge
+# credential must be allowed". Store it with --stdin, so it never touches a file:
+#   scripts/create-secrets.sh --tenant eng --provider git --stdin
+#
 # --child-key adds a version to `swarm-child-key`, the PLATFORM key the
 # scheduler mints child-task registration nonces with and swarm-api verifies
 # and attests them with (docs/design/child-tasks.md §3.2). Its value is

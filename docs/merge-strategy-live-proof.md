@@ -133,6 +133,7 @@ The minimum grant per strategy:
 | `collect` | nothing. A public clone, or a token with `Contents: Read` for a private one |
 | `direct-pr` | `Contents: Read and write` **and** `Pull requests: Read and write` |
 | `integrate` | the same, on the one token every step of the workflow shares |
+| issue run (#454) | the same, plus `Issues: Read and write` (the plan and status comments), `Checks: Read` and `Actions: Read` (the CI loop) — [docs/multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed) |
 
 A fine-grained PAT scoped to that single repository is the smallest thing that
 works. A classic PAT needs `repo`, which is every repository the account can

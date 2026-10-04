@@ -156,6 +156,18 @@ def test_the_preview_serves_the_issue_read_with_the_tenants_token(make, caplog):
     _assert_no_token(response, caplog)
 
 
+def test_the_preview_says_auto_merge_is_unavailable_and_why(make):
+    # The submit form draws auto-merge disabled unless this says otherwise;
+    # it says the same as POST /v1/runs, which refuses auto_merge until #295.
+    client, _, _ = make()
+    response = _preview(client)
+    assert response.status_code == 200, response.text
+    merge = response.json()["auto_merge"]
+    assert merge["available"] is False
+    assert merge["requires"] == "#295"
+    assert "#295" in merge["reason"]
+
+
 def test_an_issue_url_previews_the_same_issue(make):
     client, _, transport = make()
     response = _preview(client, "https://github.com/saga-xyz/widgets/issues/42")

@@ -99,3 +99,54 @@ export function ev(
     detail,
   }
 }
+
+// ---------------------------------------------------------------------------
+// Issue runs (#454): `IssueRun.to_api`, filled with a PLANNED run's dull values.
+// ---------------------------------------------------------------------------
+
+/** A plan digest built at runtime: a 64-hex literal reads as a key to a credential scan. */
+export function digest(pair: string): string {
+  return 'sha256:' + pair.repeat(32)
+}
+
+/** One issue run as the API serves it; `over` replaces whole fields. */
+export function issueRun(over: Record<string, unknown> = {}) {
+  return {
+    id: 'run_4c1e09d2', tenant_id: 'eng', state: 'PLANNED', terminal: false,
+    issue: { ref: 'example-org/infra#512', owner: 'example-org', repo: 'infra', number: 512,
+      url: 'https://github.com/example-org/infra/issues/512', repository_url: 'https://github.com/example-org/infra' },
+    plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner1',
+    plan: { summary: 'Sum step spend into the workflow read, then draw a cost column.', steps: [
+      { step_id: 'api', title: 'api: sum step spend', prompt: 'Add the sum to routes/workflows.py.' },
+      { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw it in Workflows.tsx.' },
+    ] },
+    plan_digest: digest('a1'), plan_revision: 1, plan_edited_by: null, workflow_id: null,
+    created_by: 'operator@example.com', created_at: '2026-10-02T14:02:00Z', updated_at: '2026-10-02T14:09:00Z',
+    approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null,
+    error: null,
+    history: [
+      { at: '2026-10-02T14:02:00Z', from: null, to: 'PLANNING', by: 'operator@example.com' },
+      { at: '2026-10-02T14:09:00Z', from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' },
+    ],
+    ...over,
+  }
+}
+
+/** A plan with every field #454's planning step added: mode, estimate, requirements, overlaps, per-step detail. */
+export const FULL_PLAN = {
+  summary: 'Sum step spend into the workflow read, then draw a cost column.',
+  mode: 'workflow',
+  estimate: 'about 3 agent-hours',
+  requirements: ['The workflow read serves the summed spend', 'The list draws a cost column'],
+  overlaps: [
+    { ref: 'example-org/infra#498', kind: 'pull_request', note: 'Already edits routes/workflows.py' },
+    { ref: 'example-org/infra#507', kind: 'issue', note: 'Asks for the same column' },
+  ],
+  steps: [
+    { step_id: 'api', title: 'api: sum step spend', prompt: 'Add the sum to routes/workflows.py.',
+      files: ['apps/swarm-api/swarm_api/routes/workflows.py'], tests: ['test_the_read_sums_step_spend'],
+      estimate: '1 hour' },
+    { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw it in Workflows.tsx.',
+      files: ['apps/swarm-ui/src/Workflows.tsx'], tests: ['draws the cost column'], estimate: '2 hours' },
+  ],
+}

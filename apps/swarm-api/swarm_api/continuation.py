@@ -22,10 +22,27 @@ THE RULES, and why each is a refusal rather than a quiet adjustment:
     would be a cross-tenant write. A task in another tenant is refused in the
     same words as one that does not exist, as `Store.get_task` does, so the
     refusal is not an enumeration oracle.
-  * The task must have been `direct-pr`: that is the only strategy whose task
-    pushes a branch of its own name. (`integrate` pushes contributors'
-    branches, but its pull request is the integrator's, and the integrator's
-    branch is a `direct-pr`-shaped one only in name.)
+  * The task must have pushed a branch of its own name AND opened a pull
+    request from it: a `direct-pr` task, or an `integrate` workflow's
+    INTEGRATOR. The integrator publishes exactly as a `direct-pr` task does --
+    `<prefix><its own task id>`, through the same `publish_branch` in the
+    worker (agent_worker/continuation.py), merging its contributors into that
+    branch first -- and the one pull request `integrate` produces is opened
+    from it. So continuing it derives the branch the integrator pushed, and
+    #454's CI loop can fix an issue run's pull request on that pull request.
+    An `integrate` CONTRIBUTOR is refused: its branch is merged by the
+    integrator and has no pull request of its own, so a fix pushed there
+    reaches nobody.
+  * An integrator is continuable by a tenant MEMBER only -- the issue run's
+    fix round submits as the run's creator -- and NOT by a
+    continuation-scoped account (`member_scope == "continuation"`, the CI
+    fixer's service account). That account's reach was reviewed and
+    accepted by the owner as "any `direct-pr` task"
+    (docs/contract-change-requests.md, request 30); letting it reach every
+    integrate pull request too would widen what a stolen fixer token can
+    push to without that decision. Checked on the ROOT as well, so the
+    account cannot reach an integrator through a member's continuation of
+    one.
   * The workflow must be `direct-pr` and have ONE step. Two steps pushing to
     one branch race to a non-fast-forward, and the loser's work is lost.
   * No `repository_ref`. The continued branch IS the ref; a second one could
@@ -53,8 +70,22 @@ from .validation import DISPATCH_METADATA_KEY, DispatchOptionError
 #: to it too before it becomes the root of a new continuation.
 TASK_ID_RE = re.compile(r"^task_[0-9a-f]{20}$")
 
-#: The one strategy whose task pushes `swarm/<task id>` and opens its PR from it.
+#: The one strategy whose task pushes `swarm/<task id>` and opens its PR from
+#: it, and the one a continuation itself must be.
 CONTINUABLE_STRATEGY = "direct-pr"
+
+#: The other task that does: an `integrate` workflow's integrator (#454).
+INTEGRATE_STRATEGY = "integrate"
+INTEGRATOR_ROLE = "integrator"
+
+
+def _has_own_pull_request(block: dict[str, Any]) -> bool:
+    """Whether a task's dispatch block names one that pushed `<prefix><its id>`
+    and opened its pull request from it: `direct-pr`, or the integrator."""
+    strategy = block.get("strategy")
+    if strategy == CONTINUABLE_STRATEGY:
+        return True
+    return strategy == INTEGRATE_STRATEGY and block.get("role") == INTEGRATOR_ROLE
 
 
 @dataclass(frozen=True)
@@ -85,9 +116,12 @@ def _dispatch_block(metadata: Any) -> dict[str, Any]:
 
 
 def resolve_continuation(
-    store: Store, tenant_id: str, spec: WorkflowCreate
+    store: Store, tenant_id: str, spec: WorkflowCreate, *, allow_integrator: bool = True
 ) -> Continuation | None:
     """Check `spec.continues_task` and resolve it, or return None when absent.
+
+    `allow_integrator` is False for a continuation-scoped caller (module
+    docstring): only a `direct-pr` root is continuable then.
 
     Raises `DispatchOptionError` (422 `invalid_dispatch`) for every refusal,
     before anything is written.
@@ -144,11 +178,19 @@ def resolve_continuation(
         raise not_found from None
 
     block = _dispatch_block(task.metadata)
-    if block.get("strategy") != CONTINUABLE_STRATEGY:
+    if not allow_integrator and block.get("strategy") == INTEGRATE_STRATEGY:
+        raise _integrator_refused(requested)
+    if not _has_own_pull_request(block):
+        strategy = block.get("strategy") or "collect"
+        what = (
+            f"an {INTEGRATE_STRATEGY!r} {block.get('role') or 'contributor'}, whose branch "
+            "its integrator merges and which opens no pull request of its own"
+            if strategy == INTEGRATE_STRATEGY
+            else f"dispatched with strategy {strategy!r}, which pushes no branch of its own"
+        )
         raise DispatchOptionError(
-            f"task {requested!r} was dispatched with strategy "
-            f"{block.get('strategy') or 'collect'!r}, which pushes no branch of its "
-            f"own; only a {CONTINUABLE_STRATEGY!r} task has a branch to continue.",
+            f"task {requested!r} was {what}; only a {CONTINUABLE_STRATEGY!r} task or an "
+            f"{INTEGRATE_STRATEGY!r} workflow's {INTEGRATOR_ROLE} has a branch to continue.",
             detail={"continues_task": requested},
         )
     if not task.repository_url:
@@ -165,4 +207,23 @@ def resolve_continuation(
 
     upstream = block.get("continues")
     root = upstream if isinstance(upstream, str) and TASK_ID_RE.match(upstream) else task.id
+    if root != task.id and not allow_integrator:
+        try:
+            root_block = _dispatch_block(
+                store.get_task(tenant_id, root, submitted_by=None).metadata
+            )
+        except NotFound:
+            root_block = {}
+        if root_block.get("strategy") != CONTINUABLE_STRATEGY:
+            raise _integrator_refused(requested)
     return Continuation(root_task_id=root, repository_url=task.repository_url)
+
+
+def _integrator_refused(requested: str) -> DispatchOptionError:
+    return DispatchOptionError(
+        f"task {requested!r} continues an {INTEGRATE_STRATEGY!r} workflow's "
+        f"{INTEGRATOR_ROLE}, which a continuation-scoped account may not continue: "
+        f"its reach is {CONTINUABLE_STRATEGY!r} tasks only. A member of the tenant "
+        "can submit this continuation.",
+        detail={"continues_task": requested},
+    )

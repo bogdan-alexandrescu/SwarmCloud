@@ -195,8 +195,9 @@ class ApiSettings:
     #: token, case-insensitive. A `serviceAccount:` prefix matches nobody.
     admin_pool_users: tuple[str, ...] = ()
     #: The identity the per-tenant Cloud Scheduler rollup jobs present
-    #: (terraform/modules/scheduler/jobs.tf, `workflow_rollup`): may call
-    #: `POST /v1/admin/workflows/rollup` (`auth.ROLLUP_SWEEPER_ROUTES`) and no
+    #: (terraform/modules/scheduler/jobs.tf, `workflow_rollup` and
+    #: `issue_run_advance`): may call `POST /v1/admin/workflows/rollup` and
+    #: `POST /v1/admin/runs/advance` (`auth.ROLLUP_SWEEPER_ROUTES`) and no
     #: other route, admin or not. NOT an admin and NOT a tenant member -- see
     #: `AuthContext.is_rollup_sweeper`. Admitted before the domain check, as a
     #: service account must be, and only with an explicit `email_verified`.

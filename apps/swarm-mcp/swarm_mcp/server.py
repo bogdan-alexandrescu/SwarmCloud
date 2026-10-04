@@ -1063,6 +1063,126 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["workflow_id"],
         },
     },
+    # -- issue runs (#454) -------------------------------------------------
+    #
+    # A run plans a GitHub issue with one planner task; the plan waits, holding
+    # no capacity, until a person approves the digest they were SHOWN. The
+    # same calls `sc run` / `sc plan` make, through `SwarmClient` and `runs`.
+    {
+        "name": "swarm_run_issue",
+        "description": (
+            "Plan a GitHub issue and, once the plan is approved, run it: one "
+            "planner task reads the issue and the repository's open issues and "
+            "pull requests and writes a plan; the plan compiles into one workflow "
+            "that opens a pull request, whose CI the platform reads and fixes for "
+            "up to `fix_rounds` rounds. SUBMITS WORK (the planner) -- say so "
+            "before calling it. With plan_approval `required` (the default) the "
+            "run stops PLANNED, holding no capacity, until someone approves: read "
+            "it with swarm_run, show the developer the plan, then "
+            "swarm_plan_approve with the plan_digest that read returned. "
+            "`auto_merge` is visible but disabled: the API refuses it until #295, "
+            "and the refusal comes back in words with nothing created. The "
+            "tenant's own forge credential reads the issue; this tool takes none."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "issue": {"type": "string", "description": "owner/repo#N, or the issue's URL."},
+                "plan_approval": {"type": "string", "enum": ["required", "auto"], "default": "required"},
+                "auto_merge": {"type": "boolean", "default": False},
+                "fix_rounds": {"type": "integer", "minimum": 1, "maximum": 5},
+            },
+            "required": ["issue"],
+        },
+    },
+    {
+        "name": "swarm_runs",
+        "description": (
+            "Your tenant's issue runs, newest first, each as served (state, issue, "
+            "plan digest, workflow, pull request, CI round). Each live run is "
+            "advanced by the read. Read-only."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1},
+                "page_token": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "swarm_run",
+        "description": (
+            "One issue run: its state (PLANNING, PLANNED, APPROVED, RUNNING, "
+            "CHECKING, FIXING, DONE, FAILED, REJECTED, CANCELLED), its plan and "
+            "plan_digest, its pull request, CI fix rounds, green sha or the "
+            "redacted failing-CI excerpt. The read advances the run. While a "
+            "workflow runs (RUNNING, or FIXING for a CI round) the answer carries "
+            "its steps and `attach_with`: `/sc attach <workflow_id>` shows them "
+            "as live rows. Read-only. Another tenant's run answers as missing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"run_id": {"type": "string"}},
+            "required": ["run_id"],
+        },
+    },
+    {
+        "name": "swarm_plan_approve",
+        "description": (
+            "Approve a PLANNED run's plan, which submits its workflow. "
+            "`plan_digest` MUST be the digest of the plan the developer was SHOWN "
+            "(from swarm_run) and agreed to -- never read the run and approve in "
+            "one go. A plan that changed since is refused (`plan_changed`) and "
+            "nothing is done: read it again and show it again."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "plan_digest": {"type": "string", "description": "The digest of the plan shown."},
+            },
+            "required": ["run_id", "plan_digest"],
+        },
+    },
+    {
+        "name": "swarm_plan_edit",
+        "description": (
+            "Replace a PLANNED run's plan with `plan` (the whole plan object: "
+            "summary, steps, and optionally mode, requirements, overlaps, "
+            "estimate). `plan_digest` is the digest of the plan that was edited; "
+            "a plan that changed since is refused (`plan_changed`). An invalid "
+            "plan is refused (`invalid_plan`) and the run keeps its plan. The run "
+            "stays PLANNED, with a new digest to approve."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "plan_digest": {"type": "string"},
+                "plan": {"type": "object"},
+            },
+            "required": ["run_id", "plan_digest", "plan"],
+        },
+    },
+    {
+        "name": "swarm_plan_reject",
+        "description": (
+            "Reject a PLANNED run's plan; the run ends REJECTED and nothing is "
+            "submitted. `reason` is recorded on the run and the issue. With "
+            "`plan_digest`, refused (`plan_changed`) if the plan is no longer "
+            "the one shown."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "run_id": {"type": "string"},
+                "reason": {"type": "string"},
+                "plan_digest": {"type": "string"},
+            },
+            "required": ["run_id", "reason"],
+        },
+    },
     # -- cluster state -----------------------------------------------------
     #
     # These return the SAME text `sc` prints, at a fixed 80 columns with no
@@ -1853,6 +1973,69 @@ def _refuse_unknown_arguments(name: str, args: dict[str, Any]) -> None:
         )
 
 
+_RUN_TOOLS = frozenset(
+    {"swarm_run_issue", "swarm_runs", "swarm_run", "swarm_plan_approve", "swarm_plan_edit",
+     "swarm_plan_reject"}
+)
+
+
+def _text_arg(args: dict[str, Any], name: str, tool: str) -> str:
+    value = args.get(name)
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{tool} needs `{name}` as a non-empty string. Nothing was sent")
+    return value.strip()
+
+
+def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    """The issue-run tools (#454): the calls `sc run` and `sc plan` make.
+
+    Every refusal is a `SwarmError` worded by `client.run_refusal` and answered
+    through `_tool_error_text`, like every other tool's. Nothing here reads the
+    digest it approves with: `swarm_plan_approve` takes it from the caller,
+    who was shown it.
+    """
+    from . import runs
+
+    if name == "swarm_run_issue":
+        approval = args.get("plan_approval") or "required"
+        if approval not in ("required", "auto"):
+            raise SwarmError("plan_approval is `required` or `auto`. Nothing was sent")
+        fix_rounds = args.get("fix_rounds")
+        if fix_rounds is not None and (isinstance(fix_rounds, bool) or not isinstance(fix_rounds, int)):
+            raise SwarmError("fix_rounds is an integer. Nothing was sent")
+        run = client.create_run(
+            issue=_text_arg(args, "issue", name),
+            plan_approval=approval,
+            auto_merge=_flag(args, "auto_merge"),
+            fix_rounds=fix_rounds,
+        )
+        return json.dumps(runs.summary(client, run), indent=2, default=str)
+    if name == "swarm_runs":
+        limit = args.get("limit")
+        listing = client.runs(
+            limit=limit if isinstance(limit, int) and not isinstance(limit, bool) else None,
+            page_token=args.get("page_token") or None,
+        )
+        return json.dumps(listing, indent=2, default=str)
+    run_id = _text_arg(args, "run_id", name)
+    if name == "swarm_run":
+        run = client.run(run_id)
+    elif name == "swarm_plan_approve":
+        run = client.approve_plan(run_id, plan_digest=_text_arg(args, "plan_digest", name))
+    elif name == "swarm_plan_edit":
+        plan = args.get("plan")
+        if not isinstance(plan, dict):
+            raise SwarmError("swarm_plan_edit needs `plan` as an object. Nothing was sent")
+        run = client.edit_plan(run_id, plan_digest=_text_arg(args, "plan_digest", name), plan=plan)
+    else:
+        run = client.reject_plan(
+            run_id,
+            plan_digest=args.get("plan_digest") or None,
+            reason=_text_arg(args, "reason", name),
+        )
+    return json.dumps(runs.summary(client, run), indent=2, default=str)
+
+
 def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     _refuse_unknown_arguments(name, args)
     if name == "swarm_dispatch" and args.get("tasks") is not None:
@@ -2357,6 +2540,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
 
     if name == "swarm_workflow_cancel":
         return json.dumps(workflows.cancel(client, args["workflow_id"]), indent=2)
+
+    if name in _RUN_TOOLS:
+        return _run_tool(client, name, args)
 
     if name in _SC_VIEWS:
         from . import render

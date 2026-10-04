@@ -1171,7 +1171,17 @@ contributors'. The API refuses it unless the task is in the caller's own tenant
 (another tenant's reads exactly like a missing one), was itself `direct-pr` in
 the same repository, and the workflow is `direct-pr` with one step and no
 `repository_ref`. A continuation of a continuation continues the original
-branch. The rules are in
+branch.
+
+Since #454's CI loop a tenant MEMBER may also continue an `integrate`
+workflow's **integrator**: it pushes `swarm/<its own task id>` through the same
+`publish_branch` a `direct-pr` task does, and opens the workflow's one pull
+request from it, so an issue run's fix round lands on the run's pull request.
+A contributor is still refused (its branch has no pull request). The CI
+fixer's continuation-scoped account is NOT given this: its reach was reviewed
+as `direct-pr` tasks only (contract request 30), so it is refused an
+integrator, directly or through a member's continuation of one, and a red
+integrate pull request is fixed by its issue run, not by `ci-fix.yml`. The rules are in
 [`swarm_api/continuation.py`](../apps/swarm-api/swarm_api/continuation.py); the
 block it writes is recorded under request #6 in
 [`contract-change-requests.md`](contract-change-requests.md).

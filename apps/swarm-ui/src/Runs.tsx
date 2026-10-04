@@ -3,9 +3,10 @@ import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
-import { Button, WarnMark } from './components'
+import { Banner, Button, Card, Chip, CodeBlock, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
-import type { IssueRun, IssueRunPage, IssueRunState, PlanStepDoc, RunPlan } from './types'
+import { pluralise } from './types'
+import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
 import './styles/intake.css'
 import './styles/runs.css'
@@ -25,10 +26,28 @@ import './styles/runs.css'
  * so, rather than approving whatever the plan had become. Edit and Reject
  * carry the shown digest for the same reason.
  *
- * WHAT THE RUN DOCUMENT DOES NOT SERVE IS NAMED, NOT HIDDEN. `IssueRun.to_api`
- * has no pull request, no plan or status comment on the issue, no overlaps
- * and no cost; each is a dash with that reason. A workflow not yet created is
- * "none yet", because the run does serve `workflow_id`, and null is a fact.
+ * THE OVERLAPS COME FIRST (#454's acceptance test is that the plan names
+ * them): each is a link to the issue or pull request the planner found in
+ * flight, with its kind and the planner's note, above the steps. A plan
+ * written before the planner read open work does not say, and the page says
+ * that -- never "none", which would be a finding nobody made.
+ *
+ * EVERYTHING READ FROM GITHUB OR WRITTEN BY THE PLANNER IS TEXT. An overlap's
+ * ref becomes a link only when it is `owner/repo#N` (issueruns'
+ * OVERLAP_REF_PATTERN); a pull request's URL only when it is on github.com;
+ * the failing-check excerpt is drawn as preformatted text, never as HTML.
+ *
+ * WHAT THE RUN HAS NOT GOT YET IS SAID, NOT HIDDEN: a pull request not yet
+ * opened, a comment not yet posted, a keyword the review has not decided.
+ * Cost is not served per run, and is a dash with that reason. A workflow not
+ * yet created is "none yet", because the run does serve `workflow_id`, and
+ * null is a fact.
+ *
+ * THE PAGE LEADS WITH THE ISSUE (lane U9, owner 2026-10-03). Its title is the
+ * issue's title as the run read it at submission (`issue_read`), its meta
+ * `owner/repo#N · run_… · created by …`; the plan is drawn from its schema
+ * -- a short lead, numbered steps with their prompts folded, the raw plan
+ * behind a disclosure -- rather than as one long paragraph.
  *
  * THE PAGE LEADS WITH THE ISSUE (lane U9, owner 2026-10-03). Its title is the
  * issue's title as the run read it at submission (`issue_read`), its meta
@@ -45,6 +64,35 @@ export const RUN_POLL_MS = 15_000
 /** `issueruns.AUTO_APPROVER`: who `approved_by` names on an automatic approval. */
 const AUTO_APPROVER = 'auto-approval'
 
+/** `issueruns.OVERLAP_REF_PATTERN`: the only overlap ref that is made a link. */
+const GITHUB_REF = /^([A-Za-z0-9][A-Za-z0-9-]{0,38})\/([A-Za-z0-9._-]{1,100})#([1-9][0-9]{0,9})$/
+
+/**
+ * Where an overlap points on GitHub, or null when its ref is not `owner/repo#N`.
+ * The planner wrote it, so it is data: anything else is drawn as text.
+ */
+export function overlapUrl(o: PlanOverlap): string | null {
+  const m = GITHUB_REF.exec(o.ref)
+  if (m === null) return null
+  return `https://github.com/${m[1]}/${m[2]}/${o.kind === 'pull_request' ? 'pull' : 'issues'}/${m[3]}`
+}
+
+/** A link the API served from GitHub, kept only when it is on github.com over https. */
+function githubLink(url: string | null | undefined): string | null {
+  return typeof url === 'string' && url.startsWith('https://github.com/') ? url : null
+}
+
+/** A comment on the run's issue, by the id the write-back recorded. */
+function commentUrl(run: IssueRun, id: number | null | undefined): string | null {
+  const issue = githubLink(run.issue.url)
+  return issue === null || typeof id !== 'number' ? null : `${issue}#issuecomment-${id}`
+}
+
+/** `abc1234`: a sha short enough to read; the whole sha is its title. */
+function shortSha(sha: string): string {
+  return sha.length > 12 ? sha.slice(0, 7) : sha
+}
+
 /** The brand state marks (marks.tsx) for a run's states. */
 const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>> = {
   // A planner task is working: it can hold capacity, as any task.
@@ -53,6 +101,10 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
   PLANNED: { mark: 'parked', hue: 'park' },
   APPROVED: { mark: 'starting', hue: 'live' },
   RUNNING: { mark: 'running', hue: 'live' },
+  // Waiting on CI, holding nothing (invariant 1): a park, like PLANNED.
+  CHECKING: { mark: 'parked', hue: 'park' },
+  // One continuation is fixing CI: a task working, as RUNNING.
+  FIXING: { mark: 'running', hue: 'live' },
   DONE: { mark: 'succeeded', hue: 'neu' },
   FAILED: { mark: 'failed', hue: 'bad' },
   REJECTED: { mark: 'cancelled', hue: 'neu' },
@@ -279,8 +331,14 @@ function stateLine(run: IssueRun): string {
       return 'Approved; the workflow is being submitted.'
     case 'RUNNING':
       return 'The workflow built from the approved plan is running.'
+    case 'CHECKING':
+      return 'The pull request is open. Holds no capacity: its CI is read until it is green or red.'
+    case 'FIXING':
+      return `CI was red: fix round ${run.ci_fix_round ?? 1} of ${run.fix_rounds} is pushing to the pull request.`
     case 'DONE':
-      return 'The workflow succeeded.'
+      return run.green_sha
+        ? 'Every required check is green on the pull request.'
+        : 'The workflow succeeded.'
     case 'FAILED':
       return 'The run failed.'
     case 'REJECTED':
@@ -422,6 +480,16 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </div>
         )}
 
+        {run.writeback_error && (
+          <div className="rn-writeback">
+            <Banner tone="warn" title="The issue on GitHub was not updated">
+              {run.writeback_error} · the run carries on; the next read tries the write again.
+            </Banner>
+          </div>
+        )}
+
+        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} />}
+
         <section className="rn-plan" aria-label="The plan">
           <h3>
             The plan
@@ -449,27 +517,23 @@ function RunPage({ run: served, reread, go, onHeading }: {
               <p className="sb-note">
                 revision {run.plan_revision}
                 {run.plan_edited_by !== null && <> · edited by {run.plan_edited_by}</>}
-                {' · '}{run.plan_shape ?? `${run.plan.steps.length === 1 ? '1 step' : `${run.plan.steps.length} steps`}, then a review and a fix`}
+                {' · '}{run.plan_shape ?? `${pluralise(run.plan.steps.length, 'step')}, then a review and a fix`}
                 {' '}gated on its verdict · every step runs as claude-code
               </p>
-              <PlanBody plan={run.plan} />
+              <p className="rn-plan-facts">
+                <Chip title="The planner's call: one agent, or a workflow of several steps">
+                  {run.plan.mode === 'single' ? 'single agent' : run.plan.mode === 'workflow' ? 'workflow' : 'mode not stated'}
+                </Chip>
+                {run.plan.estimate
+                  ? <Chip title="The planner's estimate for the whole plan">estimate {run.plan.estimate}</Chip>
+                  : <span className="sb-note">no estimate given</span>}
+              </p>
+              <PlanBody plan={run.plan} unmet={run.requirements_unmet ?? []} />
             </>
           )}
         </section>
 
-        <section className="rn-overlaps" aria-label="Overlaps">
-          <h3>Overlaps the planner found</h3>
-          {textList(run.plan?.overlaps) !== null ? (
-            <ul className="rn-list-items">
-              {textList(run.plan?.overlaps)!.map((o, i) => <li key={i}>{o}</li>)}
-            </ul>
-          ) : (
-            <p className="sb-note">
-              <i className="ctl-em">&mdash;</i> not served: a plan holds a summary and steps only, so the run carries no
-              overlapping pull requests or issues.
-            </p>
-          )}
-        </section>
+        <CiCard run={run} go={go} />
         {textList(run.plan?.risks) !== null && (
           <section className="rn-risks" aria-label="Risks">
             <h3>Risks the planner named</h3>
@@ -520,14 +584,10 @@ function RunPage({ run: served, reread, go, onHeading }: {
               <b>Issue</b>
               <IssueLink run={run} />
             </li>
-            <li className="ctl-fact is-absent">
-              <b>Plan comment</b>
-              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
-            </li>
-            <li className="ctl-fact is-absent">
-              <b>Status comment</b>
-              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
-            </li>
+            <CommentFact label="Plan comment" name="plan comment" url={commentUrl(run, run.plan_comment_id)}
+              absent={run.plan === null ? 'not posted · there is no plan yet' : 'not posted yet'} />
+            <CommentFact label="Status comment" name="status comment" url={commentUrl(run, run.status_comment_id)}
+              absent="not posted yet" />
             <li className="ctl-fact">
               <b>Planner</b>
               {run.planner_task_id === ''
@@ -542,10 +602,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
                 : <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: run.workflow_id }).toString()}`}
                   href={`/workflows/${encodeURIComponent(run.workflow_id)}`}>{run.workflow_id}</InApp>}
             </li>
-            <li className="ctl-fact is-absent">
-              <b>Pull request</b>
-              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
-            </li>
+            <PullRequestFact run={run} />
           </ul>
         </section>
         <IssueReadCard run={run} now={now} />
@@ -564,8 +621,38 @@ function RunPage({ run: served, reread, go, onHeading }: {
   )
 }
 
-/** Why the plan comment, the status comment and the pull request are dashes (#454). */
-const WRITE_BACK = 'GitHub write-back is not built yet (#454)'
+/** A list as the editor shows it: one entry per line. */
+function linesOf(list: string[] | null | undefined): string {
+  return (list ?? []).join('\n')
+}
+
+/** The entries a textarea holds: one per non-blank line, trimmed. */
+function entries(text: string): string[] {
+  return text.split('\n').map((l) => l.trim()).filter((l) => l !== '')
+}
+
+/**
+ * An optional plan field as edited. Untouched, it is the value the plan had --
+ * absent, null or a list -- so a save changes nothing the reader did not
+ * change; emptied, it is dropped (the API takes no empty estimate); otherwise
+ * it is what was typed.
+ */
+function editedList(original: string[] | null | undefined, text: string): string[] | null | undefined {
+  if (text === linesOf(original)) return original
+  const l = entries(text)
+  return l.length === 0 ? undefined : l
+}
+
+function editedText(original: string | null | undefined, text: string): string | null | undefined {
+  if (text === (original ?? '')) return original
+  return text.trim() === '' ? undefined : text.trim()
+}
+
+/** `target[key] = value`, or no key at all when the value is undefined. */
+function put<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined): void {
+  if (value === undefined) delete target[key]
+  else target[key] = value
+}
 
 /**
  * `owner/repo#N`, linked, on ONE line (item 6): it wrapped at the owner's
@@ -580,7 +667,7 @@ function IssueLink({ run }: { run: IssueRun }) {
   )
 }
 
-/** A plan's optional list (`overlaps`, `risks`, a step's `files`): its strings, or null when it has none. */
+/** A plan's optional list (`risks`, a step's `files` or `tests`): its strings, or null when it has none. */
 export function textList(value: unknown): string[] | null {
   if (!Array.isArray(value)) return null
   const items = value.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
@@ -618,7 +705,7 @@ export function planLead(summary: string): { lead: string; cut: boolean } {
  * plan states them, and the prompt folded -- then the raw plan behind a
  * disclosure. On a phone the plan was one paragraph with no end.
  */
-function PlanBody({ plan }: { plan: RunPlan }) {
+function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
   const { lead, cut } = planLead(plan.summary)
   return (
     <>
@@ -626,6 +713,7 @@ function PlanBody({ plan }: { plan: RunPlan }) {
         {lead}
         {cut && !lead.endsWith('…') ? ' …' : ''}
       </p>
+      <Requirements plan={plan} unmet={unmet} />
       <ol className="rn-steps">
         {plan.steps.map((s, i) => (
           <PlanStep key={s.step_id} step={s} n={i + 1} />
@@ -727,31 +815,68 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
   )
 }
 
-/** The plan, editable where a plan step is editable: the summary, and each step's title and prompt. */
+type StepDraft = { step: PlanStepDoc; title: string; prompt: string; files: string; tests: string; estimate: string }
+
+/**
+ * The plan, editable where a plan is: the summary, the estimate and the
+ * requirements, and each step's title, prompt, files, tests and estimate.
+ * The mode and the overlaps are the planner's findings and are kept as
+ * written. Every field the plan carries goes back, so an edit never drops one.
+ */
 function PlanEditor({ plan, busy, onCancel, onSave }: {
   plan: RunPlan; busy: boolean; onCancel: () => void; onSave: (plan: RunPlan) => void
 }) {
   const [summary, setSummary] = useState(plan.summary)
-  // `depends_on` is carried through untouched: dropping it would turn a staged plan back into a chain on save.
-  const [steps, setSteps] = useState<PlanStepDoc[]>(plan.steps.map((s) => ({
-    step_id: s.step_id, title: s.title, prompt: s.prompt,
-    ...(s.depends_on !== undefined ? { depends_on: [...s.depends_on] } : {}),
+  const [estimate, setEstimate] = useState(plan.estimate ?? '')
+  const [requirements, setRequirements] = useState(linesOf(plan.requirements))
+  const [steps, setSteps] = useState<StepDraft[]>(plan.steps.map((s) => ({
+    step: s, title: s.title, prompt: s.prompt, files: linesOf(s.files), tests: linesOf(s.tests), estimate: s.estimate ?? '',
   })))
   const blank = summary.trim() === '' || steps.some((s) => s.title.trim() === '' || s.prompt.trim() === '')
-  const set = (i: number, key: 'title' | 'prompt', value: string) =>
+  const set = (i: number, key: 'title' | 'prompt' | 'files' | 'tests' | 'estimate', value: string) =>
     setSteps((all) => all.map((s, j) => (j === i ? { ...s, [key]: value } : s)))
+
+  function edited(): RunPlan {
+    const out: RunPlan = {
+      ...plan,
+      summary,
+      steps: steps.map((d) => {
+        const step: PlanStepDoc = { ...d.step, title: d.title, prompt: d.prompt }
+        put(step, 'files', editedList(d.step.files, d.files))
+        put(step, 'tests', editedList(d.step.tests, d.tests))
+        put(step, 'estimate', editedText(d.step.estimate, d.estimate))
+        return step
+      }),
+    }
+    put(out, 'estimate', editedText(plan.estimate, estimate))
+    put(out, 'requirements', editedList(plan.requirements, requirements))
+    return out
+  }
+
   return (
     <form className="rn-edit" onSubmit={(e) => {
       e.preventDefault()
-      if (!blank) onSave({ summary, steps })
+      if (!blank) onSave(edited())
     }}>
       <label className="rn-field">
         <b>Summary</b>
         <textarea value={summary} rows={3} onChange={(e) => setSummary(e.target.value)} />
       </label>
+      <label className="rn-field">
+        <b>Estimate</b>
+        <input value={estimate} maxLength={200} onChange={(e) => setEstimate(e.target.value)} />
+      </label>
+      <label className="rn-field">
+        <b>Requirements, one per line</b>
+        <textarea value={requirements} rows={4} onChange={(e) => setRequirements(e.target.value)} />
+      </label>
+      <p className="sb-note">
+        The requirements are what the review checks, and what decides <code>Closes</code> against{' '}
+        <code>part of</code>. The mode and the overlaps are kept as the planner found them.
+      </p>
       {steps.map((s, i) => (
-        <fieldset key={s.step_id} className="rn-field-set">
-          <legend className="mono">{i + 1} · {s.step_id}</legend>
+        <fieldset key={s.step.step_id} className="rn-field-set">
+          <legend className="mono">{i + 1} · {s.step.step_id}</legend>
           <label className="rn-field">
             <b>Title</b>
             <input value={s.title} onChange={(e) => set(i, 'title', e.target.value)} />
@@ -759,6 +884,18 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
           <label className="rn-field">
             <b>Prompt</b>
             <textarea value={s.prompt} rows={4} onChange={(e) => set(i, 'prompt', e.target.value)} />
+          </label>
+          <label className="rn-field">
+            <b>Files, one per line</b>
+            <textarea className="mono" value={s.files} rows={2} onChange={(e) => set(i, 'files', e.target.value)} />
+          </label>
+          <label className="rn-field">
+            <b>Tests, one per line</b>
+            <textarea value={s.tests} rows={2} onChange={(e) => set(i, 'tests', e.target.value)} />
+          </label>
+          <label className="rn-field">
+            <b>Step estimate</b>
+            <input value={s.estimate} maxLength={100} onChange={(e) => set(i, 'estimate', e.target.value)} />
           </label>
         </fieldset>
       ))}
@@ -768,6 +905,165 @@ function PlanEditor({ plan, busy, onCancel, onSave }: {
         <Button disabled={busy} onClick={onCancel}>Cancel</Button>
       </div>
     </form>
+  )
+}
+
+/**
+ * THE OVERLAPS THE PLANNER FOUND, above the plan. Each is a link to the issue
+ * or pull request in flight, with its kind and the planner's note. A plan
+ * that has no `overlaps` field was written before the planner read open work,
+ * and says so; an empty list is a finding, and names what was read.
+ */
+function Overlaps({ plan, openWork }: { plan: RunPlan; openWork: OpenWork | null }) {
+  const overlaps = plan.overlaps
+  const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
+  return (
+    <Card level={3} className={`rn-overlaps${found ? ' is-found' : ''}`}
+      title={found ? `Overlaps the planner found · ${overlaps!.length}` : 'Overlaps the planner found'}>
+      {overlaps === undefined || overlaps === null ? (
+        <p className="sb-note">
+          This plan does not say: it was written without the planner&rsquo;s read of the repository&rsquo;s open issues
+          and pull requests, so nothing here rules overlaps out.
+        </p>
+      ) : overlaps.length === 0 ? (
+        <p className="sb-note">
+          None found{openWork === null ? '.' : <>
+            {' '}in {pluralise(openWork.issues.length, 'open issue')} and{' '}
+            {pluralise(openWork.pull_requests.length, 'open pull request')} read when the run was created
+            {openWork.issues_truncated || openWork.pull_requests_truncated ? ' (the list was cut, so not every one was read)' : ''}.
+          </>}
+        </p>
+      ) : (
+        <ul className="rn-overlap-list">
+          {overlaps.map((o, i) => {
+            const url = overlapUrl(o)
+            return (
+              <li key={`${o.ref}-${i}`} className="rn-overlap">
+                {url === null
+                  ? <span className="mono">{o.ref}</span>
+                  : <a href={url} target="_blank" rel="noreferrer" className="mono">{o.ref}</a>}
+                <Chip>{o.kind === 'pull_request' ? 'pull request' : 'issue'}</Chip>
+                <span className="rn-overlap-note">{o.note}</span>
+              </li>
+            )
+          })}
+        </ul>
+      )}
+    </Card>
+  )
+}
+
+/** The issue's requirements as the planner listed them; one the review left open is marked. */
+function Requirements({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
+  const reqs = plan.requirements
+  if (reqs === undefined || reqs === null || reqs.length === 0) {
+    return <p className="sb-note">The plan lists no requirements, so a review cannot confirm every one: the pull request says part of.</p>
+  }
+  const open = new Set(unmet)
+  return (
+    <div className="rn-reqs-wrap">
+      <b className="rn-sub">Requirements · {reqs.length}</b>
+      <ol className="rn-reqs">
+        {reqs.map((r, i) => (
+          <li key={`${i}-${r}`} className={open.has(r) ? 'is-unmet' : undefined}>
+            {r}{open.has(r) && <i className="sbf-bad"> · not confirmed by the review</i>}
+          </li>
+        ))}
+      </ol>
+    </div>
+  )
+}
+
+/** A comment the write-back posted on the issue, or why there is none. */
+function CommentFact({ label, name, url, absent }: { label: string; name: string; url: string | null; absent: string }) {
+  return (
+    <li className={url === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+      <b>{label}</b>
+      {url === null ? <i className="ctl-em">{absent}</i> : <a href={url} target="_blank" rel="noreferrer">{name}</a>}
+    </li>
+  )
+}
+
+/** The run's pull request: a link once the workflow opened one. */
+function PullRequestFact({ run }: { run: IssueRun }) {
+  const pr = run.pull_request ?? null
+  const url = githubLink(pr?.url)
+  const label = pr?.number === null || pr?.number === undefined ? 'pull request' : `#${pr.number}`
+  return (
+    <li className={pr === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
+      <b>Pull request</b>
+      {pr === null
+        ? <i className="ctl-em">none yet · the workflow opens it</i>
+        : url === null ? <span className="mono">{label}</span>
+          : <a href={url} target="_blank" rel="noreferrer" className="mono">{label}</a>}
+    </li>
+  )
+}
+
+/** Whether the run has reached the pull request and its CI, so the CI card has something to say. */
+function hasCi(run: IssueRun): boolean {
+  return (run.pull_request ?? null) !== null || run.state === 'CHECKING' || run.state === 'FIXING'
+    || (run.ci_fix_round ?? 0) > 0 || Boolean(run.green_sha) || Boolean(run.failure_excerpt)
+    || (run.requirements_met ?? null) !== null
+}
+
+/**
+ * THE PULL REQUEST AND ITS CI (the CI loop, `issueci`): the checks at the
+ * head, the fix round of the cap, the green sha a DONE run is pinned to, the
+ * keyword the requirements finding chose, and a FAILED run's excerpt -- the
+ * server's redacted text, drawn as text.
+ */
+function CiCard({ run, go }: { run: IssueRun; go: (to: string) => void }) {
+  if (!hasCi(run)) return null
+  const pr = run.pull_request ?? null
+  const round = run.ci_fix_round ?? 0
+  const fixes = run.ci_fix_workflows ?? []
+  const n = run.issue.number
+  return (
+    <Card level={3} className="rn-ci" title="Pull request and checks">
+      <ul className="ctl-facts rn-ci-facts">
+        <li className="ctl-fact">
+          <b>checks</b>
+          {pr?.checks
+            ? <span>{pr.checks}{pr.head_sha ? <> at <code title={pr.head_sha}>{shortSha(pr.head_sha)}</code></> : null}</span>
+            : <i className="ctl-em">not read yet</i>}
+        </li>
+        <li className="ctl-fact">
+          <b>fix rounds</b>
+          <span>
+            {round === 0 ? `none spent · up to ${run.fix_rounds}` : `fix round ${round} of ${run.fix_rounds}`}
+            {fixes.map((wf) => (
+              <span key={wf}>
+                {' · '}
+                <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf }).toString()}`}
+                  href={`/workflows/${encodeURIComponent(wf)}`}>{wf}</InApp>
+              </span>
+            ))}
+          </span>
+        </li>
+        <li className={run.green_sha ? 'ctl-fact' : 'ctl-fact is-absent'}>
+          <b>green at</b>
+          {run.green_sha ? <code>{run.green_sha}</code> : <i className="ctl-em">not green yet</i>}
+        </li>
+        <li className="ctl-fact">
+          <b>keyword</b>
+          {run.requirements_met === true ? <code>Closes #{n}</code>
+            : run.requirements_met === false ? <code>part of #{n}</code>
+              : <i className="ctl-em">not decided · the review has not reported on the requirements</i>}
+        </li>
+      </ul>
+      {run.requirements_met === false && (
+        <p className="sb-note">
+          The review left {pluralise((run.requirements_unmet ?? []).length, 'requirement')} open
+          {run.requirements_note ? <>: {run.requirements_note}</> : '.'}
+        </p>
+      )}
+      {run.failure_excerpt && (
+        <div className="rn-excerpt">
+          <CodeBlock title="Failing checks" lang="redacted by the API" text={run.failure_excerpt} />
+        </div>
+      )}
+    </Card>
   )
 }
 

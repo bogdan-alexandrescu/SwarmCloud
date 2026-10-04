@@ -526,7 +526,14 @@ What each step does, and why each field is there:
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
   and surrounding spaces. The file name is yours: the gate reads whatever the
-  gated step stages from `when.step`.
+  gated step stages from `when.step`. Any other key is ignored by the gate,
+  which is what lets an issue run's review (#454) put
+  `"requirements": [{"index", "met", "note"}]` in the same file: swarm-api
+  reads that list when the pull request opens, and the pull request says
+  `Closes #N` only when every planned requirement is answered `met: true`
+  (`swarm_api/issueci.py`, `evaluate_requirements`;
+  [issue-runs.md](issue-runs.md#closes-n-only-when-the-review-confirmed-every-requirement)
+  says why).
 * **`when` gates the AGENT, not the step.** The gated step runs whatever the
   verdict, because it is the step that publishes: if it were skipped on
   MERGE, the reviewed work would never reach a pull request. When the verdict
@@ -810,11 +817,26 @@ holds no project role. Its one grant is `roles/run.invoker` on swarm-api
 (`rollup_sweeper_invokes_api` in `terraform/infra/main.tf`), because in prod
 `api_invokers` names only the tenant groups and Cloud Run's edge would refuse
 the job before the application saw it. swarm-api admits that one address (`ROLLUP_SWEEPER_USERS`,
-set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup` and to
-nothing else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
+set by `terraform/infra/locals.tf`) to `POST /v1/admin/workflows/rollup`, to
+the issue-run tick `POST /v1/admin/runs/advance` (#454, below), and to nothing
+else, admin or not (`swarm_api.auth.ROLLUP_SWEEPER_ROUTES`, held by
 `tests/unit/control_plane/test_rollup_sweeper_is_narrow.py`). It is not an admin
 because admin is one boolean that opens every `/v1/admin` route, including the
 one that disables a tenant.
+
+The same account calls `POST /v1/admin/runs/advance?tenant_id=<t>` for the same
+tenants every minute (`google_cloud_scheduler_job.issue_run_advance`, named
+`swarm-issue-run-advance-<tenant>`). It moves the tenant's issue runs as far as
+their planner and workflow say, as a read of the run would, so a run nobody is
+watching -- and every `plan_approval: auto` run -- still advances and is
+written back to its issue. A PLANNED run waiting for a person is not read and
+nothing is created for it (invariant 1). An `auto` approval is submitted in the
+run's own tenant as the member who created the run (`routes/runs.py`
+`run_owner_auth`), never as the sweeper, which holds no tenant. An issue run
+compiles its approved plan into one `integrate` workflow of this shape --
+implementers, a review, a gated fix -- and continues that workflow's integrator
+for each CI fix round; why, and how to read a stuck run, is in
+[issue-runs.md](issue-runs.md).
 
 So the stored copy of a workflow nobody reads lags its steps by at most one
 schedule interval plus a sweep, and a reader never sees the lag at all. Two

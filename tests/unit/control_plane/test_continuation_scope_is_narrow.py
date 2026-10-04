@@ -389,6 +389,46 @@ def test_the_listed_account_can_continue_a_task_another_member_submitted(fixer_c
     assert response.json()["dispatch"]["continues_task"] == original
 
 
+def _submit_integrate_workflow(fixer_client, headers: dict[str, str]) -> dict[str, str]:
+    response = fixer_client.post(
+        "/v1/workflows",
+        headers=headers,
+        json={
+            "steps": [
+                {"step_id": "build", "runner_profile": "mock"},
+                {"step_id": "publish", "runner_profile": "mock", "depends_on": ["build"]},
+            ],
+            "strategy": "integrate",
+            "repository_url": CONTINUATION_REPO,
+        },
+    )
+    assert response.status_code == 201, response.text
+    return {s["step_id"]: s["task_id"] for s in response.json()["workflow"]["steps"]}
+
+
+def test_the_listed_account_cannot_continue_an_integrator_directly_or_through_a_member(
+    fixer_client,
+):
+    """A member may continue an integrate workflow's integrator (#454's CI
+    loop); the listed account's reach was decided as `direct-pr` tasks only,
+    and stays that, including through a member's continuation of one."""
+    integrator = _submit_integrate_workflow(fixer_client, ALICE)["publish"]
+    direct = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(integrator)
+    )
+    assert direct.status_code == 422, direct.text
+    assert direct.json()["code"] == "invalid_dispatch"
+
+    members = fixer_client.post("/v1/workflows", headers=ALICE, json=_fix_workflow(integrator))
+    assert members.status_code == 201, members.text
+    members_fix = members.json()["workflow"]["steps"][0]["task_id"]
+    through = fixer_client.post(
+        "/v1/workflows", headers=FIXER_HEADERS, json=_fix_workflow(members_fix)
+    )
+    assert through.status_code == 422, through.text
+    assert through.json()["code"] == "invalid_dispatch"
+
+
 def test_the_continued_tasks_submitted_by_is_the_listed_account_not_the_original(
     fixer_client, db
 ):

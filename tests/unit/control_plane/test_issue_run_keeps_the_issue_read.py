@@ -70,14 +70,30 @@ class FakeTokens:
         return self.tokens[secret_id]
 
 
+ISSUE_URL = "https://api.github.com/repos/saga-xyz/widgets/issues/42"
+
+
 class FakeForge:
+    """The issue at ISSUE_URL; every other read is the open-work lists, empty.
+
+    `status` is the ISSUE's answer only: the run's open-work read
+    (`forge.read_open_work`) must succeed for the run to be created at all,
+    so a failing issue read is the case this file is about.
+    """
+
     def __init__(self, status: int = 200, body=None) -> None:
         self.status = status
         self.body = ISSUE if body is None else body
         self.calls: list[str] = []
 
+    @property
+    def issue_calls(self) -> list[str]:
+        return [url for url in self.calls if url == ISSUE_URL]
+
     def __call__(self, url: str, headers: dict[str, str], timeout: float):
         self.calls.append(url)
+        if url != ISSUE_URL:
+            return 200, b"[]"
         return self.status, json.dumps(self.body).encode()
 
 
@@ -128,8 +144,10 @@ def test_a_run_stores_and_serves_what_the_issue_said_at_submission(make, db, cap
     assert read["read_at"]
     assert run["issue_read_error"] is None
     # The caller's tenant's secret, one read of the issue, at the pinned host.
-    assert reader.asked == ["swarm-tenant-eng-git"]
-    assert transport.calls == ["https://api.github.com/repos/saga-xyz/widgets/issues/42"]
+    assert set(reader.asked) == {"swarm-tenant-eng-git"}
+    assert transport.issue_calls == [ISSUE_URL]
+    assert all(url.startswith("https://api.github.com/repos/saga-xyz/widgets/")
+               for url in transport.calls)
     # It is on the run document, and every later read serves it.
     assert _stored(db, run["id"])["issue_read"]["title"] == "Widgets cannot be sorted"
     again = client.get(f"/v1/runs/{run['id']}", headers=auth_header("alice")).json()["run"]
@@ -171,7 +189,6 @@ def test_the_tenants_own_token_pasted_into_the_issue_is_masked_in_the_stored_rea
 @pytest.mark.parametrize(
     ("transport", "token_map", "code"),
     [
-        (None, {}, "no_forge_credential"),
         (FakeForge(status=404), None, "not_found"),
         (FakeForge(status=403), None, "no_access"),
         (FakeForge(status=502), None, "read_failed"),
@@ -187,6 +204,16 @@ def test_a_failed_read_creates_the_run_and_says_why(make, db, transport, token_m
     assert run["issue_read_error"]["code"] == code
     assert run["issue_read_error"]["message"]
     assert TOKEN not in created.text
+
+
+def test_a_tenant_without_a_forge_credential_is_refused_before_anything_is_created(make, db):
+    # The open-work read needs the same credential, and a forge refusal fails
+    # the run before its planner exists (owner decision on #454).
+    client, _, _ = make(None, {})
+    created = _create(client)
+    assert created.status_code == 409, created.text
+    assert created.json()["code"] == "no_forge_credential"
+    assert not [key for key in db.docs if key.startswith("issue_runs/")]
 
 
 def test_a_run_created_before_runs_kept_the_read_serves_none(make, db):

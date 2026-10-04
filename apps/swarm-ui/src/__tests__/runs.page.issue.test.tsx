@@ -8,8 +8,8 @@
 //      the run stores that read (`issue_read`, routes/runs.py) and the card
 //      shows it. A run created before runs kept it keeps the dash with that
 //      reason; a read that failed at submission says why. Plan comment,
-//      Status comment and Pull request are a dash with "GitHub write-back is
-//      not built yet (#454)".
+//      Status comment and Pull request, before the write-back posted them,
+//      say so ("not posted yet", "none yet").
 //   5. THE PLAN IS STRUCTURED: a two-to-three-line summary, numbered steps
 //      (title, step id, files / tests / estimate when the plan has them, the
 //      prompt folded), overlaps and risks when the plan has them, and the raw
@@ -70,7 +70,7 @@ function run(over: Record<string, unknown> = {}) {
           files: ['apps/agent-worker/agent_worker/forge.py'], tests: ['tests/unit/worker/test_forge_comment.py'],
           estimate: 'about 40 min' },
       ],
-      overlaps: ['PR #498 also edits Runs.tsx'],
+      overlaps: [{ ref: 'bogdan-alexandrescu/SwarmCloud#498', kind: 'pull_request', note: 'PR #498 also edits Runs.tsx' }],
       risks: ['The forge token must never reach a log line.'],
     },
     plan_digest: DIGEST, plan_revision: 1, plan_edited_by: null, workflow_id: null,
@@ -162,13 +162,15 @@ describe('item 4: the run page leads with the issue', () => {
     expect(visible(read)).not.toMatch(/\b0\b/)
   })
 
-  it('names write-back as not built for the comments and the pull request', async () => {
+  it('says the comments and the pull request are not there yet before the write-back posts them', async () => {
     const { container } = await mount(run())
     const links = card(container, 'Linked')
-    for (const key of ['Plan comment', 'Status comment', 'Pull request']) {
+    for (const [key, why] of [
+      ['Plan comment', 'not posted yet'], ['Status comment', 'not posted yet'], ['Pull request', 'none yet'],
+    ] as const) {
       const f = fact(links, key)
       expect(f.classList.contains('is-absent'), key).toBe(true)
-      expect(visible(f)).toContain('— GitHub write-back is not built yet (#454)')
+      expect(visible(f)).toContain(why)
     }
   })
 })
@@ -213,11 +215,12 @@ describe('item 5: the plan is drawn from its schema', () => {
     fireEvent.click(raw.querySelector('summary')!)
   })
 
-  it('a plan with neither draws no risks and says overlaps are not served', async () => {
+  it('a plan with neither draws no risks and says the overlaps were not read', async () => {
     const { container } = await mount(run({ plan: { summary: 'One short summary.', steps: [
       { step_id: 'one', title: 'one step', prompt: 'do it' }] } }))
     expect(container.querySelector('.rn-risks')).toBeNull()
-    expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/not served/)
+    // A plan from before the planner read open work does not say: the region says so.
+    expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/does not say/)
     expect(visible(container.querySelector('.rn-summary'))).toBe('One short summary.')
   })
 })

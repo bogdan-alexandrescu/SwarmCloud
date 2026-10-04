@@ -111,6 +111,8 @@ _WRITE_TOOLS = {
     "swarm_dispatch", "swarm_apply", "swarm_integrate", "swarm_cancel",
     # S10: they change an account in the shared pool.
     "swarm_account_pause", "swarm_account_resume", "swarm_account_drain", "swarm_account_remove",
+    # #454: they submit a planner or a workflow, or end a run.
+    "swarm_run_issue", "swarm_plan_approve", "swarm_plan_edit", "swarm_plan_reject",
 }
 
 

@@ -148,7 +148,7 @@ Reserved for:
 
 1. **browser work** — Chromium needs a large `/dev/shm`, which Cloud Run will not
    size and a GKE pod spec sets directly (2 GiB tmpfs, a `medium: Memory`
-   `emptyDir` at `apps/scheduler/scheduler/dispatch.py:1593`; this said 1 GiB
+   `emptyDir` at `apps/scheduler/scheduler/dispatch.py:1618`; this said 1 GiB
    until 2026-10-02);
 2. **GPU work**;
 3. **anything above 32 GiB**.
@@ -156,12 +156,12 @@ Reserved for:
 Every pod carries:
 
 * `cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`, on the Job AND on
-  its pod template (`apps/scheduler/scheduler/dispatch.py:1486`) — the cluster
+  its pod template (`apps/scheduler/scheduler/dispatch.py:1526`) — the cluster
   autoscaler reads it from pods, not Jobs (the comment above that line says
   why both carry it). This annotation IS Autopilot's extended-run-time
   request: it suppresses eviction for scale-down/consolidation and for node
   auto-upgrade for up to seven days, and only on on-demand capacity
-  (`apps/scheduler/scheduler/dispatch.py:1488`), which is why Spot is disabled
+  (`apps/scheduler/scheduler/dispatch.py:1513`), which is why Spot is disabled
   platform-wide. Until 2026-10-02 this line gave the key as
   `cloud.google.com/gke-extended-run-time`, which is not a real annotation and
   which nothing in this repository sets;

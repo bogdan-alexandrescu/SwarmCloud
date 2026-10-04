@@ -143,7 +143,7 @@ resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup Cloud Scheduler jobs. swarm-api admits it to POST /v1/admin/workflows/rollup only. No project roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup and issue-run-advance Cloud Scheduler jobs. swarm-api admits it to POST /v1/admin/workflows/rollup and POST /v1/admin/runs/advance only. No project roles."
 }
 
 locals {
@@ -185,5 +185,63 @@ resource "google_cloud_scheduler_job" "workflow_rollup" {
     retry_count          = 1
     min_backoff_duration = "30s"
     max_backoff_duration = "120s"
+  }
+}
+
+# --- The issue-run tick (#454) ------------------------------------------------
+#
+# POST /v1/admin/runs/advance (apps/swarm-api/swarm_api/routes/admin.py) moves
+# one tenant's live issue runs as far as their tasks say: PLANNING -> PLANNED
+# when the planner has written plan.json, an `auto` run's approval and its
+# workflow, RUNNING -> DONE/FAILED/CANCELLED from that workflow, and the
+# write-back to the GitHub issue after each. Every run READ does the same, but
+# owner decision on #454 is "Advancing runs: swarm-api, on a Cloud Scheduler
+# tick": without one, a run nobody watches -- and every `auto` run, whose point
+# is that nobody has to -- never moved and its issue was never told.
+#
+# A PLANNED run waiting for a person is not read by the tick at all
+# (swarm_api.issueruns.IssueRuns.tickable), and the tick creates nothing for
+# it: a waiting plan holds no capacity (invariant 1).
+#
+# SAME TENANTS AND SAME IDENTITY as the workflow rollup above, for the same
+# reasons: the route takes exactly one tenant_id, and swarm-api admits the
+# rollup-sweeper account to it by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES)
+# and to nothing wider. Its one grant, run.invoker on swarm-api, is already the
+# rollup's (terraform/infra main.tf, rollup_sweeper_invokes_api). An auto
+# approval the tick makes is submitted as the run's creator in the run's
+# tenant (routes/runs.py run_owner_auth), never as this account.
+
+resource "google_cloud_scheduler_job" "issue_run_advance" {
+  for_each = var.rollup_tenant_ids
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-issue-run-advance-${each.key}"
+
+  description = "managed-by=swarm-terraform; advances tenant ${each.key}'s issue runs (#454) nobody is reading"
+  schedule    = var.issue_run_advance_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One tick reads at most one page of a tenant's movable runs, oldest first,
+  # and each run costs a task or workflow read plus, when it moved, one
+  # GitHub write-back. Bounded by the API's page size.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/runs/advance?tenant_id=${urlencode(each.key)}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the schedule is every minute, so the next tick IS the retry,
+  # and a retried tick overlapping the next one only doubles the reads (each
+  # move is a transaction, so it can never double a transition).
+  retry_config {
+    retry_count = 0
   }
 }

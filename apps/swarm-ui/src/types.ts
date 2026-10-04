@@ -4500,6 +4500,10 @@ export type IssueRunState =
   | 'PLANNED'
   | 'APPROVED'
   | 'RUNNING'
+  /** The workflow opened its pull request; its CI is being read at the head. */
+  | 'CHECKING'
+  /** CI was red: one continuation is fixing it (a fix round). */
+  | 'FIXING'
   | 'DONE'
   | 'FAILED'
   | 'REJECTED'
@@ -4530,37 +4534,78 @@ export interface IssuePreview extends IssueRefDoc {
   comments: number
 }
 
+/** `issueruns.auto_merge_availability()`: whether POST /v1/runs takes `auto_merge: true` now. */
+export interface AutoMergeAvailability {
+  available: boolean
+  /** The step it waits for, `#295`. */
+  requires: string
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
 /** `GET /v1/issues/preview`. */
 export interface IssuePreviewRead {
   issue: IssuePreview
   tenant_id: string
+  /** Absent from servers before #454's console step: read as unavailable. */
+  auto_merge?: AutoMergeAvailability | null
 }
 
-/** `issueruns.PlanStep`: an id, a title, a prompt and the earlier steps it needs. Nothing else (invariant 10). */
+/**
+ * `issueruns.PlanStep`: an id, a title and a prompt, and optionally the earlier
+ * steps it needs, the files it touches, the tests it adds and an estimate. Text
+ * only (invariant 10). The optional fields are absent, not null, on a plan that
+ * did not set them.
+ */
 export interface PlanStepDoc {
   step_id: string
   title: string
   prompt: string
   /** Earlier step ids this step builds on. Absent in a plan that runs as a chain; the digest covers it. */
   depends_on?: string[]
-  /**
-   * What a plan MAY say about a step beyond `issueruns.PlanStep` -- the files
-   * it touches, the tests it adds, how long it should take. Today's schema
-   * refuses extra keys, so no served plan has them; the run page draws each
-   * only when it is there (lane U9 item 5) and never invents one.
-   */
-  files?: string[]
-  tests?: string[]
-  estimate?: string
+  files?: string[] | null
+  tests?: string[] | null
+  estimate?: string | null
 }
 
-/** `issueruns.PlanSpec`. */
+/** `issueruns.PlanOverlap`: work in flight the planner found this plan collides with. */
+export interface PlanOverlap {
+  /** `owner/repo#N`. */
+  ref: string
+  kind: 'issue' | 'pull_request'
+  note: string
+}
+
+/** `issueruns.PlanSpec`. Every field past `steps` is optional (plans stored before #454's planning step). */
 export interface RunPlan {
   summary: string
   steps: PlanStepDoc[]
-  /** Drawn when a plan has them (see `PlanStepDoc.files`); absent from today's schema. */
-  overlaps?: string[]
+  mode?: 'single' | 'workflow' | null
+  /** Every requirement the issue states; what decides `Closes #N` against `part of #N`. */
+  requirements?: string[] | null
+  overlaps?: PlanOverlap[] | null
+  estimate?: string | null
+  /** Drawn when a plan has them; absent from today's schema. */
   risks?: string[]
+}
+
+/** One open pull request in `IssueRun.open_work`, masked. */
+export interface OpenWorkPull {
+  number: number
+  title: string
+  /** Null when its files were not read (past a cap, the time budget, or a failed read). */
+  files: string[] | null
+  files_truncated: boolean
+}
+
+/** `forge.read_open_work`: the repository's open work when the run was created. */
+export interface OpenWork {
+  repository: string
+  read_at: string | null
+  issues: { number: number; title: string }[]
+  issues_truncated: boolean
+  pull_requests: OpenWorkPull[]
+  pull_requests_truncated: boolean
 }
 
 /**
@@ -4622,6 +4667,41 @@ export interface IssueRun {
   issue_read?: IssueReadDoc | null
   /** The forge read that failed at submission: its code and the API's message. */
   issue_read_error?: { code: string; message: string } | null
+  /** Null on runs created before the open-work read; absent from older servers. */
+  open_work?: OpenWork | null
+  /** The run's pull request once its workflow opened one; absent from older servers. */
+  pull_request?: RunPullRequest | null
+  /** The CI loop (`issueci`): absent from servers before it. */
+  pr_task_id?: string | null
+  /** The fix round in progress or last spent, 0 before the first; capped by `fix_rounds`. */
+  ci_fix_round?: number
+  /** Each fix round's continuation workflow, in order. */
+  ci_fix_workflows?: string[]
+  /** The head sha every required check was green at; set on DONE. */
+  green_sha?: string | null
+  /** The red checks' output, redacted and bounded (8 KB) by the server. */
+  failure_excerpt?: string | null
+  /** The write-back (`issuesync`): the plan comment's and the status comment's ids on the issue. */
+  plan_comment_id?: number | null
+  status_comment_id?: number | null
+  /** The last write-back's failure, masked and bounded by the server (`failure_text`); null once one lands. */
+  writeback_error?: string | null
+  /**
+   * The review's requirements finding: true writes `Closes #N` into the pull
+   * request, false writes `part of #N`, null is not decided yet.
+   */
+  requirements_met?: boolean | null
+  requirements_unmet?: string[]
+  requirements_note?: string | null
+}
+
+/** `IssueRun.to_api().pull_request`. */
+export interface RunPullRequest {
+  number: number | null
+  url: string | null
+  head_sha?: string | null
+  /** The last CI reading at `head_sha`; null before the first. */
+  checks?: 'pending' | 'green' | 'red' | 'none' | null
 }
 
 /** `GET /v1/runs`: newest first, as the server orders them. */

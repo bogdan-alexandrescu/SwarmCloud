@@ -362,3 +362,52 @@ make dev TARGET=emulator
 The emulator is a Java program; on a machine with no JRE `dev.sh` says so and
 points at `docker compose up firestore`. See [workflows.md](workflows.md) for the
 full local loop and for why `docker-compose.yml` is the secondary path.
+
+---
+
+## 12. Issue runs: the advance tick, and reading a stuck run
+
+An issue run (#454, [issue-runs.md](issue-runs.md)) moves when something looks
+at it: every read of the run, and a Cloud Scheduler job per registered tenant,
+`swarm-issue-run-advance-<tenant>` (`google_cloud_scheduler_job.issue_run_advance`,
+every minute, `var.issue_run_advance_schedule`). It calls
+`POST /v1/admin/runs/advance?tenant_id=<t>` as the `swarm-rollup-sweeper` OIDC
+identity, the same account as the workflow rollup, which swarm-api admits to
+those two routes and nothing else. Without it an `auto` run never leaves
+`PLANNED` and no unwatched run's issue comments move.
+
+```bash
+gcloud scheduler jobs describe "swarm-issue-run-advance-$TENANT" \
+  --project "$PROJECT_ID" --location "$REGION" --format='value(state,schedule,lastAttemptTime,status)'
+
+# One tick by hand, as an admin. The report counts what it visited and moved;
+# a run it could not advance is named with its error code, never its message.
+./scripts/api.sh POST "/admin/runs/advance?tenant_id=$TENANT"
+```
+
+A personal `u-` tenant has no job (it is not in `var.tenants`); its runs move
+only when read.
+
+**Reading one run.** A read advances it first, so what it says is current:
+
+```bash
+RUN=run_...
+./scripts/api.sh GET "/runs/$RUN" | jq '.run | {state, error, planner_task_id,
+  workflow_id, pull_request, ci_fix_round, fix_rounds, ci_fix_workflows,
+  writeback_error, history: [.history[] | "\(.at) \(.from) -> \(.to) by \(.by)"]}'
+```
+
+Where it is waiting tells you whose task to read:
+
+| state | it is waiting on | read next |
+|---|---|---|
+| `PLANNING` | the planner task | `GET /tasks/<planner_task_id>`: a planner `QUEUED`/`PARKED` is capacity, not the run ([section 6](#6-investigating-one-task)) |
+| `PLANNED` | a person: approve, edit or reject | nothing is running and nothing is held (invariant 1) |
+| `RUNNING` | the compiled workflow | `GET /workflows/<workflow_id>` |
+| `CHECKING` | CI on the pull request's head | `pull_request.checks`, and `pull_request.read_error` if CI could not be read |
+| `FIXING` | the newest CI fix round | `GET /workflows/<last of ci_fix_workflows>` |
+
+Stuck in `PLANNING` or `CHECKING`, and `writeback_error`, are in
+[troubleshooting](troubleshooting.md#an-issue-run-is-stuck-in-planning-or-checking).
+The swarm-api log lines are `issue run <id> tenant=<t> not advanced by the tick
+(<code>)` and `issue run <id> tenant=<t>: CI not read (<code>)`.

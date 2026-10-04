@@ -33,9 +33,11 @@ import './styles/intake.css'
  *    offering a choice the API would refuse.
  *
  * 3. WHAT IT MAY DO ON ITS OWN, decided now and nowhere else (#454): plan
- *    approval (Required by default), auto-merge (drawn OFF and DISABLED until
- *    #295 -- the API refuses it, `refuse_auto_merge`), and the fix-round cap
- *    (3, within 1-5).
+ *    approval (Required by default), auto-merge (drawn OFF and DISABLED,
+ *    "Not available yet", with the why in a tooltip, unless the preview's `auto_merge`
+ *    says POST /v1/runs would take it -- `issueruns.auto_merge_availability`,
+ *    the same answer `refuse_auto_merge` enforces; a server that does not say
+ *    is read as unavailable), and the fix-round cap (3, within 1-5).
  *
  * WHAT IT COSTS (invariant 1). The planner is one ordinary task; a PLANNED run
  * is a Firestore document and nothing else, so the time a person takes to
@@ -59,6 +61,9 @@ export const DEFAULT_FIX_ROUNDS = 3
  * no runner field -- is behind the list's `?` (`runner-unavailable`).
  */
 const ONLY_RUNNER = `Issue runs always use ${ISSUE_RUN_PROFILE}`
+
+/** Why auto-merge is held back, in the switch's line and the summary. */
+export const AUTO_MERGE_REASON = 'not available yet'
 
 /** The router address of one run: `/runs/<id>`. */
 export function runAddress(id: string): string {
@@ -105,6 +110,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const [closedOk, setClosedOk] = useState(false)
   const [approval, setApproval] = useState<'required' | 'auto'>('required')
   const [rounds, setRounds] = useState(String(DEFAULT_FIX_ROUNDS))
+  const [merge, setMerge] = useState(false)
   const [sending, setSending] = useState<Sending>({ kind: 'idle' })
   const keys = useProviderKeys()
 
@@ -129,6 +135,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const roundsOk = Number.isInteger(roundsN) && roundsN >= MIN_FIX_ROUNDS && roundsN <= MAX_FIX_ROUNDS
   const blocked = read === null || (closed && !closedOk) || !roundsOk || sending.kind === 'sending'
   const tenant = read?.tenant_id ?? capacity.tenant_id ?? null
+  // Offered only on the API's word, for the issue on screen; off otherwise.
+  const mergeServed = read?.auto_merge ?? null
+  const mergeOffered = mergeServed?.available === true
+  const mergeOn = mergeOffered && merge
 
   async function readIssue() {
     const ref = typed.trim()
@@ -161,8 +171,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
       // THE REFERENCE AS THE PREVIEW SERVED IT, so what is planned is what was shown.
       issue: read.issue.ref,
       plan_approval: approval,
-      // Sent, and always false: the API refuses true until #295.
-      auto_merge: false,
+      // True only when the switch was offered (the API said it would take it) and turned on.
+      auto_merge: mergeOn,
       fix_rounds: roundsN,
     }
     setSending({ kind: 'sending' })
@@ -269,18 +279,28 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
           <div className="in-choice in-merge">
             <span className="in-switch">
-              <input type="checkbox" role="switch" checked={false} disabled
-                aria-label="Merge the pull request when it is ready" onChange={() => {}} />
-              <span className="in-switch-w">off</span>
+              <input type="checkbox" role="switch" checked={mergeOn} disabled={!mergeOffered}
+                aria-label="Merge the pull request when it is ready" onChange={(e) => setMerge(e.target.checked)} />
+              <span className="in-switch-w">{mergeOn ? 'on' : 'off'}</span>
             </span>
             <div className="in-choice-t">
               <b>Merge the pull request when it is ready</b>
-              {/* What the submitter sees and can do (walkthrough E); why it is
-                  off -- the merge chain has not shipped and the API refuses
-                  auto-merge -- is the line's tooltip. */}
-              <small title="The merge chain has not shipped yet, and the API refuses auto-merge until it does.">
-                Not available yet. A person merges the run&rsquo;s pull request.
-              </small>
+              {mergeOffered ? (
+                <small>
+                  {mergeOn
+                    ? 'On: once every required check is green, the merge step merges the pull request at the sha it proved.'
+                    : 'Off (default): a person merges the run’s pull request.'}
+                </small>
+              ) : (
+                /* What the submitter sees and can do (walkthrough E); why it is
+                   off -- the merge chain has not shipped and the API refuses
+                   auto-merge -- is the line's tooltip, and the API's own
+                   reason when the preview served one. */
+                <small title="The merge chain has not shipped yet, and the API refuses auto-merge until it does.">
+                  Not available yet. A person merges the run&rsquo;s pull request.
+                  {mergeServed?.reason && <> The API says: <i>{mergeServed.reason}</i></>}
+                </small>
+              )}
             </div>
           </div>
 
@@ -291,8 +311,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <div className="in-choice-t">
               <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
               <small>
-                {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. The cap travels with the run; the workflow compiled from its plan
-                runs one review-then-fix round today, whatever the cap.
+                {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. Once the pull request is open, each red CI reading spends one fix
+                round; past the cap the run fails with the failing checks&rsquo; excerpt.
               </small>
               {!roundsOk && <small className="sbf-bad" role="alert">Not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
             </div>
@@ -323,7 +343,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className="ctl-fact">
               <b>auto-merge</b>
-              off · not available yet
+              {mergeOn ? 'on' : mergeOffered ? 'off' : `off · ${AUTO_MERGE_REASON}`}
             </li>
             <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
               <b>fix rounds</b>

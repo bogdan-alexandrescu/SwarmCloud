@@ -61,10 +61,25 @@ class SwarmError(RuntimeError):
     the first time the message is reworded.
     """
 
-    def __init__(self, message: str, *, status: int | None = None, edge: bool = False) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        edge: bool = False,
+        code: str | None = None,
+        detail: dict[str, Any] | None = None,
+    ) -> None:
         super().__init__(message)
         self.status = status
         self.edge = edge
+        #: The API's machine-readable `code` (`plan_changed`, `not_found`, ...)
+        #: and its `detail` object, when the body was this platform's JSON
+        #: error. None for an edge page, a FastAPI string detail, or no body.
+        #: Carried for the same reason `status` is: a caller that has to tell
+        #: one refusal from another must not do it by reading the sentence.
+        self.code = code
+        self.detail = detail
 
 
 def _run(argv: list[str], *, timeout: int = 60) -> str:
@@ -407,6 +422,22 @@ def _explain_json(parsed: Any, stripped: str) -> str:
     if detail:
         return str(detail)
     return stripped[:300]
+
+
+def _error_fields(body: str) -> tuple[str | None, dict[str, Any] | None]:
+    """`(code, detail)` out of an `ApiError.to_payload` body, or `(None, None)`."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return None, None
+    if not isinstance(parsed, dict):
+        return None, None
+    code = parsed.get("code")
+    detail = parsed.get("detail")
+    return (
+        code if isinstance(code, str) and code else None,
+        detail if isinstance(detail, dict) else None,
+    )
 
 
 def _login_command() -> str:
@@ -1139,7 +1170,10 @@ class SwarmClient:
                     "backend service). Ask its operator; for this repository's own "
                     "deployment the steps are docs/runbooks/iap-desktop-client.md"
                 )
-            raise SwarmError(message, status=exc.code, edge=edge) from exc
+            code, detail = (None, None) if edge else _error_fields(raw)
+            raise SwarmError(
+                message, status=exc.code, edge=edge, code=code, detail=detail
+            ) from exc
         except urllib.error.URLError as exc:
             raise SwarmError(f"could not reach {self.base_url}: {exc.reason}") from exc
 
@@ -1420,3 +1454,169 @@ class SwarmClient:
 
     def cancel(self, task_id: str) -> dict[str, Any]:
         return unwrap_task(self.request("POST", f"/v1/tasks/{task_id}/cancel", payload={}))
+
+    # -- issue runs (#454) -------------------------------------------------
+    #
+    # `POST /v1/runs` plans an issue; the plan waits, holding no capacity
+    # (invariant 1), until a person approves THE DIGEST THEY WERE SHOWN. Every
+    # method here answers the run object, unwrapped from `{"run": ...}`, and
+    # every refusal the developer can act on is re-worded by `run_refusal`.
+    # The tenant is the route's (`tenant_scope`), never a parameter: another
+    # tenant's run answers the same 404 as a missing one.
+
+    def create_run(
+        self,
+        *,
+        issue: str,
+        plan_approval: str = "required",
+        auto_merge: bool = False,
+        fix_rounds: int | None = None,
+    ) -> dict[str, Any]:
+        """Plan `issue` (`owner/repo#N` or its URL). DATA only (invariant 10):
+        no profile, image or command -- the planner and every step are the
+        API's choice. `auto_merge` is sent as asked; the API refuses it until
+        #295, and that refusal is passed back in words, not swallowed."""
+        payload: dict[str, Any] = {
+            "issue": issue,
+            "plan_approval": plan_approval,
+            "auto_merge": bool(auto_merge),
+        }
+        if fix_rounds is not None:
+            payload["fix_rounds"] = fix_rounds
+        try:
+            data = self.request("POST", "/v1/runs", payload=payload)
+        except SwarmError as exc:
+            raise run_refusal(exc) from exc
+        return unwrap_run(data, "POST /v1/runs")
+
+    def runs(self, *, limit: int | None = None, page_token: str | None = None) -> dict[str, Any]:
+        """One page of the caller's tenant's runs, newest first, as served."""
+        params: list[tuple[str, str]] = []
+        if limit is not None:
+            params.append(("limit", str(limit)))
+        if page_token:
+            params.append(("page_token", page_token))
+        query = urllib.parse.urlencode(params)
+        data = self.request("GET", f"/v1/runs?{query}")
+        if not isinstance(data, dict) or not isinstance(data.get("runs"), list):
+            raise SwarmError(
+                "GET /v1/runs answered without a `runs` list; this deployment has no "
+                "issue-run route this client speaks to"
+            )
+        return data
+
+    def run(self, run_id: str) -> dict[str, Any]:
+        """One run. The read ADVANCES it, as every run read does (`routes/runs.py`)."""
+        try:
+            data = self.request("GET", f"/v1/runs/{run_id}")
+        except SwarmError as exc:
+            raise run_refusal(exc, run_id=run_id) from exc
+        return unwrap_run(data, f"GET /v1/runs/{run_id}")
+
+    def approve_plan(self, run_id: str, *, plan_digest: str) -> dict[str, Any]:
+        """Approve the plan whose digest is `plan_digest` -- the one SHOWN.
+
+        Never call this with a digest read in the same breath as the approval:
+        the digest is the evidence that a person saw the plan being approved,
+        and a plan edited in between is refused with `plan_changed` exactly so
+        that an approval cannot land on a plan nobody read.
+        """
+        try:
+            data = self.request(
+                "POST", f"/v1/runs/{run_id}/plan:approve", payload={"plan_digest": plan_digest}
+            )
+        except SwarmError as exc:
+            raise run_refusal(exc, run_id=run_id, sent_digest=plan_digest) from exc
+        return unwrap_run(data, f"approving run {run_id}")
+
+    def edit_plan(self, run_id: str, *, plan_digest: str, plan: dict[str, Any]) -> dict[str, Any]:
+        """Replace the plan whose digest is `plan_digest` (the one opened) with `plan`."""
+        try:
+            data = self.request(
+                "POST",
+                f"/v1/runs/{run_id}/plan:edit",
+                payload={"plan_digest": plan_digest, "plan": plan},
+            )
+        except SwarmError as exc:
+            raise run_refusal(exc, run_id=run_id, sent_digest=plan_digest) from exc
+        return unwrap_run(data, f"editing run {run_id}")
+
+    def reject_plan(
+        self, run_id: str, *, plan_digest: str | None = None, reason: str | None = None
+    ) -> dict[str, Any]:
+        """Reject the run's plan. With `plan_digest`, only if it is still that plan."""
+        payload: dict[str, Any] = {}
+        if plan_digest:
+            payload["plan_digest"] = plan_digest
+        if reason:
+            payload["reason"] = reason
+        try:
+            data = self.request("POST", f"/v1/runs/{run_id}/plan:reject", payload=payload)
+        except SwarmError as exc:
+            raise run_refusal(exc, run_id=run_id, sent_digest=plan_digest) from exc
+        return unwrap_run(data, f"rejecting run {run_id}")
+
+
+def unwrap_run(payload: Any, what: str) -> dict[str, Any]:
+    """The run out of `{"run": {...}}`, or a SwarmError naming what came back."""
+    run = payload.get("run") if isinstance(payload, dict) else None
+    if not isinstance(run, dict) or not run.get("id"):
+        seen = sorted(payload) if isinstance(payload, dict) else type(payload).__name__
+        raise SwarmError(f"{what}: the response carried no `run` object (saw {seen})")
+    return run
+
+
+class RunRefused(SwarmError):
+    """An issue-run refusal, re-worded so the developer knows what to do next.
+
+    `status`, `code` and `detail` are the API's, unchanged, so a caller that
+    branches on the refusal still can.
+    """
+
+
+def run_refusal(
+    exc: SwarmError, *, run_id: str | None = None, sent_digest: str | None = None
+) -> SwarmError:
+    """The four refusals a run's caller acts on, said plainly; anything else as it came.
+
+    * `plan_changed` (409): the plan is not the one shown. NOTHING WAS DONE,
+      and the remedy is to read the run again -- never to retry with the new
+      digest, which would approve a plan nobody was shown.
+    * `auto_merge_unavailable` (422): visible but disabled until #295 (the
+      issue's own build order). Nothing was created.
+    * `invalid_plan` (422): the edit was refused and the run keeps its plan.
+    * a 404 from the API: not one of this tenant's runs. Another tenant's run
+      answers the same as a missing one, so neither is told apart here.
+    """
+    if exc.edge:
+        return exc
+    from .invocation import terminal_command
+
+    def refused(text: str) -> RunRefused:
+        return RunRefused(text, status=exc.status, edge=False, code=exc.code, detail=exc.detail)
+
+    if exc.code == "plan_changed":
+        current = (exc.detail or {}).get("plan_digest")
+        show = terminal_command(f"sc plan show {run_id}") if run_id else "a fresh read of the run"
+        return refused(
+            f"the plan of run {run_id} changed since it was shown: it was {sent_digest}, it "
+            f"is now {current}. Nothing was done. Read it again ({show}) and act on the "
+            "plan it now holds -- do not resend with the new digest unseen"
+        )
+    if exc.code == "auto_merge_unavailable":
+        return refused(
+            "auto-merge is visible but not available yet, so nothing was created. Create "
+            f"the run without auto-merge and merge its pull request yourself. The API said: {exc}"
+        )
+    if exc.code == "invalid_plan":
+        where = f"run {run_id}" if run_id else "the run"
+        return refused(
+            f"the plan was refused as invalid and nothing changed: {where} still holds the "
+            f"plan it had. Fix the plan and send it again. The API said: {exc}"
+        )
+    if exc.status == 404 and run_id:
+        return refused(
+            f"run {run_id} is not one of your tenant's runs, or does not exist. The API "
+            f"said: {exc}"
+        )
+    return exc

@@ -903,6 +903,47 @@ are the same value.
 
 None of it adds a model, an image, a command or a resource parameter.
 
+## Planning and running a GitHub issue
+
+`/sc run --issue owner/repo#N` (#454) hands an issue to SwarmCloud. A planner
+task reads the issue and the repository's open issues and pull requests, with
+the tenant's own forge credential, and writes a plan: the requirements, any
+overlap with work already in flight, and the steps with their files, tests and
+estimates. The plan waits, holding no capacity, until someone approves it;
+then it compiles into one workflow that opens a pull request, and the platform
+reads that pull request's CI and runs up to three fix rounds (`--fix-rounds`).
+The issue carries a plan comment and one status comment the platform keeps up
+to date. Why it works this way -- the digest, the tick, the fix-round cap,
+`Closes` against `part of`, and why auto-merge is refused -- is in
+[docs/issue-runs.md](../docs/issue-runs.md).
+
+| Surface | Create | Read | Act on the plan |
+|---|---|---|---|
+| `/sc` | `/sc run --issue o/r#N [--plan auto] [--auto-merge]` | `/sc runs`, `/sc plan show <run>` | `/sc plan approve\|edit\|reject <run>` |
+| MCP | `swarm_run_issue` | `swarm_runs`, `swarm_run` | `swarm_plan_approve`, `swarm_plan_edit`, `swarm_plan_reject` |
+| terminal | `uv run sc run --issue o/r#N [--follow]` | `uv run sc runs`, `uv run sc run show <run>`, `uv run sc plan show <run>` | `uv run sc plan approve <run>`, `edit --file plan.json`, `reject --reason ...` |
+
+**An approval sends the digest of the plan it showed.** `sc plan approve`
+prints the whole plan and its digest and asks for `approve` typed back
+(`SWARM_ASSUME_YES` is ignored), and `swarm_plan_approve` takes the digest
+from its caller, who was shown it. A plan edited in between is refused with
+`plan_changed`, said plainly, and nothing is retried. `sc plan edit` sends the
+digest of the plan it opened, from `--file` or `$EDITOR`.
+
+**`--auto-merge` is visible but disabled.** It is accepted and passed to the
+API, which refuses it until #295 lands; the refusal is printed as it is, and
+nothing is created.
+
+**Live rows.** Once a run is `RUNNING` (or `FIXING`, a CI fix round),
+`swarm_run` answers `attach_with: /sc attach <workflow_id>` and `sc run show`
+prints the same line: the run's workflow attaches exactly as any other
+(#448). `sc run --follow` prints one row per compiled step as it moves, and
+stops at a plan waiting for approval.
+
+`run --issue` and `plan approve|edit|reject` write, so no skill or command is
+granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
+grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
+
 ## What keeps these honest
 
 Eight files, all in `make test`, all offline — bar one test, which CI runs:

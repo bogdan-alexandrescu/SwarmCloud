@@ -426,6 +426,82 @@ See [disaster-recovery.md](disaster-recovery.md).
 
 ---
 
+## An issue run is stuck in PLANNING or CHECKING
+
+An issue run ([issue-runs.md](issue-runs.md)) moves only when it is read or
+ticked, and each state waits on one thing. Read it first -- the read advances
+it, so if this alone moves it, nothing was stuck, only unwatched:
+
+```bash
+./scripts/api.sh GET "/runs/$RUN" | jq '.run | {state, error, planner_task_id,
+  workflow_id, pull_request, ci_fix_round, fix_rounds, writeback_error}'
+```
+
+**PLANNING** waits on the planner task:
+
+```bash
+./scripts/api.sh GET "/tasks/$PLANNER_TASK" | jq '{state, park_reason, blocked_by, last_error}'
+```
+
+* `QUEUED` / `PARKED` / `READY`: the planner has not been admitted. That is
+  capacity on the `claude-code` pools, not the run -- see
+  [Nothing is running](#nothing-is-running-but-the-queue-is-full) and
+  [Everything is PARKED](#everything-is-parked).
+* `RUNNING`: the planner is still planning. A plan is one agent run; wait for it.
+* Ended, but the run is still `PLANNING` when you are not reading it: the tick
+  is not running for this tenant. A personal `u-` tenant never has one;
+  otherwise check `swarm-issue-run-advance-<tenant>`
+  ([operations §12](operations.md#12-issue-runs-the-advance-tick-and-reading-a-stuck-run))
+  -- paused, missing (the tenant was registered after the last apply), or
+  answering an error. A run the tick cannot advance is named in its response
+  and in swarm-api's log as `not advanced by the tick (<code>)`.
+
+A planner that wrote no `plan.json`, or one outside the schema, does not
+leave the run stuck: it ends `FAILED`, saying why in `error`.
+
+**CHECKING** waits on CI at the pull request's head:
+
+* `pull_request.read_error` set: CI could not be read, and a read that fails
+  is **not** a red reading, so the run waits rather than spending a fix round.
+  `checks_forbidden` means the tenant's token lacks `Checks: Read` or
+  `Commit statuses: Read`
+  ([multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed));
+  store a new version with `scripts/create-secrets.sh --stdin` and the next
+  read uses it.
+* `pull_request.checks: "pending"` for a long time: a **required** check has
+  not reported at that head -- a workflow that does not run on `swarm/`
+  branches, one waiting for a maintainer to approve it, or a required check
+  renamed in CI but not in the branch rules. The run waits for it, by design
+  (pending CI never spends a round). Make the check run, or close the pull
+  request, which ends the run `FAILED`; there is no cancel route for a run.
+* `pull_request.checks: "none"`: nothing is required and nothing has reported.
+  After 10 minutes at one head it is read as a repository with no CI and the
+  run ends `DONE`.
+
+`FIXING` is a fix round in progress; read the last of `ci_fix_workflows` like
+any workflow.
+
+## An issue run shows `writeback_error`
+
+The run went on; its issue did not hear about it. A write-back failure never
+fails or blocks a run, because the run's truth is its Firestore document, not
+the comment. `writeback_error` is the last failure, redacted, beginning with
+its code:
+
+| code | means | fix |
+|---|---|---|
+| `writeback_forbidden` | the token cannot write there; the sentence names the permission -- usually `Issues: Read and write` (the comments) or `Pull requests: Read and write` (the keyword block) | grant it on the token, store a new version with `scripts/create-secrets.sh --stdin` |
+| `writeback_unauthorized` | the token is revoked or expired | the same: a new version of `swarm-tenant-<tenant>-git` |
+| `no_forge_credential` | the tenant has no `swarm-tenant-<tenant>-git` secret | create it with `scripts/create-secrets.sh --stdin` |
+| `writeback_not_found` | the issue or pull request is not visible to the token, or was deleted | check the token's repository access |
+| `writeback_failed` | GitHub or the network failed | nothing; it is retried |
+
+The same write is not retried for five minutes unless what it would write
+changes, so a console polling a run with a broken token does not call GitHub
+on every poll. After the fix, the next read or tick past that window posts
+what was missed, edits the existing comments rather than adding new ones, and
+clears `writeback_error`.
+
 ## Where to look next
 
 | Symptom | Doc |
@@ -439,6 +515,7 @@ See [disaster-recovery.md](disaster-recovery.md).
 | A GKE dispatch failure that survives the obvious fix | [incidents/2026-09-24-gke-dispatch.md](incidents/2026-09-24-gke-dispatch.md) — seven causes behind one error message, and the commands that tell them apart |
 | A Cloud Run worker exits 69 at `validate_generation` with `ipv6:... Network is unreachable` | [incidents/2026-09-25-worker-startup-network.md](incidents/2026-09-25-worker-startup-network.md) — the IPv4 connection is the one that failed; the flow-log query that shows it |
 | Tenant isolation, secrets, groups | [multi-tenancy.md](multi-tenancy.md) |
+| An issue run: why it waits, the tick, the fix-round cap, `Closes` vs `part of` | [issue-runs.md](issue-runs.md) |
 | Spend | [cost-control.md](cost-control.md) |
 | Rebuilding after a loss | [disaster-recovery.md](disaster-recovery.md) |
 | Tool and provider versions | [versions.md](versions.md) |

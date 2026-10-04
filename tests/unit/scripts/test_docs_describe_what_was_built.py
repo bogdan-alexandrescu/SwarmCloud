@@ -100,17 +100,17 @@ def test_d8_the_gke_pod_annotation_is_the_one_the_dispatcher_sets():
     assert "`cloud.google.com/gke-extended-run-time: \"true\"`" not in text
     assert "is not a real annotation" in _flat(text)
     assert '`cluster-autoscaler.kubernetes.io/safe-to-evict: "false"`' in text
-    assert "`apps/scheduler/scheduler/dispatch.py:1486`" in text
+    assert "`apps/scheduler/scheduler/dispatch.py:1526`" in text
     # The annotation IS the extended-run-time request (the reason Spot is
     # impossible, invariant 6): the doc must not say the platform lacks it.
     flat = _flat(text)
     assert "This annotation IS Autopilot's extended-run-time request" in flat
     assert "node auto-upgrade for up to seven days" in flat
     assert "only on on-demand capacity" in flat
-    assert "Autopilot extended run time" in _line("apps/scheduler/scheduler/dispatch.py", 1488)
+    assert "Autopilot extended run time" in _line("apps/scheduler/scheduler/dispatch.py", 1513)
     assert "and this platform sets it" in flat
     assert '"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"' in _line(
-        "apps/scheduler/scheduler/dispatch.py", 1486
+        "apps/scheduler/scheduler/dispatch.py", 1526
     )
 
 
@@ -129,8 +129,8 @@ def test_d10_dev_shm_is_the_size_the_dispatcher_renders():
     size = _dshm_gib()
     assert "1 GiB tmpfs" not in text
     assert f"{size} GiB tmpfs" in text
-    assert "`apps/scheduler/scheduler/dispatch.py:1593`" in text
-    assert f'"sizeLimit": "{size}Gi"' in _line("apps/scheduler/scheduler/dispatch.py", 1593)
+    assert "`apps/scheduler/scheduler/dispatch.py:1618`" in text
+    assert f'"sizeLimit": "{size}Gi"' in _line("apps/scheduler/scheduler/dispatch.py", 1618)
 
 
 # --------------------------------------------------------------------------
@@ -143,8 +143,8 @@ def test_d10_the_compute_row_names_the_namespace_the_dispatcher_uses():
     assert "namespace `swarm-<id>`" not in compute
     assert "namespace `swarm-tenant-<id>`" in compute
     assert '"swarm-tenant-{tenant}"' in _text(DISPATCH)
-    assert "`apps/scheduler/scheduler/dispatch.py:1438`" in compute
-    assert "swarm-tenant-{tenant}" in _line("apps/scheduler/scheduler/dispatch.py", 1438)
+    assert "`apps/scheduler/scheduler/dispatch.py:1463`" in compute
+    assert "swarm-tenant-{tenant}" in _line("apps/scheduler/scheduler/dispatch.py", 1463)
 
 
 # --------------------------------------------------------------------------
@@ -185,11 +185,11 @@ def test_d10_design_section_6_names_the_route_that_serves_the_topology():
     assert "neither of which any route" not in body
     assert "`GET /v1/runtimes`" in body
     assert "`GET /v1/resource-classes`" in body
-    assert '@router.get("/runtimes")' in _line("apps/swarm-api/swarm_api/routes/platform.py", 90)
+    assert '@router.get("/runtimes")' in _line("apps/swarm-api/swarm_api/routes/platform.py", 130)
     assert '@router.get("/resource-classes")' in _line(
-        "apps/swarm-api/swarm_api/routes/platform.py", 42
+        "apps/swarm-api/swarm_api/routes/platform.py", 82
     )
-    assert "`apps/swarm-api/swarm_api/routes/platform.py:90`" in body
+    assert "`apps/swarm-api/swarm_api/routes/platform.py:130`" in body
     assert "apps/swarm-ui/src/Runtimes.tsx" in body
     assert (REPO / "apps" / "swarm-ui" / "src" / "Runtimes.tsx").is_file()
     assert STAMP in body
@@ -205,9 +205,9 @@ def test_d10_web_ui_blocked_list_carries_a_dated_recheck():
     assert f"Re-checked {STAMP}" in body
     # Rows that shipped are marked so, each with the route that unblocked it.
     for row, route, cite, needle in (
-        ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", 401), "/leases"),
-        ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", 258), "/authorize"),
-        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", 251), "/attempts"),
+        ("Screen C", "GET /v1/admin/leases", ("apps/swarm-api/swarm_api/routes/admin.py", 410), "/leases"),
+        ("ACC-3", "POST /v1/accounts/authorize", ("apps/swarm-api/swarm_api/routes/accounts.py", 283), "/authorize"),
+        ("Task timeline", "GET /v1/tasks/{id}/attempts", ("apps/swarm-api/swarm_api/routes/tasks.py", 337), "/attempts"),
     ):
         line = next((ln for ln in body.splitlines() if ln.startswith(f"| {row}")), None)
         assert line is not None, row
@@ -254,23 +254,23 @@ def test_s7_a_remote_step_is_an_sc_remote_agent_call():
     assert "agentType: 'sc:remote'" in _line("plugin/README.md", 623)
     assert "`plugin/README.md:622`" in body
     # The batch and collect half that does exist is cited.
-    assert "def _dispatch_batch(" in _line("apps/swarm-mcp/swarm_mcp/server.py", 1337)
-    assert "`apps/swarm-mcp/swarm_mcp/server.py:1337`" in body
+    assert "def _dispatch_batch(" in _line("apps/swarm-mcp/swarm_mcp/server.py", 1520)
+    assert "`apps/swarm-mcp/swarm_mcp/server.py:1520`" in body
 
 
 def test_s10_account_add_is_the_apis_oauth_flow_not_claudeswitch():
     body = _spec("#### 2.6.1 ")
     assert f"Amended {STAMP}" in body
     assert "/v1/accounts/authorize" in body and "/v1/accounts/exchange" in body
-    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1105)
-    assert '@router.post("/authorize")' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 258)
-    assert '@router.post("/exchange"' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 285)
-    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:1105",
-                 "apps/swarm-api/swarm_api/routes/accounts.py:258",
-                 "apps/swarm-api/swarm_api/routes/accounts.py:285"):
+    assert "def cmd_account_add(" in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1112)
+    assert '@router.post("/authorize")' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 283)
+    assert '@router.post("/exchange"' in _line("apps/swarm-api/swarm_api/routes/accounts.py", 310)
+    for cite in ("apps/swarm-mcp/swarm_mcp/sc.py:1112",
+                 "apps/swarm-api/swarm_api/routes/accounts.py:283",
+                 "apps/swarm-api/swarm_api/routes/accounts.py:310"):
         assert f"`{cite}`" in body, cite
     # The command really is `sc account add --label`, and it is what the spec shows.
-    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 1944)
+    assert 'ac_sub.add_parser("add"' in _line("apps/swarm-mcp/swarm_mcp/sc.py", 2156)
     assert "sc account add --label" in body
 
 
@@ -301,12 +301,12 @@ def test_dispatch_section_records_the_hold_not_the_lease():
     from swarm_common.models import Lease
 
     assert not any("account" in f.name for f in dataclasses.fields(Lease))
-    assert "holds:" in _line("apps/quota-broker/quota_broker/accounts.py", 295)
+    assert "holds:" in _line("apps/quota-broker/quota_broker/accounts.py", 352)
     # The variable's NAME, built from pieces: no value is involved here.
     variable = "CLAUDE_CODE_OAUTH_" + "TOK" + "EN"
     cited = _line("apps/agent-worker/agent_worker/accountlease.py", 131)
     assert any(ln.startswith("ACCOUNT_") and f'"{variable}"' in ln for ln in cited.splitlines())
-    for cite in ("apps/quota-broker/quota_broker/accounts.py:295",
+    for cite in ("apps/quota-broker/quota_broker/accounts.py:352",
                  "apps/agent-worker/agent_worker/accountlease.py:131"):
         assert f"`{cite}`" in body, cite
     assert "HOLD" in body and "request 13" in body
@@ -316,9 +316,9 @@ def test_dispatch_section_records_the_hold_not_the_lease():
 def test_dashboard_section_says_it_polls_through_an_external_alb():
     body = _spec("### 2.8 ")
     assert f"Amended {STAMP}" in body
-    assert "POOLS_POLL_MS" in _line("apps/swarm-ui/src/capacityPoll.ts", 13)
+    assert "POOLS_POLL_MS" in _line("apps/swarm-ui/src/capacityPoll.ts", 15)
     assert "external Application Load Balancer" in _line("terraform/modules/frontend/main.tf", 1)
-    for cite in ("apps/swarm-ui/src/capacityPoll.ts:13", "terraform/modules/frontend/main.tf:1"):
+    for cite in ("apps/swarm-ui/src/capacityPoll.ts:15", "terraform/modules/frontend/main.tf:1"):
         assert f"`{cite}`" in body, cite
     assert "no server-sent events" in body
     assert "Kubernetes API" in body

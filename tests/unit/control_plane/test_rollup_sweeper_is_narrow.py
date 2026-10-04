@@ -52,7 +52,13 @@ SWEEPER_HEADERS = {"Authorization": "Bearer token-sweeper"}
 #: THE OWNER'S DECISION as a closed set, deliberately a literal: derived from
 #: ROLLUP_SWEEPER_ROUTES, widening that set would widen what a stolen sweeper
 #: token reaches and every test here would still pass.
-DECIDED = frozenset({("POST", "/v1/admin/workflows/rollup")})
+#: The issue-run tick (#454, owner decision "Advancing runs: swarm-api, on a
+#: Cloud Scheduler tick") was added to it on purpose: it moves only runs
+#: already in the named tenant, as their own creators.
+DECIDED = frozenset({
+    ("POST", "/v1/admin/workflows/rollup"),
+    ("POST", "/v1/admin/runs/advance"),
+})
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]
 

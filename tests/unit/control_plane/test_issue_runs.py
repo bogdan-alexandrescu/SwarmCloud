@@ -27,7 +27,13 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from swarm_api import issueruns
+from swarm_api import forge, forgewrite, issueruns
+from swarm_api.auth import StaticTokenVerifier
+from swarm_api.credentials import InMemoryCredentials
+from swarm_api.deps import build_context
+from swarm_api.groups import StaticGroups
+from swarm_api.metrics import ApiMetrics
+from swarm_api.waker import NullWaker
 from swarm_api.issueruns import (
     RUN_TRANSITIONS,
     TERMINAL_RUN_STATES,
@@ -40,7 +46,8 @@ from swarm_api.issueruns import (
 from swarm_api.schemas import RunCreate
 from swarm_api.validation import IssueRef, PullRequestReference, parse_issue_ref
 
-from .conftest import auth_header
+from . import forge_fakes
+from .conftest import api_settings, auth_header
 
 REF = "saga-xyz/widgets#42"
 BUCKET = "swarm-artifacts-saga-agents-staging"
@@ -54,6 +61,44 @@ PLAN = {
          "prompt": "Make the Name header toggle the sort."},
     ],
 }
+
+
+# --------------------------------------------------------------------------
+# fixtures: every run reads the open work, from a fake GitHub
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def github():
+    return forge_fakes.GitHub(
+        issues=[forge_fakes.issue(42, "Widgets cannot be sorted"), forge_fakes.issue(7)],
+        pulls=[forge_fakes.pull(9, "Sort helpers")],
+        files={9: ["src/widgets/sort.py"]},
+    )
+
+
+@pytest.fixture
+def forge_tokens():
+    return forge_fakes.AnyTenantTokens()
+
+
+@pytest.fixture
+def api_context(db, tokens, group_map, objects, github, forge_tokens):
+    """conftest's context, with the forge reads faked: no Secret Manager, no network."""
+    return build_context(
+        settings=api_settings(),
+        db=db,
+        verifier=StaticTokenVerifier(tokens),
+        groups=StaticGroups(group_map),
+        credentials=InMemoryCredentials(),
+        waker=NullWaker(),
+        metrics=ApiMetrics(),
+        objects=objects,
+        forge_tokens=forge_tokens,
+        forge=forge.GitHubIssues(send=github),
+        # The write-back to the issue, in memory: test_issue_writeback.py
+        # holds what it writes; here it only keeps the network out.
+        forge_writer=forgewrite.GitHubWriter(send=forge_fakes.GitHubWrites()),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -214,6 +259,17 @@ def test_auto_merge_is_refused_until_the_merge_chain_is_enabled(client, db):
     assert not _docs(db, issueruns.RUNS_COLLECTION)
 
 
+def test_auto_merge_availability_says_what_the_refusal_does():
+    # The console reads availability; POST /v1/runs enforces the refusal.
+    # They must never disagree: unavailable exactly while the refusal raises.
+    availability = issueruns.auto_merge_availability()
+    assert availability["available"] is False
+    assert availability["requires"] == "#295"
+    with pytest.raises(issueruns.AutoMergeUnavailable) as refused:
+        issueruns.refuse_auto_merge(True)
+    assert availability["reason"] == refused.value.message
+
+
 def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
     response = _create(client, runner_profile="generic")
     assert response.status_code == 422
@@ -225,11 +281,17 @@ def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
 
 def test_the_machine_is_the_one_454_names():
     assert RUN_TRANSITIONS[RunState.PLANNING] == {RunState.PLANNED, RunState.FAILED, RunState.CANCELLED}
+    # FAILED: an `auto` run whose creator left the tenant before the tick approved it.
     assert RUN_TRANSITIONS[RunState.PLANNED] == {
-        RunState.PLANNED, RunState.APPROVED, RunState.REJECTED, RunState.CANCELLED,
+        RunState.PLANNED, RunState.APPROVED, RunState.REJECTED, RunState.CANCELLED, RunState.FAILED,
     }
     assert RUN_TRANSITIONS[RunState.APPROVED] == {RunState.RUNNING, RunState.FAILED}
-    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.DONE, RunState.FAILED, RunState.CANCELLED}
+    # The workflow succeeding opens a pull request; CI decides DONE (issueci).
+    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
+    assert RUN_TRANSITIONS[RunState.CHECKING] == {
+        RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
+    }
+    assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
     assert TERMINAL_RUN_STATES == {
         RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED,
     }
@@ -476,13 +538,27 @@ def test_auto_approval_submits_the_workflow_as_soon_as_the_plan_arrives(client, 
     assert len(_docs(db, "workflows")) == 1
 
 
-def test_the_run_follows_its_workflow_to_done(client, db, objects):
+def _integrator_opened(db, workflow_id: str, number: int = 57) -> None:
+    """The workflow's `fix` step -- its integrator -- records the PR it opened."""
+    steps = db.docs[f"workflows/{workflow_id}"]["steps"]
+    (task_id,) = [s["task_id"] for s in steps if s["step_id"] == issueruns.FIX_STEP]
+    db.docs[f"tasks/{task_id}"]["result_summary"] = {"git": {"pull_request": {
+        "number": number, "url": f"https://github.com/saga-xyz/widgets/pull/{number}",
+    }}}
+
+
+def test_the_run_follows_its_workflow_to_checking_its_pull_request(client, db, objects):
+    """A workflow that succeeded is not CI that passed: test_issue_run_ci.py
+    holds CHECKING -> DONE."""
     run = _planned(client, db, objects)
     running = _approve(client, run["id"], run["plan_digest"]).json()["run"]
     for doc in _docs(db, "tasks").values():
         if doc.get("workflow_id") == running["workflow_id"]:
             doc["state"] = "SUCCEEDED"
-    assert _run(client, run["id"]).json()["run"]["state"] == "DONE"
+    _integrator_opened(db, running["workflow_id"])
+    read = _run(client, run["id"]).json()["run"]
+    assert read["state"] == "CHECKING"
+    assert read["pull_request"]["number"] == 57
 
 
 def test_the_run_follows_its_workflow_to_failed(client, db, objects):
@@ -560,8 +636,9 @@ STAGED_PLAN = {
 }
 
 #: What `compile_plan` emitted for PLAN on 2026-10-03, before `depends_on`
-#: existed. A plan with no `depends_on` anywhere must still compile to exactly
-#: this, so a plan approved before the change runs the workflow it was shown.
+#: existed, with the closing-keyword rule and the (empty) requirements list
+#: every compiled prompt now carries. A plan with no `depends_on` anywhere must
+#: compile to exactly this chain.
 CHAIN_AS_BEFORE = {
     "steps": [
         {
@@ -573,7 +650,7 @@ CHAIN_AS_BEFORE = {
                     "saga-xyz/widgets#42 (https://github.com/saga-xyz/widgets/issues/42); the "
                     "issue file named below holds the issue.\n\nThe plan: Make the widget list "
                     "sortable by name.\n\nThis step -- Add a sort key:\nAdd a name sort key to "
-                    "WidgetList.\n\nDo this step only."
+                    "WidgetList.\n\nDo this step only. " + issueruns.NO_CLOSING_KEYWORD
                 ),
                 "issue": 42,
             },
@@ -588,7 +665,7 @@ CHAIN_AS_BEFORE = {
                     "issue file named below holds the issue.\n\nThe plan: Make the widget list "
                     "sortable by name.\n\nThis step -- Wire the header:\nMake the Name header "
                     "toggle the sort.\n\nThe earlier steps' work is already on this branch. "
-                    "Do this step only."
+                    "Do this step only. " + issueruns.NO_CLOSING_KEYWORD
                 ),
                 "issue": 42,
             },
@@ -606,7 +683,8 @@ CHAIN_AS_BEFORE = {
                     "swarm-work.patch holds the last step's diff; the whole change is this "
                     "branch against the default branch. Do not edit files. Write "
                     "$SWARM_ARTIFACTS_DIR/verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", "
-                    "\"findings\": [\"one blocker per entry\"]}."
+                    "\"findings\": [\"one blocker per entry\"], \"requirements\": []}. "
+                    + issueruns.NO_CLOSING_KEYWORD
                 ),
             },
             "depends_on": ["impl-ui"],
@@ -620,7 +698,7 @@ CHAIN_AS_BEFORE = {
                 "issue": 42,
                 "prompt": (
                     "Fix every finding in verdict.json for GitHub issue saga-xyz/widgets#42. "
-                    "Change nothing else."
+                    "Change nothing else. " + issueruns.NO_CLOSING_KEYWORD
                 ),
             },
             "depends_on": ["review"],
@@ -838,6 +916,199 @@ def test_the_list_is_the_callers_tenant_newest_first_and_paged(client, db):
     ).json()
     assert [r["id"] for r in second["runs"]] == [ids[0]]
     assert second["next_page_token"] is None
+
+
+# --------------------------------------------------------------------------
+# the plan's #454 fields: requirements, overlaps, mode, files, tests, estimate
+# --------------------------------------------------------------------------
+
+FULL_PLAN = {
+    "summary": "Make the widget list sortable by name.",
+    "mode": "workflow",
+    "requirements": ["The Name header sorts the list", "The sort survives a reload"],
+    "overlaps": [{"ref": "saga-xyz/widgets#9", "kind": "pull_request",
+                  "note": "PR #9 adds sort helpers; step 1 builds on them."}],
+    "estimate": "2 agent-hours",
+    "steps": [
+        {"step_id": "sort-key", "title": "Add a sort key",
+         "prompt": "Add a name sort key to WidgetList.",
+         "files": ["src/widgets/list.py"], "tests": ["test_sorts_by_name"],
+         "estimate": "1h"},
+        {"step_id": "ui", "title": "Wire the header",
+         "prompt": "Make the Name header toggle the sort."},
+    ],
+}
+
+
+def test_a_plan_stored_before_the_new_fields_still_parses_unchanged():
+    assert issueruns.parse_plan(PLAN) == PLAN
+    # So its digest is the one it was stored with.
+    assert plan_digest(issueruns.parse_plan(PLAN)) == plan_digest(PLAN)
+
+
+def test_the_new_fields_round_trip_through_the_schema():
+    assert issueruns.parse_plan(json.dumps(FULL_PLAN)) == FULL_PLAN
+
+
+def test_adding_an_overlap_changes_the_digest():
+    without = {k: v for k, v in FULL_PLAN.items() if k != "overlaps"}
+    assert plan_digest(issueruns.parse_plan(without)) != plan_digest(
+        issueruns.parse_plan(FULL_PLAN)
+    )
+
+
+@pytest.mark.parametrize(
+    "plan,named",
+    [
+        ({**FULL_PLAN, "runner_profile": "generic"}, "runner_profile"),
+        ({**FULL_PLAN, "steps": [{**FULL_PLAN["steps"][0], "image": "evil"}]}, "image"),
+        ({**FULL_PLAN, "overlaps": [{**FULL_PLAN["overlaps"][0], "command": "x"}]}, "command"),
+    ],
+)
+def test_an_unknown_key_is_still_refused_naming_it(plan, named):
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_plan(plan)
+    assert named in refused.value.message
+
+
+@pytest.mark.parametrize(
+    "change,where",
+    [
+        ({"mode": "swarm"}, "mode"),
+        ({"overlaps": [{"ref": "not a ref", "kind": "issue", "note": "n"}]}, "overlaps"),
+        ({"overlaps": [{"ref": "a/b#1", "kind": "commit", "note": "n"}]}, "overlaps"),
+        ({"requirements": ["r"] * (issueruns.MAX_PLAN_REQUIREMENTS + 1)}, "requirements"),
+        ({"requirements": ["x" * 501]}, "requirements"),
+        ({"estimate": "x" * 201}, "estimate"),
+        ({"steps": [{**FULL_PLAN["steps"][0],
+                     "files": ["f"] * (issueruns.MAX_STEP_FILES + 1)}]}, "files"),
+        ({"steps": [{**FULL_PLAN["steps"][0], "tests": [""]}]}, "tests"),
+    ],
+)
+def test_the_new_fields_are_bounded(change, where):
+    with pytest.raises(issueruns.InvalidPlan) as refused:
+        issueruns.parse_plan({**FULL_PLAN, **change})
+    assert where in refused.value.message
+
+
+def test_a_steps_files_and_tests_reach_its_prompt_and_the_requirements_the_review():
+    spec = compile_plan(_stored_run(plan=FULL_PLAN, plan_digest=plan_digest(FULL_PLAN)))
+    by_id = {s.step_id: s for s in spec.steps}
+    first = by_id["impl-sort-key"].input["prompt"]
+    assert "src/widgets/list.py" in first
+    assert "test_sorts_by_name" in first and "write them first" in first
+    assert "Files this step" not in by_id["impl-ui"].input["prompt"]
+    review = by_id["review"].input["prompt"]
+    assert "1. The Name header sorts the list" in review
+    assert "2. The sort survives a reload" in review
+
+
+def test_a_single_mode_plan_compiles_to_the_same_shape_with_one_implementer():
+    plan = {"summary": "One change.", "mode": "single",
+            "steps": [{"step_id": "all", "title": "Do it", "prompt": "Do it all."}]}
+    spec = compile_plan(_stored_run(plan=plan, plan_digest=plan_digest(plan)))
+    assert [s.step_id for s in spec.steps] == ["impl-all", "review", "fix"]
+    assert spec.strategy == "integrate"
+
+
+def test_a_plan_with_the_new_fields_is_served_and_approvable(client, db, objects):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, FULL_PLAN)
+    planned = _run(client, run["id"]).json()["run"]
+    assert planned["state"] == "PLANNED"
+    assert planned["plan"] == FULL_PLAN
+    approved = _approve(client, run["id"], planned["plan_digest"])
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["run"]["state"] == "RUNNING"
+
+
+# --------------------------------------------------------------------------
+# the open work on the run document
+# --------------------------------------------------------------------------
+
+def test_the_open_work_is_read_with_the_tenants_token_and_stored_on_the_run(
+    client, db, github, forge_tokens
+):
+    run = _create(client).json()["run"]
+    # The open-work read, then the status comment's write-back: both the
+    # caller's own tenant's secret, and no other (test_issue_writeback.py).
+    assert set(forge_tokens.asked) == {"swarm-tenant-eng-git"}
+    token = forge_tokens.issued["swarm-tenant-eng-git"]
+    assert github.calls and all(
+        headers["Authorization"] == f"Bearer {token}" for _, headers in github.calls
+    )
+    work = run["open_work"]
+    assert work["repository"] == "saga-xyz/widgets"
+    # The planned issue is not its own overlap.
+    assert [i["number"] for i in work["issues"]] == [7]
+    assert work["pull_requests"] == [{
+        "number": 9, "title": "Sort helpers", "files": ["src/widgets/sort.py"],
+        "files_truncated": False,
+    }]
+    assert isinstance(work["read_at"], str)
+    stored = db.docs[f"{issueruns.RUNS_COLLECTION}/{run['id']}"]
+    assert stored["open_work"]["pull_requests"][0]["number"] == 9
+    # And it reaches the planner, between the run's own delimiters.
+    prompt = db.docs[f"tasks/{run['planner_task_id']}"]["input"]["prompt"]
+    marker = f"=== OPEN WORK {run['id']} ==="
+    assert prompt.count(marker) == 2
+    section = prompt.split(marker)[1]
+    assert "pull request saga-xyz/widgets#9: Sort helpers" in section
+    assert "src/widgets/sort.py" in section
+    assert "issue saga-xyz/widgets#7" in section
+    assert '"overlaps"' in prompt and '"requirements"' in prompt
+    assert token not in json.dumps(run) and token not in prompt
+
+
+@pytest.mark.parametrize(
+    "status,suffix,code,http",
+    [
+        (403, "/issues", "no_access", 403),
+        (401, "/pulls", "no_access", 403),
+        (404, "/issues", "not_found", 404),
+        (404, "/pulls/9/files", "not_found", 404),
+        (502, "/pulls", "read_failed", 502),
+    ],
+)
+def test_a_forge_refusal_refuses_the_run_and_creates_nothing(
+    client, db, github, status, suffix, code, http
+):
+    github.status[suffix] = status
+    response = _create(client)
+    assert response.status_code == http, response.text
+    assert response.json()["code"] == code
+    assert not _docs(db, "tasks")
+    assert not _docs(db, issueruns.RUNS_COLLECTION)
+
+
+def test_a_tenant_with_no_git_secret_cannot_create_a_run(client, db, forge_tokens):
+    forge_tokens.missing.add("swarm-tenant-eng-git")
+    response = _create(client)
+    assert response.status_code == 409
+    assert response.json()["code"] == "no_forge_credential"
+    assert not _docs(db, "tasks")
+    assert not _docs(db, issueruns.RUNS_COLLECTION)
+
+
+def test_a_run_stored_before_the_open_work_read_still_loads():
+    stored = _stored_run().to_firestore()
+    del stored["open_work"]
+    loaded = issueruns.IssueRun.from_firestore(stored)
+    assert loaded.open_work is None
+    assert loaded.to_api()["open_work"] is None
+
+
+def test_the_open_work_round_trips_through_the_document():
+    now = datetime.now(timezone.utc)
+    work = {"repository": "saga-xyz/widgets", "read_at": now,
+            "issues": [{"number": 7, "title": "t"}], "issues_truncated": True,
+            "pull_requests": [], "pull_requests_truncated": False}
+    run = _stored_run(open_work=work)
+    loaded = issueruns.IssueRun.from_firestore(run.to_firestore())
+    assert loaded.open_work == work
+    served = loaded.to_api()["open_work"]
+    assert served["read_at"] == now.isoformat()
+    assert served["issues_truncated"] is True
 
 
 def test_a_join_stages_every_ancestor_its_base_branch_does_not_carry(client, db, objects):

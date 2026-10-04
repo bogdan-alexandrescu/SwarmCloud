@@ -201,13 +201,13 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
 
-.rn-plan, .rn-overlaps, .rn-risks, .rn-history, .rn-card {
+.rn-plan, .rn-risks, .rn-history, .rn-card {
   display: grid; gap: 8px; min-width: 0;
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface);
   padding: 12px 14px;
 }
-.rn-plan h3, .rn-overlaps h3, .rn-risks h3, .rn-history h3, .rn-card h3 {
+.rn-plan h3, .rn-risks h3, .rn-history h3, .rn-card h3 {
   margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text);
 }
 .rn-digest { font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; }
@@ -220,7 +220,26 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
 .rn-prompt { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
-.rn-overlaps .sb-note, .rn-plan .sb-note { margin: 0; }
+.rn-overlaps .sb-note, .rn-plan .sb-note, .rn-ci .sb-note { margin: 0; }
+
+/* The overlaps and the CI are canonical cards (components.css); only their
+   insides are laid out here. Found overlaps take the warn edge: the issue's
+   acceptance test is that the plan names them, so they are not quiet. */
+.rn-overlaps.is-found { border-color: var(--warn-ink); }
+.rn-overlap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.rn-overlap {
+  display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.rn-overlap a, .rn-ci a { color: var(--sk-ac); }
+.rn-overlap-note { overflow-wrap: anywhere; color: var(--text-dim); }
+.rn-plan-facts { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.rn-sub { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+.rn-reqs-wrap { display: grid; gap: 4px; }
+.rn-reqs { margin: 0; padding-left: 20px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.rn-ci .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
+.rn-ci .ctl-fact { justify-content: space-between; gap: 12px; }
+.rn-excerpt { min-width: 0; overflow-x: auto; }
 
 .rn-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 

@@ -626,6 +626,32 @@ class Authenticator:
             tenant_choices=self._tenant_choices(member_groups),
         )
 
+    def is_tenant_member(self, email: str, tenant: Any) -> bool:
+        """Whether `email` belongs to `tenant` NOW, asked of the directory again.
+
+        For work submitted on a member's behalf with nobody on the call -- an
+        issue run's auto approval and its CI fix rounds (`routes.runs.
+        run_owner_auth`) -- which may come long after that member was removed
+        from the tenant's group (invariant 9). A group tenant asks Cloud
+        Identity about its ONE stored group, the same per-group check every
+        request's tenant resolution makes; a personal tenant is its own
+        address. A lookup that fails is a 503, never a guess either way.
+        """
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+        principal = (getattr(tenant, "principal", "") or "").strip().lower()
+        if getattr(tenant, "kind", "") != "group":
+            return principal == email
+        try:
+            held = self._groups.groups_for(email, (principal,))
+        except GroupLookupError as exc:
+            log.warning("tenant membership unresolved for %s: %s", email, exc)
+            raise UpstreamUnavailable(
+                "group membership could not be resolved; retry shortly"
+            ) from None
+        return principal in {g.lower() for g in held}
+
     def _tenant_choices(self, member_groups: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
         """(tenant_id, group) for every registered tenant group in `member_groups`.
 
@@ -746,9 +772,17 @@ POOL_ADMIN_ROUTES: frozenset[tuple[str, str]] = frozenset(
 #: `PUT /v1/admin/tenants/{tenant_id}/limits`, which disables a tenant.
 #: tests/unit/control_plane/test_rollup_sweeper_is_narrow.py holds this set
 #: equal to the decided one and sweeps every authenticated route against it.
+#:
+#: And the issue-run tick (#454, terraform jobs.tf `issue_run_advance`): it
+#: moves one tenant's live issue runs as far as their tasks say, which a run
+#: nobody reads -- and an `auto` run's approval -- otherwise waits on for
+#: ever. What it can submit is bounded by the run documents, not the caller:
+#: only an `auto` run's own stored plan, in the run's own tenant, as the
+#: member who created it (`routes.runs.run_owner_auth`).
 ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
     {
         ("POST", "/v1/admin/workflows/rollup"),
+        ("POST", "/v1/admin/runs/advance"),
     }
 )
 
