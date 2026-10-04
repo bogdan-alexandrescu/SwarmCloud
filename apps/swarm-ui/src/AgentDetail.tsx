@@ -67,6 +67,7 @@ import {
   type TaskInputCopy,
   type Tone,
 } from './types'
+import './styles/details.css'
 
 /**
  * ONE AGENT RUN, IN FULL.

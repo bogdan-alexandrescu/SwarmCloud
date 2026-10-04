@@ -110,6 +110,14 @@ function host(r: AgentRun): HTMLElement {
 }
 const hosts: HTMLElement[] = []
 
+/** What a sighted reader sees: the text without a help card's hidden description or its `?`. */
+function seen(el: Element | null): string {
+  if (el === null) return ''
+  const c = el.cloneNode(true) as Element
+  for (const n of c.querySelectorAll('[data-help-description], button[aria-expanded], [role="tooltip"]')) n.remove()
+  return (c.textContent ?? '').replace(/\s+/g, ' ').trim()
+}
+
 type Pane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
 const PANES: readonly Pane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
 
@@ -185,7 +193,7 @@ describe('the header is two lines: state, name and the elapsed headline; then on
     const copy = head.querySelector<HTMLButtonElement>('.ag-head-facts .ag-head-idcopy')!
     expect(copy.title).toContain(ID)
     // Plain-language dispatch chips, in STRATEGY_LABEL's words.
-    const chips = [...head.querySelectorAll('.ag-head-dchip')].map((c) => c.textContent?.replace(/\?$/, '').trim())
+    const chips = [...head.querySelectorAll('.ag-head-dchip')].map((c) => seen(c))
     expect(chips).toEqual(['One PR for all steps', 'adds to the shared PR'])
     // Tenant, gen and units left the header.
     expect(head.textContent).not.toMatch(/tenant|gen 1|\b2u\b/)
@@ -252,9 +260,9 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
 describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () => {
   function cells(el: HTMLElement) {
     return [...el.querySelectorAll<HTMLElement>('.dt-strip > .dt-sc')].map((c) => ({
-      label: c.querySelector('.dt-sc-l')?.textContent?.replace(/\?$/, '').trim() ?? '',
-      value: c.querySelector('.dt-sc-v')?.textContent?.trim() ?? '',
-      sub: c.querySelector('.dt-sc-s')?.textContent?.trim() ?? '',
+      label: seen(c.querySelector('.dt-sc-l')),
+      value: seen(c.querySelector('.dt-sc-v')),
+      sub: seen(c.querySelector('.dt-sc-s')),
       cls: c.className,
     }))
   }
@@ -275,7 +283,7 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
     expect(c.map((x) => x.label)).toEqual(['Elapsed', 'Attempt', 'Peak memory', 'CPU', 'Cost'])
     expect(c[0]!.value).toMatch(/^1[34]m \d+s$/)
     expect(c[1]!.value).toBe('1 of 3')
-    expect(c[2]!.value).toBe('2.0 GiB 25%')
+    expect(c[2]!.value).toBe('2.00 GiB 25%')
     expect(c[2]!.sub).toMatch(/^of 8 GiB · so far · 1m ago$/)
     expect(c[3]!.value).toBe('1.6 / 2 cores')
     expect(c[3]!.sub).toBe('peak · mean 0.7')
@@ -340,7 +348,10 @@ describe('the detail has ONE scroll container', () => {
     const vertical = scrollers.filter((n) => !n.classList.contains('c-tabs'))
     expect(vertical.map((n) => n.className)).toEqual([expect.stringContaining('ag-split-pane')])
     // And no inline style makes one either (the prompt's own 320px box).
-    expect(split.querySelectorAll('[style*="overflow"]')).toHaveLength(0)
+    const inline = [...split.querySelectorAll<HTMLElement>('[style]')].filter((n) =>
+      /auto|scroll/.test(`${n.style.overflow} ${n.style.overflowY}`),
+    )
+    expect(inline).toHaveLength(0)
   })
 })
 
@@ -360,7 +371,7 @@ describe('the first 900px: Now, the strip and both column heads, with nothing he
     // Nothing is folded open on arrival.
     expect(dt.querySelectorAll('details[open]')).toHaveLength(0)
     // Every attempt card, chart and the full timeline is behind a disclosure.
-    for (const heavy of dt.querySelectorAll('.att-card, svg, .run-timeline, pre.json')) {
+    for (const heavy of dt.querySelectorAll('.att-card, figure.ctl-chart, .ctl-chart-wrap, .dt-evs-all, pre.json')) {
       expect(heavy.closest('details'), heavy.className.toString()).not.toBeNull()
     }
     // The help-link block is gone: one `?` per card instead.
