@@ -306,9 +306,11 @@ the token therefore needs:
 | `Pull requests: Read and write` | opening the pull request (unchanged), reading its head sha, writing its body's keyword block |
 | `Issues: Read and write` | the plan comment and the status comment |
 | `Checks: Read` | the CI loop reading the required checks at the head sha |
+| `Commit statuses: Read` | the CI loop reading a required check reported as a commit status (`forgewrite.STATUSES_READ`) |
 | `Actions: Read` | the CI loop reading a failing run's log excerpt |
 
-A classic token's `repo` scope carries all five. **Without `Issues: write` the
+A classic token's `repo` scope carries all six. Why the run is built this way
+is in [issue-runs.md](issue-runs.md#the-tenants-credential-and-what-it-must-be-allowed). **Without `Issues: write` the
 run still runs**: the write-back never fails or blocks a run, because the run's
 truth is its Firestore document, not the comment. The failure is recorded on
 the run as `writeback_error` — code `writeback_forbidden`, with a sentence

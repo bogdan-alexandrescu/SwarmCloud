@@ -232,6 +232,34 @@ def test_red_then_green_after_round_two_is_done(client, db, objects, writes, clo
     ]
 
 
+def test_a_run_without_auto_merge_stops_at_a_green_pull_request_and_never_merges(
+    client, db, objects, writes, clock,
+):
+    """#454: "Off is the default, and a run without it never merges"."""
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+    _read(client, clock, running["id"])
+    (round_one,) = _rounds(db, running["id"])
+    _round_ends(db, round_one)
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", "success")
+
+    run = _read(client, clock, running["id"])
+    after = _read(client, clock, running["id"])
+
+    assert run["auto_merge"] is False
+    assert run["state"] == after["state"] == "DONE" and run["green_sha"] == SHA_B
+    assert _stored(db, running["id"])["pull_request"]["merged"] is False
+    # Nothing it ran could merge: every task -- the compiled workflow's and
+    # the fix round's -- is a claude-code step publishing through a pull
+    # request, never `single-pr` and never the `merge` profile.
+    tasks = [doc for doc in _docs(db, "tasks").values() if doc.get("workflow_id")]
+    assert tasks and {t["runner_profile"] for t in tasks} == {"claude-code"}
+    assert {t["metadata"]["dispatch"]["strategy"] for t in tasks} <= {"integrate", "direct-pr"}
+    # And swarm-api itself asked GitHub to merge nothing.
+    assert not [path for method, path in writes.writes() if method == "PUT" or path.endswith("/merge")]
+
+
 def test_the_next_round_waits_for_ci_on_the_new_head(client, db, objects, writes, clock):
     running = _to_checking(client, db, objects, writes, clock)
     writes.check(SHA_A, "unit", "failure")

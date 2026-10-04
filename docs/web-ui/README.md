@@ -64,6 +64,10 @@ The eight numbered files above are the feature specification — what could be
 built, and what blocks each screen. Four more files answer different questions
 and are read on their own:
 
+* Issue runs (#454) — the issue form and `Work › Runs` are
+  [03-agents-and-workflows.md §6](03-agents-and-workflows.md#6-issue-runs-submit-from-a-github-issue-and-work--runs-454);
+  why runs work as they do is [docs/issue-runs.md](../issue-runs.md).
+
 * [`agent-inspector-artifacts.md`](agent-inspector-artifacts.md) — the agent
   drawer's Artifacts pane (inputs, the answer, every file, logs and the
   transcript, live) and the CPU rows in Details (#184): where each figure comes

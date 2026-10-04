@@ -178,7 +178,8 @@ a manual environment approval — no downloadable service-account keys exist.
 [`multi-tenancy`](docs/multi-tenancy.md) · [`security`](docs/security.md) ·
 [`operations`](docs/operations.md) · [`cost control`](docs/cost-control.md) ·
 [`troubleshooting`](docs/troubleshooting.md) · [`testing`](docs/testing.md) ·
-[`benchmarks`](docs/benchmarks.md)
+[`benchmarks`](docs/benchmarks.md) ·
+[`issue runs`](docs/issue-runs.md) — a GitHub issue in, a planned, CI-green pull request out
 
 [`CONTRACT.md`](CONTRACT.md) holds the invariants every component must respect.
 

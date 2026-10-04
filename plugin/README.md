@@ -913,7 +913,9 @@ estimates. The plan waits, holding no capacity, until someone approves it;
 then it compiles into one workflow that opens a pull request, and the platform
 reads that pull request's CI and runs up to three fix rounds (`--fix-rounds`).
 The issue carries a plan comment and one status comment the platform keeps up
-to date.
+to date. Why it works this way -- the digest, the tick, the fix-round cap,
+`Closes` against `part of`, and why auto-merge is refused -- is in
+[docs/issue-runs.md](../docs/issue-runs.md).
 
 | Surface | Create | Read | Act on the plan |
 |---|---|---|---|

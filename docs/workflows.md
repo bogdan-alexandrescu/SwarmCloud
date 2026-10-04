@@ -531,7 +531,9 @@ What each step does, and why each field is there:
   `"requirements": [{"index", "met", "note"}]` in the same file: swarm-api
   reads that list when the pull request opens, and the pull request says
   `Closes #N` only when every planned requirement is answered `met: true`
-  (`swarm_api/issueci.py`, `evaluate_requirements`).
+  (`swarm_api/issueci.py`, `evaluate_requirements`;
+  [issue-runs.md](issue-runs.md#closes-n-only-when-the-review-confirmed-every-requirement)
+  says why).
 * **`when` gates the AGENT, not the step.** The gated step runs whatever the
   verdict, because it is the step that publishes: if it were skipped on
   MERGE, the reviewed work would never reach a pull request. When the verdict
@@ -830,7 +832,11 @@ watching -- and every `plan_approval: auto` run -- still advances and is
 written back to its issue. A PLANNED run waiting for a person is not read and
 nothing is created for it (invariant 1). An `auto` approval is submitted in the
 run's own tenant as the member who created the run (`routes/runs.py`
-`run_owner_auth`), never as the sweeper, which holds no tenant.
+`run_owner_auth`), never as the sweeper, which holds no tenant. An issue run
+compiles its approved plan into one `integrate` workflow of this shape --
+implementers, a review, a gated fix -- and continues that workflow's integrator
+for each CI fix round; why, and how to read a stuck run, is in
+[issue-runs.md](issue-runs.md).
 
 So the stored copy of a workflow nobody reads lags its steps by at most one
 schedule interval plus a sweep, and a reader never sees the lag at all. Two
