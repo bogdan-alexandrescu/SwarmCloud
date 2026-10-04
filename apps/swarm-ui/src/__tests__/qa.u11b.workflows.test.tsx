@@ -189,8 +189,10 @@ describe('D12: names one line, numbers sized to what they hold', () => {
     const row = t.querySelector('tbody tr[data-step]')!
     for (const [col, text] of [['attempts', '10 of 10'], ['inputs', '12 files']] as const) {
       const td = row.querySelector(`td[data-col="${col}"]`)
-      if (td === null) continue
-      const box = cols.find((c) => c.col === col)!
+      expect(td, `no ${col} cell: the case would pass without measuring anything`).not.toBeNull()
+      const box = cols.find((c) => c.col === col)
+      expect(box, `no ${col} column head`).toBeDefined()
+      if (td === null || box === undefined) return
       const st = cellStyle(td, env)
       expect(box.end - box.start - st.pl - st.pr, col).toBeGreaterThanOrEqual(textPx(text, td, env))
     }

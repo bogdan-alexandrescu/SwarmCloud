@@ -48,7 +48,7 @@ const api = vi.hoisted(() => ({
 vi.mock('../api', () => ({ ...api, TASK_PAGE_LIMIT: 200 }))
 
 const Overview = await import('../Overview')
-const { RecentFailures } = await import('../OverviewRegions')
+const { RecentFailures, failuresOf } = await import('../OverviewRegions')
 const { newestFailureClause } = await import('../checks')
 
 const WIDE: CascadeEnv = { width: 1440 }
@@ -105,6 +105,25 @@ describe('N4: a failure\'s age is when it ended', () => {
     const dash = age.querySelector('.c-dash')!
     expect(dash, 'no dash').not.toBeNull()
     expect(dash.getAttribute('title')).toMatch(/no end time was recorded/i)
+  })
+
+  it('windows and orders on the END: a task that ended days ago is not "last 24h" because a later write bumped it', () => {
+    const now = Date.now()
+    const old = task({ id: 'tsk_old', state: 'FAILED', completed_at: ago(3 * 24 * 60), updated_at: ago(60) })
+    const recent = task({ id: 'tsk_new', state: 'FAILED', completed_at: ago(120), updated_at: ago(120) })
+    const earlier = task({ id: 'tsk_mid', state: 'DEAD_LETTERED', completed_at: ago(600), updated_at: ago(5) })
+    const { rows, note } = failuresOf([old, earlier, recent], now)
+    expect(rows.map((t) => t.id)).toEqual(['tsk_new', 'tsk_mid'])
+    expect(note).toBe('last 24h · 1 failed · 1 dead-lettered')
+  })
+
+  it('lists a task with no recorded end after the dated rows and counts it apart', () => {
+    const now = Date.now()
+    const unended = task({ id: 'tsk_unended', state: 'FAILED', completed_at: null, updated_at: ago(1) })
+    const dated = task({ id: 'tsk_dated', state: 'FAILED', completed_at: ago(300), updated_at: ago(300) })
+    const { rows, note } = failuresOf([unended, dated], now)
+    expect(rows.map((t) => t.id)).toEqual(['tsk_dated', 'tsk_unended'])
+    expect(note).toBe('last 24h · 1 failed · 0 dead-lettered · 1 with no recorded end')
   })
 
   it('dates Needs a look\'s failed-task card from the newest END', () => {

@@ -117,10 +117,13 @@ describe('N13: the summary follows Plan approval', () => {
     expect(visible(send)).toMatch(/until the plan is approved/)
     fireEvent.click(screen.getByRole('radio', { name: 'Auto' }))
     const auto = visible(send)
-    expect(visible(fact(send, 'plan'))).toMatch(/approved as soon as it is read/)
+    expect(visible(fact(send, 'plan'))).toMatch(/approved as soon as it is written/)
     expect(auto).not.toMatch(/until the plan is approved/)
     expect(auto).not.toMatch(/waits for approval/)
     expect(visible(fact(send, 'lands as'))).toMatch(/then RUNNING/)
+    // Planning leases capacity (the planner is an ordinary task); only PLANNED is free.
+    expect(visible(fact(send, 'lands as'))).not.toMatch(/planning holds no capacity/i)
+    expect(visible(fact(send, 'lands as'))).toMatch(/only the planner and the workflow's steps hold capacity/)
   })
 })
 

@@ -235,21 +235,37 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** The failed, dead-lettered and cancelled rows of the last 24 hours, newest first. */
+/**
+ * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
+ * first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
+ * 2026-10-04): `updated_at` is bumped by any later write, so a task that ended
+ * days ago with no recorded end was listed and counted as "last 24h". A
+ * terminal task with no recorded end is listed after the dated rows and
+ * counted on its own in the note -- it is not known to be inside the window.
+ */
 export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; note: string } {
-  const when = (t: Task) => new Date(t.completed_at ?? t.updated_at).getTime()
-  const rows = all
-    .filter((t) => t.state === 'FAILED' || t.state === 'DEAD_LETTERED' || t.state === 'CANCELLED')
-    .filter((t) => now - when(t) <= DAY_MS)
-    .sort((a, b) => when(b) - when(a))
-  const n = (s: TaskState) => rows.filter((t) => t.state === s).length
+  const ended = (t: Task): number | null => {
+    if (t.completed_at === null) return null
+    const ms = new Date(t.completed_at).getTime()
+    return Number.isFinite(ms) ? ms : null
+  }
+  const terminal = all.filter((t) => t.state === 'FAILED' || t.state === 'DEAD_LETTERED' || t.state === 'CANCELLED')
+  const dated = terminal
+    .filter((t) => {
+      const ms = ended(t)
+      return ms !== null && now - ms <= DAY_MS
+    })
+    .sort((a, b) => (ended(b) ?? 0) - (ended(a) ?? 0))
+  const undated = terminal.filter((t) => ended(t) === null)
+  const n = (s: TaskState) => dated.filter((t) => t.state === s).length
   const note = [
     'last 24h',
     `${n('FAILED')} failed`,
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(n('CANCELLED') > 0 ? [`${n('CANCELLED')} cancelled`] : []),
+    ...(undated.length > 0 ? [`${undated.length} with no recorded end`] : []),
   ].join(' · ')
-  return { rows, note }
+  return { rows: [...dated, ...undated], note }
 }
 
 /**

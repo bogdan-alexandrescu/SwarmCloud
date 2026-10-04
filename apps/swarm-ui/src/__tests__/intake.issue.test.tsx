@@ -308,7 +308,7 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     fireEvent.click(screen.getByRole('radio', { name: /Auto/ }))
     fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '5' } })
     // The wording follows the choice now (browser QA N13, qa.u11b.submit.test.tsx).
-    expect(side()).toContain('approved as soon as it is read')
+    expect(side()).toContain('approved as soon as it is written')
     expect(side()).toContain('up to 5')
   })
 })

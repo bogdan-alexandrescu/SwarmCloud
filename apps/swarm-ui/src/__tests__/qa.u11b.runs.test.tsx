@@ -191,6 +191,48 @@ describe('N15: a finished run names the pull request its workflow opened', () =>
   })
 })
 
+describe('N15: the CI note is true of the run it is drawn on', () => {
+  const prFact = (container: HTMLElement) =>
+    [...within(container).getByRole('region', { name: 'Linked' }).querySelectorAll('.ctl-fact')]
+      .find((li) => visible(li.querySelector('b')) === 'Pull request')!
+
+  it('never tells a rejected run it was "created before the CI loop"', async () => {
+    const { container } = await mount(run({ state: 'REJECTED', terminal: true, workflow_id: null, pull_request: null, rejected_by: 'operator@example.com' }))
+    const ci = await waitFor(() => {
+      const c = container.querySelector('.rn-ci')
+      expect(c).not.toBeNull()
+      return c!
+    }, WAIT)
+    expect(visible(ci)).not.toMatch(/before the CI loop|never read its pull request/i)
+    expect(visible(ci)).toMatch(/no pull request was opened/i)
+    expect(visible(ci)).toMatch(/plan was rejected/i)
+  })
+
+  it('says the workflow opened none when its integrator recorded no PR', async () => {
+    const noPr = { ...WORKFLOW_READ, tasks: WORKFLOW_READ.tasks.map((t) => ({ ...t, result_summary: null })) }
+    const { container } = await mount(run({ state: 'FAILED', terminal: true, workflow_id: WF, pull_request: null }), noPr)
+    const ci = await waitFor(() => {
+      const c = container.querySelector('.rn-ci')
+      expect(c).not.toBeNull()
+      return c!
+    }, WAIT)
+    expect(visible(ci)).not.toMatch(/before the CI loop/i)
+    expect(visible(ci)).toMatch(/workflow ended without one/i)
+  })
+
+  it('draws a dash with its reason, never "none recorded", when the workflow could not be read', async () => {
+    // The workflow URL answers 404 (no workflow body served).
+    const { container } = await mount(run({ state: 'DONE', terminal: true, workflow_id: WF, pull_request: null }))
+    const dash = await waitFor(() => {
+      const d = prFact(container).querySelector('.c-dash')
+      expect(d).not.toBeNull()
+      return d!
+    }, WAIT)
+    expect(visible(prFact(container))).not.toMatch(/none recorded/)
+    expect(dash.getAttribute('title')).toMatch(/could not be read/)
+  })
+})
+
 describe('N18: inline code and one ellipsis', () => {
   it('draws backticked text as code in the lead, the requirements and the prompts', async () => {
     const { container } = await mount(run())

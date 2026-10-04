@@ -4,6 +4,7 @@ import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Banner, Button, Card, Chip, CodeBlock, WarnMark } from './components'
+import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
@@ -1005,30 +1006,53 @@ function CommentFact({ label, name, url, absent }: { label: string; name: string
  * same reading the Workflows screen draws). Null until read, or when the run
  * names its own PR or no workflow.
  */
-function useWorkflowPullRequest(run: IssueRun): WorkflowPullRequest | null {
-  const [found, setFound] = useState<{ wf: string; pr: WorkflowPullRequest | null } | null>(null)
+/**
+ * What the workflow read said about its pull request. `none` when nothing was
+ * asked (the run names its own PR, or it has no workflow); `reading` and
+ * `error` are unknowns, and an unknown is never drawn as "none".
+ */
+type WfPrRead =
+  | { kind: 'none' }
+  | { kind: 'reading' }
+  | { kind: 'error'; why: string }
+  | { kind: 'read'; pr: WorkflowPullRequest | null }
+
+function useWorkflowPullRequest(run: IssueRun): WfPrRead {
+  const [found, setFound] = useState<{ wf: string; read: WfPrRead } | null>(null)
   const wf = (run.pull_request ?? null) === null ? run.workflow_id : null
   useEffect(() => {
     if (wf === null || found?.wf === wf) return
     let live = true
     void loadWorkflow(wf).then((r) => {
       if (!live) return
-      const data = r.status === 'ok' || r.status === 'stale' ? r.data : null
-      const pr = data === null ? null : workflowPullRequest(data.workflow, new Map(data.tasks.map((t) => [t.id, t])))
-      setFound({ wf, pr })
+      if (r.status === 'ok' || r.status === 'stale') {
+        const pr = workflowPullRequest(r.data.workflow, new Map(r.data.tasks.map((t) => [t.id, t])))
+        setFound({ wf, read: { kind: 'read', pr } })
+      } else if (r.status === 'error') {
+        setFound({ wf, read: { kind: 'error', why: r.error.message } })
+      } else if (r.status !== 'loading') {
+        setFound({ wf, read: { kind: 'read', pr: null } })
+      }
     })
     return () => {
       live = false
     }
   }, [wf])
-  return wf !== null && found?.wf === wf ? found.pr : null
+  if (wf === null) return { kind: 'none' }
+  return found?.wf === wf ? found.read : { kind: 'reading' }
+}
+
+/** The PR the workflow's integrator opened, once read; null otherwise. */
+function prOf(read: WfPrRead): WorkflowPullRequest | null {
+  return read.kind === 'read' ? read.pr : null
 }
 
 /** The run's pull request: a link once the workflow opened one. */
-function PullRequestFact({ run, wfPr }: { run: IssueRun; wfPr: WorkflowPullRequest | null }) {
+function PullRequestFact({ run, wfPr: read }: { run: IssueRun; wfPr: WfPrRead }) {
   const pr = run.pull_request ?? null
   const url = githubLink(pr?.url)
   const label = pr?.number === null || pr?.number === undefined ? 'pull request' : `#${pr.number}`
+  const wfPr = prOf(read)
   if (pr === null && wfPr !== null) {
     const title = `#${wfPr.number}, read from the workflow's integrator result (step ${wfPr.stepId}); the run itself records no pull request.`
     return (
@@ -1040,12 +1064,26 @@ function PullRequestFact({ run, wfPr }: { run: IssueRun; wfPr: WorkflowPullReque
       </li>
     )
   }
+  // AN UNREAD WORKFLOW IS AN UNKNOWN, NOT "NONE" (review of U11b N15): while
+  // the workflow is being read, or after its read failed, whether it opened a
+  // pull request is not known.
+  if (pr === null && (read.kind === 'reading' || read.kind === 'error')) {
+    const why = read.kind === 'reading'
+      ? 'The run records no pull request; its workflow is still being read for the one its integrator opened.'
+      : `The run records no pull request, and its workflow could not be read for the one its integrator opened: ${read.why}`
+    return (
+      <li className="ctl-fact is-absent">
+        <b>Pull request</b>
+        <Dash why={why} />
+      </li>
+    )
+  }
   const none = run.terminal ? 'none recorded' : 'none yet · the workflow opens it'
   return (
     <li className={pr === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
       <b>Pull request</b>
       {pr === null
-        ? <i className="ctl-em" title={run.terminal ? 'Neither the run nor its workflow recorded a pull request.' : 'None yet: the workflow opens it.'}>{none}</i>
+        ? <i className="ctl-em" title={run.terminal ? (run.workflow_id === null ? 'The run started no workflow, so no pull request was opened.' : 'Neither the run nor its workflow recorded a pull request.') : 'None yet: the workflow opens it.'}>{none}</i>
         : url === null ? <span className="mono" title={label}>{label}</span>
           : <a href={url} target="_blank" rel="noreferrer" className="mono" title={url}>{label}</a>}
     </li>
@@ -1065,19 +1103,36 @@ function hasCi(run: IssueRun): boolean {
  * keyword the requirements finding chose, and a FAILED run's excerpt -- the
  * server's redacted text, drawn as text.
  */
-function CiCard({ run, go, wfPr }: { run: IssueRun; go: (to: string) => void; wfPr: WorkflowPullRequest | null }) {
+function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => void; wfPr: WfPrRead }) {
   if (!hasCi(run)) {
     // A FINISHED RUN DRAWS THE CARD ANYWAY (browser QA N15): no card at all
     // read as "nothing to say", on a run whose workflow opened a PR. The CI
-    // loop records checks on the run; a run it never read says so.
+    // loop records checks on the run; a run it never read says so. "Created
+    // before the CI loop" is said ONLY where a pull request exists to have
+    // been read (review of U11b N15): a rejected run, a failed planner or a
+    // run cancelled before its workflow opened nothing for CI to check.
     if (!run.terminal) return null
+    const wfPr = prOf(read)
+    let note: string | null
+    if (wfPr !== null) {
+      note = `No CI recorded for this run: the CI loop never read its pull request (#${wfPr.number}, opened by the workflow), which is how a run created before the CI loop ends.`
+    } else if (read.kind === 'reading') {
+      note = null
+    } else if (read.kind === 'error') {
+      note = `No CI recorded for this run, and its workflow could not be read to say whether it opened a pull request: ${read.why}`
+    } else if (run.workflow_id === null) {
+      const why = run.state === 'REJECTED' ? 'the plan was rejected'
+        : run.state === 'CANCELLED' ? 'the run was cancelled'
+          : run.state === 'FAILED' ? 'the run failed'
+            : 'the run ended'
+      note = `No pull request was opened, so there is no CI to read: ${why} before any workflow started.`
+    } else {
+      note = 'No pull request was opened: the workflow ended without one, so there is no CI to read.'
+    }
+    if (note === null) return null
     return (
       <Card level={3} className="rn-ci" title="Pull request and checks">
-        <p className="sb-note">
-          No CI recorded for this run: the CI loop never read its pull request
-          {wfPr !== null ? ` (#${wfPr.number}, opened by the workflow)` : ''}, which is how a run created before the CI
-          loop ends.
-        </p>
+        <p className="sb-note">{note}</p>
       </Card>
     )
   }

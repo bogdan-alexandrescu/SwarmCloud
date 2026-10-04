@@ -358,10 +358,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             {/* THE SUMMARY FOLLOWS THE CHOICE (browser QA N13, 2026-10-04): on
                 Auto it said "runs straight on" beside "lands as PLANNING,
                 then PLANNED" and "nothing else runs until the plan is
-                approved". Each line below reads `approval`. */}
+                approved". Each line below reads `approval`. Planning is not
+                free: the planner is an ordinary task that leases capacity, as
+                RUNNING's steps do; only PLANNED holds nothing (invariant 1). */}
             <li className="ctl-fact">
               <b>plan</b>
-              {approval === 'required' ? 'waits for approval' : 'approved as soon as it is read'}
+              {approval === 'required' ? 'waits for approval' : 'approved as soon as it is written'}
             </li>
             <li className="ctl-fact">
               <b>auto-merge</b>
@@ -379,7 +381,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>lands as</b>
               {approval === 'required'
                 ? 'PLANNING, then PLANNED · a planned run holds no capacity'
-                : 'PLANNING, then PLANNED, approved on the next tick, then RUNNING · planning holds no capacity'}
+                : 'PLANNING, then PLANNED, approved on the next tick, then RUNNING · only the planner and the workflow\'s steps hold capacity'}
             </li>
           </ul>
           <Button type="submit" kind="primary" full disabled={blocked}>
@@ -388,7 +390,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           <p className="sb-note">
             {approval === 'required'
               ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
-              : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is read and the work starts without anyone being asked.'}
+              : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is written and the work starts without anyone being asked.'}
           </p>
           {sending.kind === 'failed' && (
             <>
