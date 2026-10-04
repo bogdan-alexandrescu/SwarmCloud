@@ -4,10 +4,11 @@ import {
   useRef,
   useState,
   type PointerEvent as ReactPointerEvent,
+  type ReactNode,
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy, Mark } from './AgentDetail'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadTask } from './api'
 import type { TaskPane } from './App'
@@ -107,11 +108,13 @@ export function AgentSplit({
     }
   }
 
-  // THE CHILDREN TAB HAS NO ADDRESS OF ITS OWN YET. The pane segments are
-  // `paths.ts`'s `TASK_PANES`, which is outside this lane; until it carries
-  // `children`, the tab is chosen here and any routed tab click leaves it.
-  const [children, setChildren] = useState(false)
-  useEffect(() => setChildren(false), [pane, taskId])
+  // THE CHECKPOINTS TAB'S COUNT IS THE LISTING'S (U10a D21, owner QA
+  // 2026-10-04): the tab said `–` while its pane said `found 1 of 1`. The
+  // task document does not count checkpoints, so the count is known once the
+  // pane has read the listing, and it is that read's number, for this agent.
+  const [ckpts, setCkpts] = useState<{ taskId: string; n: number } | null>(null)
+  const onCheckpoints = useCallback((n: number | null) => setCkpts(n === null ? null : { taskId, n }), [taskId])
+  const ckptCount = ckpts !== null && ckpts.taskId === taskId ? ckpts.n : null
 
   // THE HEADER'S OWN READ of the task document, at the detail's cadence, so
   // the state pill, the name and Stop are there on every tab -- not only on
@@ -202,8 +205,10 @@ export function AgentSplit({
   }
 
   const phone = phoneWidth()
-  const tabs: { id: TaskPane | 'children'; label: string; count: number | null; say: string | null; to: string | null }[] = [
+  const tabs: { id: TaskPane; label: string; count: number | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
+    // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
+    // other pane has one, so the tab moves the URL and a link can open it.
     ...(task !== null && offersChildren(task)
       ? [
           {
@@ -211,7 +216,7 @@ export function AgentSplit({
             label: 'Children',
             count: childCount,
             say: childCount === null ? 'The children read has not answered, so their count is not known.' : null,
-            to: null,
+            to: `${base}/children`,
           },
         ]
       : []),
@@ -235,12 +240,15 @@ export function AgentSplit({
     {
       id: 'checkpoints',
       label: 'Checkpoints',
-      count: null,
-      say: 'The task document does not count checkpoints; the tab reads the listing.',
+      count: ckptCount,
+      say:
+        ckptCount === null
+          ? 'The task document does not count checkpoints: the count is the listing’s, once the Checkpoints tab has read it.'
+          : null,
       to: `${base}/checkpoints`,
     },
   ]
-  const selected: TaskPane | 'children' = children ? 'children' : pane
+  const selected: TaskPane = pane
 
   return (
     <div
@@ -326,40 +334,76 @@ export function AgentSplit({
           segmented control with none). A count the task document does not
           carry is a dash with its reason in the title, never a 0. The ids and
           addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
-      <Tabs
-        className="ag-split-tabs"
-        label="Agent panes"
-        current={selected}
-        tabs={tabs.map((t) => ({
-          key: t.id,
-          label: t.label,
-          ...(t.id === 'detail' ? {} : { count: t.count, why: t.say ?? undefined }),
-        }))}
-        onSelect={(key) => {
-          const t = tabs.find((x) => x.id === key)!
-          if (t.to === null) setChildren(true)
-          else {
-            setChildren(false)
-            go(t.to)
-          }
-        }}
-      />
+      <AgTabsEdge>
+        <Tabs
+          className="ag-split-tabs"
+          label="Agent panes"
+          current={selected}
+          tabs={tabs.map((t) => ({
+            key: t.id,
+            label: t.label,
+            ...(t.id === 'detail' ? {} : { count: t.count, why: t.say ?? undefined }),
+          }))}
+          onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
+        />
+      </AgTabsEdge>
 
       <div className="ag-split-pane">
         {selected === 'children' && task !== null ? (
           <AgChildrenPane task={task} readKey={`${reads}`} />
-        ) : selected === 'detail' || selected === 'children' ? (
+        ) : selected === 'children' ? (
+          <p className="art-loading">
+            <Mark kind="pending" say="Reading the agent before its children. The read is in flight." />
+            <span className="ctl-pending art-loading-bar" />
+          </p>
+        ) : selected === 'detail' ? (
           <AgentDetailScreen taskId={taskId} onClose={close} headed />
         ) : selected === 'attempts' ? (
           <AttemptTimelineScreen taskId={taskId} />
         ) : selected === 'checkpoints' ? (
-          <CheckpointsPane taskId={taskId} />
+          <CheckpointsPane taskId={taskId} onCount={onCheckpoints} />
         ) : (
           <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
         )}
       </div>
 
       {task !== null && <LogDock key={taskId} task={task} phone={phone} />}
+    </div>
+  )
+}
+
+/**
+ * THE TABS SAY WHEN THERE ARE MORE OF THEM (U10a D39, owner QA at 390px,
+ * 2026-10-04): on a phone the strip was cut at `Che…` and nothing said it
+ * scrolls. The strip still scrolls sideways (Q4); this marks which of its
+ * ends has more beyond it, `data-more="start end"`, and the sheet fades that
+ * edge with a chevron. Measured on scroll and on resize, never guessed.
+ */
+function AgTabsEdge({ children }: { children: ReactNode }) {
+  const box = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState('')
+  useEffect(() => {
+    const strip = box.current?.querySelector<HTMLElement>('.c-tabs')
+    if (strip === null || strip === undefined) return
+    const measure = () => {
+      const over = strip.scrollWidth - strip.clientWidth
+      const at = strip.scrollLeft
+      setMore([over > 1 && at > 1 ? 'start' : '', over > 1 && at < over - 1 ? 'end' : ''].filter(Boolean).join(' '))
+    }
+    measure()
+    strip.addEventListener('scroll', measure, { passive: true })
+    globalThis.addEventListener?.('resize', measure)
+    const seen = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    seen?.observe(strip)
+    return () => {
+      strip.removeEventListener('scroll', measure)
+      globalThis.removeEventListener?.('resize', measure)
+      seen?.disconnect()
+    }
+  }, [])
+  return (
+    <div className="ag-tabs-edge" ref={box} data-more={more || undefined}>
+      {children}
     </div>
   )
 }

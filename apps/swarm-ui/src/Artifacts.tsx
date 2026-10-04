@@ -28,7 +28,7 @@ import { ArtifactViewer, Markdown } from './ArtifactViewer'
 import { DECLARED_WORDS, taskInputsOf, type TaskInputRow } from './dag'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
-import { GapNotice, LogText, stepMarks, useLogMarks } from './logMarks'
+import { GapNotice, LogText, NO_MARKS, stepMarks, useLogMarks } from './logMarks'
 import { servedAge, Stream, useRead } from './RunFiles'
 import { Id, Screen, type ScreenReading } from './Shell'
 import {
@@ -349,7 +349,7 @@ function Inputs({ v, reading }: { v: ArtifactsView; reading: ScreenReading }) {
  * request, and one that failed is asked for again. A pane that has stopped
  * polling -- a settled finish -- stops asking with it.
  */
-function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
+export function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
   const { state } = useRead<TaskInputCopy>(() => loadTaskInputOnce(taskId), taskId, `input:${readAt}`, null)
   const copy = state.status === 'ok' || state.status === 'stale' ? state.data : null
   // What this block draws, masked: the prompt and the rest, or the whole input.
@@ -382,7 +382,14 @@ function Prompt({ taskId, readAt }: { taskId: string; readAt: number }) {
           ) : (
             <pre className="arts-prompt">{copy.prompt.text}</pre>
           )}
-          {copy.rest !== null && <pre className="art-text">{copy.rest.text}</pre>}
+          {/* THE REST OF THE INPUT, LABELLED AND APART (U10a D33): it was a
+              second unlabelled box touching the prompt's. */}
+          {copy.rest !== null && (
+            <div className="arts-rest">
+              <span className="ctl-eyebrow">rest of the input</span>
+              <pre className="art-text">{copy.rest.text}</pre>
+            </div>
+          )}
         </>
       ) : copy.prompt_key === 'missing' && copy.full.text === '{}' ? (
         <p className="att-none">
@@ -1387,6 +1394,9 @@ export function StreamsFrom({
   task: Task
   now: number
 }) {
+  // INSIDE THE DOCK, whose provider is the only one there is (logMarks.tsx):
+  // everywhere else the context is the shared `NO_MARKS`.
+  const docked = useLogMarks() !== NO_MARKS
   if (logs.status === 'loading') {
     return (
       <p className="art-loading">
@@ -1414,8 +1424,7 @@ export function StreamsFrom({
   // The read's own receipt time, for the served ages: the pane's for the
   // polled read, this view's own for the stdout read -- `fetchedAt` either way.
   const fetchedAt = logs.fetchedAt
-  return (
-    <>
+  const table = (
       <div className="ctl-table is-stacked">
         <table role="table">
           <thead role="rowgroup">
@@ -1451,8 +1460,27 @@ export function StreamsFrom({
           </tbody>
         </table>
       </div>
+  )
+  const drawn = (r: (typeof rows)[number]) => r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== ''
+  return (
+    <>
+      {/* IN THE LOG DOCK THE TABLE IS FOLDED when every stream has lines to
+          show (U10a D13, owner QA 2026-10-04): stdout and stderr opened on a
+          card of gs paths and sizes with no line in view. A stream that is
+          absent, not served, empty or unread keeps the table open, because
+          then the table is the only thing that says why there is no line. */}
+      {docked && rows.every(drawn) ? (
+        <details className="ag-logmeta">
+          <summary>
+            {rows.map((r) => r.name).join(' · ')} · size, age and location
+          </summary>
+          {table}
+        </details>
+      ) : (
+        table
+      )}
       {rows.map((r) =>
-        r.stream !== null && r.stream.status === 'ok' && r.stream.content !== null && r.stream.content !== '' ? (
+        drawn(r) && r.stream !== null && r.stream.content !== null ? (
           <div key={r.name} className="rf-window">
             <span className="ctl-eyebrow">{r.name}</span>
             {/* THE DOCK'S MARKS (logMarks.tsx): numbered lines, search hits,

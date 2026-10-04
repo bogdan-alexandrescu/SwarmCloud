@@ -407,6 +407,18 @@ const NODE_CHROME_H = 10 + 42 + 2
  */
 const NAMES_CHROME_H = 6 + 34 + 2
 
+/**
+ * What a SETTLED step's card gives back: the stop strip, less the padding the
+ * card keeps under its last row (browser QA D29, 2026-10-04). The strip was
+ * reserved on every card, so a finished step -- which can never draw a Stop
+ * control again -- showed 40-65px of blank under its rows. `42 - 10` at
+ * Figures and Details, `34 - 6` at Names; `.node.is-settled` in
+ * styles/workflows.css carries the same numbers.
+ */
+export function stripSavingAt(tier: ZoomTier): number {
+  return tier === 'names' ? 34 - 6 : 42 - 10
+}
+
 // ---------------------------------------------------------------------------
 // Semantic zoom -- which fields a node stops drawing when the column runs out
 // ---------------------------------------------------------------------------
@@ -851,11 +863,13 @@ export function heightOf(
   tier: ZoomTier = 'figures',
   width: number = NODE_W,
   noted: boolean = false,
+  /** The step is terminal: its card reserves no stop strip (`stripSavingAt`). */
+  settled: boolean = false,
 ): number {
   // THE NOTE LINE (#105, #106): a failed step's first error line, or a waiting
   // step's reason. One line at every tier, ellipsed, so it costs a fixed
   // NOTE_H and nothing in width -- see `NOTE_H`.
-  const base = nodeHeightAt(tier) + (noted ? NOTE_H : 0)
+  const base = nodeHeightAt(tier) + (noted ? NOTE_H : 0) - (settled ? stripSavingAt(tier) : 0)
   if (step.depends_on.length === 0) return base
   // `+ GAP`: the dependency list is ONE MORE flex child, so it costs one more
   // `--ctl-s1` between itself and the row above as well as its own lines. The
@@ -1611,6 +1625,7 @@ export function autoTier(
   column: number = CANVAS_COLUMN,
   noted: ReadonlySet<string> = NO_NOTES,
   band: boolean = true,
+  settled: ReadonlySet<string> = NO_NOTES,
 ): ZoomTier {
   const levels = levelsOf(steps)
   if (levels.length === 0) return 'figures'
@@ -1619,7 +1634,7 @@ export function autoTier(
     const w = nodeWidthAt(tier, steps)
     return PAD * 2 + widest * w + (widest - 1) * SIB_GAP <= column
   }
-  const tall = (tier: ZoomTier) => layoutOf(steps, NO_STAGES_OPEN, tier, noted, column).height
+  const tall = (tier: ZoomTier) => layoutOf(steps, NO_STAGES_OPEN, tier, noted, column, settled).height
   // THE WHOLE GRAPH ON ONE SCREEN FIRST (#330 item 4). The widest tier whose
   // widest stage fits the column on one row AND whose graph fits
   // `CANVAS_HEIGHT`: a three-step chain is one node wide at every tier, and it
@@ -1632,17 +1647,22 @@ export function autoTier(
   // no tier that can turn a stage too wide for `column` into one that isn't --
   // only a collapsed band, or an opened one whose real width the canvas
   // scrolls to show. Zooming out still buys height, though, so take the
-  // widest tier whose row fits on its own, deferring to height only past this
-  // point.
-  for (const tier of ZOOM_TIERS) if (rowFits(tier)) return tier
+  // widest tier whose row fits on its own -- BUT NEVER FIGURES HERE (browser
+  // QA D29, 2026-10-04): Figures is the tallest card, and a graph that is
+  // already too tall for the screen only grows with it. Auto drew a
+  // three-step chain at Details and a ten-step run at Figures; the same rule
+  // now gives both Details.
+  for (const tier of ZOOM_TIERS) if (tier !== 'figures' && rowFits(tier)) return tier
   // NOTHING FITS ONE ROW AT ANY TIER. The widest stage bands (or, opened,
-  // scrolls) regardless of which tier is drawn, so `figures` keeps every
-  // field on the nodes that ARE drawn -- unless the caller has said a band may
-  // not appear here (`band` false: the details panel opened beside a graph
-  // that had none, and a picked step vanishing into a collapsed band because
-  // the graph narrowed would be worse than a graph that scrolls). Then Names,
-  // whose smaller nodes cost less canvas when that band is opened.
-  return band ? 'figures' : 'names'
+  // scrolls) regardless of which tier is drawn. It was `figures` here, so a
+  // ten-wide run was drawn at the tallest tier while a three-step chain got
+  // Details (D29); it is Details, the same answer the height rule gives --
+  // unless the caller has said a band may not appear here (`band` false: the
+  // details panel opened beside a graph that had none, and a picked step
+  // vanishing into a collapsed band because the graph narrowed would be worse
+  // than a graph that scrolls). Then Names, whose smaller nodes cost less
+  // canvas when that band is opened.
+  return band ? 'details' : 'names'
 }
 
 export interface DagNode {
@@ -1936,6 +1956,8 @@ export function layoutOf(
   tier: ZoomTier = 'figures',
   noted: ReadonlySet<string> = NO_NOTES,
   column: number = CANVAS_COLUMN,
+  /** Terminal steps, whose cards reserve no stop strip (D29). */
+  settled: ReadonlySet<string> = NO_NOTES,
 ): DagLayout {
   const levels = levelsOf(steps)
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
@@ -2000,7 +2022,7 @@ export function layoutOf(
   const wide = levels.map((l) => l.length > fits)
   const open = (lvl: number) => wide[lvl] === true && expandedStages.has(lvl)
   const nodesH = (l: readonly WorkflowStep[]) =>
-    Math.max(nodeHeightAt(tier), ...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id))))
+    Math.max(...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id), settled.has(s.step_id))))
   const levelH = levels.map((l, i) => {
     if (!wide[i]) return nodesH(l)
     return open(i) ? BAND_H + BAND_GAP + nodesH(l) : BAND_H

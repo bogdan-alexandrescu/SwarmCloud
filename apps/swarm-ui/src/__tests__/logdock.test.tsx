@@ -145,7 +145,8 @@ function running(over: Partial<Task> = {}): Task {
 }
 
 function dock(): HTMLElement {
-  return screen.getByRole('region', { name: 'Log' })
+  // Open full, the log is a dialog over the app (U10a D1); docked, a region.
+  return screen.queryByRole('dialog', { name: 'Log' }) ?? screen.getByRole('region', { name: 'Log' })
 }
 
 function chooseStream(label: string) {
@@ -220,9 +221,9 @@ describe('search covers this window, and wrap and the keys work', () => {
     chooseStream('Agent stderr')
     await waitFor(() => expect(dock().querySelectorAll('.ag-logline')).toHaveLength(3))
     fireEvent.change(within(dock()).getByRole('searchbox', { name: 'Search this window' }), { target: { value: 'traceback' } })
-    await waitFor(() => expect(dock().querySelector('.ag-logdock-count')?.textContent).toBe('– of 2 · this window'))
+    await waitFor(() => expect(dock().querySelector('.ag-logdock-count .ag-logdock-long')?.textContent).toBe('– of 2 · this window'))
     fireEvent.keyDown(within(dock()).getByRole('searchbox', { name: 'Search this window' }), { key: 'Enter' })
-    await waitFor(() => expect(dock().querySelector('.ag-logdock-count')?.textContent).toBe('1 of 2 · this window'))
+    await waitFor(() => expect(dock().querySelector('.ag-logdock-count .ag-logdock-long')?.textContent).toBe('1 of 2 · this window'))
     expect(dock().querySelector('.ag-logline.is-current')?.textContent).toContain('Traceback one')
     expect(dock().querySelectorAll('.ag-logline mark')).toHaveLength(2)
 

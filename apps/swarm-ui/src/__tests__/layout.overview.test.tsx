@@ -36,6 +36,7 @@ import STYLES from '../styles.css?raw'
 // reads them the same way -- so the source is the one place they are stated.
 import APP_SOURCE from '../App.tsx?raw'
 import type { Result } from '../fetch'
+import { pathToAddress } from '../paths'
 import type { SpendRollup } from '../api'
 import { elapsed, type Account, type AccountsPage, type Capacity, type Stats, type Task, type TaskPage } from '../types'
 
@@ -322,12 +323,16 @@ describe('a card says what it opens, and a count is not a verdict', () => {
     const el = await mountOverview()
     const accounts = el.querySelector<HTMLAnchorElement>('.ov-headroom .ov-acc a.ov-link')
     expect(accounts, 'the account line carries no link to Accounts').not.toBeNull()
-    expect(accounts!.getAttribute('href')).toBe('#capacity/accounts')
+    expect(accounts!.getAttribute('href')).toBe('/capacity/accounts')
     const links = [...el.querySelectorAll<HTMLAnchorElement>('.ctl-card-head a.ov-link, .ov-acc a.ov-link')]
     // A sweep that found no links would pass over the one that is wrong.
     expect(links.length, 'no card-head link was found, so nothing was checked').toBeGreaterThanOrEqual(6)
     for (const a of links) {
-      const href = a.getAttribute('href') ?? ''
+      // The card links are paths now (browser QA, 2026-10-04); the tab they
+      // open is the address the router reads them as.
+      const path = a.getAttribute('href') ?? ''
+      const [pathname, search = ''] = path.split('?')
+      const href = `#${pathToAddress(pathname!, search)?.address ?? path}`
       const label = tabLabel(href)
       expect(label, `${href} names no tab declared in App.tsx SECTIONS`).not.toBeNull()
       const word = (a.textContent ?? '').replace('→', '').trim().toLowerCase()

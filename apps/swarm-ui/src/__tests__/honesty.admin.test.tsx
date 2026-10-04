@@ -393,7 +393,9 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     expect(seen().match(/evicts nothing/g)).toHaveLength(1)
   })
 
-  it('names who set a ceiling only when it is not the configured value', async () => {
+  // Browser QA D32 (2026-10-04) reversed #132's blank: the configured case
+  // says `configured`, faint, so no Set by cell is ever empty.
+  it('says what set every ceiling, configured included, and never leaves the cell blank', async () => {
     api.loadCapacity.mockResolvedValue(
       ok(
         capacity({
@@ -407,15 +409,13 @@ describe('Pool limits shows a ceiling as a value with one editor open at a time 
     )
     render(<AdminSettingsScreen />)
     await limitsDrawn()
-    expect(document.body.textContent ?? '').not.toMatch(/configured/)
     const quotaRow = editorRow('provider:anthropic')
     expect(quotaRow.querySelector('td[data-label="Set by"]')?.textContent).toBe('provider quota')
-    // A family where everything is as configured still draws the Set by
-    // column, so every family has the same columns (#503) -- but its cells
-    // are empty: `configured` there is the column restating the Ceiling.
     const global = document.querySelector('.adm-family')!
     expect([...global.querySelectorAll('thead th')].map((th) => th.textContent)).toContain('Set by')
-    expect(editorRow('global').querySelector('td[data-label="Set by"]')?.textContent).toBe('')
+    const cell = editorRow('global').querySelector('td[data-label="Set by"]')!
+    expect(cell.textContent).toBe('configured')
+    expect(cell.querySelector('.adm-setby-cfg'), 'configured is drawn as loud as an override').not.toBeNull()
   })
 })
 

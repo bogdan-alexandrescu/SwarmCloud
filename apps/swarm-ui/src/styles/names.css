@@ -25,20 +25,23 @@
   overflow-wrap: anywhere;
 }
 
-/* THE PANEL'S RECENT WORKFLOWS: a lane label is a sentence, not an id. */
+/* THE PANEL'S RECENT WORKFLOWS: ONE LINE, THEN AN ELLIPSIS (U10a D14,
+   owner QA 2026-10-04). Two lines broken anywhere cut an unnamed workflow's
+   id mid-token -- `wf_8fa28bbc798e4b8a8e7 / e` -- and an id broken across
+   lines is a different id to the eye. One line, never broken; the whole name
+   and id are the button's title (Spine.tsx `RecentWorkflows`). */
 /* (Selected through the group and its buttons: a class name of seven or more
    characters after the panel's two-letter prefix reads as a provider key to
    the worker's publish scan.) */
 .sk-recent > button.sk-kid > span > span:last-child {
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  line-clamp: 2;
+  display: block;
+  min-width: 0;
   overflow: hidden;
-  white-space: normal;
-  overflow-wrap: anywhere;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow-wrap: normal;
 }
-.sk-recent > button.sk-kid > span { align-items: flex-start; }
+.sk-recent > button.sk-kid > span { align-items: center; }
 
 /* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards and the
    phone's list. */

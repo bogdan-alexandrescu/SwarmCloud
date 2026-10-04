@@ -7,6 +7,7 @@ import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
 import type { Capacity, IssuePreviewRead, RunCreateBody, RunnerProfile } from './types'
+import { Markdown } from './ArtifactViewer'
 import './styles/submit.css'
 import './styles/intake.css'
 
@@ -326,11 +327,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>issue</b>
               {read === null ? <i className="ctl-em">&mdash; read one first</i>
-                : <span><code>{read.issue.ref}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
+                : <span><code className="in-ref-code" title={read.issue.ref}>{read.issue.ref}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
             </li>
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>repository</b>
-              {read === null ? <i className="ctl-em">&mdash;</i> : <code>{read.issue.owner}/{read.issue.repo}</code>}
+              {read === null ? <i className="ctl-em">&mdash;</i> : <code title={`${read.issue.owner}/${read.issue.repo}`}>{read.issue.owner}/{read.issue.repo}</code>}
             </li>
             <li className="ctl-fact">
               <b>runner</b>
@@ -385,7 +386,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
 
 /** What was read, as served: title, state, comments, labels, the body, the link. */
-function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
+export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
 }) {
   const { issue } = read
@@ -412,7 +413,13 @@ function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
         <p className="sb-note">The issue has no body.</p>
       ) : (
         <>
-          <div className={`in-body${whole ? ' is-whole' : ''}`}>{issue.body}</div>
+          {/* THE BODY AS MARKDOWN (browser QA D23, 2026-10-04): it printed its
+              markers ("### What are you trying to do?"). `Markdown` is the
+              console's own renderer -- React elements, never HTML, links only
+              for http(s) -- so the issue's text cannot inject anything. */}
+          <div className={`in-body${whole ? ' is-whole' : ''}`}>
+            <Markdown source={issue.body} />
+          </div>
           <p className="in-row">
             <Button onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
               {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}

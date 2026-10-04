@@ -17,6 +17,7 @@ import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
 import { Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
+import { publishListCounts } from './Spine'
 import { rowClock, useNow } from './useNow'
 import {
   CONCURRENCY_STATES,
@@ -367,6 +368,16 @@ function AgentsBody({
     for (const t of page.tasks) c[tabOf(t)]++
     return c
   }, [page.tasks])
+
+  // THE PANEL COUNTS WHAT THESE TABS COUNT, FROM THIS READ (U10a D27): it
+  // read `/v1/stats` on its own 30s clock and lagged the tabs. A page with
+  // fewer rows than it asked for and no next page is every row there is;
+  // a capped page is not, and the panel says so by keeping its own read.
+  const whole = page.tasks.length < page.asked && (page.next_page_token ?? null) === null
+  useEffect(() => {
+    publishListCounts({ live: counts.live, waiting: counts.waiting, at: readAt ?? Date.now(), whole })
+  }, [counts.live, counts.waiting, readAt, whole])
+  useEffect(() => () => publishListCounts(null), [])
 
   // LAND ONCE, THEN STAY. The first page decides the tab; after that it is
   // pinned, so a refresh that brings a live agent does not pull the reader off
@@ -909,6 +920,8 @@ export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>)
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
 export const CANCEL_SPAN = '(last start to cancel, may include parked time)'
+/** The mark line two carries for it; the sentence is its title (U10a D20). */
+export const CANCEL_NOTE = 'to cancel'
 
 /**
  * ONE ROW OF THE LIST, AND IT IS ALWAYS THE COMPACT ROW (agents.html V1).
@@ -1123,12 +1136,16 @@ function CompactRow({
             <ToneMark tone="wait">cancelling</ToneMark>
           </>
         )}
-        {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), in words on line two:
-            line one has room for the figure only. */}
+        {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), as a short mark on
+            line two whose title is the whole sentence (U10a D20, owner QA
+            2026-10-04): the sentence itself pushed the hash and the rest of
+            the line off the row. It is LAST, so it is the part that gives way. */}
         {cancelSpan && (
           <>
             {' · '}
-            <span className="when-note">{CANCEL_SPAN}</span>
+            <span className="when-note" title={CANCEL_SPAN} aria-label={CANCEL_SPAN}>
+              {CANCEL_NOTE}
+            </span>
           </>
         )}
       </span>

@@ -221,7 +221,7 @@ describe('O1: Needs a look is a row of check cards', () => {
     const cards = [...lead.querySelectorAll<HTMLAnchorElement>('a.ov-att')]
     expect(cards.length, 'no check card').toBeGreaterThan(0)
     for (const c of cards) {
-      expect(c.getAttribute('href'), 'a check card goes nowhere').toMatch(/^#/)
+      expect(c.getAttribute('href'), 'a check card goes nowhere').toMatch(/^\//)
       expect(c.querySelector('.sk-st[data-mark]'), 'a check card has no mark').not.toBeNull()
       expect(text(c.querySelector('.ov-att-t b')).length).toBeGreaterThan(0)
       expect(text(c.querySelector('.ov-att-t small')).length).toBeGreaterThan(0)
@@ -237,10 +237,11 @@ describe('O1: Needs a look is a row of check cards', () => {
     expect(text(el.querySelector('#ov-needs .ov-lh .ov-cnt'))).toMatch(/^\d+ (check|checks) of \d+ · derived on this read/)
   })
 
-  it('lays the cards three across at 1440', async () => {
+  // Browser QA D18 (2026-10-04): three across cut the title at 345px; two across at 400px or more.
+  it('lays the cards at 400px or more each at 1440', async () => {
     const el = await mount()
     const atts = el.querySelector('#ov-needs .ov-atts')!
-    expect(cascade(SHEET, atts, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(3, minmax(0, 1fr))')
+    expect(cascade(SHEET, atts, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fill, minmax(min(100%, 400px), 1fr))')
   })
 })
 
@@ -369,7 +370,7 @@ describe('O1: Headroom keeps its rows inside the card', () => {
     const hps = el.querySelector('#ov-headroom .ov-hps')!
     expect(cascade(SHEET, hps, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fill, minmax(92px, 1fr))')
     const pl = el.querySelector('#ov-headroom .ov-pl')!
-    expect(cascade(SHEET, pl, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('minmax(0, 118px) minmax(0, 1fr) auto')
+    expect(cascade(SHEET, pl, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('minmax(0, 1fr) auto')
   })
 })
 
@@ -382,7 +383,7 @@ describe('O1: Recent failures', () => {
     expect(text(rows[0]!.querySelector('td.is-num'))).toBe('25m ago')
     const open = rows[0]!.querySelector<HTMLAnchorElement>('a.ov-open')!
     expect(text(open)).toBe('Open')
-    expect(open.getAttribute('href')).toBe('#work/task/tsk_fail_1')
+    expect(open.getAttribute('href')).toBe('/agents/recent/tsk_fail_1')
     expect(rows[0]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('failed')
     expect(rows[1]!.querySelector('.sk-st')?.getAttribute('data-mark')).toBe('dead')
     expect(text(el.querySelector('#ov-failures .ctl-card-note'))).toMatch(/last 24h · 1 failed · 1 dead-lettered/)

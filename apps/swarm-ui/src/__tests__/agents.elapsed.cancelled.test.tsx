@@ -26,7 +26,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-import { AgentsScreen, CANCEL_SPAN } from '../Agents'
+import { AgentsScreen, CANCEL_NOTE, CANCEL_SPAN } from '../Agents'
 
 const LABEL = '(last start to cancel, may include parked time)'
 
@@ -58,11 +58,18 @@ describe('the Agents list elapsed figure on a cancelled task', () => {
 
   it('labels a CANCELLED task with a start as last start to cancel', async () => {
     const cell = await whenCell(finished('CANCELLED'))
-    // Line one has room for the figure; the qualifier is on line two, in
-    // words, and on the figure's title, so neither half is hover-only.
+    // Line one has room for the figure; line two carries a short mark whose
+    // title and accessible name are the whole qualifier (U10a D20: the
+    // sentence pushed the hash off the line), and the figure's title says it
+    // too. The mark is the line's LAST part, so it is what gives way.
     expect(cell.textContent).toBe('12m 0s')
     expect(cell.getAttribute('title')).toBe(`12m 0s ${LABEL}`)
-    expect(cell.closest('.row')!.querySelector('.cr-sub .when-note')?.textContent).toBe(LABEL)
+    const note = cell.closest('.row')!.querySelector('.cr-sub .when-note')!
+    expect(note.textContent).toBe(CANCEL_NOTE)
+    expect(note.textContent!.length, 'the mark is the sentence again').toBeLessThan(12)
+    expect(note.getAttribute('title')).toBe(LABEL)
+    expect(note.getAttribute('aria-label')).toBe(LABEL)
+    expect(note.parentElement!.lastElementChild, 'the mark is not the last part of line two').toBe(note)
   })
 
   it('leaves a SUCCEEDED task’s elapsed figure unlabelled', async () => {

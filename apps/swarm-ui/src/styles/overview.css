@@ -30,7 +30,10 @@
 .ov-lh { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .ov-lh h2 { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; }
 .ov-cnt { font: 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); font-variant-numeric: tabular-nums; }
-.ov-atts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+/* 400px OR MORE A CARD (browser QA D18, 2026-10-04): three across a 1056px
+   column made 345px cards that cut the title ("25 failed tasks among the 200
+   mo…") and both detail lines. Two across on a desktop, one on a phone. */
+.ov-atts { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 400px), 1fr)); gap: 10px; }
 .ov-att { display: flex; gap: 10px; align-items: flex-start; padding: 10px 12px; border-radius: var(--radius); background-color: var(--surface); border: 1px solid var(--line); color: inherit; text-decoration: none; min-width: 0; }
 .ov-att:hover { border-color: var(--sk-acl); }
 /* A FAILED CHECK IS A ROW FORM, NOT ONLY A MARK (#96): the table row's edge
@@ -74,10 +77,11 @@
 .ov-lc-foot { font-size: var(--t-micro); color: var(--text-faint); }
 
 /* ---- the card grids: Running beside Cost, Waiting beside Headroom --------- */
-/* BALANCED ROWS (walkthrough F, owner 2026-10-03): the two cards of a row
-   stretch to the row's height, so the shorter one leaves no hole under it.
-   Each card's content stays at its top. */
-.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: stretch; }
+/* EACH CARD AT ITS OWN HEIGHT (browser QA D19, owner 2026-10-04). Walkthrough
+   F stretched both cards of a row to the row's height; with Headroom's three
+   stacks beside it, Running now and Waiting then drew ~600px of blank card.
+   A short card ends where its content does. */
+.ov-g21 { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-items: start; }
 @media (min-width: 1100px) {
   /* O1's 1.7 : 1. The table and the grouped list take the width; Cost and
      Headroom are a figure and three short stacks. */
@@ -86,7 +90,8 @@
 
 /* A card per components.html A: the card radius, 12px/14px padding. */
 .ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
-.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 10px; }
+/* The head wraps (D2): at 390 a long note pushed "All recent →" off the card. */
+.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; }
 .ov-card .ctl-card-title { flex: none; }
 .ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-card .ov-link { margin-left: auto; color: var(--sk-ac); font-size: var(--t-micro); white-space: nowrap; text-decoration: none; }
@@ -97,6 +102,17 @@
 .ov-tbl td { height: 32px; padding: 4px 12px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; }
 .ov-tbl tr:last-child td { border-bottom: 0; }
 .ov-tbl .is-num { text-align: right; white-space: nowrap; }
+/* A ROW HEAD IS NOT A COLUMN HEAD (D2, D19): it wraps, and it draws the same
+   separator as the cells beside it, so a row's rule is one colour end to end. */
+.ov-tbl tbody th { font: inherit; color: inherit; white-space: normal; border-bottom: 1px solid var(--line-soft); padding: 4px 12px 4px 0; vertical-align: middle; }
+.ov-tbl tbody tr:last-child th { border-bottom: 0; }
+/* Recent failures (D2): fixed columns, so the age and Open always sit in the
+   card; the error is two lines at most, and whole in its title. */
+.ov-fails { table-layout: fixed; }
+.ov-fc-mark { width: 28px; }
+.ov-fc-age { width: 76px; }
+.ov-fc-open { width: 48px; }
+.ov-fails .ov-why { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-tbl td:last-child, .ov-tbl th:last-child { padding-right: 0; }
 .ov-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .ov-name { color: var(--text); text-decoration: none; font-weight: 500; }
@@ -145,8 +161,12 @@
 .ov-hp small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ov-idc { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .ov-pls { display: flex; flex-direction: column; gap: 5px; }
-.ov-pl { display: grid; grid-template-columns: minmax(0, 118px) minmax(0, 1fr) auto; gap: 8px; align-items: center; }
-.ov-pl .ctl-util-track { height: 6px; }
+/* NAME AND FIGURE ON ONE LINE, THE BAR UNDER BOTH (browser QA D17,
+   2026-10-04): a 118px name column cut "provider:anthro…" three times with no
+   tooltip, and each bar stopped where its own figure began, so no two ended
+   together. The bar spans the row; the name is whole, or cut with its title. */
+.ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
+.ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
@@ -175,6 +195,12 @@
 @media (max-width: 759px) {
   .ov-page > .c-phead h1 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
   .ov-page > .c-phead .c-age { margin-left: 0; }
+  /* THE `?` AND THE TENANT CHIP SHARE THE LINE (U10a D39, owner QA at 390px,
+     2026-10-04): with the h1 stepped aside the head held only the `?`, and
+     the row wrapped it onto a line of its own above the chip. The row does
+     not wrap; the provenance wraps inside its own half when it must. */
+  .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; }
+  .ov-page > .c-phead > .sub { flex: 1 1 0; min-width: 0; }
 }
 @media (max-width: 560px) {
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
@@ -185,6 +211,16 @@
   .ov-lc-h small, .ov-lc-ps, .ov-lc-foot { display: none; }
   .ov-lc-h { font-weight: 400; font-size: var(--t-micro); color: var(--text-dim); }
   .ov-rows { display: none; }
+  /* Recent failures stacks (D2): the name and why over the age and Open. */
+  .ov-fails, .ov-fails tbody { display: block; }
+  .ov-fails colgroup { display: none; }
+  .ov-fails tr { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--line-soft); }
+  .ov-fails tr:last-child { border-bottom: 0; }
+  .ov-fails td, .ov-fails tbody th { height: auto; padding: 0; border-bottom: 0; }
+  .ov-fails tbody th { grid-column: 2 / 4; grid-row: 1; }
+  .ov-fails td:first-child { grid-row: 1; }
+  .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
+  .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
   .ov-prun { display: block; }
   .ov-link, .ov-open { position: relative; }
   .ov-link::after, .ov-open::after {

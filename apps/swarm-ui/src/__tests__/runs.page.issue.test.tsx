@@ -141,14 +141,13 @@ describe('item 4: the run page leads with the issue', () => {
     expect(read.querySelectorAll('.ctl-fact.is-absent')).toHaveLength(0)
   })
 
-  it('keeps the dash and its reason for a run created before runs kept the read', async () => {
+  // Browser QA D11 (2026-10-04): the reason is said once, in a short line,
+  // not under each of five keys; no key reads as a value of 0 or blank.
+  it('says once that a run created before runs kept the read has none', async () => {
     const { container } = await mount(run({ issue_read: undefined, issue_read_error: undefined }))
     const read = card(container, 'Read from the issue')
-    for (const key of ['title', 'labels', 'body', 'comments']) {
-      const f = fact(read, key)
-      expect(f.classList.contains('is-absent'), key).toBe(true)
-      expect(visible(f)).toMatch(/— .*created before runs kept what the issue said/)
-    }
+    expect(visible(read.querySelector('.rn-read-none'))).toBe('Not kept: this run is older than the issue snapshot.')
+    expect(read.querySelectorAll('.ctl-fact').length, 'only the issue link is a fact').toBe(1)
     // The page still has a title: the issue's reference.
     await screen.findByRole('heading', { level: 1, name: REF }, WAIT)
   })
@@ -157,11 +156,10 @@ describe('item 4: the run page leads with the issue', () => {
     const { container } = await mount(run({ issue_read: null,
       issue_read_error: { code: 'no_forge_credential', message: "tenant 'eng' has no forge credential" } }))
     const read = card(container, 'Read from the issue')
-    const comments = fact(read, 'comments')
-    expect(comments.classList.contains('is-absent')).toBe(true)
-    expect(visible(comments)).toMatch(/not read at submission/)
+    const note = read.querySelector('.rn-read-none')!
+    expect(visible(note)).toMatch(/^Not read at submission/)
     expect(visible(read)).toContain("tenant 'eng' has no forge credential")
-    expect(visible(comments)).not.toMatch(/\b0\b/)
+    expect(visible(read)).not.toMatch(/\b0\b/)
   })
 
   it('says the comments and the pull request are not there yet before the write-back posts them', async () => {

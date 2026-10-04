@@ -839,13 +839,19 @@ export function useEdgeSafePlacement(
 // "nothing shouts" rule (§B5.2, `typescale.test.ts`) could not see. The title
 // is a sentence someone wrote; mono plus `--text-faint` is the label rank, and
 // capitals were a third channel on the same distinction.
+//
+// SANS, AS EVERY OTHER POPOVER'S HEADING IS (U10a D31, owner QA 2026-10-04):
+// a topic card's title was mono beside the section question card's sans
+// `.ctl-q-title`, so two `?` popovers on one page headed themselves in two
+// faces. The title is a sentence, and mono is for ids, values and code (Q1).
+// One heading style: 600, --t-meta, --text-faint, the sans face.
 const CARD_TITLE: CSSProperties = {
   display: 'block',
   margin: '0 0 4px',
   fontWeight: 600,
   fontSize: 'var(--t-meta)',
   lineHeight: 'var(--lh-meta)',
-  fontFamily: 'var(--mono)',
+  fontFamily: 'var(--font)',
   color: 'var(--text-faint)',
 }
 

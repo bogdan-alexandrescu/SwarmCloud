@@ -60,6 +60,7 @@ import {
   zoomedTo,
   type Lane,
   type LaneBlock,
+  type LaneGroup,
   type LaneMark,
   type LaneSeg,
   type LanesView,
@@ -115,6 +116,54 @@ const DAY = new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric' })
 
 function clock(ms: number, wide = false): string {
   return wide ? `${DAY.format(ms)} ${CLOCK.format(ms)}` : CLOCK.format(ms)
+}
+
+/**
+ * The axis's labels, placed (browser QA D4/D5, 2026-10-04).
+ *
+ * A DAY TICK SAYS ITS DATE. The label used to be `clock(t, wide && hour === 0
+ * ? false : wide)`, which dropped the date exactly on the midnight ticks -- and
+ * past 36 hours every tick is a midnight, so 7d to 90d read "00:00" across the
+ * whole axis. Ticks a day or more apart are dates ("Oct 2"); inside a day a
+ * tick is its hour, and the one on midnight is the date it starts.
+ *
+ * A TICK NEVER SITS UNDER "now". The now label is drawn at the right edge
+ * whenever the window ends at the present; a tick in the last `NOW_GAP_PCT` of
+ * the track overprinted it ("1now0" at 24h), so it is not drawn.
+ */
+const NOW_GAP_PCT = 6
+
+export function axisLabels(since: number, until: number, nowAt: number): { t: number; pct: number; label: string }[] {
+  const ticks = axisTicks(since, until)
+  const daily = ticks.length > 1 && ticks[1]! - ticks[0]! >= 23 * 3_600_000
+  const nowShown = until >= nowAt - 60_000
+  return ticks
+    .map((t) => {
+      const d = new Date(t)
+      const midnight = d.getHours() === 0 && d.getMinutes() === 0
+      return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
+    })
+    .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
+}
+
+/**
+ * The axis's one-line count, by the grouping in use (browser QA D9): grouped
+ * by profile the page said "0 workflows · 0 standalone" over 25 lanes, because
+ * it counted only workflow and standalone blocks.
+ */
+export function laneSummary(blocks: readonly LaneBlock[], by: LaneGroup): string {
+  const lanes = blocks.reduce((n, b) => n + b.lanes.length, 0)
+  const lanesWord = `${lanes} ${lanes === 1 ? 'lane' : 'lanes'}`
+  if (by === 'workflow') {
+    const wf = blocks.filter((b) => b.kind === 'workflow').length
+    const solo = blocks.find((b) => b.kind === 'standalone')?.lanes.length ?? 0
+    return `${wf} ${wf === 1 ? 'workflow' : 'workflows'} · ${solo} standalone`
+  }
+  if (by === 'profile') {
+    const p = blocks.filter((b) => b.kind === 'profile').length
+    return `${lanesWord} in ${p} ${p === 1 ? 'profile' : 'profiles'}`
+  }
+  return lanesWord
 }
 
 function rangeWords(since: number, until: number): string {
@@ -489,8 +538,6 @@ export function TimelineLanesScreen({
   const back = view.back === null ? null : parseLanesView(view.back)
   const zoomed = view.since !== null
   const select = (id: string | null) => setView({ ...view, lane: id })
-  const workflowCount = blocks.filter((b) => b.kind === 'workflow').length
-  const standaloneCount = blocks.find((b) => b.kind === 'standalone')?.lanes.length ?? 0
 
   const profiles = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.runner_profile ?? null)), [allLanes])
   const workflowIds = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.workflow_id ?? null)), [allLanes])
@@ -624,13 +671,13 @@ export function TimelineLanesScreen({
               since={win.since}
               until={win.until}
               nowAt={anchor}
-              summary={`${workflowCount} ${workflowCount === 1 ? 'workflow' : 'workflows'} · ${standaloneCount} standalone`}
+              summary={laneSummary(blocks, view.by)}
               onZoom={(a, b) => setView(zoomedTo(view, a, b))}
             />
             {blocks.map((b) => (
               <Fragment key={b.key}>
                 <GroupHead block={b} workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null} />
-                {b.lanes.map((l) => (
+                {b.lanes.map((l) => [
                   <LaneRow
                     key={l.taskId}
                     lane={l}
@@ -644,8 +691,21 @@ export function TimelineLanesScreen({
                     onSeen={ensureEvents}
                     readNonce={nonce}
                     onRetry={retryEvents}
-                  />
-                ))}
+                  />,
+                  // UNDER THE LANE THAT WAS CLICKED (browser QA D10): drawn
+                  // after the footer, the summary and "Open in Agents" landed
+                  // 11,000px down a long page, out of sight of the click.
+                  selected !== null && selected.taskId === l.taskId && (
+                    <LaneDetail
+                      key={`${l.taskId}:detail`}
+                      lane={selected}
+                      events={events.get(selected.taskId) ?? null}
+                      onClose={() => select(null)}
+                      onOlder={() => readOlder(selected.taskId)}
+                      onRead={() => ensureEvents(selected.taskId)}
+                    />
+                  ),
+                ])}
               </Fragment>
             ))}
           </div>
@@ -668,7 +728,7 @@ export function TimelineLanesScreen({
       {shown !== null && att.status !== 'error' && (
         <p className="tl-cov">
           <span>
-            <b>{shown.rows.length}</b> attempts from {shown.pages === 1 ? 'page 1' : `pages 1–${shown.pages}`} of the attempt list (since {clock(win.since, days > 1)}, until {clock(win.until, days > 1)}) · {shown.next === null ? 'no next page' : 'a next page exists'}
+            <b>{shown.rows.length}</b> attempts from {shown.pages === 1 ? 'page 1' : `pages 1–${shown.pages}`} of the attempt list (since {clock(win.since, true)}, until {clock(win.until, true)}) · {shown.next === null ? 'no next page' : 'a next page exists'}
           </span>
           <span>an attempt created before the span is not on this read</span>
           {neverRan > 0 && <span>{neverRan} workflow {neverRan === 1 ? 'step' : 'steps'} with no attempt, from the workflow reads</span>}
@@ -678,15 +738,6 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      {selected !== null && (
-        <LaneDetail
-          lane={selected}
-          events={events.get(selected.taskId) ?? null}
-          onClose={() => select(null)}
-          onOlder={() => readOlder(selected.taskId)}
-          onRead={() => ensureEvents(selected.taskId)}
-        />
-      )}
       {view.lane !== null && selected === null && shown !== null && (
         <p className="tl-note">{`The lane ${view.lane} is not among the lanes read for this span.`}</p>
       )}
@@ -793,8 +844,7 @@ function Axis({
   summary: string
   onZoom: (since: number, until: number) => void
 }) {
-  const ticks = axisTicks(since, until)
-  const wide = until - since > 36 * 3_600_000
+  const ticks = axisLabels(since, until, nowAt)
   const [drag, setDrag] = useState<{ x0: number; x1: number; w: number; left: number } | null>(null)
   const at = (x: number, d: { w: number; left: number }) => since + (Math.min(Math.max(x - d.left, 0), d.w) / d.w) * (until - since)
   const down = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -837,8 +887,8 @@ function Axis({
         onPointerCancel={() => setDrag(null)}
       >
         {ticks.map((t) => (
-          <span key={t} className="tl-tk" style={{ left: `${pct(t, since, until)}%` }}>
-            {clock(t, wide && new Date(t).getHours() === 0 ? false : wide).replace(/ 00:00$/, '')}
+          <span key={t.t} className="tl-tk" style={{ left: `${t.pct}%` }}>
+            {t.label}
           </span>
         ))}
         {until >= nowAt - 60_000 && <span className="tl-tk is-now">now</span>}

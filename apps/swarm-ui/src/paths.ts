@@ -26,7 +26,8 @@ export const SUBMIT_ADDRESS = 'submit'
 export const REFERENCE_ADDRESS = 'reference'
 
 /** Address -> path for the panes that are one fixed path each. */
-const FIXED: Readonly<Record<string, string>> = {
+/** Exported for the not-found page, which offers the nearest of these (NotFound.tsx). */
+export const FIXED: Readonly<Record<string, string>> = {
   'overview/now': '/overview',
   'work/running': '/agents',
   'work/workflows': '/workflows',
@@ -65,7 +66,7 @@ export function helpGroupOf(topic: string): string | null {
   return t === undefined ? null : t.group
 }
 
-export const TASK_PANES = ['attempts', 'artifacts', 'checkpoints'] as const
+export const TASK_PANES = ['children', 'attempts', 'artifacts', 'checkpoints'] as const
 
 function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')

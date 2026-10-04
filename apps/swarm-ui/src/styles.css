@@ -6347,6 +6347,16 @@ a.ctl-metric:focus-visible { outline: 2px solid var(--info); outline-offset: 2px
    `min-height` rather than `height` on the line is what lets it grow. */
 .ctl-dock-facts { min-width: 0; }
 .ctl-dock-fact { white-space: nowrap; }
+/* ONE LINE ON A PHONE (U10a D39, owner QA at 390px, 2026-10-04): the strip
+   wrapped to two lines. F10 above is why it does not ELLIPSE -- the caveats
+   were what fell off -- so on a phone it drops the two facts that are not
+   caveats instead: the route count and the p95, both in the open dock's table.
+   What stays is `failed`, `admin-only` and the age, which fit at 390px
+   (Dock.tsx marks the two `is-wide`); it may still wrap between facts if
+   a longer age ever does not. */
+@media (max-width: 560px) {
+  .ctl-dock-fact.is-wide { display: none; }
+}
 .ctl-dock-bad { color: var(--bad-ink); }
 .ctl-dock-caret { margin-left: auto; flex: none; color: var(--text-faint); }
 
@@ -10240,6 +10250,16 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-ri.is-on::before { content: ""; position: absolute; left: -6px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: var(--sk-sky-line); }
 .sk-ri.sk-cta { background: var(--sk-sky); color: var(--sk-spine-foot); width: 52px; border-radius: 10px; font-weight: 600; }
 .sk-ri.sk-cta:hover { background: #7dd3fc; color: var(--sk-spine-foot); }
+/* SUBMIT IS A PLACE WHEN YOU ARE ON IT (U10a D25, owner QA 2026-10-04): on
+   /submit and its forms the spine lit Work and the panel lit Agents › Live,
+   and Submit never read as where you are. App.tsx `spineOf` gives Submit no
+   section; Spine.tsx marks the CTA `aria-current="page"`, and it carries the
+   section items' marker bar and a ring in the spine's ink.
+   The two colours are the spine's top and its sky line, written as values:
+   the spine is one blue in both themes, and the tokens' names read as
+   provider keys to the worker's publish scan. */
+.sk-ri.sk-cta[aria-current='page'] { box-shadow: 0 0 0 2px #0b3a7a, 0 0 0 4px #fff; }
+.sk-ri.sk-cta[aria-current='page']::before { content: ""; position: absolute; left: -15px; top: 10px; bottom: 10px; width: 3px; border-radius: 2px; background: #7cc8f8; }
 .sk-ri:focus-visible, .sk-pk:focus-visible, .sk-kid:focus-visible, .sk-ibtn:focus-visible { outline: 2px solid var(--sk-sky-line); outline-offset: 2px; }
 .sk-dot { position: absolute; top: 4px; right: 12px; width: 7px; height: 7px; border-radius: 50%; background: #f5c451; box-shadow: 0 0 0 2px var(--sk-spine-top); }
 .sk-ic { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; flex: none; }
@@ -10262,6 +10282,11 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pill.is-mini { font-size: var(--t-micro); padding: 3px 4px; margin-left: 0; }
 .sk-ibtn { border: 0; background: none; color: var(--text-dim); padding: 5px; border-radius: 6px; display: inline-flex; cursor: pointer; }
 .sk-ibtn:hover { background: var(--sk-hv); color: var(--text); }
+/* THE COLLAPSED SPINE'S EXPAND CONTROL (U10a D26): the panel's collapse
+   control mirrored, at the spine's foot. Solid, in the tenant tile's fill, so
+   the contrast gate measures white on a known colour rather than on the page. */
+.sk-spine .sk-expand { width: 44px; height: 32px; justify-content: center; align-items: center; margin: 0 0 6px; background: #1d518e; color: #fff; }
+.sk-spine .sk-expand:hover { background: #225693; color: #fff; }
 .sk-tenant { display: flex; align-items: center; gap: 9px; margin: 0 10px 8px; padding: 8px 10px; border: 1px solid var(--sk-ln); border-radius: 10px; background: var(--surface); }
 .sk-tg { width: 24px; height: 24px; border-radius: 6px; background: var(--sk-acs); color: var(--sk-ac); font: 650 var(--t-micro)/var(--lh-micro) var(--font); text-align: center; flex: none; }
 .sk-tt { display: flex; flex-direction: column; flex: 1; min-width: 0; }
@@ -10374,7 +10399,12 @@ span.sk-ttile { cursor: default; }
   .c-phead { flex-wrap: wrap; }
   .c-phead > .sub { flex-wrap: wrap; }
 }
-.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 4px 8px; border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
+/* THE SAME PILL IN BOTH THEMES (U10a D40, owner QA 2026-10-04): the fill
+   is `--surface-2`, which in light (#eef4fa) is all but the page's own
+   `--bg` (#f3f6f9), so the pill showed in dark and vanished in light. A
+   hairline in `--line` draws its edge in both; the padding gives back the
+   pixel the border takes, so the pill is the size it was. */
+.c-meta { font: 500 var(--t-micro)/var(--lh-flush) var(--font); padding: 3px 7px; border: 1px solid var(--line); border-radius: var(--r-pill); background: var(--surface-2); color: var(--text-dim); white-space: nowrap; }
 /* The provenance group never splits: "refresh" stays with its age. INLINE
    TEXT, not a flex box: as `inline-flex` each text run was an anonymous flex
    item and lost its edge spaces, which drew "just now·refresh" and

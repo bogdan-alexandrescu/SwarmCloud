@@ -13,7 +13,8 @@
  * walk.long.test.tsx, item C, with the other long names).
  *
  * MUTATIONS: draw `<Mark kind="pending">` for the reading row again, or put
- * `align-items: start` back on `.ov-g21` -- each turns a case red.
+ * `align-items: stretch` back on `.ov-g21` (D19 reversed F's balanced rows) --
+ * each turns a case red.
  */
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -53,8 +54,11 @@ describe('F: a check still reading is a skeleton card, not an empty dashed box',
   })
 })
 
-describe('F: the card rows are balanced', () => {
-  it('stretches both cards of a row to the row’s height', async () => {
+describe('F, revised by browser QA D19 (2026-10-04): each card keeps its own height', () => {
+  // Walkthrough F stretched both cards of a row; beside Headroom's three
+  // stacks that drew ~600px of blank under Running now and Waiting. The owner
+  // chose `align-items: start` (qa.u10b.overview.test.tsx asserts it too).
+  it('aligns both cards of a row to its top, neither with a height of its own', async () => {
     window.history.replaceState(null, '', '/')
     render(<App />)
     const rows = await waitFor(() => {
@@ -63,9 +67,8 @@ describe('F: the card rows are balanced', () => {
       return r
     }, WAIT)
     for (const row of rows) {
-      expect(painted(row, 'align-items', WIDE) ?? 'normal', 'the row leaves a hole under its shorter card').toMatch(/^(stretch|normal)$/)
+      expect(painted(row, 'align-items', WIDE), 'a short card is stretched to its neighbour').toBe('start')
       for (const card of row.querySelectorAll(':scope > .ov-card')) {
-        expect(painted(card, 'align-self', WIDE) ?? 'auto', `${card.id} does not take the row's height`).toMatch(/^(auto|stretch)$/)
         expect(painted(card, 'height', WIDE) ?? 'auto', `${card.id} has a height of its own`).toBe('auto')
       }
     }
