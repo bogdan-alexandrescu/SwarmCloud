@@ -438,10 +438,14 @@ def test_the_turn_budget_covers_the_hours_step_md_states():
 
 
 def test_a_row_waits_the_stated_hours_on_its_parents_within_the_budget():
-    """Capped holds, a parent that runs just under the stated hours: the row
-    still ends with the task's state, inside 56 calls."""
-    _, without = _stated_hours(_flat(_STEP_MD))
-    finish = without * 3600 - 600
+    """Capped holds, a parent that runs the stated hours less one -- the hour
+    is the three calls step.md says the step's own state changes take once
+    its parents are done: the row still ends with the task's state, inside
+    56 calls."""
+    flat = _flat(_STEP_MD)
+    _, without = _stated_hours(flat)
+    assert "takes one call of those 56" in flat
+    finish = (without - 1) * 3600
     world = Timeline(
         {
             "task_parent": [(0, "RUNNING", None), (finish, "SUCCEEDED", None)],
