@@ -27,7 +27,7 @@
  * Shared components (U0's, components.html A) are not on main yet, so the few
  * this page needs are local and prefixed `Tl` for a later pass to swap.
  */
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react'
 
 import {
   loadAttemptsPage,
@@ -144,6 +144,23 @@ export function axisLabels(since: number, until: number, nowAt: number): { t: nu
       return { t, pct: pct(t, since, until), label: daily || midnight ? DAY.format(t) : CLOCK.format(t) }
     })
     .filter((x) => !(nowShown && x.pct > 100 - NOW_GAP_PCT))
+}
+
+/**
+ * THE LANES' GRIDLINES, FROM THE AXIS'S OWN TICKS (browser QA N16,
+ * 2026-10-04). They were a CSS gradient repeated every sixth of the track --
+ * a scale of their own -- so at 1440 the lines fell at 730/865/1000 while the
+ * ticks sat at 605/808/1012. One 1px line at each tick's percentage, as one
+ * hard-stop gradient the chart sets once (`--tl-grid`) and every lane track
+ * paints; percentages of the track, so they hold at any width.
+ */
+export function gridlineImage(ticks: readonly { pct: number }[]): string {
+  if (ticks.length === 0) return 'none'
+  const stops = ticks.flatMap((t) => {
+    const p = Number(t.pct.toFixed(4))
+    return [`transparent ${p}%`, `var(--line-soft) ${p}%`, `var(--line-soft) calc(${p}% + 1px)`, `transparent calc(${p}% + 1px)`]
+  })
+  return `linear-gradient(to right, ${stops.join(', ')})`
 }
 
 /**
@@ -666,7 +683,12 @@ export function TimelineLanesScreen({
         </div>
       ) : (
         <div className={rereading ? 'tl-chart is-stale' : 'tl-chart'} aria-busy={rereading}>
-          <div className="tl" role="group" aria-label="Lanes">
+          <div
+            className="tl"
+            role="group"
+            aria-label="Lanes"
+            style={{ '--tl-grid': gridlineImage(axisLabels(win.since, win.until, anchor)) } as CSSProperties}
+          >
             <Axis
               since={win.since}
               until={win.until}
