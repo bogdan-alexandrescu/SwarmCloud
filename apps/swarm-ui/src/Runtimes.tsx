@@ -782,7 +782,7 @@ export function Credential({ runtime }: { runtime: Runtime }) {
       {runtime.secrets.map((s, i) => (
         <span key={s}>
           {i > 0 && ', '}
-          {/* One token, never broken mid-name (browser QA D22); cut with its title. */}
+          {/* One token, never broken mid-name (QA D22); cut with its title. */}
           <code title={s}>{s}</code>
         </span>
       ))}
