@@ -125,7 +125,12 @@ def test_the_cancelled_event_is_written_once_by_the_component_that_finished_the_
         db, task_id="task_637eb5eaae9445a6b186", tenant_id="eng", state="DISPATCHED",
         runner_profile="browser", resource_class="browser", provider="anthropic",
     )
-    ids = seed_stranded(db, "task_637eb5eaae9445a6b186", backend=CLOUD_RUN)
+    # A worker that started and then went silent: the API only flags it. One
+    # that never started is ended by the API itself since #560, and that
+    # ending is pinned in test_cancel_without_a_worker.py.
+    ids = seed_stranded(
+        db, "task_637eb5eaae9445a6b186", backend=CLOUD_RUN, heartbeat_seconds_ago=900
+    )
     db.docs[f"tasks/{ids['task']}"] = {**full, **db.docs[f"tasks/{ids['task']}"]}
 
     response = client.post(f"/v1/tasks/{ids['task']}/cancel", headers=auth_header("alice"))

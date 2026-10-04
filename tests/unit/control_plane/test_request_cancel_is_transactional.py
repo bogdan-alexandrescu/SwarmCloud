@@ -49,7 +49,10 @@ pattern from (the CI integration job starts an emulator that no test uses), so
 none is added here.
 
 WHAT MUST NOT CHANGE, pinned third. The fix must never "resolve" the race by
-releasing capacity from the API. `request_cancel`'s docstring and CONTRACT.md
+releasing capacity a LIVE worker holds from the API. (A task whose worker
+never started is ended by the cancel itself since #560: nothing is running,
+and the fence written with the release keeps it that way.)
+`request_cancel`'s docstring and CONTRACT.md
 invariant 1 say why: a task holding capacity has a container that may be
 running, and a pool decremented here would free a slot that container still
 occupies.
@@ -140,6 +143,19 @@ def db() -> ContendedFirestore:
     return ContendedFirestore()
 
 
+def worker_is_running(db: FakeFirestore, task_id: str) -> None:
+    """A heartbeat on the lease and a start on the attempt, as a worker's first
+    control-plane writes leave them. Written straight into the documents, not
+    through a transaction, as the worker's own process would be."""
+    from datetime import datetime, timezone
+
+    lease_id = db.docs[f"tasks/{task_id}"]["current_lease_id"]
+    lease = db.docs[f"leases/{lease_id}"]
+    now = datetime.now(timezone.utc)
+    lease["heartbeat_at"] = now
+    db.docs[f"attempts/{lease['attempt_id']}"]["started_at"] = now
+
+
 def cancelled_events(db: FakeFirestore, task_id: str) -> list[dict[str, Any]]:
     """Every event a cancel POST can write, of either kind.
 
@@ -182,7 +198,14 @@ def test_a_cancel_that_loses_the_race_to_admission_becomes_a_request(
         "this test races is never chosen"
     )
 
-    db.interleave(f"tasks/{task_id}", make_scheduler().drain)
+    def admitted_and_started() -> None:
+        # Admitted, dispatched, and its worker's first writes made: a
+        # container is running. One whose worker never started is ended by the
+        # cancel itself since #560 (test_cancel_without_a_worker.py).
+        make_scheduler().drain()
+        worker_is_running(db, task_id)
+
+    db.interleave(f"tasks/{task_id}", admitted_and_started)
     response = client.post(f"/v1/tasks/{task_id}/cancel", headers=auth_header("alice"))
 
     # Not vacuous: the concurrent writer really did admit and start it.
@@ -296,6 +319,7 @@ def test_cancelling_a_task_that_holds_capacity_touches_no_lease_and_no_pool(
     task_id = submitted.json()["task"]["id"]
     make_scheduler().drain()
     assert db.docs[f"tasks/{task_id}"]["state"] == "DISPATCHED"
+    worker_is_running(db, task_id)
     leases_before = copy.deepcopy(db.dump("leases/"))
     pools_before = copy.deepcopy(db.dump("pools/"))
     assert leases_before and pools_before, "nothing was admitted; the guard is vacuous"
