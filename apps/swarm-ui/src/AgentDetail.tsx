@@ -1000,7 +1000,7 @@ function DtEventRow({ e, owner }: { e: TaskEvent; owner: string | null }) {
   const kind = eventKind(e)
   const bad = /fail|lost|expired|refused/.test(kind)
   return (
-    <li className={`dt-ev${bad ? ' is-bad' : ''}`}>
+    <li className={`dt-ev${bad ? ' is-bad' : ''}`} data-kind={kind}>
       <span className="dt-ev-t mono" title={e.at}>
         {hhmm(e.at)}
       </span>
@@ -1114,7 +1114,9 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
                 kind="partial"
                 say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
               />{' '}
-              the end of this history is not on this page
+              {newest[0] === undefined
+                ? 'the end of this history is not on this page'
+                : `the page ends at ${eventKind(newest[0])}, ${timeAgo(newest[0].at, now)}`}
             </p>
           ) : (
             <p

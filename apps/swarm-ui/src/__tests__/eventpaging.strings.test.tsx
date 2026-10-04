@@ -104,7 +104,8 @@ describe('the rendered sentences put the one-page limit on this screen', () => {
 
   it('the missing-terminal-event mark, on a finished task whose ending is off the page', async () => {
     const el = await mount(run({}))
-    const marks = [...el.querySelectorAll('.ctl-toolbar .ctl-mark.is-partial')].filter((m) =>
+    // Under Progress's event list now (agent-details-v3.html A).
+    const marks = [...el.querySelectorAll('.dt-progress .dt-note .ctl-mark.is-partial')].filter((m) =>
       /terminal event/i.test(m.getAttribute('aria-label') ?? ''),
     )
     expect(marks, 'the finished task with no terminal event drew no partial mark').toHaveLength(1)
@@ -120,10 +121,10 @@ describe('the rendered sentences put the one-page limit on this screen', () => {
         attempts: [attempt(1, { completed_at: null, exit_code: null })],
       }),
     )
-    const note = [...el.querySelectorAll('.ctl-toolbar .ctl-card-note')].find((n) =>
+    const note = [...el.querySelectorAll('.dt-progress .dt-note')].find((n) =>
       (n.textContent ?? '').includes('cap unknown'),
     )
-    expect(note, 'the timeline toolbar lost its paging qualifier').toBeTruthy()
+    expect(note, 'the event list lost its paging qualifier').toBeTruthy()
     const say = note!.getAttribute('aria-label') ?? ''
     expect(say, 'the qualifier says the screen sends no page size; it sends limit=200').not.toMatch(STALE)
     expect(say).toMatch(TRUE)

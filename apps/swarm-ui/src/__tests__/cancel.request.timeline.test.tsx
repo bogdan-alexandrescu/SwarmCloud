@@ -55,15 +55,12 @@ async function timelineNote(events: TaskEvent[]): Promise<{ text: string; last: 
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={cancelledRun(events)} />)
-  await waitFor(() => expect(container.querySelector('.ev-last')).not.toBeNull())
-  // Several panels on this page carry an `.is-end` note; the timeline's is the
-  // one in the toolbar under the "Timeline" heading.
-  const heading = Array.from(container.querySelectorAll('.ctl-toolbar h2')).find((h) =>
-    (h.textContent ?? '').startsWith('Timeline'),
-  )
-  const note = heading?.parentElement?.querySelector('.is-end') ?? null
-  expect(note, 'the timeline toolbar note is not rendered').not.toBeNull()
-  const last = container.querySelector('.ev-last .ev-type')?.textContent ?? ''
+  // Progress lists the events newest first (agent-details-v3.html A); its
+  // note under the list says where the page ends when it is provably short.
+  await waitFor(() => expect(container.querySelector('.dt-progress .dt-ev')).not.toBeNull())
+  const note = [...container.querySelectorAll('.dt-progress .dt-note')].find((n) => /page/.test(n.textContent ?? '')) ?? null
+  expect(note, 'the event list’s paging note is not rendered').not.toBeNull()
+  const last = container.querySelector<HTMLElement>('.dt-progress .dt-ev')?.dataset.kind ?? ''
   return { text: note!.textContent ?? '', last }
 }
 
