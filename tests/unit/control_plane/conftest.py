@@ -129,6 +129,17 @@ def objects() -> InMemoryObjectReader:
     return InMemoryObjectReader(bucket=f"swarm-artifacts-{PROJECT}")
 
 
+class NoForgeTokens:
+    """No tenant has a forge credential: `POST /v1/runs` reads the issue at
+    submission (lane U9 item 4), and the default context must not reach
+    Secret Manager to find that out. A test about the read injects its own."""
+
+    def token_for(self, tenant: Tenant) -> str:
+        from swarm_api.forge import NoForgeCredential
+
+        raise NoForgeCredential(f"tenant {tenant.tenant_id!r} has no forge credential in this test")
+
+
 @pytest.fixture
 def api_context(db, tokens, group_map, objects):
     return build_context(
@@ -140,6 +151,7 @@ def api_context(db, tokens, group_map, objects):
         waker=NullWaker(),
         metrics=ApiMetrics(),
         objects=objects,
+        forge_tokens=NoForgeTokens(),
     )
 
 

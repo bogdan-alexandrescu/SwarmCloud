@@ -701,6 +701,21 @@ def _iso(moment: Any) -> str | None:
     return moment.isoformat() if isinstance(moment, datetime) else moment
 
 
+#: The preview's keys a run keeps (lane U9 item 4). `forge.preview` has
+#: already masked the title, the labels and the body with the API's redaction
+#: and bounded the body to `MAX_PREVIEW_BODY_CHARS`; nothing here re-reads or
+#: widens them. The reference is the run's own `issue`, so it is not copied.
+ISSUE_READ_KEYS = (
+    "title", "labels", "state", "comments", "url",
+    "body", "body_truncated", "body_redacted",
+)
+
+
+def issue_read_from_preview(preview: Mapping[str, Any], at: datetime) -> dict[str, Any]:
+    """What a run stores of the issue it was created from: the preview, as served."""
+    return {**{key: preview.get(key) for key in ISSUE_READ_KEYS}, "read_at": at}
+
+
 @dataclass
 class IssueRun:
     id: str
@@ -726,6 +741,12 @@ class IssueRun:
     rejection_reason: str | None = None
     error: str | None = None
     history: list[dict[str, Any]] = field(default_factory=list)
+    #: What the issue said when the run was created (`issue_read_from_preview`),
+    #: or None: the read failed (`issue_read_error` says why) or the run was
+    #: created before runs kept it (both None).
+    issue_read: dict[str, Any] | None = None
+    #: `{"code", "message"}` of the forge read that failed at submission.
+    issue_read_error: dict[str, str] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -753,6 +774,8 @@ class IssueRun:
             "rejection_reason": self.rejection_reason,
             "error": self.error,
             "history": [dict(entry) for entry in self.history],
+            "issue_read": dict(self.issue_read) if self.issue_read is not None else None,
+            "issue_read_error": dict(self.issue_read_error) if self.issue_read_error is not None else None,
         }
 
     @classmethod
@@ -782,6 +805,8 @@ class IssueRun:
             rejection_reason=data.get("rejection_reason"),
             error=data.get("error"),
             history=[dict(entry) for entry in data.get("history") or []],
+            issue_read=dict(data["issue_read"]) if data.get("issue_read") else None,
+            issue_read_error=dict(data["issue_read_error"]) if data.get("issue_read_error") else None,
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -813,6 +838,11 @@ class IssueRun:
             "history": [
                 {**entry, "at": _iso(entry.get("at"))} for entry in self.history
             ],
+            "issue_read": (
+                {**self.issue_read, "read_at": _iso(self.issue_read.get("read_at"))}
+                if self.issue_read is not None else None
+            ),
+            "issue_read_error": self.issue_read_error,
         }
 
 
