@@ -214,3 +214,19 @@
   .sb-kbd, .sb-foot { display: none; }
   .sb-runner-select, .sb-prio > input { min-height: 44px; }
 }
+
+/* THE SEND CARD STAYS IN VIEW (browser QA D35, 2026-10-04). `.sbf-send` is
+   sticky from 1080px (styles.css), but its column was a grid item aligned to
+   the start of the row -- exactly as tall as the card -- so sticky had no room
+   to move and the card scrolled away with the form. The column spans the row,
+   on the task, workflow and issue forms alike. */
+@media (min-width: 1080px) {
+  .sbf > .sbf-side { align-self: stretch; }
+}
+
+/* "+ ADD SETTING": THE KEY OVER ITS NOTE (D34). Key and note side by side
+   squeezed both into two ragged columns; the note now sits under its key,
+   left-aligned, in a list wide enough for a sentence. */
+.sbf-addset > .sbf-addset-list { width: min(420px, 100%); }
+.sbf-addset-list > .sbf-addset-item { flex-direction: column; align-items: flex-start; gap: 2px; }
+.sbf-addset-list > .sbf-addset-item em { text-align: left; }
