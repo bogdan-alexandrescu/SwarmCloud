@@ -64,6 +64,10 @@ IGNORED_IN_PLUGIN_AGENTS = frozenset({"permissionMode", "hooks", "mcpServers", "
 #: `sc:workflow` submits and reads; `sc:remote` is the one that dispatches.
 EXPECTED_TOOLS = {
     "remote": {"swarm_dispatch", "swarm_follow"},
+    # `sc:wait` is the pause between two tries of a row whose bridge was down
+    # (a workflow script has no timer): no SwarmCloud tool at all, only Bash
+    # for its one `sleep` (HOST_TOOLS).
+    "wait": set(),
     "step": {"swarm_follow"},
     # `swarm_workflow_spec` reads a spec FILE for /sc:run (epic #227): a workflow
     # script has no filesystem, so the bridge reads it and digests it.
@@ -77,6 +81,10 @@ EXPECTED_TOOLS = {
     },
 }
 
+#: The non-SwarmCloud tools an agent may hold beside StructuredOutput, and why.
+#: `sc:wait` makes one `sleep` and nothing else.
+HOST_TOOLS = {"wait": {"Bash"}}
+
 #: The globals a workflow script's body may use: the workflow runtime's own
 #: (the workflow-authoring reference) and the plain JavaScript built-ins.
 WORKFLOW_GLOBALS = frozenset({"agent", "pipeline", "parallel", "phase", "log", "args", "budget", "workflow"})
@@ -84,10 +92,9 @@ JS_BUILTINS = frozenset(
     {"JSON", "Math", "String", "Number", "Array", "Object", "Error", "Boolean", "isFinite", "isNaN",
      "parseInt", "parseFloat", "Promise", "Set", "Map", "undefined", "Infinity", "NaN"}
 )
-#: A host timer, read only behind `typeof setTimeout === 'function'`: run.js
-#: spaces a lost row's retries with it where the runtime has one, and goes on
-#: without the wait where it does not (`pause`).
-GUARDED_HOST_GLOBALS = frozenset({"setTimeout"})
+#: Host globals run.js may read behind a `typeof` guard. None: the runtime has
+#: no timer, so a lost row's retries are spaced by an `sc:wait` row instead.
+GUARDED_HOST_GLOBALS: frozenset[str] = frozenset()
 JS_KEYWORDS = frozenset(
     {"if", "else", "for", "of", "in", "const", "let", "var", "function", "return", "await", "async",
      "try", "catch", "finally", "throw", "new", "typeof", "instanceof", "true", "false", "null",
@@ -176,7 +183,7 @@ def _plugin_name() -> str:
 # --------------------------------------------------------------------------
 
 
-def test_the_plugin_ships_the_three_agents_the_workflows_name():
+def test_the_plugin_ships_the_agents_the_workflows_name():
     assert {p.stem for p in _AGENTS} == set(EXPECTED_TOOLS), (
         f"expected agents {sorted(EXPECTED_TOOLS)} under {_PLUGIN / 'agents'}, found "
         f"{sorted(p.stem for p in _AGENTS)}"
@@ -295,7 +302,8 @@ def test_an_agents_tools_are_the_swarmcloud_ones_it_needs_from_the_plugins_serve
         f"{path.name} grants the checkout's server too: {checkout_names}. A plugin agent must "
         f"reach only its own plugin's server, {scoped}*"
     )
-    stray = sorted(t for t in tools if t != "StructuredOutput" and not str(t).startswith(scoped))
+    allowed = {"StructuredOutput"} | HOST_TOOLS.get(path.stem, set())
+    stray = sorted(t for t in tools if t not in allowed and not str(t).startswith(scoped))
     assert not stray, (
         f"{path.name} grants {stray}: only the plugin's SwarmCloud tools, and StructuredOutput "
         "-- the channel a schema-bearing agent() call answers through -- are allowed"

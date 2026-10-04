@@ -31,14 +31,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 import pytest
 
-from swarm_mcp import cli, server, workflows
+from swarm_mcp import cli, launch, server, workflows
 
 from test_plugin_agents_and_workflows import _HARNESS, _PLUGIN, _RUN_JS, _node, _step
 
@@ -66,11 +68,13 @@ def _replace(text: str, old: str, new: str) -> str:
 
 #: `_HARNESS`, with three additions: a reply keyed by the whole prompt (attach
 #: asks `ATTACH` once per workflow), a LIST of replies answered one per call
-#: (the last repeats), and a `setTimeout` that records its delay and fires at
-#: once, so a test of five tries 30 s apart takes no time.
+#: (the last repeats), and a `setTimeout` that THROWS -- the workflow runtime
+#: has no timer, so the 30 s between a lost row's tries must be an `sc:wait`
+#: row, never a host timer that would be absent and let the tries run back to
+#: back.
 _SEQ = _HARNESS
-_SEQ = _replace(_SEQ, "const calls = []", "const calls = []\nconst asked = {}\nconst delays = []\n"
-                "function fakeTimer(fn, ms) { delays.push(ms); fn() }")
+_SEQ = _replace(_SEQ, "const calls = []", "const calls = []\nconst asked = {}\n"
+                "function noTimer() { throw new Error('a workflow script has no setTimeout') }")
 _SEQ = _replace(
     _SEQ,
     "const answer = fixture.answers[key]",
@@ -80,9 +84,7 @@ _SEQ = _replace(
 )
 _SEQ = _replace(_SEQ, "'log', 'args'", "'log', 'setTimeout', 'args'")
 _SEQ = _replace(_SEQ, "run(agent, pipeline, parallel, phase, log, fixture.args",
-                "run(agent, pipeline, parallel, phase, log, fakeTimer, fixture.args")
-_SEQ = _replace(_SEQ, "JSON.stringify({ result, calls, logs, phases })",
-                "JSON.stringify({ result, calls, logs, phases, delays })")
+                "run(agent, pipeline, parallel, phase, log, noTimer, fixture.args")
 
 
 def _run(tmp_path, args, answers, script: Path = _RUN_JS) -> dict:
@@ -115,7 +117,8 @@ def _submitted(spec: dict, workflow_id: str = "wf_1", order=None) -> dict:
 
 
 def _answers(spec: dict, **extra) -> dict:
-    out = {"SUBMIT": _submitted(spec), "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []}}
+    out = {"SUBMIT": _submitted(spec), "STATUS": {"state": "SUCCEEDED", "state_note": None, "console": None, "steps": []},
+           "WAIT": {"waited": True, "error": None}}
     for step in spec["steps"]:
         out["step:" + step["step_id"]] = _step("SUCCEEDED")
     out.update(extra)
@@ -380,6 +383,20 @@ def test_a_launch_writes_a_copy_of_run_js_named_after_the_workflow(_plugin_root,
     assert got["result"]["title"] == meta["name"]
 
 
+def test_a_launch_removes_run_copies_older_than_a_week_and_nothing_else(_plugin_root, tmp_path):
+    folder = tmp_path / launch.RUN_DIR
+    folder.mkdir()
+    stale, fresh, other = folder / "swarmcloud-old.js", folder / "swarmcloud-new.js", folder / "notes.txt"
+    for path in (stale, fresh, other):
+        path.write_text("x")
+    week_ago = time.time() - launch.RUN_COPY_MAX_AGE_S - 60
+    os.utime(stale, (week_ago, week_ago))
+    os.utime(other, (week_ago, week_ago))
+    script = launch.write_script("SwarmCloud · t · 1 steps", "d")
+    assert not stale.exists()
+    assert fresh.exists() and other.exists() and script.exists()
+
+
 def test_a_launch_by_spec_path_reads_the_title_from_the_file(_plugin_root, tmp_path):
     target = tmp_path / "spec.json"
     target.write_text(json.dumps({**_FIXTURE["chain"], "title": "nightly"}))
@@ -467,6 +484,10 @@ def _row_result(got, step_id) -> dict:
     return next(r for r in got["result"]["steps"] if r["step_id"] == step_id)
 
 
+def _waits(got) -> list[dict]:
+    return [c for c in got["calls"] if c["agentType"] == "sc:wait"]
+
+
 def test_a_row_whose_bridge_is_down_twice_then_answers_ends_with_the_real_state(tmp_path):
     spec = _FIXTURE["chain"]
     got = _run(tmp_path, {"spec": spec}, _answers(spec, **{
@@ -476,7 +497,16 @@ def test_a_row_whose_bridge_is_down_twice_then_answers_ends_with_the_real_state(
     assert len(review) == 3
     assert len({c["label"] for c in review}) == 1, "a retry is the same row, by the same label"
     assert _row_result(got, "review")["state"] == "SUCCEEDED"
-    assert got["delays"] == [30000, 30000]
+    # Between two tries, one sc:wait row of 30 s, labelled as setup.
+    waits = _waits(got)
+    assert [c["prompt"] for c in waits] == ["WAIT\nseconds: 30"] * 2
+    assert [c["label"].split(" · setup · ")[1] for c in waits] == [
+        "waiting for the bridge · review · try 2 of 5", "waiting for the bridge · review · try 3 of 5",
+    ]
+    assert all(c["label"].startswith("[SwarmCloud] ") for c in waits)
+    order = [c["agentType"] for c in got["calls"]
+             if c["agentType"] == "sc:wait" or (c["agentType"] == "sc:step" and "step_id: review" in c["prompt"])]
+    assert order == ["sc:step", "sc:wait", "sc:step", "sc:wait", "sc:step"]
 
 
 def test_five_bridge_failures_end_unknown_with_the_resume_line(tmp_path):
@@ -484,11 +514,35 @@ def test_five_bridge_failures_end_unknown_with_the_resume_line(tmp_path):
     got = _run(tmp_path, {"spec": spec}, _answers(spec, **{"step:review": [_down()]}))
     review = [c for c in _step_rows(got) if "step_id: review" in c["prompt"]]
     assert len(review) == 5
-    assert got["delays"] == [30000] * 4
+    assert len(_waits(got)) == 4
     row = _row_result(got, "review")
     assert row["state"] == "UNKNOWN"
     assert row["last_error"].startswith(_NOT_CONNECTED)
     assert row["last_error"].endswith("resume: /sc attach wf_1")
+
+
+def test_a_wait_that_could_not_be_made_is_logged_and_the_tries_stay_bounded(tmp_path):
+    """A session that refuses the wait row's Bash gets its tries at once, and
+    the run says so instead of passing them off as spaced 30 s apart."""
+    spec = _FIXTURE["chain"]
+    got = _run(tmp_path, {"spec": spec}, _answers(spec, **{
+        "step:review": [_down()], "WAIT": {"waited": False, "error": "Bash was refused"},
+    }))
+    assert len([c for c in _step_rows(got) if "step_id: review" in c["prompt"]]) == 5
+    refused = [line for line in got["logs"] if "could not be made" in line]
+    assert len(refused) == 4 and "Bash was refused" in refused[0], got["logs"]
+    assert _row_result(got, "review")["last_error"].endswith("resume: /sc attach wf_1")
+
+
+def test_a_task_whose_own_error_says_not_connected_is_not_retried(tmp_path):
+    """Only the MCP server's own wording is a bridge outage; a task that gave
+    up on something else "not connected" is that task's answer, once."""
+    spec = _FIXTURE["chain"]
+    task_side = _step("UNKNOWN", last_error="abandoned: the database is not connected; task gave up")
+    got = _run(tmp_path, {"spec": spec}, _answers(spec, **{"step:review": [task_side]}))
+    assert len([c for c in _step_rows(got) if "step_id: review" in c["prompt"]]) == 1
+    assert not _waits(got)
+    assert "resume:" not in _row_result(got, "review")["last_error"]
 
 
 def test_a_result_over_a_running_workflow_reattaches_an_unknown_row_once(tmp_path):

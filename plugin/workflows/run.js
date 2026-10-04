@@ -89,7 +89,8 @@ export const meta = {
 // agent's tools are fixed when it starts -- it has no ToolSearch -- so a row
 // started while the bridge was reconnecting cannot gain swarm_follow. The row
 // therefore answers at once, and THIS SCRIPT starts the step's row again, under
-// the same label, up to BRIDGE_TRIES times BRIDGE_RETRY_MS apart; the last
+// the same label, up to BRIDGE_TRIES times with an sc:wait row of
+// BRIDGE_RETRY_S between tries (a script has no timer); the last
 // such UNKNOWN's last_error ends `resume: /sc attach <workflow_id>`. The
 // Result, when SwarmCloud says the workflow still runs, re-attaches every
 // unfinished step whose row ended UNKNOWN, once.
@@ -714,27 +715,66 @@ function notSubmitted(error) {
 // A row's answer that says the bridge itself was missing or did not answer --
 // the tool absent when the row started (step.md answers that at once), or its
 // calls failing as not connected or not responding -- rather than anything
-// about the task.
+// about the task. Anchored on the MCP server's own wording, so a task whose
+// abandoned_because merely contains "not connected" is not retried.
 const BRIDGE_DOWN = ['not connected', 'not responding']
 const BRIDGE_TRIES = 5
-const BRIDGE_RETRY_MS = 30000
+const BRIDGE_RETRY_S = 30
 
 function bridgeDown(result) {
   if (!result || result.state !== 'UNKNOWN' || typeof result.last_error !== 'string') return false
-  return BRIDGE_DOWN.some((words) => result.last_error.indexOf(words) >= 0)
+  // The clause that names the MCP server, up to its first ';' or '.'.
+  const text = result.last_error.toLowerCase()
+  const at = text.indexOf('mcp server')
+  if (at < 0) return false
+  let clause = text.slice(at)
+  for (const stop of [';', '.']) {
+    const end = clause.indexOf(stop)
+    if (end >= 0) clause = clause.slice(0, end)
+  }
+  return BRIDGE_DOWN.some((words) => clause.indexOf(words) >= 0)
 }
 
-// Waits `ms` where the runtime has a timer. The tries are bounded either way:
-// without one they come back to back, each as long as an agent takes to start.
-function pause(ms) {
-  if (typeof setTimeout !== 'function') return Promise.resolve()
-  return new Promise((resolve) => setTimeout(resolve, ms))
+// The wait between two tries. A workflow script has no timer: the runtime
+// gives it plain JavaScript built-ins and no host API (the workflow-authoring
+// reference: "No filesystem or Node.js API access"; even the clock throws),
+// so a host timer here would be absent and the five tries would come back to
+// back in seconds. The wait is therefore an agent: one sc:wait row, labelled
+// as setup, that runs `sleep 30` and says whether it did. A wait that could
+// not be made is logged, never passed off as a wait.
+const WAITED = {
+  type: 'object',
+  properties: {
+    waited: { type: 'boolean' },
+    error: { type: ['string', 'null'] },
+  },
+  required: ['waited', 'error'],
+}
+
+async function waitForBridge(wf, step, next, phaseName) {
+  let answer = null
+  try {
+    answer = await agent('WAIT\nseconds: ' + BRIDGE_RETRY_S, {
+      label: setupLabel(wf.name, [], 'waiting for the bridge · ' + step.step_id + ' · try ' + next + ' of ' + BRIDGE_TRIES),
+      phase: phaseName,
+      agentType: 'sc:wait',
+      schema: WAITED,
+    })
+  } catch (error) {
+    answer = { waited: false, error: failureText(error) }
+  }
+  if (!answer || answer.waited !== true) {
+    const why = answer && answer.error ? answer.error : 'the wait row stopped before it answered'
+    log(step.step_id + ' · the ' + BRIDGE_RETRY_S + 's wait before try ' + next + ' of ' + BRIDGE_TRIES + ' could not be made (' + clip(why, 120) + ') · trying again at once')
+  }
 }
 
 // One step's row, started again under the same label while the bridge is
-// down, BRIDGE_TRIES times at most (about five minutes). The last answer's
-// last_error then ends with the command that re-joins the workflow.
-async function followRow(workflowId, step, prompt, opts) {
+// down, BRIDGE_TRIES times at most, a BRIDGE_RETRY_S wait row between two
+// tries (about two minutes of waits plus the rows' own start, ~5 min in all).
+// The last answer's last_error then ends with the command that re-joins the
+// workflow.
+async function followRow(wf, step, prompt, opts) {
   let result = null
   for (let tried = 1; tried <= BRIDGE_TRIES; tried++) {
     try {
@@ -744,11 +784,11 @@ async function followRow(workflowId, step, prompt, opts) {
     }
     if (!bridgeDown(result)) return result
     if (tried < BRIDGE_TRIES) {
-      log(step.step_id + ' · its row could not reach the SwarmCloud bridge (' + clip(result.last_error, 100) + ') · trying again in ' + BRIDGE_RETRY_MS / 1000 + 's, ' + (tried + 1) + ' of ' + BRIDGE_TRIES)
-      await pause(BRIDGE_RETRY_MS)
+      log(step.step_id + ' · its row could not reach the SwarmCloud bridge (' + clip(result.last_error, 100) + ') · trying again in ' + BRIDGE_RETRY_S + 's, ' + (tried + 1) + ' of ' + BRIDGE_TRIES)
+      await waitForBridge(wf, step, tried + 1, opts.phase)
     }
   }
-  return Object.assign({}, result, { last_error: result.last_error + ' · resume: /sc attach ' + workflowId })
+  return Object.assign({}, result, { last_error: result.last_error + ' · resume: /sc attach ' + wf.id })
 }
 
 // A workflow as its rows show it: `id`; `name`, the title's name; `count`,
@@ -770,7 +810,7 @@ async function followSteps(wf, steps, parentTasksOf) {
     async (step) => {
       if (!step.task_id) return { row_error: 'SwarmCloud named no task for this step' }
       const stage = wf.stages.stage[step.step_id] || 1
-      return await followRow(wf.id, step, stepPrompt(wf.id, step, parentTasksOf(step)), {
+      return await followRow(wf, step, stepPrompt(wf.id, step, parentTasksOf(step)), {
         label: rowLabel(wf.name, 'stage ' + stage + ' · ' + step.step_id, step.console),
         phase: stagePhase(stage),
         agentType: 'sc:step',

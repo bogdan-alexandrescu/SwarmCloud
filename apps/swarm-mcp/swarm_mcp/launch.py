@@ -27,6 +27,7 @@ import json
 import os
 import secrets
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,10 @@ MAX_ATTACHED_WORKFLOWS = 10
 
 #: Where the copies go: the system's temporary directory, one file per run.
 RUN_DIR = "sc-swarmcloud-runs"
+#: A per-run copy older than this is removed when the next one is written, so
+#: the folder does not grow without bound. A week: Claude Code reads a copy at
+#: launch and again only to resume that run, which happens within a session.
+RUN_COPY_MAX_AGE_S = 7 * 24 * 3600
 
 
 def template() -> str:
@@ -88,9 +93,23 @@ def write_script(title: str, description: str) -> Path:
     lines[2] = "  description: " + json.dumps(_clip(description, DESCRIPTION_CHARS), ensure_ascii=False) + ","
     folder = Path(tempfile.gettempdir()) / RUN_DIR
     folder.mkdir(parents=True, exist_ok=True)
+    _prune(folder)
     target = folder / f"swarmcloud-{secrets.token_hex(6)}.js"
     target.write_text("\n".join(lines), encoding="utf-8")
     return target
+
+
+def _prune(folder: Path) -> None:
+    """Remove this bridge's own run copies older than RUN_COPY_MAX_AGE_S. Only
+    `swarmcloud-*.js` in its own folder; a file that vanishes or cannot be
+    removed meanwhile is left alone, never an error for the launch."""
+    cutoff = time.time() - RUN_COPY_MAX_AGE_S
+    for old in folder.glob("swarmcloud-*.js"):
+        try:
+            if old.is_file() and old.stat().st_mtime < cutoff:
+                old.unlink()
+        except OSError:
+            continue
 
 
 def _launch(title: str, description: str, args: dict[str, Any] | None) -> dict[str, Any]:
