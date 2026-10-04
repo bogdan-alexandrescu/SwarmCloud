@@ -38,6 +38,7 @@
 .dt-card-head > b { font-size: var(--t-body); line-height: var(--lh-body); font-weight: 650; }
 .dt-card-r { display: inline-flex; align-items: center; gap: 10px; margin-inline-start: auto; }
 .dt-more {
+  text-decoration: none;
   border: 0;
   padding: 0;
   background: none;

@@ -10,6 +10,7 @@ import {
   type ResourceClasses,
 } from './api'
 import { ArtifactViewer, diffStat } from './ArtifactViewer'
+import { absTime, gapText } from './AttemptTimeline'
 import { classUnits } from './Blockers'
 import { AttemptDurations } from './charts/AttemptPhases'
 import { CheckpointStrip } from './charts/CheckpointStrip'
@@ -455,14 +456,34 @@ function DtCardHead({ title, children }: { title: ReactNode; children?: ReactNod
   )
 }
 
-/** A link inside a card that switches tabs, or nothing when there is no split to switch. */
-function DtMore({ onClick, children }: { onClick: (() => void) | undefined; children: ReactNode }) {
-  if (onClick === undefined) return null
+/**
+ * A link inside a card to another of the agent's tabs. A real address, so it
+ * opens in a new tab and works outside the split; inside it, the split's own
+ * switch moves the pane.
+ */
+function DtMore({ href, onClick, children }: { href: string; onClick: (() => void) | undefined; children: ReactNode }) {
   return (
-    <button type="button" className="dt-more" onClick={onClick}>
+    <a
+      className="dt-more"
+      href={href}
+      onClick={
+        onClick === undefined
+          ? undefined
+          : (e) => {
+              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button !== 0) return
+              e.preventDefault()
+              onClick()
+            }
+      }
+    >
       {children} ›
-    </button>
+    </a>
   )
+}
+
+/** The address of one of this agent's tabs. */
+function tabHref(task: Task, tab: 'attempts' | 'artifacts'): string {
+  return `#work/task/${encodeURIComponent(task.id)}/${tab}`
 }
 
 /** The oldest-first copy of a run's attempts, and the newest of them. */
@@ -660,7 +681,9 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
   return (
     <section className="dt-card dt-now is-bad" data-lead="failed">
       <DtCardHead title={heading}>
-        <DtMore onClick={links?.attempts}>Attempts</DtMore>
+        <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
+          Attempts
+        </DtMore>
         <HelpCard topic="attempt-documents" />
       </DtCardHead>
       <p className="dt-nfs">
@@ -995,18 +1018,26 @@ function hhmm(iso: string): string {
   return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`
 }
 
-/** One event row: time, kind in words, and whose attempt it was. */
-function DtEventRow({ e, owner }: { e: TaskEvent; owner: string | null }) {
+/**
+ * One event row: its local time (the absolute instant in its title, as the
+ * Attempts tab writes it), its kind in words, the gap since the event before
+ * it on the page, and whose attempt it was. No JSON: the detail is on the
+ * Attempts tab.
+ */
+function DtEventRow({ e, prev, owner }: { e: TaskEvent; prev: TaskEvent | undefined; owner: string | null }) {
   const kind = eventKind(e)
   const bad = /fail|lost|expired|refused/.test(kind)
+  const at = instant(e.at)
+  const before = prev === undefined ? null : instant(prev.at)
   return (
     <li className={`dt-ev${bad ? ' is-bad' : ''}`} data-kind={kind}>
-      <span className="dt-ev-t mono" title={e.at}>
+      <time className="dt-ev-t mono" dateTime={e.at} title={absTime(e.at)}>
         {hhmm(e.at)}
-      </span>
+      </time>
       <span>
         <span className="dt-ev-k">{kind.replace(/_/g, ' ')}</span>
-        {owner !== null && <small> {owner}</small>}
+        {at !== null && before !== null && <small> {gapText(at - before)}</small>}
+        {owner !== null && <small> · {owner}</small>}
       </span>
     </li>
   )
@@ -1033,7 +1064,9 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
   return (
     <section className="dt-card dt-progress">
       <DtCardHead title="Progress">
-        <DtMore onClick={links?.attempts}>Attempts tab</DtMore>
+        <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
+          Attempts tab
+        </DtMore>
         <HelpCard topic="attempt-documents" />
       </DtCardHead>
       {attempts === null ? (
@@ -1100,8 +1133,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
       ) : (
         <>
           <ol className="dt-evs">
-            {newest.slice(0, 5).map((e) => (
-              <DtEventRow key={e.event_id} e={e} owner={ownerOf(e)} />
+            {newest.slice(0, 5).map((e, i) => (
+              <DtEventRow key={e.event_id} e={e} prev={newest[i + 1]} owner={ownerOf(e)} />
             ))}
           </ol>
           {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER. Proven
@@ -1130,8 +1163,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
             <details className="dt-disc">
               <summary>All {events.length} events</summary>
               <ol className="dt-evs dt-evs-all">
-                {newest.slice(5).map((e) => (
-                  <DtEventRow key={e.event_id} e={e} owner={ownerOf(e)} />
+                {newest.slice(5).map((e, i) => (
+                  <DtEventRow key={e.event_id} e={e} prev={newest[i + 6]} owner={ownerOf(e)} />
                 ))}
               </ol>
             </details>
@@ -3215,7 +3248,9 @@ function Output({
           </span>
         )}
         <span className="dt-card-r">
-          <DtMore onClick={lead?.links?.artifacts}>Artifacts</DtMore>
+          <DtMore href={tabHref(task, 'artifacts')} onClick={lead?.links?.artifacts}>
+            Artifacts
+          </DtMore>
           <HelpCard topic="attempt-documents" />
         </span>
       </div>

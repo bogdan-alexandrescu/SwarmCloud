@@ -106,17 +106,29 @@ async function mount(r: AgentRun, listing: Promise<Result<CheckpointsPage>> | nu
   return container as HTMLElement
 }
 
+/**
+ * One cell of the stat strip (agent-details-v3.html A), or -- for
+ * `Checkpoints`, which moved out of the figures and into the leading card --
+ * that card's checkpoint fact.
+ */
 function tile(el: HTMLElement, label: string): HTMLElement {
-  const found = [...el.querySelectorAll<HTMLElement>('.ctl-metric')].find(
-    (t) => t.querySelector('.ctl-metric-label')?.textContent?.startsWith(label),
-  )
+  const found =
+    label === 'Checkpoints'
+      ? [...el.querySelectorAll<HTMLElement>('.dt-now .dt-nf')].find((t) => t.textContent?.startsWith('Checkpoints'))
+      : [...el.querySelectorAll<HTMLElement>('.dt-sc')].find((t) => t.querySelector('.dt-sc-l')?.textContent?.startsWith(label))
   expect(found, `no ${label} tile`).toBeTruthy()
   return found!
 }
 
+/** The keys the leading card prints: the run's facts, said once. */
 function headlineFacts(el: HTMLElement): string[] {
-  const head = el.querySelector('.run-stack > section')!
-  return [...head.querySelectorAll('.ctl-facts > .ctl-fact > b')].map((b) => b.textContent ?? '')
+  const head = el.querySelector('.run-stack > .dt-now')!
+  return [...head.querySelectorAll('.ctl-fact > b')].map((b) => b.textContent ?? '')
+}
+
+/** Every card heading on the tab. */
+function cardHeads(el: HTMLElement): string[] {
+  return [...el.querySelectorAll('.dt-card-head > b, section > h2')].map((h) => h.textContent?.trim() ?? '')
 }
 
 // ---------------------------------------------------------------------------
@@ -138,11 +150,11 @@ describe('#102 (a): Output and Code are one section, under one heading', () => {
         }),
       }),
     )
-    const heads = [...el.querySelectorAll('h2')]
-      .map((h) => h.textContent?.trim() ?? '')
-      .filter((t) => /^(Output|Code)\b/.test(t))
+    // A finished agent's code card leads the tab, headed Outcome
+    // (agent-details-v3.html A3): still one heading over the result.
+    const heads = cardHeads(el).filter((t) => /^(Output|Code|Outcome)\b/.test(t))
     expect(heads, `headings: ${heads.join(' | ')}`).toHaveLength(1)
-    expect(heads[0]).toMatch(/^Code/)
+    expect(heads[0]).toBe('Outcome')
     // The facts the section carried are all still there.
     expect(el.textContent).toContain('nothing pushed · collect')
     expect(el.textContent).toContain('gs://b/swarm-work.patch')
@@ -150,9 +162,11 @@ describe('#102 (a): Output and Code are one section, under one heading', () => {
 
   it('keeps the Output heading when there is no code to speak of', async () => {
     const el = await mount(run({ task: task({ state: 'RUNNING', started_at: at(1) }) }))
-    const heads = [...el.querySelectorAll('h2')].map((h) => h.textContent?.trim() ?? '')
-    expect(heads.filter((t) => /^Output\b/.test(t))).toHaveLength(1)
-    expect(heads.filter((t) => /^Code\b/.test(t))).toHaveLength(0)
+    // NO OUTPUT CARD BEFORE THERE IS OUTPUT (agent-details-v3.html A): the
+    // Now card says so in one line, and nothing is headed Code.
+    const heads = cardHeads(el)
+    expect(heads.filter((t) => /^(Output|Code)\b/.test(t))).toHaveLength(0)
+    expect(el.querySelector('.dt-now')?.textContent).toContain('Output none yet · written when the attempt ends')
   })
 })
 
@@ -173,7 +187,7 @@ describe('#102 (b): checkpoints are listed once, in the Checkpoints tab', () => 
     expect(card.querySelector('.att-ckpt-line')?.textContent).toMatch(/2 written/)
     // The listing HAS landed -- the tile reads it -- so an absent panel is
     // not a panel still loading.
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written, 2 kept'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toMatch(/^Checkpoints 2\b.* · 2 kept/))
     const panel = [...el.querySelectorAll<HTMLElement>('section')].find(
       (s) => s.querySelector('h2')?.textContent === 'Checkpoints',
     )
@@ -187,12 +201,13 @@ describe('#102 (c): one duration, said once', () => {
   it('drops the Headline run fact, which is the Elapsed tile', async () => {
     const el = await mount(run())
     expect(headlineFacts(el)).not.toContain('run')
-    expect(tile(el, 'Elapsed').querySelector('.ctl-metric-value')?.textContent).toBe('9m 0s')
+    expect(tile(el, 'Elapsed').querySelector('.dt-sc-v')?.textContent).toBe('9m 0s')
   })
 
   it('keeps a wait, which the tile does not carry', async () => {
     const el = await mount(run({ task: task({ state: 'QUEUED', started_at: null }), attempts: [] }))
-    expect(headlineFacts(el)).toContain('wait')
+    // In the Now card's phase line: the whole age of an unstarted task is a wait.
+    expect(el.querySelector('.dt-now .dt-phase')?.textContent).toMatch(/^no attempt yet · waiting \d/)
   })
 
   it('prints a per-attempt ran only when there are several attempts', async () => {
@@ -234,16 +249,16 @@ describe('#103: the Tokens tile says what it leaves out', () => {
         ],
       }),
     )
-    const t = tile(el, 'Tokens')
-    // #322 replaced the `+ N cache` line: the headline is all four kinds,
-    // and the caption says each one.
-    expect(t.querySelector('.ctl-metric-value')?.textContent).toBe('1.01M')
+    // Tokens are Cost's sub-line (agent-details-v3.html A); #322: the headline
+    // is all four kinds, and the caption says each one.
+    const t = tile(el, 'Cost')
+    expect(t.querySelector('.dt-sc-s')?.textContent).toMatch(/^1\.01M tokens/)
     expect(t.textContent).toContain('cache read 1M · write 10k')
   })
 
   it('draws no cache line when no attempt reported one: absent stays absent, never 0', async () => {
     const el = await mount(run({ attempts: [attempt(1, { input_tokens: 100, output_tokens: 50 })] }))
-    expect(tile(el, 'Tokens').textContent).not.toMatch(/cache/)
+    expect(tile(el, 'Cost').textContent).not.toMatch(/cache/)
   })
 })
 
@@ -253,7 +268,7 @@ describe('#103: the Checkpoints tile says what is still in the bucket', () => {
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001', 'ckpt-00002'] })] }),
       Promise.resolve(ok(page([]))),
     )
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('2 written, 0 kept'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toMatch(/^Checkpoints 2\b.* · 0 kept/))
     expect(tile(el, 'Checkpoints').querySelector('.ctl-mark.is-partial')).not.toBeNull()
   })
 
@@ -262,7 +277,7 @@ describe('#103: the Checkpoints tile says what is still in the bucket', () => {
       run({ attempts: [attempt(1, { checkpoints: ['ckpt-00001'] })] }),
       Promise.resolve(ok(page(['ckpt-00001']))),
     )
-    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toContain('1 written, 1 kept'))
+    await waitFor(() => expect(tile(el, 'Checkpoints').textContent).toMatch(/^Checkpoints 1\b.* · 1 kept/))
     expect(tile(el, 'Checkpoints').querySelector('.ctl-mark.is-partial')).toBeNull()
   })
 
@@ -288,18 +303,17 @@ describe('#101: Details carries the compact timeline and a link to the full one'
 
   it('shows the last event with its gap, the absolute time in its title, and no JSON', async () => {
     const el = await mount(run({ events }))
-    const section = [...el.querySelectorAll<HTMLElement>('section')].find((s) =>
-      s.querySelector('h2')?.textContent?.startsWith('Timeline'),
-    )!
+    // PROGRESS CARRIES THE LAST EVENTS, newest first (agent-details-v3.html A).
+    const section = el.querySelector<HTMLElement>('.dt-progress')!
     expect(section, 'the Timeline section is gone').toBeTruthy()
     expect(section.querySelector('ol.timeline'), 'Details still draws the full event list').toBeNull()
     expect(section.querySelector('.ev-detail')).toBeNull()
     expect(section.textContent).toContain('succeeded')
     expect(section.textContent).toContain('+3m 09s')
-    const when = section.querySelector('time.ev-at')!
+    const when = section.querySelector('.dt-ev time')!
     expect(when.getAttribute('title')).toContain('2026-09-22 10:04:09')
     const link = section.querySelector<HTMLAnchorElement>('a[href="#work/task/tsk_charts/attempts"]')
-    expect(link?.textContent).toBe('full timeline in Attempts')
+    expect(link?.textContent).toBe('Attempts tab ›')
   })
 })
 

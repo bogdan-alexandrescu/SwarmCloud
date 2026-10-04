@@ -19,6 +19,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 
 import type { AgentRun } from '../api'
+import { HELP } from '../help'
 import type { Task } from '../types'
 import { attempt, task } from './runfixture'
 
@@ -107,7 +108,12 @@ async function mount(run: AgentRun): Promise<HTMLElement> {
 }
 
 function section(root: HTMLElement, title: string): HTMLElement | null {
-  return [...root.querySelectorAll<HTMLElement>('section')].find((s) => s.querySelector('h2')?.textContent === title) ?? null
+  // A Details card is headed by `.dt-card-head > b` (agent-details-v3.html A).
+  return (
+    [...root.querySelectorAll<HTMLElement>('section')].find(
+      (s) => s.querySelector(':scope > h2, :scope > .dt-card-head > b')?.textContent === title,
+    ) ?? null
+  )
 }
 
 /** The sub-block of Input headed `metadata`. */
@@ -188,9 +194,14 @@ describe('Details holds no log rows', () => {
 describe('the card foot’s index no longer says CPU is never sampled (#222 a)', () => {
   it('lists what the CPU rows are, and not the retired claim', async () => {
     const root = await mount(agentRun())
-    const legend = root.querySelector('.att-legend')
-    expect(legend, 'no reading-these-cards index').not.toBeNull()
-    expect(legend!.textContent, 'the index contradicts the CPU rows above it').not.toMatch(/never sampled/i)
-    expect(legend!.textContent).toMatch(/CPU is peak and mean cores/)
+    // The index of links is gone (agent-details-v3.html A); the CPU cell's
+    // label publishes the CPU topic itself, and what it says is the rows'.
+    const label = [...root.querySelectorAll<HTMLElement>('.dt-sc-l')].find((l) => l.firstChild?.textContent === 'CPU')
+    expect(label, 'no CPU cell').toBeTruthy()
+    const said = document.getElementById(label!.getAttribute('aria-describedby') ?? '')
+    expect(said, 'the CPU label publishes no explanation').not.toBeNull()
+    expect(said!.textContent, 'the CPU help contradicts the CPU figures').not.toMatch(/never sampled/i)
+    expect(said!.textContent).toBe(HELP['cpu-figures'].short)
+    expect(HELP['cpu-figures'].title).toMatch(/CPU is peak and mean cores/)
   })
 })
