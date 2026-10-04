@@ -79,6 +79,11 @@ a plan with no requirements is False. The block is then written
 left, and every other closing keyword in the body and title neutralised. A
 CI fix round is not re-reviewed, so the second reading says what the first
 did; it is the block that is restored, over whatever the round's agent wrote.
+A write of the block that FAILS is not left there: `keyword_written` is
+recorded on the pull request only by a write that worked, every CHECKING
+visit writes the block again while it is missing, and a green run stays
+CHECKING until it is written (`keyword_pending`) -- otherwise one failed
+write would leave the worker's "Fixes #N" title to close the issue on merge.
 An unmet requirement the gated `fix` step went on to address is still named:
 nothing confirmed it.
 
@@ -96,7 +101,7 @@ from typing import Any, Callable, Mapping
 
 from swarm_common.states import TaskState
 
-from .errors import ApiError, Conflict, Gone, NotFound
+from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
 from .forgechecks import (
     GREEN,
     NONE,
@@ -120,7 +125,7 @@ from .issueruns import (
     failure_text,
     requirements_finding,
 )
-from .issuesync import _tenant, sync_pull_request
+from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
 from .schemas import WorkflowCreate
 
@@ -189,6 +194,20 @@ def keyword_finding(run: IssueRun) -> tuple[bool, list[str]]:
     about it: CI does not say what the issue asked for.
     """
     return run.requirements_met is True, list(run.requirements_unmet)
+
+
+def keyword_pending(run: IssueRun) -> bool:
+    """Whether the pull request is not recorded as carrying the block the run's finding needs.
+
+    `sync_pull_request` records `keyword_written` only when its write worked,
+    and the two places that (re)write the block clear it first. A failed
+    write -- a transient 5xx, a rate limit, a token without
+    `pull-requests: write` -- therefore leaves this True, and the next
+    CHECKING visit writes the block again instead of leaving a "Fixes #N"
+    title on a pull request whose review did not confirm every requirement.
+    """
+    closes, _ = keyword_finding(run)
+    return (run.pull_request or {}).get("keyword_written") != keyword_mark(closes)
 
 
 def _review_task_id(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> str | None:
@@ -324,7 +343,10 @@ def enter_checking(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> Is
         from_states={RunState.RUNNING},
         patch=lambda current: {
             "pr_task_id": task.id,
-            "pull_request": {**(current.pull_request or {}), "number": number, "url": url},
+            "pull_request": {
+                **(current.pull_request or {}), "number": number, "url": url,
+                "keyword_written": None,
+            },
         },
     )
     checking = evaluate_requirements(ctx, tenant_id, checking, workflow)
@@ -484,6 +506,12 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
     checked_at = _aware(recorded.get("checked_at"))
     if checked_at is not None and now - checked_at < timedelta(seconds=CI_READ_SECONDS):
         return run
+    if keyword_pending(run):
+        # The last write of the block failed: write it again, at the CI
+        # read's cadence, before anything below can call the run DONE.
+        closes, unmet = keyword_finding(run)
+        run = sync_pull_request(ctx, run, number, closes=closes, unmet=unmet)
+        recorded = dict(run.pull_request or {})
 
     writer: GitHubWriter = ctx.forge_writer
     token = ""
@@ -534,6 +562,15 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
         if reading.state == GREEN or (
             reading.state == NONE and now - seen_since >= timedelta(seconds=NO_CHECKS_SECONDS)
         ):
+            if keyword_pending(run):
+                # Green, but the pull request may still say "Fixes #N": a run
+                # is DONE only once its keyword block is written, so it stays
+                # CHECKING and the next visit writes it again.
+                log.warning(
+                    "issue run %s tenant=%s: green, keyword block not written yet",
+                    run.id, run.tenant_id,
+                )
+                return runs.patch(tenant_id, run.id, {"pull_request": record})
             return runs.transition(
                 tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
                 patch={"pull_request": record, "green_sha": head},
@@ -577,9 +614,31 @@ def _start_round(
     ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], excerpt: str, head: str,
     owner_auth: OwnerAuth,
 ) -> IssueRun:
-    """Claim round n+1 (CHECKING -> FIXING), then submit its one continuation."""
+    """Claim round n+1 (CHECKING -> FIXING), then submit its one continuation.
+
+    The submitter is resolved FIRST (`owner_auth`, which asks the directory
+    whether the run's creator is still a member of its tenant): a creator
+    who left fails the run with no round claimed and nothing submitted, and
+    a lookup that failed leaves the run CHECKING for the next read.
+    """
     runs = _runs(ctx)
     round_no = run.ci_fix_round + 1
+    try:
+        owner = owner_auth(ctx, run)
+    except UpstreamUnavailable:
+        log.warning("issue run %s: fix round %d waits: membership unresolved", run.id, round_no)
+        return runs.patch(tenant_id, run.id, {"pull_request": record})
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        log.warning("issue run %s: fix round %d refused (%s)", run.id, round_no, reason)
+        return runs.transition(
+            tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+            patch={
+                "pull_request": record,
+                "failure_excerpt": excerpt,
+                "error": failure_text(f"CI fix round {round_no} was refused: {reason}"),
+            },
+        )
 
     def _claim(current: IssueRun) -> dict[str, Any]:
         if current.ci_fix_round != run.ci_fix_round:
@@ -601,7 +660,7 @@ def _start_round(
     )
     try:
         spec = ci_fix_workflow(claimed, round_no, excerpt, head)
-        submission = ctx.submissions.submit_workflow(owner_auth(ctx, claimed), spec)
+        submission = ctx.submissions.submit_workflow(owner, spec)
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         log.warning("issue run %s: fix round %d refused (%s)", run.id, round_no, reason)
@@ -654,7 +713,9 @@ def from_fix_round(ctx: Any, tenant_id: str, run: IssueRun) -> IssueRun:
             tenant_id, run.id, RunState.CHECKING, by=ACTOR, from_states={RunState.FIXING},
             # Read CI at once: the head the round pushed is what is waited on.
             patch=lambda current: {
-                "pull_request": {**(current.pull_request or {}), "checked_at": None},
+                "pull_request": {
+                    **(current.pull_request or {}), "checked_at": None, "keyword_written": None,
+                },
             },
         )
         number = (checking.pull_request or {}).get("number")

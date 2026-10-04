@@ -4552,14 +4552,17 @@ export interface IssuePreviewRead {
 }
 
 /**
- * `issueruns.PlanStep`: an id, a title and a prompt, and optionally the files it
- * touches, the tests it adds and an estimate. Text only (invariant 10). The
- * optional fields are absent, not null, on a plan that did not set them.
+ * `issueruns.PlanStep`: an id, a title and a prompt, and optionally the earlier
+ * steps it needs, the files it touches, the tests it adds and an estimate. Text
+ * only (invariant 10). The optional fields are absent, not null, on a plan that
+ * did not set them.
  */
 export interface PlanStepDoc {
   step_id: string
   title: string
   prompt: string
+  /** Earlier step ids this step builds on. Absent in a plan that runs as a chain; the digest covers it. */
+  depends_on?: string[]
   files?: string[] | null
   tests?: string[] | null
   estimate?: string | null
@@ -4582,6 +4585,8 @@ export interface RunPlan {
   requirements?: string[] | null
   overlaps?: PlanOverlap[] | null
   estimate?: string | null
+  /** Drawn when a plan has them; absent from today's schema. */
+  risks?: string[]
 }
 
 /** One open pull request in `IssueRun.open_work`, masked. */
@@ -4601,6 +4606,23 @@ export interface OpenWork {
   issues_truncated: boolean
   pull_requests: OpenWorkPull[]
   pull_requests_truncated: boolean
+}
+
+/**
+ * `IssueRun.issue_read`: what the issue said when the run was created -- the
+ * preview's read (`forge.preview`), masked and with the body bounded to the
+ * preview's length, kept on the run at submission (lane U9 item 4).
+ */
+export interface IssueReadDoc {
+  title: string
+  labels: string[]
+  state: 'open' | 'closed'
+  comments: number
+  url: string
+  body: string
+  body_truncated: boolean
+  body_redacted: boolean
+  read_at: string | null
 }
 
 /** One transition, as `IssueRun.history` serves it. */
@@ -4627,6 +4649,8 @@ export interface IssueRun {
   plan_digest: string | null
   plan_revision: number
   plan_edited_by: string | null
+  /** `issueruns.plan_shape`: `8 steps in 4 stages (1 → 3 → 3 → 1), then review and fix`; null without a plan. */
+  plan_shape?: string | null
   /** Null until approval creates the workflow. */
   workflow_id: string | null
   created_by: string
@@ -4639,6 +4663,10 @@ export interface IssueRun {
   rejection_reason: string | null
   error: string | null
   history: RunTransition[]
+  /** Null when the read failed (`issue_read_error`), absent or null on a run created before runs kept it. */
+  issue_read?: IssueReadDoc | null
+  /** The forge read that failed at submission: its code and the API's message. */
+  issue_read_error?: { code: string; message: string } | null
   /** Null on runs created before the open-work read; absent from older servers. */
   open_work?: OpenWork | null
   /** The run's pull request once its workflow opened one; absent from older servers. */

@@ -39,6 +39,7 @@ import {
   type WorkflowRead,
 } from './api'
 import { agentName } from './agentlist'
+import { HELP } from './help'
 import { eventKind } from './events'
 import type { ApiError, Result } from './fetch'
 import {
@@ -590,7 +591,7 @@ export function TimelineLanesScreen({
       {att.status === 'error' ? (
         <div className="tl-state is-bad" role="alert">
           <p>
-            The attempts could not be read. /v1/attempts {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
+            The attempts could not be read: the read {failureWords(att.error)} at {CLOCK_S.format(att.at)}. Nothing is drawn, because nothing was read.
           </p>
           <Button size="sm" onClick={refresh}>
             Try again
@@ -598,7 +599,7 @@ export function TimelineLanesScreen({
         </div>
       ) : shown === null ? (
         <div className="tl-state" aria-busy="true">
-          <p>{`Reading /v1/attempts for ${rangeWords(win.since, win.until)}…`}</p>
+          <p>{`Reading attempts for ${rangeWords(win.since, win.until)}…`}</p>
           <div className="tl-skel" aria-hidden="true" />
           <div className="tl-skel is-short" aria-hidden="true" />
         </div>
@@ -667,11 +668,11 @@ export function TimelineLanesScreen({
       {shown !== null && att.status !== 'error' && (
         <p className="tl-cov">
           <span>
-            <b>{shown.rows.length}</b> attempts from {shown.pages === 1 ? 'page 1' : `pages 1–${shown.pages}`} of /v1/attempts (since {clock(win.since, days > 1)}, until {clock(win.until, days > 1)}) · {shown.next === null ? 'no next page' : 'a next page exists'}
+            <b>{shown.rows.length}</b> attempts from {shown.pages === 1 ? 'page 1' : `pages 1–${shown.pages}`} of the attempt list (since {clock(win.since, days > 1)}, until {clock(win.until, days > 1)}) · {shown.next === null ? 'no next page' : 'a next page exists'}
           </span>
           <span>an attempt created before the span is not on this read</span>
           {neverRan > 0 && <span>{neverRan} workflow {neverRan === 1 ? 'step' : 'steps'} with no attempt, from the workflow reads</span>}
-          <span>events: one page per lane in view, newest first (order=desc)</span>
+          <span>events: the newest page per lane in view</span>
           <span>State, profile and workflow filters run in this browser over the rows read</span>
           <span>times {tz}</span>
         </p>
@@ -905,15 +906,28 @@ function laneNote(lane: Lane, events: EventsRead | null, single: Task | string |
             ? 'the task list read failed'
             : `not on the task page, and over the ${MISSING_TASK_READS}-read cap or still reading`
           : 'not read'
-    return `${lane.taskId} · profile —, task not read (${why})`
+    return `profile —, task not read (${why})`
   }
-  const parts = [t.step_id !== null ? t.id : null, t.runner_profile].filter((x): x is string => x !== null)
+  // THE ID IS THE LABEL'S TOOLTIP, not the note's first word (walkthrough G).
+  const parts = [t.runner_profile]
   if (lane.neverRan) parts.push(TERMINAL_STATES.has(t.state) ? 'never ran · no attempt' : 'never ran yet · no attempt')
   else if (lane.attempts.length > 1) parts.push(`${lane.attempts.length} attempts`)
   if (!lane.neverRan && events?.status === 'error') {
     parts.push(`fence and cancel marks: — this lane's events read failed (${events.httpStatus ?? 'no answer'})`)
   }
   return parts.join(' · ')
+}
+
+/**
+ * HOW LONG A LANE'S ATTEMPTS HELD CAPACITY: its bars (held and fenced), not
+ * its parks or its waits, which hold nothing (invariant 1). Null for a lane
+ * that never ran, or whose every bar ended at an instant nobody wrote --
+ * a duration made of guesses is not one.
+ */
+function heldFor(lane: Lane): number | null {
+  const bars = lane.segs.filter((s) => (s.kind === 'hold' || s.kind === 'cut') && (s.endKnown || s.open))
+  if (bars.length === 0) return null
+  return bars.reduce((sum, s) => sum + Math.max(0, s.to - s.from), 0)
 }
 
 function LaneRow({
@@ -948,17 +962,27 @@ function LaneRow({
   }, [inView, lane.neverRan, lane.taskId, onSeen, readNonce])
   const t = lane.task
   const name = t !== null ? agentName(t) : lane.taskId
+  const held = heldFor(lane)
   const wide = until - since > 36 * 3_600_000
   const segs = lane.segs.filter((s) => s.to > since && s.from < until)
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
   return (
     <div ref={ref} className={selected ? 'tl-row is-sel' : 'tl-row'} data-lane={lane.taskId}>
       <div className="tl-lab">
+        {/* THE NAME, THE STATE AND HOW LONG IT HELD CAPACITY -- `implement ✓
+            · 1h 18m` (walkthrough G, owner 2026-10-03). The label led with
+            the task id; the id is the name's tooltip now. */}
         <b>
-          {t !== null && <StateMark state={t.state} bare />}
-          <button type="button" className="tl-name" aria-pressed={selected} onClick={onSelect} title={lane.taskId}>
+          <button type="button" className="tl-name" aria-pressed={selected} onClick={onSelect} title={`${name} · ${lane.taskId}`}>
             {name}
           </button>
+          {t !== null && <StateMark state={t.state} bare />}
+          {held !== null && (
+            <span className="tl-dur" title="Time its attempts held capacity">
+              {' · '}
+              {formatDuration(held)}
+            </span>
+          )}
         </b>
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>
         {events?.status === 'error' && !lane.neverRan && (
@@ -1034,10 +1058,10 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
   return (
     <div className="tl-strip">
       {strip.status === 'loading' ? (
-        <p className="tl-q">Reading /v1/outcomes…</p>
+        <p className="tl-q">Reading outcomes…</p>
       ) : strip.status === 'error' ? (
         <p>
-          <span>{`Outcomes not read (/v1/outcomes${strip.error.httpStatus === null ? '' : ` ${strip.error.httpStatus}`}: ${strip.error.message}).`}</span> The lanes below are unaffected.
+          <span>{`Outcomes not read (${strip.error.httpStatus === null ? '' : `HTTP ${strip.error.httpStatus}: `}${strip.error.message}).`}</span> The lanes below are unaffected.
         </p>
       ) : (
         <p className="tl-strip1">
@@ -1079,8 +1103,11 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
         </p>
       )}
       {strip.status !== 'ok' && strip.status !== 'loading' && link}
+      {/* WHAT IT COUNTS, IN THE READER'S WORDS (walkthrough E): where the
+          counts come from is the Outcomes help topic, one click away. */}
       <p className="tl-q">
-        Decided counts from GET /v1/outcomes over {rangeWords(since, until)}; parks and fences counted from the lanes drawn, not the whole tenant.
+        Decided counts cover {rangeWords(since, until)}; parks and fences count only the lanes drawn.{' '}
+        <a className="ctl-link" href={`#${HELP['outcome-buckets'].anchor}`}>How these are counted</a>
       </p>
     </div>
   )

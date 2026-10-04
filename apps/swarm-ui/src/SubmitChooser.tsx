@@ -1,5 +1,6 @@
 import { useEffect } from 'react'
 import { Button, NamedMark } from './components'
+import { HelpCard } from './HelpCard'
 import { PageHead } from './Shell'
 import './styles/submit.css'
 
@@ -125,14 +126,15 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
         </div>
       </div>
       <section className="sb-card sb-recent" aria-labelledby="submit-recent-h">
-        <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
+        <div className="sb-card-hr">
+          <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
+          <HelpCard topic="recent-submissions" />
+        </div>
+        {/* WHAT THE USER SEES AND CAN DO (walkthrough E): why the list is
+            empty -- the API keeps no per-person list yet -- is behind the `?`. */}
         <p className="sb-empty">
           <NamedMark mark="queued" hue="neu" />
-          <span>
-            <b>No recent submissions to show yet.</b> This list needs the API to keep a short per-person list of
-            what you submitted: task or workflow, name, settings, when. It does not today, so the card stays empty
-            rather than guessing from the agent list.
-          </span>
+          <span>No recent submissions yet.</span>
         </p>
       </section>
       <p className="sb-note sb-foot">

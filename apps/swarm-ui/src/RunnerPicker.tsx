@@ -173,12 +173,80 @@ function canStartText(profile: RunnerProfile): string {
 const isOff = (p: RunnerProfile) => (p.available ?? true) === false
 
 /**
+ * ONLY THE USABLE OPTIONS, WHEN MOST ARE NOT (walkthrough D, owner
+ * 2026-10-03). The issue form drew seven disabled cards with long orange
+ * explanations around the one runner it can use. When more entries are
+ * disabled than usable, the list shows the usable ones -- and the chosen
+ * one, whatever it is -- and holds the rest behind "Other runners (N
+ * unavailable)". A list with most entries usable keeps every one in place.
+ * One rule for the issue form, the task form and the workflow form's steps.
+ */
+export function runnerSplit(
+  profiles: ReadonlyArray<readonly [string, RunnerProfile]>,
+  chosen: string,
+  /** Hold back every unusable entry, however few: a form that decides the runner itself (the issue form). */
+  always = false,
+): { shown: ReadonlyArray<readonly [string, RunnerProfile]>; held: ReadonlyArray<readonly [string, RunnerProfile]> } {
+  const off = profiles.filter(([n, p]) => isOff(p) && n !== chosen)
+  const shown = profiles.filter(([n, p]) => !isOff(p) || n === chosen)
+  // Nothing usable at all: the list is the reasons, so it stays whole.
+  if ((!always && off.length * 2 <= profiles.length) || off.length === 0 || shown.length === 0) return { shown: profiles, held: [] }
+  return { shown, held: off }
+}
+
+/**
+ * A DISABLED RUNNER'S ONE-LINE REASON (walkthrough E). The platform's
+ * `disabled_reason` is written for operators -- "the merge chain (#295) is
+ * disabled for every tenant until signed step specs (#342)…" -- so on the
+ * form it is a short reason a submitter can act on, and the platform's own
+ * words are the line's tooltip and the list's `?`. A reason that is already
+ * one short plain sentence is shown as it is.
+ */
+export function shortReason(reason: string | null | undefined): string {
+  const r = (reason ?? '').trim()
+  if (r === '') return 'Not available'
+  if (r.length <= 48 && !/[#/()_]|\d{3}/.test(r)) return r.replace(/\.$/, '')
+  const why = /\b(disabled|until|not (yet )?enabled)\b/i.test(r)
+    ? 'Not enabled yet'
+    : /\b(credential|key|token|sign[- ]?in)\b/i.test(r)
+      ? 'Its credential was refused'
+      : 'Not available'
+  // What to do instead, when the platform says: "… Use claude-code."
+  const instead = /\bUse ([A-Za-z0-9][\w.-]*?)\.?$/.exec(r)
+  return instead === null ? why : `${why}. Use ${instead[1]}`
+}
+
+/** The runners a list holds back, behind a disclosure, each with its reason. */
+function HeldRunners({ held }: { held: ReadonlyArray<readonly [string, RunnerProfile]> }) {
+  if (held.length === 0) return null
+  return (
+    <details className="sbf-runners-more">
+      <summary>Other runners ({held.length} unavailable)</summary>
+      {/* THE WHY IS ONE CLICK AWAY, in Help (walkthrough E). A link, not a
+          `?`: the console's glyphs are rationed (tests/help.test.ts, B7.4),
+          and this list is drawn on two forms. */}
+      <a className="sbf-runners-why ctl-link" href={`#${HELP['runner-unavailable'].anchor}`}>
+        Why a runner is unavailable
+      </a>
+      <ul>
+        {held.map(([n, p]) => (
+          <li key={n} title={p.disabled_reason || undefined}>
+            <span className="sbf-runner-name mono">{n}</span>
+            <span className="sbf-runner-why">{shortReason(p.disabled_reason)}</span>
+          </li>
+        ))}
+      </ul>
+    </details>
+  )
+}
+
+/**
  * THE TASK FORM'S RUNNERS, AS TWO-COLUMN CARDS (submit.html F1, picked
  * 2026-10-01). Each card is the name, then its size and backend and the key
  * it needs, then how many can start now -- or, for a disabled runner, the
  * platform's reason in that line's place.
  */
-export function RunnerPicker({ group, label, profiles, chosen, keys, onPick }: {
+export function RunnerPicker({ group, label, profiles, chosen, keys, onPick, onlyUsable = false }: {
   /** The radio group's name. Unique per picker on the page. */
   group: string
   /** The group's accessible name. */
@@ -188,10 +256,14 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick }: {
   chosen: string
   keys: ProviderKeys
   onPick: (name: string) => void
+  /** Show only the usable runners however few are held back (the issue form, which decides the runner itself). */
+  onlyUsable?: boolean
 }) {
+  const { shown, held } = runnerSplit(profiles, chosen, onlyUsable)
   return (
+    <>
     <ul className="sbf-runners is-cards" role="radiogroup" aria-label={label}>
-      {profiles.map(([n, p]) => {
+      {shown.map(([n, p]) => {
         const off = isOff(p)
         return (
           <li key={n} role="none">
@@ -205,7 +277,7 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick }: {
                   <span className="sbf-runner-key"><KeyFact provider={p.provider} keys={keys} /></span>
                 </span>
                 {off
-                  ? <span className="sbf-runner-off">disabled: {p.disabled_reason || 'refused by the platform'}</span>
+                  ? <span className="sbf-runner-off" title={p.disabled_reason || undefined}>{shortReason(p.disabled_reason)}</span>
                   : <span className="sbf-runner-room"><CanStartFact profile={p} /></span>}
               </span>
             </label>
@@ -213,6 +285,8 @@ export function RunnerPicker({ group, label, profiles, chosen, keys, onPick }: {
         )
       })}
     </ul>
+    <HeldRunners held={held} />
+    </>
   )
 }
 
@@ -234,11 +308,24 @@ export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
     <select id={id} className="mono sb-runner-select" aria-label={label} value={chosen}
       aria-invalid={chosen === '' || undefined} onChange={(e) => onPick(e.target.value)}>
       <option value="" disabled>choose a runner</option>
-      {profiles.map(([n, p]) => (
-        <option key={n} value={n} disabled={isOff(p)}>
-          {isOff(p) ? `${n} · disabled` : `${n} · ${canStartText(p)}`}
+      {runnerSplit(profiles, chosen).shown.map(([n, p]) => (
+        <option key={n} value={n} disabled={isOff(p)} title={isOff(p) ? p.disabled_reason || undefined : undefined}>
+          {isOff(p) ? `${n} · ${shortReason(p.disabled_reason).toLowerCase()}` : `${n} · ${canStartText(p)}`}
         </option>
       ))}
+      {/* The held runners, in a group of their own: a select has no disclosure. */}
+      {(() => {
+        const { held } = runnerSplit(profiles, chosen)
+        return held.length === 0 ? null : (
+          <optgroup label={`Other runners (${held.length} unavailable)`}>
+            {held.map(([n, p]) => (
+              <option key={n} value={n} disabled title={p.disabled_reason || undefined}>
+                {`${n} · ${shortReason(p.disabled_reason).toLowerCase()}`}
+              </option>
+            ))}
+          </optgroup>
+        )
+      })()}
     </select>
   )
 }

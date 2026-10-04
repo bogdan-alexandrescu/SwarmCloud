@@ -647,7 +647,8 @@ export function PageHead({
   return (
     <div className="c-phead">
       <div className="head">
-        <h1 id={headingId}>{title}</h1>
+        {/* Two lines at most, the whole title in its tooltip (walkthrough C). */}
+        <h1 id={headingId} title={title}>{title}</h1>
         {/* ONE `?` BY THE TITLE: the screen's own topic when it has one,
             otherwise its section's question (Q2). */}
         {help !== undefined ? <HelpCard topic={help} /> : sectionHelp}

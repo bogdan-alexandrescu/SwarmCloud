@@ -148,6 +148,18 @@ is something to read or write, held in one frame, passed to redaction as a
 known literal, and dropped; every forge error is a constant sentence that
 names the missing permission and never quotes the token.
 
+**The creator is asked about again before anything is submitted as them.**
+The tick submits an auto approval, and up to `fix_rounds` CI fix rounds that
+push to the tenant's repository, as the run's creator -- possibly long after
+the run was created. A person removed from the tenant's group must not keep
+doing that, so `run_owner_auth` asks the directory whether the creator is
+*still* a member, every time (`Authenticator.is_tenant_member`: the same
+per-group Cloud Identity check every request's tenant resolution makes; a
+personal tenant is its own address). Removed: the run is FAILED, naming why,
+and nothing is submitted -- an `auto` run goes `PLANNED → FAILED`, a CI fix
+round is never claimed. A lookup that fails (Cloud Identity unavailable) is
+not a guess either way: the run waits, unchanged, for the next tick.
+
 The permissions it needs, on every repository a tenant submits issues from, are
 tabled in [multi-tenancy.md](multi-tenancy.md#what-the-forge-credential-must-be-allowed):
 `Contents` and `Pull requests` read/write (unchanged, for the agents' push and
@@ -279,6 +291,15 @@ tells its agent not to write one (`NO_CLOSING_KEYWORD`), because a keyword an
 agent wrote in a commit message or `pr-body.md` would close the issue on merge
 whatever the review found. A requirement the gated fix went on to address is
 still named as left: nothing confirmed it.
+
+**A failed write of the block is written again, and holds the run.** The
+worker titles a pull request for a step with an `issue` input "Fixes #N", and
+only this write neutralises it. So it is not left to one attempt:
+`pull_request.keyword_written` is recorded only by a write that worked, every
+CHECKING visit writes the block again while it is missing, and a run whose CI
+is green stays CHECKING until it is written (`issueci.keyword_pending`). A pull
+request a person merges before then is DONE regardless -- there is nothing
+left to protect -- and `writeback_error` says why the block was not written.
 
 ## Auto-merge: visible, refused, and why
 
@@ -413,4 +434,6 @@ exists, has the sha to pin.
 | invariant 9: another tenant's run is a 404 on every route and is never ticked or read on GitHub | `test_issue_runs.py::test_another_tenants_run_reads_404_on_every_route`, `test_issue_run_tick.py::test_another_tenants_run_is_never_visited`, `test_issue_run_ci.py::test_another_tenants_checking_run_is_a_404_and_reads_no_github` |
 | invariant 9: every read uses the run's own tenant's token, and a forge refusal creates nothing | `test_issue_open_work.py::test_the_snapshot_is_read_for_the_named_tenant_only`, `test_issue_runs.py::test_a_forge_refusal_refuses_the_run_and_creates_nothing`, `test_issue_runs.py::test_a_tenant_with_no_git_secret_cannot_create_a_run` |
 | no token in any comment, error or URL | `test_issue_writeback.py::test_the_token_is_only_ever_in_the_authorization_header`, `test_issue_writeback.py::test_a_token_quoted_in_the_plan_is_masked_in_the_comment`, `test_issue_writeback.py::test_each_refusal_is_its_own_code_and_never_quotes_the_token` |
+| invariant 9: nothing is submitted as a creator who has left the tenant; an unresolved lookup waits | `test_issue_run_tick.py::test_an_auto_run_whose_creator_left_the_tenant_fails_and_submits_nothing`, `test_issue_run_ci.py::test_a_creator_removed_from_the_tenant_fails_the_run_instead_of_a_fix_round`, `test_issue_run_ci.py::test_an_unresolved_membership_spends_no_round_and_the_next_read_does`, `test_issue_run_tick.py::test_membership_is_asked_of_the_directory_for_the_tenants_one_group` |
+| a failed keyword write is written again, and a green run is not DONE without it | `test_issue_run_keyword.py::test_a_failed_keyword_write_is_written_again_and_a_green_run_waits_for_it` |
 | a failed write-back is recorded, never raised, and not retried every read | `test_issue_writeback.py::test_a_403_is_recorded_on_the_run_and_never_raised`, `test_issue_writeback.py::test_the_same_failed_write_is_not_retried_on_every_read` |

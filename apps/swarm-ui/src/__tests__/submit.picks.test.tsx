@@ -126,8 +126,10 @@ describe('the chooser draws the three picked cards', () => {
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     expect(recent, 'no recent card').not.toBeNull()
     expect(visible(recent.querySelector('.sb-card-h'))).toBe('Start from a recent one')
-    expect(visible(recent)).toContain('No recent submissions to show yet.')
-    expect(visible(recent)).toMatch(/does not/)
+    // WHAT THE USER SEES AND CAN DO (walkthrough E): the empty state in one
+    // line, and why it is empty -- the API keeps no such list -- behind its `?`.
+    expect(visible(recent.querySelector('.sb-empty'))).toBe('No recent submissions yet.')
+    expect(recent.querySelector('button[aria-label^="Help: "]'), 'the why is not behind a `?`').not.toBeNull()
     expect(recent.querySelector('[data-mark]'), 'the empty state carries no mark').not.toBeNull()
     expect(container.querySelector(OLD_SK('recent-empty'))).toBeNull()
     // Nothing invented: no digit in the region.
@@ -162,7 +164,9 @@ describe('the task form is F1', () => {
     // A disabled runner stays listed with its reason in place of the room.
     const codex = runnerCard(container, 'codex')
     expect(codex.querySelector('input')!.disabled).toBe(true)
-    expect(visible(codex.querySelector('.sbf-runner-off'))).toMatch(/^disabled: .*Use claude-code/)
+    // One short line (walkthrough E); the platform's words are its tooltip.
+    expect(visible(codex.querySelector('.sbf-runner-off'))).toBe('Not enabled yet. Use claude-code')
+    expect(codex.querySelector('.sbf-runner-off')!.getAttribute('title')).toMatch(/codex is disabled on this platform/)
   })
 
   it('draws steps 2 and 3 as cards, dimmed until a runner is chosen', async () => {
@@ -211,7 +215,7 @@ describe('the workflow form is G1', () => {
     expect(names).toEqual(['', 'browser', 'claude-code', 'codex', 'generic', 'mock'])
     const codex = [...select.options].find((o) => o.value === 'codex')!
     expect(codex.disabled).toBe(true)
-    expect(codex.textContent).toMatch(/disabled/)
+    expect(codex.textContent).toMatch(/not enabled yet/)
     expect(step.classList.contains('is-bad'), 'an unchosen step is not flagged').toBe(true)
 
     fireEvent.change(select, { target: { value: 'mock' } })

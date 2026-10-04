@@ -47,14 +47,14 @@ from dataclasses import dataclass, field
 from fastapi import APIRouter, Depends, Query, Response, status
 
 from swarm_common.identity import Principal
-from swarm_common.models import new_id
+from swarm_common.models import Tenant, new_id
 from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
+from ..errors import ApiError, Conflict, Forbidden, Gone, NotFound, UpstreamUnavailable
 from .. import issueci
-from ..forge import ForgeReadError, read_open_work
+from ..forge import ForgeReadError, preview, read_open_work
 from ..issueruns import (
     AUTO_APPROVER,
     MAX_PLAN_BYTES,
@@ -66,6 +66,7 @@ from ..issueruns import (
     RunState,
     compile_plan,
     failure_text,
+    issue_read_from_preview,
     parse_plan,
     plan_digest,
     planner_task,
@@ -214,6 +215,16 @@ def _approve(
     )
 
 
+class RunOwnerNotMember(Forbidden):
+    """The run's creator is no longer a member of the run's tenant.
+
+    Nothing more is submitted as them: the run FAILS with this message
+    (`_advance_state`, `issueci._start_round`).
+    """
+
+    code = "run_owner_not_member"
+
+
 def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     """The submitter of an AUTO approval: the run's creator, in the run's tenant.
 
@@ -230,11 +241,28 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     created by one), and `tenant_principal` is the STORED one, so
     `SubmissionService.tenant_for` runs its collision, secret-admin and
     disabled checks against the tenant as registered.
+
+    AND ONLY WHILE THEY ARE STILL A MEMBER. The tick submits as the creator
+    long after the run was created -- an auto approval, up to `fix_rounds`
+    CI fix rounds that push to the tenant's repository -- so membership is
+    asked of the directory again here, every time (`Authenticator.
+    is_tenant_member`, invariant 9). Removed from the tenant:
+    `RunOwnerNotMember`, and the run fails. A lookup that fails:
+    `UpstreamUnavailable`, and the run waits for the next tick.
     """
     tenant = ctx.store.get_tenant(run.tenant_id)
     if tenant is None:
         raise NotFound(f"tenant {run.tenant_id!r} not found")
     email = run.created_by
+    if not ctx.authenticator.is_tenant_member(email, tenant):
+        log.warning(
+            "issue run %s tenant=%s: its creator is no longer a member; nothing submitted",
+            run.id, run.tenant_id,
+        )
+        raise RunOwnerNotMember(
+            f"the run's creator {email or '(not recorded)'} is no longer a member of tenant "
+            f"{run.tenant_id!r}, so nothing more is submitted on their behalf"
+        )
     return AuthContext(
         principal=Principal(
             email=email,
@@ -278,6 +306,11 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
                 run = _approve(
                     ctx, run_owner_auth(ctx, run), tenant_id, run,
                     digest=run.plan_digest, by=AUTO_APPROVER,
+                )
+            except RunOwnerNotMember as gone:
+                return _runs(ctx).transition(
+                    tenant_id, run.id, RunState.FAILED, by=SYSTEM,
+                    from_states=_PLANNED_ONLY, patch={"error": failure_text(gone.message)},
                 )
             except Conflict:
                 raise
@@ -361,6 +394,43 @@ def advance_tenant_runs(ctx: AppContext, tenant_id: str, *, limit: int) -> Advan
 
 
 # --------------------------------------------------------------------------
+# what the issue said at submission
+# --------------------------------------------------------------------------
+
+def _read_issue(
+    ctx: AppContext, auth: AuthContext, tenant_id: str, ref
+) -> tuple[dict | None, dict | None]:
+    """The issue as the preview reads it, for the run to keep; or why it could not be read.
+
+    THE SAME READ AS `GET /v1/issues/preview` (lane U9 item 4): the caller's
+    tenant's forge token, `forge.preview`'s masking and body bound. The token
+    lives inside `preview` only; nothing about it is returned or logged here.
+    A failure does not refuse the run -- the planner reads the issue itself,
+    on the worker -- it is kept as `issue_read_error`, so the run page says
+    why its card is empty instead of pretending the issue had nothing in it.
+    """
+    if ctx.forge_tokens is None or ctx.forge is None:
+        return None, {"code": "read_failed", "message": "this API has no forge reader configured"}
+    tenant = ctx.store.get_tenant(tenant_id) or Tenant(
+        tenant_id=tenant_id,
+        kind="group",
+        principal=auth.tenant_principal or auth.email,
+        created_at=ctx.now(),
+    )
+    try:
+        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+    except ForgeReadError as refused:
+        log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
+        return None, {"code": refused.code, "message": refused.message}
+    except Exception as exc:  # noqa: BLE001 -- the run is created either way
+        # The type only: an exception's text can quote a request.
+        log.warning("issue run read tenant=%s issue=%s failed (%s)", tenant_id, ref.short, type(exc).__name__)
+        return None, {"code": "read_failed", "message": f"the issue could not be read ({type(exc).__name__})"}
+    log.info("issue run read tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
+    return issue_read_from_preview(read, ctx.now()), None
+
+
+# --------------------------------------------------------------------------
 # routes
 # --------------------------------------------------------------------------
 
@@ -402,6 +472,9 @@ def create_run(
     # sit PLANNING for ever.
     submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id, open_work)])
     planner = submission.tasks[0]
+    # After the planner, in the tenant `submit_tasks` resolved: what the run
+    # page shows under "Read from the issue".
+    issue_read, issue_read_error = _read_issue(ctx, auth, planner.tenant_id, ref)
     now = ctx.now()
     run = _runs(ctx).create(
         IssueRun(
@@ -417,6 +490,8 @@ def create_run(
             fix_rounds=body.fix_rounds,
             planner_task_id=planner.id,
             open_work=open_work,
+            issue_read=issue_read,
+            issue_read_error=issue_read_error,
         )
     )
     response.headers["Location"] = f"/v1/runs/{run.id}"

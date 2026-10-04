@@ -33,7 +33,7 @@ import './styles/intake.css'
  *
  * 3. WHAT IT MAY DO ON ITS OWN, decided now and nowhere else (#454): plan
  *    approval (Required by default), auto-merge (drawn OFF and DISABLED,
- *    "requires the merge step (#295)", unless the preview's `auto_merge`
+ *    "Not available yet", with the why in a tooltip, unless the preview's `auto_merge`
  *    says POST /v1/runs would take it -- `issueruns.auto_merge_availability`,
  *    the same answer `refuse_auto_merge` enforces; a server that does not say
  *    is read as unavailable), and the fix-round cap (3, within 1-5).
@@ -54,11 +54,15 @@ export const MIN_FIX_ROUNDS = 1
 export const MAX_FIX_ROUNDS = 5
 export const DEFAULT_FIX_ROUNDS = 3
 
-/** Why every runner but one is held back, in the card's "disabled:" line. */
-const ONLY_RUNNER = `an issue run plans and builds with ${ISSUE_RUN_PROFILE}; POST /v1/runs takes no runner`
+/**
+ * Why every runner but one is held back, as the submitter reads it
+ * (walkthrough E): the reason the API takes none -- the run's create body has
+ * no runner field -- is behind the list's `?` (`runner-unavailable`).
+ */
+const ONLY_RUNNER = `Issue runs always use ${ISSUE_RUN_PROFILE}`
 
 /** Why auto-merge is held back, in the switch's line and the summary. */
-export const AUTO_MERGE_REASON = 'requires the merge step (#295)'
+export const AUTO_MERGE_REASON = 'not available yet'
 
 /** The router address of one run: `/runs/<id>`. */
 export function runAddress(id: string): string {
@@ -234,7 +238,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
 
         <Move n={2} title="The runner it plans and builds with" dim={read === null}>
           <RunnerPicker group="issue-runner" label="runner" profiles={catalogue} chosen={ISSUE_RUN_PROFILE}
-            keys={keys} onPick={() => {}} />
+            keys={keys} onPick={() => {}} onlyUsable />
           {runner === null && (
             <p className="warn-text" role="alert">
               {ISSUE_RUN_PROFILE} is not in this tenant&rsquo;s catalogue, so the API would have no runner to plan with.
@@ -245,10 +249,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               {ISSUE_RUN_PROFILE} is disabled for this tenant: {runner?.disabled_reason || 'refused by the platform'}.
             </p>
           )}
-          <p className="sb-note">
-            By name only. The planner and every step it plans run as {ISSUE_RUN_PROFILE}; the API chooses it, and the
-            run takes no other.
-          </p>
+          <p className="sb-note">The planner and every step it plans run as {ISSUE_RUN_PROFILE}.</p>
         </Move>
 
         <Move n={3} title="Decide what it may do on its own" dim={read === null}>
@@ -290,9 +291,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
                     : 'Off (default): a person merges the run’s pull request.'}
                 </small>
               ) : (
-                <small>
-                  Off, and {AUTO_MERGE_REASON}: the API refuses auto-merge until the merge step ships. A person merges
-                  the run&rsquo;s pull request.
+                /* What the submitter sees and can do (walkthrough E); why it is
+                   off -- the merge chain has not shipped and the API refuses
+                   auto-merge -- is the line's tooltip, and the API's own
+                   reason when the preview served one. */
+                <small title="The merge chain has not shipped yet, and the API refuses auto-merge until it does.">
+                  Not available yet. A person merges the run&rsquo;s pull request.
                   {mergeServed?.reason && <> The API says: <i>{mergeServed.reason}</i></>}
                 </small>
               )}

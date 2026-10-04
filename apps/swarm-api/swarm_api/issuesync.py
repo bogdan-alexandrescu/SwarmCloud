@@ -90,20 +90,23 @@ def _upsert(
 
 def _record_failure(
     runs: IssueRuns, run: IssueRun, error: Exception, *, attempt: str, now: Any,
-    changes: dict[str, Any],
+    changes: dict[str, Any] | Callable[[IssueRun], dict[str, Any]],
 ) -> IssueRun:
     code = error.code if isinstance(error, ApiError) else type(error).__name__
     message = error.message if isinstance(error, ApiError) else (
         f"the write-back failed ({type(error).__name__})"
     )
     log.warning("issue run %s tenant=%s: write-back failed (%s)", run.id, run.tenant_id, code)
-    try:
-        return runs.patch(run.tenant_id, run.id, {
-            **changes,
+    def _patch(current: IssueRun) -> dict[str, Any]:
+        return {
+            **(changes(current) if callable(changes) else changes),
             "writeback_error": failure_text(f"{code}: {message}"),
             "writeback_failed_at": now,
             "writeback_attempt": attempt,
-        })
+        }
+
+    try:
+        return runs.patch(run.tenant_id, run.id, _patch)
     except Exception as exc:
         log.warning("issue run %s: write-back failure not recorded (%s)", run.id, type(exc).__name__)
         return run
@@ -221,6 +224,11 @@ def _delete_losers(
                 )
 
 
+def keyword_mark(closes: bool) -> str:
+    """What `pull_request.keyword_written` holds once that block is on the pull request."""
+    return "closes" if closes else "part_of"
+
+
 def sync_pull_request(
     ctx: Any,
     run: IssueRun,
@@ -237,6 +245,14 @@ def sync_pull_request(
     body does not already say exactly that, and stores `pull_request`
     `{number, url, head_sha}` plus whatever `extra` adds (`checks`,
     `merged`). Then the status comment follows, through `sync_issue`.
+
+    THE KEYWORD IS RECORDED ONLY WHEN IT WAS WRITTEN. A write that worked
+    stores `pull_request.keyword_written` as `keyword_mark(closes)`; a write
+    that failed clears it. Until it reads right, the pull request may still
+    carry the worker's "Fixes #N" title, which closes the issue on a squash
+    merge whatever the review found, so the CI loop writes the block again
+    on every CHECKING visit and does not call a run DONE before it is
+    written (`issueci.keyword_pending`).
     """
     runs = IssueRuns(ctx.db, now=ctx.now)
     token = ""
@@ -263,11 +279,16 @@ def sync_pull_request(
             "url": pull.url,
             "head_sha": pull.head_sha,
             "merged": pull.merged,
+            "keyword_written": keyword_mark(closes),
         }
     except Exception as exc:
         token = ""
         return _record_failure(
-            runs, run, exc, attempt=f"pull:{int(number)}", now=ctx.now(), changes={}
+            runs, run, exc, attempt=f"pull:{int(number)}", now=ctx.now(),
+            changes=lambda current: (
+                {} if current.pull_request is None
+                else {"pull_request": {**current.pull_request, "keyword_written": None}}
+            ),
         )
     finally:
         token = ""

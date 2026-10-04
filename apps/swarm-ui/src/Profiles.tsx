@@ -90,7 +90,7 @@ function Catalogue({ capacity }: { capacity: Capacity }) {
         <h2>The catalogue came back with no entries</h2>
         <p className="muted">
           The capacity read succeeded and returned {capacity.pools.length} pools, so
-          this is not a failed query — <code>runner_profiles</code> itself arrived
+          this is not a failed read — the runner catalogue itself arrived
           empty, and nothing can be submitted until a profile is registered.
         </p>
       </section>

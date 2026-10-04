@@ -359,6 +359,21 @@ function cell(card: HTMLElement, stepId: string, col: string): HTMLElement {
   return td!
 }
 
+/**
+ * A step's files: the Inputs column is a count, and its files open in the row
+ * under the step (walkthrough A, 2026-10-03). Opens it and returns that row;
+ * a step that reads nothing has no control, and its cell is returned.
+ */
+function inputsOf(card: HTMLElement, stepId: string): HTMLElement {
+  const td = cell(card, stepId, 'inputs')
+  const toggle = td.querySelector<HTMLButtonElement>('button[aria-expanded]')
+  if (toggle === null) return td
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle)
+  const row = td.closest('tr')!.nextElementSibling as HTMLElement | null
+  expect(row?.classList.contains('wf-xrow'), `${stepId}'s files did not open under it`).toBe(true)
+  return row!
+}
+
 function sortBy(card: HTMLElement, col: string): HTMLElement {
   const th = card.querySelector<HTMLElement>(`.wf-table th[data-col="${col}"]`)
   expect(th, `no ${col} column head`).toBeTruthy()
@@ -813,14 +828,15 @@ describe('U3: an edge that carries a file', () => {
 
   it('lists staged files in the table, with their size, and one from the submission as such', async () => {
     const old = await openPage('wf_old', 'table')
-    const inputs = cell(old, 'build', 'inputs')
+    expect(cell(old, 'build', 'inputs').textContent).toBe('2 files')
+    const inputs = inputsOf(old, 'build')
     expect(inputs.textContent).toContain('plan.md')
     expect(inputs.textContent).toContain('2 KiB')
     expect(inputs.textContent).toContain('brief.txt')
     expect(inputs.textContent).toContain('submission')
     // A declared input on a step still running is not "not staged".
     await openPage('wf_new', 'table')
-    const fresh = cell(cardOf('wf_new'), 'build', 'inputs')
+    const fresh = inputsOf(cardOf('wf_new'), 'build')
     expect(fresh.textContent).toContain('plan.md')
     expect(fresh.textContent).toContain('reported at finish')
     // A step that declares nothing says so; it is not an absence.
@@ -1106,7 +1122,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     ])
     const { container } = render(<Card w={w} tasks={tasks} />)
     fireEvent.click(within(container.querySelector<HTMLElement>('.wf-viewbar')!).getByText('Table'))
-    const td = cell(container as HTMLElement, 'merge', 'inputs')
+    const td = inputsOf(container as HTMLElement, 'merge')
     const files = [...td.querySelectorAll('.wf-input')].map((el) => (el.textContent ?? '').split(' ←')[0])
     expect(files, 'the inputs follow the map, not depends_on').toEqual(['left.md', 'right.md'])
     // ONE LINE EACH: a break between the two, and no comma-joined run for the
@@ -1180,7 +1196,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     expect(layer!.querySelectorAll('.wf-link.is-order .wf-edge-halo')).toHaveLength(1)
   })
 
-  it('WF-22: shows the sample mark only while an open card draws step figures', async () => {
+  it('WF-22: shows the sample mark in the head row of the table whose figures it qualifies', async () => {
     // Twelve tasks is the attempt read's ceiling; this board asked for more,
     // so the mark has something to say.
     const { usage } = board()
@@ -1189,31 +1205,24 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       data: { ...usage, notSampled: new Set(['t_beyond']), tasksRequested: 8 },
       fetchedAt: T0,
     } satisfies Result<WorkflowUsage>)
-    // ON ONE WORKFLOW'S PAGE since the board form was removed (2026-10-01);
-    // the views are the page's tabs. The board's Rows form, which drew no step
-    // figure, went with it.
+    // WALKTHROUGH A (owner, 2026-10-03): the mark was a chip in a strip ABOVE
+    // the card, floating apart from the figures it qualifies. It is in the
+    // Steps table's own head row now, inside the card -- on the Table tab, and
+    // under the Graph, where the page draws the same table.
     const c = await openPage('wf_new', 'table')
-    const mark = () => document.querySelector('.wf-caveats .ctl-mark.is-partial')
-    // The Table draws cost and tokens per step: the coverage of that read is
-    // worth stating there. Waiting for it here is also what proves the read
-    // has LANDED, so the absences below are not just an early render.
+    const mark = () => document.querySelector('.ctl-mark.is-partial')
+    // Waiting for it here is also what proves the read has LANDED.
     await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
+    expect(mark()!.closest('.wf-table-head'), 'the mark is not in the table head row').not.toBeNull()
+    expect(mark()!.closest('.wf-card'), 'the mark is outside the card').not.toBeNull()
+    expect(document.querySelector('.wf-chrome'), 'an empty strip above the card').toBeNull()
     // The Timeline draws times from the task read, not the sample.
     chooseTab(c, 'Timeline')
     expect(mark(), 'a caveat about figures nobody can see').toBeNull()
-    // AH-24: AFTER THE LABEL OR HEADING, NEVER AFTER A VALUE. The board's one
-    // `?` trailed the caveats -- `6/8 sampled ?` -- where it read as a
-    // footnote on the figure. #161's first version moved it to LEAD the
-    // strip, which has no label, so it followed nothing. The glyph explains a
-    // property of the whole screen (a word where a digit would be, on every
-    // absent figure), so it follows the screen's heading -- the workflow's id,
-    // on its page -- in the page head, and is there whether any caveat is
-    // drawn or none.
-    // MUTATION: move it back into `.wf-caveats`, at either end.
+    // AH-24: the board's one `?` follows the screen's heading, never a value.
     chooseTab(cardOf('wf_new'), 'Table')
     await waitFor(() => expect(mark()?.textContent).toBe('6/8 sampled'))
-    const caveats = document.querySelector('.wf-caveats')!
-    expect(caveats.querySelector('button[aria-label^="Help: "]'), 'the board `?` is still among the caveats').toBeNull()
+    expect(mark()!.parentElement!.querySelector('button[aria-label^="Help: "]'), 'a `?` trails the mark').toBeNull()
     const head = document.querySelector('.head')
     expect(head?.querySelector('h1')?.textContent).toBe('wf_new')
     const glyph = head?.querySelector('button[aria-label^="Help: "]') ?? null
@@ -1223,18 +1232,9 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
       head!.querySelector('h1')!.compareDocumentPosition(glyph!) & Node.DOCUMENT_POSITION_FOLLOWING,
       'the `?` sits before the heading',
     ).toBeTruthy()
-    // The Graph draws step figures only at the Figures tier. On the board the
-    // smallest workflow (`wf_old`, two steps) landed there on Auto and carried
-    // the mark for all; one workflow's page has only its own steps, and
-    // `wf_new`'s three levels are taller than the canvas at Figures, so Auto
-    // draws fewer fields and the mark must be gone. The reader's own choice of
-    // Figures brings the figures back, and the mark with them.
+    // Under the Graph the page draws the Steps table, and its head row carries the mark.
     chooseTab(cardOf('wf_new'), 'Graph')
-    const zoom = () => document.querySelector<HTMLElement>('.wf-zoom-seg')!
-    fireEvent.click(within(zoom()).getByText('Names'))
-    expect(mark(), 'a caveat about figures a Names graph does not draw').toBeNull()
-    fireEvent.click(within(zoom()).getByText('Figures'))
-    expect(mark()?.textContent).toBe('6/8 sampled')
+    expect(mark()?.closest('.wfp-steps .wf-table-head'), 'the Steps table under the graph lost its mark').not.toBeNull()
   })
 })
 

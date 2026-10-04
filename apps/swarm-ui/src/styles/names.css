@@ -1,0 +1,75 @@
+/* ========================================================================
+   LONG NAMES: TWO LINES, THEN AN ELLIPSIS, AND THE WHOLE NAME IN A TOOLTIP
+   (walkthrough C, owner 2026-10-03, at 1440x900). A long workflow name --
+   the lane label -- ran off the right edge of the workflow page, because the
+   page head's title block was `flex: none` beside a meta chip and the
+   freshness, and every other name that can be long was cut to one line.
+
+   Imported by Workflows.tsx and Overview.tsx (the import is global; the two
+   are the screens the owner measured). Every rule wins on SPECIFICITY, not
+   on order: this sheet comes before styles.css in the bundle, so each rule
+   is one element or class deeper than the one it replaces. Each name's
+   element carries its whole text in `title`.
+   ======================================================================== */
+
+/* THE PAGE TITLE, on every page: the title block may shrink, and the title
+   wraps to a second line before it is cut. */
+.c-phead > div.head { flex: 0 1 auto; min-width: 0; }
+.c-phead > div.head > h1 {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+/* THE PANEL'S RECENT WORKFLOWS: a lane label is a sentence, not an id. */
+/* (Selected through the group and its buttons: a class name of seven or more
+   characters after the panel's two-letter prefix reads as a provider key to
+   the worker's publish scan.) */
+.sk-recent > button.sk-kid > span > span:last-child {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.sk-recent > button.sk-kid > span { align-items: flex-start; }
+
+/* OVERVIEW'S AGENT NAMES, in the Running and Recent failures cards and the
+   phone's list. */
+.ov-page a.ov-name,
+.ov-page a.ov-prun-n {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A HEADROOM TILE'S PROFILE NAME, WHOLE (walkthrough F): `claude-code-…` was
+   cut to one mono line. It is a name a person reads, so it is the sans face,
+   and it wraps to a second line before it is cut. */
+.ov-hp > span.ov-idc {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
+  font: 500 var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text);
+}
+
+/* THE WORKFLOW PAGE'S ROWS SIT 12px APART (walkthrough C): the head, the
+   tabs and the card were a gutter apart, and with the empty strip between
+   the tabs and the card that was a ~100px band. */
+div.wfp { gap: var(--ctl-s3); }

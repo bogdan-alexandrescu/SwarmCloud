@@ -26,21 +26,23 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
 
 from swarm_api import forge, forgewrite, issueruns
-from swarm_api.auth import StaticTokenVerifier
+from swarm_api.auth import Authenticator, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
-from swarm_api.errors import NotFound
-from swarm_api.groups import StaticGroups
+from swarm_api.errors import NotFound, UpstreamUnavailable
+from swarm_api.groups import GroupLookupError, StaticGroups
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.routes import runs as runs_routes
 from swarm_api.waker import NullWaker
+from swarm_common.models import Tenant
 
 from . import forge_fakes
 from .conftest import api_settings
@@ -315,3 +317,46 @@ def test_the_tick_needs_a_tenant(client):
 @pytest.fixture
 def client(api_context) -> TestClient:
     return TestClient(create_app(api_context), raise_server_exceptions=False)
+
+
+# --------------------------------------------------------------------------
+# the creator is asked about again before anything is submitted as them
+# --------------------------------------------------------------------------
+
+def test_an_auto_run_whose_creator_left_the_tenant_fails_and_submits_nothing(
+    client, db, objects, api_context, monkeypatch
+):
+    run = _create(client, plan_approval="auto").json()["run"]
+    _finish_planner(db, objects, run, PLAN)
+    monkeypatch.setattr(api_context.authenticator, "is_tenant_member", lambda email, tenant: False)
+
+    report = _tick(client).json()["report"]
+
+    stored = _stored(db, run["id"])
+    assert report["failed"] == 0 and report["moved"] == 1
+    assert stored["state"] == "FAILED"
+    assert "no longer a member" in stored["error"]
+    assert [h["to"] for h in stored["history"]] == ["PLANNING", "PLANNED", "FAILED"]
+    assert stored["approved_by"] is None
+    assert not _docs(db, "workflows")
+
+
+def test_membership_is_asked_of_the_directory_for_the_tenants_one_group(group_map):
+    now = datetime.now(timezone.utc)
+    authenticator = Authenticator(api_settings(), StaticTokenVerifier({}), StaticGroups(group_map))
+    eng = Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz", created_at=now)
+    personal = Tenant(tenant_id="u-carol", kind="user", principal="carol@saga.xyz", created_at=now)
+
+    assert authenticator.is_tenant_member("alice@saga.xyz", eng)
+    assert not authenticator.is_tenant_member("bob@saga.xyz", eng)
+    assert not authenticator.is_tenant_member("", eng)
+    assert authenticator.is_tenant_member("Carol@saga.xyz", personal)
+    assert not authenticator.is_tenant_member("alice@saga.xyz", personal)
+
+    class Unreachable:
+        def groups_for(self, member_email, candidate_groups):
+            raise GroupLookupError("Cloud Identity did not answer")
+
+    down = Authenticator(api_settings(), StaticTokenVerifier({}), Unreachable())
+    with pytest.raises(UpstreamUnavailable):
+        down.is_tenant_member("alice@saga.xyz", eng)

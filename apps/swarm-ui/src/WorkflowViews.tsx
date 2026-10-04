@@ -654,6 +654,44 @@ function InputsCell({ inputs }: { inputs: StepInputs }) {
 }
 
 /**
+ * THE INPUTS COLUMN IS A COUNT (walkthrough A, owner 2026-10-03). The files,
+ * one line each, were drawn in the column itself, which at its width stacked
+ * every `plan.md ← plan` one word per line into a tower taller than the row.
+ * The column says how many files the step reads; the files open in a row
+ * under the step (`InputsCell`, unchanged). A step that reads nothing says
+ * `none`, which is a fact about its definition, so it has no control.
+ */
+function inputsCount(inputs: StepInputs): number {
+  return inputs.declared.size + inputs.stray.length
+}
+
+function InputsSummary({ inputs, open, controls, onToggle }: { inputs: StepInputs; open: boolean; controls: string; onToggle: () => void }) {
+  const n = inputsCount(inputs)
+  if (n === 0 && inputs.malformed === 0) return <span className="wf-cell is-none">none</span>
+  const words = [
+    n > 0 ? `${n} file${n === 1 ? '' : 's'}` : null,
+    inputs.malformed > 0 ? `${inputs.malformed} unreadable` : null,
+  ].filter((w): w is string => w !== null)
+  return (
+    <button
+      type="button"
+      className={`wf-inputs-toggle${inputs.malformed > 0 ? ' is-unread' : ''}`}
+      aria-expanded={open}
+      aria-controls={controls}
+      title={open ? 'Hide the files this step reads' : 'Show the files this step reads'}
+      onClick={onToggle}
+    >
+      {words.join(' · ')}
+    </button>
+  )
+}
+
+/** A DOM id for a step's row of files: step ids are free text. */
+function inputsRowId(stepId: string): string {
+  return `wf-in-${stepId.replace(/[^A-Za-z0-9_-]/g, '_')}`
+}
+
+/**
  * THE SAME STEPS AS ROWS, sortable by what a reader hunting an outlier sorts by
  * (redesign-v2 §2.3: "duration, cost, attempts, state").
  *
@@ -681,10 +719,20 @@ export function WorkflowTable({
   picked,
   onPick,
   detail = null,
+  head = null,
+  title = null,
 }: {
   rows: readonly StepRowModel[]
   picked: string | null
   onPick: (stepId: string) => void
+  /**
+   * What the table says about its own figures -- the sampling mark -- drawn
+   * in the table's head row, inside its card (walkthrough A: it floated in a
+   * strip above the card, apart from the figures it qualifies).
+   */
+  head?: ReactNode
+  /** The head row's title, where the table sits under another view (the Graph's Steps). */
+  title?: string | null
   /**
    * Drawn in a full-width row directly under the picked step's row: the
    * inspector, below the width where it docks beside the view (#110).
@@ -694,11 +742,25 @@ export function WorkflowTable({
   const [sort, setSort] = useState<SortSpec>(DEFAULT_SORT)
   const sorted = sortRows(rows, sort)
   const more = useMoreRight<HTMLDivElement>()
+  const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
+  const toggleInputs = (stepId: string) =>
+    setOpened((was) => {
+      const next = new Set(was)
+      if (!next.delete(stepId)) next.add(stepId)
+      return next
+    })
   return (
-    // `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
-    // so below 900px it scrolls with the step column held in view rather than
-    // stacking (design-system.md §7.3). `has-more` is the right-edge fade
-    // while columns are off that edge (#109).
+    <>
+    {(head !== null || title !== null) && (
+      <div className="wf-table-head">
+        {title !== null && <h3 className="wf-table-title">{title}</h3>}
+        {head !== null && <span className="wf-table-marks">{head}</span>}
+      </div>
+    )}
+    {/* `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
+        so below 900px it scrolls with the step column held in view rather
+        than stacking (design-system.md §7.3). `has-more` is the right-edge
+        fade while columns are off that edge (#109). */}
     <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}`}>
       <table>
         <thead>
@@ -767,9 +829,24 @@ export function WorkflowTable({
                 <CellView cell={r.tokens} pending={r.pending} from={r.tokensFrom} />
               </td>
               <td data-col="inputs">
-                <InputsCell inputs={r.inputs} />
+                <InputsSummary
+                  inputs={r.inputs}
+                  open={opened.has(r.step.step_id)}
+                  controls={inputsRowId(r.step.step_id)}
+                  onToggle={() => toggleInputs(r.step.step_id)}
+                />
               </td>
             </tr>
+            {opened.has(r.step.step_id) && inputsCount(r.inputs) + r.inputs.malformed > 0 && (
+              <tr className="wf-xrow">
+                <td colSpan={COLUMNS.length}>
+                  <div id={inputsRowId(r.step.step_id)} className="wf-xinputs">
+                    <span className="wf-xinputs-h">Reads</span>
+                    <InputsCell inputs={r.inputs} />
+                  </div>
+                </td>
+              </tr>
+            )}
             {detail !== null && picked === r.step.step_id && (
               <tr className="wf-inline-row">
                 <td colSpan={COLUMNS.length}>
@@ -782,6 +859,7 @@ export function WorkflowTable({
         </tbody>
       </table>
     </div>
+    </>
   )
 }
 

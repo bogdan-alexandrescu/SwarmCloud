@@ -163,7 +163,6 @@
   .rn-page { grid-template-columns: minmax(0, 1fr) 300px; }
 }
 .rn-main { display: grid; gap: 12px; min-width: 0; }
-.rn-title { margin: 0; font-size: var(--t-lead); line-height: var(--lh-lead); font-weight: 600; color: var(--text); }
 .rn-state { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .rn-state-t { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .rn-error { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--bad-ink); overflow-wrap: anywhere; }
@@ -174,13 +173,13 @@
   font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
 }
 
-.rn-plan, .rn-history, .rn-card {
+.rn-plan, .rn-risks, .rn-history, .rn-card {
   display: grid; gap: 8px; min-width: 0;
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface);
   padding: 12px 14px;
 }
-.rn-plan h3, .rn-history h3, .rn-card h3 {
+.rn-plan h3, .rn-risks h3, .rn-history h3, .rn-card h3 {
   margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text);
 }
 .rn-digest { font-size: var(--t-micro); color: var(--text-dim); font-weight: 400; }
@@ -210,13 +209,6 @@
 .rn-sub { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
 .rn-reqs-wrap { display: grid; gap: 4px; }
 .rn-reqs { margin: 0; padding-left: 20px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
-.rn-step-facts {
-  margin: 4px 0 0; display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px;
-  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
-}
-.rn-step-facts dt { font-weight: 600; }
-.rn-step-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
-.rn-files { margin: 0; padding: 0; list-style: none; }
 .rn-ci .ctl-facts { margin: 0; flex-direction: column; align-items: stretch; gap: 8px; padding: 0; }
 .rn-ci .ctl-fact { justify-content: space-between; gap: 12px; }
 .rn-excerpt { min-width: 0; overflow-x: auto; }

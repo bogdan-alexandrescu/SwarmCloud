@@ -297,3 +297,44 @@ def test_a_title_without_a_closing_keyword_is_left_alone(client, db, objects, wr
 
     assert writes.pulls[PR]["title"] == "Sortable widgets (#42)"
     assert not [c for c in writes.calls if c[0] == "PATCH" and b'"title"' in (c[3] or b"")]
+
+
+def test_a_failed_keyword_write_is_written_again_and_a_green_run_waits_for_it(
+    client, db, objects, writes, clock
+):
+    # One failed write must not leave the worker's "Fixes #42" title on a pull
+    # request whose review left a requirement open: a squash merge would close
+    # the issue. The run stays CHECKING, green or not, until the block is on it.
+    running = _checking(client, db, objects, writes, _verdict(True, False), title="Fixes #42")
+    writes.check(SHA_A, "unit", "success")
+    writes.status = {"PATCH": 503}
+
+    held = _read(client, clock, running["id"])
+
+    assert held["state"] == "CHECKING" and held["pull_request"]["checks"] == "green"
+    assert held["green_sha"] is None
+    assert held["writeback_error"]
+    assert CLOSING.findall(writes.pulls[PR]["title"]), "the failed write changed the title"
+    assert _stored(db, running["id"])["pull_request"].get("keyword_written") is None
+
+    writes.status = {}
+    done = _read(client, clock, running["id"])
+
+    assert done["state"] == "DONE" and done["green_sha"] == SHA_A
+    assert not CLOSING.findall(writes.pulls[PR]["title"])
+    assert not CLOSING.findall(writes.pulls[PR]["body"])
+    assert "part of #42" in _block(writes.pulls[PR]["body"], running["id"])
+    assert _stored(db, running["id"])["pull_request"]["keyword_written"] == "part_of"
+
+
+def test_a_written_keyword_is_not_written_again_on_every_read(client, db, objects, writes, clock):
+    running = _checking(client, db, objects, writes, _verdict(True, True))
+
+    first = _read(client, clock, running["id"])
+    assert first["state"] == "CHECKING"
+    assert _stored(db, running["id"])["pull_request"]["keyword_written"] == "closes"
+    patches = [c for c in writes.calls if c[0] == "PATCH" and "/pulls/" in c[1]]
+
+    _read(client, clock, running["id"])
+
+    assert [c for c in writes.calls if c[0] == "PATCH" and "/pulls/" in c[1]] == patches

@@ -188,7 +188,7 @@ export function AgChildrenPane({ task, readKey }: { task: Task; readKey: string 
             kind="absent"
             say="The list route answering this console does not apply the parent_task_id filter: its rows carry no parent field, so they are the tenant's newest tasks and not this agent's children."
           />{' '}
-          not served · <code>GET /v1/tasks?parent_task_id=</code>
+          not available on this deployment yet
         </p>
       )}
       {list !== null && list.served && (
@@ -300,7 +300,7 @@ function ChildTable({
       )}
       <p className="ctl-card-note">
         The parent reads each child&apos;s end when it resumes and decides for itself; a failed child does not fail{' '}
-        {agentName(task)}. Source: <code>GET /v1/tasks?parent_task_id=</code>
+        {agentName(task)}.
       </p>
     </>
   )

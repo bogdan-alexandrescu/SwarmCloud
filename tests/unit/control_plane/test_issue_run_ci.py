@@ -34,6 +34,7 @@ from swarm_api import forge, forgechecks, forgewrite, issueci, issueruns
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
+from swarm_api.errors import UpstreamUnavailable
 from swarm_api.groups import StaticGroups
 from swarm_api.issueruns import RUN_TRANSITIONS, RunState
 from swarm_api.metrics import ApiMetrics
@@ -605,3 +606,52 @@ def test_red_wins_over_pending():
         required, [_run_doc("unit", "failure"), _run_doc("lint", None, "queued")], []
     )
     assert reading.state == "red" and reading.failing_names() == ["unit"]
+
+
+# --------------------------------------------------------------------------
+# the submitter is still a member of the tenant
+# --------------------------------------------------------------------------
+
+def test_a_creator_removed_from_the_tenant_fails_the_run_instead_of_a_fix_round(
+    client, db, objects, writes, clock, api_context, monkeypatch
+):
+    # A fix round pushes to the tenant's repository as the run's creator, so
+    # it is submitted only while they are still a member (invariant 9).
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+    asked: list[tuple[str, str]] = []
+
+    def removed(email, tenant):
+        asked.append((email, tenant.tenant_id))
+        return False
+
+    monkeypatch.setattr(api_context.authenticator, "is_tenant_member", removed)
+
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "no longer a member" in run["error"]
+    assert ("alice@saga.xyz", "eng") in asked
+    assert run["ci_fix_round"] == 0 and _rounds(db, running["id"]) == []
+    assert len(_docs(db, "workflows")) == 1, "a round was submitted for a removed member"
+    assert "test_a" in run["failure_excerpt"]
+
+
+def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
+    client, db, objects, writes, clock, api_context, monkeypatch
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure")
+
+    def unresolved(email, tenant):
+        raise UpstreamUnavailable("group membership could not be resolved; retry shortly")
+
+    monkeypatch.setattr(api_context.authenticator, "is_tenant_member", unresolved)
+    waiting = _read(client, clock, running["id"])
+    assert waiting["state"] == "CHECKING" and _rounds(db, running["id"]) == []
+
+    monkeypatch.undo()
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FIXING" and run["ci_fix_round"] == 1
+    assert len(_rounds(db, running["id"])) == 1

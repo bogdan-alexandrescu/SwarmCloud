@@ -106,7 +106,10 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
       return h!
     })
     expect(head.querySelector('.sk-st')?.textContent).toMatch(/running/i)
-    expect(head.querySelector('.ag-head-sub')?.textContent).toBe(`${ID} · claude-code · standard · 1u · gen 1`)
+    // ONCE, IN THE HEADER BLOCK (walkthrough B): the whole id with its copy,
+    // then profile · class · units · gen as the first of the facts.
+    expect(head.querySelector('.ag-head-id .ad-id-text')?.textContent).toBe(ID)
+    expect(head.querySelector('.ag-head-facts .ag-head-shape')?.textContent).toBe('claude-code · standard · 1u · gen 1')
     // Stop is in the header, once.
     expect(within(head).getByRole('button', { name: 'stop' })).toBeTruthy()
   })
@@ -118,7 +121,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
     render(split())
     const copy = await screen.findByRole('button', { name: 'Copy link' })
     fireEvent.click(copy)
-    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('copied'))
+    await waitFor(() => expect(document.querySelector('.ag-head-copied')?.textContent).toBe('copied'))
     expect(writeText).toHaveBeenCalledWith(window.location.href)
   })
 
@@ -270,7 +273,8 @@ describe('children (D15): a tab on a parent, a link on a child, only when the AP
     await waitFor(() => expect(tab('Children').querySelector('.c-tabs em')?.textContent).toBe('—'))
     fireEvent.click(tab('Children'))
     const pane = await screen.findByRole('region', { name: 'Children' })
-    await waitFor(() => expect(pane.textContent).toMatch(/not served/))
+    // In the reader's words (walkthrough E); the route is the mark's sentence.
+    await waitFor(() => expect(pane.textContent).toMatch(/not available on this deployment yet/))
     expect(pane.textContent).not.toContain('task_unrelated')
   })
 

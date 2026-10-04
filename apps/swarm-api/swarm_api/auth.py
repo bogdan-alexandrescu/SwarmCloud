@@ -626,6 +626,32 @@ class Authenticator:
             tenant_choices=self._tenant_choices(member_groups),
         )
 
+    def is_tenant_member(self, email: str, tenant: Any) -> bool:
+        """Whether `email` belongs to `tenant` NOW, asked of the directory again.
+
+        For work submitted on a member's behalf with nobody on the call -- an
+        issue run's auto approval and its CI fix rounds (`routes.runs.
+        run_owner_auth`) -- which may come long after that member was removed
+        from the tenant's group (invariant 9). A group tenant asks Cloud
+        Identity about its ONE stored group, the same per-group check every
+        request's tenant resolution makes; a personal tenant is its own
+        address. A lookup that fails is a 503, never a guess either way.
+        """
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+        principal = (getattr(tenant, "principal", "") or "").strip().lower()
+        if getattr(tenant, "kind", "") != "group":
+            return principal == email
+        try:
+            held = self._groups.groups_for(email, (principal,))
+        except GroupLookupError as exc:
+            log.warning("tenant membership unresolved for %s: %s", email, exc)
+            raise UpstreamUnavailable(
+                "group membership could not be resolved; retry shortly"
+            ) from None
+        return principal in {g.lower() for g in held}
+
     def _tenant_choices(self, member_groups: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
         """(tenant_id, group) for every registered tenant group in `member_groups`.
 

@@ -646,8 +646,16 @@ body {
 
    `overflow-x` follows `overflow-y` to `auto` per the spec once one axis is
    not `visible`, which matches what the document used to do with a too-wide
-   table: scroll, rather than clip a column off. */
+   table: scroll, rather than clip a column off.
+
+   `position: relative` MAKES THE SCROLLER EVERY PAGE BOX'S CONTAINING BLOCK
+   (lane U9 item 3, owner 2026-10-03). The visually hidden words (`.sk-vh`,
+   a compact row's `.sk-st-w`) are absolute; with no positioned ancestor
+   inside the scroller they were laid out against `.sk-app`, at a static
+   position thousands of pixels down the page, and the WINDOW scrolled past
+   the frame into blank grey to reach them. frame.overscroll.test.tsx. */
 .ctl-scroll {
+  position: relative;
   min-height: 0;
   min-width: 0;
   overflow: auto;
@@ -10550,7 +10558,6 @@ span.sk-ttile { cursor: default; }
 .wfp-confirm-err { color: var(--s-bad); }
 .wfp-confirm-do { display: flex; flex-wrap: wrap; gap: 8px; }
 .wfp-steps { display: flex; flex-direction: column; gap: 6px; margin-top: var(--ctl-gutter); }
-.wfp-eyb { margin: 0; font-size: var(--t-micro); font-weight: 600; color: var(--text-dim); }
 .wfp-missing { color: var(--text-dim); }
 
 /* The Recent (5) switcher under Workflows in the panel (workflows.html C). */
