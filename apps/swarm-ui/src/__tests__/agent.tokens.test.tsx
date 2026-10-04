@@ -55,7 +55,7 @@ async function tokensTile(r: AgentRun): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={r} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull())
   const found = [...container.querySelectorAll<HTMLElement>('.ctl-metric')].find(
     (m) => m.querySelector('.ctl-metric-label')?.textContent?.startsWith('Tokens'),
   )

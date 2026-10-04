@@ -101,7 +101,7 @@ async function mount(run: AgentRun): Promise<HTMLElement> {
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskInputOnce.mockImplementation(async () => served)
   const { container } = render(<Run run={run} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull(), WAIT)
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull(), WAIT)
   // The Input section's own read has landed: no block is still `reading`.
   await waitFor(() => expect(section(container as HTMLElement, 'Input')?.querySelector('.ctl-mark.is-pending') ?? null).toBeNull(), WAIT)
   return container as HTMLElement

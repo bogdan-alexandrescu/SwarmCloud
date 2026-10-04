@@ -657,26 +657,20 @@ function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
       <li className="is-nodot">
         <AgCopyId value={taskId} />
       </li>
-      {task !== null && d === null && (
-        <li className="is-nodot">
-          <span className="ag-head-dchip is-absent">
-            dispatch not served
-            <HelpCard topic="dispatch-absent-is-old-api" />
-          </span>
-        </li>
-      )}
-      {d !== null && (
-        <li className="is-nodot">
-          <span className="ag-head-dchip">
-            {STRATEGY_LABEL[d.strategy]}
-            <HelpCard topic="dispatch-strategies" />
-          </span>
-          {d.role !== null && (
-            <span className="ag-head-dchip">
-              {ROLE_SAY[d.role]}
-              <HelpCard topic="dispatch-strategies" />
-            </span>
+      {task !== null && (
+        // ONE `?` FOR THE DISPATCH CHIPS, after them: what the strategy and
+        // the role mean is one topic. The carrier gets no chip -- no worker
+        // reads it yet (`CARRIER_NOTE`) -- and the topic names it.
+        <li className="is-nodot ag-head-dispatch">
+          {d === null ? (
+            <span className="ag-head-dchip is-absent">dispatch not served</span>
+          ) : (
+            <>
+              <span className="ag-head-dchip">{STRATEGY_LABEL[d.strategy]}</span>
+              {d.role !== null && <span className="ag-head-dchip">{ROLE_SAY[d.role]}</span>}
+            </>
           )}
+          <HelpCard topic={d === null ? 'dispatch-absent-is-old-api' : 'dispatch-strategies'} />
         </li>
       )}
     </ul>

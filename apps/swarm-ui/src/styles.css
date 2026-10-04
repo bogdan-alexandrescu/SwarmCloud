@@ -2873,8 +2873,7 @@ table.pools .was { margin-left: 5px; font-size: var(--t-micro); color: var(--tex
 }
 /* The card foot as a link row. `.ctl-card-foot` supplies the surface step, the
    mono face and the tone; this is only the wrapping. */
-.ctl-card-foot,
-.att-legend {
+.ctl-card-foot {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -3152,17 +3151,6 @@ ol.timeline li::before {
   font: var(--t-micro)/var(--lh-micro) var(--mono);
   color: var(--text-faint);
 }
-/* Details' compact timeline: the last event, and the way to the full one. */
-.ev-last {
-  display: flex;
-  align-items: baseline;
-  flex-wrap: wrap;
-  gap: 0 var(--ctl-s2);
-  margin: 0;
-}
-.ev-last .ev-at { margin-left: 0; }
-.ev-owner { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); }
-.ev-more-link { margin: var(--ctl-s2) 0 0; font-size: var(--t-micro); line-height: var(--lh-micro); }
 /* Code a step handed on to a dependant rather than pushed (#278). */
 .git-handed { margin: var(--ctl-s3) 0 0; }
 .git-handed-line,

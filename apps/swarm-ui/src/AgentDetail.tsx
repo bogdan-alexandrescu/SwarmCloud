@@ -1,5 +1,5 @@
 import { Button, CIcon, Count, ToneMark } from './components'
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
+import { useCallback, useEffect, useId, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   EVENT_PAGE_LIMIT,
   loadAgentRun,
@@ -22,7 +22,7 @@ import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd,
 import { eventKind, isTerminalEvent } from './events'
 import { num, type Result } from './fetch'
 import { type TopicId } from './help'
-import { HelpCard } from './HelpCard'
+import { HelpCard, HelpNote } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
@@ -670,9 +670,22 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
             end cause — not recorded
           </span>
         )}
-        <span className="dt-nf">
-          {anythingRan(task, run.attempts) ? `after ${task.attempt_count} of ${task.max_attempts} attempts` : 'nothing ran'}
-        </span>
+        {anythingRan(task, run.attempts) ? (
+          <span className="dt-nf">
+            after {task.attempt_count} of {task.max_attempts} attempts
+          </span>
+        ) : (
+          // NOTHING RAN, SO NOTHING WAS DUE (AG-8): a cascade cancel, a
+          // cancel before admission, a dispatch that never came up. A real
+          // zero, not a missing summary.
+          <span className="dt-nf">
+            <Mark
+              kind="zero"
+              say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
+            />{' '}
+            nothing ran · {stateWord(task.state)}
+          </span>
+        )}
       </p>
       {text ? (
         <>
@@ -693,7 +706,7 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
 // The stat strip
 // ---------------------------------------------------------------------------
 
-type DtTone = 'absent' | 'unread' | 'reading' | 'alert'
+type DtTone = 'absent' | 'unread' | 'reading' | 'alert' | 'live'
 
 interface DtCell {
   label: string
@@ -707,13 +720,19 @@ interface DtCell {
   help?: TopicId
 }
 
-/** One strip cell. A value not due, not read or not recorded is small and muted: never full size, never 0. */
+/**
+ * One strip cell. A value not due, not read or not recorded is small and
+ * muted: never full size, never 0. The cell's topic is PUBLISHED at its label
+ * (`HelpNote`, read by a screen reader, drawn nowhere), as the tiles' `explain`
+ * did: the strip is one card, and its `?`s are the cards' below.
+ */
 function DtStatCell({ c }: { c: DtCell }) {
+  const id = useId()
   return (
     <div className={`dt-sc${c.tone ? ` is-${c.tone}` : ''}`}>
-      <span className="dt-sc-l">
+      <span className="dt-sc-l" aria-describedby={c.help === undefined ? undefined : id}>
         {c.label}
-        {c.help !== undefined && <HelpCard topic={c.help} />}
+        {c.help !== undefined && <HelpNote topic={c.help} id={id} />}
       </span>
       <span className="dt-sc-v">
         {c.value}
@@ -829,7 +848,10 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
           : mem.kind === 'last'
             ? `${ofLimit} · no peak was written`
             : `${ofLimit} · ${attempts.length > 1 ? `worst of ${mem.measured}` : 'at exit'}${nearMiss ? ' · OOM near miss' : ''}`,
-      tone: nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? undefined : undefined,
+      // THE LIVE HIGH-WATER MARK IS NOT THE FINAL FIGURE (AG-4): full size,
+      // because it is a real measurement, but on its own tone and labelled
+      // `so far` with its age.
+      tone: nearMiss || mem.kind === 'last' ? 'alert' : mem.kind === 'live' ? 'live' : undefined,
       help: 'peak-memory',
     })
   } else if (mem.kind === 'pending') {
@@ -1054,23 +1076,29 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
               <DtEventRow key={e.event_id} e={e} owner={ownerOf(e)} />
             ))}
           </ol>
-          {endMissing && (
+          {/* WHAT THE PAGE DOES AND DOES NOT COVER, AS ONE QUALIFIER. Proven
+              short -- a terminal task with no terminal event on the page -- is
+              `partial`; unproven is a plain caveat and no mark (AG-9): a
+              caveat about a route's paging is not a read in flight. */}
+          {endMissing ? (
             <p className="dt-note">
               <Mark
                 kind="partial"
-                say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token, so the newest events are not on it.`}
+                say={`The task is ${stateWord(task.state)} and a terminal task writes a terminal event — none is on this page. This screen reads one page of events, oldest-first, and does not follow the page token the events route returns, so the newest events are not on it. The end of this task's history is missing, not absent.`}
               />{' '}
               the end of this history is not on this page
+            </p>
+          ) : (
+            <p
+              className="dt-note"
+              aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower, and it does not follow the page token the events route returns — so a page that looks complete is not evidence that it is.`}
+            >
+              newest first · one page, cap unknown
             </p>
           )}
           {events.length > 5 && (
             <details className="dt-disc">
-              <summary>
-                All {events.length} events{' '}
-                <span className="dt-note" aria-label={`One page, as served. This screen asks for ${EVENT_PAGE_LIMIT} events and the server may clamp that lower.`}>
-                  · one page, cap unknown
-                </span>
-              </summary>
+              <summary>All {events.length} events</summary>
               <ol className="dt-evs dt-evs-all">
                 {newest.slice(5).map((e) => (
                   <DtEventRow key={e.event_id} e={e} owner={ownerOf(e)} />
@@ -1445,47 +1473,6 @@ export function attemptLabel(ordinal: number, generation: number): string {
 // and Overview name an agent and link its workflow by the same rule.
 export { agentName, workflowHref }
 
-/** How long a copy's outcome stays beside the button that asked for it. */
-const COPY_SAID_MS = 4000
-
-/**
- * THE WHOLE TASK ID, AND ITS COPY (#94). Under a step-name heading the id is
- * what a person pastes into `sc` or a search, so it is printed whole and a
- * button copies it. SAID, NOT SILENT: `navigator.clipboard` is undefined
- * outside a secure context and a write can be refused, and the status says
- * which happened, then clears.
- */
-export function IdCopy({ value }: { value: string }) {
-  const [said, setSaid] = useState('')
-  useEffect(() => {
-    if (said === '') return
-    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
-    return () => clearTimeout(t)
-  }, [said])
-  const refused = 'copy refused; select the id instead'
-  const copy = () => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clipboard === undefined) {
-      setSaid(refused)
-      return
-    }
-    clipboard.writeText(value).then(
-      () => setSaid('task id copied'),
-      () => setSaid(refused),
-    )
-  }
-  return (
-    <>
-      <span className="mono ad-id-text">{value}</span>
-      <Button size="sm" className="copy" aria-label={`Copy task id ${value}`} title="Copy the whole task id" onClick={copy}>
-        copy
-      </Button>
-      <span className="ad-id-said" role="status">
-        {said}
-      </span>
-    </>
-  )
-}
 
 /**
  * Why there is no ceiling to read a measurement against -- or null when there
