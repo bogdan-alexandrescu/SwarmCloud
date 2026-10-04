@@ -1289,7 +1289,12 @@ function StepPanel({ onClose, children }: { onClose: () => void; children: React
   const ref = useRef<HTMLElement | null>(null)
   useEffect(() => {
     const el = ref.current
-    if (el !== null && !el.contains(document.activeElement)) el.focus()
+    if (el === null) return
+    if (!el.contains(document.activeElement)) el.focus({ preventScroll: true })
+    // THE CARD IS BROUGHT TO THE READER (browser QA, 2026-10-04): on a page
+    // it opens under every node, a screen below the node that was clicked.
+    // `nearest` moves the page only as far as the card needs.
+    if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
   }, [])
   return (
     <aside

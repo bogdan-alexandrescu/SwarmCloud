@@ -1498,8 +1498,11 @@ describe('foldMix', () => {
       expect(shown.length, `${room}px named more than two`).toBeLessThanOrEqual(2)
       const drawn = [...shown.map(mixChipW), ...(rest > 0 ? [moreChipW(rest)] : [])]
       const w = drawn.reduce((t, x) => t + x, 0) + Math.max(0, drawn.length - 1) * 4
-      // Only the count alone is allowed to overflow, and only when nothing fits.
-      if (shown.length > 0) expect(w, `${room}px drew chips wider than the column`).toBeLessThanOrEqual(room)
+      // A runner is always named (browser QA N7: a lone "+1" named none).
+      expect(shown.length, `${room}px named no runner`).toBeGreaterThanOrEqual(1)
+      // Only the commonest chip, cut by the sheet, may overflow, and only when
+      // it and the count do not fit whole.
+      if (w > room) expect(shown.length, `${room}px drew chips wider than the column`).toBe(1)
     }
     expect(visited).toBe(81)
     // And more room never names FEWER.

@@ -36,7 +36,9 @@
   .wfl .wfl-table th[data-col="state"] { width: 136px; }
   .wfl .wfl-table th[data-col="shape"] { width: 10%; }
   .wfl .wfl-table th[data-col="done"] { width: 92px; }
-  .wfl .wfl-table th[data-col="runners"] { width: 11%; }
+  /* Runners holds one whole "claude-code ×20" chip (browser QA N7: at 11%
+     it held 96px, so a one-profile workflow folded to a bare "+1"). */
+  .wfl .wfl-table th[data-col="runners"] { width: 148px; }
   .wfl .wfl-table th[data-col="cost"] { width: 8%; }
   .wfl .wfl-table th[data-col="owner"] { width: 8%; }
   .wfl .wfl-table th[data-col="started"] { width: 9%; }
@@ -158,15 +160,22 @@
    (`tableColumns`), and the step column takes its room; Ran fits
    "23h 59m so far" and Cost "not reported"; and below the table's minimum
    width the rows STACK (the container query below) instead of scrolling.
-   The px columns sum to 940, so Why keeps 60px at the 1000px minimum and is
-   cut there with its whole reason in its title. */
+   The px columns sum to 940, so Why keeps 20px at the 960px minimum and
+   56px at 1440 (the box is 996px there), cut with its whole reason in its
+   title.
+   BROWSER QA N1 (owner, 2026-10-04): the minimum WAS 1000px and the stacked
+   form below it -- and the box is 996px at a 1440 viewport, so every desktop
+   got the stacked rows, pinned at 30px by `.ctl-table tbody tr`, and each
+   step's Ran / Attempts / Cost line printed over the next step's name. The
+   minimum is now the columns' own sum plus Why's sliver, and a stacked row's
+   height is `auto`. qa.u11b.workflows.test.tsx. */
 /* The box AROUND the table is the container its stacked form asks about, at
    any width. Not the table's own box: a container query matches descendants
    only, so the border and overflow below would never apply to it (D12). */
 .wf-card .wf-table-box { container: wf-steps / inline-size; }
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
-  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; font-size: var(--t-meta); }
+  .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 960px; font-size: var(--t-meta); }
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
@@ -191,19 +200,19 @@
 /* BELOW THE MINIMUM WIDTH THE ROWS STACK (D12): the name and the state on a
    line, then each figure under its own label, wrapping; no sideways scroll,
    no second border inside the card. Phone and the docked step card alike. */
-@container wf-steps (max-width: 999px) {
+@container wf-steps (max-width: 959px) {
   .wf-card .ctl-table.wf-table.is-scroll { border: 0; overflow-x: visible; }
   .wf-card .ctl-table.wf-table.is-scroll > table { display: block; min-width: 0; width: 100%; }
   .wf-card .ctl-table.wf-table.is-scroll > table > thead { display: none; }
   .wf-card .ctl-table.wf-table.is-scroll > table > tbody { display: block; }
-  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; padding: 6px 4px; border-bottom: 1px solid var(--line-soft); }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 14px; height: auto; padding: 6px 4px; border-bottom: 1px solid var(--line-soft); }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; white-space: normal; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-label]::before { content: attr(data-label) ' '; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
   .wf-card .ctl-table.wf-table.is-scroll tr.wf-xrow,
-  .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; }
+  .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; height: auto; }
 }
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
