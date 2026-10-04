@@ -2186,7 +2186,7 @@ describe('#105: a failure’s cause is on the canvas, not only in the inspector'
     expect(placed.h).toBeGreaterThan(heightOf(w.steps[w.steps.length - 1]!, layout.tier, layout.nodeW, false, settled.has('join')))
     // A node that succeeded carries no line and is not made taller for one.
     expect(nodeNamed(container, 'plan').querySelector('.node-note')).toBeNull()
-    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt(layout.tier))
+    expect(Number.parseFloat(slotOf(container, 'plan').style.height)).toBe(nodeHeightAt(layout.tier) - (settled.has('plan') ? stripSavingAt(layout.tier) : 0))
   })
 
   it('keeps the line to one line in the sheet, and shows the whole error on focus', () => {
