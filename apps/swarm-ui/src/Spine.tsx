@@ -1550,7 +1550,12 @@ function RecentWorkflows({ nav }: { nav: (to: string) => void }) {
           >
             <span className="sk-recent-row">
               <NamedMark mark={look === null ? null : look.mark} hue={look === null ? 'neu' : look.hue} word={word} bare />
-              <span className={RECENT_NAME_CLASS}>{w.name ?? w.id}</span>
+              {/* THE WHOLE NAME AND ID ON THE SPAN THAT ELLIPSES (U11a D14):
+                  the ellipsis is drawn on this span, so the hover that
+                  explains it is too, not only on the button around it. */}
+              <span className={RECENT_NAME_CLASS} title={w.name !== null ? `${w.name} · ${w.id}` : w.id}>
+                {w.name ?? w.id}
+              </span>
             </span>
           </button>
         )

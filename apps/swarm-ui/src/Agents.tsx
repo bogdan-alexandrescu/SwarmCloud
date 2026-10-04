@@ -15,7 +15,7 @@ import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
-import { Segmented, StateMark, ToneMark } from './components'
+import { PARK_WORD, Segmented, StateMark, ToneMark } from './components'
 import { Id, Screen } from './Shell'
 import { publishListCounts } from './Spine'
 import { rowClock, useNow } from './useNow'
@@ -455,6 +455,15 @@ function AgentsBody({
     setRecentState(next)
     onList?.({ tab: 'recent', state: next })
   }
+  // A ROW OPENS UNDER THE TAB IT CAME FROM (N9, owner QA 2026-10-04). The
+  // landing tab is this screen's own state until a click reports one, so a
+  // row on a Recent the list LANDED on opened `/agents/live/<id>` and the
+  // panel lit `Live 0` beside the Recent rows. The tab on screen is reported
+  // first, so App writes the agent's address under it.
+  const openRow = (taskId: string) => {
+    onList?.({ tab: shown, state: shown === 'recent' ? recentState : null })
+    onOpen(taskId)
+  }
 
   // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
   //
@@ -631,11 +640,11 @@ function AgentsBody({
           </h3>
         </div>
       ) : shown === 'waiting' ? (
-        <WaitingGroups rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} grouped={grouped} />
+        <WaitingGroups rows={rows} now={now} onOpen={openRow} openTaskId={openTaskId} classes={classes} grouped={grouped} />
       ) : grouped && shown !== 'live' ? (
-        <GroupedRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+        <GroupedRows rows={rows} now={now} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
       ) : (
-        <FlatRows rows={rows} now={now} onOpen={onOpen} openTaskId={openTaskId} classes={classes} />
+        <FlatRows rows={rows} now={now} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
       )}
     </>
   )
@@ -702,12 +711,25 @@ function WaitingGroups({
   classes: ResourceClasses | null
   grouped: boolean
 }) {
-  const split = { needs_action: [] as Task[], no_room: [] as Task[] }
-  for (const t of rows) split[taskGroup(t, classUnits(classes, t.resource_class))].push(t)
-  const groups = [
-    { key: 'needs_action', title: 'Needs action', rows: split.needs_action },
-    { key: 'no_room', title: 'No room', rows: split.no_room },
-  ] as const
+  // A PARKED TASK IS FILED UNDER ITS OWN PARK REASON (N12, owner QA
+  // 2026-10-04): `/agents/waiting` headed a step waiting on an earlier step
+  // `No room 1`, while its row said why it waited -- and nothing was short of
+  // room. `No room` is for a task the pools refused; a park is grouped by the
+  // reason the writer recorded, in the pill's words (`PARK_WORD`), and a
+  // reason this client does not know is its raw value, never hidden.
+  const groups: { key: string; title: string; rows: Task[] }[] = [
+    { key: 'needs_action', title: 'Needs action', rows: [] },
+    { key: 'no_room', title: 'No room', rows: [] },
+  ]
+  for (const t of rows) {
+    const at = taskGroup(t, classUnits(classes, t.resource_class)) === 'needs_action' ? { key: 'needs_action', title: '' } : waitGroupOf(t)
+    let g = groups.find((x) => x.key === at.key)
+    if (g === undefined) {
+      g = { key: at.key, title: at.title, rows: [] }
+      groups.push(g)
+    }
+    g.rows.push(t)
+  }
   return (
     <>
       {groups.map((g) =>
@@ -726,6 +748,15 @@ function WaitingGroups({
       )}
     </>
   )
+}
+
+/** The Waiting group a task that needs no action is filed under: its park reason, or `No room`. */
+export function waitGroupOf(t: Task): { key: string; title: string } {
+  if (t.state !== 'PARKED') return { key: 'no_room', title: 'No room' }
+  const r = t.park_reason ?? null
+  if (r === null) return { key: 'park:none', title: 'Parked, reason not recorded' }
+  const word = (PARK_WORD as Readonly<Record<string, string>>)[r] ?? r
+  return { key: `park:${r}`, title: word.charAt(0).toUpperCase() + word.slice(1) }
 }
 
 /**

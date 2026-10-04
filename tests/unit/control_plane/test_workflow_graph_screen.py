@@ -527,7 +527,10 @@ def test_the_checkpoint_and_log_loaders_now_have_a_caller():
         "cannot tell a checkpoint written and since reclaimed from a real zero"
     )
     # The split (AgentSplit.tsx, moved out of App.tsx 2026-10-02) mounts it.
-    assert re.search(r"<CheckpointsPane\s+taskId=\{taskId\}", _src("AgentSplit.tsx")), (
+    # Matched on its props, in any order: the mount carries `key={taskId}` and
+    # `onCount` besides `taskId` (U11a).
+    split_mount = re.search(r"<CheckpointsPane\b([^>]*)/>", _src("AgentSplit.tsx"))
+    assert split_mount is not None and re.search(r"\btaskId=\{taskId\}", split_mount.group(1)), (
         "the run screen does not mount the checkpoints pane for its task"
     )
 

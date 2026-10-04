@@ -403,7 +403,7 @@ describe('a checkpoint written while the drawer is open is not drawn as lost', (
     expect(listings).toBe(1)
     await advance(DRAWER_POLL_MS)
     expect(listings, 'the checkpoint listing was not re-read with the drawer').toBe(2)
-    expect(root.textContent).toContain('1 written · 1 in bucket')
+    expect(root.textContent).toContain('1 written, 1 kept')
     expect(section(root, 'Checkpoints'), 'Details drew the Checkpoints tab\'s panel').toBeUndefined()
   })
 })

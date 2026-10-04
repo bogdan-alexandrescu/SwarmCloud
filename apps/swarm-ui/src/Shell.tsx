@@ -1,6 +1,7 @@
 import {
   createContext,
   Fragment,
+  isValidElement,
   useCallback,
   useContext,
   useEffect,
@@ -657,7 +658,10 @@ export function PageHead({
       <p className="sub">
         {meta !== undefined && meta !== null && meta !== '' && (
           <>
-            <span className="c-meta">{meta}</span>
+            {/* THE WHOLE CHIP IN ITS TITLE (U11a N10): beside an open agent
+                the chip ellipses (`200 loaded · 0 live…`), and the words it
+                cut are the scope of every figure under it. */}
+            <span className="c-meta" title={textOf(meta) || undefined}>{meta}</span>
             {/* The chip and the age are two facts: said as two to a reader
                 of the text, drawn apart by the row's gap. */}
             <span className="sk-vh"> · </span>
@@ -671,6 +675,15 @@ export function PageHead({
       </p>
     </div>
   )
+}
+
+/** The words a node draws, for a title: strings and numbers, through elements and fragments. */
+export function textOf(n: ReactNode): string {
+  if (n === null || n === undefined || typeof n === 'boolean') return ''
+  if (typeof n === 'string' || typeof n === 'number') return String(n)
+  if (Array.isArray(n)) return n.map(textOf).join('')
+  if (isValidElement<{ children?: ReactNode }>(n)) return textOf(n.props.children)
+  return ''
 }
 
 /** Whether a node draws anything (a SubLine that has nothing to add returns null). */
@@ -753,9 +766,9 @@ function SubLine<T>({
       return <>Reading…</>
     case 'ok':
     case 'empty':
-      return <>{dots([unrefreshed, ownAge ? `read ${timeAgo(state.serverAt ?? state.fetchedAt, now)}` : null, cadenceText, retryBtn])}</>
+      return <AgeLine parts={[unrefreshed, ownAge ? `read ${timeAgo(state.serverAt ?? state.fetchedAt, now)}` : null, cadenceText]} action={retryBtn} />
     case 'stale':
-      return <>{dots([<strong key="n">not refreshed</strong>, `showing ${timeAgo(state.fetchedAt, now)}`, cadenceText, retryBtn])}</>
+      return <AgeLine parts={[<strong key="n">not refreshed</strong>, `showing ${timeAgo(state.fetchedAt, now)}`, cadenceText]} action={retryBtn} />
     case 'error':
       return state.error.kind === 'admin_required' ? (
         <>Admin only.</>
@@ -763,6 +776,28 @@ function SubLine<T>({
         <>Could not read. {retryBtn}</>
       )
   }
+}
+
+/**
+ * THE PROVENANCE'S WORDS, THEN ITS CONTROL (U11a N10, owner QA 2026-10-04).
+ * Beside an open agent the list's head has ~150px for `read just now · every
+ * 5s · refresh`, and the ellipsis on the whole line clipped `refresh` (its
+ * button at x722-758 in a 584-732 box). The words are their own span, which
+ * gives way with an ellipsis and keeps them in its title; the control after
+ * them keeps its width. The text a reader hears is unchanged.
+ */
+function AgeLine({ parts, action }: { parts: readonly ReactNode[]; action: ReactNode }) {
+  const said = dots(parts)
+  if (said === null) return <>{action}</>
+  return (
+    <>
+      <span className="c-age-say" title={textOf(said) || undefined}>
+        {said}
+      </span>
+      {' · '}
+      {action}
+    </>
+  )
 }
 
 /**

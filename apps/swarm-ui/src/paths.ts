@@ -66,7 +66,7 @@ export function helpGroupOf(topic: string): string | null {
   return t === undefined ? null : t.group
 }
 
-export const TASK_PANES = ['children', 'attempts', 'artifacts', 'checkpoints'] as const
+export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints'] as const
 
 function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')

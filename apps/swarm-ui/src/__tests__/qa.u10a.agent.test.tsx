@@ -117,7 +117,7 @@ describe('D6: beside an open agent the page title keeps its word', () => {
   it('does not shrink the title; the meta and then the freshness give way', () => {
     const host = tree(
       '<div class="app has-inspector"><main class="work"><div class="c-phead"><div class="head"><h1>Agents</h1></div>' +
-        '<p class="sub"><span class="c-meta">2 read</span><span class="c-age">read just now · refresh</span></p></div></main></div>',
+        '<p class="sub"><span class="c-meta">2 read</span><span class="c-age"><span class="c-age-say">read just now</span><button>refresh</button></span></p></div></main></div>',
     )
     const head = host.querySelector('.c-phead > .head')!
     const h1 = host.querySelector('h1')!
@@ -129,7 +129,8 @@ describe('D6: beside an open agent the page title keeps its word', () => {
     expect(painted(sub, 'min-width', WIDE)).toBe('0')
     expect(painted(sub, 'overflow', WIDE)).toBe('hidden')
     expect(painted(host.querySelector('.c-meta')!, 'text-overflow', WIDE)).toBe('ellipsis')
-    expect(painted(host.querySelector('.c-age')!, 'text-overflow', WIDE)).toBe('ellipsis')
+    // U11a N10: the freshness words give way, not the refresh control after them.
+    expect(painted(host.querySelector('.c-age-say')!, 'text-overflow', WIDE)).toBe('ellipsis')
   })
 })
 

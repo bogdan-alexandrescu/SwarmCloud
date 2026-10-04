@@ -9,14 +9,14 @@ import {
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
 import { AgentDetailScreen, DRAWER_POLL_MS, IdCopy, Mark } from './AgentDetail'
+import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadTask } from './api'
 import type { TaskPane } from './App'
 import { ArtifactsScreen } from './Artifacts'
 import { AttemptTimelineScreen } from './AttemptTimeline'
-import { CheckpointsPane } from './CheckpointsPane'
+import { CheckpointsPane, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { isOverlay, trapTab } from './focus'
-import { phoneWidth } from './HelpCard'
 import {
   SNAPS,
   SNAP_LABEL,
@@ -28,10 +28,9 @@ import {
   useListSnap,
   type ListSnap,
 } from './listSnap'
-import { LogDock } from './LogDock'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
+import { CONCURRENCY_STATES, RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/agents.css'
 import { Button, CIcon, StateMark, Tabs } from './components'
@@ -42,9 +41,14 @@ import { Button, CIcon, StateMark, Tabs } from './components'
  *
  * The list on the left, the selected agent on the right: a header row (state
  * pill, the agent's name, Copy link, Stop), underline tabs with counts --
- * Details, Children when the agent has any, Attempts, Artifacts, Checkpoints
- * -- the open tab, and the log docked along the bottom of this column, open
- * across every tab.
+ * Details, Logs, Children when the agent has any, Attempts, Artifacts,
+ * Checkpoints -- and the open tab, which fills the rest of the column.
+ *
+ * THE LOG IS A TAB (owner decision 2026-10-04). It was a dock along the foot
+ * of this column, open across every tab, and it lay over the agent's details;
+ * it is the Logs tab now (AgentLogs.tsx), full height under the header with
+ * nothing beneath it. A running agent opens on Logs, a finished one on
+ * Details, whose one-line last log line switches to it.
  *
  * MOVED OUT OF App.tsx (lane U1, 2026-10-02). It was `AgentDrawer` there; the
  * shell is another lane's, and this is the Agents section's own screen. App
@@ -108,13 +112,17 @@ export function AgentSplit({
     }
   }
 
-  // THE CHECKPOINTS TAB'S COUNT IS THE LISTING'S (U10a D21, owner QA
-  // 2026-10-04): the tab said `–` while its pane said `found 1 of 1`. The
-  // task document does not count checkpoints, so the count is known once the
-  // pane has read the listing, and it is that read's number, for this agent.
-  const [ckpts, setCkpts] = useState<{ taskId: string; n: number } | null>(null)
-  const onCheckpoints = useCallback((n: number | null) => setCkpts(n === null ? null : { taskId, n }), [taskId])
-  const ckptCount = ckpts !== null && ckpts.taskId === taskId ? ckpts.n : null
+  // THE CHECKPOINTS TAB'S COUNT IS ITS PANE'S READ (U10a D21, owner QA
+  // 2026-10-04, and again in U11a): the tab said `–` until it was opened,
+  // then `0`, while Details said `1 written · 0 in bucket`. The pane is
+  // mounted with the split, hidden until its tab is chosen, so its one read
+  // is both the count and the content from the start; the count is what the
+  // bucket keeps, and its reason says what was written beside it in the
+  // words Details uses: `1 written, 0 kept`.
+  const [ckpts, setCkpts] = useState<{ taskId: string; c: CheckpointCount } | null>(null)
+  const onCheckpoints = useCallback((c: CheckpointCount | null) => setCkpts(c === null ? null : { taskId, c }), [taskId])
+  const ckpt = ckpts !== null && ckpts.taskId === taskId ? ckpts.c : null
+  const ckptCount = ckpt === null ? null : ckpt.kept
 
   // THE HEADER'S OWN READ of the task document, at the detail's cadence, so
   // the state pill, the name and Stop are there on every tab -- not only on
@@ -204,9 +212,34 @@ export function AgentSplit({
     setDragAt(null)
   }
 
-  const phone = phoneWidth()
+  /*
+   * A RUNNING AGENT OPENS ON LOGS, A FINISHED ONE ON DETAILS (owner decision
+   * 2026-10-04). Decided once per agent, on the first read of its document,
+   * and only when the address named no pane: a link to `/attempts` stays
+   * there, and a reader who then picks Details is not sent back to Logs.
+   * Until that read lands nothing is drawn in the pane, so a running agent's
+   * Details are not read and thrown away on the way to its log.
+   */
+  // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
+  // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
+  // attempt and usually no log yet; its Details say why it waits.
+  const inFlight = task !== null && CONCURRENCY_STATES.has(task.state)
+  const [decided, setDecided] = useState<string | null>(null)
+  const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || inFlight)
+  useEffect(() => {
+    if (decided === taskId) return
+    if (pane !== 'detail') {
+      setDecided(taskId)
+      return
+    }
+    if (head.state.status === 'loading') return
+    setDecided(taskId)
+    if (inFlight) go(`${base}/logs`)
+  }, [decided, taskId, pane, head.state.status, inFlight, go, base])
+
   const tabs: { id: TaskPane; label: string; count: number | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
+    { id: 'logs', label: 'Logs', count: null, say: null, to: `${base}/logs` },
     // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
     // other pane has one, so the tab moves the URL and a link can open it.
     ...(task !== null && offersChildren(task)
@@ -241,10 +274,7 @@ export function AgentSplit({
       id: 'checkpoints',
       label: 'Checkpoints',
       count: ckptCount,
-      say:
-        ckptCount === null
-          ? 'The task document does not count checkpoints: the count is the listing’s, once the Checkpoints tab has read it.'
-          : null,
+      say: checkpointsSay(ckpt),
       to: `${base}/checkpoints`,
     },
   ]
@@ -342,14 +372,26 @@ export function AgentSplit({
           tabs={tabs.map((t) => ({
             key: t.id,
             label: t.label,
-            ...(t.id === 'detail' ? {} : { count: t.count, why: t.say ?? undefined }),
+            ...(t.id === 'detail' || t.id === 'logs' ? {} : { count: t.count, why: t.say ?? undefined }),
           }))}
           onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
         />
       </AgTabsEdge>
 
-      <div className="ag-split-pane">
-        {selected === 'children' && task !== null ? (
+      <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}`}>
+        {deciding ? (
+          <p className="art-loading">
+            <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
+            <span className="ctl-pending art-loading-bar" />
+          </p>
+        ) : selected === 'logs' && task !== null ? (
+          <AgentLogs key={taskId} task={task} />
+        ) : selected === 'logs' ? (
+          <p className="art-loading">
+            <Mark kind="pending" say="Reading the agent before its log. The read is in flight." />
+            <span className="ctl-pending art-loading-bar" />
+          </p>
+        ) : selected === 'children' && task !== null ? (
           <AgChildrenPane task={task} readKey={`${reads}`} />
         ) : selected === 'children' ? (
           <p className="art-loading">
@@ -357,17 +399,20 @@ export function AgentSplit({
             <span className="ctl-pending art-loading-bar" />
           </p>
         ) : selected === 'detail' ? (
-          <AgentDetailScreen taskId={taskId} onClose={close} headed />
+          <>
+            {task !== null && <LogLastLine key={taskId} task={task} onOpen={() => go(`${base}/logs`)} />}
+            <AgentDetailScreen taskId={taskId} onClose={close} headed />
+          </>
         ) : selected === 'attempts' ? (
           <AttemptTimelineScreen taskId={taskId} />
-        ) : selected === 'checkpoints' ? (
-          <CheckpointsPane taskId={taskId} onCount={onCheckpoints} />
-        ) : (
+        ) : selected === 'checkpoints' ? null : (
           <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
         )}
+        {/* Mounted with the split, shown on its tab (D21, above). */}
+        <div className="ag-ckpts-host" hidden={selected !== 'checkpoints'}>
+          <CheckpointsPane key={taskId} taskId={taskId} onCount={onCheckpoints} />
+        </div>
       </div>
-
-      {task !== null && <LogDock key={taskId} task={task} phone={phone} />}
     </div>
   )
 }
