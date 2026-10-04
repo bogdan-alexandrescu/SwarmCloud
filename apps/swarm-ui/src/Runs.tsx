@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, loadWorkflow, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
-import { runAddress } from './IssueSubmit'
+import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
 import { Banner, Button, Card, Chip, CodeBlock, WarnMark } from './components'
 import { FailedPanel, Screen, timeAgo } from './Shell'
@@ -132,24 +132,6 @@ export function RunStateMark({ state }: { state: IssueRunState }) {
       </svg>
       {runStateWord(state)}
     </span>
-  )
-}
-
-/**
- * A PLANNER'S TEXT WITH ITS INLINE CODE DRAWN AS CODE (browser QA N18,
- * 2026-10-04): the lead, the prompts and the requirements printed their
- * backticks (`Closes #N`, `apps/...`). Only a backtick pair is read -- React
- * elements, never HTML -- so the text cannot inject anything; an unpaired
- * backtick is left as it was written.
- */
-export function RnText({ text }: { text: string }) {
-  const parts = text.split(/(`[^`\n]+`)/g)
-  return (
-    <>
-      {parts.map((p, i) =>
-        p.length > 2 && p.startsWith('`') && p.endsWith('`') ? <code key={i}>{p.slice(1, -1)}</code> : <Fragment key={i}>{p}</Fragment>,
-      )}
-    </>
   )
 }
 

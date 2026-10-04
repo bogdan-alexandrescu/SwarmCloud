@@ -65,6 +65,13 @@
    owner's hyphen. Cut with an ellipsis, whole in its title. */
 .in-send .ctl-fact code { display: inline-block; max-width: 100%; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
 .in-send .ctl-fact > span { min-width: 0; }
+/* NO VALUE WIDENS THE CARD (browser QA N2, 2026-10-04): a fact is at most
+   the card's width, and its value shrinks inside it and is cut, whole in the
+   reference's title. */
+.in-send .ctl-fact { max-width: 100%; }
+.in-send .ctl-fact > span { overflow: hidden; }
+/* The meta line's items keep their trailing dot with them (N20). */
+.in-meta > .in-meta-i { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
 .in-row { margin: 0; display: flex; gap: 8px; flex-wrap: wrap; }
 
 /* A closed issue: a warning with its way through, never a refusal. */

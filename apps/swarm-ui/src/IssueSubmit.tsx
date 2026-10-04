@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
 import type { ApiError } from './fetch'
 import { Button, NamedMark, Tag, WarnMark } from './components'
@@ -6,7 +6,7 @@ import { RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen } from './Shell'
 import { Move } from './Submit'
 import { TASK_FORM } from './SubmitChooser'
-import type { Capacity, IssuePreviewRead, RunCreateBody, RunnerProfile } from './types'
+import { clockTime, type Capacity, type IssuePreviewRead, type RunCreateBody, type RunnerProfile } from './types'
 import { Markdown } from './ArtifactViewer'
 import './styles/submit.css'
 import './styles/intake.css'
@@ -64,6 +64,24 @@ const ONLY_RUNNER = `Issue runs always use ${ISSUE_RUN_PROFILE}`
 
 /** Why auto-merge is held back, in the switch's line and the summary. */
 export const AUTO_MERGE_REASON = 'not available yet'
+
+/**
+ * TEXT WITH ITS INLINE CODE DRAWN AS CODE (browser QA N18, 2026-10-04): a
+ * run's plan lead, prompts and requirements and an issue's title printed their
+ * backticks (`Closes #N`, `apps/...`). Only a backtick pair is read -- React
+ * elements, never HTML -- so the text cannot inject anything; an unpaired
+ * backtick is left as it was written.
+ */
+export function InlineText({ text }: { text: string }) {
+  const parts = text.split(/(`[^`\n]+`)/g)
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.length > 2 && p.startsWith('`') && p.endsWith('`') ? <code key={i}>{p.slice(1, -1)}</code> : <Fragment key={i}>{p}</Fragment>,
+      )}
+    </>
+  )
+}
 
 /** The router address of one run: `/runs/<id>`. */
 export function runAddress(id: string): string {
@@ -337,9 +355,13 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>runner</b>
               <code>{ISSUE_RUN_PROFILE}</code>
             </li>
+            {/* THE SUMMARY FOLLOWS THE CHOICE (browser QA N13, 2026-10-04): on
+                Auto it said "runs straight on" beside "lands as PLANNING,
+                then PLANNED" and "nothing else runs until the plan is
+                approved". Each line below reads `approval`. */}
             <li className="ctl-fact">
               <b>plan</b>
-              {approval === 'required' ? 'waits for approval' : 'runs straight on'}
+              {approval === 'required' ? 'waits for approval' : 'approved as soon as it is read'}
             </li>
             <li className="ctl-fact">
               <b>auto-merge</b>
@@ -347,7 +369,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
               <b>fix rounds</b>
-              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">not a number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
+              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
             </li>
             <li className={tenant === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>tenant</b>
@@ -355,15 +377,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className="ctl-fact">
               <b>lands as</b>
-              PLANNING, then PLANNED · a planned run holds no capacity
+              {approval === 'required'
+                ? 'PLANNING, then PLANNED · a planned run holds no capacity'
+                : 'PLANNING, then PLANNED, approved on the next tick, then RUNNING · planning holds no capacity'}
             </li>
           </ul>
           <Button type="submit" kind="primary" full disabled={blocked}>
             {sending.kind === 'sending' ? 'Planning…' : 'Plan this issue'}
           </Button>
           <p className="sb-note">
-            A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is
-            approved.
+            {approval === 'required'
+              ? 'A planner task reads the issue and the repository and writes a plan; nothing else runs until the plan is approved.'
+              : 'A planner task reads the issue and the repository and writes a plan; the plan is approved the moment it is read and the work starts without anyone being asked.'}
           </p>
           {sending.kind === 'failed' && (
             <>
@@ -392,17 +417,22 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
   const { issue } = read
   const [whole, setWhole] = useState(false)
   const closed = issue.state === 'closed'
-  const time = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+  // THE CONSOLE'S ONE CLOCK (browser QA N20, 2026-10-04): this said
+  // "11:45 PM" where every other screen says 23:45:10 (`clockTime`).
+  const time = clockTime(new Date(at).toISOString(), at)
   return (
     <section className="in-preview" aria-label="The issue as read">
-      <h3>{issue.title === '' ? <i className="ctl-em">&mdash; untitled</i> : issue.title}</h3>
+      <h3>{issue.title === '' ? <i className="ctl-em">&mdash; untitled</i> : <InlineText text={issue.title} />}</h3>
+      {/* EACH SEPARATOR ENDS ITS ITEM (N20): between items, a wrapped line
+          opened on "·". Now an item carries the dot after it, so a line can
+          end on one but never start with one. */}
       <p className="in-meta">
-        <a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a>
-        {' · '}
-        <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} />
-        {' · '}
-        {issue.comments === 1 ? '1 comment' : `${issue.comments} comments`}
-        {' · '}read {time} with this tenant&rsquo;s forge credential
+        <span className="in-meta-i"><a href={issue.url} target="_blank" rel="noreferrer" className="mono">{issue.ref}</a> ·</span>
+        <span className="in-meta-i">
+          <NamedMark mark={closed ? 'succeeded' : 'ready'} hue={closed ? 'neu' : 'live'} word={issue.state} /> ·
+        </span>
+        <span className="in-meta-i">{issue.comments === 1 ? '1 comment' : `${issue.comments} comments`} ·</span>
+        <span className="in-meta-i" title={time?.title}>read {time?.text ?? 'at an unknown time'} with this tenant&rsquo;s forge credential</span>
       </p>
       {issue.labels.length > 0 ? (
         <p className="in-chips">{issue.labels.map((l) => <Tag key={l}>{l}</Tag>)}</p>

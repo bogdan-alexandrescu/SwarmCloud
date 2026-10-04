@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity } from './api'
 import {
   CeilingTag,
@@ -751,15 +751,24 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
   const [open, setOpen] = useState(false)
   const listId = `${idPrefix}-add-setting`
   const buttonId = `${listId}-button`
-  const close = () => {
-    setOpen(false)
-    document.getElementById(buttonId)?.focus()
-  }
+  // ESCAPE CLOSES IT FROM ANYWHERE WHILE IT IS OPEN (browser QA D34,
+  // 2026-10-04). Handled on the control, it missed the case the owner hit:
+  // opening it left focus in a field outside it -- a click does not move
+  // focus in every browser -- and Escape there did nothing. A key another
+  // control already handled (a dialog, the step panel) is left alone.
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented) return
+      e.preventDefault()
+      setOpen(false)
+      document.getElementById(buttonId)?.focus()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [open, buttonId])
   return (
-    // ESCAPE CLOSES FROM ANYWHERE IN THE CONTROL (browser QA D34, 2026-10-04):
-    // it was handled on the list alone, so with focus still on the button --
-    // where a click leaves it -- Escape did nothing.
-    <div className="sbf-addset" onKeyDown={(e) => { if (open && e.key === 'Escape') { e.preventDefault(); close() } }}>
+    <div className="sbf-addset">
       <button type="button" id={buttonId} className="sbf-addset-btn" aria-expanded={open}
         aria-controls={listId} onClick={() => setOpen(!open)}>
         + Add setting <span aria-hidden="true">▾</span>
