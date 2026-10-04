@@ -431,6 +431,43 @@ def _read_issue(
 
 
 # --------------------------------------------------------------------------
+# what the issue said at submission
+# --------------------------------------------------------------------------
+
+def _read_issue(
+    ctx: AppContext, auth: AuthContext, tenant_id: str, ref
+) -> tuple[dict | None, dict | None]:
+    """The issue as the preview reads it, for the run to keep; or why it could not be read.
+
+    THE SAME READ AS `GET /v1/issues/preview` (lane U9 item 4): the caller's
+    tenant's forge token, `forge.preview`'s masking and body bound. The token
+    lives inside `preview` only; nothing about it is returned or logged here.
+    A failure does not refuse the run -- the planner reads the issue itself,
+    on the worker -- it is kept as `issue_read_error`, so the run page says
+    why its card is empty instead of pretending the issue had nothing in it.
+    """
+    if ctx.forge_tokens is None or ctx.forge is None:
+        return None, {"code": "read_failed", "message": "this API has no forge reader configured"}
+    tenant = ctx.store.get_tenant(tenant_id) or Tenant(
+        tenant_id=tenant_id,
+        kind="group",
+        principal=auth.tenant_principal or auth.email,
+        created_at=ctx.now(),
+    )
+    try:
+        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+    except ForgeReadError as refused:
+        log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
+        return None, {"code": refused.code, "message": refused.message}
+    except Exception as exc:  # noqa: BLE001 -- the run is created either way
+        # The type only: an exception's text can quote a request.
+        log.warning("issue run read tenant=%s issue=%s failed (%s)", tenant_id, ref.short, type(exc).__name__)
+        return None, {"code": "read_failed", "message": f"the issue could not be read ({type(exc).__name__})"}
+    log.info("issue run read tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
+    return issue_read_from_preview(read, ctx.now()), None
+
+
+# --------------------------------------------------------------------------
 # routes
 # --------------------------------------------------------------------------
 

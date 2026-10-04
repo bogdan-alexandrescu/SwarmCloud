@@ -1208,9 +1208,6 @@ class IssueRun:
             "open_work": self.open_work,
             "plan_comment_id": self.plan_comment_id,
             "status_comment_id": self.status_comment_id,
-            # Why the issue shows no comment, or a stale one. Stored through
-            # `failure_text` (issuesync), so it is masked and bounded already.
-            "writeback_error": self.writeback_error,
             "pull_request": None if self.pull_request is None else dict(self.pull_request),
             "ci_fix_round": self.ci_fix_round,
             "pr_task_id": self.pr_task_id,

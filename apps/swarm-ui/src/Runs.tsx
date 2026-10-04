@@ -49,6 +49,12 @@ import './styles/runs.css'
  * -- a short lead, numbered steps with their prompts folded, the raw plan
  * behind a disclosure -- rather than as one long paragraph.
  *
+ * THE PAGE LEADS WITH THE ISSUE (lane U9, owner 2026-10-03). Its title is the
+ * issue's title as the run read it at submission (`issue_read`), its meta
+ * `owner/repo#N · run_… · created by …`; the plan is drawn from its schema
+ * -- a short lead, numbered steps with their prompts folded, the raw plan
+ * behind a disclosure -- rather than as one long paragraph.
+ *
  * Classes are `rn-` so a later pass can swap them for lane U0's components.
  */
 
