@@ -315,7 +315,7 @@ def test_attach_all_lists_every_followed_workflows_link(tmp_path):
     got = _run_all(tmp_path, answers)
     assert "error" not in got, got.get("error")
     for i in ids:
-        listed = [line for line in got["logs"] if line.startswith(i + " ") and "following" in line]
+        listed = [line for line in got["logs"] if line.startswith(i + " ") and "/sc attach " + i in line]
         assert listed and listed[0].endswith(" · console: " + _served_workflow(i)), got["logs"]
 
 

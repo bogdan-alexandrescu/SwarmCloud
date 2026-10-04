@@ -90,12 +90,16 @@ _STEP_KEYS = frozenset(
     }
 )
 
-#: A step key that is READ HERE AND NEVER SENT. `stage` names the group a step
-#: is shown under in Claude Code's `/workflows` when the spec is run with
-#: `/sc:swarmcloud`; the platform has no such field (`WorkflowStepCreate` forbids
-#: extras) and nothing executes from it. Accepted rather than refused so one
-#: spec file serves `/sc:swarmcloud` and `swarm workflow` alike -- and named here, so
-#: it is the one key this module drops knowingly.
+#: A step key that is READ HERE AND NEVER SENT. `stage` was the group a step was
+#: shown under in Claude Code's `/workflows` when the spec ran with
+#: `/sc:swarmcloud`; since 2026-10-04 those rows show the console's stage
+#: instead -- the step's level in the DAG -- because the console never sees
+#: this key and the owner asked that both read the same. It stays a note for
+#: the spec's reader: the platform has no such field (`WorkflowStepCreate`
+#: forbids extras) and nothing executes from it. Accepted rather than refused
+#: so existing spec files keep working with `/sc:swarmcloud` and `swarm
+#: workflow` alike -- and named here, so it is the one key this module drops
+#: knowingly.
 DISPLAY_ONLY_STEP_KEYS = frozenset({"stage"})
 
 #: The top-level keys a `swarm workflow` spec may carry -- the file the
@@ -113,6 +117,12 @@ SPEC_KEYS = frozenset(
         "on_step_failure",
         "priority",
         "label",
+        # A short NAME for the workflow (owner, 2026-10-04): what Claude Code
+        # titles its run (`SwarmCloud · <title> · N steps`) and what the
+        # console can show beside it. Sent as `metadata.title`, the way `label`
+        # goes as `metadata.unit`: WorkflowCreate forbids extra top-level
+        # fields, so it never travels as one.
+        "title",
     }
 )
 
@@ -278,7 +288,7 @@ def build_steps(raw_steps: Any) -> list[dict[str, Any]]:
                 )
             step["builds_on"] = raw["builds_on"]
         if raw.get("stage") is not None and not isinstance(raw.get("stage"), str):
-            raise SwarmError(f"{where}: stage must be a string -- the group /sc:swarmcloud shows it under")
+            raise SwarmError(f"{where}: stage must be a string -- a note for the spec's reader, never sent")
         steps.append(step)
     return steps
 
@@ -341,12 +351,22 @@ def fnv1a32(data: bytes) -> int:
     return value
 
 
+def check_title(value: Any, *, where: str) -> str | None:
+    """A spec's optional `title`, trimmed, or None when absent. Anything but
+    non-empty text is refused: a title is a name a person reads."""
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise SwarmError(f"{where}: title must be a non-empty string -- the workflow's short name")
+    return value.strip()
+
+
 def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, Any]:
     """A whole `swarm workflow` spec, checked, as `submit`'s keyword arguments.
 
     Returns `steps` built by `build_steps`, and the spec's `strategy`,
     `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
-    `priority` and `label` as given (None when absent). The caller decides what
+    `priority`, `label` and `title` as given (None when absent). The caller decides what
     overrides them -- the terminal's flags, or the repository the bridge infers
     from a checkout.
     """
@@ -360,6 +380,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
             "`runner_profile`; an image, a command, a backend, a model or a resource "
             "spec is never sent."
         )
+    title = check_title(document.get("title"), where=where)
     return {
         "steps": build_steps(document.get("steps")),
         "strategy": document.get("strategy"),
@@ -369,6 +390,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "on_step_failure": document.get("on_step_failure"),
         "priority": document.get("priority"),
         "label": document.get("label"),
+        "title": title,
     }
 
 
@@ -383,6 +405,7 @@ def submit(
     on_step_failure: str | None = None,
     priority: int | None = None,
     label: str | None = None,
+    title: str | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -394,7 +417,11 @@ def submit(
     """
     body: dict[str, Any] = {
         "steps": steps,
-        "metadata": {"origin": "swarm-mcp", **({"unit": label} if label else {})},
+        "metadata": {
+            "origin": "swarm-mcp",
+            **({"unit": label} if label else {}),
+            **({"title": title} if title else {}),
+        },
     }
     if strategy:
         body["strategy"] = strategy
@@ -409,6 +436,79 @@ def submit(
     if priority is not None:
         body["priority"] = int(priority)
     return _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+
+
+# --------------------------------------------------------------------------
+# The workflow's name in Claude Code
+# --------------------------------------------------------------------------
+
+#: The most characters a SwarmCloud workflow's run title has in Claude Code
+#: (owner, 2026-10-04): `SwarmCloud · <name> · N steps`, whole, never longer.
+#: plugin/workflows/run.js cuts the same way (`workflowTitle`), and
+#: test_plugin_rows_match_console holds the two equal.
+TITLE_CHARS = 100
+TITLE_PREFIX = "SwarmCloud · "
+
+
+def _flat(text: Any) -> str | None:
+    if not isinstance(text, str):
+        return None
+    flat = " ".join(text.split())
+    return flat or None
+
+
+def title_name(
+    *,
+    title: Any = None,
+    label: Any = None,
+    stored: Any = None,
+    workflow_id: Any = None,
+) -> str:
+    """The NAME a workflow's run is titled with, in the owner's order: the
+    spec's `title`, else its `label`, else (an attach) the title or label
+    SwarmCloud stored, else the workflow id. Never a model-written summary --
+    every source is text a person wrote or the API minted."""
+    for candidate in (title, label, stored, workflow_id):
+        flat = _flat(candidate)
+        if flat:
+            return flat
+    return "workflow"
+
+
+def _steps_text(steps: int) -> str:
+    return f"{steps} step" if steps == 1 else f"{steps} steps"
+
+
+def workflow_title(name: str, steps: int) -> str:
+    """`SwarmCloud · <name> · N steps`, at most TITLE_CHARS characters.
+
+    The NAME is cut, never the step count: at the last word boundary that
+    fits, with `…`; a single word longer than the room is cut inside it."""
+    tail = " · " + _steps_text(steps)
+    room = TITLE_CHARS - len(TITLE_PREFIX) - len(tail)
+    flat = _flat(name) or "workflow"
+    if len(flat) > room:
+        head = flat[: room - 1]
+        if flat[room - 1] != " " and " " in head:
+            head = head[: head.rindex(" ")]
+        flat = head.rstrip() + "…"
+    return TITLE_PREFIX + flat + tail
+
+
+def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:
+    """The `title` and `label` SwarmCloud stored for a workflow.
+
+    The frozen `Workflow` has no metadata field; `submit` puts the metadata on
+    every step task, so both are read back from the first task carrying each:
+    `metadata.title`, and the label as `metadata.unit`."""
+    found: dict[str, str | None] = {"title": None, "label": None}
+    for task in envelope.get("tasks") or []:
+        metadata = (task.get("metadata") or {}) if isinstance(task, dict) else {}
+        for key, field in (("title", "title"), ("label", "unit")):
+            value = _flat(metadata.get(field))
+            if found[key] is None and value:
+                found[key] = value
+    return found
 
 
 def fetch(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
@@ -589,6 +689,9 @@ def report(
     workflow = envelope["workflow"]
     rows = step_rows(envelope, describe=describe)
     out: dict[str, Any] = {"workflow_id": workflow.get("workflow_id")}
+    # The workflow's names as stored, for /sc:swarmcloud's attach to title
+    # its rows the way the run that submitted it did.
+    out.update(stored_names(envelope))
     out.update(state_of(workflow))
     out["steps_total"] = len(rows)
     out["cancel_requested"] = workflow.get("cancel_requested")
