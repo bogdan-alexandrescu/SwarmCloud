@@ -137,8 +137,8 @@
 /* NOT DUE, NOT READ OR NOT RECORDED: small and muted, never full size. */
 .dt-sc.is-reading > .dt-sc-v,
 .dt-sc.is-absent > .dt-sc-v,
-.dt-sc.is-unread > .dt-sc-v { font: 500 var(--t-meta)/var(--lh-title) var(--font); color: var(--text-dim); }
-.dt-sc-s { color: var(--text-dim); font-size: var(--t-micro); line-height: 1.35; }
+.dt-sc.is-unread > .dt-sc-v { font: 500 var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); }
+.dt-sc-s { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .dt-sc.is-alert > .dt-sc-s { color: var(--s-warn); }
 .dt-sc.is-unread > .dt-sc-s { color: var(--s-warn); }
 

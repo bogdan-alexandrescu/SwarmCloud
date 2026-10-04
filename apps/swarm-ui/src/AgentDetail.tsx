@@ -4183,8 +4183,6 @@ function PublishOutcome({ git, task }: { git: GitSummary; task: Task }) {
  */
 function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
   const { task } = run
-  const cls = run.classes?.[task.resource_class] ?? null
-  const noCeiling = ceilingNote(run)
   const { state: copy } = useRead<TaskInputCopy>(
     () => loadTaskInputOnce(task.id),
     task.id,
@@ -4267,27 +4265,8 @@ function Input({ run, readAt }: { run: AgentRun; readAt: number | null }) {
 
       <details className="dt-disc">
         <summary>Metadata{keys === null ? '' : ` · ${keys} ${keys === 1 ? 'key' : 'keys'}`}</summary>
-        <ul className="ctl-facts">
-          <li className="ctl-fact">
-            <b>profile</b>
-            {task.runner_profile}
-          </li>
-          <li className="ctl-fact">
-            <b>class</b>
-            {task.resource_class}
-            {cls !== null ? (
-              <> · {cls.cpu} vCPU · {cls.memory_gib} GiB · {cls.disk_gib} GiB disk · {cls.units}u</>
-            ) : (
-              <>
-                {' '}
-                <Mark
-                  kind={run.classes === null ? 'unread' : 'absent'}
-                  say={`The sizing behind this class name is unknown: ${noCeiling ?? 'the catalogue did not answer'}.`}
-                />
-              </>
-            )}
-          </li>
-        </ul>
+        {/* NO PROFILE OR CLASS HERE: the header's meta line says them, once
+            (walkthrough B, owner 2026-10-03). */}
         <MaskedMetadataBlock served={served} copy={copy} />
         {served !== null && <RestOfInput served={served} />}
       </details>

@@ -61,29 +61,34 @@ describe('B: the metadata is said once, in the header block', () => {
     const s = await split(FINISHED)
     const head = s.querySelector('.ag-head')!
     const pane = s.querySelector('.ag-split-pane')!
-    expect(times(head, 'claude-code · standard'), 'profile · class is not in the header').toBe(1)
-    expect(times(pane, 'claude-code · standard'), 'the pane repeats profile · class').toBe(0)
+    // THE META LINE (agent-details-v3.html A): profile · class · account,
+    // each once, as items the sheet separates with a `·`.
+    const meta = [...head.querySelectorAll('.ag-head-facts > li')].map((li) => (li.textContent ?? '').trim())
+    expect(meta[0], 'the profile is not in the header').toBe('claude-code')
+    expect(meta[1], 'the class is not in the header').toMatch(/^standard( · \d+ vCPU · \d+ GiB)?$/)
+    expect(times(pane, 'claude-code'), 'the pane repeats the profile').toBe(0)
     // The whole id with its copy, once, in the header.
     expect(head.querySelector('button[aria-label^="Copy task id"]'), 'no id copy in the header').not.toBeNull()
     expect(pane.querySelector('button[aria-label^="Copy task id"]'), 'the pane repeats the id copy').toBeNull()
-    // The whole id is printed once, by its copy (the pane's own <h1> is hidden
-    // under the header, and the title names the agent -- item G).
+    // The id is behind its copy button, whose title is the whole id; it is
+    // printed nowhere (the pane's own <h1> is hidden under the header, and
+    // the title names the agent -- item G).
     expect(painted(pane.querySelector('.head')!, 'display', WIDE)).toBe('none')
+    expect(head.querySelector<HTMLElement>('button[aria-label^="Copy task id"]')!.title).toContain(FINISHED)
     const shown = s.cloneNode(true) as HTMLElement
     // A tab not on screen is not printed (the Checkpoints pane is mounted
     // hidden, for its count -- U11a D21).
     for (const el of shown.querySelectorAll('.ag-split-pane .head, .ag-head-title, [hidden]')) el.remove()
-    expect(times(shown, FINISHED), 'the id is printed more than once').toBe(1)
-    // The facts the header owns, keyed once; the pane keys none of them.
+    expect(times(shown, FINISHED), 'the id is printed').toBe(0)
+    // The facts the header owns are said there once; the pane keys none of them.
     const keys = (root: Element) => [...root.querySelectorAll('.ctl-fact > b')].map((b) => (b.textContent ?? '').trim())
-    // (Each attempt's card keys its own account; the run's facts are the
-    // Details pane's first section.)
-    const facts = pane.querySelector('.run-stack > section')!
-    for (const k of ['started', 'account', 'tenant']) {
-      expect(keys(head), `the header has no ${k}`).toContain(k)
+    expect(meta.some((m) => m.startsWith('account ')), 'the header has no account').toBe(true)
+    expect(meta.some((m) => /tenant/.test(m)), 'the tenant is back in the header; the panel says it').toBe(false)
+    // (Each attempt's card keys its own account, behind Resources' Details.)
+    const facts = pane.querySelector('.run-stack > .dt-now')!
+    for (const k of ['started', 'account', 'tenant', 'state', 'id', 'ended', 'wf', 'workflow', 'profile', 'class']) {
       expect(keys(facts), `the pane repeats ${k}`).not.toContain(k)
     }
-    for (const k of ['state', 'id', 'ended', 'wf', 'workflow']) expect(keys(facts), `the pane repeats ${k}`).not.toContain(k)
     expect(head.querySelector('[data-mark]'), 'no state pill in the header').not.toBeNull()
   })
 })
@@ -112,8 +117,9 @@ describe('B: the log is a tab, and nothing is drawn under the pane', () => {
     expect(painted(pane, ['overflow-y', 'overflow'], WIDE)).toBe('auto')
     expect(painted(pane, 'min-height', WIDE)).toBe('0')
     expect(painted(pane, ['flex', 'flex-grow'], WIDE)).toMatch(/^1\b/)
-    // Details' one log line is in the pane's flow, at its top.
-    expect(pane.firstElementChild?.classList.contains('ag-loglast')).toBe(true)
+    // Details' one log line is in the pane's flow, in the leading card at the
+    // top of the stack (agent-details-v3.html A).
+    expect(pane.querySelector('.dt > .dt-now > .ag-loglast')).not.toBeNull()
   })
 
   it('opens a running agent on Logs and a finished one on Details', async () => {
