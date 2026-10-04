@@ -350,7 +350,7 @@ authorization layer rather than in our code.
   service account — forced by Cloud Run setting the SA on the Job, not the
   execution. See [execution-backends.md](execution-backends.md).
 * GKE: namespace `swarm-tenant-<id>` (the dispatcher's default template,
-  `apps/scheduler/scheduler/dispatch.py:1438`; this row said `swarm-<id>` until
+  `apps/scheduler/scheduler/dispatch.py:1463`; this row said `swarm-<id>` until
   2026-10-02, the spelling §1 above records as behind the 2026-09-23 outage),
   tenant KSA workload-identity-bound to the tenant GSA, default-deny
   NetworkPolicy so one tenant's pod cannot reach another's.

@@ -597,8 +597,8 @@ class Worker:
         #: request title (#265's own fetch, once it lands) already read it.
         #: Nothing sets this yet -- #265 is landing separately and had not, as
         #: of this change, shipped the fetch -- so it stays None and
-        #: `_title_from_issue_input` names the work from the step's label or
-        #: the issue number, always as "part of #N", never "Fixes #N".
+        #: `_title_from_issue_input` names the work by the issue number,
+        #: always as "part of #N", never "Fixes #N".
         self._issue_title: str | None = None
         self._clone_base: str | None = None
         #: The commit this attempt's clone checked out, recorded as
@@ -7590,7 +7590,7 @@ class Worker:
         return self._opens_pull_request() and self._title_from_issue_input(task) is None
 
     def _title_from_issue_input(self, task: dict[str, Any]) -> str | None:
-        """"<the work> (part of #N)": the issue's title, else the step's label.
+        """"<the issue's title> (part of #N)", else "Work on issue #N (part of #N)".
 
         NEVER A CLOSING KEYWORD. This used to fall back to "Fixes #N", and a
         squash merge writes the title into a commit on the base branch, which
@@ -7602,8 +7602,9 @@ class Worker:
         whether the pull request closes the issue is said in its body, by
         whatever decides completeness -- for an issue run, the API's block
         from the review's per-requirement verdict (owner decision on #454).
-        Without an issue title or a step label the work is named by the
-        issue number alone, still as `part of`.
+        Without an issue title the work is named by the issue number alone,
+        still as `part of`. (Not the step's `metadata.label`: the step-spec
+        signature does not cover it, and the worker reads no unsigned key.)
 
         `input.issue` is `#265`'s field (contract request 28, accepted
         2026-09-28): "a positive integer naming an issue in the step's own
@@ -7614,8 +7615,7 @@ class Worker:
         `number`/`issue_number` key in case the shape changes before it
         lands -- and returns None, not a guess, when there is no number at
         all. `self._issue_title` is the hook the fetch fills in once it
-        exists; until then it is always None and the label or the number
-        names the work.
+        exists; until then it is always None and the number names the work.
         """
         payload = task.get("input")
         issue = payload.get("issue") if isinstance(payload, dict) else None
@@ -7635,11 +7635,6 @@ class Worker:
         # An issue's title is anyone's text: a mention in it would page that
         # person or team from a title the platform wrote, so
         # `_scrub_and_cap_title` puts a zero-width joiner after each `@`.
-        if title is None:
-            metadata = task.get("metadata")
-            label = metadata.get("label") if isinstance(metadata, dict) else None
-            if isinstance(label, str) and label.strip():
-                title = " ".join(label.split())
         text = f"{title} (part of #{number})" if title else f"Work on issue #{number} (part of #{number})"
         return self._scrub_and_cap_title(text)
 

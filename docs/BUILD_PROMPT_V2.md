@@ -257,7 +257,7 @@ tenant.
 > The `swarm.dispatch` / `swarm.collect` shape below survives as the bridge's
 > MCP tools for a session that is not running a workflow script:
 > `swarm_dispatch` takes one task, or a `tasks` list checked in full and sent as
-> one request (`apps/swarm-mcp/swarm_mcp/server.py:1337`), and `swarm_collect`
+> one request (`apps/swarm-mcp/swarm_mcp/server.py:1520`), and `swarm_collect`
 > gathers the results.
 
 ```js
@@ -349,15 +349,15 @@ runs the mechanism.
 > `sc account add --label <label> [--lend-to <tenant>]`,
 > `sc account pause|resume|drain <label>` and `sc account remove <label>`, which
 > asks for the label typed back. `sc accounts` is the read-only list. `add`
-> (`apps/swarm-mcp/swarm_mcp/sc.py:1105`) runs four steps:
+> (`apps/swarm-mcp/swarm_mcp/sc.py:1112`) runs four steps:
 >
 > 1. It calls `POST /v1/accounts/authorize`
->    (`apps/swarm-api/swarm_api/routes/accounts.py:258`), which returns the
+>    (`apps/swarm-api/swarm_api/routes/accounts.py:283`), which returns the
 >    Anthropic sign-in URL and the `state` that keys it.
 > 2. It opens the operator's browser at that URL.
 > 3. It reads the code the callback page shows, without echoing it.
 > 4. It sends that code once to `POST /v1/accounts/exchange`
->    (`apps/swarm-api/swarm_api/routes/accounts.py:285`).
+>    (`apps/swarm-api/swarm_api/routes/accounts.py:310`).
 >
 > The broker exchanges the code and writes the credential to Secret Manager
 > itself. It files the account under the tenant recorded when the sign-in
@@ -415,7 +415,7 @@ refresh disabled, and let the broker own it.
 > **Amended 2026-10-02: the assignment is a broker HOLD, not a field on the
 > lease, and there is no credential file.** The broker records each assignment
 > as a hold on the account document
-> (`apps/quota-broker/quota_broker/accounts.py:295`). A hold carries its own
+> (`apps/quota-broker/quota_broker/accounts.py:352`). A hold carries its own
 > id, which the release must name, and it expires on its own, so a SIGKILLed
 > worker costs a few stale minutes rather than a count that stays inflated for
 > good (`apps/agent-worker/agent_worker/accountlease.py:66`). It is not on the
@@ -566,7 +566,7 @@ is a platform that blocks its own upgrades.
 >   (`terraform/modules/frontend/main.tf:21`).
 > * **It polls, with no server-sent events.** The capacity screens re-read
 >   every 30 or 60 seconds and pause while the tab is hidden
->   (`apps/swarm-ui/src/capacityPoll.ts:13`).
+>   (`apps/swarm-ui/src/capacityPoll.ts:15`).
 > * **The front door is an external Application Load Balancer with IAP**
 >   (`terraform/modules/frontend/main.tf:1`), not an internal one.
 >   `INGRESS_TRAFFIC_INTERNAL_LOAD_BALANCER` is exactly the ingress setting an

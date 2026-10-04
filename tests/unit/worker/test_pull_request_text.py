@@ -21,8 +21,8 @@ WHAT IS PINNED. When the agent leaves `pr-title.txt` and/or `pr-body.md` in
 
 With no `pr-body.md` the generated body is unchanged. NO TITLE IS INVENTED
 (owner decisions, 2026-09-28): the only title the platform writes is the
-step's `issue` input, as "<issue title> (part of #N)", "<step label> (part of
-#N)" or "Work on issue #N (part of #N)" -- never a closing keyword, which a
+step's `issue` input, as "<issue title> (part of #N)" or "Work on issue #N
+(part of #N)" -- never a closing keyword, which a
 squash merge would carry into the base branch and close the issue with
 (review of #545) -- with a zero-width joiner after every `@` in the issue's
 title. With no usable `pr-title.txt` and
@@ -425,14 +425,16 @@ def test_a_platform_title_never_carries_a_closing_keyword(
     assert title.endswith("(part of #42)"), title
 
 
-def test_a_step_label_names_the_work_when_the_issue_title_is_not_known(
+def test_without_the_issue_title_the_number_names_the_work_whatever_the_label(
     worker_factory, monkeypatch, origin, local_urls, forge
 ):
+    # `metadata.label` is not covered by the step-spec signature, so the
+    # worker does not read it for the title.
     _publish(
         worker_factory, monkeypatch, origin, task_id="t-pr-label", files={},
-        task_input={"issue": 42}, label="Sort the  widget list", with_title=False,
+        task_input={"issue": 42}, label="Sort the widget list", with_title=False,
     )
-    assert _only_pull(forge)["title"] == "Sort the widget list (part of #42)"
+    assert _only_pull(forge)["title"] == "Work on issue #42 (part of #42)"
 
 
 def test_the_prompt_alone_opens_no_pull_request(

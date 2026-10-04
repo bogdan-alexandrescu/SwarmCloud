@@ -295,7 +295,7 @@ still named as left: nothing confirmed it.
 **A failed write of the block is written again, and holds the run.** Until
 the block lands, nothing on the pull request may close the issue. The worker
 titles a pull request for a step with an `issue` input "<the work> (part of
-#N)" -- the issue's title or the step's label, never "Fixes #N", which it
+#N)" -- the issue's title or its number, never "Fixes #N", which it
 used to write and which a squash merge would carry onto the default branch --
 and every compiled prompt forbids the agent a closing keyword. The block is
 still the only place that says `Closes #N`, so it is not left to one attempt:
