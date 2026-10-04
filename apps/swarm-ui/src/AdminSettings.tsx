@@ -125,7 +125,7 @@ export function AdminSettingsScreen() {
       // A count, not a promise. "changes take effect immediately" was a
       // rationale in the one slot on this screen a reader cannot skip.
       summary={(d) =>
-        `${d.pools.length} pools · ${Object.keys(d.runner_profiles).length} profiles`
+        `${d.pools.length} ${d.pools.length === 1 ? 'pool' : 'pools'} · ${Object.keys(d.runner_profiles).length} ${Object.keys(d.runner_profiles).length === 1 ? 'profile' : 'profiles'}`
       }
       empty={{
         heading: 'No pools exist',
@@ -385,17 +385,17 @@ function impactOf(pool: Pool, next: number, capacity: Capacity): Sentence[] {
   if (after === 0) {
     said.push([
       pool.active > 0
-        ? `Nothing new is admitted to it. The ${pool.active} units in use are not stopped.`
+        ? `Nothing new is admitted to it. The ${unitsWord(pool.active)} in use ${pool.active === 1 ? 'is' : 'are'} not stopped.`
         : 'Nothing new is admitted to it.',
     ])
   } else if (after < pool.active) {
     said.push([
-      `Nothing running is stopped: the ${pool.active} units in use finish, and new work waits until fewer than ${after} are in use.`,
+      `Nothing running is stopped: the ${unitsWord(pool.active)} in use finish${pool.active === 1 ? 'es' : ''}, and new work waits until fewer than ${after} are in use.`,
     ])
   } else if (pool.effective_limit !== null && after < pool.effective_limit) {
-    said.push([`The ${pool.active} units in use fit under it; nothing is stopped.`])
+    said.push([`The ${unitsWord(pool.active)} in use ${pool.active === 1 ? 'fits' : 'fit'} under it; nothing is stopped.`])
   } else if (pool.effective_limit === null || after > pool.effective_limit) {
-    said.push([`${after - pool.active} units free on this pool after the change.`])
+    said.push([`${unitsWord(after - pool.active)} free on this pool after the change.`])
   }
   return said
 }
@@ -463,6 +463,22 @@ function changeOf(pool: Pool): { by: string; at: string } | null {
   const at = served.admin_changed_at
   if (typeof by !== 'string' || by === '' || typeof at !== 'string' || Number.isNaN(Date.parse(at))) return null
   return { by, at }
+}
+
+/** "1 unit", "3 units" (browser QA D32: the editor said "1 units"). */
+export function unitsWord(n: number): string {
+  return `${n} ${n === 1 ? 'unit' : 'units'}`
+}
+
+/**
+ * WHAT SET A POOL'S CEILING, NEVER A BLANK CELL (browser QA D32, 2026-10-04).
+ * #132 left the configured case empty so the column would not restate the
+ * Ceiling, and every row then read as a cell nobody filled in. The configured
+ * case is the word, faint; AIMD and provider quota stand out in ink.
+ */
+export function AdmSetBy({ pool }: { pool: Pool }) {
+  const by = setBy(pool)
+  return by.term === 'configured' ? <span className="adm-setby-cfg">configured</span> : <>{by.term}</>
 }
 
 /** `ops@… · 3h ago`, with the instant on the `time` element. */
@@ -806,7 +822,7 @@ function PoolRow({
           {pool.effective_limit !== null && pool.active > pool.effective_limit && (
             <span
               className="adm-over"
-              title={`${pool.active - pool.effective_limit} units over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
+              title={`${unitsWord(pool.active - pool.effective_limit)} over: lowering a ceiling evicts nothing, so the work in use finishes and nothing new is admitted until fewer than ${pool.effective_limit} are in use.`}
             >
               over ceiling
             </span>
@@ -828,8 +844,8 @@ function PoolRow({
       {/* EMPTY WHERE THE CEILING IS THE CONFIGURED VALUE (#132): `configured`
           on every such row was the column restating the Ceiling beside it.
           The column itself is in every family now (#503). */}
-      <td role="cell" data-label="Set by" title={by.term === 'configured' ? undefined : by.detail}>
-        {by.term === 'configured' ? null : by.term}
+      <td role="cell" data-label="Set by" title={by.detail}>
+        <AdmSetBy pool={pool} />
       </td>
       <td role="cell" data-label="Last changed">
         {/* THE LAST ADMIN WRITE, OR A DASH WITH ITS REASON. Never `updated_at`,
@@ -945,9 +961,9 @@ function SideEditor({
       </h3>
       <dl className="adm-side-facts">
         <dt>In use</dt>
-        <dd>{pool.active} units</dd>
+        <dd>{unitsWord(pool.active)}</dd>
         <dt>Ceiling</dt>
-        <dd>{pool.effective_limit === null ? 'no limit set' : `${pool.effective_limit} units`}</dd>
+        <dd>{pool.effective_limit === null ? 'no limit set' : unitsWord(pool.effective_limit)}</dd>
         {pool.effective_limit !== pool.hard_limit && pool.hard_limit !== null && (
           <>
             <dt>Hard limit</dt>

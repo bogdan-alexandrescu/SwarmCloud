@@ -739,7 +739,7 @@ function RuntimeCard({
  * every card, and it is `#help/credential-names-not-values` -- linked from the
  * column and from the footer.
  */
-function Credential({ runtime }: { runtime: Runtime }) {
+export function Credential({ runtime }: { runtime: Runtime }) {
   if (runtime.provider === null) {
     return (
       /* Not "unknown", and not an em dash: em dash means "not measured", and
@@ -782,7 +782,8 @@ function Credential({ runtime }: { runtime: Runtime }) {
       {runtime.secrets.map((s, i) => (
         <span key={s}>
           {i > 0 && ', '}
-          <code>{s}</code>
+          {/* One token, never broken mid-name (browser QA D22); cut with its title. */}
+          <code title={s}>{s}</code>
         </span>
       ))}
     </span>

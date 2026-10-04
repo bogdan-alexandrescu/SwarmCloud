@@ -427,7 +427,8 @@ function PoolTable({
             <th role="columnheader" scope="col">Use</th>
             <th role="columnheader" scope="col">State</th>
             <th role="columnheader" scope="col">Set by</th>
-            <th role="columnheader" scope="col" aria-label="Links" />
+            {/* A HEAD YOU CAN SEE (D32): blank, its links read as Set by's. */}
+            <th role="columnheader" scope="col">Open</th>
           </tr>
         </thead>
         <tbody role="rowgroup">
@@ -549,11 +550,12 @@ function PoolRow({
           <PoolMarks marks={marks} />
         </span>
       </td>
-      {/* SET BY ONLY WHEN IT IS NOT "configured" (#125): the configured limit
-          is what applies to almost every row, and a column repeating it hid
-          the two rows where AIMD or quota had lowered it. */}
+      {/* NEVER A BLANK CELL (browser QA D32, 2026-10-04). #125 left the
+          configured case empty, and with a links column that had no head the
+          holders/limit links then read as Set by's contents. The configured
+          case is the word, faint; AIMD and quota stand out in ink. */}
       <td role="cell" data-label="Set by" title={by.detail}>
-        {by.term === 'configured' ? '' : by.term}
+        {by.term === 'configured' ? <span className="cap-setby-cfg">configured</span> : by.term}
       </td>
       <td role="cell" data-label="Links" className="cap-links">
         {/* Both name the pool (#125): Holders filtered to it, and its own row
