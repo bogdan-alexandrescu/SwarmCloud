@@ -218,7 +218,14 @@
    LINE 2: one sans meta line. agent.header.actions.test.tsx,
    details.v3.test.tsx. */
 .ag-head { display: flex; flex-direction: column; gap: 6px; padding: var(--ctl-s2) 0 0; min-width: 0; }
-.ag-head-row { display: flex; align-items: center; flex-wrap: nowrap; gap: 10px; min-width: 0; }
+/* THE ROW WRAPS rather than run out of the column: the column is
+   `overflow: hidden`, so a row that did not fit clipped the ✕ (the U9 item 2
+   defect again). Measured on a running agent, 2026-10-04: line 1 needs about
+   552-559px; the column is 527px at 1440 on the 50% snap and 547px at 1280 on
+   the 380px snap. Under 640px the title and the headline take lines of their
+   own (below); above it a row that still does not fit drops its actions to
+   the next line, never past the edge. */
+.ag-head-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-width: 0; }
 .ag-head-row > :first-child { flex: none; }
 .ag-head-title {
   flex: 1 1 0;
@@ -284,11 +291,11 @@
   line-height: var(--lh-micro);
 }
 .ag-head-dchip.is-absent { color: var(--text-faint); }
-/* A NARROW COLUMN (a phone, or a pane under 480px): line 1 keeps the pill
-   and the actions, the title takes its own line and the headline the next,
-   as agent-details-v3.html A5 draws it. */
-@container ctl-inspector (max-width: 479px) {
-  .ag-head-row { flex-wrap: wrap; }
+/* A NARROW COLUMN (a phone, or a pane under 640px -- the width the Details
+   tab's two columns also switch at): line 1 keeps the pill and the actions,
+   the title takes its own line and the headline the next, as
+   agent-details-v3.html A5 draws it. 480px was too low: see `.ag-head-row`. */
+@container ctl-inspector (max-width: 639px) {
   .ag-head-title { order: 3; flex-basis: 100%; }
   .ag-head-hl { order: 4; flex-basis: 100%; }
 }

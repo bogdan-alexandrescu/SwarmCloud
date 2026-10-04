@@ -20,6 +20,13 @@
  * width) -- at 1440 and at 1100, the narrowest width the split docks at.
  * MUTATIONS: move the actions back into the title row, put `flex-wrap:
  * nowrap` on the actions, or let the band draw in the split -- each goes red.
+ *
+ * LINE 1 IS MEASURED WHOLE (fix of the v3 review, 2026-10-04): the pill, the
+ * title at its min-width, the elapsed headline and the actions share line 1,
+ * so a model of the actions alone could not see the row running past a
+ * 527px column (1440, 50%) or a 547px one (1280, the 380px snap) and the
+ * column's `overflow: hidden` clipping the ✕. MUTATION: put the row back to
+ * `flex-wrap: nowrap`, or the narrow-column query back to 479px -- red.
  */
 import { render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -27,7 +34,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { App } from '../App'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { lengthPx, paddingX, textPx } from './tablefit'
+import { fontPx, lengthPx, paddingX, textPx } from './tablefit'
 
 const WAIT = { timeout: 8000 }
 const RUNNING = 'task_a073aff5'
@@ -110,7 +117,7 @@ function label(el: Element): string {
 }
 
 describe('item 2: the agent header\'s actions never overlap, at every split width', () => {
-  for (const viewport of [1440, 1100]) {
+  for (const viewport of [1440, 1280, 1100]) {
     for (const snap of SNAPS) {
       it(`no two controls overlap, and none leaves the column, at ${snap.label} in a ${viewport}px window`, async () => {
         const env: CascadeEnv = { width: viewport }
@@ -139,6 +146,62 @@ describe('item 2: the agent header\'s actions never overlap, at every split widt
     }
   }
 
+  for (const viewport of [1440, 1280, 1100]) {
+    for (const snap of SNAPS) {
+      it(`line 1 -- pill, title, headline and actions -- stays inside the column at ${snap.label} in a ${viewport}px window`, async () => {
+        const s = await split(snap.pref)
+        const base: CascadeEnv = { width: viewport }
+        const app = viewport - CHROME
+        const [pl, pr] = paddingX(s, base)
+        const inner = app - snap.list(app) - pl - pr - 1
+        const env: CascadeEnv = { width: viewport, container: inner }
+        const row = s.querySelector<HTMLElement>('.ag-head-row')!
+        const pill = row.firstElementChild as HTMLElement
+        const title = row.querySelector<HTMLElement>('.ag-head-title')!
+        const hl = row.querySelector<HTMLElement>('.ag-head-hl')!
+        const actions = row.querySelector<HTMLElement>('.ag-head-actions')!
+        const full = (el: HTMLElement): boolean => painted(el, ['flex-basis', 'flex'], env)?.split(/\s+/).includes('100%') ?? false
+        const order = (el: HTMLElement): number => Number(painted(el, 'order', env) ?? '0')
+        const controls = [...actions.querySelectorAll<HTMLElement>(':scope > button, :scope > span > button')]
+        const agap = lengthPx(painted(actions, ['column-gap', 'gap'], env), 0) ?? 0
+        // The headline at its longest: a finished agent adds ` · ended HH:MM`,
+        // and an elapsed of hours is longer than this fixture's.
+        const hlText = `${(hl.textContent ?? '').trim()} · ended 23:59`
+        const items = [
+          { name: 'the state pill', el: pill, w: full(pill) ? inner : paddingX(pill, env).reduce((a, b) => a + b, 0) + 18 + textPx((pill.textContent ?? '').trim(), pill, env) },
+          { name: 'the title', el: title, w: full(title) ? inner : (lengthPx(painted(title, 'min-width', env), 0) ?? fontPx(title, env) * 4) },
+          { name: 'the headline', el: hl, w: full(hl) ? inner : textPx(hlText, hl, env) },
+          { name: 'the actions', el: actions, w: controls.reduce((a, c) => a + controlPx(c, env), 0) + agap * (controls.length - 1) },
+        ].sort((a, b) => order(a.el) - order(b.el))
+        const gap = lengthPx(painted(row, ['column-gap', 'gap'], env), 0) ?? 0
+        const wraps = painted(row, 'flex-wrap', env) === 'wrap'
+        let line = 0
+        let x = 0
+        let first = true
+        const boxes: Box[] = []
+        for (const it of items) {
+          const start = first ? 0 : x + gap
+          if (wraps && !first && start + it.w > inner) {
+            line += 1
+            boxes.push({ name: it.name, start: 0, end: it.w, row: line })
+            x = it.w
+          } else {
+            boxes.push({ name: it.name, start, end: start + it.w, row: line })
+            x = start + it.w
+          }
+          first = false
+        }
+        for (const b of boxes) expect(b.end, `${b.name} runs out of a ${Math.round(inner)}px column (line ${b.row + 1})`).toBeLessThanOrEqual(inner)
+        // Nothing else rides the pill's line once the row is narrow: the title
+        // and the headline have lines of their own, as A5 draws it.
+        if (inner < 640) {
+          expect(full(title), `the title shares line 1 in a ${Math.round(inner)}px column`).toBe(true)
+          expect(full(hl), `the headline shares line 1 in a ${Math.round(inner)}px column`).toBe(true)
+        }
+      })
+    }
+  }
+
   // LINE 1 AGAIN (agent-details-v3.html A, picked 2026-10-04): the pill, the
   // title, the elapsed headline and the actions share one line. What U9's own
   // row was FOR still holds: nothing the actions hold can be drawn over
@@ -155,7 +218,7 @@ describe('item 2: the agent header\'s actions never overlap, at every split widt
     expect(row.querySelector('[data-mark]')).not.toBeNull()
     const title = row.querySelector<HTMLElement>('.ag-head-title')!
     expect(title).not.toBeNull()
-    expect(painted(row, 'flex-wrap', env)).toBe('nowrap')
+    expect(painted(row, 'flex-wrap', env), 'line 1 runs out of the column rather than wrap').toBe('wrap')
     expect(painted(actions, ['flex', 'flex-shrink'], env), 'the actions may be squeezed').toMatch(/^(none|0)\b/)
     expect(painted(row.querySelector('.ag-head-hl')!, ['flex', 'flex-shrink'], env), 'the headline may be squeezed').toMatch(/^(none|0)\b/)
     expect(painted(title, ['flex', 'flex-grow'], env), 'the title does not take the slack').toMatch(/^1\b/)
