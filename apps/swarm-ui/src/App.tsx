@@ -31,7 +31,7 @@ import {
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
-import { NotFound } from './NotFound'
+import { NotFound, nearestPath } from './NotFound'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -701,6 +701,13 @@ export function fromHash(): Route {
  * carries one (resolved once, then rewritten to its path by `App`), otherwise
  * the real path (paths.ts).
  */
+/** The section a missing path's nearest route belongs to: the spine lights
+ *  where the page offers to go, not Overview for every unknown address. */
+function missingSection(pathname: string): Route['sectionId'] {
+  const p = pathToAddress(nearestPath(pathname))
+  return fromAddress(p === null ? '' : p.address).sectionId
+}
+
 export function fromLocation(): Route {
   const { pathname, search, hash } = window.location
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
@@ -1059,7 +1066,7 @@ export function App() {
     // the spine it cut the avatar off at 1440x900 (#503).
     <div className="ctl-frame">
         <SkyShell
-          section={spineOf(at.sectionId)}
+          section={spineOf(at.missing ? missingSection(at.missing) : at.sectionId)}
           tab={at.tab}
           agentTab={at.list?.tab ?? lastList.current?.tab ?? 'live'}
           title={title}

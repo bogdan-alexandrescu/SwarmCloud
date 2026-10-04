@@ -47,5 +47,8 @@ describe('an unknown route is a not-found state, not a redirect', () => {
     expect(page.getByRole('link', { name: 'Overview' }).getAttribute('href')).toBe('/overview')
     // The nav is still there, so the reader can go anywhere.
     expect(document.querySelector('.sk-spine')).not.toBeNull()
+    // The spine lights the section of the route it offers, not Overview.
+    const lit = [...document.querySelectorAll('.sk-ri[data-sec][aria-current="page"]')].map((a) => a.getAttribute('data-sec'))
+    expect(lit).toEqual(['capacity'])
   })
 })
