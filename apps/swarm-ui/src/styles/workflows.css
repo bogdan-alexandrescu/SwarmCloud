@@ -443,3 +443,14 @@
    is the same arithmetic: 42 - 10 and 34 - 6. */
 .wf-canvas .node.is-settled { padding-bottom: 10px; }
 .wf-canvas .node.zoom-names.is-settled { padding-bottom: 6px; }
+
+/* THE TIMELINE THINS ITS LABELS BY ITS OWN WIDTH (browser QA D38, 2026-10-04).
+   The phone rule in styles.css asks the VIEWPORT, so with the step card open
+   at 1440 the track was ~290px and "+3h" "+4h" all but touched. The scale is
+   its own container, and below 420px -- six seven-character labels at 59px --
+   it prints every other label exactly as the phone rule does: counted back
+   from the last, `0` and the last always printed, every rule line kept. */
+.wf-timeline > .wf-tl-scale { container: wf-tl-scale / inline-size; }
+@container wf-tl-scale (max-width: 420px) {
+  .wf-tl-scale > .wf-tl-tick:nth-last-of-type(even):not(:first-of-type) > .wf-tl-tick-label { visibility: hidden; }
+}

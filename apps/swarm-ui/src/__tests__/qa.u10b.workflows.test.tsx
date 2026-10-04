@@ -195,3 +195,22 @@ describe('D30: the same-step scrubber keeps its arrows with the position', () =>
     expect(shape.getAttribute('title')).toBeTruthy()
   })
 })
+
+describe('D38: the workflow Timeline thins its labels at a narrow track, whatever the viewport', () => {
+  it('prints every other label when its own track is narrow, as a phone does', () => {
+    const host = document.createElement('div')
+    host.innerHTML =
+      '<div class="wf-timeline"><span class="wf-tl-corner"></span><div class="wf-tl-scale">' +
+      ['0', '+1h', '+2h', '+3h', '+4h', '+5h'].map((l) => `<span class="wf-tl-tick"><span class="wf-tl-tick-label">${l}</span></span>`).join('') +
+      '</div></div>'
+    document.body.appendChild(host)
+    const labels = [...host.querySelectorAll('.wf-tl-tick-label')]
+    const shown = (env: CascadeEnv) => labels.filter((l) => (painted(l, 'visibility', env) ?? 'visible') !== 'hidden').map((l) => l.textContent)
+    // The step card open at 1440: the track is ~290px wide.
+    expect(shown({ width: 1440, container: 290 })).toEqual(['0', '+1h', '+3h', '+5h'])
+    // A wide track prints them all.
+    expect(shown({ width: 1440, container: 800 })).toEqual(['0', '+1h', '+2h', '+3h', '+4h', '+5h'])
+    expect(painted(host.querySelector('.wf-tl-scale')!, 'container-type', { width: 1440 }) ?? painted(host.querySelector('.wf-tl-scale')!, 'container', { width: 1440 })).toMatch(/inline-size/)
+    host.remove()
+  })
+})
