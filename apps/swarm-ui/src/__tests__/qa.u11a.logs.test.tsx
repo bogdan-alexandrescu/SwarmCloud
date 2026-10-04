@@ -11,7 +11,7 @@
  * MUTATIONS: render a log element outside the pane or position one over it
  * (`position: fixed|absolute|sticky` on `.ag-logs`/`.ag-loglast`); drop a
  * stream from the segmented control or let it spill into More; drop the
- * default-tab effect or send a finished agent to Logs; drop `onMoreKey`'s
+ * default-tab effect or send a finished or waiting agent to Logs; drop `onMoreKey`'s
  * `stopPropagation`; restore `flex-wrap: wrap` on the bar or drop the spill
  * effect; drop `top: 16px` or the `- 16px`. Each turns a case red.
  */
@@ -296,6 +296,30 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
     expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
     expect(await screen.findByRole('region', { name: 'Logs' })).toBeTruthy()
   })
+
+  // "Running" is an attempt in flight (CONTRACT.md invariant 1). A waiting
+  // agent has no attempt and usually no log; its Details say why it waits.
+  for (const state of ['QUEUED', 'READY', 'PARKED'] as const) {
+    it(`opens a ${state} agent on Details, not on an empty log`, async () => {
+      api.loadTask.mockResolvedValue(ok(running({ state, attempt_count: 0 })))
+      const go = vi.fn()
+      render(<Routed start="detail" onGo={go} />)
+      await screen.findByRole('button', { name: /^Last log line/ })
+      expect(go).not.toHaveBeenCalled()
+      expect(tab('Details').getAttribute('aria-selected')).toBe('true')
+      expect(screen.queryByRole('region', { name: 'Logs' })).toBeNull()
+    })
+  }
+
+  for (const state of ['LEASED', 'DISPATCHED', 'STARTING'] as const) {
+    it(`opens a ${state} agent on its log, as a RUNNING one`, async () => {
+      api.loadTask.mockResolvedValue(ok(running({ state })))
+      const go = vi.fn()
+      render(<Routed start="detail" onGo={go} />)
+      await screen.findByRole('region', { name: 'Logs' })
+      expect(go).toHaveBeenCalledWith(`work/task/${ID}/logs`)
+    })
+  }
 
   it('leaves a link to another pane where it points', async () => {
     api.loadTask.mockResolvedValue(ok(running()))

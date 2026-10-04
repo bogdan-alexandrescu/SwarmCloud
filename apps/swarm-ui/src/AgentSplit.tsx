@@ -30,7 +30,7 @@ import {
 } from './listSnap'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
-import { RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
+import { CONCURRENCY_STATES, RESOURCE_UNITS, TERMINAL_STATES, accountText, clockTime, startedOf, type Task } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/agents.css'
 import { Button, CIcon, StateMark, Tabs } from './components'
@@ -220,8 +220,12 @@ export function AgentSplit({
    * Until that read lands nothing is drawn in the pane, so a running agent's
    * Details are not read and thrown away on the way to its log.
    */
+  // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
+  // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
+  // attempt and usually no log yet; its Details say why it waits.
+  const inFlight = task !== null && CONCURRENCY_STATES.has(task.state)
   const [decided, setDecided] = useState<string | null>(null)
-  const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || live)
+  const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || inFlight)
   useEffect(() => {
     if (decided === taskId) return
     if (pane !== 'detail') {
@@ -230,8 +234,8 @@ export function AgentSplit({
     }
     if (head.state.status === 'loading') return
     setDecided(taskId)
-    if (live) go(`${base}/logs`)
-  }, [decided, taskId, pane, head.state.status, live, go, base])
+    if (inFlight) go(`${base}/logs`)
+  }, [decided, taskId, pane, head.state.status, inFlight, go, base])
 
   const tabs: { id: TaskPane; label: string; count: number | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
