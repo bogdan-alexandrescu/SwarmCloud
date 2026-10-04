@@ -56,8 +56,9 @@ read from its REPLY:
 * `path` — the reply's `path`
 * `spec_ref` — the reply's `spec_ref`, character for character
 * `spec_digest` — the reply's `spec_digest`
-* `outline` — the reply's `outline`: its `label`, and for each of its `steps`
-  the `step_id`, `depends_on` and `stage`, copied character for character
+* `outline` — the reply's `outline`: its `title` and `label` (each null when
+  the reply's is null), and for each of its `steps` the `step_id`,
+  `depends_on` and `stage`, copied character for character
 * `error` — null
 
 The reply also carries the whole `spec`. Never copy the spec: the bridge
@@ -127,6 +128,9 @@ of the reply's `steps` whose `state` is not `SUCCEEDED`, `FAILED`,
 `StructuredOutput` with:
 
 * `workflow_id` — the reply's `workflow_id`
+* `title` and `label` — the reply's `title` and `label`, the names SwarmCloud
+  stored for the workflow, copied character for character (each null when the
+  reply's is null or absent)
 * `console` — the reply's `console`, copied character for character; null
   when the reply has none
 * `state` — the reply's `state` (null when it is null; never `stored_state`)
@@ -152,10 +156,10 @@ probed in this job: call `swarm_workflows` once, with no arguments. Then call
 
 * `count` — the reply's `count`
 * `workflows` — for each entry of the reply's `workflows`, in the reply's
-  order: its `workflow_id`, `label` (null when it is null), `state` and
-  `console` (null when the entry has none), copied character for character.
-  Every entry, none dropped, none added, none reordered: each one becomes
-  live rows
+  order: its `workflow_id`, `title` and `label` (each null when it is null or
+  absent), `state` and `console` (null when the entry has none), copied
+  character for character. Every entry, none dropped, none added, none
+  reordered: each one becomes a run of its own
 * `error` — null
 
 If `swarm_workflows` returns an error, do not call it again: answer with

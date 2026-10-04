@@ -79,6 +79,7 @@ _DISPATCH_STRATEGIES = tuple(s for s in workflows.STRATEGIES if s != "integrate"
 #: them beside a spec is two answers to one question.
 _SPEC_EXCLUSIVE = (
     "steps", "repo", "ref", "strategy", "carrier", "on_step_failure", "priority", "label",
+    "title",
 )
 
 #: A runner's DECLARED inputs, for `swarm_dispatch` and a `swarm_workflow` step
@@ -743,8 +744,11 @@ TOOLS: list[dict[str, Any]] = [
                     "description": (
                         "A whole workflow spec -- the file the terminal's workflow "
                         "command reads -- instead of `steps` and the "
-                        "parameters beside it. A step may carry `stage`, the group "
-                        "/sc:swarmcloud shows it under; it is never sent."
+                        "parameters beside it. A step may carry `stage`, a note for "
+                        "the spec's reader that is never sent: /sc:swarmcloud's rows "
+                        "show the console's stage, the step's level in the DAG. The "
+                        "spec's optional `title` is its short name, sent as "
+                        "`metadata.title`."
                     ),
                 },
                 "spec_path": {
@@ -929,6 +933,13 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "priority": {"type": "integer"},
                 "label": {"type": "string", "description": "A short name, for the UI."},
+                "title": {
+                    "type": "string",
+                    "description": (
+                        "The workflow's short name, sent as `metadata.title`: what "
+                        "Claude Code titles its /sc:swarmcloud run with."
+                    ),
+                },
                 "target": _TARGET_SCHEMA,
                 "needs_local": _NEEDS_LOCAL_SCHEMA,
             },
@@ -953,7 +964,7 @@ TOOLS: list[dict[str, Any]] = [
             "without its content being repeated.\n"
             "\n"
             "The reply also carries `spec_ref`, which swarm_workflow takes in place "
-            "of the spec, and `outline` -- the label and each step's id, "
+            "of the spec, and `outline` -- the title, the label and each step's id, "
             "`depends_on` and `stage` -- which is all a relay needs to copy back. "
             "Submit with `spec_ref`; never retype `spec`."
         ),
@@ -966,6 +977,33 @@ TOOLS: list[dict[str, Any]] = [
                 },
             },
             "required": ["path"],
+        },
+    },
+    {
+        "name": "swarm_workflow_launch",
+        "description": (
+            "Write the script a /sc:swarmcloud run is launched from, titled after "
+            "its SwarmCloud workflow: `SwarmCloud · <name> · N steps`, at most 100 "
+            "characters, where <name> is the spec's `title`, else its `label` cut at "
+            "a word, else (attach) the title or label SwarmCloud stored, else the "
+            "workflow id. A workflow script's name is fixed when it is launched, so "
+            "this writes a copy of the plugin's run.js with that name and returns "
+            "its `script_path`: launch it with the Workflow tool, "
+            "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
+            "\n"
+            "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
+            "`attach` (a workflow id, read once for its stored name and step "
+            "count; or \"all\": every running workflow of your tenant, one copy "
+            "each, at most 10 -- one Claude Code run per SwarmCloud workflow, "
+            "each launched with the `args` its entry carries)."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "spec": {"type": "object", "description": "The workflow spec about to be run."},
+                "spec_path": {"type": "string", "description": "Its file, relative to this checkout or absolute."},
+                "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
+            },
         },
     },
     {
@@ -1928,7 +1966,7 @@ def _held_spec(ref: str) -> dict[str, Any]:
 
 
 def _outline(spec: dict[str, Any]) -> dict[str, Any]:
-    """What a relay copies back instead of a spec: its label and its DAG."""
+    """What a relay copies back instead of a spec: its title, its label and its DAG."""
     steps = []
     for step in spec.get("steps") or []:
         if not isinstance(step, dict):
@@ -1940,7 +1978,12 @@ def _outline(spec: dict[str, Any]) -> dict[str, Any]:
             "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
         })
     label = spec.get("label")
-    return {"label": label if isinstance(label, str) and label.strip() else None, "steps": steps}
+    title = spec.get("title")
+    return {
+        "title": title.strip() if isinstance(title, str) and title.strip() else None,
+        "label": label if isinstance(label, str) and label.strip() else None,
+        "steps": steps,
+    }
 
 
 def bridge_version() -> str | None:
@@ -2337,6 +2380,27 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         read["outline"] = _outline(read["spec"])
         return json.dumps(read, indent=2)
 
+    if name == "swarm_workflow_launch":
+        from . import launch
+
+        given = sorted(k for k in ("spec", "spec_path", "attach") if args.get(k) is not None)
+        if len(given) != 1:
+            raise SwarmError(
+                f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
+                f"it was given {given or 'none'}. Nothing was written"
+            )
+        if args.get("attach") is not None:
+            target = _text_arg(args, "attach", name)
+            if target in ("all", "--all"):
+                return json.dumps(launch.for_all(client), indent=2, default=str)
+            return json.dumps(launch.for_attach(client, target), indent=2)
+        document = (
+            _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
+            if args.get("spec_path") is not None
+            else args["spec"]
+        )
+        return json.dumps(launch.for_spec(document), indent=2)
+
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
         task = client.task(args["task_id"])
@@ -2431,6 +2495,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "on_step_failure": args.get("on_step_failure"),
                 "priority": args.get("priority"),
                 "label": args.get("label"),
+                "title": workflows.check_title(args.get("title"), where="swarm_workflow"),
             }
             repo, ref = args.get("repo"), args.get("ref")
         repository = checkout.resolve(
@@ -2446,6 +2511,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             on_step_failure=fields["on_step_failure"],
             priority=fields["priority"],
             label=fields["label"],
+            title=fields["title"],
         )
         workflow = envelope["workflow"]
         workflow_id = workflow.get("workflow_id")

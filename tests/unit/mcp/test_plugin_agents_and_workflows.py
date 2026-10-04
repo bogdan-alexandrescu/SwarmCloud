@@ -84,6 +84,10 @@ JS_BUILTINS = frozenset(
     {"JSON", "Math", "String", "Number", "Array", "Object", "Error", "Boolean", "isFinite", "isNaN",
      "parseInt", "parseFloat", "Promise", "Set", "Map", "undefined", "Infinity", "NaN"}
 )
+#: A host timer, read only behind `typeof setTimeout === 'function'`: run.js
+#: spaces a lost row's retries with it where the runtime has one, and goes on
+#: without the wait where it does not (`pause`).
+GUARDED_HOST_GLOBALS = frozenset({"setTimeout"})
 JS_KEYWORDS = frozenset(
     {"if", "else", "for", "of", "in", "const", "let", "var", "function", "return", "await", "async",
      "try", "catch", "finally", "throw", "new", "typeof", "instanceof", "true", "false", "null",
@@ -580,7 +584,13 @@ def test_run_js_uses_only_the_workflow_globals():
         if following == ("punct", ":") and previous in (("punct", "{"), ("punct", ",")):
             continue  # an object key
         free.add(text)
-    unknown = sorted(free - WORKFLOW_GLOBALS - JS_BUILTINS)
+    unknown = sorted(free - WORKFLOW_GLOBALS - JS_BUILTINS - GUARDED_HOST_GLOBALS)
+    source = _RUN_JS.read_text()
+    for name in GUARDED_HOST_GLOBALS:
+        uses = source.count(name)
+        assert uses == source.count(f"typeof {name} !== 'function'") * 2, (
+            f"run.js reads {name} other than as `if (typeof {name} !== 'function') ...` and one call after it"
+        )
     assert not unknown, f"run.js reads globals a workflow script does not have: {unknown}"
     source = _RUN_JS.read_text()
     for banned in ("Date.now", "Math.random", "new Date(", "import(", "require(", "process."):
@@ -743,21 +753,22 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     submit, *steps, status = got["calls"]
 
     assert (submit["agentType"], submit["phase"], submit["label"]) == (
-        "sc:workflow", "Submit", "[SwarmCloud] scan · submit")
+        "sc:workflow", "Submit", "[SwarmCloud] scan · 4 steps · setup · submit")
     lines = submit["prompt"].split("\n")
     assert lines[:3] == ["SUBMIT", "spec_digest: " + workflows.spec_digest(_SPEC), "BEGIN SPEC"]
     assert lines[-1] == "END SPEC"
     assert json.loads("\n".join(lines[3:-1])) == _SPEC, "the spec must reach the submitting agent verbatim"
 
     # One row per step, labelled `[SwarmCloud] <workflow> · stage <n> · <step>`
-    # (owner decision, 2026-10-01), grouped by DAG level -- or by the stage the
-    # spec gives -- and started shallowest first.
+    # (owner decision, 2026-10-01) with the CONSOLE'S stage, the DAG level plus
+    # one (owner, 2026-10-04: the spec's own `stage` never reaches the console,
+    # so it is not shown here either), grouped under 'Stage N', shallowest first.
     # The submission answered them deepest first; the rows start level 0 first.
     assert [(c["agentType"], c["label"], c["phase"]) for c in steps] == [
-        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-01", "Level 0"),
-        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-02", "Level 0"),
-        ("sc:step", "[SwarmCloud] scan · stage 2 · join", "Level 1"),
-        ("sc:step", "[SwarmCloud] scan · stage Report · report", "Report"),
+        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-01", "Stage 1"),
+        ("sc:step", "[SwarmCloud] scan · stage 1 · scan-02", "Stage 1"),
+        ("sc:step", "[SwarmCloud] scan · stage 2 · join", "Stage 2"),
+        ("sc:step", "[SwarmCloud] scan · stage 3 · report", "Stage 3"),
     ]
     by_label = {c["label"].rsplit(" · ", 1)[-1]: c["prompt"] for c in steps}
     assert "task_id: task_3" in by_label["join"] and "workflow_id: wf_1" in by_label["join"]
@@ -769,7 +780,7 @@ def test_run_js_submits_once_then_starts_one_step_row_per_step(tmp_path):
     # The agents pin the model; the script names none.
     assert all(c["model"] is None for c in got["calls"])
     assert (status["agentType"], status["phase"], status["label"]) == (
-        "sc:workflow", "Result", "[SwarmCloud] scan · result")
+        "sc:workflow", "Result", "[SwarmCloud] scan · 4 steps · wf_1 · setup · result")
     assert status["prompt"].startswith("STATUS\nworkflow_id: wf_1")
 
 
@@ -960,7 +971,7 @@ def test_run_js_takes_the_spec_as_json_text_and_refuses_what_is_not_a_spec(tmp_p
 
 def _read(spec, digest=None, **extra):
     """What the READ SPEC row relays: the bridge's ref, digest and outline -- never the spec."""
-    outline = {"label": spec.get("label"), "steps": [
+    outline = {"title": spec.get("title"), "label": spec.get("label"), "steps": [
         {"step_id": s["step_id"], "depends_on": s.get("depends_on", []), "stage": s.get("stage")} for s in spec["steps"]
     ]}
     return {"path": "/work/widgets/specs/scan.json", "spec_ref": "spec_00112233aabbccdd",
@@ -974,7 +985,7 @@ def test_run_js_takes_a_spec_files_path_and_submits_what_the_bridge_read(tmp_pat
     assert "error" not in got, got.get("error")
     read, submit = got["calls"][0], got["calls"][1]
     assert (read["agentType"], read["phase"], read["label"]) == (
-        "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · read spec")
+        "sc:workflow", "Submit", "[SwarmCloud] specs/scan.json · setup · read spec")
     assert read["prompt"] == "READ SPEC\npath: specs/scan.json"
     # By the ref the bridge holds: the submit row never sees the spec.
     assert submit["prompt"] == "SUBMIT\nspec_digest: " + workflows.spec_digest(_SPEC) + "\nspec_ref: spec_00112233aabbccdd"
@@ -1044,7 +1055,7 @@ def test_a_long_workflow_label_is_cut_so_the_stage_and_step_survive(tmp_path):
     got = _run(tmp_path, spec, {**_ANSWERS, "SUBMIT": submitted})
     assert "error" not in got, got.get("error")
     for call in got["calls"]:
-        assert len(call["label"]) <= 80, call["label"]
+        assert len(call["label"]) <= 100, call["label"]
         assert call["label"].startswith("[SwarmCloud] Wave 1 B2"), call["label"]
     join = [c["label"] for c in got["calls"] if c["agentType"] == "sc:step"][2]
     assert join.endswith("… · stage 2 · join"), join

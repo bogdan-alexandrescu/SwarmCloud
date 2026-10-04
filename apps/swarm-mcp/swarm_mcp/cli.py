@@ -1028,6 +1028,7 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         on_step_failure=spec["on_step_failure"],
         priority=spec["priority"],
         label=args.label or spec["label"],
+        title=workflows.check_title(getattr(args, "title", None), where="--title") or spec["title"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
@@ -1806,6 +1807,10 @@ def build_parser() -> argparse.ArgumentParser:
         "default) or branches (pushed, and they outlive the platform)",
     )
     w.add_argument("--label", default=None, help="recorded as metadata.unit")
+    w.add_argument(
+        "--title", default=None,
+        help="the workflow's short name, recorded as metadata.title (overrides the spec's `title`)",
+    )
     w.add_argument("--json", action="store_true")
     w.set_defaults(func=cmd_workflow)
 
