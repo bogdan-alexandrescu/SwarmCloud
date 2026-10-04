@@ -209,6 +209,23 @@ function ChildTable({
   now: number
   resumes: number | null
 }) {
+  // ONE EMPTY STATE (U10a D36, owner QA 2026-10-04): `waiting on 0 · 0 of —
+  // not measured` beside `no children` said nothing twice and one thing it
+  // could not know. With no child there is nothing to wait on and no fan-out
+  // to measure against a cap: the read's answer is the whole of it.
+  if (children.length === 0) {
+    return (
+      <>
+        <div className="ctl-toolbar ag-children-head">
+          <h2>Children</h2>
+        </div>
+        <p className="att-none ag-children-none">
+          <Mark kind="zero" say="The read applied the filter and returned no child: this agent has submitted none." /> no
+          children
+        </p>
+      </>
+    )
+  }
   const rows = childOrder(children)
   const counts = new Map<TaskState, number>()
   for (const c of children) counts.set(c.state, (counts.get(c.state) ?? 0) + 1)
@@ -225,79 +242,70 @@ function ChildTable({
           · depth 1: a child cannot have children
         </span>
       </div>
-      {children.length > 0 && (
-        <p className="ag-children-mix" aria-label="Children by state">
-          {[...counts.entries()].map(([s, n]) => (
-            <span key={s} className="ag-children-mixpart">
-              <StateMark state={s} />{' '}
-              {n}
-            </span>
-          ))}
-          <span className="ctl-sub">
-            {' '}
-            · await refunds {resumes === null ? <Em /> : resumes} used
+      <p className="ag-children-mix" aria-label="Children by state">
+        {[...counts.entries()].map(([s, n]) => (
+          <span key={s} className="ag-children-mixpart">
+            <StateMark state={s} />{' '}
+            {n}
           </span>
-        </p>
-      )}
-      {children.length === 0 ? (
-        <p className="att-none">
-          <Mark kind="zero" say="The read applied the filter and returned no child: this agent has submitted none." /> no
-          children
-        </p>
-      ) : (
-        <div className="ctl-table is-scroll">
-          <table role="table">
-            <thead role="rowgroup">
-              <tr role="row">
-                <th role="columnheader" scope="col">State</th>
-                <th role="columnheader" scope="col">Child</th>
-                <th role="columnheader" scope="col">Request id</th>
-                <th role="columnheader" scope="col">Runner</th>
-                <th role="columnheader" scope="col">From</th>
-                <th role="columnheader" scope="col">Now</th>
-                <th role="columnheader" scope="col">Outputs</th>
-              </tr>
-            </thead>
-            <tbody role="rowgroup">
-              {rows.map((c) => {
-                const req = requestId(c)
-                const out = outputsOf(c)
-                return (
-                  <tr role="row" key={c.id} data-task-id={c.id}>
-                    <td role="cell" data-label="State">
-                      <StateMark state={c.state} />
-                    </td>
-                    <th role="rowheader" scope="row">
-                      <a className="ctl-link" href={`#work/task/${encodeURIComponent(c.id)}`}>
-                        {agentName(c)}
-                      </a>
-                    </th>
-                    <td role="cell" data-label="Request id" className="mono">
-                      {req ?? <Em />}
-                    </td>
-                    <td role="cell" data-label="Runner">
-                      {c.runner_profile} · {c.resource_class}
-                    </td>
-                    <td role="cell" data-label="From" className="mono">
-                      {c.parent_attempt_id ?? <Em />}
-                    </td>
-                    <td role="cell" data-label="Now">
-                      {elapsed(c, now).text}
-                    </td>
-                    <td role="cell" data-label="Outputs">
-                      {out === null ? (
-                        <Em />
-                      ) : (
-                        `${out} file${out === 1 ? '' : 's'} written`
-                      )}
-                    </td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+        ))}
+        <span className="ctl-sub">
+          {' '}
+          · await refunds {resumes === null ? <Em /> : resumes} used
+        </span>
+      </p>
+      <div className="ctl-table is-scroll">
+        <table role="table">
+          <thead role="rowgroup">
+            <tr role="row">
+              <th role="columnheader" scope="col">State</th>
+              <th role="columnheader" scope="col">Child</th>
+              <th role="columnheader" scope="col">Request id</th>
+              <th role="columnheader" scope="col">Runner</th>
+              <th role="columnheader" scope="col">From</th>
+              <th role="columnheader" scope="col">Now</th>
+              <th role="columnheader" scope="col">Outputs</th>
+            </tr>
+          </thead>
+          <tbody role="rowgroup">
+            {rows.map((c) => {
+              const req = requestId(c)
+              const out = outputsOf(c)
+              return (
+                <tr role="row" key={c.id} data-task-id={c.id}>
+                  <td role="cell" data-label="State">
+                    <StateMark state={c.state} />
+                  </td>
+                  <th role="rowheader" scope="row">
+                    <a className="ctl-link" href={`#work/task/${encodeURIComponent(c.id)}`}>
+                      {agentName(c)}
+                    </a>
+                  </th>
+                  <td role="cell" data-label="Request id" className="mono">
+                    {req ?? <Em />}
+                  </td>
+                  <td role="cell" data-label="Runner">
+                    {c.runner_profile} · {c.resource_class}
+                  </td>
+                  <td role="cell" data-label="From" className="mono">
+                    {c.parent_attempt_id ?? <Em />}
+                  </td>
+                  <td role="cell" data-label="Now">
+                    {elapsed(c, now).text}
+                  </td>
+                  <td role="cell" data-label="Outputs">
+                    {out === null ? (
+                      <Em />
+                    ) : (
+                      `${out} file${out === 1 ? '' : 's'} written`
+                    )}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
       <p className="ctl-card-note">
         The parent reads each child&apos;s end when it resumes and decides for itself; a failed child does not fail{' '}
         {agentName(task)}.

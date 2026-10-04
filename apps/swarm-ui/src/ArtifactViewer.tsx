@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 
 import { Mark } from './AgentDetail'
 import { Button, ButtonLink, Segmented } from './components'
@@ -6,6 +6,7 @@ import { artifactRawUrl, loadArtifactContent } from './api'
 import { DiffView } from './diff/DiffView'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { useEscapeLayer } from './escape'
 import { segments } from './logLines'
 import { LogText } from './logMarks'
 import {
@@ -132,8 +133,25 @@ export function ArtifactViewer({
   // -- so the generic head is not drawn above it a second time.
   const patch = state.kind === 'ok' && showsAsDiff(state.data, kind ?? null)
 
+  // OPENING A FILE IS SEEN, AND ESCAPE CLOSES IT (U10a, owner QA 2026-10-04).
+  // The viewer opens under the list, below the fold, so a click on a file
+  // looked like nothing happened: it is scrolled into view as it opens.
+  // Escape closes it (escape.ts: before the split's own Escape, which would
+  // close the agent), and focus goes back to what opened it.
+  const box = useRef<HTMLDivElement>(null)
+  const opener = useRef<Element | null>(null)
+  useEffect(() => {
+    opener.current = typeof document === 'undefined' ? null : document.activeElement
+    box.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' })
+    return () => {
+      const back = opener.current
+      if (back instanceof HTMLElement && back.isConnected && back !== document.body) back.focus()
+    }
+  }, [])
+  useEscapeLayer(true, onClose)
+
   return (
-    <div className="art-viewer" role="region" aria-label={`Artifact ${artifact.name}`}>
+    <div className="art-viewer" role="region" aria-label={`Artifact ${artifact.name}`} ref={box}>
       {!patch && (
         <div className="art-head">
           <h3 className="mono">{artifact.name}</h3>

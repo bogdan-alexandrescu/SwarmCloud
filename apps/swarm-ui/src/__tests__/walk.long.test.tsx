@@ -109,7 +109,10 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
     }
   })
 
-  it('clamps a workflow’s name in the panel’s Recent list, with the whole name in its tooltip', async () => {
+  // ONE LINE NOW, NOT TWO (U10a D14, owner QA 2026-10-04): two lines broken
+  // anywhere cut an unnamed workflow's id mid-token. qa.u10a.shell.test.tsx
+  // holds the one-line rule; this keeps the tooltip and the ellipsis.
+  it('ellipses a workflow’s name in the panel’s Recent list on one line, with the whole name in its tooltip', async () => {
     localStorage.setItem(
       'swarm.workflows.recent',
       JSON.stringify([{ id: WF, state: 'FAILED', name: 'a very long lane label that will not fit on one line of the panel' }]),
@@ -122,7 +125,8 @@ describe('C: a long name is two lines and a tooltip, never off the edge', () => 
     const kid = [...document.querySelectorAll<HTMLElement>(KID)].find((k) => k.textContent?.includes('a very long lane label'))!
     expect(kid, 'the remembered workflow is not in Recent').toBeTruthy()
     const name = kid.querySelector(`${ROW} > span:last-child`)!
-    expectClamped(name, 'a Recent workflow name')
+    expect(painted(name, 'white-space', WIDE), 'a Recent workflow name wraps').toBe('nowrap')
+    expect(painted(name, 'text-overflow', WIDE), 'a Recent workflow name is cut without an ellipsis').toBe('ellipsis')
     expect(kid.getAttribute('title')).toContain('a very long lane label that will not fit on one line of the panel')
   })
 })

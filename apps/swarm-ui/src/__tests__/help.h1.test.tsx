@@ -196,7 +196,10 @@ describe('a Help topic anchor (#130)', () => {
     })
     // The real address, as the router spells it: `/help/<group>#<topic>`.
     expect(writeText).toHaveBeenCalledWith(`${window.location.origin}${addressToPath(HELP['paused-vs-full'].anchor)}`)
-    await waitFor(() => expect(topic.querySelector('[role="status"]')?.textContent).toBe('link copied'))
+    // THE AGENT HEADER'S CONFIRMATION (U10a, 2026-10-04): `copied`, and the
+    // button says it too, where the reader is looking.
+    await waitFor(() => expect(topic.querySelector('[role="status"]')?.textContent).toBe('copied'))
+    expect(copy.textContent).toBe('copied ✓')
   })
 
   it('says so when the browser refuses the clipboard, and leaves the link to select', async () => {
@@ -206,6 +209,6 @@ describe('a Help topic anchor (#130)', () => {
     await act(async () => {
       fireEvent.click(topic.querySelector<HTMLButtonElement>('.help-topic-anchor button')!)
     })
-    await waitFor(() => expect(topic.querySelector('[role="status"]')?.textContent).toBe('copy refused; select the link instead'))
+    await waitFor(() => expect(topic.querySelector('[role="status"]')?.textContent).toBe('could not copy; select the link instead'))
   })
 })

@@ -373,6 +373,39 @@ export interface PanelCount {
   alert?: boolean
 }
 
+/**
+ * THE AGENTS LIST'S OWN COUNTS, while it is on screen (U10a D27, owner QA
+ * 2026-10-04: the panel said Live 14 / Waiting 1 beside tabs that said Live 8
+ * / Waiting 2 at the same moment). The panel read `/v1/stats` every 30s and
+ * the list read its page every 5s, so the two lagged each other by up to 30s.
+ * While the list is mounted and its page is the WHOLE population (fewer rows
+ * than it asked for, no next page), the panel draws the list's numbers: one
+ * read, one moment. A capped page is not a count of everything, so then the
+ * panel keeps `/v1/stats` -- and re-reads it with each list read, so the two
+ * at least come from the same refresh.
+ */
+export interface ListCounts {
+  live: number
+  waiting: number
+  /** When the list's read landed. */
+  at: number
+  /** Whether the page held every row there is. */
+  whole: boolean
+}
+let listCounts: ListCounts | null = null
+const listWatchers = new Set<() => void>()
+export function publishListCounts(next: ListCounts | null): void {
+  listCounts = next
+  for (const w of listWatchers) w()
+}
+function subscribeListCounts(w: () => void): () => void {
+  listWatchers.add(w)
+  return () => listWatchers.delete(w)
+}
+function listCountsSnapshot(): ListCounts | null {
+  return listCounts
+}
+
 /** CONTRACT invariant 1: the four states that hold capacity, counted from LEASED. */
 const LIVE_STATES = ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING'] as const
 /** Waiting, and free: QUEUED, READY and PARKED hold nothing. */
@@ -393,8 +426,18 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *
  * A failed read is a dash with the failure as its reason, never a 0.
  */
-export function panelCounts(stats: Result<Stats>, cap: Result<Capacity>): Readonly<Record<string, PanelCount>> {
+export function panelCounts(
+  stats: Result<Stats>,
+  cap: Result<Capacity>,
+  list: ListCounts | null = null,
+): Readonly<Record<string, PanelCount>> {
   const out: Record<string, PanelCount> = {}
+  if (list !== null && list.whole) {
+    const why = `counted from the Agents list read at ${new Date(list.at).toLocaleTimeString()}, as its tabs are`
+    out.live = { n: list.live, why }
+    out.waiting = { n: list.waiting, why }
+    return { ...panelCounts(stats, cap), ...out }
+  }
   const s = dataOf(stats)
   // A reply with no per-state table is not a table of zeros.
   if (s !== null && (typeof s.tasks_by_state !== 'object' || s.tasks_by_state === null)) {
@@ -497,6 +540,12 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     <>
       <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
       <path d="M9.5 4.5v15M15.5 10l-2 2 2 2" />
+    </>
+  ),
+  expand: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2.5" />
+      <path d="M9.5 4.5v15M13.5 10l2 2-2 2" />
     </>
   ),
   menu: <path d="M4 7h16M4 12h16M4 17h16" />,
@@ -643,7 +692,9 @@ export function SkyShell({
   const tenant = useSyncExternalStore(subscribeTenant, chosenTenant, chosenTenant)
   const [me, rereadMe] = useFrameRead(loadFrameMe, null, tenant ?? '', true)
   const [cap] = useFrameRead(loadFrameCapacity, 30_000, tenant ?? '')
-  const [stats] = useFrameRead(loadFrameStats, 30_000, tenant ?? '')
+  const fromList = useSyncExternalStore(subscribeListCounts, listCountsSnapshot, listCountsSnapshot)
+  // A capped list re-reads the stats with each of its own reads (D27).
+  const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
@@ -654,7 +705,7 @@ export function SkyShell({
   )
   const t = envTreatment(env)
   const meter = meterOf(dataOf(cap))
-  const counts = panelCounts(stats, cap)
+  const counts = panelCounts(stats, cap, fromList)
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -884,6 +935,14 @@ export function SkyShell({
         )
       })}
       <span className="sk-grow" />
+      {/* THE WAY BACK TO THE PANEL (U10a D26): collapsed, the only way to
+          bring it back was to click a section. The panel's own collapse
+          control, mirrored, at the spine's foot. */}
+      {collapsed && !drawer && (
+        <button type="button" className="sk-ibtn sk-expand" aria-label="Expand the panel" title="Expand the panel" onClick={toggle}>
+          <Icon name="expand" />
+        </button>
+      )}
       {foot}
       <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
         {initials(who?.principal.email ?? '')}
@@ -1179,26 +1238,31 @@ function TenantBlock({
   )
 }
 
-/** The collapsed spine's tenant tile: the initial and the name, opening the list beside the spine. */
+/**
+ * The collapsed spine's tenant tile: THE INITIAL ONLY, the name in its title
+ * (U10a D26, owner QA 2026-10-04: `E Engin…` -- a 44px tile has no room for a
+ * name, and a cut one reads as a different tenant). It opens the list beside
+ * the spine for someone who can switch.
+ */
 function TenantTile({ me, switchable, open, onOpen }: { me: Result<Me>; switchable: boolean; open: boolean; onOpen: () => void }) {
   const who = dataOf(me)
   const name = who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : (who.tenant.display_name ?? who.tenant.tenant_id)
+  const say = who === null ? `Tenant ${name}` : `Tenant ${name} (${who.tenant.tenant_id})`
   const body = (
     <>
-      {who === null ? '·' : initialOf(name)}
-      <small>{name}</small>
+      <span aria-hidden>{who === null ? '·' : initialOf(name)}</span>
       {switchable && <Icon name="swap" className="sk-ic sk-tswap" />}
     </>
   )
   if (!switchable) {
     return (
-      <span className="sk-ttile" title={who === null ? name : `tenant ${who.tenant.tenant_id}`}>
+      <span className="sk-ttile" title={say} role="img" aria-label={say}>
         {body}
       </span>
     )
   }
   return (
-    <button type="button" className="sk-ttile" aria-haspopup="dialog" aria-expanded={open} aria-label={`Tenant ${name}: switch`} onClick={onOpen}>
+    <button type="button" className="sk-ttile" title={`${say}: switch`} aria-haspopup="dialog" aria-expanded={open} aria-label={`${say}: switch`} onClick={onOpen}>
       {body}
     </button>
   )

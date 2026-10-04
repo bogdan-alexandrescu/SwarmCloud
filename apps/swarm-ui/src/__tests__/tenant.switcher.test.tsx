@@ -294,7 +294,11 @@ describe('the spine tenant block', () => {
       expect(t).not.toBeNull()
       return t!
     })
-    expect(tile.textContent).toContain('Engineering')
+    // THE INITIAL ONLY, THE NAME IN THE TOOLTIP (U10a D26): `E Engin…` was
+    // a cut name in a 44px tile.
+    expect((tile.textContent ?? '').trim()).toBe('E')
+    expect(tile.getAttribute('title')).toContain('Engineering')
+    expect(tile.getAttribute('aria-label')).toContain('Engineering')
     fireEvent.click(tile)
     expect(picker()?.className).toContain('is-tile')
     expect(rowFor('research@example.com')).toBeDefined()

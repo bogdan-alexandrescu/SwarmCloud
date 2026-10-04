@@ -191,14 +191,34 @@ function PhaseDrawing({
           top={rows.length * ROW}
           scale={x}
           extent={extent}
-          format={(v) => (v === 0 ? 'admitted' : spanText(v))}
+          format={axisLabel}
           keep={[0]}
           ticks={d.ticks}
-          minGapPx={52}
+          minGapPx={axisGapPx([extent.lo, extent.hi, 0, ...x.ticks(d.ticks)].map(axisLabel))}
         />
       </g>
     </svg>
   )
+}
+
+/** An axis label: `admitted` at the shared instant, a span either side of it. */
+export function axisLabel(v: number): string {
+  return v === 0 ? 'admitted' : spanText(v)
+}
+
+/**
+ * THE LEAST DISTANCE BETWEEN TWO AXIS LABELS' CENTRES, FROM THE LABELS
+ * THEMSELVES (U10a D15, owner QA 2026-10-04). It was a fixed 52px, and two
+ * centred labels of seven characters at the axis's 12px are ~52px wide
+ * between them, so `-3h 54m` and `-2h 46m` drew as one run, `-3h 54m-2h
+ * 46m`. The gap is the widest label at 7.5px a character -- the axis face's
+ * widest digits and the `m`, rounded up -- plus 12px of air.
+ */
+export const AXIS_CHAR_PX = 7.5
+export const AXIS_AIR_PX = 12
+export function axisGapPx(labels: readonly string[]): number {
+  const widest = labels.reduce((n, l) => Math.max(n, l.length), 0)
+  return Math.ceil(widest * AXIS_CHAR_PX) + AXIS_AIR_PX
 }
 
 function runStart(r: AttemptPhases): number {
