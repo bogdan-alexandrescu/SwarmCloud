@@ -76,10 +76,11 @@ class _Forge:
         self.answers = answers
         self.requests: list[urllib.request.Request] = []
 
-    def __call__(self, req: urllib.request.Request) -> tuple[int, Any]:
+    def __call__(self, req: urllib.request.Request) -> tuple[int, Any, dict[str, str]]:
         self.requests.append(req)
         path = req.full_url.split("://", 1)[1].split("/", 1)[1]
-        return self.answers.get("/" + path, (404, {"message": "Not Found"}))
+        status, data = self.answers.get("/" + path, (404, {"message": "Not Found"}))
+        return status, data, {}
 
 
 @pytest.fixture
@@ -666,3 +667,131 @@ def test_a_fetch_that_fails_fails_the_attempt_and_the_agent_never_starts(
     assert task.get("end_cause") == EndCause.INPUTS_UNAVAILABLE.value, task
     assert "#31" in (task.get("last_error") or ""), task
     assert _agent_record(tmp_path) is None, "the agent started without its issue"
+
+
+# ---------------------------------------------------------------------------
+# a forge that blinked is not a missing issue (F1, 2026-10-04)
+# ---------------------------------------------------------------------------
+#
+# Measured: run_51e2e460eef54d208986 (#72) lost its review step to ONE
+# "could not reach api.github.com: timed out", ended INPUTS_UNAVAILABLE after
+# one attempt, and `fail_workflow` cancelled the fix step behind it.
+
+
+def _capacity_released(db) -> bool:
+    lease = db.doc("leases/lease_1")
+    pools = [db.doc(name if name.startswith("pools/") else f"pools/{name}")
+             for name in lease["pools"]]
+    return lease.get("released_at") is not None and all(int(p["active"]) < 1 for p in pools)
+
+
+@needs_git
+def test_a_timeout_then_a_success_is_retried_in_process_and_the_agent_runs(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace,
+    log_stream,
+):
+    calls: list[int] = []
+
+    def fetch(*, repository_url, number, token, on_request=None):
+        calls.append(number)
+        if len(calls) == 1:
+            raise issue_mod.IssueUnreachable("could not reach api.github.com: timed out")
+        return issue_mod.Issue(
+            repository="octo/widgets", number=number, title="Point a step at an issue",
+            state="open", author="bogdan", created_at="", url="", body="the body",
+        )
+
+    _seed(db, number=72)
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+    slept: list[float] = []
+    worker.forge_sleep = slept.append
+
+    code = worker.run()
+
+    task = db.doc("tasks/task_1")
+    assert code == ExitCode.OK, task
+    assert task["state"] == TaskState.SUCCEEDED.value
+    assert calls == [72, 72]
+    assert len(slept) == 1
+    record = _agent_record(tmp_path)
+    assert record is not None and "# Issue #72" in (record["issue_md"] or "")
+    # Logged once, with its attempt number, and never the token.
+    retries = [line for line in log_stream.getvalue().splitlines() if "retrying" in line]
+    assert len(retries) == 1 and '"attempt": 1' in retries[0], retries
+    assert TOKEN not in log_stream.getvalue()
+
+
+@needs_git
+def test_persistent_timeouts_end_the_attempt_retryably_and_release_capacity(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace,
+    log_stream,
+):
+    calls: list[int] = []
+
+    def fetch(*, repository_url, number, token, on_request=None):
+        calls.append(number)
+        raise issue_mod.IssueUnreachable("could not reach api.github.com: timed out")
+
+    _seed(db, number=72)
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+
+    code = worker.run()
+
+    task = db.doc("tasks/task_1")
+    assert code != ExitCode.OK
+    # Attempt 1 of 3: READY again, for the scheduler to admit as a new attempt.
+    assert task["state"] == TaskState.READY.value, task
+    assert task.get("end_cause") != EndCause.INPUTS_UNAVAILABLE.value
+    assert (task.get("last_error") or "").startswith("forge_unreachable:"), task["last_error"]
+    assert "#72" in task["last_error"]
+    assert task["result_summary"]["issue_check"]["cause"] == "forge_unreachable"
+    assert task.get("next_eligible_at") is not None
+    assert len(calls) == worker.cfg.forge_read_attempts
+    assert _capacity_released(db), db.doc("leases/lease_1")
+    assert _agent_record(tmp_path) is None, "the agent started without its issue"
+    assert TOKEN not in json.dumps(task, default=str)
+
+
+@needs_git
+def test_persistent_timeouts_on_the_last_attempt_end_failed_but_not_inputs_unavailable(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace
+):
+    def fetch(*, repository_url, number, token, on_request=None):
+        raise issue_mod.IssueUnreachable("could not reach api.github.com: timed out")
+
+    _seed(db, number=72)
+    db.doc("tasks/task_1")["attempt_count"] = 3
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+
+    worker.run()
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task
+    assert task.get("end_cause") == EndCause.CANNOT_START.value, task
+    assert _capacity_released(db)
+
+
+@needs_git
+def test_a_404_ends_inputs_unavailable_at_once_with_no_retry(
+    db, store, worker_factory, monkeypatch, tmp_path, origin, lane_agent, keep_workspace
+):
+    calls: list[int] = []
+
+    def fetch(*, repository_url, number, token, on_request=None):
+        calls.append(number)
+        raise issue_mod.IssueUnavailable(
+            f"could not fetch issue #{number} of octo/widgets: the forge has no such issue (404)"
+        )
+
+    _seed(db, number=72)
+    worker = _worker(worker_factory, monkeypatch, origin, fetch)
+    slept: list[float] = []
+    worker.forge_sleep = slept.append
+
+    worker.run()
+
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.FAILED.value, task
+    assert task.get("end_cause") == EndCause.INPUTS_UNAVAILABLE.value, task
+    assert "(404)" in task["last_error"]
+    assert calls == [72] and slept == []

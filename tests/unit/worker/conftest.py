@@ -416,6 +416,10 @@ def build_worker(
     # alive", which is the clean case the publish tests assume. The tests that
     # exercise the reap itself (test_forge_token_isolation.py) set their own.
     worker.reap_before_publish = reap_before_publish or (lambda: ())
+    # A forge call that failed transiently is tried again after a backoff
+    # (`Worker._forge_retry`); a test waits for none of it. A test about the
+    # waits records them by setting its own.
+    worker.forge_sleep = lambda _seconds: None
     if sign_spec:
         _sign_before_run(worker, db, config)
     return worker, config, exporter

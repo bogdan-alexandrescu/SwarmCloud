@@ -82,6 +82,17 @@ class WorkerConfig:
     heartbeat_interval_seconds: int = 30
     checkpoint_interval_seconds: int = 120
     max_in_worker_retry_delay_seconds: int = 45
+    #: How many times one forge call the worker makes before or after the
+    #: agent (the issue fetch, the push-scope probe, the publish's probe and
+    #: pull request, the merge and post-verdict reads) is tried when it fails
+    #: TRANSIENTLY -- a timeout, a reset, DNS, 429, 5xx, a rate-limit 403
+    #: (`forge.retry_transient`). Four, because one blip lost a whole run on
+    #: 2026-10-04 (run_51e2e460eef54d208986) and a second try clears a blip.
+    #: The tries share ONE wall-clock budget, the smaller of
+    #: `max_in_worker_retry_delay_seconds` and the step's remaining deadline,
+    #: so this never becomes the long in-worker wait invariant 4 forbids;
+    #: past it the attempt fails retryably and its capacity is released.
+    forge_read_attempts: int = 4
     #: Hard wall clock for the runner child.
     timeout_seconds: int = 3600
     #: SIGTERM -> (grace) -> SIGKILL.
@@ -396,6 +407,7 @@ class WorkerConfig:
                 "CHECKPOINT_INTERVAL_SECONDS", profile.checkpoint_interval_seconds
             ),
             max_in_worker_retry_delay_seconds=settings.max_in_worker_retry_delay_seconds,
+            forge_read_attempts=max(1, _int_env("FORGE_READ_ATTEMPTS", 4)),
             timeout_seconds=_int_env("TASK_TIMEOUT_SECONDS", profile.timeout_seconds),
             termination_grace_seconds=_int_env("TERMINATION_GRACE_SECONDS", 20),
             control_poll_seconds=_int_env("CONTROL_POLL_SECONDS", 10),

@@ -39,13 +39,15 @@ requests" has no mechanism to do so -- not a quota it would exhaust first.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import re
+import ssl
 import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 from urllib.parse import quote, urlencode, urlparse
 
 _UA = "swarmcloud-agent-worker"
@@ -54,6 +56,188 @@ _TIMEOUT = 30
 
 class ForgeError(RuntimeError):
     """The forge could not be reached, or refused in a way worth surfacing."""
+
+
+# ---------------------------------------------------------------------------
+# Transient or permanent: one classification for every forge call a worker makes
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-04: issue run run_51e2e460eef54d208986 (#72) lost its
+# review step to ONE "could not reach api.github.com: timed out". The issue
+# fetch read that as "the issue is not there", ended the task
+# INPUTS_UNAVAILABLE after a single attempt, and `on_step_failure=
+# fail_workflow` cancelled the fix step behind it. The same timeout turned
+# release 37017777271's acceptance red on 2026-10-02 ("no pull request was
+# opened: could not reach the forge"). A blip and a refusal need opposite
+# answers -- wait and ask again, or stop and say why -- so every forge call
+# is put in one of two classes, here, once:
+#
+#   TRANSIENT (`ForgeUnavailable`): a connect or read timeout, a connection
+#     reset, a DNS failure, 429, any 5xx, and GitHub's rate limits on a 403
+#     -- the secondary limit says so in its message and usually carries
+#     `Retry-After`; the primary one sends `x-ratelimit-remaining: 0`.
+#   PERMANENT (any other `ForgeError`, or the caller's own refusal): 404
+#     (absent, or invisible to this credential), 401 and 403 with no
+#     rate-limit signal, 410, 422, a malformed reference, and a TLS
+#     certificate the host could not prove -- asking again meets each of
+#     these unchanged.
+#
+# A transient failure is retried IN THIS PROCESS a bounded number of times
+# (`retry_transient`), within `max_in_worker_retry_delay_seconds` and the
+# step's deadline. Past that the caller ends the ATTEMPT retryably, so the
+# scheduler retries it within `max_attempts` and its capacity is released
+# meanwhile -- never sleeping through a long wait (invariant 4).
+
+#: 403 bodies GitHub sends for its rate limits: "You have exceeded a secondary
+#: rate limit" and "API rate limit exceeded for ...". Matched on the message
+#: because the secondary limit does not always send `Retry-After`.
+_RATE_LIMIT_MESSAGE = re.compile(r"rate limit", re.IGNORECASE)
+
+
+def _lowered(headers: Mapping[str, str] | None) -> dict[str, str]:
+    return {str(k).lower(): str(v) for k, v in (headers or {}).items()}
+
+
+def _message_of(data: Any) -> str:
+    return str(data.get("message") or "")[:300] if isinstance(data, dict) else ""
+
+
+def transient_status(
+    status: int, headers: Mapping[str, str] | None = None, data: Any = None
+) -> bool:
+    """True when an HTTP answer is an outage or a rate limit, not an answer."""
+    if status == 429 or status >= 500:
+        return True
+    if status != 403:
+        return False
+    lowered = _lowered(headers)
+    if "retry-after" in lowered:
+        return True
+    if lowered.get("x-ratelimit-remaining", "").strip() == "0":
+        return True
+    return bool(_RATE_LIMIT_MESSAGE.search(_message_of(data)))
+
+
+def transient_network_error(exc: BaseException) -> bool:
+    """True when a request that got no HTTP answer may get one if asked again.
+
+    A timeout (connect or read), a reset or refused connection, a DNS failure,
+    a connection the server dropped mid-answer. NOT a certificate the host
+    could not prove: that is the host, or something pretending to be it, and
+    it will be the same in a minute.
+    """
+    reason: Any = exc
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        reason = exc.reason
+    if isinstance(reason, ssl.SSLCertVerificationError):
+        return False
+    if isinstance(reason, str):
+        return "timed out" in reason.lower()
+    return isinstance(reason, (OSError, http.client.HTTPException))
+
+
+def _network_reason(exc: BaseException) -> Any:
+    if isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError):
+        return exc.reason
+    return exc
+
+
+# -- the bounded in-process retry ---------------------------------------------
+
+#: How many times one forge read is tried before the attempt gives up on it.
+#: Four: the measured failures were single blips, which the second try clears;
+#: two more cover a short outage, and past that the forge is down for longer
+#: than this process should hold a concurrency slot waiting -- the scheduler's
+#: retry, with the capacity released, is the right wait from there.
+DEFAULT_READ_ATTEMPTS = 4
+#: The first backoff; each one after doubles it (2, 4, 8 s: 14 s in all).
+BACKOFF_BASE_SECONDS = 2.0
+
+_T = TypeVar("_T")
+_QUERY = re.compile(r"\?\S*")
+
+
+@dataclass(frozen=True)
+class RetryPolicy:
+    """How a transient forge failure is retried in this process.
+
+    `budget_seconds` bounds the WALL TIME from the first try, failed requests
+    included, not only the sleeps: a try that timed out has already spent its
+    request timeout. A wait (backoff or `Retry-After`) that would end past the
+    budget is not slept at all; the failure goes to the caller, which ends the
+    attempt retryably with the forge's `Retry-After` as the retry's delay.
+
+    The budget is checked before each WAIT, not before each try, so the last
+    try can run up to one request timeout (`_TIMEOUT`, or the issue fetch's
+    own) past it. Deliberate: a budget that also reserved a request timeout
+    would leave a 45 s budget room for one retry of a 30 s timeout at most,
+    which is the blip this retry exists for. The overshoot is bounded by that
+    one timeout.
+    """
+
+    attempts: int = DEFAULT_READ_ATTEMPTS
+    budget_seconds: float = 45.0
+    base_delay_seconds: float = BACKOFF_BASE_SECONDS
+    sleep: Callable[[float], Any] = time.sleep
+    clock: Callable[[], float] = time.monotonic
+    #: Anything with `warning(message, **fields)`, or None.
+    log: Any = None
+
+    @classmethod
+    def bounded(
+        cls,
+        *,
+        attempts: int,
+        max_in_worker_retry_delay_seconds: float,
+        remaining_seconds: float,
+        sleep: Callable[[float], Any] = time.sleep,
+        log: Any = None,
+    ) -> "RetryPolicy":
+        """The platform's bound: the in-worker wait limit and the step's deadline."""
+        budget = max(0.0, min(float(max_in_worker_retry_delay_seconds), float(remaining_seconds)))
+        return cls(attempts=max(1, int(attempts)), budget_seconds=budget, sleep=sleep, log=log)
+
+
+def loggable(text: str) -> str:
+    """A failure's text for a log line: no query string, bounded."""
+    return _QUERY.sub("", text)[:300]
+
+
+def retry_transient(call: Callable[[], _T], *, policy: RetryPolicy | None, what: str) -> _T:
+    """`call()`, tried again on `ForgeUnavailable` within `policy`; anything else raises.
+
+    Each retry is logged once, with its attempt number and the failure's text
+    stripped of any query string; the token is in no message this module
+    writes. The `ForgeUnavailable` that ends it carries `tries`.
+    """
+    if policy is None:
+        return call()
+    started = policy.clock()
+    attempt = 1
+    while True:
+        try:
+            return call()
+        except ForgeUnavailable as exc:
+            exc.tries = attempt
+            if attempt >= policy.attempts:
+                raise
+            if exc.retry_after_seconds is not None:
+                wait = float(exc.retry_after_seconds)
+            else:
+                wait = policy.base_delay_seconds * (2 ** (attempt - 1))
+            if (policy.clock() - started) + wait > policy.budget_seconds:
+                raise
+            if policy.log is not None:
+                policy.log.warning(
+                    "a forge call failed transiently; retrying it in-process",
+                    what=what,
+                    attempt=attempt,
+                    attempts=policy.attempts,
+                    wait_seconds=wait,
+                    reason=loggable(str(exc)),
+                )
+            policy.sleep(wait)
+            attempt += 1
 
 
 #: The only hosts github.com's own API answers on (case-insensitive; `host` is
@@ -192,6 +376,7 @@ def _request(
     req.add_header("User-Agent", _UA)
     if body is not None:
         req.add_header("Content-Type", "application/json")
+    host = urlparse(url).hostname
     try:
         with urllib.request.urlopen(req, timeout=_TIMEOUT) as response:
             raw = response.read().decode("utf-8", errors="replace")
@@ -202,9 +387,25 @@ def _request(
             parsed = json.loads(raw) if raw.strip() else None
         except json.JSONDecodeError:
             parsed = {"message": raw[:500]}
+        headers = dict(exc.headers.items()) if exc.headers else {}
+        if transient_status(exc.code, headers, parsed):
+            # The path only: a query string (`?head=owner:branch`) is not the
+            # failure, and nothing here ever carries the token.
+            message = _message_of(parsed)
+            raise ForgeUnavailable(
+                f"the forge answered {exc.code} to {urlparse(url).path}"
+                + (f": {message}" if message else ""),
+                retry_after_seconds=retry_after_from_headers(headers),
+            ) from None
         return exc.code, parsed
-    except urllib.error.URLError as exc:
-        raise ForgeError(f"could not reach {urlparse(url).hostname}: {exc.reason}") from exc
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        # OSError and HTTPException as well as URLError: a timeout DURING
+        # `response.read()` is a bare TimeoutError, which escaped this
+        # function before and ended a publish as a crash.
+        reason = _network_reason(exc)
+        if transient_network_error(exc):
+            raise ForgeUnavailable(f"could not reach {host}: {reason}") from None
+        raise ForgeError(f"could not reach {host}: {reason}") from None
 
 
 def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
@@ -238,6 +439,13 @@ def probe_repository(*, url: str, token: str | None) -> RepoAccess | None:
         )
 
     status, data = _request(f"{ref.api_base}/repos/{ref.owner}/{ref.name}", token=token)
+    if transient_status(status, None, data):
+        # An outage is not "the token cannot push": raised, so a caller
+        # retries it rather than reporting a read-only token.
+        raise ForgeUnavailable(
+            f"the forge answered {status}"
+            + (f": {_message_of(data)}" if _message_of(data) else "")
+        )
     if status == 404:
         # 404 rather than 403 is what GitHub returns for a private repository
         # the token cannot see AT ALL, so it is not necessarily "missing".
@@ -362,7 +570,8 @@ def open_pull_request(
         raise ForgeError(f"the forge refused the pull request: {message or '422'}")
 
     message = str(data.get("message")) if isinstance(data, dict) else ""
-    raise ForgeError(f"could not open a pull request ({status}){': ' + message if message else ''}")
+    failure = ForgeUnavailable if transient_status(status, None, data) else ForgeError
+    raise failure(f"could not open a pull request ({status}){': ' + message if message else ''}")
 
 
 def _find_open_pull_request(
@@ -374,6 +583,10 @@ def _find_open_pull_request(
         f"?head={ref.owner}:{head}&state=open&per_page=1",
         token=token,
     )
+    if transient_status(status, None, data):
+        # Not "there is none": that would turn the 422 above into "the forge
+        # refused the pull request", which fails the step for good.
+        raise ForgeUnavailable(f"could not look up the open pull request ({status})")
     if status != 200 or not isinstance(data, list) or not data:
         return None
     first = data[0]
@@ -500,6 +713,8 @@ class ForgeUnavailable(ForgeError):
     def __init__(self, message: str, *, retry_after_seconds: int | None = None) -> None:
         super().__init__(message)
         self.retry_after_seconds = retry_after_seconds
+        #: How many times `retry_transient` tried before giving up; 1 untried.
+        self.tries = 1
 
 
 class ForgeAnswered(ForgeError):
@@ -547,12 +762,17 @@ def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], byte
         body = exc.read() if exc.fp is not None else b""
         return exc.code, dict(exc.headers.items()) if exc.headers else {}, body
     except urllib.error.URLError as exc:
+        if not transient_network_error(exc):
+            raise ForgeError(f"could not reach the forge: {exc.reason}") from None
         raise ForgeUnavailable(f"could not reach the forge: {exc.reason}") from None
-    except (TimeoutError, OSError) as exc:
+    except (OSError, http.client.HTTPException) as exc:
         raise ForgeUnavailable(f"could not reach the forge: {type(exc).__name__}") from None
 
 
-def _retry_after(headers: Mapping[str, str], *, now: float | None = None) -> int | None:
+def retry_after_from_headers(
+    headers: Mapping[str, str], *, now: float | None = None
+) -> int | None:
+    """The forge's own wait, in seconds: `retry-after`, else until `x-ratelimit-reset`."""
     lowered = {k.lower(): v for k, v in headers.items()}
     raw = lowered.get("retry-after")
     if raw is not None and str(raw).strip().isdigit():
@@ -564,15 +784,16 @@ def _retry_after(headers: Mapping[str, str], *, now: float | None = None) -> int
     return None
 
 
-def _message_of(data: Any) -> str:
-    return str(data.get("message") or "")[:300] if isinstance(data, dict) else ""
-
-
 class PinnedForgeClient:
     """Requests to `api.github.com` alone, with no redirect followed. See above."""
 
     def __init__(
-        self, *, token: str, host: str = PINNED_API_HOST, transport: Transport | None = None
+        self,
+        *,
+        token: str,
+        host: str = PINNED_API_HOST,
+        transport: Transport | None = None,
+        retry: RetryPolicy | None = None,
     ) -> None:
         if host != PINNED_API_HOST:
             # Not lower-cased first: FORGE_HOST is rendered by Terraform, and
@@ -587,6 +808,10 @@ class PinnedForgeClient:
         self._host = host
         self.__token = token
         self._transport = transport or _open
+        #: Applied to GETs only. A GET asks; a POST, PUT or DELETE that timed
+        #: out may have been done, and the merge and the review post each
+        #: have their own answer to that, which a blind resend is not.
+        self._retry = retry
 
     def __repr__(self) -> str:
         return f"PinnedForgeClient(host={self._host!r})"
@@ -604,6 +829,15 @@ class PinnedForgeClient:
         return url
 
     def _send(self, method: str, url: str, path: str, payload: Any) -> ForgeResponse:
+        if method != "GET" or self._retry is None:
+            return self._send_once(method, url, path, payload)
+        return retry_transient(
+            lambda: self._send_once(method, url, path, payload),
+            policy=self._retry,
+            what=f"GET {path}",
+        )
+
+    def _send_once(self, method: str, url: str, path: str, payload: Any) -> ForgeResponse:
         body = json.dumps(payload).encode() if payload is not None else None
         req = urllib.request.Request(url, data=body, method=method)
         req.add_header("Authorization", f"Bearer {self.__token}")
@@ -620,14 +854,11 @@ class PinnedForgeClient:
             data = json.loads(text) if text.strip() else None
         except json.JSONDecodeError:
             data = {"message": text[:300]}
-        if status >= 500 or status == 429 or (
-            status == 403 and str({k.lower(): v for k, v in headers.items()}.get(
-                "x-ratelimit-remaining", "")) == "0"
-        ):
+        if transient_status(status, headers, data):
             raise ForgeUnavailable(
                 f"the forge answered {status} to {path}"
                 + (f": {_message_of(data)}" if _message_of(data) else ""),
-                retry_after_seconds=_retry_after(headers),
+                retry_after_seconds=retry_after_from_headers(headers),
             )
         return ForgeResponse(status=status, data=data, headers=headers)
 
@@ -870,6 +1101,7 @@ def mint_installation_token(
     permissions: Mapping[str, str],
     transport: Transport | None = None,
     now: int | None = None,
+    retry: RetryPolicy | None = None,
 ) -> InstallationToken:
     """`GET /repos/{o}/{r}/installation` with the App's JWT, then one token for
     that repository alone with exactly `permissions` (§2.2 step 7).
@@ -878,7 +1110,8 @@ def mint_installation_token(
     repository. 401 and 404 are `AppRejected` (§6 rows 16, 6a row 7).
     """
     jwt = app_jwt(key, now=now)
-    client = PinnedForgeClient(token=jwt, transport=transport)
+    # `retry` reaches the installation read only; the mint is a POST.
+    client = PinnedForgeClient(token=jwt, transport=transport, retry=retry)
     del jwt
     path = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/installation"
     found = client.get(path)

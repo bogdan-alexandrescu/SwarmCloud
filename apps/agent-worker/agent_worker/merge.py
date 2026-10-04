@@ -62,6 +62,7 @@ from .post_verdict import (
     _task_id,
     cancelled,
     cannot_start,
+    forge_retry,
     pull_request_belongs,
     pull_request_number,
     read_verdict,
@@ -362,6 +363,7 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
         token = forge_mod.mint_installation_token(
             key=key, owner=target.owner, repo=target.repo,
             permissions=MERGE_PERMISSIONS, transport=ctx.transport,
+            retry=forge_retry(ctx),
         )
     except forge_mod.AppRejected as exc:
         return cannot_start(summary, "app_rejected", str(exc))
@@ -374,7 +376,8 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     ctx.register_secret(token.token)
     summary.update({"app_id": token.app_id, "installation_id": token.installation_id,
                     "token_expires_at": token.expires_at})
-    client = forge_mod.PinnedForgeClient(token=token.token, transport=ctx.transport)
+    client = forge_mod.PinnedForgeClient(token=token.token, transport=ctx.transport,
+                                         retry=forge_retry(ctx))
     del token
     try:
         return _with_forge(ctx, client, target, summary, refuse, review=review, proof=proof,
