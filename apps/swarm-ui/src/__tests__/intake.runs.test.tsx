@@ -303,7 +303,9 @@ describe('/runs/<id>: one run', () => {
     for (const [over, line] of cases) {
       serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run(over) } } : null)
       const { container, unmount } = await mount('run=run_4c1e09d2')
-      await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain(String(over.state)), WAIT)
+      // Named as the API names it, in sentence case (no all-caps rule, U10b D11).
+      const named = String(over.state).charAt(0) + String(over.state).slice(1).toLowerCase()
+      await waitFor(() => expect(visible(container.querySelector('.rn-state'))).toContain(named), WAIT)
       expect(container.querySelector('.rn-state [data-mark]'), `${over.state} has no mark`).not.toBeNull()
       expect(visible(container.querySelector('.rn-state-t'))).toMatch(line)
       expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
