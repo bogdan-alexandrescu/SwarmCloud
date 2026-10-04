@@ -179,6 +179,10 @@ describe('A: the sampling chip is in the table head row, inside the card', () =>
       return h!
     }, WAIT)
     expect(head.querySelector('h3')?.textContent).toBe('Steps')
-    expect(head.nextElementSibling?.classList.contains('wf-table')).toBe(true)
+    // The table sits in the box its stacked form asks about (D12), and that
+    // box is the head row's next sibling: nothing is drawn between them.
+    const box = head.nextElementSibling
+    expect(box?.classList.contains('wf-table-box')).toBe(true)
+    expect(box?.firstElementChild?.classList.contains('wf-table')).toBe(true)
   })
 })
