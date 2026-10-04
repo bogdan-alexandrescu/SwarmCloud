@@ -102,16 +102,6 @@ async function mount(served: unknown) {
   return utils
 }
 
-function card(container: HTMLElement, name: string): HTMLElement {
-  return within(container).getByRole('region', { name })
-}
-
-function fact(region: HTMLElement, key: string): HTMLElement {
-  const li = [...region.querySelectorAll<HTMLElement>('.ctl-fact')].find((f) => visible(f.querySelector('b')) === key)
-  expect(li, `no "${key}" fact`).toBeDefined()
-  return li!
-}
-
 async function mountList(runs: unknown[]) {
   globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ runs, next_page_token: null }), { status: 200, headers: JSON_HEADERS })) as unknown as typeof fetch
   vi.stubEnv('VITE_LIVE', '1')

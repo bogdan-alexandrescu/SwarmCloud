@@ -83,10 +83,6 @@ function board(a: Account, tenant = 'eng'): AccountsBoard {
 
 const MINUTES = 60_000
 
-function holders(over: Partial<AccountHolders>): AccountHolders {
-  return { account_id: 'eng:laptop', viewer: 'owner', total: 0, holders: [], others: 0, ...over }
-}
-
 /** Answer each read by its URL, so the test says which route got what. */
 function serve(byPath: { holders?: AccountHolders; history?: HoldHistory }) {
   reads.read.mockImplementation(async (target: { url: string }) => {
