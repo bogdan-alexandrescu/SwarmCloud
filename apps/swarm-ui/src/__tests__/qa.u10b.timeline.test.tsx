@@ -23,6 +23,8 @@ import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
 import type { AttemptRow, AttemptsPage, Task, TaskEvent, TaskEventsPage, TaskPage } from '../types'
 import type { WorkflowRead } from '../api'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -183,5 +185,15 @@ describe('D37: the footer carries dates', () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(document.querySelector('.tl-cov')).not.toBeNull())
     expect(document.querySelector('.tl-cov')!.textContent).toMatch(/since [A-Z][a-z]{2} \d{1,2} \d\d:\d\d, until [A-Z][a-z]{2} \d{1,2} \d\d:\d\d/)
+  })
+})
+
+describe('D10: a stale read dims the lanes, not the open summary', () => {
+  it('leaves the summary drawn inside the chart at full strength', () => {
+    document.body.innerHTML =
+      '<div class="tl-chart is-stale"><div class="tl"><div class="tl-row"></div><section class="tl-detail"></section></div></div>'
+    const env: CascadeEnv = { width: 1440 }
+    expect(painted(document.querySelector('.tl-row')!, 'opacity', env)).toBe('0.5')
+    expect(painted(document.querySelector('.tl-detail')!, 'opacity', env)).toBeNull()
   })
 })

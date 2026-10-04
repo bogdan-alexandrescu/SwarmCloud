@@ -195,7 +195,9 @@
 
 /* ---- the chart ---- */
 .tl-chart { margin-bottom: var(--ctl-s3); }
-.tl-chart.is-stale .tl { opacity: 0.5; }
+/* A stale read dims the lanes, not the summary of the lane that was clicked,
+   which is drawn inside `.tl` (D10) and reads the same either way. */
+.tl-chart.is-stale .tl > :not(.tl-detail) { opacity: 0.5; }
 .tl {
   border: 1px solid var(--line);
   border-radius: 10px;

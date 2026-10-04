@@ -450,3 +450,12 @@ describe('Tenants draws status and credentials in the brand marks (admin-help.ht
     expect(keys.querySelectorAll('.tags > .tag')).toHaveLength(2)
   })
 })
+
+describe('D16: a head cut at a narrow width keeps its name', () => {
+  it('gives every Tenants head its whole label as a title', async () => {
+    const c = await roster()
+    const heads = [...c.querySelectorAll('table.ten-table thead th')]
+    expect(heads.length).toBeGreaterThan(0)
+    for (const th of heads) expect(th.getAttribute('title'), th.textContent!).toBe(th.textContent!.trim())
+  })
+})

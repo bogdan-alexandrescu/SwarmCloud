@@ -1293,10 +1293,10 @@ export function TenantsScreen() {
               </colgroup>
               <thead role="rowgroup">
                 <tr role="row">
-                  <th role="columnheader" scope="col">Tenant</th>
-                  <th role="columnheader" scope="col">Status</th>
-                  <th role="columnheader" scope="col">Kind</th>
-                  <th role="columnheader" scope="col">Principal</th>
+                  <th role="columnheader" scope="col" title="Tenant">Tenant</th>
+                  <th role="columnheader" scope="col" title="Status">Status</th>
+                  <th role="columnheader" scope="col" title="Kind">Kind</th>
+                  <th role="columnheader" scope="col" title="Principal">Principal</th>
                   {/* THE CEILING ADMISSION ACTUALLY APPLIES (AH-12). The two
                       registry values were printed bare, and the figure that
                       binds -- the smaller, which every writer of the tenant
@@ -1308,14 +1308,14 @@ export function TenantsScreen() {
                       link is under the table, not a `?` in here: a glyph in a
                       `<th>` publishes its HelpNote as part of the column's
                       name, which a screen reader then reads on every cell. */}
-                  <th role="columnheader" scope="col" className="n">
+                  <th role="columnheader" scope="col" className="n" title="Enforced">
                     Enforced
                   </th>
-                  <th role="columnheader" scope="col" className="n">
+                  <th role="columnheader" scope="col" className="n" title="Configured">
                     Configured
                   </th>
-                  <th role="columnheader" scope="col">Credentials</th>
-                  <th role="columnheader" scope="col">Identity</th>
+                  <th role="columnheader" scope="col" title="Credentials">Credentials</th>
+                  <th role="columnheader" scope="col" title="Identity">Identity</th>
                 </tr>
               </thead>
               <tbody role="rowgroup">
