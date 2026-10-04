@@ -296,7 +296,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
     }
   }, [served])
   const title = run.issue_read?.title || run.issue.ref
-  useEffect(() => onHeading(title), [title]) // eslint-disable-line react-hooks/exhaustive-deps
+  // On the title alone: `onHeading` is a new function on every render of the screen.
+  useEffect(() => onHeading(title), [title])
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
   // The editor records the digest it opened on, and saves with that one.
   const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject' }>(
