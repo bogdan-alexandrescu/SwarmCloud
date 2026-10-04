@@ -31,6 +31,7 @@ import {
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP_ROUTE } from './help'
 import { SUBMIT_ADDRESS, addressToPath, isLegacyHash, pathToAddress } from './paths'
+import { NotFound } from './NotFound'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -668,6 +669,8 @@ export interface Route {
   view?: string | null
   /** The Timeline's second page, Outcomes (`/timeline/outcomes`); absent is Lanes. */
   page?: 'outcomes' | null
+  /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
+  missing?: string | null
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -702,7 +705,7 @@ export function fromLocation(): Route {
   const { pathname, search, hash } = window.location
   if (isLegacyHash(hash, LEGACY_HEADS, pathname)) return fromHash()
   const p = pathToAddress(pathname, search, hash)
-  if (p === null) return fromAddress('')
+  if (p === null) return { ...fromAddress(''), missing: pathname }
   const r = fromAddress(p.address)
   return p.agentTab === null || r.taskId === null ? r : { ...r, list: { tab: p.agentTab, state: null } }
 }
@@ -934,7 +937,7 @@ export function App() {
 
   /** The path a route is written as: an open agent sits under its list's tab. */
   const pathFor = useCallback(
-    (r: Route) => addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
+    (r: Route) => r.missing ?? addressToPath(canonical(r), r.list?.tab ?? lastList.current?.tab ?? 'live'),
     [],
   )
 
@@ -947,7 +950,7 @@ export function App() {
       if (to.startsWith('/')) {
         const u = new URL(to, window.location.origin)
         const p = pathToAddress(u.pathname, u.search, u.hash)
-        r = p === null ? fromAddress('') : fromAddress(p.address)
+        r = p === null ? { ...fromAddress(''), missing: u.pathname } : fromAddress(p.address)
         if (p !== null && p.agentTab !== null) r = { ...r, list: { tab: p.agentTab, state: null } }
       } else {
         r = fromAddress(to.replace(/^#/, ''))
@@ -1127,7 +1130,7 @@ export function App() {
                 // nowhere but the dock's tab-wide age.
                 <RoutedPage.Provider value={true}>
                   <FrameAge.Provider value={at.taskId === null}>
-                  <SectionBody
+                  {at.missing ? <NotFound path={at.missing} go={go} /> : <SectionBody
                     sectionId={section.id}
                     tab={at.tab}
                     taskId={at.taskId}
@@ -1137,7 +1140,7 @@ export function App() {
                     page={at.page ?? null}
                     onView={onView}
                     go={go}
-                  />
+                  />}
                   </FrameAge.Provider>
                 </RoutedPage.Provider>
               )}
