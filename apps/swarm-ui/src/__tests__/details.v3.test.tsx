@@ -26,6 +26,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { HELP } from '../help'
 import type { AgentRun } from '../api'
 import type { Result } from '../fetch'
 import type { ResourceClasses } from '../api'
@@ -216,6 +217,9 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     expect(now.querySelector('.dt-phase.is-cur')?.textContent).toMatch(/^run/)
     expect(now.textContent).toMatch(/Checkpoints\s*1 · last 1m ago/)
     expect(now.textContent).toMatch(/Heartbeat/)
+    // Its one '?' explains what it shows -- checkpoints -- not capacity.
+    const help = [...now.querySelectorAll('.dt-card-head button[aria-label^="Help: "]')].map((b) => b.getAttribute('aria-label'))
+    expect(help).toEqual([`Help: ${HELP.checkpoints.title}`])
   })
 
   it('a checkpoint whose event is not in the window says so with a dash, never a time', () => {
@@ -254,6 +258,16 @@ describe('the Now card leads, and becomes the outcome or the failure', () => {
     // The lead precedes the strip.
     const kids = [...el.querySelector('.dt')!.children]
     expect(kids.indexOf(lead)).toBeLessThan(kids.indexOf(el.querySelector('.dt-strip')!))
+  })
+
+  it('a cancelled agent with no error leads with the neutral Cancelled card, not an Outcome', () => {
+    const t = running({ state: 'CANCELLED', completed_at: ago(1), started_at: null, end_cause: null, last_error: null, attempt_count: 0 })
+    const el = host(runOf({ task: t, attempts: [] }))
+    const lead = el.querySelector<HTMLElement>('.dt > .dt-now')!
+    expect(lead.dataset.lead).toBe('failed')
+    expect(lead.classList.contains('is-neu'), 'a cancel reads as a failure').toBe(true)
+    expect(lead.querySelector('.dt-card-head > b')?.textContent).toBe('Cancelled')
+    expect(lead.textContent).toContain('No error text was written on the task.')
   })
 })
 
@@ -332,6 +346,16 @@ describe('Progress | Resources: two columns from a 640px pane, one below', () =>
     const strip = el.querySelector<HTMLElement>('.dt-strip')!
     expect(Number(painted(strip, 'order', { width: 390, container: 380 }) ?? '0')).toBeLessThan(0)
     expect(Number(painted(strip, 'order', { width: 1440, container: 700 }) ?? '0')).toBe(0)
+  })
+
+  it('below 640px the strip sticks to the top of the pane; at 640 and over it scrolls with the rest', () => {
+    const el = host(runOf())
+    const strip = el.querySelector<HTMLElement>('.dt-strip')!
+    for (const container of [380, 600]) {
+      expect(painted(strip, 'position', { width: 1440, container }), `the strip does not stick in a ${container}px pane`).toBe('sticky')
+      expect(painted(strip, 'top', { width: 1440, container })).toBe('0')
+    }
+    expect(painted(strip, 'position', { width: 1440, container: 700 }) ?? 'static').toBe('static')
   })
 })
 

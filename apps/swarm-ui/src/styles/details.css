@@ -161,6 +161,12 @@
 @container ag-pane (min-width: 640px) {
   .dt-cols { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 }
+/* BELOW 640px THE COLUMNS STACK AND THE STRIP STICKS (agent-details-v3.html,
+   small choices: B's idea): the figures stay in view while the stacked cards
+   scroll under them. Sticky against the pane, the detail's one scroller. */
+@container ag-pane (max-width: 639px) {
+  .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+}
 .dt-phrow { display: grid; grid-template-columns: 70px minmax(0, 1fr) 64px; gap: 8px; align-items: center; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
 .dt-phrow > b { color: var(--text); font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
 .dt-phb { display: flex; gap: 2px; height: 12px; border-radius: 4px; background: var(--surface-2); overflow: hidden; }

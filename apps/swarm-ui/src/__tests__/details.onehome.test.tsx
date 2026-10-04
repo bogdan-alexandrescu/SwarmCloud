@@ -121,9 +121,11 @@ function tile(el: HTMLElement, label: string): HTMLElement {
 }
 
 /** The keys the leading card prints: the run's facts, said once. */
-function headlineFacts(el: HTMLElement): string[] {
-  const head = el.querySelector('.run-stack > .dt-now')!
-  return [...head.querySelectorAll('.ctl-fact > b')].map((b) => b.textContent ?? '')
+/** The leading Now card's own words: v3 draws no `.ctl-fact` in it, so the text is what can say `run 9m`. */
+function nowText(el: HTMLElement): string {
+  const now = el.querySelector('.run-stack > .dt-now')
+  expect(now, 'no Now card leads the tab').not.toBeNull()
+  return now!.textContent ?? ''
 }
 
 /** Every card heading on the tab. */
@@ -200,8 +202,12 @@ describe('#102 (b): checkpoints are listed once, in the Checkpoints tab', () => 
 describe('#102 (c): one duration, said once', () => {
   it('drops the Headline run fact, which is the Elapsed tile', async () => {
     const el = await mount(run())
-    expect(headlineFacts(el)).not.toContain('run')
-    expect(tile(el, 'Elapsed').querySelector('.dt-sc-v')?.textContent).toBe('9m 0s')
+    // The Elapsed figure is the strip's alone: the Now card repeats neither
+    // a `run <duration>` fact nor the figure itself.
+    const elapsed = tile(el, 'Elapsed').querySelector('.dt-sc-v')?.textContent
+    expect(elapsed).toBe('9m 0s')
+    expect(nowText(el)).not.toMatch(/\brun\s+\d/)
+    expect(nowText(el)).not.toContain(elapsed!)
   })
 
   it('keeps a wait, which the tile does not carry', async () => {

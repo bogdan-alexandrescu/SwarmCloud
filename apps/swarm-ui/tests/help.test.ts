@@ -853,7 +853,7 @@ const GLYPH_CEILING_PER_FILE = 2
  */
 const PER_CARD_SCREENS: ReadonlyMap<string, number> = new Map([['AgentDetail.tsx', 6]])
 
-test('the console draws fewer than twenty help glyphs in total', () => {
+test('the console draws no more help glyphs in total than its ceiling of twenty-six', () => {
   const counts = glyphAnchors()
   const total = [...counts.values()].reduce((a, b) => a + b, 0)
   const breakdown = [...counts.entries()]

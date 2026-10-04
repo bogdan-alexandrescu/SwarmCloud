@@ -412,6 +412,9 @@ export interface DetailLinks {
 function leadOf(task: Task): 'failed' | 'outcome' | 'now' {
   if (!TERMINAL_STATES.has(task.state)) return 'now'
   if (task.state === 'SUCCEEDED') return 'outcome'
+  // A CANCEL LEADS WITH THE NEUTRAL 'Cancelled' CARD whether or not an error
+  // was written: a cancel with no error is not an 'Outcome'.
+  if (task.state === 'CANCELLED') return 'failed'
   return task.last_error || task.state === 'FAILED' || task.state === 'DEAD_LETTERED' ? 'failed' : 'outcome'
 }
 
@@ -632,7 +635,7 @@ function DtNow({
     <section className={`dt-card dt-now${live.kind === 'silent' ? ' is-warn' : ''}`} data-lead="now">
       <DtCardHead title="Now">
         {stop}
-        <HelpCard topic="capacity" />
+        <HelpCard topic="checkpoints" />
       </DtCardHead>
       <DtPhases run={run} now={now} />
       {lastLine}
