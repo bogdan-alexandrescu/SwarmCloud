@@ -2977,14 +2977,16 @@ export function profileMix(steps: readonly WorkflowStep[]): ProfileCount[] {
 export const MIX_NAMED_MAX = 2
 
 // THE CHIP'S GEOMETRY, from the sheet, in the same terms `NODE_CHROME_W` is
-// derived in above. `.wf-chip` is `padding: 0 5px` inside a 1px border at
-// --t-micro mono; `.wf-chip-n` (the `×N`) sits `margin-left: 3px` inside it;
-// `.wf-mix` spaces the chips `--ctl-s1` apart. If those rules change, these
-// move with them -- the cost of drifting is a chip folded one step early or a
-// few pixels clipped, never a wrong count, because the `+N` is computed from
-// what was folded rather than measured.
-const CHIP_CHROME_W = 2 * 5 + 2
-const CHIP_N_GAP = 3
+// derived in above. The canonical `.c-chip` (components.css) is `padding: 4px
+// 8px` inside a 1px border at --t-micro mono, and a flex box with a 4px gap;
+// `.wf-mix-n` (the `×N`) sits `margin-left: 3px` after that gap; `.wf-mix`
+// spaces the chips `--ctl-s1` apart. If those rules change, these move with
+// them -- the cost of drifting is a chip folded one step early or a few pixels
+// clipped, never a wrong count, because the `+N` is computed from what was
+// folded rather than measured. (These still said `.wf-chip`'s 5px padding
+// after the #503 swap, so every chip was measured 9px narrow; browser QA N7.)
+const CHIP_CHROME_W = 2 * 8 + 2
+const CHIP_N_GAP = 4 + 3
 const MIX_GAP = 4
 
 /** One named chip, `claude-code ×20`, as drawn. */
@@ -3005,7 +3007,7 @@ export function moreChipW(rest: number): number {
 /**
  * Which chips the row names, and how many it folds into `+N`, in `room` pixels.
  *
- * WHOLE CHIPS OR NONE. `.wf-mix` clips, so a row that simply drew the first two
+ * WHOLE CHIPS, AND NEVER NONE (the last case below). `.wf-mix` clips, so a row that simply drew the first two
  * chips and a `+1` cut them mid-word at 1440 -- `moc`, half a `+` -- and a
  * clipped profile name is a different, shorter name. So the row folds a chip
  * into the count instead of letting the column cut it: the named chips plus
@@ -3021,7 +3023,8 @@ export function foldMix(
 ): { shown: ProfileCount[]; rest: number } {
   const cap = Math.min(MIX_NAMED_MAX, mix.length)
   if (room === null) return { shown: mix.slice(0, cap), rest: mix.length - cap }
-  for (let k = cap; k >= 0; k--) {
+  // Down to ONE named chip, never none: a bare `+N` names no runner at all.
+  for (let k = cap; k >= 1; k--) {
     const shown = mix.slice(0, k)
     const rest = mix.length - k
     const widths = shown.map(mixChipW)
@@ -3029,7 +3032,10 @@ export function foldMix(
     const w = widths.reduce((t, x) => t + x, 0) + Math.max(0, widths.length - 1) * MIX_GAP
     if (w <= room) return { shown, rest }
   }
-  // Not even the count fits. It is still the only true thing to draw: the
-  // column clips it, and every profile is in the row's `title` regardless.
-  return { shown: [], rest: mix.length }
+  // NOT EVEN ONE WHOLE CHIP AND ITS COUNT FIT. The commonest profile is still
+  // named -- the sheet cuts a lone chip with an ellipsis, which says it was
+  // shortened -- and the rest are counted after it. A bare `+1` for a
+  // one-profile workflow (browser QA N7: "claude-code ×3" drew only "+1")
+  // names nothing at all; every profile is in the row's `title` regardless.
+  return { shown: mix.slice(0, 1), rest: mix.length - 1 }
 }

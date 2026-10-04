@@ -107,11 +107,16 @@
    would only fight that. */
 @media (min-width: 900px) {
   table.adm-limits { table-layout: fixed; width: 100%; }
-  table.adm-limits > colgroup > col.adm-col-pool { width: 26%; }
-  table.adm-limits > colgroup > col.adm-col-use { width: 12%; }
-  table.adm-limits > colgroup > col.adm-col-ceiling { width: 26%; }
+  /* IN USE HOLDS ITS HEAD ON ONE LINE (browser QA N19, 2026-10-04): at 12%
+     of the ~660px column beside the open editor it was 79px, and "In use
+     (units)" wrapped. 19% is 125px there, that head and its padding. */
+  table.adm-limits > colgroup > col.adm-col-pool { width: 23%; }
+  table.adm-limits > colgroup > col.adm-col-use { width: 19%; }
+  table.adm-limits > colgroup > col.adm-col-ceiling { width: 24%; }
   table.adm-limits > colgroup > col.adm-col-by { width: 14%; }
-  table.adm-limits > colgroup > col.adm-col-changed { width: 22%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 20%; }
+  /* One line: `.cap-families .ctl-table th` lets Capacity's heads wrap. */
+  .cap-families table.adm-limits > thead th { white-space: nowrap; }
 }
 /* THE CEILING'S SLOT IS A FIXED WIDTH, right-aligned, so the figure lines up
    down the column and `edit` after it starts at the same x in every row. Six

@@ -241,7 +241,7 @@ describe('O1: Needs a look is a row of check cards', () => {
   it('lays the cards at 400px or more each at 1440', async () => {
     const el = await mount()
     const atts = el.querySelector('#ov-needs .ov-atts')!
-    expect(cascade(SHEET, atts, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fill, minmax(min(100%, 400px), 1fr))')
+    expect(cascade(SHEET, atts, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fit, minmax(min(100%, 400px), 1fr))')
   })
 })
 
@@ -359,7 +359,9 @@ describe('O1: Headroom keeps its rows inside the card', () => {
     expect(tiles[0]!.querySelector('b')?.classList.contains('is-zero')).toBe(true)
     expect(text(tiles[1]!.querySelector('b'))).toBe('+6')
     expect(text(tiles[1]!.querySelector('small'))).toBe('binds your tenant')
-    expect([...card.querySelectorAll('.ov-pl')].map((p) => text(p.querySelector('b')))).toEqual(['31/40', '4/4', '14/20'])
+    // The pools are their own full-width card now (browser QA N17).
+    expect(card.querySelectorAll('.ov-pl').length).toBe(0)
+    expect([...el.querySelectorAll('#ov-pools .ov-pl')].map((p) => text(p.querySelector('b')))).toEqual(['31/40', '4/4', '14/20'])
     const acc = text(card.querySelector('.ov-acc'))
     expect(acc).toMatch(/2 of 3 usable/)
     expect(acc).toMatch(/1 needs sign-in/)
@@ -368,8 +370,8 @@ describe('O1: Headroom keeps its rows inside the card', () => {
   it('wraps the tiles to the card rather than overflowing it', async () => {
     const el = await mount()
     const hps = el.querySelector('#ov-headroom .ov-hps')!
-    expect(cascade(SHEET, hps, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fill, minmax(92px, 1fr))')
-    const pl = el.querySelector('#ov-headroom .ov-pl')!
+    expect(cascade(SHEET, hps, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('repeat(auto-fill, minmax(140px, 1fr))')
+    const pl = el.querySelector('#ov-pools .ov-pl')!
     expect(cascade(SHEET, pl, 'grid-template-columns', { width: 1440 }).winner?.value).toBe('minmax(0, 1fr) auto')
   })
 })

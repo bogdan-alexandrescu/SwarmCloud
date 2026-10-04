@@ -18,6 +18,7 @@
  */
 import { agentName, type AgentTab } from './agentlist'
 import type { Result } from './fetch'
+import { Dash } from './components/Chip'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { CONCURRENCY_STATES, TERMINAL_STATES, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
@@ -234,21 +235,52 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
-/** The failed, dead-lettered and cancelled rows of the last 24 hours, newest first. */
+/**
+ * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
+ * first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
+ * 2026-10-04): `updated_at` is bumped by any later write, so a task that ended
+ * days ago with no recorded end was listed and counted as "last 24h". A
+ * terminal task with no recorded end is listed after the dated rows and
+ * counted on its own in the note -- it is not known to be inside the window.
+ */
 export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; note: string } {
-  const when = (t: Task) => new Date(t.completed_at ?? t.updated_at).getTime()
-  const rows = all
-    .filter((t) => t.state === 'FAILED' || t.state === 'DEAD_LETTERED' || t.state === 'CANCELLED')
-    .filter((t) => now - when(t) <= DAY_MS)
-    .sort((a, b) => when(b) - when(a))
-  const n = (s: TaskState) => rows.filter((t) => t.state === s).length
+  const ended = (t: Task): number | null => {
+    if (t.completed_at === null) return null
+    const ms = new Date(t.completed_at).getTime()
+    return Number.isFinite(ms) ? ms : null
+  }
+  const terminal = all.filter((t) => t.state === 'FAILED' || t.state === 'DEAD_LETTERED' || t.state === 'CANCELLED')
+  const dated = terminal
+    .filter((t) => {
+      const ms = ended(t)
+      return ms !== null && now - ms <= DAY_MS
+    })
+    .sort((a, b) => (ended(b) ?? 0) - (ended(a) ?? 0))
+  const undated = terminal.filter((t) => ended(t) === null)
+  const n = (s: TaskState) => dated.filter((t) => t.state === s).length
   const note = [
     'last 24h',
     `${n('FAILED')} failed`,
     `${n('DEAD_LETTERED')} dead-lettered`,
     ...(n('CANCELLED') > 0 ? [`${n('CANCELLED')} cancelled`] : []),
+    ...(undated.length > 0 ? [`${undated.length} with no recorded end`] : []),
   ].join(' · ')
-  return { rows, note }
+  return { rows: [...dated, ...undated], note }
+}
+
+/**
+ * HOW LONG AGO A FAILURE ENDED (browser QA N4, 2026-10-04). The age was
+ * `completed_at ?? updated_at`, and a later write -- a reconciler pass, an
+ * account event -- bumps `updated_at`: tasks that ended ~9h earlier read
+ * "58m ago". `completed_at` is the end every terminal writer records; a task
+ * with none has no recorded end, and that is a dash with its reason, never
+ * the time of the last write.
+ */
+function EndedAgo({ task: t, now }: { task: Task; now: number }) {
+  if (t.completed_at === null || !Number.isFinite(new Date(t.completed_at).getTime())) {
+    return <Dash why={`No end time was recorded for this task; its document was last written ${timeAgo(t.updated_at, now)}, which is not when it ended.`} />
+  }
+  return <>{timeAgo(t.completed_at, now)}</>
 }
 
 /** "Recent failures": mark, agent and why, age, Open (O1). */
@@ -282,8 +314,11 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
           return (
             <tr key={t.id}>
+              {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
+                  overprinted the name in this 28px column. The word is the
+                  mark's title and its accessible name. */}
               <td>
-                <StateMark state={t.state} />
+                <StateMark state={t.state} bare />
               </td>
               <th scope="row">
                 <a className="ov-name" href={href} title={`${agentName(t)} · ${t.id}`}>
@@ -295,7 +330,9 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
                   </span>
                 )}
               </th>
-              <td className="is-num">{timeAgo(t.completed_at ?? t.updated_at, now)}</td>
+              <td className="is-num">
+                <EndedAgo task={t} now={now} />
+              </td>
               <td className="is-num">
                 <a className="ov-open" href={href}>
                   Open

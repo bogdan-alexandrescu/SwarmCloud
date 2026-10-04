@@ -20,7 +20,7 @@ import { blindness, deriveChecks, type Check, type Problem } from './checks'
 import type { TopicId } from './help'
 import { HelpCard, HelpNote, phoneWidth } from './HelpCard'
 import { errorHeading, isPaused, type ApiError, type Result } from './fetch'
-import { Button, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
+import { Button, Dash, NamedMark, Skeleton, StateMark, ToneMark, UsageTrack, WarnMark, type TrackTone } from './components'
 import { Absent, Mark } from './primitives'
 import { PageHead, timeAgo } from './Shell'
 import {
@@ -229,6 +229,14 @@ export function OverviewScreen() {
           <HeadroomBody capacity={capacity} accounts={accounts} />
         </section>
       </div>
+
+      {/* THE POOLS ARE THEIR OWN FULL-WIDTH ROW (browser QA N17, 2026-10-04):
+          under Headroom, a long pool list made that card ~1100px taller than
+          Waiting beside it, and the left column was blank for all of it. */}
+      <section className="ctl-card ov-card ov-pools" id="ov-pools">
+        <CardHead title="Pools" href="/capacity/pools" cta="Pools" />
+        <PoolsBody state={capacity} />
+      </section>
 
       <section className="ctl-card ov-card ov-failures" id="ov-failures">
         <CardHead
@@ -965,12 +973,6 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
           ))}
         </div>
       )}
-      <h3 className="ov-sub2">Pools</h3>
-      <div className="ov-pls">
-        {cap.pools.map((p) => (
-          <PoolRow key={p.name} pool={p} />
-        ))}
-      </div>
       <p className="ov-foot">
         <FootRun>
           <span>{countOf(cap.pools.length, 'pool')}</span>
@@ -983,11 +985,34 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
 }
 
 /**
+ * THE POOLS CARD: each pool's units in use over its ceiling, laid across the
+ * page's width. Headroom's card already says why when the read did not land;
+ * this card says it in one line rather than a second absent card.
+ */
+function PoolsBody({ state }: { state: Result<Capacity> }) {
+  if (state.status === 'loading') return <Reading rows={2} />
+  if (state.status !== 'ok') {
+    return (
+      <p className="ctl-em" title={state.status === 'error' ? `${blindness(state.error).why}` : undefined}>
+        {state.status === 'empty' ? 'No pools exist: the read succeeded and returned nothing.' : '— not read; see Headroom'}
+      </p>
+    )
+  }
+  return (
+    <div className="ov-pls">
+      {state.data.pools.map((p) => (
+        <PoolRow key={p.name} pool={p} />
+      ))}
+    </div>
+  )
+}
+
+/**
  * One runner profile: `+6`, a measured `0` in the warning ink, or an em dash
  * that says which kind of not-measured it is -- never a 0 for a pool nobody
  * read. The line under it is the binding pool, or why there is none.
  */
-function ProfileTile({
+export function ProfileTile({
   name,
   profile,
   byName,
@@ -998,6 +1023,20 @@ function ProfileTile({
   byName: ReadonlyMap<string, Pool>
   tenant: string | undefined
 }) {
+  // A DISABLED PROFILE HAS NO HEADROOM (browser QA N5, 2026-10-04): four
+  // profiles Pools marks disabled read "+39 can start now" here. The platform
+  // refuses them whatever the pools say, so the tile says so and why. Absent
+  // `available` is an older API and means available (types.ts).
+  if (profile.available === false) {
+    const reason = profile.disabled_reason || 'refused by the platform'
+    return (
+      <div className="ov-hp is-off" title={`${name} is disabled: ${reason}. Nothing can start on it, whatever the pools hold.`}>
+        <span className="ov-idc" title={name}>{name}</span>
+        <b className="ov-hp-off">disabled</b>
+        <small title={reason}>{reason}</small>
+      </div>
+    )
+  }
   const h = headroomFor(profile)
   const binding = h.binding !== null ? (byName.get(h.binding) ?? null) : null
   const paused = binding !== null && isPaused(binding)
@@ -1173,6 +1212,7 @@ function RunningCard({
 }) {
   const page = dataOf(tasks)
   const silent = silentByTask(leases)
+  const leased = leasedAtByTask(leases)
   const running =
     page === null
       ? []
@@ -1291,7 +1331,7 @@ function RunningCard({
           </thead>
           <tbody>
             {shown.map((t) => (
-              <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} />
+              <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
             ))}
           </tbody>
         </table>
@@ -1301,7 +1341,7 @@ function RunningCard({
             <table className="ov-tbl">
               <tbody>
                 {running.slice(RUNNING_ROWS).map((t) => (
-                  <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} />
+                  <RunningRow key={t.id} task={t} silentFor={silent.get(t.id)} leasedAt={leased.get(t.id)} />
                 ))}
               </tbody>
             </table>
@@ -1318,7 +1358,7 @@ function RunningCard({
               {agentName(t)}
             </a>
             <em>
-              <Runtime task={t} />
+              <Runtime task={t} leasedAt={leased.get(t.id)} />
             </em>
           </li>
         ))}
@@ -1334,7 +1374,16 @@ function RunningCard({
  * same as on Agents -- never the accent blue, which brand §3 keeps off every
  * state (#503).
  */
-export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number | undefined }) {
+export function RunningRow({
+  task,
+  silentFor,
+  leasedAt,
+}: {
+  task: Task
+  silentFor?: number | undefined
+  /** When the lease this attempt holds was granted (`leasedAtByTask`). */
+  leasedAt?: string | undefined
+}) {
   return (
     <tr>
       <td>
@@ -1367,7 +1416,7 @@ export function RunningRow({ task, silentFor }: { task: Task; silentFor?: number
         </span>
       </th>
       <td className="is-num">
-        <Runtime task={task} />
+        <Runtime task={task} leasedAt={leasedAt} />
       </td>
       <td className="is-num">
         <span className="ov-dash" title={COST_NOT_SERVED}>
@@ -1393,6 +1442,24 @@ function silentByTask(leases: Result<LeasePage>): Map<string, number> {
   }
   return out
 }
+/**
+ * When each task's live lease was granted: the lease at the task's own
+ * generation, else its newest unreleased one. A LEASED or DISPATCHED task has
+ * no `started_at` of this attempt, and its lease's `created_at` is the one
+ * recorded instant it began holding capacity (invariant 3 counts from LEASED).
+ */
+function leasedAtByTask(leases: Result<LeasePage>): Map<string, string> {
+  const out = new Map<string, { at: string; generation: number }>()
+  const page = dataOf(leases)
+  if (page === null) return new Map()
+  for (const l of page.leases) {
+    if (l.released) continue
+    const had = out.get(l.task_id)
+    if (had === undefined || l.generation > had.generation) out.set(l.task_id, { at: l.created_at, generation: l.generation })
+  }
+  return new Map([...out].map(([id, v]) => [id, v.at]))
+}
+
 function startKey(t: Task): number {
   const v = new Date(t.started_at ?? t.created_at).getTime()
   return Number.isFinite(v) ? v : Number.MAX_SAFE_INTEGER
@@ -1408,9 +1475,25 @@ function startKey(t: Task): number {
  * `started_at` is the previous attempt's. Only STARTING and RUNNING rows
  * tick here.
  */
-function Runtime({ task }: { task: Task }) {
+function Runtime({ task, leasedAt }: { task: Task; leasedAt?: string | undefined }) {
   const now = useNow()
-  return <>{elapsed(task, now).text}</>
+  const e = elapsed(task, now)
+  // A ROW BEFORE ITS ATTEMPT STARTS IS TIMED FROM ITS LEASE (browser QA N6,
+  // 2026-10-04): this column repeated "dispatched", the State column's word.
+  // The state stays in the State column; this says how long it has held the
+  // slot, and a dash with why when the lease was not read.
+  if (e.phase === 'waiting' && CONCURRENCY_STATES.has(task.state)) {
+    const at = leasedAt === undefined ? NaN : new Date(leasedAt).getTime()
+    if (!Number.isFinite(at)) {
+      return <Dash why={`No attempt has started yet, and the lease that would date it was not read, so how long it has held capacity is unknown.`} />
+    }
+    return (
+      <span title={`Holding capacity since its lease was granted ${timeAgo(at, now)}; no attempt has started yet.`}>
+        {formatDuration(now - at)}
+      </span>
+    )
+  }
+  return <>{e.text}</>
 }
 
 // ---------------------------------------------------------------------------
