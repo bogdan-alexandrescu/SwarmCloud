@@ -47,3 +47,9 @@ disagrees:
 | wide-workflows.html | **A, extends what is live**: stage rows top to bottom, a stage never wraps; a wide stage's band gains a state-mix bar, failed → running → parked steps as chips, "holds N slots · M waiting hold none", edges bundled one lane per target and lit on hover/select, 1:1 children aligned under their parents; a band count opens the Table filtered to that stage and state. A step skipped by its verdict gate (`result_summary.verdict_gate.agent_ran: false`) gets its own look |
 
 The live app was audited against the batch 1-2 picks on 2026-10-02: #503.
+
+## Agent Details tab, v3 (picked 2026-10-04)
+
+| Page | Pick |
+|---|---|
+| agent-details-v3.html | **A as drawn**: a 2-line header (state pill, title, 'elapsed · attempt n of N', Copy link / Stop / close; one sans meta line with profile · class · workflow link · account, the task id behind copy); a **Now** card (current phase, last log line, latest checkpoint, Open logs); ONE stat strip (Elapsed · Attempt · Peak memory with % of limit · CPU peak/limit · Cost, unknown values small and muted 'at exit'); Progress (compact phases + last 5 events) and Resources (thin bars with % of limit, charts behind 'details') side by side from a 640px pane; Input folded (3-line prompt preview, metadata behind a disclosure); Dispatch as plain-language chips in the header meta; one '?' per card instead of the help-link block; an Outcome card (finished) or a failure card (failed) leads; tokens under Cost; checkpoints in the Now card; lease/attempt ids on the Attempts tab; mono only for ids and values; ONE scroll container. Replaces the Details layout of agent-detail-2.html. Logs stay a full-height tab (owner, 2026-10-04). |
