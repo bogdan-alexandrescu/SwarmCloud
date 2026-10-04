@@ -161,6 +161,14 @@ describe('D12: the step table of an issue run', () => {
   it('stacks its rows below its minimum width, with no second border, and keeps the table at 1100', async () => {
     const wrap = await steps()
     const row = wrap.querySelector('tbody tr[data-step]')!
+    // A container query matches only DESCENDANTS of its container, and the
+    // resolver below applies `env.container` to any element. So the rules it
+    // finds for the table's own box (its border) are real in a browser only if
+    // the container is an ancestor of that box, never the box itself.
+    expect(painted(wrap, ['container', 'container-name', 'container-type'], WIDE), 'the table is its own container').toBeNull()
+    const box = wrap.parentElement!
+    expect(box.closest('.wf-card'), 'the container box is not inside the card').not.toBeNull()
+    expect(painted(box, 'container', WIDE)).toMatch(/^wf-steps\s*\/\s*inline-size$/)
     for (const width of [1440, 390]) {
       const narrow: CascadeEnv = { width, container: 640 }
       expect(painted(row, 'display', narrow), `at ${width}`).toBe('flex')

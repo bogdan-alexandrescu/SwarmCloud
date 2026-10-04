@@ -160,8 +160,10 @@
    width the rows STACK (the container query below) instead of scrolling.
    The px columns sum to 940, so Why keeps 60px at the 1000px minimum and is
    cut there with its whole reason in its title. */
-/* The table's box is the container its stacked form asks about, at any width. */
-.wf-card .ctl-table.wf-table { container: wf-steps / inline-size; }
+/* The box AROUND the table is the container its stacked form asks about, at
+   any width. Not the table's own box: a container query matches descendants
+   only, so the border and overflow below would never apply to it (D12). */
+.wf-card .wf-table-box { container: wf-steps / inline-size; }
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
   .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; font-size: var(--t-meta); }

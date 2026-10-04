@@ -771,7 +771,10 @@ export function WorkflowTable({
     {/* `is-scroll` (CH-13): ten columns compared across rows is a DATA table,
         so below 900px it scrolls with the step column held in view rather
         than stacking (design-system.md §7.3). `has-more` is the right-edge
-        fade while columns are off that edge (#109). */}
+        fade while columns are off that edge (#109). The box around it is the
+        size container its stacked form asks about: a container query matches
+        only descendants, so the table's own border could not answer it (D12). */}
+    <div className="wf-table-box">
     <div ref={more.ref} className={`ctl-table wf-table is-scroll${more.on ? ' has-more' : ''}${columns.length < COLUMNS.length ? ' no-why' : ''}`}>
       <table>
         <thead>
@@ -871,6 +874,7 @@ export function WorkflowTable({
           ))}
         </tbody>
       </table>
+    </div>
     </div>
     </>
   )
