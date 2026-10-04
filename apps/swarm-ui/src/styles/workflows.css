@@ -121,6 +121,10 @@
 }
 .wf-inspect-acts { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
 .wf-scrub-more { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+/* ◀ position ▶ as one unit that never wraps (browser QA D30); the shape after
+   it shrinks and is cut, whole in its title. */
+.wf-scrub > .wf-scrub-nav { display: inline-flex; align-items: center; gap: var(--ctl-s2); flex: none; white-space: nowrap; }
+.wf-scrub > .wf-scrub-shape { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wf-scrub-strip > li > .wf-mk { display: inline-flex; }
 
 /* THE STEP TABLE IS A FIXED TABLE WITH PX COLUMNS (walkthrough A, owner

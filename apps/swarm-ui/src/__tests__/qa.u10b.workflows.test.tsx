@@ -20,12 +20,16 @@
  *        drawn; Ran and Cost fit what they hold; below the table's minimum
  *        width the rows stack.
  *
+ *   D30  The step card's "same step" row: the ▶ wrapped onto a line of its own
+ *        because the shape sat between the position and the arrow. ◀ position
+ *        ▶ are one unit that never wraps; the shape follows, cut, with its title.
+ *
  * MUTATIONS: put State, Steps done or Duration back to 9%, the ellipsis back
  * on them, drop a title, let a step name wrap, draw Why when no row has one,
  * put Ran back to 64px, or drop the stacked container rule -- each turns a
  * case red.
  */
-import { render, waitFor } from '@testing-library/react'
+import { fireEvent, render, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { App } from '../App'
@@ -167,5 +171,27 @@ describe('D12: the step table of an issue run', () => {
       expect(ran.getAttribute('data-label')).toBe('Ran')
     }
     expect(painted(row, 'display', { width: 1440, container: 1100 }) ?? 'table-row').not.toBe('flex')
+  })
+})
+
+describe('D30: the same-step scrubber keeps its arrows with the position', () => {
+  it('holds ◀ position ▶ in one unit that never wraps, and cuts the shape after it', async () => {
+    const wrap = await steps()
+    fireEvent.click(wrap.querySelector<HTMLButtonElement>('tbody tr[data-step] .wf-pick')!)
+    const row = await waitFor(() => {
+      const r = document.querySelector<HTMLElement>('[data-scrub="workflow"]')
+      expect(r).not.toBeNull()
+      return r!
+    }, WAIT)
+    const nav = row.querySelector<HTMLElement>(':scope > .wf-scrub-nav')!
+    expect(nav, 'the arrows and the position are not one unit').not.toBeNull()
+    expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['◀', '▶'])
+    expect(nav.querySelector('.wf-scrub-pos')).not.toBeNull()
+    expect(painted(nav, 'white-space', WIDE)).toBe('nowrap')
+    expect(painted(nav, 'flex', WIDE)).toBe('none')
+    const shape = row.querySelector<HTMLElement>(':scope > .wf-scrub-shape')!
+    expect(nav.compareDocumentPosition(shape) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(painted(shape, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(shape.getAttribute('title')).toBeTruthy()
   })
 })

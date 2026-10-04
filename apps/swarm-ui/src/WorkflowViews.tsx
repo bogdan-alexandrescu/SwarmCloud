@@ -1294,24 +1294,30 @@ export function StepInspector({
         onKeyDown={scrubKeys(hasNewer ? () => onSibling(-1) : null, hasOlder ? () => onSibling(1) : null)}
       >
         <span className="ctl-eyebrow wf-scrub-key">same step</span>
-        <ScrubButton
-          buttonRef={newerRef}
-          label="Same step, newer workflow"
-          glyph="◀"
-          onPress={hasNewer ? () => onSibling(-1) : null}
-        />
-        <span className="wf-scrub-pos">
-          workflow {siblingIndex + 1} of {siblings.length}
+        {/* ◀ POSITION ▶ ARE ONE UNIT THAT NEVER WRAPS (browser QA D30,
+            2026-10-04): the shape sat between the position and ▶, and a long
+            shape pushed the arrow onto a line of its own. The shape follows
+            the unit and is cut, whole in its title. */}
+        <span className="wf-scrub-nav">
+          <ScrubButton
+            buttonRef={newerRef}
+            label="Same step, newer workflow"
+            glyph="◀"
+            onPress={hasNewer ? () => onSibling(-1) : null}
+          />
+          <span className="wf-scrub-pos">
+            workflow {siblingIndex + 1} of {siblings.length}
+          </span>
+          <ScrubButton
+            buttonRef={olderRef}
+            label="Same step, older workflow"
+            glyph="▶"
+            onPress={hasOlder ? () => onSibling(1) : null}
+          />
         </span>
         <span className="wf-scrub-shape" title={`Only workflows of this shape are compared. ${shape.label}`}>
           {shape.text} · {shape.steps} step{shape.steps === 1 ? '' : 's'}
         </span>
-        <ScrubButton
-          buttonRef={olderRef}
-          label="Same step, older workflow"
-          glyph="▶"
-          onPress={hasOlder ? () => onSibling(1) : null}
-        />
         {/* THE STRIP: every occurrence, in scrub order, in its own state's
             silhouette, with this one ringed. Decoration for a sighted reader
             -- the position above is the fact, and each workflow's state is one
