@@ -421,6 +421,14 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_account_state",
         "sc.cmd_account_remove",
         "sc.cmd_account_add",
+        # #454: creating an issue run submits a planner task, and moving its
+        # plan submits a workflow or ends the run. They write to the cluster,
+        # so no skill may be granted them, and a grant for `sc runs` or
+        # `sc plan show` must not reach them.
+        "sc.cmd_run",
+        "sc.cmd_plan_approve",
+        "sc.cmd_plan_edit",
+        "sc.cmd_plan_reject",
     }
 )
 

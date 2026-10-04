@@ -13,6 +13,13 @@ API's browser sign-in. The API served those routes and nothing reached them.
 They are a separate subcommand, never a view, held out of every skill's grant
 by `test_plugin_commands.py`, and `remove` takes the label typed back.
 
+THE SECOND IS THE ISSUE RUN (#454): `sc run --issue owner/repo#N` creates a
+run -- one planner task -- and `sc plan approve|edit|reject <run>` moves its
+plan. A plan holds no capacity until it is approved, and an approval sends the
+digest of the plan `sc` PRINTED, after `approve` is typed back. Held out of
+every grant exactly as the account verbs are; `sc runs`, `sc run show` and
+`sc plan show` are views.
+
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
 half: which deployment this machine talks to (config.py) and the developer's
@@ -1785,6 +1792,211 @@ def cmd_context_remove(_client, args, out) -> int:
 # --------------------------------------------------------------------------
 
 
+# --------------------------------------------------------------------------
+# Issue runs (#454): `sc run --issue`, `sc runs`, `sc run show`, `sc plan ...`
+# --------------------------------------------------------------------------
+#
+# THE SECOND PART OF `sc` THAT WRITES, after `sc account ...`: `sc run --issue`
+# creates a run (one planner task), and `sc plan approve|edit|reject` moves
+# its plan. Like the account verbs they are held out of every skill's grant by
+# `test_plugin_commands.py`; `sc runs`, `sc run show` and `sc plan show` read.
+#
+# APPROVAL SENDS THE DIGEST OF THE PLAN IT PRINTED. `sc plan approve` reads the
+# run, prints the plan and its digest, and asks for `approve` typed back; the
+# digest sent is the one printed, so an edit in between is refused with
+# `plan_changed` rather than approved unseen. `--digest` skips the prompt for
+# a plan already shown (by `sc plan show`), and is then the evidence itself.
+
+
+def _run_style(args, out) -> Style:
+    return style_for(out, width=args.width, color=args.color, ascii_only=args.ascii)
+
+
+def _print_run(client: SwarmClient, run: dict[str, Any], args, out, *, plan: bool) -> None:
+    from . import runs
+
+    if args.json:
+        out.write(json.dumps(runs.summary(client, run), indent=2, default=str) + "\n")
+        return
+    style = _run_style(args, out)
+    lines = runs.run_lines(run, style)
+    if plan:
+        lines += [""] + runs.plan_lines(run, style)
+    report, failure = _attempt(lambda: runs.step_report(client, run))
+    if failure is not None:
+        lines += ["", f"  steps of {runs.active_workflow_id(run)} could not be read: {failure}"]
+    elif report:
+        lines += [""] + runs.step_lines(report, style)
+    _emit(lines, out)
+
+
+def _run_exit(run: dict[str, Any]) -> int:
+    """0 unless the run ENDED some way other than DONE."""
+    if run.get("terminal") and run.get("state") != "DONE":
+        return EXIT_FAIL
+    return EXIT_OK
+
+
+def cmd_run(client: SwarmClient, args, out) -> int:
+    """`sc run --issue owner/repo#N`: plan the issue, and follow it with `--follow`."""
+    from . import runs
+
+    if not args.issue:
+        raise SwarmError(
+            f"sc run needs --issue owner/repo#N (or the issue's URL); "
+            f"`{terminal_command('sc run show <run>')}` reads one run. Nothing was created"
+        )
+    if args.auto_merge:
+        # Sent anyway: the API is the authority, and it says why it refuses.
+        sys.stderr.write(
+            "sc: --auto-merge is visible but disabled until #295; the API decides, and "
+            "refuses it today\n"
+        )
+    run = client.create_run(
+        issue=args.issue,
+        plan_approval=args.plan_approval,
+        auto_merge=args.auto_merge,
+        fix_rounds=args.fix_rounds,
+    )
+    if args.follow and not args.json:
+        style = _run_style(args, out)
+        out.write(f"created run {run.get('id')} for {args.issue}: one planner task, no capacity "
+                  "held by the plan until it is approved\n")
+        run = runs.follow(client, str(run["id"]), out, style, interval=args.interval)
+        _emit([""] + runs.run_lines(run, style), out)
+        return _run_exit(run)
+    _print_run(client, run, args, out, plan=False)
+    return EXIT_OK
+
+
+def cmd_run_show(client: SwarmClient, args, out) -> int:
+    run = client.run(args.run_id)
+    _print_run(client, run, args, out, plan=True)
+    return _run_exit(run)
+
+
+def cmd_runs(client: SwarmClient, args, out) -> int:
+    from . import runs
+
+    listing = client.runs(limit=args.limit, page_token=args.page_token)
+    if args.json:
+        out.write(json.dumps(listing, indent=2, default=str) + "\n")
+        return EXIT_OK
+    _emit(runs.runs_lines(listing, _run_style(args, out)), out)
+    return EXIT_OK
+
+
+def cmd_plan_show(client: SwarmClient, args, out) -> int:
+    from . import runs
+
+    run = client.run(args.run_id)
+    if args.json:
+        out.write(json.dumps({"run_id": run.get("id"), "state": run.get("state"),
+                              "plan": run.get("plan"), "plan_digest": run.get("plan_digest")},
+                             indent=2, default=str) + "\n")
+        return EXIT_OK
+    style = _run_style(args, out)
+    lines = runs.plan_lines(run, style)
+    if runs.waits_for_a_person(run):
+        approve = f"sc plan approve {run.get('id')} --digest {run.get('plan_digest')}"
+        lines.append(f"  approve this plan: {terminal_command(approve)}")
+    _emit(lines, out)
+    return EXIT_OK
+
+
+def _shown_digest(client: SwarmClient, args, out, verb: str) -> str:
+    """The digest of the plan this command PRINTS, after it is typed `verb` back.
+
+    With `--digest`, that digest, unprinted: the plan was shown already. The
+    prompt goes to stderr and SWARM_ASSUME_YES is ignored, as for every
+    typed confirmation here; no terminal to type at means nothing is sent.
+    """
+    from . import runs
+
+    if args.digest:
+        return args.digest
+    run = client.run(args.run_id)
+    if run.get("state") != "PLANNED" or not run.get("plan_digest"):
+        raise SwarmError(
+            f"run {args.run_id} is {run.get('state')}; only a PLANNED run's plan can be "
+            f"{verb}ed. Nothing was sent"
+        )
+    _emit(runs.plan_lines(run, _run_style(args, out)), out)
+    out.flush()
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write(f"sc: SWARM_ASSUME_YES is ignored here; a plan is {verb}ed by typing\n")
+    typed = _ask(f"{verb} plan {run['plan_digest']} of run {args.run_id}? Type {verb!r} to confirm: ")
+    if typed.strip() != verb:
+        raise SwarmError(f"{verb!r} was not typed; nothing was sent")
+    return str(run["plan_digest"])
+
+
+def cmd_plan_approve(client: SwarmClient, args, out) -> int:
+    digest = _shown_digest(client, args, out, "approve")
+    run = client.approve_plan(args.run_id, plan_digest=digest)
+    _print_run(client, run, args, out, plan=False)
+    return _run_exit(run)
+
+
+def cmd_plan_reject(client: SwarmClient, args, out) -> int:
+    digest = _shown_digest(client, args, out, "reject")
+    run = client.reject_plan(args.run_id, plan_digest=digest, reason=args.reason)
+    _print_run(client, run, args, out, plan=False)
+    return EXIT_OK
+
+
+def _edit_in_editor(plan: dict[str, Any]) -> str:
+    """The plan, as the developer left it in $VISUAL or $EDITOR."""
+    import shlex
+    import subprocess
+    import tempfile
+
+    editor = os.environ.get("VISUAL", "").strip() or os.environ.get("EDITOR", "").strip()
+    if not editor:
+        raise SwarmError("set $EDITOR (or $VISUAL), or pass --file plan.json; nothing was sent")
+    with tempfile.TemporaryDirectory(prefix="sc-plan-") as scratch:
+        path = os.path.join(scratch, "plan.json")
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(plan, handle, indent=2, ensure_ascii=False)
+            handle.write("\n")
+        finished = subprocess.run([*shlex.split(editor), path], check=False)
+        if finished.returncode != 0:
+            raise SwarmError(f"the editor exited {finished.returncode}; nothing was sent")
+        with open(path, encoding="utf-8") as handle:
+            return handle.read()
+
+
+def cmd_plan_edit(client: SwarmClient, args, out) -> int:
+    """Replace a PLANNED run's plan, sending the digest of the plan that was OPENED."""
+    run = client.run(args.run_id)
+    current = run.get("plan")
+    if run.get("state") != "PLANNED" or not isinstance(current, dict):
+        raise SwarmError(
+            f"run {args.run_id} is {run.get('state')}; only a PLANNED run's plan can be "
+            "edited. Nothing was sent"
+        )
+    opened = args.digest or str(run.get("plan_digest") or "")
+    if args.file == "-":
+        text = sys.stdin.read()
+    elif args.file:
+        with open(args.file, encoding="utf-8") as handle:
+            text = handle.read()
+    else:
+        text = _edit_in_editor(current)
+    try:
+        plan = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SwarmError(f"the edited plan is not JSON ({exc}); nothing was sent") from exc
+    if not isinstance(plan, dict):
+        raise SwarmError("a plan is a JSON object with a summary and steps; nothing was sent")
+    if plan == current:
+        out.write(f"the plan of run {args.run_id} is unchanged; nothing was sent\n")
+        return EXIT_OK
+    run = client.edit_plan(args.run_id, plan_digest=opened, plan=plan)
+    _print_run(client, run, args, out, plan=True)
+    return EXIT_OK
+
+
 def _common(parser: argparse.ArgumentParser, *, root: bool) -> None:
     """The same four flags, before OR after the subcommand.
 
@@ -1949,6 +2161,62 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(aa, root=False)
     aa.set_defaults(func=cmd_account_add)
+
+    # -- issue runs (#454): `run` and `plan` WRITE, `runs` and the shows read
+    rn = sub.add_parser(
+        "run", help="plan a GitHub issue and run the plan once approved: run --issue owner/repo#N"
+    )
+    rn.add_argument("--issue", help="owner/repo#N, or the issue's URL")
+    rn.add_argument(
+        "--plan", dest="plan_approval", choices=("required", "auto"), default="required",
+        help="required (default): the plan waits for your approval; auto: approved when read",
+    )
+    rn.add_argument(
+        "--auto-merge", action="store_true",
+        help="end in a merge -- visible but disabled: the API refuses it until #295",
+    )
+    rn.add_argument("--fix-rounds", type=int, default=None, metavar="N",
+                    help="CI fix rounds after the pull request opens (the API's default is 3)")
+    rn.add_argument("--follow", action="store_true",
+                    help="keep reading the run, one row per step, until it ends or waits for you")
+    rn.add_argument("--interval", type=float, default=10.0, help="seconds between reads with --follow")
+    _common(rn, root=False)
+    rn.set_defaults(func=cmd_run)
+    rn_sub = rn.add_subparsers(dest="run_command")
+    rs = rn_sub.add_parser("show", help="one run: state, plan, pull request, CI, its steps")
+    rs.add_argument("run_id")
+    _common(rs, root=False)
+    rs.set_defaults(func=cmd_run_show)
+
+    rl = sub.add_parser("runs", help="your tenant's issue runs, newest first")
+    rl.add_argument("--limit", type=int, default=None)
+    rl.add_argument("--page-token", default=None)
+    _common(rl, root=False)
+    rl.set_defaults(func=cmd_runs)
+
+    pl = sub.add_parser("plan", help="a run's plan: show, approve, edit, reject")
+    pl_sub = pl.add_subparsers(dest="plan_command", required=True)
+    ps = pl_sub.add_parser("show", help="the plan and the digest an approval must send")
+    ps.add_argument("run_id")
+    _common(ps, root=False)
+    ps.set_defaults(func=cmd_plan_show)
+    pa = pl_sub.add_parser("approve", help="approve the plan printed (type `approve`), or --digest")
+    pa.add_argument("run_id")
+    pa.add_argument("--digest", help="the plan_digest you were shown; skips the prompt")
+    _common(pa, root=False)
+    pa.set_defaults(func=cmd_plan_approve)
+    pe = pl_sub.add_parser("edit", help="replace the plan: --file plan.json, or $EDITOR")
+    pe.add_argument("run_id")
+    pe.add_argument("--file", help="the whole replacement plan as JSON; - reads stdin")
+    pe.add_argument("--digest", help="the digest of the plan you edited (default: the one read now)")
+    _common(pe, root=False)
+    pe.set_defaults(func=cmd_plan_edit)
+    pr = pl_sub.add_parser("reject", help="reject the plan printed (type `reject`), or --digest")
+    pr.add_argument("run_id")
+    pr.add_argument("--reason", required=True, help="recorded on the run and the issue")
+    pr.add_argument("--digest", help="the plan_digest you were shown; skips the prompt")
+    _common(pr, root=False)
+    pr.set_defaults(func=cmd_plan_reject)
 
     cx = sub.add_parser(
         "context", help="the deployments this machine knows: add, use, list, remove"

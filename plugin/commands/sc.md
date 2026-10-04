@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|task <id>]"
+argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -10,6 +10,9 @@ allowed-tools:
   - Bash(uv run sc task:*)
   - Bash(uv run sc trouble:*)
   - Bash(uv run sc whoami:*)
+  - Bash(uv run sc runs:*)
+  - Bash(uv run sc run show:*)
+  - Bash(uv run sc plan show:*)
   - Bash(uv run swarm doctor:*)
 ---
 
@@ -20,7 +23,16 @@ uv run sc $ARGUMENTS
 ```
 
 With no arguments that is the overview. Other views: `accounts`, `agents`,
-`capacity`, `task <id>`, `trouble`, `whoami`.
+`capacity`, `task <id>`, `trouble`, `whoami`, and for issue runs (#454)
+`runs`, `run show <run>` and `plan show <run>`.
+
+If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
+**not** run them here: they create an issue run or act on its plan, so they
+are not views. Use the `sc` skill's `run --issue` and `plan` verbs, which say
+what they submit first and approve only the plan digest the operator was
+shown, or tell the operator the command (`uv run sc plan approve <run>` prints
+the plan and asks them to type `approve`). `--auto-merge` is visible but
+disabled: the API refuses it until #295.
 
 If the arguments are `login`, `logout` or `context ...`, do **not** run them.
 They are not views: they change the operator's own sign-in, or which cluster

@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does — the only verb that writes. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, or to run a spec.
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON>]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run>]"
 arguments:
   - verb
   - target
@@ -17,6 +17,9 @@ allowed-tools:
   - Bash(uv run sc config:*)
   - Bash(uv run sc debug:*)
   - Bash(uv run sc workflows:*)
+  - Bash(uv run sc runs:*)
+  - Bash(uv run sc run show:*)
+  - Bash(uv run sc plan show:*)
   - Bash(sc)
   - Bash(sc overview:*)
   - Bash(sc accounts:*)
@@ -28,13 +31,18 @@ allowed-tools:
   - Bash(sc config:*)
   - Bash(sc debug:*)
   - Bash(sc workflows:*)
+  - Bash(sc runs:*)
+  - Bash(sc run show:*)
+  - Bash(sc plan show:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
 ---
 
 # sc — SwarmCloud cluster state, and the front door
 
-This skill reads only, except `run`, which submits and says so first.
+This skill reads only, except `run`, which submits and says so first, and
+`plan approve|edit|reject`, which act on an issue run's plan only when the
+developer asks for exactly that.
 
 ## The verb
 
@@ -50,6 +58,10 @@ one action — never a second one the developer did not ask for:
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
 | `attach --all` | live rows for every running workflow of your tenant (at most 10) | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
+| `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
+| `runs` | lists your tenant's issue runs | no |
+| `plan show <run>` | shows a run's plan and its digest | no |
+| `plan approve\|edit\|reject <run>` | acts on that plan, with the digest the developer was shown | **yes** |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
 
 Anything else: say which verbs exist and run nothing. `/sc:swarmcloud` keeps
@@ -124,6 +136,67 @@ The one verb that writes: it spends the shared pool, a step at a time.
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
+
+### `run --issue owner/repo#N`
+
+Plans a GitHub issue and, once the plan is approved, runs it (#454). A planner
+task reads the issue and the repository's open issues and pull requests and
+writes a plan; the approved plan compiles into one workflow that opens a pull
+request, whose CI the platform reads and fixes for up to `--fix-rounds` rounds
+(3 by default). The issue gets a plan comment and one status comment, kept up
+to date by the platform with the tenant's own forge credential — never one
+this session supplies.
+
+1. Say, before anything is submitted: "about to plan SwarmCloud issue run for
+   `<owner/repo#N>`: one planner task, no capacity held by the plan until it is
+   approved". Then call `swarm_run_issue` with `issue`, and `plan_approval:
+   "auto"`, `auto_merge: true` or `fix_rounds` only when the developer gave
+   `--plan auto`, `--auto-merge` or `--fix-rounds`. The terminal equivalent,
+   `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
+   (this skill is not granted it); it prints one row per step as it moves.
+2. `--auto-merge` is visible but disabled: the API refuses it until #295 and
+   nothing is created. Report that refusal plainly, in its own words, and offer
+   the same run without `--auto-merge`.
+3. Report the run's `id` and `state`. A `required` run (the default) stops at
+   `PLANNED`, holding no capacity, until the developer approves — go on to
+   `plan show`. Once the run is `RUNNING` (or `FIXING`, a CI fix round), its
+   answer carries `attach_with`: run `/sc attach <workflow_id>` for live rows.
+
+### `runs`
+
+ONE read: call `swarm_runs` (in a checkout, `uv run sc runs`) and report each
+run's id, issue, state and pull request as served. Never poll.
+
+### `plan show <run>`
+
+ONE read: call `swarm_run` with `run_id` (in a checkout,
+`uv run sc plan show <run>`), and show the developer the WHOLE plan — summary,
+requirements, overlaps with work in flight, every step's title, files, tests,
+estimate and prompt — and its `plan_digest`. The prompts are what will run with
+the tenant's forge token; they are what is being approved.
+
+### `plan approve|edit|reject <run>`
+
+THE DIGEST IS THE APPROVAL. Approve only a plan the developer was SHOWN, with
+the `plan_digest` of that showing: if the plan was not shown in this
+conversation, do `plan show` first and wait for the developer to say approve.
+Never read the run and approve in one go.
+
+- `approve`: `swarm_plan_approve` with `run_id` and the shown `plan_digest`.
+  The workflow is submitted; report its `attach_with`.
+- `edit`: build the whole replacement plan from the developer's instructions,
+  show it, then `swarm_plan_edit` with `run_id`, the `plan_digest` of the plan
+  that was edited, and `plan`. The run stays `PLANNED` with a new digest, which
+  must be shown and approved in its turn.
+- `reject`: `swarm_plan_reject` with `run_id`, the developer's `reason` and the
+  shown `plan_digest`. The run ends `REJECTED`.
+
+A `plan_changed` refusal means the plan is no longer the one shown, and
+nothing was done: show the new plan and ask again — never resend with the new
+digest unseen. `invalid_plan` means the edit was refused and the run kept its
+plan. Report every error verbatim. In a terminal the developer runs
+`sc plan approve <run>` themselves; it prints the plan and asks them to type
+`approve`. This skill is not granted those commands.
 
 ## The views
 

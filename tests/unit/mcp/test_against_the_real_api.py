@@ -238,6 +238,14 @@ def test_the_route_scan_actually_found_the_calls():
         ("POST", "/v1/workflows"),
         ("GET", "/v1/workflows/{workflow_id}"),
         ("POST", "/v1/workflows/{workflow_id}/cancel"),
+        # The issue-run routes (#454), spoken by `sc run` / `sc plan` and the
+        # run tools: the seam test above checks each against the real router.
+        ("POST", "/v1/runs"),
+        ("GET", "/v1/runs"),
+        ("GET", "/v1/runs/{run_id}"),
+        ("POST", "/v1/runs/{run_id}/plan:approve"),
+        ("POST", "/v1/runs/{run_id}/plan:edit"),
+        ("POST", "/v1/runs/{run_id}/plan:reject"),
     ):
         assert expected in found, f"{expected} was not scanned out of the source"
 
