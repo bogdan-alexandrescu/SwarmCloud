@@ -55,9 +55,14 @@ class RecordingReleaser:
 
 
 class FenceLosesItsRace(ControlStore):
-    """`invalidate_generation` refused inside its transaction (#372)."""
+    """The fence refused inside its transaction (#372).
 
-    def invalidate_generation(self, *args, **kwargs):  # noqa: ANN002, ANN003
+    The fence's decision, not `invalidate_generation`: since #560 a repair
+    fences in the same transaction as it releases (`fence_release_repair`),
+    and both paths make the fence through this one judgement.
+    """
+
+    def _fence_decision(self, *args, **kwargs):  # noqa: ANN002, ANN003
         return None
 
 

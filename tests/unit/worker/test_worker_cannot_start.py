@@ -268,7 +268,7 @@ def test_an_execution_that_exited_78_fails_its_task_at_once_with_the_workers_cau
 def test_the_generation_is_fenced_before_the_lease_is_released_and_every_pool_comes_back(
     db, reconciler_config
 ):
-    """Invariants 2 and 5, the same order every other repair keeps."""
+    """Invariants 2 and 5, committed together, as every other repair does."""
     seed_an_attempt_that_never_started(db)
 
     reconcile(
@@ -281,7 +281,10 @@ def test_the_generation_is_fenced_before_the_lease_is_released_and_every_pool_co
     fenced = _write_index(db, f"tasks/{TASK}", "current_generation")
     released = _write_index(db, f"leases/{LEASE}", "released_at")
     failed = _write_index(db, f"tasks/{TASK}", "state")
-    assert fenced < released < failed, (fenced, released, failed)
+    # One transaction since #560: the frozen release writes first (it must
+    # read the pools before anything is written), and the fence and the
+    # new state are the one task write that commits with it.
+    assert released < fenced == failed, (fenced, released, failed)
     assert db.doc(f"tasks/{TASK}")["current_generation"] == GENERATION + 1
     lease = db.doc(f"leases/{LEASE}")
     assert lease["released_at"] is not None

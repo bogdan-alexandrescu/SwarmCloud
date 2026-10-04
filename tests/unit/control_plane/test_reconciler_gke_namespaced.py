@@ -308,6 +308,14 @@ def seed_tenant(db: FakeFirestore, tenant: str, *, record_namespace: bool = Fals
     db.docs[f"tenants/{tenant}"] = doc
 
 
+#: A never-started lease this old is still inside the reconciler's
+#: `never_started_release_seconds` (20 minutes), so only proof of absence may
+#: release it. The tests that pin "an unreadable namespace holds" use it; past
+#: the wait, a worker that never started is its own evidence (#560), which
+#: test_reconciler_fence_and_repair_are_one.py pins.
+INSIDE_THE_WAIT = 15
+
+
 def seed_stranded(
     db: FakeFirestore,
     task_id: str,
@@ -533,7 +541,9 @@ def test_one_unreadable_namespace_does_not_hold_another_tenants_lease():
     seed_tenant(db, ENG, record_namespace=True)
     seed_tenant(db, "u-bogdan", record_namespace=True)
     readable = seed_stranded(db, "task_64a451a63efb48438265", tenant=ENG)
-    blind = seed_stranded(db, "task_719225c0557148c793d9", tenant="u-bogdan")
+    blind = seed_stranded(
+        db, "task_719225c0557148c793d9", tenant="u-bogdan", minutes_ago=INSIDE_THE_WAIT
+    )
     batch = RbacBatchApi(listable={ENG_NS}, gettable={ENG_NS})
     rec, _ = reconciler(db, gke(batch))
 
@@ -564,7 +574,7 @@ def test_nothing_is_released_when_the_attempts_own_namespace_is_unreadable():
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
     seed_tenant(db, "smoke", record_namespace=True)
-    ids = seed_stranded(db, "task_30074d78ced8432b9a3b")
+    ids = seed_stranded(db, "task_30074d78ced8432b9a3b", minutes_ago=INSIDE_THE_WAIT)
     batch = RbacBatchApi(listable={f"{NS}smoke"}, gettable={f"{NS}smoke"})
     before = pool_actives(db)
     rec, _ = reconciler(db, gke(batch))
@@ -815,7 +825,7 @@ def test_a_404_by_name_confirms_absence_and_releases():
 def test_a_403_by_name_proves_nothing_and_holds_the_lease():
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
-    ids = seed_stranded(db, "task_2a417cb24edb4d2cb59e")
+    ids = seed_stranded(db, "task_2a417cb24edb4d2cb59e", minutes_ago=INSIDE_THE_WAIT)
     batch = RbacBatchApi(listable=set(), gettable=set())
     rec, _ = reconciler(db, gke(batch))
 
@@ -830,7 +840,7 @@ def test_a_403_by_name_proves_nothing_and_holds_the_lease():
 
 
 def test_an_active_job_found_by_name_is_killed_before_its_lease_is_released():
-    """Fence, terminate, release -- in that order -- through a backend whose list failed.
+    """Terminate, then fence and release together, through a backend whose list failed.
 
     Also the proof that the backend HANDLE outlives the backend's readability:
     the kill has to be sent to a backend this pass could not list.
@@ -852,9 +862,11 @@ def test_an_active_job_found_by_name_is_killed_before_its_lease_is_released():
     report = rec.run_once()
 
     assert batch.deleted == [f"{ENG_NS}/{job.metadata.name}"], batch.calls
-    assert at_delete == {"generation": 2, "released_at": None}, (
-        "the generation must be fenced before the kill and the lease released only after it"
+    assert at_delete == {"generation": 1, "released_at": None}, (
+        "nothing may be fenced or released before the kill is confirmed: the fence "
+        "commits with the release, after it (#560)"
     )
+    assert db.docs[f"tasks/{ids['task']}"]["current_generation"] == 2
     assert db.docs[f"leases/{ids['lease']}"]["released_at"] is not None
     killed = [o for o in report.outcomes if o.terminated]
     assert [o.kind for o in killed] == ["dead_worker"]
@@ -1017,7 +1029,7 @@ def test_a_blind_pass_counts_what_it_held_back_instead_of_reporting_zero():
     """
     db = FakeFirestore()
     seed_tenant(db, ENG, record_namespace=True)
-    ids = seed_stranded(db, "task_c388c25e50c5421f840d")
+    ids = seed_stranded(db, "task_c388c25e50c5421f840d", minutes_ago=INSIDE_THE_WAIT)
     rec, stream = reconciler(db, gke(RbacBatchApi(listable=set(), gettable=set())))
 
     report = rec.run_once()

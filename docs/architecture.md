@@ -163,16 +163,46 @@ believes with what the backends report and repairs the difference in the one
 order that cannot cause duplicate execution:
 
 ```
-1. invalidate the generation   (the running worker now fences itself)
-2. terminate the execution     (and confirm the backend accepted it)
-3. release the slot            (only if 2 succeeded)
-4. repair the task state       (READY, or FAILED if attempts are spent)
+1. terminate the execution     (and confirm the backend accepted it)
+2. in ONE Firestore transaction, only once 1 succeeded:
+     invalidate the generation (a worker that wakes later fences itself)
+     release the slot          (the frozen release, every pool at once)
+     repair the task state     (READY, FAILED if attempts are spent,
+                                CANCELLED if a cancel was requested)
 ```
 
 Releasing before terminating would hand the slot to the scheduler while the old
 agent is still writing to a tenant's repository. A termination that is not
 confirmed therefore does **not** release: one stuck slot until the next pass is
 a far cheaper mistake than two agents on one workspace.
+
+**The fence is never written alone.** Until #560 the generation was invalidated
+first, in a transaction of its own, before the kill. When the kill then failed,
+the pass returned with the task fenced and the lease still held. Every later
+pass saw a superseded lease whose execution "belonged" to the obsolete-generation
+rule, and that rule's kill failed the same way, so nothing more was ever
+written. On 2026-10-04 four DISPATCHED tasks held their leases like that for ten
+hours, one with a cancel pressed on it. Now a pass that cannot finish the repair
+writes nothing, and the next pass starts again from a clean state.
+
+**A worker that never started is its own evidence, after a bounded wait.** The
+lease never heartbeated, the attempt records no start, and the task never
+reached RUNNING. Once the lease is `NEVER_STARTED_RELEASE_SECONDS` old (20
+minutes; 2.5 times the dispatch deadline, nearly five times the slowest start
+measured), the repair goes ahead even if the kill is not confirmed or the
+backend cannot be read. It is safe because the fence commits with the release:
+a container that starts late checks its generation before it does anything, and
+exits (invariant 5). A worker that **did** start is still held until something
+proves its execution gone (#450). Until the wait is over, the hold is listed in
+the pass's `held_past_ttl` and logged at ERROR once an hour, with the time left.
+
+**A cancel with no live worker ends the task at once.** The API cancels a
+DISPATCHED or STARTING task outright when its worker never started, or when its
+generation is fenced and its lease has been silent for 90 s. In the cancel's
+own transaction it releases the lease and fences the generation. A task with a
+live worker is only flagged, and the worker ends it. A LEASED task is left to
+the scheduler, which is between admission and dispatch and finishes a flagged
+cancel itself.
 
 ---
 
