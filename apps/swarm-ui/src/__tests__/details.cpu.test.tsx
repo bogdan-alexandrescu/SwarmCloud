@@ -103,7 +103,7 @@ async function mount(a: AttemptRow, t: Partial<Task> = {}, events: TaskEvent[] |
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={agentRun(a, t, events)} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull(), WAIT)
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull(), WAIT)
   return container as HTMLElement
 }
 

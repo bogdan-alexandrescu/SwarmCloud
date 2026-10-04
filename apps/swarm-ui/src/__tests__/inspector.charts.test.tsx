@@ -97,7 +97,7 @@ async function mount(r: AgentRun = run()): Promise<HTMLElement> {
   api.loadCheckpoints.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   const { container } = render(<Run run={r} />)
-  await waitFor(() => expect(container.querySelector('.ctl-metrics')).not.toBeNull())
+  await waitFor(() => expect(container.querySelector('.dt-strip')).not.toBeNull())
   return container as HTMLElement
 }
 

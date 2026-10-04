@@ -104,6 +104,18 @@ function finished(): Task {
   return running({ state: 'SUCCEEDED', completed_at: new Date(Date.now() - 3_600_000).toISOString() })
 }
 
+/**
+ * The header's read and the Details read of one task. The last log line is in
+ * the Details tab's leading card (agent-details-v3.html A), so it is drawn
+ * once the Details read lands.
+ */
+function serve(t: Task) {
+  api.loadTask.mockResolvedValue(ok(t))
+  api.loadAgentRun.mockResolvedValue(
+    ok({ task: t, events: [], eventsDetail: null, attempts: [], attemptsDetail: null, classes: null, classesDetail: null, classesRouteMissing: false }),
+  )
+}
+
 type Pane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
 const PANES: readonly Pane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
 
@@ -149,7 +161,7 @@ afterEach(() => {
 
 describe('the Logs tab: its address, its place, and all four streams', () => {
   it('sits beside Details and has its own route, /agents/<tab>/<id>/logs', async () => {
-    api.loadTask.mockResolvedValue(ok(finished()))
+    serve(finished())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
     await screen.findByRole('button', { name: /^Last log line/ })
@@ -214,7 +226,7 @@ describe('no element of the detail is covered by a log element, at any split wid
   const POSITIONED = /^(fixed|absolute|sticky)$/
 
   async function check(start: Pane, task: Task) {
-    api.loadTask.mockResolvedValue(ok(task))
+    serve(task)
     const r = render(<Routed start={start} onGo={() => {}} />)
     await waitFor(() => expect(document.querySelector('.ag-head-facts')).not.toBeNull())
     return r
@@ -261,7 +273,9 @@ describe('no element of the detail is covered by a log element, at any split wid
         if (start === 'detail') {
           const line = pane.querySelector('.ag-loglast')
           expect(line, 'Details has no last log line').not.toBeNull()
-          expect(pane.firstElementChild).toBe(line)
+          // IN THE LEADING CARD, at the top of the Details stack
+          // (agent-details-v3.html A): in the pane's flow, over nothing.
+          expect(line!.closest('.dt-now')).toBe(pane.querySelector('.dt > .dt-now'))
         }
         unmount()
       }
@@ -271,7 +285,7 @@ describe('no element of the detail is covered by a log element, at any split wid
 
 describe('a running agent opens on Logs, a finished one on Details', () => {
   it('opens a running agent on its log', async () => {
-    api.loadTask.mockResolvedValue(ok(running()))
+    serve(running())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
     await screen.findByRole('region', { name: 'Logs' })
@@ -285,7 +299,7 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
   })
 
   it('opens a finished agent on Details, whose last log line opens the tab', async () => {
-    api.loadTask.mockResolvedValue(ok(finished()))
+    serve(finished())
     const go = vi.fn()
     render(<Routed start="detail" onGo={go} />)
     const line = await screen.findByRole('button', { name: /^Last log line/ })
@@ -301,7 +315,7 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
   // agent has no attempt and usually no log; its Details say why it waits.
   for (const state of ['QUEUED', 'READY', 'PARKED'] as const) {
     it(`opens a ${state} agent on Details, not on an empty log`, async () => {
-      api.loadTask.mockResolvedValue(ok(running({ state, attempt_count: 0 })))
+      serve(running({ state, attempt_count: 0 }))
       const go = vi.fn()
       render(<Routed start="detail" onGo={go} />)
       await screen.findByRole('button', { name: /^Last log line/ })
@@ -313,7 +327,7 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
 
   for (const state of ['LEASED', 'DISPATCHED', 'STARTING'] as const) {
     it(`opens a ${state} agent on its log, as a RUNNING one`, async () => {
-      api.loadTask.mockResolvedValue(ok(running({ state })))
+      serve(running({ state }))
       const go = vi.fn()
       render(<Routed start="detail" onGo={go} />)
       await screen.findByRole('region', { name: 'Logs' })
@@ -322,7 +336,7 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
   }
 
   it('leaves a link to another pane where it points', async () => {
-    api.loadTask.mockResolvedValue(ok(running()))
+    serve(running())
     const go = vi.fn()
     render(<Routed start="attempts" onGo={go} />)
     await waitFor(() => expect(document.querySelector('.ag-head-facts')).not.toBeNull())
@@ -333,7 +347,7 @@ describe('a running agent opens on Logs, a finished one on Details', () => {
 
 describe('N11: Escape in More closes the menu, and only the menu', () => {
   it('folds More, keeps the agent open, and the next Escape closes the agent', async () => {
-    api.loadTask.mockResolvedValue(ok(running()))
+    serve(running())
     const go = vi.fn()
     render(<Routed start="logs" onGo={go} />)
     const region = await screen.findByRole('region', { name: 'Logs' })
@@ -352,7 +366,7 @@ describe('N11: Escape in More closes the menu, and only the menu', () => {
   })
 
   it('closes the menu from a control inside it too', async () => {
-    api.loadTask.mockResolvedValue(ok(running()))
+    serve(running())
     const go = vi.fn()
     render(<Routed start="logs" onGo={go} />)
     const region = await screen.findByRole('region', { name: 'Logs' })
