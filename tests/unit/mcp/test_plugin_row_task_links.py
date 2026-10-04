@@ -163,7 +163,7 @@ def test_a_row_answer_without_console_falls_back_to_the_submission_link(tmp_path
     line = next(line for line in got["logs"] if line.startswith("fix "))
     assert line.endswith(" · console: " + _served("task_3")), line
     # Exactly the served string, and no other URL anywhere: nothing was built.
-    urls = set(re.findall(r"https?://\S+", json.dumps(got)))
+    urls = set(re.findall(r"https?://[^\s\"\\]+", json.dumps(got)))
     served = {_served(f"task_{n}") for n in (1, 2, 3)} | {_served_workflow("wf_9")}
     assert urls <= served, urls - served
 

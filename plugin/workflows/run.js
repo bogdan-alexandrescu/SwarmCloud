@@ -107,6 +107,18 @@ export const meta = {
 // step's on its final line -- and spells no host and no path of its own. A
 // null or missing link prints nothing.
 //
+// EVERY ROW SAYS WHERE ITS TASK IS WATCHED, WHATEVER ITS STATE (owner request,
+// 2026-10-04). A step's row LABEL -- the text /workflows shows for it -- ends
+// with the link the submit or attach reply carried for that step, from the
+// moment the row exists: a QUEUED or PARKED step that has not started, and may
+// not for an hour, is exactly the one a person opens the console to look at.
+// The Result row's label ends with the workflow's link the same way. The link
+// is a bare https URL, not an OSC 8 hyperlink: the label is plain text in
+// Claude Code's row list, and a terminal makes a bare URL clickable where an
+// escape sequence the renderer does not pass through would print as noise.
+// Each row is also handed its step's link (`console:` in its prompt) to end
+// its progress lines with when a follow reply carries none.
+//
 // This script derives nothing SwarmCloud decides. The workflow's final state
 // is read back from swarm_workflow_status, which serves the state the server
 // derived from its steps; it is never computed here from the rows.
@@ -414,22 +426,38 @@ function clip(text, limit) {
   return flat.length <= limit ? flat : flat.slice(0, limit - 1) + '…'
 }
 
-// Every row's label: `[SwarmCloud] <name> · <suffix>`, at most LABEL_CHARS.
-// The NAME is cut, never the suffix, so a long workflow label still shows
-// which stage and which step the row is.
+// Every row's label: `[SwarmCloud] <name> · <suffix>`, at most LABEL_CHARS,
+// then ` · <console link>` when the API served one. The NAME is cut, never the
+// suffix, so a long workflow label still shows which stage and which step the
+// row is -- and never the link, which sits outside the budget because a
+// clipped URL opens nothing.
 const LABEL_PREFIX = '[SwarmCloud] '
 const LABEL_CHARS = 80
 
-function rowLabel(name, suffix) {
+function rowLabel(name, suffix, link) {
   const tail = ' · ' + suffix
   const room = Math.max(8, LABEL_CHARS - LABEL_PREFIX.length - tail.length)
-  return LABEL_PREFIX + clip(name, room) + tail
+  const served = consoleLink(link)
+  return LABEL_PREFIX + clip(name, room) + tail + (served ? ' · ' + served : '')
+}
+
+// The link a relay copied from the bridge, trimmed, or null. Nothing here
+// builds or repairs one.
+function consoleLink(link) {
+  return typeof link === 'string' && link.trim() ? link.trim() : null
 }
 
 // ' · console: <link>' for a link a relay copied from the bridge, else ''.
-// The link is printed as given: nothing here builds or repairs one.
 function consoleSuffix(link) {
-  return typeof link === 'string' && link.trim() ? ' · console: ' + link.trim() : ''
+  const served = consoleLink(link)
+  return served ? ' · console: ' + served : ''
+}
+
+// `result` with `console` set to the served link, or without the key.
+function withConsole(result, link) {
+  const served = consoleLink(link)
+  if (served) result.console = served
+  return result
 }
 
 function failureText(error) {
@@ -521,7 +549,9 @@ function submitPrompt(digest, source) {
 
 // `parent_task_ids` are the task ids of the parents that have not finished:
 // the row's first call holds on them, so a step that has not started makes one
-// call while they run.
+// call while they run. `console` is the step's link as the submit or attach
+// reply carried it, or `none`: the row ends a progress line with it when the
+// follow reply that line came from carries no link of its own.
 function stepPrompt(workflowId, step, parentTasks) {
   const parents = (step.depends_on || []).join(', ') || 'none'
   return [
@@ -530,19 +560,20 @@ function stepPrompt(workflowId, step, parentTasks) {
     'workflow_id: ' + workflowId,
     'depends_on: ' + parents,
     'parent_task_ids: ' + ((parentTasks || []).join(', ') || 'none'),
+    'console: ' + (consoleLink(step.console) || 'none'),
   ].join('\n')
 }
 
 // The probe failed: this session's bridge refused the follow every row makes.
 // The workflow is in SwarmCloud and runs regardless; no row starts, and none
 // tries another format.
-function followRefused(workflowId, version, error) {
+function followRefused(workflowId, version, error, workflowConsole) {
   const bridge = version
     ? 'swarm-mcp ' + version
     : 'which reported no version, so it predates the version check this plugin makes'
   const message = 'SwarmCloud has workflow ' + workflowId + ' and it runs regardless, but this session\'s SwarmCloud bridge (' + bridge + ') refused the progress follow every row makes: ' + error + '. The likely cause is a SWARM_MCP_FROM override pinning an older bridge than this plugin ships: unset it, or point it at this plugin\'s release, and restart Claude Code. Then re-join the workflow with /sc attach ' + workflowId + ' (or /sc:swarmcloud {attach: "' + workflowId + '"}). No row was started, and no row falls back to another format.'
-  log(workflowId + ' · follow refused by the bridge · ' + clip(error, 160))
-  return { workflow_id: workflowId, state: 'FOLLOW_REFUSED', error: message, steps: [] }
+  log(workflowId + ' · follow refused by the bridge · ' + clip(error, 160) + consoleSuffix(workflowConsole))
+  return withConsole({ workflow_id: workflowId, state: 'FOLLOW_REFUSED', error: message, steps: [] }, workflowConsole)
 }
 
 function notSubmitted(error) {
@@ -562,7 +593,7 @@ async function followSteps(workflowId, workflowName, steps, stages, parentTasksO
       if (!step.task_id) return { row_error: 'SwarmCloud named no task for this step' }
       try {
         return await agent(stepPrompt(workflowId, step, parentTasksOf(step)), {
-          label: rowLabel(workflowName, 'stage ' + (stages[step.step_id] || (depth[step.step_id] || 0) + 1) + ' · ' + step.step_id),
+          label: rowLabel(workflowName, 'stage ' + (stages[step.step_id] || (depth[step.step_id] || 0) + 1) + ' · ' + step.step_id, step.console),
           phase: stages[step.step_id] || 'Level ' + (depth[step.step_id] || 0),
           agentType: 'sc:step',
           schema: STEP_RESULT,
@@ -577,10 +608,10 @@ async function followSteps(workflowId, workflowName, steps, stages, parentTasksO
       if (!result || result.row_error) {
         row.state = null
         row.row_error = result && result.row_error ? result.row_error : 'the row stopped before its task finished'
-        if (consoleSuffix(step.console)) row.console = step.console.trim()
-        return row
+        return withConsole(row, step.console)
       }
-      return Object.assign(row, result)
+      // A row that answered with no link keeps the one its submission carried.
+      return withConsole(Object.assign(row, result), result.console || step.console)
     },
   )
 }
@@ -597,7 +628,7 @@ async function finish(workflowId, workflowName, rows, knownConsole, together) {
   let finalFailure = null
   try {
     final = await agent('STATUS\nworkflow_id: ' + workflowId, {
-      label: rowLabel(workflowName, 'result'),
+      label: rowLabel(workflowName, 'result', knownConsole),
       phase: 'Result',
       agentType: 'sc:workflow',
       schema: WORKFLOW_STATE,
@@ -680,7 +711,7 @@ async function attachOne(workflowId, name, together) {
     log((name === workflowId ? '' : workflowId + ' ') + 'not attached · ' + clip(error, 200))
     return { workflow_id: workflowId, state: 'NOT_ATTACHED', error: error, steps: [] }
   }
-  if (attached.follow_error) return followRefused(workflowId, attached.bridge_version, attached.follow_error)
+  if (attached.follow_error) return followRefused(workflowId, attached.bridge_version, attached.follow_error, attached.console)
 
   const known = {}
   for (const step of attached.steps) known[step.step_id] = step
@@ -771,6 +802,12 @@ async function attachAll() {
   const follow = running.slice(0, MAX_ATTACHED_WORKFLOWS)
   const rest = running.slice(MAX_ATTACHED_WORKFLOWS)
   log(running.length + ' running workflow(s) · following ' + follow.length + (rest.length ? ' · ' + rest.length + ' listed, not followed (at most ' + MAX_ATTACHED_WORKFLOWS + ')' : ''))
+  // One line per followed workflow, with its link: any of them can be opened
+  // before its rows have started.
+  for (const entry of follow) {
+    const label = typeof entry.label === 'string' && entry.label.trim() ? ' ' + entry.label.trim() : ''
+    log(entry.workflow_id + label + ' ' + (entry.state || 'state not read') + ' · following' + consoleSuffix(entry.console))
+  }
   for (const entry of rest) {
     const label = typeof entry.label === 'string' && entry.label.trim() ? ' ' + entry.label.trim() : ''
     log(entry.workflow_id + label + ' ' + (entry.state || 'state not read') + ' · not followed · /sc attach ' + entry.workflow_id + consoleSuffix(entry.console))
@@ -876,15 +913,15 @@ if (!submitted.workflow_id) {
 const problems = mismatches(spec, submitted, digest)
 if (problems.length > 0) {
   for (const problem of problems) log(submitted.workflow_id + ' · ' + clip(problem, 200))
-  return {
+  return withConsole({
     workflow_id: submitted.workflow_id,
     state: 'SUBMITTED_UNVERIFIED',
     error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given, so no row was started: ' + problems.join('; ') + '. The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.',
     steps: [],
-  }
+  }, submitted.console)
 }
 
-if (submitted.follow_error) return followRefused(submitted.workflow_id, submitted.bridge_version, submitted.follow_error)
+if (submitted.follow_error) return followRefused(submitted.workflow_id, submitted.bridge_version, submitted.follow_error, submitted.console)
 
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
 log(submitted.workflow_id + ' submitted · ' + submitted.steps.length + ' step(s)' + where + consoleSuffix(submitted.console))

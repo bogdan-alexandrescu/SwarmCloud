@@ -851,6 +851,15 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
         lines.append(f"    now: {_steps_text(entry)}")
         if entry.get("console"):
             lines.append(f"    console: {entry['console']}")
+        # Each unfinished step on its own line, with the link the API served
+        # for it (owner request 2026-10-04): a PARKED or QUEUED step is the one
+        # a person opens the console to look at. No link served, none printed.
+        for step in entry.get("current_steps") or []:
+            link = f"  console: {step['console']}" if step.get("console") else ""
+            lines.append(
+                f"      {step.get('step_id')}  {step.get('task_id') or 'no task'}  "
+                f"{step.get('state') or 'state not read'}{link}"
+            )
     if not listing.get("complete"):
         lines.append(f"  {listing.get('incomplete_because')}")
     if running:
