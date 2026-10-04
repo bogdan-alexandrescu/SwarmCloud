@@ -484,28 +484,49 @@ def planner_task(
     )
 
 
-def refuse_auto_merge(auto_merge: bool) -> None:
-    """`auto_merge` is refused until #295's chain runs, and until phase 2 is built.
+#: The merge step auto-merge waits for. Named once: the refusal and the
+#: availability the console reads both carry it.
+AUTO_MERGE_REQUIRES = "#295"
+
+
+def _auto_merge_refusal() -> str | None:
+    """Why auto-merge is refused for a new run now, or None when it is not.
 
     The first refusal is the platform's: `single-pr` is not dispatchable while
     the catalogue disables the merge and post-verdict profiles for every tenant
     (`validation.dispatchable_strategies`). The second is this module's: the
-    compile branch for a run that ends in a merge does not exist yet.
+    compile branch for a run that ends in a merge does not exist yet, so today
+    this never returns None.
     """
-    if not auto_merge:
-        return
     if SINGLE_PR not in dispatchable_strategies():
-        raise AutoMergeUnavailable(
+        return (
             "auto_merge requires the merge chain (#295), which is not enabled for this "
             "tenant; create the run with auto_merge false and merge its pull request "
-            "yourself",
-            detail={"requires": "#295"},
+            "yourself"
         )
-    raise AutoMergeUnavailable(
+    return (
         "auto_merge requires #295 phase 2 (a single-pr chain ending in merge), which "
-        "issue runs do not compile yet; create the run with auto_merge false",
-        detail={"requires": "#295"},
+        "issue runs do not compile yet; create the run with auto_merge false"
     )
+
+
+def auto_merge_availability() -> dict[str, Any]:
+    """What the submit form draws for auto-merge: the same answer the refusal gives.
+
+    Served on the issue preview (routes/issues.py) so the console never offers
+    a switch POST /v1/runs would refuse, and never hides one it would accept.
+    """
+    reason = _auto_merge_refusal()
+    return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason}
+
+
+def refuse_auto_merge(auto_merge: bool) -> None:
+    """`auto_merge` is refused until #295's chain runs, and until phase 2 is built."""
+    if not auto_merge:
+        return
+    reason = _auto_merge_refusal()
+    if reason is not None:
+        raise AutoMergeUnavailable(reason, detail={"requires": AUTO_MERGE_REQUIRES})
 
 
 def _impl_id(step_id: str) -> str:
@@ -852,6 +873,9 @@ class IssueRun:
             "open_work": self.open_work,
             "plan_comment_id": self.plan_comment_id,
             "status_comment_id": self.status_comment_id,
+            # Why the issue shows no comment, or a stale one. Stored through
+            # `failure_text` (issuesync), so it is masked and bounded already.
+            "writeback_error": self.writeback_error,
             "pull_request": None if self.pull_request is None else dict(self.pull_request),
             "ci_fix_round": self.ci_fix_round,
             "pr_task_id": self.pr_task_id,
@@ -955,10 +979,13 @@ class IssueRun:
                 None if self.open_work is None
                 else {**self.open_work, "read_at": _iso(self.open_work.get("read_at"))}
             ),
-            # The write-back: the comment ids and the pull request's link
-            # only. The digests, the author and the error are bookkeeping.
+            # The write-back: the comment ids, the pull request's link and the
+            # last write's error. The digests and the author are bookkeeping.
             "plan_comment_id": self.plan_comment_id,
             "status_comment_id": self.status_comment_id,
+            # Why the issue shows no comment, or a stale one. Stored through
+            # `failure_text` (issuesync), so it is masked and bounded already.
+            "writeback_error": self.writeback_error,
             "pull_request": (
                 None if self.pull_request is None else {
                     "number": self.pull_request.get("number"),

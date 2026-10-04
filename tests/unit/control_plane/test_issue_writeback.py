@@ -224,7 +224,10 @@ def test_a_403_is_recorded_on_the_run_and_never_raised(client, db, objects, writ
     assert "writeback_forbidden" in doc["writeback_error"]
     assert "issues: write" in doc["writeback_error"]
     assert _eng_token(forge_tokens) not in doc["writeback_error"]
-    assert "writeback_error" not in run, "to_api serves the ids and the PR link only"
+    # Served, so the console can say why the issue shows no comment; it is
+    # the stored text, already masked and bounded by `failure_text`.
+    assert run["writeback_error"] == doc["writeback_error"]
+    assert _eng_token(forge_tokens) not in created.text
     # The planner still finishes, the run still moves.
     _finish_planner(db, objects, run, PLAN)
     assert _run(client, run["id"]).json()["run"]["state"] == "PLANNED"

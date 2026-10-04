@@ -12,41 +12,29 @@
 //     stays the one Approve and Edit name, an editor saves with the digest it
 //     opened on, and a notice offers the new plan;
 //   * Reject sends the shown digest and the reason;
-//   * what the run document does not serve -- the PR, the plan and status
-//     comments, overlaps, cost -- is a dash with its reason, never hidden and
-//     never invented; a workflow not yet created is "none yet".
+//   * what the run has not got yet -- the PR, the plan and status comments --
+//     is said with its reason, never hidden and never invented; cost, which
+//     the run does not serve, is a dash; a workflow not yet created is
+//     "none yet";
+//   * the plan shows what #454's planner writes: mode, estimate, the
+//     requirements, the OVERLAPS as links (the issue's acceptance test is that
+//     the plan names them), and each step's files, tests and estimate; the
+//     editor round-trips all of it;
+//   * the CI loop: fix round n of N, the pull request, the green sha, Closes
+//     against part-of, the failing excerpt AS TEXT, the comments on the issue
+//     and a failed write-back.
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { FULL_PLAN, digest, issueRun } from './runfixture'
 
 const WAIT = { timeout: 4000 }
 const JSON_HEADERS = { 'content-type': 'application/json' }
 const visible = (el: Element | null) => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 // Digests built at runtime: a 64-hex literal reads as a key to a credential scan.
-const DIGEST_A = 'sha256:' + 'a1'.repeat(32)
-const DIGEST_B = 'sha256:' + 'b2'.repeat(32)
-
-function run(over: Record<string, unknown> = {}) {
-  return {
-    id: 'run_4c1e09d2', tenant_id: 'eng', state: 'PLANNED', terminal: false,
-    issue: { ref: 'example-org/infra#512', owner: 'example-org', repo: 'infra', number: 512,
-      url: 'https://github.com/example-org/infra/issues/512', repository_url: 'https://github.com/example-org/infra' },
-    plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_planner1',
-    plan: { summary: 'Sum step spend into the workflow read, then draw a cost column.', steps: [
-      { step_id: 'api', title: 'api: sum step spend', prompt: 'Add the sum to routes/workflows.py.' },
-      { step_id: 'ui', title: 'ui: the cost column', prompt: 'Draw it in Workflows.tsx.' },
-    ] },
-    plan_digest: DIGEST_A, plan_revision: 1, plan_edited_by: null, workflow_id: null,
-    created_by: 'operator@example.com', created_at: '2026-10-02T14:02:00Z', updated_at: '2026-10-02T14:09:00Z',
-    approved_by: null, approved_at: null, approved_digest: null, rejected_by: null, rejection_reason: null,
-    error: null,
-    history: [
-      { at: '2026-10-02T14:02:00Z', from: null, to: 'PLANNING', by: 'operator@example.com' },
-      { at: '2026-10-02T14:09:00Z', from: 'PLANNING', to: 'PLANNED', by: 'swarm-api' },
-    ],
-    ...over,
-  }
-}
+const DIGEST_A = digest('a1')
+const DIGEST_B = digest('b2')
+const run = issueRun
 
 type Handler = (method: string, url: string, body: unknown) => { status: number; body: unknown } | null
 
@@ -157,10 +145,10 @@ describe('/runs/<id>: one run', () => {
     expect(within(links).getByRole('link', { name: /example-org\/infra#512/ }).getAttribute('href'))
       .toBe('https://github.com/example-org/infra/issues/512')
     expect(visible(links)).toMatch(/Workflow.*none yet/)
-    expect(visible(links)).toMatch(/Pull request.*not served/)
-    expect(visible(links)).toMatch(/Plan comment.*not served/)
-    // Overlaps are not on the run document: a region that says so.
-    expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/not served/)
+    expect(visible(links)).toMatch(/Pull request.*none yet/)
+    expect(visible(links)).toMatch(/Plan comment.*not posted/)
+    // A plan from before the planner read open work does not say: the region says so.
+    expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/does not say/)
   })
 
   it('links the workflow once there is one', async () => {
@@ -281,6 +269,201 @@ describe('/runs/<id>: one run', () => {
       expect(screen.queryByRole('button', { name: 'Approve and run' })).toBeNull()
       unmount()
     }
+  })
+
+  it('the plan names its overlaps as links, with kind and note, ahead of the steps', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ plan: FULL_PLAN }) } } : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const overlaps = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-overlaps')
+      expect(el).not.toBeNull()
+      expect(el!.querySelectorAll('.rn-overlap')).toHaveLength(2)
+      return el!
+    }, WAIT)
+    const pr = within(overlaps).getByRole('link', { name: 'example-org/infra#498' })
+    expect(pr.getAttribute('href')).toBe('https://github.com/example-org/infra/pull/498')
+    const issue = within(overlaps).getByRole('link', { name: 'example-org/infra#507' })
+    expect(issue.getAttribute('href')).toBe('https://github.com/example-org/infra/issues/507')
+    expect(visible(overlaps)).toContain('pull request')
+    expect(visible(overlaps)).toContain('Already edits routes/workflows.py')
+    expect(visible(overlaps)).toContain('Asks for the same column')
+    // Prominent: the overlaps come before the plan's steps in the page.
+    const plan = container.querySelector('.rn-plan')!
+    expect(overlaps.compareDocumentPosition(plan) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('an overlap ref that is not owner/repo#N is drawn as text, never a link', async () => {
+    const plan = { ...FULL_PLAN, overlaps: [{ ref: 'javascript:alert(1)#1', kind: 'issue', note: 'odd' }] }
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ plan }) } } : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    await waitFor(() => expect(container.querySelector('.rn-overlap')).not.toBeNull(), WAIT)
+    expect(container.querySelector('.rn-overlaps a')).toBeNull()
+    expect(visible(container.querySelector('.rn-overlaps'))).toContain('javascript:alert(1)#1')
+  })
+
+  it('a plan that found no overlaps says so, with the open work it read', async () => {
+    const plan = { ...FULL_PLAN, overlaps: [] }
+    const open_work = { repository: 'example-org/infra', read_at: '2026-10-02T14:03:00Z',
+      issues: [{ number: 1, title: 'a' }, { number: 2, title: 'b' }], issues_truncated: false,
+      pull_requests: [{ number: 3, title: 'c', files: [], files_truncated: false }], pull_requests_truncated: false }
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ plan, open_work }) } } : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    await waitFor(() => expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/None found/), WAIT)
+    expect(visible(container.querySelector('.rn-overlaps'))).toMatch(/2 open issues and 1 open pull request/)
+  })
+
+  it('the plan shows its mode, estimate, requirements, and each step\'s files, tests and estimate', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2' ? { status: 200, body: { run: run({ plan: FULL_PLAN }) } } : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const plan = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-plan')
+      expect(visible(el)).toContain('about 3 agent-hours')
+      return el!
+    }, WAIT)
+    expect(visible(plan)).toMatch(/workflow/)
+    const reqs = container.querySelector<HTMLElement>('.rn-reqs')!
+    expect(reqs.querySelectorAll('li')).toHaveLength(2)
+    expect(visible(reqs)).toContain('The list draws a cost column')
+    const steps = [...plan.querySelectorAll<HTMLElement>('.rn-step')]
+    expect(visible(steps[0]!)).toContain('apps/swarm-api/swarm_api/routes/workflows.py')
+    expect(visible(steps[0]!)).toContain('test_the_read_sums_step_spend')
+    expect(visible(steps[0]!)).toContain('1 hour')
+    expect(visible(steps[1]!)).toContain('apps/swarm-ui/src/Workflows.tsx')
+    expect(visible(steps[1]!)).toContain('2 hours')
+  })
+
+  it('the editor round-trips every new field and saves with the digest it opened on', async () => {
+    const calls = serve((m, url) => {
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: FULL_PLAN }) } }
+      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan_digest: DIGEST_B, plan_revision: 2 }) } }
+      return null
+    })
+    await mount('run=run_4c1e09d2')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    // Unchanged, it sends the plan it opened on, every field included.
+    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
+    await waitFor(() => expect(calls.filter((c) => c.url.endsWith('plan:edit'))).toHaveLength(1), WAIT)
+    expect(calls.find((c) => c.url.endsWith('plan:edit'))!.body).toEqual({ plan_digest: DIGEST_A, plan: FULL_PLAN })
+  })
+
+  it('the editor edits requirements, the estimate and a step\'s files, tests and estimate', async () => {
+    const calls = serve((m, url) => {
+      if (url === '/v1/runs/run_4c1e09d2' && m === 'GET') return { status: 200, body: { run: run({ plan: FULL_PLAN }) } }
+      if (url.endsWith('plan:edit')) return { status: 200, body: { run: run({ plan_digest: DIGEST_B, plan_revision: 2 }) } }
+      return null
+    })
+    await mount('run=run_4c1e09d2')
+    fireEvent.click(await screen.findByRole('button', { name: 'Edit plan' }, WAIT))
+    fireEvent.change(screen.getByLabelText('Requirements, one per line'), { target: { value: 'Only this one\n\n' } })
+    fireEvent.change(screen.getByLabelText('Estimate'), { target: { value: '' } })
+    fireEvent.change(screen.getAllByLabelText('Files, one per line')[1]!, { target: { value: 'a.tsx\n b.tsx ' } })
+    fireEvent.change(screen.getAllByLabelText('Tests, one per line')[1]!, { target: { value: '' } })
+    fireEvent.change(screen.getAllByLabelText('Step estimate')[0]!, { target: { value: '90 minutes' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save the plan' }))
+    await waitFor(() => expect(calls.some((c) => c.url.endsWith('plan:edit'))).toBe(true), WAIT)
+    const { estimate: _dropped, ...rest } = FULL_PLAN
+    const { tests: _cleared, ...ui } = FULL_PLAN.steps[1]!
+    expect(calls.find((c) => c.url.endsWith('plan:edit'))!.body).toEqual({
+      plan_digest: DIGEST_A,
+      plan: {
+        ...rest,
+        requirements: ['Only this one'],
+        steps: [{ ...FULL_PLAN.steps[0]!, estimate: '90 minutes' }, { ...ui, files: ['a.tsx', 'b.tsx'] }],
+      },
+    })
+  })
+
+  it('a CHECKING run links its pull request and names the fix rounds left', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2'
+      ? { status: 200, body: { run: run({ state: 'CHECKING', workflow_id: 'wf_8b21d0e4', ci_fix_round: 1,
+        pull_request: { number: 57, url: 'https://github.com/example-org/infra/pull/57', head_sha: 'abc1234def', checks: 'red' } }) } }
+      : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const ci = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-ci')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(visible(ci)).toMatch(/fix round 1 of 3/)
+    expect(visible(ci)).toContain('abc1234')
+    expect(visible(ci)).toMatch(/red/)
+    const links = container.querySelector<HTMLElement>('.rn-links')!
+    expect(within(links).getByRole('link', { name: /#57/ }).getAttribute('href'))
+      .toBe('https://github.com/example-org/infra/pull/57')
+  })
+
+  it('a DONE run shows the green sha and Closes when every requirement was confirmed', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2'
+      ? { status: 200, body: { run: run({ state: 'DONE', terminal: true, plan: FULL_PLAN, workflow_id: 'wf_8b21d0e4',
+        green_sha: 'f00dfeed1234567', requirements_met: true, requirements_unmet: [],
+        pull_request: { number: 57, url: 'https://github.com/example-org/infra/pull/57', head_sha: 'f00dfeed1234567', checks: 'green' } }) } }
+      : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const ci = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-ci')
+      expect(visible(el)).toContain('f00dfeed1234567')
+      return el!
+    }, WAIT)
+    expect(visible(ci)).toContain('Closes #512')
+    expect(visible(ci)).not.toContain('part of')
+  })
+
+  it('a run whose review left requirements open says part of, and names them', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2'
+      ? { status: 200, body: { run: run({ state: 'CHECKING', plan: FULL_PLAN, workflow_id: 'wf_8b21d0e4',
+        requirements_met: false, requirements_unmet: ['The list draws a cost column'], requirements_note: 'the UI half is missing',
+        pull_request: { number: 57, url: 'https://github.com/example-org/infra/pull/57', head_sha: 'abc', checks: 'pending' } }) } }
+      : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const ci = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-ci')
+      expect(visible(el)).toContain('part of #512')
+      return el!
+    }, WAIT)
+    expect(visible(ci)).not.toContain('Closes')
+    expect(visible(ci)).toContain('the UI half is missing')
+    // The unmet requirement is marked in the requirements list.
+    const unmet = container.querySelector<HTMLElement>('.rn-reqs .is-unmet')
+    expect(visible(unmet)).toContain('The list draws a cost column')
+  })
+
+  it('a FAILED run shows the failing excerpt as text, never as HTML', async () => {
+    const excerpt = 'FAILED tests/unit/test_x.py::test_y\n<img src=x onerror=alert(1)><b>bold</b>\nassert 1 == 2'
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2'
+      ? { status: 200, body: { run: run({ state: 'FAILED', terminal: true, workflow_id: 'wf_8b21d0e4', ci_fix_round: 3,
+        error: 'checks still red after 3 fix rounds', failure_excerpt: excerpt,
+        pull_request: { number: 57, url: 'https://github.com/example-org/infra/pull/57', head_sha: 'abc', checks: 'red' } }) } }
+      : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const block = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-excerpt')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(block.querySelector('pre')).not.toBeNull()
+    expect(block.querySelector('pre img')).toBeNull()
+    expect(block.querySelector('pre b')).toBeNull()
+    expect(block.textContent).toContain('<img src=x onerror=alert(1)><b>bold</b>')
+    expect(block.textContent).toContain('assert 1 == 2')
+    expect(visible(container.querySelector('.rn-ci'))).toMatch(/3 of 3/)
+  })
+
+  it('links the plan and status comments on the issue, and shows a failed write-back', async () => {
+    serve((_m, url) => url === '/v1/runs/run_4c1e09d2'
+      ? { status: 200, body: { run: run({ plan_comment_id: 9001, status_comment_id: 9002,
+        writeback_error: 'writeback_forbidden: the credential lacks issues: write' }) } }
+      : null)
+    const { container } = await mount('run=run_4c1e09d2')
+    const links = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>('.rn-links')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
+    expect(within(links).getByRole('link', { name: 'plan comment' }).getAttribute('href'))
+      .toBe('https://github.com/example-org/infra/issues/512#issuecomment-9001')
+    expect(within(links).getByRole('link', { name: 'status comment' }).getAttribute('href'))
+      .toBe('https://github.com/example-org/infra/issues/512#issuecomment-9002')
+    expect(visible(container.querySelector('.rn-writeback'))).toContain('the credential lacks issues: write')
   })
 
   it('an unknown run is not found, not an empty page', async () => {

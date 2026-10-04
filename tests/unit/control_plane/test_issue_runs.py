@@ -259,6 +259,17 @@ def test_auto_merge_is_refused_until_the_merge_chain_is_enabled(client, db):
     assert not _docs(db, issueruns.RUNS_COLLECTION)
 
 
+def test_auto_merge_availability_says_what_the_refusal_does():
+    # The console reads availability; POST /v1/runs enforces the refusal.
+    # They must never disagree: unavailable exactly while the refusal raises.
+    availability = issueruns.auto_merge_availability()
+    assert availability["available"] is False
+    assert availability["requires"] == "#295"
+    with pytest.raises(issueruns.AutoMergeUnavailable) as refused:
+        issueruns.refuse_auto_merge(True)
+    assert availability["reason"] == refused.value.message
+
+
 def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
     response = _create(client, runner_profile="generic")
     assert response.status_code == 422

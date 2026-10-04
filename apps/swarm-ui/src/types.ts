@@ -4534,10 +4534,21 @@ export interface IssuePreview extends IssueRefDoc {
   comments: number
 }
 
+/** `issueruns.auto_merge_availability()`: whether POST /v1/runs takes `auto_merge: true` now. */
+export interface AutoMergeAvailability {
+  available: boolean
+  /** The step it waits for, `#295`. */
+  requires: string
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
 /** `GET /v1/issues/preview`. */
 export interface IssuePreviewRead {
   issue: IssuePreview
   tenant_id: string
+  /** Absent from servers before #454's console step: read as unavailable. */
+  auto_merge?: AutoMergeAvailability | null
 }
 
 /**
@@ -4642,6 +4653,18 @@ export interface IssueRun {
   green_sha?: string | null
   /** The red checks' output, redacted and bounded (8 KB) by the server. */
   failure_excerpt?: string | null
+  /** The write-back (`issuesync`): the plan comment's and the status comment's ids on the issue. */
+  plan_comment_id?: number | null
+  status_comment_id?: number | null
+  /** The last write-back's failure, masked and bounded by the server (`failure_text`); null once one lands. */
+  writeback_error?: string | null
+  /**
+   * The review's requirements finding: true writes `Closes #N` into the pull
+   * request, false writes `part of #N`, null is not decided yet.
+   */
+  requirements_met?: boolean | null
+  requirements_unmet?: string[]
+  requirements_note?: string | null
 }
 
 /** `IssueRun.to_api().pull_request`. */

@@ -10,7 +10,8 @@
 //     no_forge_credential, read_failed; validation_failed for a malformed
 //     reference), and none of them prints a figure it did not read;
 //   * a CLOSED issue warns and needs "Plan it anyway", never a refusal;
-//   * auto-merge is drawn OFF and DISABLED with #295 (the API refuses it);
+//   * auto-merge is drawn OFF and DISABLED, 'requires the merge step (#295)',
+//     unless the preview reports it available (the API refuses it until then);
 //   * fix rounds are 3 by default within 1-5;
 //   * the body POSTed is exactly RunCreate's fields, and the page lands on the
 //     new run.
@@ -49,7 +50,7 @@ const PROVIDERS = {
   generated_at: '2026-10-02T10:00:00Z',
 }
 
-function preview(over: Record<string, unknown> = {}) {
+function preview(over: Record<string, unknown> = {}, top: Record<string, unknown> = {}) {
   return {
     issue: {
       ref: 'example-org/infra#512', owner: 'example-org', repo: 'infra', number: 512,
@@ -62,6 +63,7 @@ function preview(over: Record<string, unknown> = {}) {
       ...over,
     },
     tenant_id: 'eng',
+    ...top,
   }
 }
 
@@ -228,7 +230,7 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(visible(codex.closest('label'))).toMatch(/plans and builds with claude-code/)
   })
 
-  it('plan approval defaults to Required; auto-merge is off and disabled until #295; fix rounds 3 in 1-5', async () => {
+  it('plan approval defaults to Required; auto-merge is off and disabled, requiring #295; fix rounds 3 in 1-5', async () => {
     serve({ status: 200, body: preview() })
     await mount()
     const required = screen.getByRole('radio', { name: /Required/ }) as HTMLInputElement
@@ -238,11 +240,51 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
     expect(merge.checked).toBe(false)
     expect(merge.disabled).toBe(true)
-    expect(visible(merge.closest('.in-merge'))).toContain('not available until #295')
+    expect(visible(merge.closest('.in-merge'))).toContain('requires the merge step (#295)')
     const rounds = screen.getByLabelText('Fix rounds when checks go red') as HTMLInputElement
     expect(rounds.value).toBe('3')
     expect(rounds.min).toBe('1')
     expect(rounds.max).toBe('5')
+  })
+
+  it('auto-merge stays disabled when the preview says it is unavailable, and shows the API\'s reason', async () => {
+    const reason = 'auto_merge requires #295 phase 2, which issue runs do not compile yet'
+    serve({ status: 200, body: preview({}, { auto_merge: { available: false, requires: '#295', reason } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(true)
+    expect(visible(container.querySelector('.in-merge'))).toContain('requires the merge step (#295)')
+    expect(visible(container.querySelector('.in-merge'))).toContain(reason)
+  })
+
+  it('auto-merge can be switched on only when the API reports it available, and is sent', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(false)
+    expect(merge.checked).toBe(false)
+    fireEvent.click(merge)
+    expect(merge.checked).toBe(true)
+    expect(visible(container.querySelector('.in-send'))).toMatch(/auto-merge\s*on/)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+  })
+
+  it('a preview that does not say is read as unavailable: nothing switches it on', async () => {
+    const served = serve({ status: 200, body: preview() })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.disabled).toBe(true)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: false })
   })
 
   it('the summary repeats the choices', async () => {
@@ -255,7 +297,7 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(side()).toContain('example-org/infra#512')
     expect(side()).toContain('claude-code')
     expect(side()).toContain('waits for approval')
-    expect(side()).toContain('off · not available until #295')
+    expect(side()).toContain('off · requires the merge step (#295)')
     expect(side()).toContain('up to 3')
     fireEvent.click(screen.getByRole('radio', { name: /Auto/ }))
     fireEvent.change(screen.getByLabelText('Fix rounds when checks go red'), { target: { value: '5' } })

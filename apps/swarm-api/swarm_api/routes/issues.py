@@ -23,6 +23,7 @@ from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
 from ..forge import ForgeReadError, IssueIsPullRequest, preview
+from ..issueruns import auto_merge_availability
 from ..validation import PullRequestReference, parse_issue_ref
 
 log = logging.getLogger(__name__)
@@ -58,4 +59,6 @@ def preview_issue(
         log.info("issue preview tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
         raise
     log.info("issue preview tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
-    return {"issue": body, "tenant_id": tenant_id}
+    # Whether POST /v1/runs would take `auto_merge: true` now, and why not:
+    # the submit form draws the switch from this rather than guessing.
+    return {"issue": body, "tenant_id": tenant_id, "auto_merge": auto_merge_availability()}
