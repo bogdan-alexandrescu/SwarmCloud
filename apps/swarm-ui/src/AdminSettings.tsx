@@ -955,9 +955,11 @@ function SideEditor({
         onClose()
       }}
     >
+      {/* THE NAME UNDER THE LABEL ONLY WHEN IT ADDS SOMETHING (browser QA
+          N19, 2026-10-04): `global` read "global / global". */}
       <h3 className="adm-side-title" id={titleId}>
         {poolLabel(pool.name)}
-        <span className="ctl-sub">{pool.name}</span>
+        {poolLabel(pool.name) !== pool.name && <span className="ctl-sub">{pool.name}</span>}
       </h3>
       <dl className="adm-side-facts">
         <dt>In use</dt>
