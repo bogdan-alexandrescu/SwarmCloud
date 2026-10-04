@@ -623,7 +623,7 @@ const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
  * account, the id's copy button, and the dispatch chips. Sans; mono only for
  * the ids. An account not read is a dash with its reason, never blank.
  */
-function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
+export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
   const classes = useResourceClasses()
   const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
   const account = task === null ? null : accountText(task.account)

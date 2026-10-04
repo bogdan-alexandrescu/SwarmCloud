@@ -109,7 +109,7 @@ function label(el: Element): string {
   return el.getAttribute('aria-label') ?? (el.textContent ?? '').trim()
 }
 
-describe('item 2: the agent header\'s actions have their own row at every split width', () => {
+describe('item 2: the agent header\'s actions never overlap, at every split width', () => {
   for (const viewport of [1440, 1100]) {
     for (const snap of SNAPS) {
       it(`no two controls overlap, and none leaves the column, at ${snap.label} in a ${viewport}px window`, async () => {
@@ -139,17 +139,27 @@ describe('item 2: the agent header\'s actions have their own row at every split 
     }
   }
 
-  it('puts the actions in a row of their own, not beside the title, and the row wraps', async () => {
+  // LINE 1 AGAIN (agent-details-v3.html A, picked 2026-10-04): the pill, the
+  // title, the elapsed headline and the actions share one line. What U9's own
+  // row was FOR still holds: nothing the actions hold can be drawn over
+  // another control -- the title takes the slack and clamps, the headline and
+  // the actions never shrink, and the actions wrap inside themselves.
+  // MUTATION: let the actions or the headline shrink, or stop the title
+  // taking the slack, or the actions wrapping.
+  it('shares line 1 with the title, and neither the actions nor the headline is squeezed under it', async () => {
     const s = await split('list')
+    const env = { width: 1440 }
     const actions = s.querySelector<HTMLElement>('.ag-head-actions')!
     const row = actions.parentElement!
-    expect(row.classList.contains('ag-head-bar'), 'the actions are not in their own row').toBe(true)
-    expect(row.querySelector('.ag-head-title'), 'the title shares the actions\' row').toBeNull()
-    expect(painted(actions, 'flex-wrap', { width: 1440 }), 'the actions overprint rather than wrap').toBe('wrap')
-    // The title row still holds the pill and the title on one line.
-    const title = s.querySelector('.ag-head-row')!
-    expect(title.querySelector('[data-mark]')).not.toBeNull()
-    expect(title.querySelector('.ag-head-title')).not.toBeNull()
+    expect(row.classList.contains('ag-head-row'), 'the actions are not on line 1').toBe(true)
+    expect(row.querySelector('[data-mark]')).not.toBeNull()
+    const title = row.querySelector<HTMLElement>('.ag-head-title')!
+    expect(title).not.toBeNull()
+    expect(painted(row, 'flex-wrap', env)).toBe('nowrap')
+    expect(painted(actions, ['flex', 'flex-shrink'], env), 'the actions may be squeezed').toMatch(/^(none|0)\b/)
+    expect(painted(row.querySelector('.ag-head-hl')!, ['flex', 'flex-shrink'], env), 'the headline may be squeezed').toMatch(/^(none|0)\b/)
+    expect(painted(title, ['flex', 'flex-grow'], env), 'the title does not take the slack').toMatch(/^1\b/)
+    expect(painted(actions, 'flex-wrap', env), 'the actions overprint rather than wrap').toBe('wrap')
   })
 
   it('draws no sticky header band over the split\'s header', async () => {

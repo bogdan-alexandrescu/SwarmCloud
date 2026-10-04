@@ -35,6 +35,7 @@ vi.mock('../api', async (importOriginal) => {
 
 import { AgentsScreen } from '../Agents'
 import { Run } from '../AgentDetail'
+import { AgHeadMeta } from '../AgentSplit'
 import { WorkflowCard } from '../Workflows'
 
 afterEach(() => {
@@ -274,7 +275,22 @@ describe('the agent inspector head', () => {
     api.loadTaskLogs.mockResolvedValue({ status: 'empty', fetchedAt: Date.now() })
   })
 
-  it('shows started, submitted, ended and the account beside the state', () => {
+  // agent-details-v3.html A: started and ended are the Elapsed figure's
+  // sub-line (`13:18 → 13:41`), submitted is Progress's `submitted` line, and
+  // the account is in the header's meta line -- each said once, in the one
+  // formatter, with the UTC instant in its title.
+  function elapsedSub(c: HTMLElement): HTMLElement {
+    const cell = [...c.querySelectorAll<HTMLElement>('.dt-sc')].find((x) => x.querySelector('.dt-sc-l')?.textContent === 'Elapsed')
+    expect(cell, 'no Elapsed cell').toBeTruthy()
+    return cell!.querySelector<HTMLElement>('.dt-sc-s')!
+  }
+  function submitted(c: HTMLElement): HTMLElement {
+    const p = [...c.querySelectorAll<HTMLElement>('.dt-progress .dt-note')].find((x) => x.textContent?.startsWith('submitted '))
+    expect(p, 'no submitted line').toBeTruthy()
+    return p!
+  }
+
+  it('shows started, submitted, ended and the account', () => {
     const t = runTask({
       state: 'SUCCEEDED',
       created_at: iso(90),
@@ -283,21 +299,23 @@ describe('the agent inspector head', () => {
       account: acct({ swapped_from: 'acct-eng-01', swaps: [{ account_id: 'acct-eng-01', cause: 'unreadable' }] }),
     })
     const { container } = render(<Run run={agentRun(t)} />)
-    const head = container.querySelector('.section.panel') as HTMLElement
-    expect(fact(head, 'started')?.textContent).toContain(clockTime(iso(80))!.text)
-    expect(fact(head, 'started')?.getAttribute('title')).toContain(new Date(NOW - 80 * 60_000).toISOString())
-    expect(fact(head, 'submitted')?.textContent).toContain(clockTime(iso(90))!.text)
-    expect(fact(head, 'ended')?.textContent).toContain(clockTime(iso(10))!.text)
-    expect(fact(head, 'account')?.textContent).toContain('acct-eng-01 → 02 (swapped: unreadable)')
+    const span = elapsedSub(container).querySelector<HTMLElement>('span[title]')!
+    expect(span.textContent).toBe(`${clockTime(iso(80))!.text} → ${clockTime(iso(10))!.text}`)
+    expect(span.getAttribute('title')).toContain(new Date(NOW - 80 * 60_000).toISOString())
+    expect(span.getAttribute('title')).toContain(new Date(NOW - 10 * 60_000).toISOString())
+    expect(submitted(container).textContent).toContain(clockTime(iso(90))!.text)
+    const meta = render(<AgHeadMeta taskId={t.id} task={t} />).container
+    expect(meta.textContent).toContain('acct-eng-01 → 02 (swapped: unreadable)')
   })
 
-  it('says never started on a cancelled task that never ran, with its submit time', () => {
+  it('says never ran on a cancelled task that never ran, with its submit time', () => {
     const t = runTask({ state: 'CANCELLED', created_at: iso(45), started_at: null, completed_at: iso(40) })
     const { container } = render(<Run run={agentRun(t, [])} />)
-    const head = container.querySelector('.section.panel') as HTMLElement
-    expect(fact(head, 'started')?.textContent).toContain('never started')
-    expect(fact(head, 'submitted')?.textContent).toContain(clockTime(iso(45))!.text)
-    expect(fact(head, 'account')?.textContent).toContain('not read')
+    const cell = [...container.querySelectorAll<HTMLElement>('.dt-sc')].find((x) => x.querySelector('.dt-sc-l')?.textContent === 'Elapsed')!
+    expect(cell.querySelector('.dt-sc-v')?.textContent).toBe('never ran')
+    expect(submitted(container).textContent).toContain(clockTime(iso(45))!.text)
+    const meta = render(<AgHeadMeta taskId={t.id} task={t} />).container
+    expect(meta.textContent).toContain('not read')
   })
 
   it('shows each attempt’s own account, with its swap, on the attempt card', async () => {

@@ -42,6 +42,7 @@ import {
   attemptOutcome,
   bytesLabel,
   checkpointsFor,
+  clockTime,
   dispatchOf,
   elapsed,
   newestHeartbeat,
@@ -798,7 +799,27 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   const el = elapsed(task, now)
   const cls = run.classes?.[task.resource_class] ?? null
   const noCeiling = ceilingNote(run)
-  const cells: DtCell[] = [{ label: 'Elapsed', value: el.text, sub: elapsedNote(task, el.phase, now) }]
+  // WHEN IT STARTED AND ENDED ARE THE ELAPSED FIGURE'S SUB-LINE (agent-
+  // details-v3.html A: `since 14:02`, `13:18 → 13:41`), in the one formatter
+  // (`clockTime`): local time, the UTC instant and its age in the title.
+  const start = clockTime(task.started_at, now)
+  const end = clockTime(task.completed_at, now)
+  const cells: DtCell[] = [
+    {
+      label: 'Elapsed',
+      value: el.text,
+      sub:
+        el.phase === 'running' && start !== null ? (
+          <span title={`started ${start.title}`}>since {start.text}</span>
+        ) : el.phase === 'ran' && start !== null && end !== null ? (
+          <span title={`started ${start.title} · ended ${end.title}`}>
+            {start.text} → {end.text}
+          </span>
+        ) : (
+          elapsedNote(task, el.phase, now)
+        ),
+    },
+  ]
 
   if (attempts === null) {
     cells.push(

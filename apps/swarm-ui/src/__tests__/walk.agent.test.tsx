@@ -66,7 +66,11 @@ describe('B: the metadata is said once, in the header block', () => {
     const meta = [...head.querySelectorAll('.ag-head-facts > li')].map((li) => (li.textContent ?? '').trim())
     expect(meta[0], 'the profile is not in the header').toBe('claude-code')
     expect(meta[1], 'the class is not in the header').toMatch(/^standard( · \d+ vCPU · \d+ GiB)?$/)
-    expect(times(pane, 'claude-code'), 'the pane repeats the profile').toBe(0)
+    // The pane's own <h1> is hidden under the header (asserted below), and it
+    // names the agent, not its profile; what the pane SHOWS repeats nothing.
+    const paneShown = pane.cloneNode(true) as HTMLElement
+    for (const el of paneShown.querySelectorAll('.head, [hidden]')) el.remove()
+    expect(times(paneShown, 'claude-code'), 'the pane repeats the profile').toBe(0)
     // The whole id with its copy, once, in the header.
     expect(head.querySelector('button[aria-label^="Copy task id"]'), 'no id copy in the header').not.toBeNull()
     expect(pane.querySelector('button[aria-label^="Copy task id"]'), 'the pane repeats the id copy').toBeNull()
