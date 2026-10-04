@@ -191,11 +191,11 @@ describe('item 5: the plan is drawn from its schema', () => {
     expect(steps).toHaveLength(2)
     expect(visible(steps[0]!.querySelector('.rn-step-h'))).toBe('1 · api: the plan schema and its overlaps')
     expect(visible(steps[0]!)).toContain('impl-plan-schema-and-overlaps')
-    expect(steps[0]!.querySelector('.rn-step-meta'), 'files drawn for a step that has none').toBeNull()
-    const meta = steps[1]!.querySelector<HTMLElement>('.rn-step-meta')!
-    expect(visible(meta)).toContain('apps/agent-worker/agent_worker/forge.py')
-    expect(visible(meta)).toContain('tests/unit/worker/test_forge_comment.py')
-    expect(visible(meta)).toContain('about 40 min')
+    expect(steps[0]!.querySelector('.rn-step-list, .rn-step-meta'), 'files drawn for a step that has none').toBeNull()
+    // Touches and tests are lists, one per line (U12 C); the estimate is its own line.
+    expect(visible(steps[1]!.querySelector('ul.rn-step-list[aria-label="Touches"]'))).toContain('apps/agent-worker/agent_worker/forge.py')
+    expect(visible(steps[1]!.querySelector('ul.rn-step-list[aria-label="Tests"]'))).toContain('tests/unit/worker/test_forge_comment.py')
+    expect(visible(steps[1]!.querySelector('.rn-step-meta'))).toContain('about 40 min')
     for (const s of steps) {
       const fold = s.querySelector<HTMLDetailsElement>('details.rn-prompt-d')
       expect(fold, 'the prompt is not folded').not.toBeNull()
@@ -225,7 +225,11 @@ describe('item 5: the plan is drawn from its schema', () => {
   })
 })
 
-describe('item 6: owner/repo#N stays on one line', () => {
+// SUPERSEDED BY U12 A (owner, 2026-10-04): one line cut with an ellipsis put
+// the value past a 300px card's edge. The reference now takes the card's width
+// under its label and breaks ONLY after `/` or `#` -- still never at the
+// owner's hyphen by `overflow-wrap: anywhere`, which is what item 6 forbade.
+describe('item 6: owner/repo#N breaks only at its joints', () => {
   for (const width of [1440, 390]) {
     it(`in the Linked and Read-from-the-issue cards at ${width}px`, async () => {
       const env: CascadeEnv = { width }
@@ -233,11 +237,11 @@ describe('item 6: owner/repo#N stays on one line', () => {
       for (const name of ['Linked', 'Read from the issue']) {
         const ref = within(card(container, name)).getByText(REF)
         expect(ref.getAttribute('title'), `${name}: the whole reference is not in a title`).toBe(REF)
-        expect(painted(ref, 'white-space', env), `${name}: the reference wraps`).toBe('nowrap')
-        expect(painted(ref, 'text-overflow', env), `${name}: the reference is cut without an ellipsis`).toBe('ellipsis')
-        expect(painted(ref, ['overflow-x', 'overflow'], env)).toBe('hidden')
         expect(painted(ref, 'min-width', env), `${name}: the reference cannot shrink in its row`).toBe('0')
         expect(painted(ref, 'overflow-wrap', env) ?? 'normal', `${name}: the reference breaks anywhere`).toBe('normal')
+        expect(painted(ref, 'word-break', env) ?? 'normal', `${name}: the reference breaks anywhere`).toBe('normal')
+        const breaks = [...ref.childNodes].map((n) => (n.nodeName === 'WBR' ? '|' : n.textContent)).join('')
+        expect(breaks, `${name}: a break inside a name`).toBe(REF.replace('/', '/|').replace('#', '#|'))
       }
     })
   }

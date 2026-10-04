@@ -58,17 +58,21 @@ describe('F, revised by browser QA D19 (2026-10-04): each card keeps its own hei
   // Walkthrough F stretched both cards of a row; beside Headroom's three
   // stacks that drew ~600px of blank under Running now and Waiting. The owner
   // chose `align-items: start` (qa.u10b.overview.test.tsx asserts it too).
-  it('aligns both cards of a row to its top, neither with a height of its own', async () => {
+  // U12 N17/D19 (owner QA 2026-10-04): the rows of two became two column
+  // stacks, so a short card is followed by the next card in its column. Each
+  // column and the grid still align to the top, and no card has a height.
+  it('aligns every card of a column to its top, none with a height of its own', async () => {
     window.history.replaceState(null, '', '/')
     render(<App />)
-    const rows = await waitFor(() => {
-      const r = [...document.querySelectorAll<HTMLElement>('.ov-g21')]
+    const cols = await waitFor(() => {
+      const r = [...document.querySelectorAll<HTMLElement>('.ov-g21 > .ov-col')]
       expect(r.length).toBe(2)
       return r
     }, WAIT)
-    for (const row of rows) {
-      expect(painted(row, 'align-items', WIDE), 'a short card is stretched to its neighbour').toBe('start')
-      for (const card of row.querySelectorAll(':scope > .ov-card')) {
+    expect(painted(cols[0]!.parentElement!, 'align-items', WIDE), 'a short column is stretched to its neighbour').toBe('start')
+    for (const col of cols) {
+      expect(painted(col, 'align-items', WIDE), 'a short card is stretched').toBe('start')
+      for (const card of col.querySelectorAll(':scope > .ov-card')) {
         expect(painted(card, 'height', WIDE) ?? 'auto', `${card.id} has a height of its own`).toBe('auto')
       }
     }

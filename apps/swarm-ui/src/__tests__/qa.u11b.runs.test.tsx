@@ -123,19 +123,24 @@ describe('D3: the Linked card cuts values, never labels', () => {
     for (const card of side.querySelectorAll(':scope > .rn-card')) {
       expect(painted(card, 'grid-template-columns', WIDE), card.getAttribute('aria-label')!).toBe('minmax(0, 1fr)')
     }
+    // SUPERSEDED BY U12 A (owner, 2026-10-04): a label|value row did not
+    // fit a 300px card, so each label now sits ABOVE its value. A label is
+    // still never cut; a single-token id is still cut with its title, and
+    // everything else wraps at a safe point (qa.u12.runs.test.tsx holds where).
     for (const fact of linked.querySelectorAll('.ctl-fact')) {
       const b = fact.querySelector(':scope > b')!
-      expect(painted(b, 'flex', WIDE)).toBe('none')
       expect(painted(b, 'white-space', WIDE), visible(b)).toBe('nowrap')
       const value = fact.querySelector(':scope > :not(b)') as HTMLElement
       expect(painted(value, 'min-width', WIDE), visible(fact)).toBe('0')
-      expect(painted(value, 'text-overflow', WIDE), visible(fact)).toBe('ellipsis')
-      expect(value.getAttribute('title') ?? value.querySelector('[title]')?.getAttribute('title'), visible(fact)).toBeTruthy()
+      if (painted(value, 'white-space', WIDE) === 'nowrap') {
+        expect(painted(value, 'text-overflow', WIDE), visible(fact)).toBe('ellipsis')
+        expect(value.getAttribute('title'), visible(fact)).toBeTruthy()
+      }
     }
-    // Every label fits beside a usable value in a 300px card (14px padding a side).
+    // Every label fits on its own row of a 300px card (14px padding a side).
     const room = 300 - 28 - 2
     for (const b of linked.querySelectorAll('.ctl-fact > b')) {
-      expect(textPx(visible(b), b, WIDE) + 12 + 60, visible(b)).toBeLessThanOrEqual(room)
+      expect(textPx(visible(b), b, WIDE), visible(b)).toBeLessThanOrEqual(room)
     }
   })
 })

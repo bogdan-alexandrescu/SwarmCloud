@@ -1,7 +1,15 @@
-import { useEffect } from 'react'
-import { Button, NamedMark } from './components'
+import { useEffect, useState } from 'react'
+import { agentName } from './agentlist'
+import { loadMe, loadRuns, loadTasks, loadWorkflows } from './api'
+import { Button, Chip, NamedMark } from './components'
+import { Dash } from './components/Chip'
+import type { Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { runAddress } from './IssueSubmit'
+import { addressToPath } from './paths'
 import { PageHead } from './Shell'
+import { workflowLabel } from './stepviews'
+import { timeAgo, type Task } from './types'
 import './styles/submit.css'
 
 /**
@@ -11,11 +19,15 @@ import './styles/submit.css'
  * per form, each with its icon, a Start button and its key (T, W, I). The
  * third is "From a GitHub issue" (intake-tenants.html 1A, /submit/issue).
  *
- * RECENT SUBMISSIONS ARE NOT LISTED, and the card says why in place (states.html
- * C, a region state). No route serves "what did I submit, with what settings":
- * `GET /v1/tasks` carries `submitted_by` but not the input a submission was
- * made with, so a list built from it could neither re-open a form nor tell a
- * task from a workflow step. The card stays empty rather than guessing.
+ * RECENT SUBMISSIONS ARE YOURS, FROM THE READS THAT EXIST (owner QA R15,
+ * 2026-10-04): the card said "No recent submissions yet" to an owner with runs
+ * on the page beside it. No route serves "what did I submit, with what
+ * settings", but who submitted each task, workflow and run IS served
+ * (`submitted_by`, `created_by`), and so is who you are (`/v1/tenants/me`).
+ * The card lists your newest lone tasks, workflows and issue runs from those
+ * reads -- each a link to its page -- and says which windows it looked in. A
+ * workflow's steps are not lone tasks and are not listed twice; who you are
+ * unread means nothing is listed, never everyone's.
  *
  * T, W AND I FOLLOW N's GUARDS (SkyShell in Spine.tsx): never while focus is in a
  * field, never with a modifier held, never for a key another handler already
@@ -130,16 +142,144 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
           <HelpCard topic="recent-submissions" />
         </div>
-        {/* WHAT THE USER SEES AND CAN DO (walkthrough E): why the list is
-            empty -- the API keeps no per-person list yet -- is behind the `?`. */}
-        <p className="sb-empty">
-          <NamedMark mark="queued" hue="neu" />
-          <span>No recent submissions yet.</span>
-        </p>
+        <RecentSubmissions go={go} />
       </section>
       <p className="sb-note sb-foot">
         The spine&rsquo;s Submit button opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
       </p>
     </section>
+  )
+}
+
+/** How many of your submissions the card lists. */
+export const RECENT_SHOWN = 5
+
+export interface RecentSubmission {
+  kind: 'task' | 'workflow' | 'issue run'
+  id: string
+  name: string
+  at: string
+  /** The router address `go` takes, and the path a new tab opens. */
+  to: string
+}
+
+type RecentRead =
+  | { kind: 'reading' }
+  | { kind: 'who-unread'; why: string }
+  | { kind: 'read'; items: RecentSubmission[]; looked: string[]; unread: string[] }
+
+function okData<T>(r: Result<T>): T | null {
+  return r.status === 'ok' || r.status === 'stale' ? r.data : null
+}
+
+function unreadWhy(what: string, r: Result<unknown>): string | null {
+  return r.status === 'error' ? `${what} not read: ${r.error.message}` : null
+}
+
+/**
+ * YOUR SUBMISSIONS, NEWEST FIRST, from what the reads served (owner QA R15):
+ * a lone task you submitted (not a workflow's step, not an agent's child), a
+ * workflow you submitted, an issue run you created. Pure, for the test.
+ */
+export function recentSubmissions(
+  email: string,
+  tasks: readonly Task[] | null,
+  workflows: readonly import('./types').Workflow[] | null,
+  runs: readonly import('./types').IssueRun[] | null,
+): RecentSubmission[] {
+  const mine = (who: string | null | undefined) => typeof who === 'string' && who.toLowerCase() === email.toLowerCase()
+  const byId = new Map((tasks ?? []).map((t) => [t.id, t]))
+  const out: RecentSubmission[] = []
+  for (const t of tasks ?? []) {
+    if (!mine(t.submitted_by) || t.workflow_id !== null || t.step_id !== null || (t.parent_task_id ?? null) !== null) continue
+    out.push({ kind: 'task', id: t.id, name: agentName(t), at: t.created_at, to: `work/task/${t.id}` })
+  }
+  for (const w of workflows ?? []) {
+    if (!mine(w.submitted_by)) continue
+    out.push({
+      kind: 'workflow', id: w.workflow_id, name: workflowLabel(w, byId) ?? w.workflow_id, at: w.created_at,
+      to: `work/workflows?${new URLSearchParams({ wf: w.workflow_id }).toString()}`,
+    })
+  }
+  for (const r of runs ?? []) {
+    if (!mine(r.created_by)) continue
+    out.push({ kind: 'issue run', id: r.id, name: r.issue_read?.title || r.issue.ref, at: r.created_at, to: runAddress(r.id) })
+  }
+  return out.sort((a, b) => Date.parse(b.at) - Date.parse(a.at)).slice(0, RECENT_SHOWN)
+}
+
+function RecentSubmissions({ go }: { go: (to: string) => void }) {
+  const [read, setRead] = useState<RecentRead>({ kind: 'reading' })
+  useEffect(() => {
+    let live = true
+    void Promise.all([loadMe(), loadTasks(), loadWorkflows(), loadRuns()]).then(([me, tasks, workflows, runs]) => {
+      if (!live) return
+      const who = okData(me)
+      if (who === null) {
+        setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing' })
+        return
+      }
+      const t = tasks.status === 'empty' ? [] : (okData(tasks)?.tasks ?? null)
+      const w = workflows.status === 'empty' ? [] : (okData(workflows)?.workflows ?? null)
+      const r = runs.status === 'empty' ? [] : (okData(runs)?.runs ?? null)
+      const looked = [
+        t === null ? null : `the newest ${t.length} task${t.length === 1 ? '' : 's'}`,
+        w === null ? null : `${w.length} workflow${w.length === 1 ? '' : 's'}`,
+        r === null ? null : `${r.length} issue run${r.length === 1 ? '' : 's'}`,
+      ].filter((x): x is string => x !== null)
+      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
+        .filter((x): x is string => x !== null)
+      setRead({ kind: 'read', items: recentSubmissions(who.principal.email, t, w, r), looked, unread })
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+
+  if (read.kind === 'reading') {
+    return (
+      <p className="sb-empty" aria-busy="true">
+        <NamedMark mark="queued" hue="neu" />
+        <span>Reading your recent submissions…</span>
+      </p>
+    )
+  }
+  if (read.kind === 'who-unread') {
+    // WHO YOU ARE IS UNREAD: nothing can be called yours, so nothing is listed.
+    return (
+      <p className="sb-empty">
+        <Dash why={`Who you are could not be read (${read.why}), so your submissions cannot be told from anyone else's.`} />
+        <span>Not read: who you are is unknown here.</span>
+      </p>
+    )
+  }
+  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')} this tenant has.`
+  return (
+    <>
+      {read.items.length === 0 ? (
+        <p className="sb-empty">
+          <NamedMark mark="queued" hue="neu" />
+          <span>{read.unread.length === 0 ? 'None of yours yet.' : 'None of yours in what was read.'}</span>
+        </p>
+      ) : (
+        <ul className="sb-recent-list">
+          {read.items.map((it) => (
+            <li key={`${it.kind}:${it.id}`} className="sb-recent-i">
+              <Chip>{it.kind}</Chip>
+              <a className="sb-recent-n" href={addressToPath(it.to)} title={`${it.name} · ${it.id}`} onClick={(e) => {
+                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+                e.preventDefault()
+                go(it.to)
+              }}>{it.name}</a>
+              <span className="sb-recent-at" title={it.at}>{timeAgo(it.at)}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+      {scope !== null && <p className="sb-note sb-recent-scope">{scope}</p>}
+      {read.unread.map((u) => (
+        <p key={u} className="sb-note sb-recent-scope"><Dash why={u} /> {u}</p>
+      ))}
+    </>
   )
 }

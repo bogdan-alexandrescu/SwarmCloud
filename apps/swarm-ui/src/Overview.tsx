@@ -144,7 +144,7 @@ export function OverviewScreen() {
   const checks = useMemo(
     () =>
       deriveChecks(
-        { capacity, tasks, leases, providers, accounts, workflows, stats },
+        { capacity, tasks, leases, providers, accounts, workflows, stats, phonePage: phoneWidth() },
         Date.now(),
       ),
     [capacity, tasks, leases, providers, accounts, workflows, stats],
@@ -204,49 +204,58 @@ export function OverviewScreen() {
 
       <LifecycleBand stats={stats} tasks={tasks} />
 
-      <div className="ov-g21">
-        <section className="ctl-card ov-card ov-running" id="ov-running">
-          <RunningCard tasks={tasks} stats={stats} leases={leases} />
-        </section>
-        <section className="ctl-card ov-card ov-spend" id="ov-spend">
-          <CardHead title="Cost so far" href="/timeline" cta="Timeline" explain="token-cost" />
-          <SpendBody state={spend} tasks={tasks} />
+      {/* TWO COLUMNS THAT EACH STACK, NOT ROWS OF PAIRS (owner QA N17/D19,
+          2026-10-04). As two rows of two, each row was as tall as its taller
+          card, and the shorter one's column was blank beside it: ~157px
+          beside Cost so far and ~388px beside Headroom. Each column now
+          stacks its own cards at their own heights -- Running now, Waiting
+          and Recent failures on the left, Cost so far and Headroom on the
+          right -- so a short card is followed by the next card in its
+          column, not by blank. The pools stay a full-width row under both
+          (N17). On a narrower screen it is one column in O1's order. */}
+      <div className="ov-g21 ov-cols">
+        <div className="ov-col">
+          <section className="ctl-card ov-card ov-running" id="ov-running">
+            <RunningCard tasks={tasks} stats={stats} leases={leases} />
+          </section>
+          <section className="ctl-card ov-card ov-waiting" id="ov-waiting">
+            <CardHead
+              title="Waiting, and why"
+              note={waiting === null ? undefined : `${waiting.reduce((n, g) => n + g.n, 0)} · none cost anything`}
+              href="/agents/waiting"
+              cta="All waiting"
+            />
+            <WaitingWhy tasks={tasks} />
+          </section>
+          <section className="ctl-card ov-card ov-failures" id="ov-failures">
+            <CardHead
+              title="Recent failures"
+              note={failures === null ? undefined : failures.note}
+              href="/agents/recent?state=failed"
+              cta="All recent"
+            />
+            <RecentFailures tasks={tasks} />
+          </section>
+        </div>
+        <div className="ov-col">
+          <section className="ctl-card ov-card ov-spend" id="ov-spend">
+            <CardHead title="Cost so far" href="/timeline" cta="Timeline" explain="token-cost" />
+            <SpendBody state={spend} tasks={tasks} />
+          </section>
+          <section className="ctl-card ov-card ov-headroom" id="ov-headroom">
+            <CardHead title="Headroom" href="/capacity/pools" cta="Pools" explain="pools-all-at-once" />
+            <HeadroomBody capacity={capacity} accounts={accounts} />
+          </section>
+        </div>
+
+        {/* THE POOLS ARE THEIR OWN FULL-WIDTH ROW (browser QA N17, 2026-10-04):
+            under Headroom, a long pool list made that card ~1100px taller than
+            Waiting beside it, and the left column was blank for all of it. */}
+        <section className="ctl-card ov-card ov-pools" id="ov-pools">
+          <CardHead title="Pools" href="/capacity/pools" cta="Pools" />
+          <PoolsBody state={capacity} />
         </section>
       </div>
-
-      <div className="ov-g21">
-        <section className="ctl-card ov-card ov-waiting" id="ov-waiting">
-          <CardHead
-            title="Waiting, and why"
-            note={waiting === null ? undefined : `${waiting.reduce((n, g) => n + g.n, 0)} · none cost anything`}
-            href="/agents/waiting"
-            cta="All waiting"
-          />
-          <WaitingWhy tasks={tasks} />
-        </section>
-        <section className="ctl-card ov-card ov-headroom" id="ov-headroom">
-          <CardHead title="Headroom" href="/capacity/pools" cta="Pools" explain="pools-all-at-once" />
-          <HeadroomBody capacity={capacity} accounts={accounts} />
-        </section>
-      </div>
-
-      {/* THE POOLS ARE THEIR OWN FULL-WIDTH ROW (browser QA N17, 2026-10-04):
-          under Headroom, a long pool list made that card ~1100px taller than
-          Waiting beside it, and the left column was blank for all of it. */}
-      <section className="ctl-card ov-card ov-pools" id="ov-pools">
-        <CardHead title="Pools" href="/capacity/pools" cta="Pools" />
-        <PoolsBody state={capacity} />
-      </section>
-
-      <section className="ctl-card ov-card ov-failures" id="ov-failures">
-        <CardHead
-          title="Recent failures"
-          note={failures === null ? undefined : failures.note}
-          href="/agents/recent?state=failed"
-          cta="All recent"
-        />
-        <RecentFailures tasks={tasks} />
-      </section>
     </div>
   )
 }

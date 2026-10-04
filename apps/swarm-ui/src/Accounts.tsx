@@ -1590,14 +1590,15 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
                     className="acct-hist-who"
                     title={[s.task_id, typeof s.attempt === 'number' ? `attempt ${s.attempt}` : null, s.tenant].filter(Boolean).join(' · ') || undefined}
                   >
-                    {s.mine ? <HoldWork h={s} /> : <span className="mono">{s.tenant}</span>}
-                    {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
-                    {!s.mine && h?.viewer === 'platform' && s.task_id && (
-                      <>
-                        {' '}
-                        <HoldWork h={s} />
-                      </>
-                    )}
+                    {/* ONE ROW THAT GIVES WAY BY ITS ID (owner QA D24, 2026-10-04):
+                        the task link ran 2-3px over "attempt 1" in a 196px
+                        cell. The link and the tenant shrink, each cut with
+                        an ellipsis; "attempt N" and a mark never do. */}
+                    <span className="acct-hist-whoin">
+                      {s.mine ? <HoldWork h={s} /> : <span className="mono">{s.tenant}</span>}
+                      {s.mine && s.tenant !== undefined && <span className="mono"> {s.tenant}</span>}
+                      {!s.mine && h?.viewer === 'platform' && s.task_id && <HoldWork h={s} />}
+                    </span>
                   </td>
                   <td>{s.since ? clockOf(s.since) : <span className="muted">start not recorded</span>}</td>
                   <td className="is-num">{s.since ? heldFor(b - a) : '—'}</td>

@@ -205,6 +205,20 @@
 }
 .sb-empty b { color: var(--text); }
 .sb-empty .sk-st { margin-top: 3px; }
+/* YOUR RECENT SUBMISSIONS (owner QA R15, 2026-10-04): 32px rows -- the kind
+   as a chip, the name cut with its title, its age -- then the windows the
+   card looked in. */
+.sb-recent-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.sb-recent-i {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center;
+  min-height: 32px; border-bottom: 1px solid var(--line);
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.sb-recent-i:last-child { border-bottom: 0; }
+.sb-recent-n { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--sk-ac); }
+.sb-recent-n:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.sb-recent-at { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); white-space: nowrap; }
+.sb-recent-scope { margin: 6px 0 0; }
 
 /* ---- a phone (submit.html's 390px frames) ------------------------------- */
 /* One column of runners; the choices stack (the grid already does); no key

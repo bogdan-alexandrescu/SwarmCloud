@@ -90,6 +90,24 @@
      Headroom are a figure and three short stacks. */
   .ov-g21 { grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr); }
 }
+/* EACH COLUMN STACKS ITS OWN CARDS (owner QA N17/D19, 2026-10-04): two rows
+   of pairs left ~157px blank beside Cost so far and ~388px beside Headroom,
+   each row as tall as its taller card. A column is a stack of cards at their
+   own heights; the pools span both columns under them. Below 1100px the
+   column wrappers step aside and the cards are one column in O1's order. */
+.ov-cols > .ov-col { display: contents; }
+@media (min-width: 1100px) {
+  .ov-cols > .ov-col { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; align-content: start; align-items: start; min-width: 0; }
+  .ov-cols > .ov-pools { grid-column: 1 / -1; }
+}
+@media (max-width: 1099px) {
+  .ov-cols .ov-running { order: 1; }
+  .ov-cols .ov-spend { order: 2; }
+  .ov-cols .ov-waiting { order: 3; }
+  .ov-cols .ov-headroom { order: 4; }
+  .ov-cols > .ov-pools { order: 5; }
+  .ov-cols .ov-failures { order: 6; }
+}
 
 /* A card per components.html A: the card radius, 12px/14px padding. */
 .ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }

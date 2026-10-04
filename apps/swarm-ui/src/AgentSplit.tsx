@@ -69,6 +69,28 @@ import { Button, CIcon, StateMark, Tabs } from './components'
  * are flattened by two rules scoped to `.ctl-drawer` in styles.css. Its own
  * stop control is not drawn here (`headed`): Stop is in this header row.
  */
+/** How long after a keyboard move of the divider the page is held where it was. */
+export const HOLD_SCROLL_MS = 400
+
+/**
+ * THE DIVIDER NEVER MOVES THE PAGE (owner QA R3, 2026-10-04: the no-jump
+ * rule). A keyboard move of the divider shifted the page scroller 0 -> 12:
+ * the list's new width re-lays both columns, and the browser re-anchors the
+ * page's scroll while it does. The page's scroll offset is recorded at the
+ * key and put back on every scroll the move causes, for the few frames the
+ * re-layout takes (`HOLD_SCROLL_MS`); then the page is the reader's again.
+ */
+export function holdPageScroll(from: Element | null): void {
+  const scroller = from?.closest<HTMLElement>('.ctl-scroll') ?? null
+  if (scroller === null) return
+  const top = scroller.scrollTop
+  const keep = () => {
+    if (scroller.scrollTop !== top) scroller.scrollTop = top
+  }
+  scroller.addEventListener('scroll', keep)
+  setTimeout(() => scroller.removeEventListener('scroll', keep), HOLD_SCROLL_MS)
+}
+
 export function AgentSplit({
   taskId,
   pane,
@@ -328,6 +350,7 @@ export function AgentSplit({
           const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
           if (step === 0) return
           e.preventDefault()
+          holdPageScroll(panel.current)
           setListSnap(SNAPS[Math.max(0, Math.min(SNAPS.length - 1, i + step))]!)
         }}
         onPointerDown={(e) => {
@@ -401,7 +424,7 @@ export function AgentSplit({
         ) : selected === 'detail' ? (
           <>
             {task !== null && <LogLastLine key={taskId} task={task} onOpen={() => go(`${base}/logs`)} />}
-            <AgentDetailScreen taskId={taskId} onClose={close} headed />
+            <AgentDetailScreen taskId={taskId} onClose={close} headed checkpoints={ckpt} />
           </>
         ) : selected === 'attempts' ? (
           <AttemptTimelineScreen taskId={taskId} />

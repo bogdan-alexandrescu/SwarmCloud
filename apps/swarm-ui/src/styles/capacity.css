@@ -325,6 +325,14 @@
 .acct-hist td { height: 32px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .acct-hist tr:last-child td { border-bottom: 0; }
 .acct-hist .is-num { text-align: right; font-variant-numeric: tabular-nums; }
+/* THE HOLDER IS A ROW OF PIECES, EACH ITS OWN BOX (owner QA D24, 2026-10-04):
+   as inline text in a 196px cell the task link ran 2-3px over "attempt 1".
+   The link and the tenant shrink and are cut, each with its own ellipsis;
+   "attempt N" and a mark keep their width. The cell's title is the whole. */
+.acct-hist-whoin { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; overflow: hidden; }
+.acct-hist-whoin > * { flex: none; white-space: nowrap; }
+.acct-hist-whoin > a,
+.acct-hist-whoin > .mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .acct-hist-bar { position: relative; display: block; min-width: 96px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .acct-hist-bar > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--sk-ac); }
 

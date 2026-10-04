@@ -27,6 +27,7 @@ import { HELP, type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { Absent, Mark, Metric, UtilRow, type MarkKind } from './primitives'
+import { checkpointsLine, checkpointsSay, type CheckpointCount } from './CheckpointsPane'
 import { useCheckpointListing, useRead, type CheckpointListing } from './RunFiles'
 import { Screen, timeAgo, type ScreenReading } from './Shell'
 import { StagedInputs } from './StagedInputs'
@@ -104,9 +105,18 @@ export function AgentDetailScreen({
   taskId,
   onClose,
   headed = false,
+  checkpoints,
 }: {
   taskId: string
   onClose: () => void
+  /**
+   * THE CHECKPOINTS TAB'S READ, when the split has one (owner QA D21,
+   * 2026-10-04): the tile said 4 then 6 while the tab said `2 of 2`, two reads
+   * of a moving count. Passed, the tile draws this read and no other, so the
+   * two always agree; null while it has not answered. Undefined outside the
+   * split, where the tile reads its own.
+   */
+  checkpoints?: CheckpointCount | null
   /**
    * Drawn under the split's header row (AgentSplit.tsx), which carries the
    * state pill, the name and Stop for every tab: this pane then draws no
@@ -183,7 +193,7 @@ export function AgentDetailScreen({
         {/* THE READING GOES DOWN WITH THE RUN. `Run` caps its clock at one
             poll past it, and the checkpoint and log panels re-read when it
             moves, so every part of the drawer is as of the same read. */}
-        {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} />}
+        {(r, reading) => <Run run={r} reload={reload} reading={reading} headed={headed} checkpoints={checkpoints} />}
       </Screen>
   )
   if (headed) return screenEl
@@ -286,8 +296,11 @@ export function Run({
   reload,
   reading,
   headed = false,
+  checkpoints,
 }: {
   run: AgentRun
+  /** The Checkpoints tab's read, for the tile (`AgentDetailScreen`). */
+  checkpoints?: CheckpointCount | null
   reload?: () => void
   /** Under the split's header row, which holds Stop; see `AgentDetailScreen`. */
   headed?: boolean
@@ -350,7 +363,7 @@ export function Run({
       <Alerts task={task} />
       <Why task={task} events={events} now={now} classes={run.classes} />
       <ErrorBanner run={run} />
-      <RunMetrics run={run} now={now} listing={listing} />
+      <RunMetrics run={run} now={now} listing={listing} checkpoints={checkpoints} />
       <Attempts run={run} now={now} />
       <DispatchPanel task={task} />
       <Output run={run} readAt={reading?.fetchedAt ?? null} />
@@ -835,7 +848,11 @@ function Headline({
  * rollup over. "1.8 GiB peak" across three attempts is the worst attempt, not
  * the run's total, and a tile that does not say so gets read as both.
  */
-function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing?: CheckpointListing }) {
+function RunMetrics({ run, now, listing, checkpoints }: {
+  run: AgentRun; now: number; listing?: CheckpointListing
+  /** The Checkpoints tab's read: when passed, the tile's only source (D21). */
+  checkpoints?: CheckpointCount | null
+}) {
   const { task, attempts, classes, events } = run
   const el = elapsed(task, now)
 
@@ -1019,6 +1036,9 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
           unmeasured neighbours render as phrases on dashed ones. The contrast
           between the two shapes IS the honesty rule, and it is visible with
           every card shut. */}
+      {checkpoints !== undefined ? (
+        <SharedCheckpoints c={checkpoints} />
+      ) : (
       <Metric
         label="Checkpoints"
         value={`${ckpts}`}
@@ -1046,7 +1066,38 @@ function RunMetrics({ run, now, listing }: { run: AgentRun; now: number; listing
         }
         explain="checkpoints"
       />
+      )}
     </div>
+  )
+}
+
+/**
+ * THE CHECKPOINTS TILE FROM THE TAB'S READ (owner QA D21, 2026-10-04). While
+ * an agent ran the tile said 4, then 6, and the tab `2 of 2`: two reads of a
+ * count that moves between them. In the split the tile draws the tab's read,
+ * so both say the same number from the same moment. A read not answered yet
+ * is said as reading; a part it could not read is a dash with its reason.
+ */
+function SharedCheckpoints({ c }: { c: CheckpointCount | null }) {
+  if (c === null) {
+    return <Metric label="Checkpoints" value="reading" tone="reading" explain="checkpoints" />
+  }
+  if (c.written === null) {
+    return <Metric label="Checkpoints" value="not read" tone="unread" sub={checkpointsSay(c)} explain="checkpoints" />
+  }
+  const line = checkpointsLine(c)
+  return (
+    <Metric
+      label="Checkpoints"
+      value={`${c.written}`}
+      sub={
+        <>
+          {line ?? <>{c.written} written, kept not read</>}{' '}
+          {(c.kept === null || c.kept !== c.written) && <Mark kind="partial" say={checkpointsSay(c)} />}
+        </>
+      }
+      explain="checkpoints"
+    />
   )
 }
 

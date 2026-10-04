@@ -157,17 +157,24 @@ export const FINISH_NOT_RECORDED: Absence = {
 // ---------------------------------------------------------------------------
 
 /**
- * Money.
+ * Money: ONE FORMAT FOR EVERY WORKFLOW FIGURE (owner QA R10, 2026-10-04).
  *
- * Two decimal places is the readable form, but a real cost of $0.004 printed
- * as "$0.00" is the absent-measurement lie arriving by a different door -- it
- * claims a run was free when it was not. Anything under a cent therefore keeps
- * four places. An EXACT zero is a measurement and renders as a digit.
+ * Two decimal places from a dollar up. Below a dollar, THREE SIGNIFICANT
+ * FIGURES: a real cost of $0.004 printed as "$0.00" is the absent-measurement
+ * lie arriving by a different door -- it claims a run was free when it was not
+ * -- and a single attempt is routinely worth $0.0312. Zeros past the second
+ * decimal say nothing and are dropped ($0.50, not $0.500). The Workflows list
+ * printed '$0.4950', '$7.6778' and '$12.92' side by side; it now prints
+ * '$0.495', '$7.68' and '$12.92'. An EXACT zero is a measurement and renders
+ * as a digit.
  */
 export function usd(n: number): string {
   if (n === 0) return '$0.00'
-  if (Math.abs(n) < 0.01) return `$${n.toFixed(4)}`
-  return `$${n.toFixed(2)}`
+  const a = Math.abs(n)
+  if (a >= 1) return `$${n.toFixed(2)}`
+  // Decimal places for three significant figures: 0.6024 -> 3, 0.0312 -> 4.
+  const places = Math.min(20, Math.max(2, 2 - Math.floor(Math.log10(a))))
+  return `$${n.toFixed(places).replace(/(\.\d\d\d*?)0+$/, '$1')}`
 }
 
 /**

@@ -34,16 +34,21 @@
      Steps done a 24px bar and "10/10", Duration "23h 59m so far"; the name
      takes what is left and is cut with its title, as the shape is. */
   .wfl .wfl-table th[data-col="state"] { width: 136px; }
-  .wfl .wfl-table th[data-col="shape"] { width: 9%; }
+  .wfl .wfl-table th[data-col="shape"] { width: 84px; }
   .wfl .wfl-table th[data-col="done"] { width: 92px; }
   /* Runners holds one whole "claude-code ×20" chip (browser QA N7: at 11%
      it held 96px, so a one-profile workflow folded to a bare "+1"). */
   .wfl .wfl-table th[data-col="runners"] { width: 148px; }
-  .wfl .wfl-table th[data-col="cost"] { width: 8%; }
-  /* Shape and Owner gave a point each to Runners' 148px (N7), so the name
-     keeps its 200px at 1056. */
-  .wfl .wfl-table th[data-col="owner"] { width: 7%; }
-  .wfl .wfl-table th[data-col="started"] { width: 9%; }
+  /* COST AND OWNER HOLD WHAT THEY SHOW (owner QA R10, 2026-10-04): at 8%
+     '$0.6024 1/3' was clipped by 3px, and at 7% (74px) an owner read
+     'swarm-…'. Cost holds '$12.92 10/12' in the one money format
+     (`measure.usd`); Owner holds a 14-character name, the whole address in
+     its title. Shape and Started give up their shares for px (each cut with
+     its title, as before), so the name keeps the most room of any column
+     (168px at 1056), cut with its title. */
+  .wfl .wfl-table th[data-col="cost"] { width: 100px; }
+  .wfl .wfl-table th[data-col="owner"] { width: 116px; }
+  .wfl .wfl-table th[data-col="started"] { width: 88px; }
   .wfl .wfl-table th[data-col="duration"] { width: 124px; }
   .wfl .wfl-table td { overflow: hidden; text-overflow: ellipsis; }
   .wfl .wfl-table td[data-col="state"],
@@ -56,6 +61,11 @@
   /* A COST IS NEVER CUT (visual QA Q9): "not re…" was a cut word. The
      column holds "$12.3456 3/5"; an unreported cost is a dash. */
   .wfl .wfl-table td[data-col="cost"] { text-overflow: clip; white-space: nowrap; }
+  .wfl .wfl-table td[data-col="owner"] { white-space: nowrap; }
+  /* At the micro size, as the row's other secondary facts are: it is what
+     lets both hold their longest value and the name keep 168px at 1056. */
+  .wfl .wfl-table td[data-col="cost"],
+  .wfl .wfl-table td[data-col="owner"] { font-size: var(--t-micro); }
   .wfl .wfl-name { min-width: 0; }
   .wfl .wfl-name > a { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 }
@@ -181,13 +191,16 @@
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
-  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 104px; }
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 82px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
   .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
   .wf-card .ctl-table.wf-table th[data-col="ran"] { width: 114px; }
-  .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 70px; }
+  /* 'task unread' is 79px of 12px mono; at 70px it clipped (owner QA R8).
+     Step gives the 22px: its name is one line cut with its title (D12), and
+     Why keeps its 60px at the 980px minimum. */
+  .wf-card .ctl-table.wf-table th[data-col="attempts"] { width: 92px; }
   .wf-card .ctl-table.wf-table th[data-col="inputs"] { width: 72px; }
   .wf-card .ctl-table.wf-table th[data-col="cost"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="tokens"] { width: 156px; }
