@@ -146,6 +146,12 @@ describe('R10: one money format, and Cost and Owner hold what they show', () => 
     expect(usd(0.0312)).toBe('$0.0312')
     expect(usd(0.004)).toBe('$0.004')
     expect(usd(0)).toBe('$0.00')
+    // A real cost never prints as free, however small; only an exact zero does.
+    expect(usd(0.0000004)).toBe('<$0.000001')
+    expect(usd(1e-25)).toBe('<$0.000001')
+    expect(usd(-1e-25)).toBe('-<$0.000001')
+    expect(usd(0.000001)).toBe('$0.000001')
+    expect(usd(0.009999)).toBe('$0.01')
   })
 
   it('fits "$12.92 10/12" in Cost and a 14-character owner in Owner at 1440, the name keeping room', async () => {

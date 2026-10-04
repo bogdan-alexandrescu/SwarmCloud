@@ -168,12 +168,19 @@ export const FINISH_NOT_RECORDED: Absence = {
  * '$0.495', '$7.68' and '$12.92'. An EXACT zero is a measurement and renders
  * as a digit.
  */
+/** The smallest cost usd() prints in figures; below it, "<$0.000001". */
+const USD_FLOOR = 0.000001
+
 export function usd(n: number): string {
   if (n === 0) return '$0.00'
   const a = Math.abs(n)
   if (a >= 1) return `$${n.toFixed(2)}`
+  // THE FLOOR: three significant figures of a cost this small would need more
+  // places than anyone reads, and toFixed stops at 20, where a real cost of
+  // 1e-21 rounds to two zeros -- free, which it was not. It says "under".
+  if (a < USD_FLOOR) return `${n < 0 ? '-' : ''}<$${USD_FLOOR.toFixed(6)}`
   // Decimal places for three significant figures: 0.6024 -> 3, 0.0312 -> 4.
-  const places = Math.min(20, Math.max(2, 2 - Math.floor(Math.log10(a))))
+  const places = Math.max(2, 2 - Math.floor(Math.log10(a)))
   return `$${n.toFixed(places).replace(/(\.\d\d\d*?)0+$/, '$1')}`
 }
 

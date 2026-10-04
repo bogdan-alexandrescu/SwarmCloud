@@ -229,10 +229,21 @@ def test_a_measured_zero_renders_as_a_digit():
 
 def test_usd_never_rounds_a_real_cost_down_to_zero():
     """$0.004 printed as "$0.00" is the same lie arriving by a different door."""
+    # RE-POINTED (owner QA R10, 2026-10-04): usd() no longer switches to four
+    # places under a cent; below a dollar it prints THREE SIGNIFICANT FIGURES,
+    # whose decimal places grow as the value shrinks, so rounding never
+    # reaches zero -- down to the floor, under which it says "<$0.000001".
+    # The property is read from that code: "$0.00" only for an exact zero.
     money = body_of(src("measure.ts"), "export function usd(")
-    assert "Math.abs(n) < 0.01" in money and "toFixed(4)" in money, (
-        "usd() rounds every value to two places, so a real sub-cent cost "
-        "prints as $0.00 and claims a run was free."
+    assert "if (n === 0) return '$0.00'" in money, "an exact zero no longer prints as a digit"
+    assert money.count("$0.00") == 1, "usd() prints $0.00 for something other than an exact zero"
+    assert "2 - Math.floor(Math.log10(a))" in money and "n.toFixed(places)" in money, (
+        "usd() rounds below a dollar to a fixed number of places, so a real "
+        "sub-cent cost prints as $0.00 and claims a run was free."
+    )
+    assert "Math.min(" not in money, "a cap on usd()'s places rounds a tiny real cost to $0.00"
+    assert re.search(r"if \(a < USD_FLOOR\) return `[^`]*<\$", money), (
+        "usd() has no floor, so a cost below toFixed's 20 places prints as $0.00"
     )
 
 
@@ -646,32 +657,55 @@ def test_the_dag_fills_the_width_it_is_given():
 
 
 def _overview_grids() -> list[tuple[str, int, int]]:
-    """Each Overview grid as (class, panels it holds, tracks it has when widest).
+    """Each Overview grid as (class, items that take one track, tracks when widest).
 
-    O1 (overview.html, the owner's pick; built 2026-10-02) draws two `.ov-g21`
-    grids -- Running now beside Cost so far, then Waiting, and why beside
-    Headroom -- each TWO panels in two tracks, so no row ends with a panel
-    alone. The pools are a full-width card of their own after the second
-    grid (browser QA N17), outside both. The grids' rules live in the screen's own sheet,
-    `styles/overview.css`. What is read is the markup's panel count and the
-    sheet's widest track count, so adding a third panel to either grid -- the
-    change that brings the orphan back -- fails here until something spans it.
+    O1 (overview.html, the owner's pick; built 2026-10-02) drew two `.ov-g21`
+    grids of two panels each. RE-POINTED (owner QA N17/D19, 2026-10-04): the
+    Overview is now ONE `.ov-g21 ov-cols` grid whose direct children are two
+    `.ov-col` stacks -- Running now, Waiting and Recent failures on the left,
+    Cost so far and Headroom on the right -- and the full-width Pools card.
+    The property is unchanged and read from the new layout:
+
+    * the grid items that take one track each (the `.ov-col` stacks) fill
+      every track of the widest rule, so the row they share has no blank
+      right cell -- adding a third column, or a lone panel beside them, is
+      the change that brings the orphan back and fails here;
+    * every other direct child spans `1 / -1` in the sheet, at the width where
+      there are two tracks, so it is a row of its own and never an orphan;
+    * each `.ov-col` is a single-track stack holding at least one panel, so
+      nothing inside a column can leave a right-hand cell empty either.
+
+    The grids' rules live in the screen's own sheet, `styles/overview.css`.
     """
     css = src("styles/overview.css")
     ov = src("Overview.tsx")
-    opener = '<div className="ov-g21">'
-    first = ov.find(opener)
-    second = ov.find(opener, first + 1)
-    # The second grid ends at the first full-width card after it: Pools (its
-    # own row since browser QA N17, 2026-10-04) or Recent failures. Each
-    # section's own opening tag carries its id.
-    def opening(section_id: str) -> int:
-        at = ov.find(f'id="{section_id}"')
-        return ov.rfind("<section", 0, at) if at > -1 else -1
+    # JSX comments quote class names in their explanations; read the code.
+    code = re.sub(r"\{/\*.*?\*/\}", "", ov, flags=re.S)
+    opener = '<div className="ov-g21 ov-cols">'
+    assert code.count("ov-g21") == 1 and opener in code, (
+        "Overview.tsx no longer draws one .ov-g21 ov-cols grid of column stacks"
+    )
 
-    after = [p for p in (opening("ov-pools"), opening("ov-failures")) if p > second]
-    end = min(after) if after else -1
-    assert -1 < first < second < end, "Overview.tsx no longer draws two .ov-g21 grids before Recent failures"
+    # The grid's direct children, by tag depth from its opening tag.
+    children: list[tuple[str, str]] = []  # (className, the child's markup)
+    depth, start, cls = 0, -1, ""
+    for tag in re.finditer(r'<(/?)(div|section)\b([^>]*)>', code[code.index(opener):]):
+        closing, attrs = tag.group(1) == "/", tag.group(3)
+        if attrs.rstrip().endswith("/"):
+            continue
+        if not closing:
+            depth += 1
+            if depth == 2:
+                start = tag.start()
+                named = re.search(r'className="([^"]*)"', attrs)
+                cls = named.group(1) if named else ""
+        else:
+            if depth == 2:
+                children.append((cls, code[code.index(opener):][start:tag.end()]))
+            depth -= 1
+            if depth == 0:
+                break
+    assert children, "the .ov-g21 grid has no children"
 
     def panels(block: str) -> int:
         return len(re.findall(r'<section className="ctl-card\b', block))
@@ -679,10 +713,26 @@ def _overview_grids() -> list[tuple[str, int, int]]:
     widest = re.findall(r"\.ov-g21 \{ grid-template-columns: ((?:minmax\(0, [\d.]+fr\) ?)+);? ?\}", css)
     assert widest, "`.ov-g21` declares no explicit track count"
     tracks = max(t.count("minmax") for t in widest)
-    return [
-        ("ov-g21", panels(ov[first:second]), tracks),
-        ("ov-g21", panels(ov[second:end]), tracks),
-    ]
+
+    columns = [block for name, block in children if "ov-col" in name.split()]
+    for name, block in children:
+        if "ov-col" in name.split():
+            continue
+        own = [c for c in name.split() if c.startswith("ov-") and c != "ov-card"]
+        assert own and any(
+            re.search(rf"\.ov-cols > \.{re.escape(c)} \{{ grid-column: 1 / -1", css) for c in own
+        ), (
+            f"`{name}` sits in the .ov-g21 grid beside the column stacks and spans "
+            "nothing in the sheet, so it takes one track and can end a row alone"
+        )
+    if columns:
+        stack = re.search(
+            r"\.ov-cols > \.ov-col \{ display: grid; grid-template-columns: minmax\(0, 1fr\);", css
+        )
+        assert stack is not None, "an .ov-col is not a single-track stack"
+        for block in columns:
+            assert panels(block) >= 1, "an .ov-col holds no panels; the column is blank"
+    return [("ov-g21", len(columns), tracks)]
 
 
 def test_no_overview_row_ends_with_a_blank_right_column():
@@ -716,11 +766,11 @@ def test_no_overview_panel_spans_tracks_from_an_inline_style():
 
     A track span lives in CSS where every other rule can be read against it.
     An inline style is invisible to the stylesheet, so a panel spanning from one
-    silently invalidates every layout rule that follows. Since the rebrand the
-    Overview's two grids hold two panels in two tracks, so no panel spans at
-    all -- which is only coherent while neither grid has an orphan, and that is
-    asserted here too, so deleting the span cannot be paired with a grid that
-    needs it.
+    silently invalidates every layout rule that follows. Since owner QA N17/D19
+    the Overview's one grid holds two column stacks in two tracks, so no panel
+    spans a track -- which is only coherent while the grid has no orphan, and
+    that is asserted here too, so deleting a span cannot be paired with a grid
+    that needs it.
     """
     ov = src("Overview.tsx")
     assert "gridColumn" not in ov, "a panel still spans tracks from an inline style"

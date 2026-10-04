@@ -88,6 +88,13 @@ async function land(tasks: Task[], taskId: string | null): Promise<HTMLElement> 
   } satisfies Result<TaskPage>)
   const { container } = render(<AgentsScreen onOpen={() => {}} taskId={taskId} />)
   await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
+  // THE RENDER THAT DREW THE LIST LANDED OUTSIDE `act` (waitFor polls with it
+  // off), so its passive effects -- the « toggle's `useSyncExternalStore`
+  // subscription among them -- may still be queued on React's scheduler. A
+  // click before they run tells an empty listener set, and the toggle does
+  // not re-render until the scheduler gets round to it: on a loaded CI runner,
+  // after the assertion (#562, #567). Flush them before handing the screen over.
+  await act(async () => {})
   return container as HTMLElement
 }
 
@@ -171,10 +178,15 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     expect(toggle, 'no « in the list header').not.toBeNull()
     expect(toggle!.getAttribute('aria-pressed')).toBe('false')
     expect(toggle!.textContent).toContain('«')
+    // AWAITED, NOT READ AT ONCE: the toggle re-renders from the list-snap
+    // store's notification, which reaches it only through its subscription.
+    // Waiting for the state makes the assertion independent of when React
+    // ran that effect; a toggle that never flips still fails, on the timeout.
     fireEvent.click(toggle!)
-    expect(toggle!.getAttribute('aria-pressed')).toBe('true')
+    await waitFor(() => expect(toggle!.getAttribute('aria-pressed')).toBe('true'))
     expect(toggle!.textContent).toContain('»')
     fireEvent.click(toggle!)
+    await waitFor(() => expect(toggle!.getAttribute('aria-pressed')).toBe('false'))
     expect(toggle!.textContent).toContain('«')
     const closed = await land([STEP, LONE], null)
     expect(closed.querySelector('.ag-collapse')).toBeNull()
