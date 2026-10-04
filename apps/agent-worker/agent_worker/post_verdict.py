@@ -152,6 +152,11 @@ class ActionContext:
     human_gate: bool = False
     #: The longest wait an action may ask a retry to be delayed by.
     max_in_worker_retry_delay_seconds: int = 45
+    #: Tries of one forge READ that failed transiently (`forge_retry`); the
+    #: worker's `forge_read_attempts`.
+    forge_read_attempts: int = forge_mod.DEFAULT_READ_ATTEMPTS
+    #: Seconds left before the step's deadline, read when a retry starts.
+    remaining_seconds: Callable[[], float] = lambda: float("inf")
     #: Registers a minted token with the logger's redaction (never logged
     #: anyway: belt and braces for any message that might quote a header).
     register_secret: Callable[[str], None] = lambda _value: None
@@ -196,6 +201,24 @@ def unavailable(summary: dict[str, Any], cause: EndCause, message: str,
     return _outcome(
         TaskState.FAILED, cause, summary, f"forge_unavailable: {message}",
         retryable=True, retry_delay_seconds=max(0, int(retry_after or 0)),
+    )
+
+
+def forge_retry(ctx: ActionContext) -> forge_mod.RetryPolicy:
+    """How a worker action retries a forge READ that failed transiently (F1).
+
+    GETs only (`PinnedForgeClient` applies it to nothing else): the merge and
+    the review post are not resent blindly. Bounded by the platform's
+    in-worker wait and the step's deadline; past that the read's
+    `ForgeUnavailable` reaches `unavailable`, which fails the attempt
+    retryably with the forge's `retry-after` as its delay.
+    """
+    return forge_mod.RetryPolicy.bounded(
+        attempts=ctx.forge_read_attempts,
+        max_in_worker_retry_delay_seconds=ctx.max_in_worker_retry_delay_seconds,
+        remaining_seconds=ctx.remaining_seconds(),
+        sleep=ctx.sleep,
+        log=ctx.log,
     )
 
 
@@ -492,6 +515,7 @@ def run_post_verdict(ctx: ActionContext) -> ActionOutcome:
         token = forge_mod.mint_installation_token(
             key=key, owner=target.owner, repo=target.repo,
             permissions=POST_VERDICT_PERMISSIONS, transport=ctx.transport,
+            retry=forge_retry(ctx),
         )
     except forge_mod.AppRejected as exc:
         return cannot_start(summary, "app_rejected", str(exc))
@@ -505,7 +529,8 @@ def run_post_verdict(ctx: ActionContext) -> ActionOutcome:
     ctx.register_secret(token.token)
     summary.update({"app_id": token.app_id, "installation_id": token.installation_id,
                     "token_expires_at": token.expires_at})
-    client = forge_mod.PinnedForgeClient(token=token.token, transport=ctx.transport)
+    client = forge_mod.PinnedForgeClient(token=token.token, transport=ctx.transport,
+                                         retry=forge_retry(ctx))
     del token
     try:
         if ctx.recheck():

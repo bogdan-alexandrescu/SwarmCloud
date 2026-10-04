@@ -527,3 +527,47 @@ def test_a_post_verdict_whose_pull_request_read_blips_once_still_posts(tmp_path)
     assert outcome.state is TaskState.SUCCEEDED, outcome.message
     assert len(seen) == 2
     assert chain.github.calls("POST", f"{PR}/reviews")
+
+
+def test_an_outage_looking_up_the_existing_pull_request_is_not_a_refusal(monkeypatch):
+    """A 422 sends `open_pull_request` to look for the open one; a 503 on that
+    lookup is an outage, not "none exists" -- which would read as the forge
+    refusing the pull request and fail the step for good."""
+    def request(url, *, token, method="GET", payload=None):
+        if method == "POST":
+            return 422, {"message": "Validation Failed",
+                         "errors": [{"message": "A pull request already exists"}]}
+        return 503, {"message": "unavailable"}
+
+    monkeypatch.setattr(forge_mod, "_request", request)
+    access = forge_mod.RepoAccess(ref=forge_mod.parse_repo(REPO), default_branch="main",
+                                  can_push=True, reason="")
+    with pytest.raises(forge_mod.ForgeUnavailable):
+        forge_mod.open_pull_request(access=access, token=fresh_token(), head="swarm/t",
+                                    base="main", title="t", body="b")
+
+
+def test_an_outage_opening_the_pull_request_is_retried_and_then_adopts(monkeypatch):
+    """The POST timed out after GitHub made it: the retry's 422 adopts it."""
+    posts: list[int] = []
+
+    def request(url, *, token, method="GET", payload=None):
+        if method == "POST":
+            posts.append(1)
+            if len(posts) == 1:
+                raise forge_mod.ForgeUnavailable("could not reach api.github.com: timed out")
+            return 422, {"message": "Validation Failed"}
+        return 200, [{"number": 5, "html_url": "https://github.com/octo/widgets/pull/5",
+                      "state": "open", "title": "t"}]
+
+    monkeypatch.setattr(forge_mod, "_request", request)
+    access = forge_mod.RepoAccess(ref=forge_mod.parse_repo(REPO), default_branch="main",
+                                  can_push=True, reason="")
+    clock = _Clock()
+    pr = forge_mod.retry_transient(
+        lambda: forge_mod.open_pull_request(access=access, token=fresh_token(),
+                                            head="swarm/t", base="main", title="t", body="b"),
+        policy=_policy(clock), what="the pull request",
+    )
+    assert pr.number == 5 and pr.created is False
+    assert len(posts) == 2 and len(clock.slept) == 1

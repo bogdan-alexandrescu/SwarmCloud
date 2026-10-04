@@ -582,6 +582,9 @@ class Worker:
         self.forge_transport: forge_mod.Transport | None = None
         self.action_environ: Any = os.environ
         self.action_sleep: Callable[[float], Any] = time.sleep
+        # The pause between two tries of a forge call that failed
+        # transiently (`_forge_retry`). Replaceable so a test waits for nothing.
+        self.forge_sleep: Callable[[float], Any] = time.sleep
         # The LIVE runner's sampler, or None between runners. The runners that
         # have ended are in `_runner_usage`, and `_attempt_usage` combines the
         # two: every figure this worker reports -- the attempt document, the
@@ -1064,6 +1067,8 @@ class Worker:
             # off, which is the merge as merge-step.md §5 designs it.
             human_gate=False,
             max_in_worker_retry_delay_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            forge_read_attempts=self.cfg.forge_read_attempts,
+            remaining_seconds=self._remaining_seconds,
             register_secret=self.log.register_secret,
         )
         self.phases.enter("worker_action")
@@ -1612,19 +1617,32 @@ class Worker:
         # After the credentials, so every secret this attempt holds is
         # registered before the issue's text is scrubbed. A fetch that fails
         # fails the attempt here, before the agent starts (`agent_worker.issue`).
+        # A forge that did not answer is retried in-process (`_forge_retry`),
+        # and if it stays down the ATTEMPT fails retryably -- never
+        # INPUTS_UNAVAILABLE, which is for a forge that answered "no" (F1).
         issue_number = issue_mod.requested(task.get("input"), cfg.profile)
         if issue_number is not None:
             self.phases.enter("fetch_issue")
-            issue_mod.stage_issue(
-                number=issue_number,
-                repository_url=self._repo_url,
-                token=self._git_token(),
-                refusal=self._git_token_refusal(),
-                work_dir=ws.work,
-                scrub=self._scrub,
-                logger=self.log,
-                on_request=self._heartbeat,
-            )
+            try:
+                issue_mod.stage_issue(
+                    number=issue_number,
+                    repository_url=self._repo_url,
+                    token=self._git_token(),
+                    refusal=self._git_token_refusal(),
+                    work_dir=ws.work,
+                    scrub=self._scrub,
+                    logger=self.log,
+                    on_request=self._heartbeat,
+                    retry=self._forge_retry(),
+                )
+            except forge_mod.ForgeUnavailable as exc:
+                return functools.partial(
+                    self._fail_issue_unreachable,
+                    issue_number,
+                    str(self._scrub(str(exc)[:600])),
+                    exc.retry_after_seconds,
+                    exc.tries,
+                )
 
         # Re-check fencing immediately before the agent starts. Cloning a large
         # repository can take minutes, and the whole point of step 1 is that
@@ -5562,7 +5580,11 @@ class Worker:
                 "no git credential is registered for this tenant",
             )
         try:
-            access = probe_repository(url=url, token=token)
+            access = forge_mod.retry_transient(
+                lambda: probe_repository(url=url, token=token),
+                policy=self._forge_retry(),
+                what="the push-scope probe",
+            )
         except ForgeError as exc:
             return functools.partial(
                 self._fail_forge_unreachable, url, self._scrub(str(exc)[:300])
@@ -5627,6 +5649,66 @@ class Worker:
             result_summary=summary,
             retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
             detail={"carrier": "branches"},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
+
+    def _forge_retry(self) -> forge_mod.RetryPolicy:
+        """The bound on retrying a forge call that failed transiently (F1).
+
+        `cfg.forge_read_attempts` tries, sharing one wall-clock budget: the
+        smaller of `max_in_worker_retry_delay_seconds` and what is left of the
+        step's deadline, read when the call starts. Never the long in-worker
+        wait invariant 4 forbids: a `Retry-After` past the budget is not slept
+        at all, and the caller fails the attempt retryably instead.
+        """
+        return forge_mod.RetryPolicy.bounded(
+            attempts=self.cfg.forge_read_attempts,
+            max_in_worker_retry_delay_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            remaining_seconds=self._remaining_seconds(),
+            sleep=self.forge_sleep,
+            log=self.log,
+        )
+
+    def _fail_issue_unreachable(
+        self, number: int, reason: str, retry_after: int | None, tries: int
+    ) -> Outcome:
+        """A retryable failure before the agent ran: the issue's forge did not answer.
+
+        The measured failure (run_51e2e460eef54d208986, 2026-10-04): one
+        "could not reach api.github.com: timed out" ended the review step
+        INPUTS_UNAVAILABLE after ONE attempt, and `fail_workflow` took the
+        run with it. A forge that did not answer says nothing about the issue,
+        so this ends only the ATTEMPT (`fail_retryably`): the task goes back
+        to READY while it has attempts left, its lease and capacity are
+        released, and the scheduler admits it again after the forge's own
+        `Retry-After` or `FORGE_UNREACHABLE_RETRY_DELAY_SECONDS`, whichever
+        is longer. A task whose attempts are spent ends CANNOT_START -- the
+        agent could not be started -- and never INPUTS_UNAVAILABLE, which
+        stays the answer to a forge that said the issue is not there.
+        """
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: input.issue asks for issue #{number}, and the "
+            f"forge did not answer after {tries} tries: {reason}. The agent was not "
+            "started; the attempt is retried while the task has attempts left."
+        )
+        self.log.warning(
+            "the issue's forge did not answer; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            issue=number,
+            tries=tries,
+        )
+        summary = self._upload_outputs()
+        summary["issue_check"] = {"cause": FORGE_UNREACHABLE, "issue": number, "tries": tries}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=max(FORGE_UNREACHABLE_RETRY_DELAY_SECONDS, int(retry_after or 0)),
+            detail={"input": "issue", "issue": number},
             end_cause=EndCause.CANNOT_START,
         )
         return Outcome(exit_code=ExitCode.FAILED, state=state)
@@ -6797,7 +6879,11 @@ class Worker:
 
         token = self._git_token()
         try:
-            access = probe_repository(url=url, token=token)
+            access = forge_mod.retry_transient(
+                lambda: probe_repository(url=url, token=token),
+                policy=self._forge_retry(),
+                what="the publish probe",
+            )
         except ForgeError as exc:
             return {
                 "published": False,
@@ -7244,23 +7330,30 @@ class Worker:
             self.log.warning("no pull request opened: no usable agent title", refused=refused)
             return out
         try:
-            pr = open_pull_request(
-                access=access,
-                token=token,
-                head=branch,
-                base=access.default_branch,
-                title=title,
-                body=body,
-                # A reused pull request takes the agent's text too; generated
-                # text never overwrites one a human may have edited.
-                update_existing=bool(agent_title or agent_body),
-                # An adopted pull request whose title carries the task id --
-                # the OLD generated `[swarm] <task id>`, from before this
-                # rule -- is retitled (title only) even when nothing here
-                # asked for an update: the owner's rule is that a title never
-                # carries the task id, and that has to reach a pull request
-                # this attempt only adopts, not just one it opens.
-                retitle_if=self._title_carries_task_id,
+            # Retried on an outage: a POST that timed out after GitHub made
+            # the pull request is answered 422 on the next try, which
+            # `open_pull_request` resolves by adopting the open one.
+            pr = forge_mod.retry_transient(
+                lambda: open_pull_request(
+                    access=access,
+                    token=token,
+                    head=branch,
+                    base=access.default_branch,
+                    title=title,
+                    body=body,
+                    # A reused pull request takes the agent's text too; generated
+                    # text never overwrites one a human may have edited.
+                    update_existing=bool(agent_title or agent_body),
+                    # An adopted pull request whose title carries the task id --
+                    # the OLD generated `[swarm] <task id>`, from before this
+                    # rule -- is retitled (title only) even when nothing here
+                    # asked for an update: the owner's rule is that a title never
+                    # carries the task id, and that has to reach a pull request
+                    # this attempt only adopts, not just one it opens.
+                    retitle_if=self._title_carries_task_id,
+                ),
+                policy=self._forge_retry(),
+                what="the pull request",
             )
         except ForgeError as exc:
             message = str(self._scrub(str(exc)[:300]))

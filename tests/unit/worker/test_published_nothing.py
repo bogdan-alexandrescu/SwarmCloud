@@ -269,3 +269,44 @@ def test_a_refused_title_on_the_last_attempt_ends_publish_refused(db, worker_fac
     assert task["state"] == TaskState.FAILED.value
     assert task["end_cause"] == "publish_refused", task["end_cause"]
     assert "pr-title.txt refused" in task["last_error"]
+
+
+def test_a_pull_request_whose_open_blips_once_is_retried_in_process_and_opened(
+    db, worker_factory, monkeypatch, origin, local_urls, forge
+):
+    """F1 (2026-10-04): release 37017777271's acceptance went red on one
+    "could not reach the forge: ... timed out" opening the pull request. A
+    transient failure is now tried again before the publish gives up; a
+    probe that blips is too."""
+    real_open, real_probe = forge.open_pull_request, forge.probe
+    blips = {"open": 1, "probe": 1}
+
+    def flaky_open(**kwargs):
+        if blips["open"]:
+            blips["open"] -= 1
+            raise forge_mod.ForgeUnavailable("could not reach api.github.com: timed out")
+        return real_open(**kwargs)
+
+    def flaky_probe(**kwargs):
+        if blips["probe"]:
+            blips["probe"] -= 1
+            raise forge_mod.ForgeUnavailable("could not reach api.github.com: timed out")
+        return real_probe(**kwargs)
+
+    monkeypatch.setattr(lifecycle, "open_pull_request", flaky_open)
+    monkeypatch.setattr(lifecycle, "probe_repository", flaky_probe)
+    worker = _run(
+        db, worker_factory, monkeypatch, origin,
+        dispatch={"strategy": "integrate", "role": "integrator", "integrates": ["t-gone"]},
+        task_input=TITLED,
+    )
+    slept: list[float] = []
+    worker.forge_sleep = slept.append
+
+    assert worker.run() == 0
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.SUCCEEDED.value, task.get("last_error")
+    git = task["result_summary"]["git"]
+    assert git["pull_request"]["number"] == 1, git
+    assert len(forge.pulls) == 1
+    assert slept, "the blips were not retried"

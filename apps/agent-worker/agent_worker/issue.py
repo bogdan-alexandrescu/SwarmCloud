@@ -38,13 +38,28 @@ other text an agent sees from the worker.
 
 **A FETCH THAT FAILS FAILS THE ATTEMPT, AND THE AGENT NEVER STARTS.** A step
 pointed at an issue has been promised it: its prompt is written as though the
-issue is there. `IssueUnavailable` is an `InputUnavailable`, so the task ends
-`INPUTS_UNAVAILABLE` with a message naming the issue and the repository, the
-same way a declared `input_from` file that cannot be staged ends it.
+issue is there. How the attempt fails depends on WHY the fetch failed
+(`forge.transient_status`, `forge.transient_network_error`):
+
+  * The forge ANSWERED, and the answer was no -- 404, 410, 422, a 401/403
+    with no rate-limit signal, a pull request's number, a repository on no
+    forge: `IssueUnavailable`, an `InputUnavailable`, so the task ends
+    `INPUTS_UNAVAILABLE` at once with a message naming the issue and the
+    repository, the way a declared `input_from` file that cannot be staged
+    ends it. Another attempt would be told the same.
+  * The forge did NOT answer -- a timeout, a reset, DNS, 429, 5xx, GitHub's
+    secondary rate limit: `IssueUnreachable`, a `forge.ForgeUnavailable` and
+    NOT an `InputUnavailable`. `stage_issue` retries it in this process
+    within the platform's bound, and if the forge is still down the lifecycle
+    fails the ATTEMPT retryably (`Worker._fail_issue_unreachable`). Measured
+    2026-10-04: one "could not reach api.github.com: timed out" ended
+    run_51e2e460eef54d208986's review step INPUTS_UNAVAILABLE after one
+    attempt, and its workflow with it.
 """
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import urllib.error
@@ -57,7 +72,17 @@ from urllib.parse import quote, urlparse
 from swarm_common.profiles import InputRefused, RunnerProfile
 
 from .errors import InputUnavailable
-from .forge import GITHUB_HOSTS, RepoRef, parse_repo
+from .forge import (
+    GITHUB_HOSTS,
+    ForgeUnavailable,
+    RepoRef,
+    RetryPolicy,
+    _retry_after,
+    parse_repo,
+    retry_transient,
+    transient_network_error,
+    transient_status,
+)
 
 #: The key of `input`, as `RunnerProfile.inputs` declares it (contract request 28).
 INPUT_KEY = "issue"
@@ -98,6 +123,15 @@ class IssueUnavailable(InputUnavailable):
     agent is never started without it, and the task ends `INPUTS_UNAVAILABLE`
     (`lifecycle._end_cause_of`). Every message names the issue and the
     repository, because those are what a person needs to fix it.
+    """
+
+
+class IssueUnreachable(ForgeUnavailable):
+    """The forge did not answer the issue fetch: a blip, not a missing issue.
+
+    A `ForgeUnavailable`, and deliberately NOT an `InputUnavailable`: it must
+    never end a task `INPUTS_UNAVAILABLE`. `stage_issue` retries it, then the
+    lifecycle fails the attempt retryably.
     """
 
 
@@ -205,31 +239,39 @@ def _read_capped(source: Any, *, req: urllib.request.Request) -> bytes:
     return raw
 
 
-def _open(req: urllib.request.Request) -> tuple[int, Any]:
-    """One request: (status, parsed JSON body or None). Replaced in tests."""
+def _open(req: urllib.request.Request) -> tuple[int, Any, Mapping[str, str]]:
+    """One request: (status, parsed JSON body or None, headers). Replaced in tests.
+
+    The headers are returned for `_refusal`, which reads `Retry-After` and
+    GitHub's rate-limit headers to tell a rate limit from a refusal.
+    """
     try:
         with _OPENER.open(req, timeout=_TIMEOUT) as response:
             raw = _read_capped(response, req=req).decode("utf-8", errors="replace")
-            return response.status, (json.loads(raw) if raw.strip() else None)
+            headers = dict(response.headers.items()) if response.headers else {}
+            return response.status, (json.loads(raw) if raw.strip() else None), headers
     except urllib.error.HTTPError as exc:
         raw = _read_capped(exc, req=req).decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
         except json.JSONDecodeError:
             parsed = {"message": raw[:300]}
-        return exc.code, parsed
+        return exc.code, parsed, (dict(exc.headers.items()) if exc.headers else {})
     except json.JSONDecodeError as exc:
         raise IssueUnavailable(
             f"{urlparse(req.full_url).hostname} answered with text that is not JSON"
         ) from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        reason = getattr(exc, "reason", exc)
-        raise IssueUnavailable(
-            f"could not reach {urlparse(req.full_url).hostname}: {reason}"
-        ) from None
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        # A timeout, a reset or DNS is a blip (`IssueUnreachable`, retried);
+        # a certificate the host could not prove is not, and stays a refusal.
+        reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+        message = f"could not reach {urlparse(req.full_url).hostname}: {reason}"
+        if transient_network_error(exc):
+            raise IssueUnreachable(message) from None
+        raise IssueUnavailable(message) from None
 
 
-def _get(url: str, *, token: str | None) -> tuple[int, Any]:
+def _get(url: str, *, token: str | None) -> tuple[int, Any, Mapping[str, str]]:
     req = urllib.request.Request(url, method="GET")
     if token:
         req.add_header("Authorization", f"Bearer {token}")
@@ -245,8 +287,18 @@ def _message(data: Any) -> str:
     return ""
 
 
-def _refusal(status: int, data: Any, *, what: str) -> IssueUnavailable:
+def _refusal(
+    status: int, data: Any, *, what: str, headers: Mapping[str, str] | None = None
+) -> IssueUnavailable | IssueUnreachable:
+    """Why `what` was not fetched: a refusal, or an outage to be retried."""
     message = _message(data)
+    if transient_status(status, headers, data):
+        detail = f": {message}" if message else ""
+        return IssueUnreachable(
+            f"could not fetch {what}: the forge is unavailable or rate-limited "
+            f"({status}{detail})",
+            retry_after_seconds=_retry_after(headers or {}),
+        )
     if status == 404:
         why = (
             "the forge has no such issue, or the credential cannot see the repository "
@@ -300,11 +352,11 @@ def fetch_issue(
     # that is not "github.com", and none of them match.
     fetch_token = token if ref.host in GITHUB_HOSTS else None
 
-    status, data = _get(f"{base}/issues/{number}", token=fetch_token)
+    status, data, headers = _get(f"{base}/issues/{number}", token=fetch_token)
     if on_request is not None:
         on_request()
     if status != 200 or not isinstance(data, dict):
-        raise _refusal(status, data, what=what)
+        raise _refusal(status, data, what=what, headers=headers)
     if data.get("pull_request"):
         # GitHub serves a pull request through the issues API as well. The
         # input names an issue (contract request 28); a pull request's diff and
@@ -320,14 +372,14 @@ def fetch_issue(
     comments: list[Comment] = []
     page = 1
     while total and page <= MAX_COMMENT_PAGES:
-        status, rows = _get(
+        status, rows, headers = _get(
             f"{base}/issues/{number}/comments?per_page={COMMENTS_PER_PAGE}&page={page}",
             token=fetch_token,
         )
         if on_request is not None:
             on_request()
         if status != 200 or not isinstance(rows, list):
-            raise _refusal(status, rows, what=f"the comments of {what}")
+            raise _refusal(status, rows, what=f"the comments of {what}", headers=headers)
         for row in rows:
             if isinstance(row, dict):
                 comments.append(
@@ -475,6 +527,7 @@ def stage_issue(
     scrub: Callable[[Any], Any],
     logger: Any,
     on_request: Callable[[], None] | None = None,
+    retry: RetryPolicy | None = None,
 ) -> Path:
     """Fetch issue `number` of the task's repository into `work/issue.md`.
 
@@ -482,25 +535,53 @@ def stage_issue(
     worker would not read it (`Worker._git_token_refusal`). `scrub` redacts
     every secret the attempt holds; the lifecycle calls this after the
     credentials step, so the provider key is registered by then as well as the
-    forge token. Raises IssueUnavailable, and writes nothing, on any failure.
+    forge token. Writes nothing on any failure, and raises:
+
+      * `IssueUnavailable` for a refusal (404, 410, a plain 401/403, ...),
+        never retried;
+      * `IssueUnreachable` when the forge stayed unavailable through `retry`
+        -- the WHOLE fetch is tried again, the issue and its comment pages,
+        all of them idempotent reads, so a blip on page three costs a few
+        requests rather than the attempt.
     """
     if not repository_url:
         raise IssueUnavailable(
             f"input.issue asks for issue #{number} of the task's repository, and this "
             "task has no repository"
         )
-    try:
-        issue = fetch_issue(
-            repository_url=repository_url, number=number, token=token, on_request=on_request
-        )
-    except IssueUnavailable as exc:
-        message = str(exc)
+
+    def annotated(message: str) -> str:
         if refusal:
             message += f"; fetched without the tenant git token because {refusal}"
         elif not token:
             message += "; fetched without a credential, because the tenant has no usable git token"
         # Scrubbed: a forge's message is text this worker did not write.
-        raise IssueUnavailable(str(scrub(message))) from None
+        return str(scrub(message))
+
+    try:
+        issue = retry_transient(
+            lambda: fetch_issue(
+                repository_url=repository_url, number=number, token=token, on_request=on_request
+            ),
+            policy=retry,
+            what=f"issue #{number}",
+        )
+    except IssueUnavailable as exc:
+        raise IssueUnavailable(annotated(str(exc))) from None
+    except ForgeUnavailable as exc:
+        message = str(exc)
+        if f"#{number}" not in message:
+            # A network failure names the host only; the step's owner needs
+            # the issue and the repository too. The repository by name, never
+            # the URL, which may carry userinfo.
+            ref = parse_repo(repository_url)
+            where = ref.full_name if ref is not None else "the task's repository"
+            message = f"could not fetch issue #{number} of {where}: {message}"
+        unreachable = IssueUnreachable(
+            annotated(message), retry_after_seconds=exc.retry_after_seconds
+        )
+        unreachable.tries = exc.tries
+        raise unreachable from None
 
     text = str(scrub(render(issue)))
     path = write(work_dir, text)
