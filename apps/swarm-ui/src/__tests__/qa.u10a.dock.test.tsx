@@ -13,11 +13,18 @@
  *   D13  an open dock showed ~5 lines: ~175px of controls in 300px. One row
  *        of controls, metadata folded, and a default height with 15 lines.
  *   +    Follow on a finished agent is disabled.
+ *   D13 review: the one row overflowed its column (Error and More past a
+ *        390px phone's edge, Fold past the 50% split). Labels shorten under
+ *        a container query, then controls spill into More while the row still
+ *        overflows, then it wraps. Escape in an open More folds More, not the
+ *        full view; a read the server did not mask is a chip in the row.
  *
  * MUTATIONS: render the full view in place (drop the portal); drop the
  * capture-phase Escape; restore `initial: 300` or `flex-wrap: wrap` on the
  * bar; unfold the stream table; drop `top: 16px` or the `- 16px`; enable
- * Follow on a final record. Each turns a case red.
+ * Follow on a final record; drop the `ag-logbar` container rules or the
+ * spill effect; drop the `details[open]` branch in escape.ts. Each turns a
+ * case red.
  */
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -39,7 +46,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { LogDock, LOG_DOCK } = await import('../LogDock')
+const { LogDock, LOG_DOCK, BAR_SPILL } = await import('../LogDock')
 
 const WIDE: CascadeEnv = { width: 1440 }
 const ID = 'task_0123456789abcdef0123'
@@ -261,5 +268,176 @@ describe('D7: the column ends at the scrollport, above the API-reads line', () =
     } finally {
       host.remove()
     }
+  })
+})
+
+/**
+ * THE ROW'S WIDTH, BY A STATED MODEL (jsdom lays nothing out). Each control is
+ * its visible text at 7px a character (the bar's 12-14px type) plus its own
+ * chrome -- a small button or More's summary 22px of padding and border, More's
+ * caret 14px, a chip 12px, a key hint 10px -- and the two controls that give
+ * way are their `min-width` floor from the shipped sheet. Visibility comes from
+ * the cascade at the stated container width, so the short labels and the
+ * hidden heading count only where the sheet really applies them.
+ */
+const CH = 7
+function shown(el: Element, env: CascadeEnv): boolean {
+  return painted(el, 'display', env) !== 'none' && painted(el, 'position', env) !== 'absolute'
+}
+function textWidth(el: Element, env: CascadeEnv): number {
+  let w = 0
+  for (const n of Array.from(el.childNodes)) {
+    if (n.nodeType === Node.TEXT_NODE) w += (n.textContent ?? '').length * CH
+    else if (n instanceof Element && shown(n, env)) w += textWidth(n, env) + (n.tagName === 'KBD' ? 10 : 0)
+  }
+  return w
+}
+function rowWidth(bar: Element, env: CascadeEnv): number {
+  const items = Array.from(bar.children).filter((c) => shown(c, env))
+  let w = 24 + 8 * Math.max(0, items.length - 1)
+  for (const c of items) {
+    if (c.matches('.ag-logdock-streams, .ag-logdock-search')) w += Number.parseFloat(painted(c, 'min-width', env) ?? 'NaN')
+    else if (c.matches('details')) w += textWidth(c.querySelector(':scope > summary')!, env) + 22 + 14
+    else if (c.matches('.c-btn')) w += textWidth(c, env) + 22
+    else if (c.matches('.art-masked')) w += textWidth(c, env) + 12
+    else w += textWidth(c, env)
+  }
+  return w
+}
+
+/** Lays the bar out by `rowWidth` in a column `box` px wide; restores jsdom after. */
+function laidOut(box: number, env: CascadeEnv): () => void {
+  const proto = HTMLElement.prototype
+  const sw = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollWidth')
+  const cw = Object.getOwnPropertyDescriptor(Element.prototype, 'clientWidth')
+  Object.defineProperty(proto, 'scrollWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      if (!this.classList.contains('ag-logdock-bar')) return 0
+      return this.classList.contains('is-wrap') ? box : rowWidth(this, env)
+    },
+  })
+  Object.defineProperty(proto, 'clientWidth', {
+    configurable: true,
+    get(this: HTMLElement) {
+      return this.classList.contains('ag-logdock-bar') ? box : 0
+    },
+  })
+  return () => {
+    delete (proto as unknown as Record<string, unknown>).scrollWidth
+    delete (proto as unknown as Record<string, unknown>).clientWidth
+    if (sw !== undefined) Object.defineProperty(Element.prototype, 'scrollWidth', sw)
+    if (cw !== undefined) Object.defineProperty(Element.prototype, 'clientWidth', cw)
+  }
+}
+
+const PHONE: CascadeEnv = { width: 390, container: 390 }
+const HALF: CascadeEnv = { width: 1440, container: 550 }
+
+function phoneFull(t: Task): HTMLElement {
+  render(<LogDock task={t} phone />)
+  fireEvent.click(within(screen.getByRole('region', { name: 'Log' })).getByRole('button', { expanded: false }))
+  return screen.getByRole('dialog', { name: 'Log' })
+}
+
+describe('D13 review: the one row fits its column', () => {
+  it('shortens its labels and drops the key hints under 720px, and keeps them wide', () => {
+    inSplit(running())
+    const bar = screen.getByRole('region', { name: 'Log' }).querySelector<HTMLElement>('.ag-logdock-bar')!
+    const follow = within(bar).getByRole('button', { name: /^Following/ })
+    const error = within(bar).getByRole('button', { name: /^No error matched/ })
+    const wide: CascadeEnv = { width: 1440, container: 900 }
+    for (const b of [follow, error]) {
+      expect(shown(b.querySelector('.ag-logdock-long') ?? b, wide)).toBe(true)
+      expect(b.querySelector('kbd') && shown(b.querySelector('kbd')!, wide)).toBe(true)
+      expect(b.querySelector('kbd') && shown(b.querySelector('kbd')!, HALF), 'a key hint stayed in a narrow row').toBe(false)
+    }
+    const long = error.querySelector('.ag-logdock-long')!
+    const short = error.querySelector('.ag-logdock-short')!
+    expect(shown(short, wide)).toBe(false)
+    expect(shown(long, HALF), 'the long label stayed in a narrow row').toBe(false)
+    expect(shown(short, HALF)).toBe(true)
+    expect(short.textContent).toBe('Errors 0')
+    // The name a reader hears is the long one, at every width.
+    expect(error.getAttribute('aria-label')).toBeNull()
+  })
+
+  it('at the 50% split (550px column) keeps every control in the row, and the row fits', () => {
+    const restore = laidOut(550, HALF)
+    try {
+      inSplit(running())
+      const bar = screen.getByRole('region', { name: 'Log' }).querySelector<HTMLElement>('.ag-logdock-bar')!
+      expect(bar.dataset.spill).toBe('0')
+      expect(rowWidth(bar, HALF)).toBeLessThanOrEqual(550)
+      for (const name of [/^Following/, /^No error matched/, /^Fold$/]) {
+        expect(within(bar).getByRole('button', { name }).closest('details'), `${name} is under More`).toBeNull()
+      }
+    } finally {
+      restore()
+    }
+  })
+
+  it('on a 390px phone moves controls into More until the row fits, and leaves none past the edge', () => {
+    const restore = laidOut(390, PHONE)
+    try {
+      const full = phoneFull(running())
+      const bar = full.querySelector<HTMLElement>('.ag-logdock-bar')!
+      expect(Number(bar.dataset.spill)).toBeGreaterThan(0)
+      expect(bar.classList.contains('is-wrap')).toBe(false)
+      expect(rowWidth(bar, PHONE), 'the row is wider than the phone').toBeLessThanOrEqual(390)
+      const more = bar.querySelector('details.ag-logdock-more')!
+      // Every control is in the row or under More: none is lost.
+      expect(within(bar).getAllByRole('button', { name: /^Following/ })).toHaveLength(1)
+      expect(within(more as HTMLElement).getByRole('button', { name: /^No error matched/ })).toBeTruthy()
+      expect(within(bar).getByRole('button', { name: '‹ Agent' })).toBeTruthy()
+    } finally {
+      restore()
+    }
+  })
+
+  it('wraps rather than hide a control when even the spilled row is too wide', async () => {
+    api.loadTaskLogs.mockResolvedValue(
+      ok({ ...logs([{ ...stream('stdout', 'one\ntwo\n'), redaction_count: 3 }, stream('stderr', 'three\n')]), redaction: { applied_at_read_time: false, rules: 0 } }),
+    )
+    const restore = laidOut(300, { width: 300, container: 300 })
+    try {
+      const full = phoneFull(running())
+      await waitFor(() => expect(full.querySelectorAll('.ag-logdock-maskchip')).toHaveLength(2))
+      fireEvent.change(within(full).getByRole('searchbox', { name: 'Search this window' }), { target: { value: 'one' } })
+      const bar = full.querySelector<HTMLElement>('.ag-logdock-bar')!
+      await waitFor(() => expect(bar.dataset.spill).toBe(String(BAR_SPILL.wrap)))
+      expect(bar.classList.contains('is-wrap')).toBe(true)
+      expect(painted(bar, 'flex-wrap', PHONE)).toBe('wrap')
+    } finally {
+      restore()
+    }
+  })
+})
+
+describe('D13 review: what moved under More', () => {
+  it('a read the server did not mask is a warning chip in the row, not only a fact under More', async () => {
+    api.loadTaskLogs.mockResolvedValue(
+      ok({ ...logs([stream('stdout', 'one\n'), stream('stderr', 'two\n')]), redaction: { applied_at_read_time: false, rules: 0 } }),
+    )
+    inSplit(running())
+    const bar = screen.getByRole('region', { name: 'Log' }).querySelector<HTMLElement>('.ag-logdock-bar')!
+    await waitFor(() => expect(bar.querySelector(':scope > .ag-logdock-maskchip')?.textContent).toBe('not masked'))
+    expect(bar.querySelector(':scope > .ag-logdock-maskchip')!.classList.contains('is-warn')).toBe(true)
+  })
+
+  it('Escape in an open More folds More and leaves the full view open', () => {
+    inSplit(running())
+    const full = openFull()
+    const more = full.querySelector<HTMLDetailsElement>('details.ag-logdock-more')!
+    more.open = true
+    const summary = more.querySelector<HTMLElement>('summary')!
+    summary.focus()
+    fireEvent.keyDown(summary, { key: 'Escape' })
+    expect(more.open, 'More stayed open').toBe(false)
+    expect(screen.getByRole('dialog', { name: 'Log' })).toBe(full)
+    expect(document.activeElement).toBe(summary)
+    // The next Escape is the full view's.
+    fireEvent.keyDown(summary, { key: 'Escape' })
+    expect(screen.queryByRole('dialog', { name: 'Log' })).toBeNull()
   })
 })

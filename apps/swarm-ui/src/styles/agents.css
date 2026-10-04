@@ -269,7 +269,7 @@
    -- the log strip, or the foot of an open dock -- was under the API-reads
    line; focusing the dock's search scrolled the page 16px to reach it. It
    sticks 16px down and is 16px shorter, so at every scroll offset its foot is
-   the scrollport's foot. qa.split.fit.test.tsx holds the two 16px together. */
+   the scrollport's foot. qa.u10a.dock.test.tsx holds the two 16px together. */
 @media (min-width: 1100px) {
   .app.has-inspector > .ctl-drawer.ag-split {
     top: 16px;
@@ -334,8 +334,18 @@
    tools were two wrapping rows, ~175px of a 300px dock, four rows at the 50%
    split. One row that never wraps: the stream pills scroll sideways inside
    it, the search gives way to its floor, everything else keeps its width,
-   and the least-used controls are under More. logdock.room.test.tsx. */
+   and the least-used controls are under More. qa.u10a.dock.test.tsx.
+   THE ROW FITS ITS WIDTH (review of D13): the bar is a size container, so
+   under 720px its labels take their short forms and the key hints go, and
+   under 480px (a phone's full log) the heading leaves the row and the back
+   button is its chevron. While the row still overflows, LogDock.tsx moves
+   controls into More (`BAR_SPILL`); past the last of them it wraps
+   (`.is-wrap`) rather than leave a control past the edge. The bar is its own
+   stacking layer at 5, the z its More menu used to carry. */
 .ag-logdock-bar {
+  container: ag-logbar / inline-size;
+  position: relative;
+  z-index: 5;
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
@@ -345,7 +355,31 @@
   padding: 4px var(--ctl-s3);
   flex: none;
 }
+.ag-logdock-bar.is-wrap { flex-wrap: wrap; }
 .ag-logdock-bar > * { flex: none; }
+.ag-logdock-short { display: none; }
+@container ag-logbar (max-width: 720px) {
+  .ag-logdock-bar > * > .ag-logdock-long {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .ag-logdock-bar > * > .ag-logdock-short { display: inline; }
+  .ag-logdock-bar > .c-btn > kbd { display: none; }
+}
+@container ag-logbar (max-width: 480px) {
+  .ag-logdock-bar > h2 {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+}
 .ag-logdock-bar h2 { margin: 0; font: 600 var(--t-body)/var(--lh-body) var(--font); }
 .ag-logdock-streams { display: inline-flex; gap: 2px; }
 .ag-logdock-bar > .ag-logdock-streams { flex: 0 1 auto; min-width: 64px; overflow-x: auto; scrollbar-width: none; }

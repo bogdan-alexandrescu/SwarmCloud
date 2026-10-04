@@ -80,7 +80,7 @@ import { Button } from './components'
  * D13, owner QA 2026-10-04): at 300 the controls took ~175px and the log body
  * kept 124px, about five lines. The controls are one 40px row now, and 400
  * leaves the body ~345px -- 16 lines at the log's 21px line.
- * `logdock.room.test.tsx` holds the arithmetic against the shipped sheet.
+ * `qa.u10a.dock.test.tsx` holds the arithmetic against the shipped sheet.
  */
 export const LOG_DOCK: PaneSpec = { key: 'swarm.agents.logdock.h', min: 120, max: 720, initial: 400 }
 /**
@@ -132,6 +132,31 @@ function stillMoving(task: Task, feed: LogFeed | null, now: number): boolean {
   if (transcriptSettled(feed) && logsSettled(feed)) return false
   const done = task.completed_at === null ? Number.NaN : Date.parse(task.completed_at)
   return Number.isFinite(done) && Math.abs(now - done) <= DRAWER_SETTLE_MS
+}
+
+/**
+ * HOW FAR THE BAR HAS SPILLED INTO MORE (U10a D13 review). The row never
+ * wraps by design, so a row wider than its column would leave its last
+ * controls past the edge, out of reach -- the review's arithmetic put Error and
+ * More off a 390px phone and Fold off the 50% split. The labels shorten first,
+ * by a container query on the bar (styles/agents.css); then, while the row
+ * still overflows, these move into More one at a time: the attempts-unread
+ * note, Error, Follow. Past the last step the row wraps rather than hide a
+ * control.
+ */
+export const BAR_SPILL = { unread: 1, error: 2, follow: 3, wrap: 4 } as const
+
+/** A label with a short form for a narrow bar. The accessible name is always the long one. */
+function DockWords({ long, short }: { long: string; short: string }) {
+  if (long === short) return <>{long}</>
+  return (
+    <>
+      <span className="ag-logdock-long">{long}</span>
+      <span className="ag-logdock-short" aria-hidden="true">
+        {short}
+      </span>
+    </>
+  )
 }
 
 function attemptEnd(a: AttemptRow): string {
@@ -451,6 +476,69 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
     ? 'This agent has finished: its log is the final record, and nothing more will arrive to follow.'
     : undefined
 
+  // THE SPILL (BAR_SPILL): measured after every render, reset whenever what
+  // the row holds or the row's width changes, so it never stays spilled after
+  // the room came back.
+  const bar = useRef<HTMLDivElement | null>(null)
+  const [spill, setSpill] = useState(0)
+  const searching = needle.trim() !== ''
+  const unmasked = logs !== null && !logs.redaction.applied_at_read_time
+  const attemptsUnread = attempts.state.status === 'error'
+  const maskWarn = masked !== null && masked > 0
+  useLayoutEffect(() => {
+    setSpill(0)
+  }, [expanded, full, phone, searching, maskWarn, unmasked, attemptsUnread, finished, view])
+  useLayoutEffect(() => {
+    const el = bar.current
+    if (el === null || spill >= BAR_SPILL.wrap) return
+    if (el.scrollWidth > el.clientWidth + 1) setSpill((n) => Math.min(n + 1, BAR_SPILL.wrap))
+  })
+  useEffect(() => {
+    const el = bar.current
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    let width = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      // Only a change of WIDTH: wrapping changes the height, and resetting on
+      // that would undo the wrap that caused it.
+      if (el.clientWidth === width) return
+      width = el.clientWidth
+      setSpill(0)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [expanded])
+
+  const unreadNote = attemptsUnread && (
+    <span className="ctl-sub ag-logdock-unread">
+      <Mark kind="unread" say="The attempt list did not load, so only the latest attempt can be picked." />{' '}
+      <DockWords long="attempts not read" short="" />
+    </span>
+  )
+  const followButton = (
+    <Button size="sm" aria-pressed={follow} aria-keyshortcuts="F" disabled={finished} title={followSay} onClick={toggleFollow}>
+      <DockWords
+        long={finished ? 'Final record' : follow ? 'Following' : 'Paused · Follow'}
+        short={finished ? 'Final' : follow ? 'Following' : 'Paused'}
+      />{' '}
+      <kbd>F</kbd>
+    </Button>
+  )
+  const errorButton = (
+    <Button
+      size="sm"
+      disabled={targets.errors.length === 0}
+      aria-keyshortcuts="E"
+      onClick={() => jump(targets.errors)}
+      title={`Matches a transcript tool result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
+    >
+      <DockWords
+        long={targets.errors.length === 0 ? 'No error matched' : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}
+        short={targets.errors.length === 0 ? 'Errors 0' : `Error ${errAt < 0 ? '–' : errAt + 1}/${targets.errors.length}`}
+      />{' '}
+      <kbd>E</kbd>
+    </Button>
+  )
+
   const dock = (
     <LogMarksContext.Provider value={marks}>
       <section
@@ -514,10 +602,10 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                 stream pills scroll sideways inside it, the search gives way,
                 and what is used least -- the attempt picker, wrap, open full
                 and the read's facts -- is under More. */}
-            <div className="ag-logdock-bar">
+            <div ref={bar} className={`ag-logdock-bar${spill >= BAR_SPILL.wrap ? ' is-wrap' : ''}`} data-spill={spill}>
               {full && (
                 <button type="button" className="ag-logdock-back" onClick={exitFull}>
-                  ‹ Agent
+                  <DockWords long="‹ Agent" short="‹" />
                 </button>
               )}
               <h2>Log</h2>
@@ -548,48 +636,35 @@ export function LogDock({ task, phone = false }: { task: Task; phone?: boolean }
                 />
                 <kbd>/</kbd>
               </label>
-              {needle.trim() !== '' && (
+              {searching && (
                 <span className="ag-logdock-count" aria-live="polite">
-                  {targets.hits.length === 0
-                    ? 'none in this window'
-                    : `${hitAt < 0 ? '–' : hitAt + 1} of ${targets.hits.length} · this window`}
+                  <DockWords
+                    long={
+                      targets.hits.length === 0
+                        ? 'none in this window'
+                        : `${hitAt < 0 ? '–' : hitAt + 1} of ${targets.hits.length} · this window`
+                    }
+                    short={targets.hits.length === 0 ? '0 found' : `${hitAt < 0 ? '–' : hitAt + 1}/${targets.hits.length}`}
+                  />
                 </span>
               )}
-              <Button
-                size="sm"
-                aria-pressed={follow}
-                aria-keyshortcuts="F"
-                disabled={finished}
-                title={followSay}
-                onClick={toggleFollow}
-              >
-                {finished ? 'Final record' : follow ? 'Following' : 'Paused · Follow'} <kbd>F</kbd>
-              </Button>
-              <Button
-                size="sm"
-                disabled={targets.errors.length === 0}
-                aria-keyshortcuts="E"
-                onClick={() => jump(targets.errors)}
-                title={`Matches a transcript tool result marked is_error, and lines with ${ERROR_PATTERN_SAYS}. The API marks no line as an error, so this is the console's own pattern: it can miss an error that says none of these, and match a line that only quotes one.`}
-              >
-                {targets.errors.length === 0
-                  ? 'No error matched'
-                  : `Error ${errAt < 0 ? '–' : errAt + 1} of ${targets.errors.length}`}{' '}
-                <kbd>E</kbd>
-              </Button>
-              {/* A MASK IS A WARNING, so it is never only under More. */}
-              {masked !== null && masked > 0 && (
-                <span className="art-masked is-warn ag-logdock-maskchip">masked {masked}</span>
-              )}
-              {attempts.state.status === 'error' && (
-                <span className="ctl-sub ag-logdock-unread">
-                  <Mark kind="unread" say="The attempt list did not load, so only the latest attempt can be picked." /> attempts not
-                  read
+              {spill < BAR_SPILL.follow && followButton}
+              {spill < BAR_SPILL.error && errorButton}
+              {/* A MASK IS A WARNING, so it is never only under More; nor is a
+                  read the server did not mask (U10a review). */}
+              {maskWarn && <span className="art-masked is-warn ag-logdock-maskchip">masked {masked}</span>}
+              {unmasked && (
+                <span className="art-masked is-warn ag-logdock-maskchip" title="The server did not apply its masking rules to this read.">
+                  not masked
                 </span>
               )}
+              {spill < BAR_SPILL.unread && unreadNote}
               <details className="ag-logdock-more">
                 <summary>More</summary>
                 <div className="ag-logdock-menu">
+                  {spill >= BAR_SPILL.follow && followButton}
+                  {spill >= BAR_SPILL.error && errorButton}
+                  {spill >= BAR_SPILL.unread && unreadNote}
                   <label className="ag-logdock-attempt">
                     Attempt{' '}
                     <select

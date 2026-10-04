@@ -12,12 +12,32 @@ import { useEffect, useRef } from 'react'
  *
  * An open help card (`[data-focus-return]`, HelpCard.tsx) keeps its own
  * Escape: it is above everything, and it closes first.
+ *
+ * SO DOES ANY SMALLER LAYER THE KEY WAS PRESSED IN (U10a review). A capture
+ * listener sees the key before the layer that holds focus, so without this an
+ * Escape in the tenant flyout, a menu or a select closed the whole viewer
+ * instead. A focused `<select>` and a spine flyout or menu host close
+ * themselves on their own listener, so the key is left to them; an open
+ * `<details>` (the log's More) has no Escape of its own, so it is folded
+ * here and the focus goes back to its summary.
  */
+const OWN_ESCAPE = 'select, .sk-flyout, .sk-spine, .c-menu-host'
+
 const layers: { close: () => void }[] = []
 
 function onKey(e: KeyboardEvent): void {
   if (e.key !== 'Escape' || e.defaultPrevented || layers.length === 0) return
   if (document.querySelector('[data-focus-return]') !== null) return
+  const t = e.target instanceof Element ? e.target : null
+  if (t?.closest(OWN_ESCAPE)) return
+  const details = t?.closest('details[open]')
+  if (details instanceof HTMLDetailsElement) {
+    e.preventDefault()
+    e.stopPropagation()
+    details.open = false
+    details.querySelector<HTMLElement>(':scope > summary')?.focus()
+    return
+  }
   e.preventDefault()
   e.stopPropagation()
   layers[layers.length - 1]!.close()
