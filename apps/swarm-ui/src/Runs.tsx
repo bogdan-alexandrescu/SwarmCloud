@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { runAddress } from './IssueSubmit'
@@ -8,6 +8,7 @@ import { FailedPanel, Screen, timeAgo } from './Shell'
 import type { IssueRun, IssueRunPage, IssueRunState, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
 import './styles/intake.css'
+import './styles/runs.css'
 
 /**
  * WORK › RUNS (intake-tenants.html 1A, picked 2026-10-02): `/runs`, this
@@ -28,6 +29,12 @@ import './styles/intake.css'
  * has no pull request, no plan or status comment on the issue, no overlaps
  * and no cost; each is a dash with that reason. A workflow not yet created is
  * "none yet", because the run does serve `workflow_id`, and null is a fact.
+ *
+ * THE PAGE LEADS WITH THE ISSUE (lane U9, owner 2026-10-03). Its title is the
+ * issue's title as the run read it at submission (`issue_read`), its meta
+ * `owner/repo#N · run_… · created by …`; the plan is drawn from its schema
+ * -- a short lead, numbered steps with their prompts folded, the raw plan
+ * behind a disclosure -- rather than as one long paragraph.
  *
  * Classes are `rn-` so a later pass can swap them for lane U0's components.
  */
@@ -87,11 +94,14 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
   /** Why the run was re-read, when a refusal made this page do it. */
   const [notice, setNotice] = useState<string | null>(null)
   useEffect(() => setNotice(null), [runId])
+  /** The issue's title, once the run is read: the page's title (item 4). */
+  const [heading, setHeading] = useState<{ run: string; title: string } | null>(null)
 
   if (runId !== null) {
     // A local, not an inline expression: the nav-heading test reads the
-    // literal below as the tab's heading and skips a per-run title.
-    const pageTitle = runId
+    // literal below as the tab's heading and skips a per-run title. Until the
+    // run is read, the id is all this page knows to call it.
+    const pageTitle = heading !== null && heading.run === runId ? heading.title : runId
     const reread = (why: string) => {
       setNotice(why)
       setReloads((n) => n + 1)
@@ -114,9 +124,16 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
           title={pageTitle}
           load={() => loadRun(runId)}
           pollMs={(d) => (d === null || d.run.terminal ? null : RUN_POLL_MS)}
-          summary={(d) => `${d.run.issue.ref} · created by ${d.run.created_by || '—'}`}
+          summary={(d) => `${d.run.issue.ref} · ${d.run.id} · created by ${d.run.created_by || '—'}`}
         >
-          {(d) => <RunPage run={d.run} reread={reread} go={go} />}
+          {(d) => (
+            <RunPage
+              run={d.run}
+              reread={reread}
+              go={go}
+              onHeading={(title) => setHeading((was) => (was?.run === runId && was.title === title ? was : { run: runId, title }))}
+            />
+          )}
         </Screen>
       </>
     )
@@ -250,7 +267,13 @@ export function planMovedUnder(shown: IssueRun, served: IssueRun): boolean {
   return shown.plan_digest !== null && served.state === 'PLANNED' && served.plan_digest !== shown.plan_digest
 }
 
-function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: string) => void; go: (to: string) => void }) {
+function RunPage({ run: served, reread, go, onHeading }: {
+  run: IssueRun
+  reread: (why: string) => void
+  go: (to: string) => void
+  /** Told the page's title: the issue's, or its reference when the run kept none. */
+  onHeading: (title: string) => void
+}) {
   const now = useNow()
   // THE ANSWER TO AN ACTION IS DRAWN AT ONCE: the API returns the run it
   // moved, and a poll that lands later replaces it with whatever it reads.
@@ -272,6 +295,8 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
       setRun(served)
     }
   }, [served])
+  const title = run.issue_read?.title || run.issue.ref
+  useEffect(() => onHeading(title), [title]) // eslint-disable-line react-hooks/exhaustive-deps
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
   // The editor records the digest it opened on, and saves with that one.
   const [open, setOpen] = useState<{ kind: 'none' } | { kind: 'edit'; digest: string } | { kind: 'reject' }>(
@@ -322,9 +347,6 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
   return (
     <div className="rn-page">
       <section className="rn-main">
-        <h2 className="rn-title">
-          {run.state === 'PLANNING' || run.state === 'PLANNED' ? `Plan for ${run.issue.ref}` : run.issue.ref}
-        </h2>
         <div className="rn-state">
           <RunStateMark state={run.state} />
           <span className="rn-state-t">{stateLine(run)}</span>
@@ -397,32 +419,32 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
                 {' · '}{run.plan_shape ?? `${run.plan.steps.length === 1 ? '1 step' : `${run.plan.steps.length} steps`}, then a review and a fix`}
                 {' '}gated on its verdict · every step runs as claude-code
               </p>
-              <p className="rn-summary">{run.plan.summary}</p>
-              <ol className="rn-steps">
-                {run.plan.steps.map((s, i) => (
-                  <li key={s.step_id} className="rn-step">
-                    <b>{i + 1} · {s.title}</b>
-                    <span className="mono sb-note">{s.step_id}</span>
-                    {s.depends_on !== undefined && (
-                      <span className="sb-note rn-deps">
-                        {s.depends_on.length === 0 ? 'starts at once' : <>after <span className="mono">{s.depends_on.join(', ')}</span></>}
-                      </span>
-                    )}
-                    <p className="rn-prompt">{s.prompt}</p>
-                  </li>
-                ))}
-              </ol>
+              <PlanBody plan={run.plan} />
             </>
           )}
         </section>
 
         <section className="rn-overlaps" aria-label="Overlaps">
           <h3>Overlaps the planner found</h3>
-          <p className="sb-note">
-            <i className="ctl-em">&mdash;</i> not served: a plan holds a summary and steps only, so the run carries no
-            overlapping pull requests or issues.
-          </p>
+          {textList(run.plan?.overlaps) !== null ? (
+            <ul className="rn-list-items">
+              {textList(run.plan?.overlaps)!.map((o, i) => <li key={i}>{o}</li>)}
+            </ul>
+          ) : (
+            <p className="sb-note">
+              <i className="ctl-em">&mdash;</i> not served: a plan holds a summary and steps only, so the run carries no
+              overlapping pull requests or issues.
+            </p>
+          )}
         </section>
+        {textList(run.plan?.risks) !== null && (
+          <section className="rn-risks" aria-label="Risks">
+            <h3>Risks the planner named</h3>
+            <ul className="rn-list-items">
+              {textList(run.plan?.risks)!.map((r, i) => <li key={i}>{r}</li>)}
+            </ul>
+          </section>
+        )}
 
         {canAct && open.kind !== 'edit' && (
           <div className="rn-actions">
@@ -463,15 +485,15 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
           <ul className="ctl-facts">
             <li className="ctl-fact">
               <b>Issue</b>
-              <a href={run.issue.url} target="_blank" rel="noreferrer" className="mono">{run.issue.ref}</a>
+              <IssueLink run={run} />
             </li>
             <li className="ctl-fact is-absent">
               <b>Plan comment</b>
-              <i className="ctl-em">&mdash; not served by the run</i>
+              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
             </li>
             <li className="ctl-fact is-absent">
               <b>Status comment</b>
-              <i className="ctl-em">&mdash; not served by the run</i>
+              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
             </li>
             <li className="ctl-fact">
               <b>Planner</b>
@@ -489,20 +511,11 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
             </li>
             <li className="ctl-fact is-absent">
               <b>Pull request</b>
-              <i className="ctl-em">&mdash; not served by the run</i>
+              <i className="ctl-em">&mdash; {WRITE_BACK}</i>
             </li>
           </ul>
         </section>
-        <section className="rn-card" aria-label="Read from the issue">
-          <h3>Read from the issue</h3>
-          <ul className="ctl-facts">
-            <li className="ctl-fact"><b>issue</b><span className="mono">{run.issue.ref}</span></li>
-            <li className="ctl-fact is-absent"><b>title</b><i className="ctl-em">&mdash; not served by the run</i></li>
-            <li className="ctl-fact is-absent"><b>labels</b><i className="ctl-em">&mdash; not served by the run</i></li>
-            <li className="ctl-fact is-absent"><b>body</b><i className="ctl-em">&mdash; not served by the run</i></li>
-            <li className="ctl-fact is-absent"><b>comments</b><i className="ctl-em">&mdash; not served by the run</i></li>
-          </ul>
-        </section>
+        <IssueReadCard run={run} now={now} />
         <section className="rn-card" aria-label="Chosen at submission">
           <h3>Chosen at submission</h3>
           <ul className="ctl-facts">
@@ -515,6 +528,167 @@ function RunPage({ run: served, reread, go }: { run: IssueRun; reread: (why: str
         </section>
       </aside>
     </div>
+  )
+}
+
+/** Why the plan comment, the status comment and the pull request are dashes (#454). */
+const WRITE_BACK = 'GitHub write-back is not built yet (#454)'
+
+/**
+ * `owner/repo#N`, linked, on ONE line (item 6): it wrapped at the owner's
+ * hyphen ('bogdan- / alexandrescu/SwarmCloud#454'). Cut with an ellipsis where
+ * it does not fit, its whole text in the title.
+ */
+function IssueLink({ run }: { run: IssueRun }) {
+  return (
+    <a href={run.issue_read?.url || run.issue.url} target="_blank" rel="noreferrer" className="mono rn-ref" title={run.issue.ref}>
+      {run.issue.ref}
+    </a>
+  )
+}
+
+/** A plan's optional list (`overlaps`, `risks`, a step's `files`): its strings, or null when it has none. */
+export function textList(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null
+  const items = value.filter((v): v is string => typeof v === 'string' && v.trim() !== '')
+  return items.length === 0 ? null : items
+}
+
+/** The most a plan's lead may run to: two or three lines in the plan's column. */
+export const PLAN_LEAD_CHARS = 240
+
+/**
+ * The plan's summary cut to its lead (item 5): its first sentences, up to
+ * three and `PLAN_LEAD_CHARS`, and whether anything was left out. The whole
+ * summary is under "Show the full plan". A first sentence longer than the
+ * limit is cut at a word with an ellipsis.
+ */
+export function planLead(summary: string): { lead: string; cut: boolean } {
+  const text = summary.trim().replace(/\s+/g, ' ')
+  const sentences = text.match(/[^.!?]+(?:[.!?]+|$)\s*/g) ?? [text]
+  let lead = ''
+  for (const sentence of sentences.slice(0, 3)) {
+    if (lead !== '' && (lead + sentence).trim().length > PLAN_LEAD_CHARS) break
+    lead += sentence
+  }
+  lead = lead.trim()
+  if (lead.length > PLAN_LEAD_CHARS) {
+    const at = lead.lastIndexOf(' ', PLAN_LEAD_CHARS - 1)
+    return { lead: `${lead.slice(0, at > 0 ? at : PLAN_LEAD_CHARS - 1)}…`, cut: true }
+  }
+  return { lead, cut: lead.length < text.length }
+}
+
+/**
+ * THE PLAN FROM ITS SCHEMA (item 5): the lead, then the numbered steps --
+ * title, step id, what it waits for, the files, tests and estimate when the
+ * plan states them, and the prompt folded -- then the raw plan behind a
+ * disclosure. On a phone the plan was one paragraph with no end.
+ */
+function PlanBody({ plan }: { plan: RunPlan }) {
+  const { lead, cut } = planLead(plan.summary)
+  return (
+    <>
+      <p className="rn-summary">
+        {lead}
+        {cut && !lead.endsWith('…') ? ' …' : ''}
+      </p>
+      <ol className="rn-steps">
+        {plan.steps.map((s, i) => (
+          <PlanStep key={s.step_id} step={s} n={i + 1} />
+        ))}
+      </ol>
+      <details className="rn-raw">
+        <summary>Show the full plan</summary>
+        <p className="rn-full">{plan.summary}</p>
+        <pre className="rn-raw-json">{JSON.stringify(plan, null, 2)}</pre>
+      </details>
+    </>
+  )
+}
+
+function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
+  const files = textList(step.files)
+  const tests = textList(step.tests)
+  const estimate = typeof step.estimate === 'string' && step.estimate.trim() !== '' ? step.estimate : null
+  return (
+    <li className="rn-step">
+      <b className="rn-step-h">{n} · {step.title}</b>
+      <span className="rn-step-id sb-note">
+        <span className="mono">{step.step_id}</span>
+        {step.depends_on !== undefined && (
+          <span className="rn-deps">
+            {' · '}
+            {step.depends_on.length === 0 ? 'starts at once' : <>after <span className="mono">{step.depends_on.join(', ')}</span></>}
+          </span>
+        )}
+      </span>
+      {(files !== null || tests !== null || estimate !== null) && (
+        <span className="rn-step-meta sb-note">
+          {files !== null && <span>touches {files.map((f, i) => <Fragment key={f}>{i > 0 && ', '}<code>{f}</code></Fragment>)}</span>}
+          {tests !== null && <span>tests {tests.map((t, i) => <Fragment key={t}>{i > 0 && ', '}<code>{t}</code></Fragment>)}</span>}
+          {estimate !== null && <span>{estimate}</span>}
+        </span>
+      )}
+      <details className="rn-prompt-d">
+        <summary>Prompt</summary>
+        <p className="rn-prompt">{step.prompt}</p>
+      </details>
+    </li>
+  )
+}
+
+/**
+ * WHAT THE ISSUE SAID WHEN THE RUN WAS CREATED (item 4): the preview's read,
+ * kept on the run (`issue_read`), masked and bounded as the preview is. A run
+ * created before runs kept it, or whose read failed, says which, per fact --
+ * never a blank, and never a 0 for comments it did not read.
+ */
+function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
+  const read = run.issue_read ?? null
+  const failed = run.issue_read_error ?? null
+  const why =
+    failed !== null
+      ? `not read at submission: ${failed.message}`
+      : 'not kept: this run was created before runs kept what the issue said'
+  const absent = (key: string) => (
+    <li key={key} className="ctl-fact is-absent"><b>{key}</b><i className="ctl-em">&mdash; {why}</i></li>
+  )
+  return (
+    <section className="rn-card rn-read" aria-label="Read from the issue">
+      <h3>Read from the issue</h3>
+      <ul className="ctl-facts">
+        <li className="ctl-fact"><b>issue</b><IssueLink run={run} /></li>
+        {read === null ? (
+          ['title', 'state', 'labels', 'body', 'comments'].map(absent)
+        ) : (
+          <>
+            <li className="ctl-fact"><b>title</b><span className="rn-read-v">{read.title}</span></li>
+            <li className="ctl-fact"><b>state</b><span>{read.state}</span></li>
+            <li className="ctl-fact"><b>labels</b><span className="rn-read-v">{read.labels.length === 0 ? 'none' : read.labels.join(' · ')}</span></li>
+            <li className="ctl-fact">
+              <b>body</b>
+              <span>
+                {read.body === '' ? 'empty' : `${read.body.length.toLocaleString('en-US')} chars`}
+                {read.body_truncated && ' · cut at the preview\u2019s length'}
+                {read.body_redacted && ' · masked'}
+              </span>
+            </li>
+            <li className="ctl-fact"><b>comments</b><span>{read.comments}</span></li>
+            <li className="ctl-fact">
+              <b>read</b>
+              <span title={read.read_at ?? undefined}>{read.read_at === null ? '—' : `${timeAgo(read.read_at, now)}, at submission`}</span>
+            </li>
+          </>
+        )}
+      </ul>
+      {read !== null && read.body !== '' && (
+        <details className="rn-read-body">
+          <summary>Show the body</summary>
+          <p className="rn-prompt">{read.body}</p>
+        </details>
+      )}
+    </section>
   )
 }
 
