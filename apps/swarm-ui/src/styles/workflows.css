@@ -124,15 +124,23 @@
    box at 1440 with the panel open is 1020 (1440 - 84 spine - 236 panel -
    2 x 32 gutter - the card's 16px padding and borders), less a classic
    scrollbar's 15, so it scrolls inside its card only below that. The widths
-   sum to 852, which leaves Why 148px at the minimum and 384px with the panel
-   collapsed. Below 900 the phone form keeps its sideways scroll. */
+   sum to 888, which leaves Why 112px at the minimum and 348px with the panel
+   collapsed. Below 900 the phone form keeps its sideways scroll.
+   THE STEP COLUMN IS 140px AND ITS NAME WRAPS (lane U9 item 1, owner
+   2026-10-03): with the step card docked beside the table, a planned run's
+   names ('impl-plan-schema-and-overlaps') were wider than the column and the
+   state pill printed inside them. The name is a button, an atomic inline
+   box, so the cell's ellipsis never reached it and the clip cut it mid-id;
+   it now wraps inside its own cell (below), whole, because a cut id cannot
+   be pasted. walk.steps.inspector.test.tsx. */
 @media (min-width: 900px) {
   .wf-card .ctl-table.wf-table { overflow-x: auto; }
   .wf-card .ctl-table.wf-table > table { table-layout: fixed; width: 100%; min-width: 1000px; font-size: var(--t-meta); }
   .wf-card .ctl-table.wf-table th,
   .wf-card .ctl-table.wf-table td { padding: 4px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wf-card .ctl-table.wf-table td.is-num { font-size: var(--t-micro); }
-  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 104px; }
+  .wf-card .ctl-table.wf-table th[data-col="step"] { width: 140px; }
+  .wf-card .ctl-table.wf-table td[data-col="step"] { white-space: normal; }
   .wf-card .ctl-table.wf-table th[data-col="state"] { width: 100px; }
   .wf-card .ctl-table.wf-table th[data-col="runner"] { width: 96px; }
   .wf-card .ctl-table.wf-table th[data-col="waited"] { width: 108px; }
@@ -144,6 +152,11 @@
   /* The files a step reads, in the row under it: wrapping text, the row's width. */
   .wf-card .ctl-table.wf-table tr.wf-xrow > td { white-space: normal; overflow: visible; padding: 4px 12px 10px; }
 }
+/* A STEP'S NAME WRAPS INSIDE ITS CELL, at any width (item 1 above): the
+   button is the cell's width at most and breaks the id anywhere, so the next
+   column's state pill is never drawn over it. */
+.wf-table td[data-col="step"] > .wf-pick { display: flex; max-width: 100%; white-space: normal; }
+.wf-table td[data-col="step"] .wf-pick-id { min-width: 0; overflow-wrap: anywhere; }
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
 /* THE TABLE'S HEAD ROW, inside the card: its title, and the sampling mark
