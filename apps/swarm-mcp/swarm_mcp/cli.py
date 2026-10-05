@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from . import profiles as catalogue
+from . import progress
 from . import workflows
 from .auth import REACHES, WHY_NOT, Tier, detect
 from .client import (
@@ -812,6 +813,10 @@ def cmd_result(client: SwarmClient, args) -> int:
         for line in _upstream_steps(client, task):
             print(f"  upstream {line}")
     _print_failure(client, task)
+    # WHAT THE WHOLE TASK COST, every attempt's, the last one in brackets
+    # (lane review P1): this command printed no cost at all, and the task
+    # document's own figures are the last attempt's alone.
+    print(f"  cost    {progress.cost_words(progress.spend_totals(client, task))}")
     # WHAT IT PRODUCED, before the code (#143). A step whose summary listed
     # output.txt, a runner summary and 60.6s printed only "this task cloned no
     # repository". From the artifacts route, whose `complete` tells "not

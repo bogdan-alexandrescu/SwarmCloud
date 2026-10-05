@@ -958,7 +958,10 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     `answer` is the agent's final text; `answer_json` is the last JSON object
     that text ends with, parsed, for a caller that asked the agent for one.
     `cost_usd` is the sum of every attempt's recorded spend, and null -- never
-    0 -- when no attempt recorded one. On a failure, `last_error` and `failure`
+    0 -- when no attempt recorded one; `cost_incomplete` says it is a floor.
+    `spend_totals`' fields sit beside it: `attempts`, `cost_usd_total`,
+    `duration_s_total`, `first_started_at` and the last attempt's
+    `last_attempt_cost_usd` and `last_attempt_duration_s`. On a failure, `last_error` and `failure`
     carry what the per-attempt record says, and `answer` is whatever the agent
     printed, which is not a success.
     """
@@ -969,8 +972,12 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
         "runner_profile": task.get("runner_profile"),
     }
     out.update(final_answer(client, task))
-    out.update(_cost(client, task))
+    totals = spend_totals(client, task)
+    out.update(_cost(totals))
     out.update(_duration(task))
+    # EVERY ATTEMPT, with the last one beside it (lane review P1): `cost_usd`
+    # above is the total; `duration_s` is the last attempt's.
+    out.update(totals)
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
     out["last_error"] = task.get("last_error")
@@ -1120,32 +1127,131 @@ def last_json_object(text: Any) -> dict[str, Any] | None:
     return None
 
 
-def _cost(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
-    """The task's spend: every attempt's `cost_usd`, summed. Null is not zero."""
+#: What `swarm_api.attempt_totals` serves on a task, read back by these names.
+TOTAL_FIELDS = (
+    "attempts",
+    "attempts_with_cost",
+    "cost_usd_total",
+    "cost_incomplete",
+    "duration_s_total",
+    "duration_incomplete",
+    "first_started_at",
+    "last_attempt_cost_usd",
+    "last_attempt_duration_s",
+)
+
+
+def _number(value: Any) -> float | None:
+    return float(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _attempt_seconds(attempt: dict[str, Any]) -> float | None:
+    started = parse_time(attempt.get("started_at"))
+    completed = parse_time(attempt.get("completed_at"))
+    if started is None or completed is None or completed < started:
+        return None
+    return (completed - started).total_seconds()
+
+
+def _derived_totals(attempts: list[dict[str, Any]]) -> dict[str, Any]:
+    """`attempt_totals`' rules over the attempts route's rows, for an API that serves none."""
+    costs = [c for c in (_number(a.get("cost_usd")) for a in attempts) if c is not None]
+    seconds = [s for s in (_attempt_seconds(a) for a in attempts) if s is not None]
+    starts = [(parse_time(a.get("started_at")), a.get("started_at")) for a in attempts]
+    starts = [(moment, raw) for moment, raw in starts if moment is not None]
+    last = max(
+        attempts,
+        key=lambda a: (a.get("generation") or 0, str(a.get("created_at") or "")),
+        default=None,
+    )
+    last_seconds = _attempt_seconds(last) if last is not None else None
+    return {
+        "attempts": len(attempts),
+        "attempts_with_cost": len(costs),
+        "cost_usd_total": round(sum(costs), 6) if costs else None,
+        "cost_incomplete": len(costs) < len(attempts),
+        "duration_s_total": round(sum(seconds), 1) if seconds else None,
+        "duration_incomplete": len(seconds) < len(attempts),
+        "first_started_at": min(starts)[1] if starts else None,
+        "last_attempt_cost_usd": _number(last.get("cost_usd")) if last is not None else None,
+        "last_attempt_duration_s": round(last_seconds, 1) if last_seconds is not None else None,
+    }
+
+
+def spend_totals(client: SwarmClient, task: dict[str, Any], *, read_attempts: bool = True) -> dict[str, Any]:
+    """The task's cost and time over EVERY attempt, with the last attempt's beside them.
+
+    WHY (owner decision, 2026-10-05, lane review P1): `swarm result` and this
+    outcome reported only the final attempt -- UR1's implement step served
+    $0.51 while its two attempts cost $9.64. The API serves the totals on the
+    task (`swarm_api.attempt_totals`) and they are read from there, as served.
+    An API from before them, or one whose attempt read failed, is totalled
+    here from `GET /v1/tasks/{id}/attempts` by the same rules: a missing
+    attempt cost makes the total a floor (`cost_incomplete`), and nothing
+    recorded is null -- never 0.
+
+    `read_attempts=False` is for a reader that promises no extra round trip
+    (`swarm_result` on a success): with no served totals it says so instead.
+    """
+    served = task.get("attempts")
+    if isinstance(served, int) and not isinstance(served, bool) and task.get("attempts_read") != "failed":
+        out = {field: task.get(field) for field in TOTAL_FIELDS}
+        if out["attempts_with_cost"] is None:
+            out.pop("attempts_with_cost")
+        return out
+    if not read_attempts:
+        why = (
+            "the API could not read this task's attempts"
+            if task.get("attempts_read") == "failed"
+            else "this API serves no attempt totals"
+        )
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": f"{why}; swarm_follow's outcome reads them per attempt"}
     task_id = task_id_of(task)
     if not task_id:
-        return {"cost_usd": None, "cost_note": "the task carries no id, so its attempts cannot be read"}
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": "the task carries no id, so its attempts cannot be read"}
     try:
         attempts = client.attempts(task_id)
     except SwarmError as exc:
-        return {"cost_usd": None, "cost_note": f"the attempts could not be read: {exc}"}
-    recorded = [
-        a.get("cost_usd") for a in attempts
-        if isinstance(a.get("cost_usd"), (int, float)) and not isinstance(a.get("cost_usd"), bool)
-    ]
-    if not recorded:
-        return {
-            "cost_usd": None,
-            "cost_note": (
-                "no attempt recorded a cost" if attempts else "the task has no attempts"
-            ) + " -- this is NOT MEASURED, not $0",
-        }
-    out: dict[str, Any] = {"cost_usd": round(sum(recorded), 6)}
-    if len(recorded) < len(attempts):
+        return {**{field: None for field in TOTAL_FIELDS},
+                "totals_unavailable_because": f"the attempts could not be read: {exc}"}
+    return _derived_totals(attempts)
+
+
+def cost_words(totals: dict[str, Any]) -> str:
+    """The total as one line, the last attempt in brackets: what a reader is shown."""
+    if totals.get("totals_unavailable_because"):
+        return f"cost unreadable: {totals['totals_unavailable_because']}"
+    count = totals.get("attempts")
+    total = _number(totals.get("cost_usd_total"))
+    if total is None:
+        return "no attempts yet" if count == 0 else "cost not recorded -- NOT MEASURED, not $0"
+    words = f"${total:.2f}"
+    if totals.get("cost_incomplete"):
+        words = f"at least {words}"
+    if not isinstance(count, int) or count <= 1:
+        return words
+    notes = []
+    with_cost = totals.get("attempts_with_cost")
+    if totals.get("cost_incomplete") and isinstance(with_cost, int):
+        notes.append(f"{count - with_cost} of {count} attempts recorded no cost")
+    last = _number(totals.get("last_attempt_cost_usd"))
+    notes.append("last attempt " + (f"${last:.2f}" if last is not None else "not recorded"))
+    return f"{words} over {count} attempts ({'; '.join(notes)})"
+
+
+def _cost(totals: dict[str, Any]) -> dict[str, Any]:
+    """`cost_usd`, the task's spend over every attempt, and why it is null or a floor."""
+    out: dict[str, Any] = {"cost_usd": totals.get("cost_usd_total")}
+    if totals.get("totals_unavailable_because"):
+        out["cost_note"] = totals["totals_unavailable_because"]
+    elif out["cost_usd"] is None:
         out["cost_note"] = (
-            f"{len(attempts) - len(recorded)} of {len(attempts)} attempt(s) recorded no "
-            "cost, so this is a floor"
-        )
+            "no attempt recorded a cost" if totals.get("attempts") else "the task has no attempts"
+        ) + " -- this is NOT MEASURED, not $0"
+    elif totals.get("cost_incomplete"):
+        out["cost_note"] = f"{cost_words(totals)}: an attempt recorded no cost, so this is a floor"
     return out
 
 
@@ -1155,7 +1261,9 @@ def _duration(task: dict[str, Any]) -> dict[str, Any]:
     if started and completed and completed >= started:
         return {
             "duration_s": round((completed - started).total_seconds(), 1),
-            "duration_basis": "started_at to completed_at, across every attempt",
+            # The task's `started_at` is rewritten by every attempt's STARTING,
+            # so this span is the LAST attempt's; `duration_s_total` is all of them.
+            "duration_basis": "the last attempt's started_at to completed_at",
         }
     seconds = (task.get("result_summary") or {}).get("duration_seconds")
     if isinstance(seconds, (int, float)) and not isinstance(seconds, bool):

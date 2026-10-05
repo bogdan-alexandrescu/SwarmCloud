@@ -360,6 +360,11 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
         "state": full.get("state"),
         "answer_excerpt": full.get("answer_excerpt"),
         "cost_usd": full.get("cost_usd"),
+        # `cost_usd` is every attempt's; these say whether it is a floor and
+        # what the last attempt alone cost (lane review P1).
+        "cost_incomplete": full.get("cost_incomplete"),
+        "attempts": full.get("attempts"),
+        "last_attempt_cost_usd": full.get("last_attempt_cost_usd"),
         "duration_s": full.get("duration_s"),
         "pr_url": full.get("pr_url"),
         "artifacts": [a.get("name") for a in full.get("artifacts") or [] if isinstance(a, dict)],

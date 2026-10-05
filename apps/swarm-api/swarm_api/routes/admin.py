@@ -24,6 +24,7 @@ from swarm_common.identity import Principal
 from swarm_common.models import ProviderState
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
+from ..attempt_totals import totals_for, with_totals
 from ..auth import AuthContext
 from ..codec import (
     lease_to_api,
@@ -630,14 +631,22 @@ def list_failures(
     for task in page.items:
         by_tenant.setdefault(task.tenant_id, []).append(task)
     accounts: dict[str, dict] = {}
+    totals: dict[str, dict] = {}
     for tenant_id, tasks in by_tenant.items():
         accounts.update(accounts_for(ctx.db, tenant_id, tasks))
+        # Every attempt's spend and time, per tenant like the accounts, so the
+        # row carries the same fields a member's task row does
+        # (`swarm_api.attempt_totals`).
+        totals.update(totals_for(ctx.db, tenant_id, [t.id for t in tasks]))
     return {
         "tasks": [
-            task_to_api(
-                task,
-                account=accounts.get(task.id),
-                console_url=ctx.settings.console_url,
+            with_totals(
+                task_to_api(
+                    task,
+                    account=accounts.get(task.id),
+                    console_url=ctx.settings.console_url,
+                ),
+                totals,
             )
             for task in page.items
         ],

@@ -1022,12 +1022,24 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
       help: 'token-cost',
     })
   } else {
+    // THE TOTAL OVER EVERY ATTEMPT, the last attempt as secondary text (lane
+    // review P1, 2026-10-05): `result_summary` is the last attempt's alone, and
+    // a retried task read from it under-reported every earlier attempt. An
+    // attempt with no figure makes the total a floor, and it says `at least`
+    // rather than a sum that looks whole.
+    const lastCost = attempts.length > 1 && latest !== null ? latest.cost_usd : undefined
     cells.push({
       label: 'Cost',
-      value: usd(cost),
+      value: spent.length < attempts.length ? <>at least {usd(cost)}</> : usd(cost),
       sub: (
         <>
           {spent.length !== attempts.length && `cost ${spent.length} of ${attempts.length} reported · `}
+          {lastCost !== undefined && (
+            <>
+              last attempt {lastCost === null ? 'not reported' : usd(lastCost)}
+              {' · '}
+            </>
+          )}
           {tokenLine ?? 'tokens not reported'}
         </>
       ),

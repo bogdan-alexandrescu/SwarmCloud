@@ -42,6 +42,7 @@ import {
   stageGlyph,
   stageMix,
   stepCostOf,
+  totalCostCell,
   stepDuration,
   workflowSpend,
   CANVAS_COLUMN,
@@ -4032,10 +4033,18 @@ function figuresFor(state: StepState, usage: UsageRead, now: number): StepFigure
   // the task has finished, which is when the result is its newest attempt's.
   // `gap` is why the telemetry has none, and the note says so.
   const result = finishedResultOf(state.task)
+  // BEFORE THE RESULT, the API's total over every attempt (lane review P1):
+  // the result is the last attempt's alone, and a retried step drawn from it
+  // under-reported every earlier attempt. Not marked `from result` -- it is
+  // the attempts' sum, as the telemetry is -- and the last attempt's figure
+  // is its secondary text (`totalCostCell`).
+  const served = totalCostCell(state.task)
   const costOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
-    own.kind === 'absent' && result !== null && result.usd !== null
-      ? { cell: costCell(result.usd, boardResultNote(gap)), from: 'result' }
-      : { cell: own, from: null }
+    own.kind === 'absent' && served !== null
+      ? { cell: served, from: null }
+      : own.kind === 'absent' && result !== null && result.usd !== null
+        ? { cell: costCell(result.usd, boardResultNote(gap)), from: 'result' }
+        : { cell: own, from: null }
   const tokensOrResult = (own: Cell, gap: BoardTelemetryGap): { cell: Cell; from: 'result' | null } =>
     own.kind === 'absent' && result !== null && (result.inputTokens !== null || result.outputTokens !== null)
       ? { cell: tokenPairCell(result.inputTokens, result.outputTokens, boardResultNote(gap)), from: 'result' }
