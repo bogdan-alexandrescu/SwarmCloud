@@ -48,9 +48,15 @@ TENANT_HEADER = "X-Swarm-Tenant"
 #: non-default tenant would 404 every artifact of the tasks it lists. It is
 #: validated by exactly the same `Authenticator._select_tenant` as the header:
 #: it selects among the caller's verified memberships and never grants one.
+#:
+#: The checkpoint archive is here for the same reason: the console offers it
+#: as a plain download link (`checkpointDownloadHref`), so the browser can
+#: stream a large archive to disk rather than into memory, and that link can
+#: carry no header either.
 TENANT_QUERY = "tenant"
 TENANT_QUERY_ROUTES: frozenset[tuple[str, str]] = frozenset({
     ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
+    ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
 })
 
 

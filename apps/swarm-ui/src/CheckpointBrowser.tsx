@@ -4,7 +4,7 @@ import { Mark } from './AgentDetail'
 import { USE_FIXTURES } from './api'
 import { ArtifactViewer } from './ArtifactViewer'
 import { Button, ButtonLink } from './components'
-import { encoded, errorHeading, noteFixtureProbe, read, route, type ApiError, type Result } from './fetch'
+import { encoded, errorHeading, noteFixtureProbe, read, route, tenantQuery, type ApiError, type Result } from './fetch'
 import { bytesLabel, timeAgo, type ArtifactContent } from './types'
 
 /**
@@ -199,13 +199,16 @@ export async function loadCheckpointFile(
  * attachment. A plain link: behind IAP the browser carries the session cookie
  * on a same-origin navigation exactly as it does on `fetch`, and a link is
  * what lets the browser stream a 2 GiB file to disk instead of into memory.
+ * A link carries no `X-Swarm-Tenant`, so the chosen tenant rides as
+ * `?tenant=` (`tenantQuery`); without it a console switched to another tenant
+ * would download from the default one and 404.
  */
 export function checkpointDownloadHref(
   taskId: string,
   attemptId: string,
   checkpointId: string,
 ): string {
-  const query = new URLSearchParams({ attempt_id: attemptId })
+  const query = tenantQuery(new URLSearchParams({ attempt_id: attemptId }))
   const path = `/v1/tasks/${encodeURIComponent(taskId)}/checkpoints/${encodeURIComponent(checkpointId)}/content`
   return path + `?${query}`
 }
