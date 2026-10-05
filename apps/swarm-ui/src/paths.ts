@@ -40,6 +40,7 @@ export const FIXED: Readonly<Record<string, string>> = {
   // `/runs/<id>`, below).
   'work/new-issue': '/submit/issue',
   'work/runs': '/runs',
+  'work/repositories': '/repositories',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -93,6 +94,9 @@ function isAgentTab(s: string | undefined): s is AgentTab {
 /** The panes of one workflow that are a path segment: `/workflows/<id>/<pane>`. */
 export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
 
+/** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
+export const REPO_TABS: readonly string[] = ['test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
+
 export function addressToPath(address: string, agentTab: AgentTab = 'live'): string {
   const q = address.indexOf('?')
   const bare = q === -1 ? address : address.slice(0, q)
@@ -126,6 +130,19 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
   if (bare === 'work/runs' && query !== '') {
     const run = new URLSearchParams(query).get('run')
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
+  }
+  // Work › Repositories (repositories.html): the page rides on the tab's query.
+  if (bare === 'work/repositories' && query !== '') {
+    const q = new URLSearchParams(query)
+    const page = q.get('page')
+    const repo = q.get('repo')
+    if (page === 'register' || page === 'tokens') return `/repositories/${page}`
+    if (page === 'permissions') return '/repositories/tokens/permissions'
+    if (repo !== null && repo !== '') {
+      const tab = q.get('tab')
+      const base = `/repositories/${encodeURIComponent(repo)}`
+      return tab !== null && REPO_TABS.includes(tab) ? `${base}/${tab}` : base
+    }
   }
   // Help: a topic lands at its group's page, scrolled to it; a group is a page.
   if (seg[0] === HELP_ROUTE && seg.length > 1) {
@@ -185,6 +202,15 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
 
   if (seg[0] === 'runs' && seg.length >= 2) {
     return plain(`work/runs?${new URLSearchParams({ run: decodeURIComponent(seg.slice(1).join('/')) }).toString()}`)
+  }
+
+  if (seg[0] === 'repositories' && seg.length >= 2) {
+    const at = (q: Record<string, string>) => plain(`work/repositories?${new URLSearchParams(q).toString()}`)
+    if (seg[1] === 'register' && seg.length === 2) return at({ page: 'register' })
+    if (seg[1] === 'tokens') return seg[2] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
+    const repo = decodeURIComponent(seg[1] ?? '')
+    const tab = seg[2]
+    return tab !== undefined && REPO_TABS.includes(tab) ? at({ repo, tab }) : at({ repo })
   }
 
   if (seg[0] === 'help' && seg.length >= 2) {

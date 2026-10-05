@@ -73,6 +73,8 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // redirect (visual QA Q7, 2026-10-02).
     { key: 'runs', label: 'Runs', icon: 'runs', to: 'work/runs' },
     { key: 'timeline', label: 'Timeline', icon: 'timeline', to: 'work/timeline' },
+    // repositories.html's shell: the last Work page, with its own icon.
+    { key: 'repositories', label: 'Repositories', icon: 'repo', to: 'work/repositories' },
   ],
   capacity: [
     {
@@ -570,6 +572,13 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     <>
       <path d="M4 19.5h16" />
       <path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5" />
+    </>
+  ),
+  // repositories.html's i-repo, as drawn.
+  repo: (
+    <>
+      <path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z" />
+      <path d="M5.5 17.5a2 2 0 0 1 2-2h11M9 8.5h6" />
     </>
   ),
   runtimes: (

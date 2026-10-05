@@ -1,0 +1,283 @@
+/**
+ * The pieces Work › Repositories and Git tokens share: reading a region,
+ * saying a route is not served yet, the freshness pill, the capability mark,
+ * the breadcrumb and a routed link. Built LOCALLY, prefixed `Ur`, on the
+ * canonical set that is on main (components.html A); lane U0's set is landing
+ * in parallel, and a later pass can swap each of these for its own by name.
+ */
+import { useCallback, useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
+import { MarkGlyph } from './marks'
+import { FailedPanel } from './Shell'
+import type { ApiError, Result } from './fetch'
+import { addressToPath } from './paths'
+import { CAPABILITIES, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
+
+/** One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped. */
+export function useUrRead<T>(load: () => Promise<Result<T>>, key: string): { state: Result<T>; reload: () => void } {
+  const [state, setState] = useState<Result<T>>({ status: 'loading', since: Date.now() })
+  const [nonce, setNonce] = useState(0)
+  useEffect(() => {
+    let live = true
+    setState((was) => (was.status === 'ok' || was.status === 'stale' ? was : { status: 'loading', since: Date.now() }))
+    void load().then((r) => {
+      if (live) setState(r)
+    })
+    return () => {
+      live = false
+    }
+    // `load` is a new closure every render; `key` names what it reads.
+  }, [key, nonce])
+  const reload = useCallback(() => setNonce((n) => n + 1), [])
+  return { state, reload }
+}
+
+/**
+ * A ROUTE THE API DOES NOT SERVE YET (the backend lanes RI1, RI2 and GT1 are
+ * building them in parallel). Said in place, naming the route, so nobody
+ * reads an absent region as an empty one -- and never as a failure of
+ * something that exists.
+ */
+export function UrNotServed({ route, what }: { route: string; what: string }) {
+  return (
+    <div className="ur-notserved" data-notserved={route}>
+      <EmptyState kind="partial" heading="Not served yet">
+        {what} comes from <code>{route}</code>, which this API does not serve yet. Nothing here is a zero: it has not been
+        read.
+      </EmptyState>
+    </div>
+  )
+}
+
+/**
+ * A region's read, in its states: reading, not served yet, failed (with
+ * Retry), empty, or its data. A stale read keeps the data, dimmed, with the
+ * failure above it (states.html C, page tier).
+ */
+export function UrRegion<T>({
+  state,
+  route,
+  what,
+  onRetry,
+  empty,
+  lines = 3,
+  children,
+}: {
+  state: Result<T>
+  /** The route as the design names it: `GET /v1/repositories/{repo_id}/languages`. */
+  route: string
+  /** What the region shows, as the subject of "… comes from <route>". */
+  what: string
+  onRetry: () => void
+  empty?: ReactNode
+  lines?: number
+  children: (data: T) => ReactNode
+}) {
+  if (state.status === 'loading') return <LoadingState lines={lines} label={`Reading ${what.toLowerCase()}…`} />
+  if (state.status === 'error') {
+    if (notServed(state.error)) return <UrNotServed route={route} what={what} />
+    return <FailedPanel error={state.error} onRetry={onRetry} />
+  }
+  if (state.status === 'empty') return <>{empty ?? null}</>
+  if (state.status === 'stale') {
+    return (
+      <div className="ur-stale">
+        <p className="ur-stale-why" role="status">
+          The last read failed ({state.error.message}); this is the previous answer.
+        </p>
+        <div className="ur-dim">{children(state.data)}</div>
+      </div>
+    )
+  }
+  return <>{children(state.data)}</>
+}
+
+/** The freshness pill (components.html A `c-pill`), with its reason as its title. */
+export function UrFreshPill({ f, sha }: { f: Freshness; sha?: string | null }) {
+  return (
+    <span className={`c-pill is-${f.hue}`} data-fresh={f.kind} data-mark={f.mark} title={f.why ?? undefined}>
+      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+        <MarkGlyph mark={f.mark} />
+      </svg>
+      {sha ? `${f.word} · ${sha}` : f.word}
+    </span>
+  )
+}
+
+const CAP_MARK = { ok: 'succeeded', missing: 'failed', unknown: 'queued' } as const
+
+/**
+ * One capability (git-tokens.md §5): ok (measured), missing (refused, with
+ * the reason) or unknown (not readable without trying), with its reason as
+ * the title. An unknown is the grey ring, never green.
+ */
+export function UrCap({ label, cell, word }: { label: string; cell: CapCell; word?: string }) {
+  const reason = cell.reason ?? (cell.state === 'unknown' ? 'Not served for this pair' : null)
+  return (
+    <span className={`ur-cap is-${cell.state}`} data-cap={cell.state} title={`${label}: ${cell.state}${reason ? `. ${reason}` : ''}`}>
+      <svg viewBox="0 0 12 12" aria-hidden="true" focusable="false">
+        <MarkGlyph mark={CAP_MARK[cell.state]} />
+      </svg>
+      {word ?? label}
+    </span>
+  )
+}
+
+/** The eight capabilities as one row of marks (Settings A's resolved token). */
+export function UrCapRow({ row }: { row: CapRow }) {
+  return (
+    <div className="ur-tokrow">
+      {CAPABILITIES.map((c) => (
+        <UrCap key={c.key} label={c.label} cell={row[c.key]} />
+      ))}
+    </div>
+  )
+}
+
+/** A link to a router address: a real href for a new tab, `go()` for a plain click. */
+export function UrLink({
+  to,
+  go,
+  className,
+  children,
+}: {
+  to: string
+  go: (to: string) => void
+  className?: string
+  children: ReactNode
+}) {
+  return (
+    <a
+      className={className}
+      href={addressToPath(to)}
+      onClick={(e: MouseEvent) => {
+        if (!routedClick(e)) return
+        e.preventDefault()
+        go(to)
+      }}
+    >
+      {children}
+    </a>
+  )
+}
+
+/** The frames' breadcrumb: `Work › Repositories › <here>`, every step but the last a link. */
+export function UrCrumb({ trail, go }: { trail: readonly { label: string; to?: string }[]; go: (to: string) => void }) {
+  return (
+    <nav className="ur-crumb" aria-label="Breadcrumb">
+      {trail.map((t, i) => (
+        <span key={`${i}:${t.label}`}>
+          {i > 0 && <span aria-hidden> › </span>}
+          {t.to === undefined ? i === trail.length - 1 ? <b>{t.label}</b> : t.label : <UrLink to={t.to} go={go}>{t.label}</UrLink>}
+        </span>
+      ))}
+    </nav>
+  )
+}
+
+export const LIST = 'work/repositories'
+export const REGISTER = 'work/repositories?page=register'
+export const GT_PAGE = 'work/repositories?page=tokens'
+export const PERMISSIONS = 'work/repositories?page=permissions'
+
+/** The address of one repository, or one of its tabs. */
+export function repoAddress(repoId: string, tab: string | null = null): string {
+  const q = new URLSearchParams({ repo: repoId })
+  if (tab !== null && tab !== 'overview') q.set('tab', tab)
+  return `${LIST}?${q.toString()}`
+}
+
+/** A navigation drawn as a button (`ButtonLink`), routed like `UrLink`. */
+export function UrNavButton({
+  to,
+  go,
+  kind = 'secondary',
+  size,
+  children,
+}: {
+  to: string
+  go: (to: string) => void
+  kind?: ButtonKind
+  size?: ButtonSize
+  children: ReactNode
+}) {
+  return (
+    <ButtonLink
+      kind={kind}
+      size={size}
+      href={addressToPath(to)}
+      onClick={(e) => {
+        if (!routedClick(e)) return
+        e.preventDefault()
+        go(to)
+      }}
+    >
+      {children}
+    </ButtonLink>
+  )
+}
+
+/**
+ * A single choice drawn as the canonical segmented control (`c-seg`, whose
+ * `aria-checked` state it already styles), with radio semantics: the frames'
+ * `.radio` rows (schedule, scope, policy) are one-of-N choices, not toggles.
+ */
+export function UrRadio<K extends string>({
+  label,
+  options,
+  value,
+  onChange,
+  disabled = false,
+}: {
+  label: string
+  options: readonly { key: K; label: ReactNode; title?: string; disabled?: boolean }[]
+  value: K | null
+  onChange?: (k: K) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="c-seg ur-radio" role="radiogroup" aria-label={label}>
+      {options.map((o) => (
+        <button
+          key={o.key}
+          type="button"
+          role="radio"
+          aria-checked={o.key === value}
+          title={o.title}
+          disabled={disabled || o.disabled === true || undefined}
+          onClick={() => onChange?.(o.key)}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+/** What a refused write said, or that its route is not served yet, naming it. */
+export function writeFailure(e: ApiError, route: string): string {
+  return notServed(e) ? `Not served yet: ${route}.` : e.message
+}
+
+/** The test-map bar: filled to the ratio, or hatched when there is nothing measured. */
+export function UrBar({ ratio, label }: { ratio: number | null; label: string }) {
+  if (ratio === null) return <span className="ur-bar is-unmeasured" role="img" aria-label={label} />
+  return (
+    <span className="ur-bar" role="img" aria-label={label}>
+      <i style={{ width: pct(ratio) }} />
+    </span>
+  )
+}
+
+/** "Tests mapped" with its bar: the share of source files with a test edge. */
+export function TestsMapped({ r }: { r: RepoRecord }) {
+  const c = r.index.coverage
+  const why = r.index.current_sha === null ? 'No index has been built yet' : 'The index did not report its test-map coverage'
+  return (
+    <div className="ur-tm">
+      <span className="ur-mu">Tests mapped</span>
+      <UrBar ratio={c} label={c === null ? `Tests mapped: ${why}` : `Tests mapped: ${pct(c)} of source files have a test edge`} />
+      {c === null ? <Dash why={why} /> : <b>{pct(c)}</b>}
+    </div>
+  )
+}

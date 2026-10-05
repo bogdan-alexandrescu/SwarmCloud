@@ -47,6 +47,7 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
+import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
 
@@ -293,6 +294,8 @@ export const SECTIONS: SectionDef[] = [
       // with its TAIL INTACT through SECTION_ALIASES rather than landing on
       // this section's first pane. See SECTION_ALIASES and MOVED_PANES below.
       { id: 'timeline', label: 'Timeline' },
+      // repositories.html §1: Work › Repositories, after Runs; the shell draws it last.
+      { id: 'repositories', label: 'Repositories' },
       // "Submit a task", not "New agent", and the screen's own copy is why.
       // Submit.tsx creates a TASK at READY or PARKED and then says, in the
       // panel it renders on success, "That is not a running agent" -- because
@@ -820,7 +823,7 @@ export function fromAddress(full: string): Route {
     }
     // The Workflows list's filters and its open workflow (`wf=<id>`) ride on
     // its address the same way: `/workflows/<id>?owner=me` (paths.ts).
-    if (tab && section.id === WORK && (tab.id === 'workflows' || tab.id === 'runs') && query !== '') {
+    if (tab && section.id === WORK && (tab.id === 'workflows' || tab.id === 'runs' || tab.id === 'repositories') && query !== '') {
       return { sectionId: section.id, tab: tab.id, ...blank, view: query }
     }
     // THE ROW A LINK NAMED rides on Pool limits' address (#134): the Tenants
@@ -888,7 +891,7 @@ export function canonical(r: Route): string {
     const at = r.page === 'outcomes' ? `${WORK}/timeline/outcomes` : `${WORK}/timeline`
     return r.view ? `${at}?${r.view}` : at
   }
-  if (r.sectionId === WORK && (r.tab === 'workflows' || r.tab === 'runs') && r.view) {
+  if (r.sectionId === WORK && (r.tab === 'workflows' || r.tab === 'runs' || r.tab === 'repositories') && r.view) {
     return `${WORK}/${r.tab}?${r.view}`
   }
   // And Pool limits' linked row, for the same reason (#134) -- and Pools' and
@@ -1648,6 +1651,8 @@ function SectionBody({
       return <IssueSubmitScreen go={go} />
     case 'work/runs':
       return <RunsScreen view={view} go={go} />
+    case 'work/repositories':
+      return <RepositoriesScreen view={view} go={go} />
 
     case 'capacity/pools':
       return <CapacityScreen />

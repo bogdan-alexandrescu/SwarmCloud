@@ -10,6 +10,11 @@ import { sumReported } from './measure'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
+import {
+  normIndexDoc, normLanguages, normPermissions, normReadable, normRepoDetail, normRepoList, normResolved, normTokens,
+  type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
+  type ResolvedToken, type TokenScope,
+} from './RepositoriesData'
 import type {
   ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
@@ -5073,4 +5078,107 @@ export async function loadRunnerProfiles(): Promise<Result<string[]>> {
     return { status: 'ok', fetchedAt: r.fetchedAt, data: Object.keys(r.data.runtimes).sort() }
   }
   return r as Result<string[]>
+}
+
+// ---------------------------------------------------------------------------
+// Work › Repositories and Git tokens (repositories.html, picked 2026-10-05;
+// docs/repo-index.md §6.1, docs/git-tokens.md §7). The routes are being built
+// in parallel by lanes RI1, RI2 and GT1; every answer is normalised in
+// RepositoriesData.ts, and a route that is not there yet reads as a 404 with
+// no code, which the screens draw as "not served yet" naming the route.
+//
+// NO FIXTURES. The fixture build has no data for these routes and invents
+// none: it answers each as not served, exactly as an API without them would.
+// ---------------------------------------------------------------------------
+
+function repoNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no repository or git-token routes.' },
+  }
+}
+
+/** A read whose body is normalised before any screen sees it. */
+async function readAs<T>(target: ApiRoute, norm: (raw: unknown) => T, isEmpty: (d: T) => boolean = () => false): Promise<Result<T>> {
+  if (USE_FIXTURES) return repoNotServed<T>(target)
+  const r = await read<unknown>(target, () => false)
+  if (r.status === 'ok') {
+    const data = norm(r.data)
+    return isEmpty(data) ? { status: 'empty', fetchedAt: r.fetchedAt, serverAt: r.serverAt } : { ...r, data }
+  }
+  if (r.status === 'stale') return { ...r, data: norm(r.data) }
+  return r
+}
+
+async function writeTo(target: ApiRoute, method: 'POST' | 'PUT' | 'DELETE', body?: unknown): Promise<Result<unknown>> {
+  if (USE_FIXTURES) return repoNotServed<unknown>(target)
+  return write(target, method, body)
+}
+
+/** `GET /v1/repositories`: the tenant's registrations with freshness, schedule and coverage. */
+export async function loadRepositories(): Promise<Result<RepoRecord[]>> {
+  return readAs(route('/v1/repositories'), normRepoList, (d) => d.length === 0)
+}
+
+/** `GET /v1/repositories/{repo_id}`: one registration, its last index runs and who used its index. */
+export async function loadRepository(repoId: string): Promise<Result<RepoDetail | null>> {
+  return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), normRepoDetail)
+}
+
+/** `GET /v1/repositories/{repo_id}/index?format=json`: the current index's structured document. */
+export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexDoc | null>> {
+  return readAs(route('/v1/repositories/{repo_id}/index', { repo_id: repoId }, new URLSearchParams({ format: 'json' })), normIndexDoc)
+}
+
+/** `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server and status. */
+export async function loadRepositoryLanguages(repoId: string): Promise<Result<LanguageRow[]>> {
+  return readAs(route('/v1/repositories/{repo_id}/languages', { repo_id: repoId }), normLanguages, (d) => d.length === 0)
+}
+
+/** `GET /v1/repositories/{repo_id}/token?user=me`: the token that resolves here and its capability row. */
+export async function loadResolvedToken(repoId: string): Promise<Result<ResolvedToken>> {
+  return readAs(route('/v1/repositories/{repo_id}/token', { repo_id: repoId }, new URLSearchParams({ user: 'me' })), normResolved)
+}
+
+/** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
+export async function loadReadableRepositories(): Promise<Result<ReadableList>> {
+  return readAs(route('/v1/repositories/readable'), normReadable, (d) => d.repositories.length === 0)
+}
+
+export interface RegisterRepositoryBody {
+  repository: string
+  default_branch?: string
+  allowed_profiles?: string[]
+  index?: { interval_hours: number; on_change: boolean }
+}
+
+/** `POST /v1/repositories`: register; the API reads the forge once and is idempotent on `repo_id`. */
+export async function registerRepository(body: RegisterRepositoryBody): Promise<Result<unknown>> {
+  return writeTo(route('/v1/repositories'), 'POST', body)
+}
+
+/** `POST /v1/repositories/{repo_id}/index:run`: queue an index run now. */
+export async function runRepositoryIndex(repoId: string, kind: 'full' | 'incremental'): Promise<Result<unknown>> {
+  return writeTo(route('/v1/repositories/{repo_id}/index:run', { repo_id: repoId }), 'POST', { kind })
+}
+
+/** `GET /v1/git-tokens`: the tenant's token records, metadata only. */
+export async function loadGitTokens(): Promise<Result<GitToken[]>> {
+  return readAs(route('/v1/git-tokens'), normTokens, (d) => d.length === 0)
+}
+
+/** `GET /v1/git-tokens/permissions`: per token × repository, the eight capabilities. */
+export async function loadTokenPermissions(): Promise<Result<Permissions>> {
+  return readAs(route('/v1/git-tokens/permissions'), normPermissions, (d) => d.rows.length === 0)
+}
+
+/** `POST /v1/git-tokens`: create a slot's RECORD. It takes no value; the value comes from create-secrets.sh. */
+export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: string }): Promise<Result<unknown>> {
+  return writeTo(route('/v1/git-tokens'), 'POST', body)
+}
+
+/** `POST /v1/git-tokens/{token_id}:verify`: re-probe now. */
+export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
+  return writeTo(route('/v1/git-tokens/{token_id}:verify', { token_id: tokenId }), 'POST')
 }
