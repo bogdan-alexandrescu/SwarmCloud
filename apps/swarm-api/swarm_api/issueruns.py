@@ -13,9 +13,13 @@
                  request; CI is read at the pull request's head sha.
       FIXING     CI was red: ONE `continues_task` continuation of the
                  integrator is fixing it (a fix round), then CHECKING again.
-      DONE       every required check green at the head, pinned as `green_sha`.
-      FAILED     the planner, the workflow or a fix round failed; no pull
-                 request was opened; or CI was still red at `fix_rounds`.
+      DONE       every required check green at the head, pinned as `green_sha`;
+                 or (#646) `outcome: already_on_main` -- the workflow
+                 SUCCEEDED, every build step changed nothing and the
+                 integrator was skipped, so there is no pull request to open.
+      FAILED     the planner, the workflow or a fix round failed; the
+                 integrator ran and opened no pull request; or CI was still
+                 red at `fix_rounds`.
       CANCELLED  the planner, the workflow or a fix round was cancelled.
       REJECTED   the plan was turned down.
 
@@ -96,6 +100,20 @@ green at the head and the keyword block is written, and only when the
 review's verdict is MERGE. A run created without saying takes the
 platform's `merge_by_default`, and records what it resolved.
 
+ALREADY ON MAIN IS AN ANSWER, NOT A FAILURE (#646, owner decision
+2026-10-05). Every implementer step is compiled with `allow_empty_diff`
+(#644): an agent that finds the issue's work already on the default branch
+changes nothing and ends SUCCEEDED with `result_summary.no_change`, and the
+review and the integrator, which needed its change, end SKIPPED. Its prompt
+asks it, in that case, for `verification.md`: one Markdown table row per
+planned requirement -- met on main or not, where (file and function), and
+the test that proves it. `verification_finding` reads those tables as
+strictly as `requirements_finding` reads a verdict, the run ends DONE with
+`outcome: already_on_main` (`issueci.enter_checking`), and the write-back
+posts the table on the issue and closes it only when every planned
+requirement's row says met (`issuesync`). The review and fix steps keep the
+default: an empty diff there is still the failure it was.
+
 STAGES, NOT ONLY A CHAIN (owner decision, 2026-10-03). A step may state
 `depends_on`: earlier steps whose code or files it needs. A plan that states it
 anywhere compiles to stages -- independent steps run side by side, the review
@@ -114,6 +132,7 @@ import binascii
 import hashlib
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -206,6 +225,16 @@ MAX_VERDICT_BYTES = 256 * 1024
 #: A review's note on one requirement, as kept on the run and shown in `part of`.
 MAX_REQUIREMENT_NOTE_CHARS = 300
 
+#: What a build step that changed nothing writes, and how much of it is read
+#: (#646). The run keeps at most MAX_VERIFICATION_CHARS of the tables,
+#: redacted: enough for a table per step of the largest plan, and well
+#: under a comment's 65,536 characters.
+VERIFICATION_FILE = "verification.md"
+MAX_VERIFICATION_BYTES = 64 * 1024
+MAX_VERIFICATION_CHARS = 20_000
+#: `IssueRun.outcome` of a DONE run whose build found nothing to change.
+OUTCOME_ALREADY_ON_MAIN = "already_on_main"
+
 #: In every prompt this module and the CI loop compile. Only the pull
 #: request's keyword block, written by the API from the review's per-
 #: requirement verdict, may close the issue (owner decision on #454): a
@@ -249,8 +278,11 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     # stored, FAILED when it is refused.
     RunState.APPROVED: frozenset({RunState.RUNNING, RunState.FAILED}),
     # A workflow that SUCCEEDED opened a pull request whose CI is not read
-    # yet: CHECKING, never DONE. No pull request is FAILED, saying so.
-    RunState.RUNNING: frozenset({RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}),
+    # yet: CHECKING. No pull request is FAILED, saying so -- unless nothing
+    # needed changing: DONE with `outcome: already_on_main` (#646).
+    RunState.RUNNING: frozenset(
+        {RunState.CHECKING, RunState.DONE, RunState.FAILED, RunState.CANCELLED}
+    ),
     # CI at the head: green -> DONE, red -> FIXING (a round submitted) or
     # FAILED at the cap, pending -> stays.
     RunState.CHECKING: frozenset(
@@ -833,6 +865,32 @@ def _requirements_shape(plan: Mapping[str, Any]) -> str:
     )
 
 
+def _verification_text(plan: Mapping[str, Any]) -> str:
+    """What an implementer writes when it changes nothing (#646): the table's shape.
+
+    One row per planned requirement, numbered as the plan numbers them, so
+    `verification_finding` can tell every requirement was answered. A plan
+    with no requirements still gets a table (one row, for the step), but can
+    never close the issue: nothing planned was there to confirm.
+    """
+    requirements = plan.get("requirements") or []
+    rows = (
+        "one row for each requirement below, numbered as it is" if requirements
+        else "one row, numbered 1, for this step (the plan lists no numbered requirements)"
+    )
+    return (
+        "\n\nIf the default branch already does everything this step asks, changing nothing "
+        "is a correct outcome: change no file, and write "
+        f"$SWARM_ARTIFACTS_DIR/{VERIFICATION_FILE}, a Markdown table with {rows}:\n"
+        "| # | Met on main | Where (file, function) | Proving test |\n"
+        "|---|---|---|---|\n"
+        "| 1 | yes | path/to/module.py, function_name | tests/path/test_module.py::test_name |\n"
+        "Met on main is yes only when the default branch delivers that requirement in full "
+        "and a test proves it; otherwise no, saying what is missing.\n"
+        + "".join(f"{n}. {item}\n" for n, item in enumerate(requirements, start=1))
+    )
+
+
 class _VerdictRefused(ValueError):
     pass
 
@@ -914,6 +972,115 @@ def requirements_finding(
     return not unmet, unmet, None
 
 
+#: A Markdown table's delimiter cell: `---`, `:--`, `--:`, `:-:`.
+_TABLE_DELIMITER = re.compile(r"^:?-+:?$")
+
+
+def _cells(line: str) -> list[str] | None:
+    text = line.strip()
+    if not text.startswith("|"):
+        return None
+    return [cell.strip() for cell in text.strip("|").split("|")]
+
+
+def _verification_rows(content: str, count: int) -> dict[int, bool]:
+    """`{index: met}` from one verification.md, or `_VerdictRefused` naming why.
+
+    A row is a line opening with `|`. A row followed by a delimiter row is
+    the header, and delimiter rows are skipped; every other row must open
+    with a requirement's number and say `yes` or `no` (markup around it is
+    ignored). Every requirement must be answered exactly once.
+    """
+    lines = content.splitlines()
+    rows = [(i, _cells(line)) for i, line in enumerate(lines)]
+    tabled = {i: cells for i, cells in rows if cells is not None}
+
+    def delimiter(cells: list[str] | None) -> bool:
+        return bool(cells) and all(_TABLE_DELIMITER.match(c.replace(" ", "")) for c in cells)
+
+    found: dict[int, bool] = {}
+    for i, cells in sorted(tabled.items()):
+        if delimiter(cells) or delimiter(tabled.get(i + 1)):
+            continue
+        first = cells[0].strip("*`_ ").rstrip(".")
+        if not first.isdigit():
+            raise _VerdictRefused(
+                f"a row of {VERIFICATION_FILE} does not open with a requirement number"
+            )
+        index = int(first)
+        if not 1 <= index <= count:
+            raise _VerdictRefused(
+                f"a row of {VERIFICATION_FILE} names requirement {index}, not one from 1 to {count}"
+            )
+        if index in found:
+            raise _VerdictRefused(f"requirement {index} is answered more than once")
+        answer = cells[1].strip("*`_ ").lower() if len(cells) > 1 else ""
+        if answer not in ("yes", "no"):
+            raise _VerdictRefused(f"requirement {index}'s Met on main is not yes or no")
+        found[index] = answer == "yes"
+    if not found:
+        raise _VerdictRefused(f"{VERIFICATION_FILE} has no table row")
+    missing = [n for n in range(1, count + 1) if n not in found]
+    if missing:
+        raise _VerdictRefused(
+            "the table did not answer requirement " + ", ".join(map(str, missing[:10]))
+        )
+    return found
+
+
+def verification_finding(
+    plan: Mapping[str, Any] | None,
+    readings: list[tuple[str, str | None, str | None]],
+) -> tuple[bool, list[str], str | None]:
+    """`(all_met, unmet, why_not)` from the verification tables of a run that changed nothing.
+
+    `readings` is `(step_id, content, problem)` for each build step that
+    changed nothing: `content` None with a `problem` is a table that could
+    not be read. `all_met` is True ONLY when the plan lists requirements,
+    every table was read and is well formed, and every requirement is
+    answered `yes` and by no table `no` -- what closing the issue needs
+    (CLAUDE.md, "`Closes #N` ONLY WHEN IT IS UNCONDITIONALLY TRUE"). `unmet`
+    names each requirement not confirmed; `why_not` says what could not be
+    read or checked, else None.
+    """
+    requirements = [str(r) for r in ((plan or {}).get("requirements") or [])]
+    if not requirements:
+        return False, [], "the plan listed no requirements, so none could be confirmed"
+    if not readings:
+        return False, list(requirements), "no build step that changed nothing was found"
+    answers: dict[int, list[bool]] = {}
+    problems: list[str] = []
+    for step_id, content, problem in readings:
+        if content is None:
+            problems.append(problem or f"{step_id} wrote no {VERIFICATION_FILE}")
+            continue
+        try:
+            rows = _verification_rows(content, len(requirements))
+        except _VerdictRefused as refused:
+            problems.append(f"{step_id}: {refused}")
+            continue
+        for index, met in rows.items():
+            answers.setdefault(index, []).append(met)
+    unmet = [
+        text for n, text in enumerate(requirements, start=1)
+        if not answers.get(n) or not all(answers[n])
+    ]
+    if problems and not answers:
+        unmet = list(requirements)
+    return not unmet and not problems, unmet, "; ".join(problems) or None
+
+
+def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str:
+    """The tables as the run stores them: per step, redacted and bounded."""
+    parts = []
+    for step_id, content, problem in readings:
+        if content is None:
+            parts.append(f"**{step_id}**: {problem or f'wrote no {VERIFICATION_FILE}'}")
+        else:
+            parts.append(f"**{step_id}**\n\n{content.strip()}")
+    return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
+
+
 def compile_plan(run: "IssueRun") -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix.
 
@@ -947,11 +1114,16 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
                 if previous is not None else ""
             )
             + "Do this step only. " + NO_CLOSING_KEYWORD
+            + _verification_text(plan)
         )
         spec: dict[str, Any] = {
             "step_id": step_id,
             "runner_profile": STEP_PROFILE,
             "input": {"prompt": prompt, "issue": ref.number},
+            # #646: finding the work already on main is an answer, not an
+            # `empty_diff` failure. Only the build steps: the review and the
+            # integrator keep the default.
+            "allow_empty_diff": True,
         }
         if previous is not None:
             spec["depends_on"] = [previous]
@@ -1008,6 +1180,7 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
         + _step_detail(step)
         + context
         + "Do this step only. " + NO_CLOSING_KEYWORD
+        + _verification_text(plan)
     )
 
 
@@ -1049,7 +1222,11 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
         sid = step["step_id"]
         deps: list[str] = step.get("depends_on") or []
         ancestors[sid] = set(deps).union(*(ancestors[d] for d in deps))
-        spec: dict[str, Any] = {"step_id": _impl_id(sid), "runner_profile": STEP_PROFILE}
+        spec: dict[str, Any] = {
+            "step_id": _impl_id(sid), "runner_profile": STEP_PROFILE,
+            # #646, as in the chain: an empty diff is the step's answer.
+            "allow_empty_diff": True,
+        }
         if not deps:
             context = (
                 "Other steps of the plan may run at the same time on their own branches; "
@@ -1271,6 +1448,20 @@ class IssueRun:
     #: submitted for the green head. None until CI is green with the keyword
     #: block written; never set on a run without `auto_merge`.
     merge: dict[str, Any] | None = None
+    # -- a run whose build changed nothing (#646). All optional, so a run
+    # stored before them reads as one that opened a pull request.
+    #: How a DONE run ended, beyond its state: `OUTCOME_ALREADY_ON_MAIN`, set
+    #: by the transition to DONE; None for a run that opened a pull request.
+    outcome: str | None = None
+    #: The build steps' verification tables, redacted and bounded
+    #: (`verification_text`); what the verification comment quotes.
+    verification: str | None = None
+    #: The verification comment on the issue, and the digest last written.
+    verification_comment_id: int | None = None
+    last_verification_posted: str | None = None
+    #: True once the write-back closed the issue -- only an already_on_main
+    #: run with every planned requirement met (`requirements_met`) is closed.
+    issue_closed: bool | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1320,6 +1511,11 @@ class IssueRun:
             "issue_read": dict(self.issue_read) if self.issue_read is not None else None,
             "issue_read_error": dict(self.issue_read_error) if self.issue_read_error is not None else None,
             "merge": dict(self.merge) if self.merge is not None else None,
+            "outcome": self.outcome,
+            "verification": self.verification,
+            "verification_comment_id": self.verification_comment_id,
+            "last_verification_posted": self.last_verification_posted,
+            "issue_closed": self.issue_closed,
         }
 
     @classmethod
@@ -1376,6 +1572,15 @@ class IssueRun:
             issue_read=dict(data["issue_read"]) if data.get("issue_read") else None,
             issue_read_error=dict(data["issue_read_error"]) if data.get("issue_read_error") else None,
             merge=dict(data["merge"]) if isinstance(data.get("merge"), Mapping) else None,
+            outcome=data.get("outcome") if isinstance(data.get("outcome"), str) else None,
+            verification=(
+                data["verification"] if isinstance(data.get("verification"), str) else None
+            ),
+            verification_comment_id=_opt_int(data.get("verification_comment_id")),
+            last_verification_posted=data.get("last_verification_posted"),
+            issue_closed=(
+                data["issue_closed"] if isinstance(data.get("issue_closed"), bool) else None
+            ),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -1449,6 +1654,14 @@ class IssueRun:
                     "head_sha": self.merge.get("head_sha"),
                 }
             ),
+            # #646: how a DONE run ended (`already_on_main`, or None for a
+            # pull request), the build's verification tables (redacted when
+            # stored), the comment that quotes them, and whether the run
+            # closed the issue.
+            "outcome": self.outcome,
+            "verification": self.verification,
+            "verification_comment_id": self.verification_comment_id,
+            "issue_closed": self.issue_closed,
         }
 
 
@@ -1469,6 +1682,7 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "writeback_error", "writeback_failed_at", "writeback_attempt",
     "requirements_met", "requirements_unmet", "requirements_note",
     "merge",
+    "verification_comment_id", "last_verification_posted", "issue_closed",
 })
 
 

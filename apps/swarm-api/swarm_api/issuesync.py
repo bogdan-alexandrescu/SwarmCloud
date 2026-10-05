@@ -30,6 +30,18 @@ is found is a comment posted. Two syncs racing past that search can both
 post; the patch keeps whichever id was stored first and the loser deletes the
 comment it posted.
 
+ALREADY ON MAIN (#646). A run that ended DONE with `outcome:
+already_on_main` gets a third comment, the build's VERIFICATION table
+(`render_verification_comment`), posted once and edited if its text changes,
+and then -- only when `issuecomments.closes_issue` says every planned
+requirement is met on main -- the issue is CLOSED as completed
+(`GitHubWriter.close_issue`), once: `issue_closed` is recorded only by a
+close that worked. The close is never attempted before the table is on the
+issue, because the table is the evidence it cites. Both use the tenant's
+credential below, never anything an agent holds. A failed write is recorded
+and retried exactly as a comment's is: a read of the run (`GET
+/v1/runs/{id}`) syncs it, a DONE run included.
+
 INVARIANT 9. The token is the run's OWN tenant's (`ctx.store.get_tenant(
 run.tenant_id)`, then `ctx.forge_tokens`), read only when there is something
 to write, held in this frame, passed to redaction as a known literal, and
@@ -49,13 +61,16 @@ from .forgewrite import CommentRef, ForgeWriteNotFound, GitHubWriter
 from .issuecomments import (
     PLAN_KIND,
     STATUS_KIND,
+    VERIFICATION_KIND,
     apply_keyword_block,
     body_digest,
+    closes_issue,
     keyword_block,
     marker,
     neutralise_closing_keywords,
     render_plan_comment,
     render_status_comment,
+    render_verification_comment,
 )
 from .issueruns import IssueRun, IssueRuns, failure_text
 
@@ -130,9 +145,18 @@ def _sync_issue(ctx: Any, run: IssueRun) -> IssueRun:
     status_hash = body_digest(status_text)
     want_plan = plan_hash is not None and plan_hash != run.last_plan_posted
     want_status = status_hash != run.last_status_posted
-    if not (want_plan or want_status):
+    verification_text = render_verification_comment(run)
+    verification_hash = body_digest(verification_text) if verification_text is not None else None
+    want_verification = (
+        verification_hash is not None and verification_hash != run.last_verification_posted
+    )
+    want_close = closes_issue(run) and run.issue_closed is not True
+    if not (want_plan or want_status or want_verification or want_close):
         return run
-    attempt = body_digest(f"{plan_hash if want_plan else ''}|{status_hash if want_status else ''}")
+    attempt = body_digest(
+        f"{plan_hash if want_plan else ''}|{status_hash if want_status else ''}"
+        f"|{verification_hash if want_verification else ''}|{'close' if want_close else ''}"
+    )
     now = ctx.now()
     if (
         run.writeback_error
@@ -172,6 +196,24 @@ def _sync_issue(ctx: Any, run: IssueRun) -> IssueRun:
                 changes["forge_login"] = comment.login
             if fresh:
                 created["status_comment_id"] = comment.id
+        if want_verification:
+            comment, fresh = _upsert(
+                writer, run, VERIFICATION_KIND, run.verification_comment_id,
+                render_verification_comment(run, literals=literals) or "", token,
+            )
+            changes["verification_comment_id"] = comment.id
+            changes["last_verification_posted"] = verification_hash
+            if comment.login:
+                changes["forge_login"] = comment.login
+            if fresh:
+                created["verification_comment_id"] = comment.id
+        # The table is on the issue -- written now, or by an earlier sync --
+        # before the issue is closed on its evidence.
+        if want_close:
+            writer.close_issue(run.issue, token)
+            changes["issue_closed"] = True
+            log.info("issue run %s tenant=%s: closed %s, already on main",
+                     run.id, run.tenant_id, run.issue.short)
     except Exception as exc:
         token = ""
         return _record_failure(runs, run, exc, attempt=attempt, now=now, changes=changes)
@@ -199,7 +241,7 @@ def _keep_first(changes: dict[str, Any], read: IssueRun, current: IssueRun) -> d
     id this sync replaced (a comment deleted on GitHub) is not a rival.
     """
     kept = dict(changes)
-    for name in ("plan_comment_id", "status_comment_id"):
+    for name in ("plan_comment_id", "status_comment_id", "verification_comment_id"):
         theirs = getattr(current, name)
         if (
             name in kept and theirs is not None and theirs != kept[name]

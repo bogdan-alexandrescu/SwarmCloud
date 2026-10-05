@@ -52,7 +52,7 @@ class _Refresher:
         reason, expires = self.answers.get(key, ("still_valid", None))
         return RefreshOutcome(key, "account", reason == "refreshed", reason, expires)
 
-    def sweep_accounts(self, secrets, keep_going=None):
+    def sweep_accounts(self, secrets, keep_going=None, held=()):
         self.handed = [key for _base, key in secrets]
         return [self._answer(key) for key in self.handed]
 
@@ -209,7 +209,7 @@ def test_the_completion_survives_the_next_sweep_taking_the_lease(db, store):
 
 def test_a_sweep_whose_account_phase_failed_says_error(db, store):
     class _Broken(_Refresher):
-        def sweep_accounts(self, secrets, keep_going=None):
+        def sweep_accounts(self, secrets, keep_going=None, held=()):
             raise RuntimeError("secret manager is down")
 
     client = _client(db, store, _Broken({}))

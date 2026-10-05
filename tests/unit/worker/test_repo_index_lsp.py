@@ -593,6 +593,16 @@ def test_the_four_servers_are_the_ones_section_3_5_names(lsp: Any) -> None:
     assert servers["gopls"].env["GOTOOLCHAIN"] == "local"
 
 
+def test_tsserver_runs_as_one_full_server_so_a_first_definition_follows_an_import(lsp: Any) -> None:
+    # typescript-language-server's default `useSyntaxServer: "auto"` answers
+    # definition requests from a partial-semantic syntax server while the
+    # project is still loading, which cannot resolve an import into another
+    # file; the driver's first request always lands in that window.
+    options = lsp.SERVERS["tsserver"].initialization_options
+    assert options["tsserver"]["useSyntaxServer"] == "never"
+    assert options["disableAutomaticTypingAcquisition"] is True
+
+
 def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
     out = tmp_path / "repo-index.json"

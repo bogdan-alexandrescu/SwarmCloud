@@ -166,6 +166,9 @@ REFRESH_REASONS = (
     "reauth_required",
     "refresh_failed",
     "refreshed",
+    # An agent held the account and its token was not yet within the held
+    # margin, so nothing was exchanged (#626, `CredentialRefresher._refresh`).
+    "held_deferred",
     "error",
 )
 

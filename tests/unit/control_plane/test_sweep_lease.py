@@ -86,7 +86,7 @@ class _Refresher:
             self._block.wait(10)
         return []
 
-    def sweep_accounts(self, secrets, keep_going=None):
+    def sweep_accounts(self, secrets, keep_going=None, held=()):
         out = []
         for _base, label in secrets:
             if keep_going is not None and not keep_going():

@@ -486,7 +486,7 @@ class _SweepRefresher:
         reason = self.on_second.get(label, self.reasons.get(label, "refreshed"))
         return RefreshOutcome(label, "account", reason == "refreshed", reason)
 
-    def sweep_accounts(self, secrets, keep_going=None):
+    def sweep_accounts(self, secrets, keep_going=None, held=()):
         from quota_broker.credentials import RefreshOutcome
 
         self.seen.append(list(secrets))
@@ -636,7 +636,7 @@ def test_an_account_removed_mid_sweep_does_not_stall_the_tick(client):
     from quota_broker.credentials import RefreshOutcome
 
     refresher = _SweepRefresher()
-    refresher.sweep_accounts = lambda secrets, keep_going=None: [
+    refresher.sweep_accounts = lambda secrets, keep_going=None, held=(): [
         RefreshOutcome(f"{TENANT}:gone", "account", False, "reauth_required")
     ]
 

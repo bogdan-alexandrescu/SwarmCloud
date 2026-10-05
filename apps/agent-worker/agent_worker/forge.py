@@ -132,8 +132,22 @@ def transient_network_error(exc: BaseException) -> bool:
     if isinstance(reason, ssl.SSLCertVerificationError):
         return False
     if isinstance(reason, str):
-        return "timed out" in reason.lower()
+        return bool(_TRANSIENT_REASON.search(reason))
     return isinstance(reason, (OSError, http.client.HTTPException))
+
+
+#: A network failure that arrives as TEXT rather than as an exception (a
+#: `URLError` whose reason is a string, or a proxy's message): a timeout, a
+#: connect failure, a DNS failure or a dropped connection. Only "timed out"
+#: was read before, so "Failed to connect to github.com port 443" ended its
+#: call as a permanent `ForgeError` (#623, 2026-10-05).
+_TRANSIENT_REASON = re.compile(
+    r"timed out|failed to connect|couldn't connect|could not resolve"
+    r"|temporary failure in name resolution|name or service not known"
+    r"|connection (?:reset|refused|closed|aborted)|network is unreachable"
+    r"|no route to host|remote end closed connection",
+    re.IGNORECASE,
+)
 
 
 def _network_reason(exc: BaseException) -> Any:

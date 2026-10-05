@@ -82,7 +82,7 @@ from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
 from .service import QuotaBroker, quota_to_firestore
-from .settings import BrokerSettings
+from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
     SWEEP_ERROR,
     SWEEP_OK,
@@ -1564,9 +1564,15 @@ def _sweep_account_pool(
     """
     try:
         due = due_for_refresh(store.list(), now)
+        # WHICH OF THEM AN AGENT IS ON NOW (#626): refreshing revokes the token
+        # that agent runs with, so the refresher defers a held account until
+        # its token nears expiry. A LIVE hold only -- an expired one is a
+        # worker that died without releasing, and nothing is running on it.
+        held = {a.account_id for a in due if a.live_holds(now)}
         outcomes = refresher.sweep_accounts(
             [(store.secret_for(a), a.account_id) for a in due],
             keep_going=keep_going,
+            held=held,
         )
     except Exception as exc:
         log.error(
@@ -1683,6 +1689,8 @@ def _sweep_account_pool(
         "unverified_skipped": [
             o.tenant_id for o in outcomes if o.reason == "unverified_skipped"
         ],
+        #: ACCOUNT IDS a running agent held, left unrefreshed this tick (#626).
+        "held_deferred": [o.tenant_id for o in outcomes if o.reason == "held_deferred"],
     }
 
 
@@ -1875,6 +1883,7 @@ def create_app(
                 HttpTokenEndpoint(),
                 logger=log,
                 ledger=app.state.publish_ledger,
+                held_margin=held_refresh_margin(),
             )
             if tenants is None:
                 tenants = store.subscription_tenants

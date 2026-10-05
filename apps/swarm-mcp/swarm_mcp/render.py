@@ -1702,6 +1702,18 @@ class Snapshot:
     accounts_absent: bool = False
     tasks: list[dict[str, Any]] | None = None
     tasks_error: str | None = None
+    #: The page `GET /v1/admin/leases?active_only=true` serves: the read the
+    #: console's Overview "Needs a look" takes its Leases check from
+    #: (`swarm-ui/src/checks.ts` `leaseCheck`), so `sc trouble` counts a lease
+    #: held past its TTL exactly where the console does (#532, 5b).
+    leases: dict[str, Any] | None = None
+    leases_error: str | None = None
+    #: True when the API REFUSED the read -- a 403 to a caller who is not an
+    #: admin, or a deployment with no such route -- rather than failing it.
+    #: The finding is still printed; only its severity changes, for the reason
+    #: `accounts_absent` gives: a non-admin's `sc trouble` must not be a red
+    #: screen forever over a check the console gates the same way.
+    leases_refused: bool = False
     api_url: str = ""
     tier: str = ""
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -1852,7 +1864,88 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
         if failed:
             out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
 
+    out += lease_findings(snap, style)
+
     out.sort(key=lambda f: (f.rank, f.where))
+    return out
+
+
+#: The longest a lease's task error may run in a finding. `last_error` can be
+#: an agent's stderr tail; its first line says what happened and the task's
+#: own view prints the rest.
+_LEASE_REASON_CHARS = 160
+
+
+def _lease_reason(row: dict[str, Any], style: Style) -> str:
+    """Why a held lease is held, in the words the lease row has."""
+    error = str(row.get("last_error") or "").strip()
+    if error:
+        first = error.splitlines()[0].strip()
+        if len(first) > _LEASE_REASON_CHARS:
+            first = first[: _LEASE_REASON_CHARS - 1] + style.ellipsis
+        return first
+    if row.get("heartbeat_ever") is False:
+        return f"its worker never beat {style.dash} no error recorded"
+    silent = row.get("silent_seconds")
+    if isinstance(silent, (int, float)) and not isinstance(silent, bool):
+        return f"no heartbeat for {_span(silent, style)} {style.dash} no error recorded"
+    return "no error recorded"
+
+
+def lease_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """Leases held past their TTL: the console's "N leases are past the TTL".
+
+    THE SAME ROWS AND THE SAME TEST AS THE CONSOLE. `leaseCheck` counts the
+    rows of `/v1/admin/leases?active_only=true` whose server-computed
+    `expired` is true; so does this, so the two cannot disagree about a lease.
+    The tenant-scoped `/v1/leases` was not used: it serves only each task's
+    CURRENT lease, and a lease held past its TTL is most often one that is no
+    longer current -- fenced at an older generation, the #560 shape.
+
+    A READ THAT FAILED IS A FINDING, never an empty list: no finding would
+    read as "no lease is held past its TTL", which nobody established.
+    """
+    if snap.leases_error:
+        return [
+            Finding(
+                "note" if snap.leases_refused else "down",
+                "leases",
+                f"not read ({snap.leases_error})",
+            )
+        ]
+    if snap.leases is None:
+        return []
+    rows = [r for r in (snap.leases.get("leases") or []) if isinstance(r, dict)]
+    now = parse_time(snap.leases.get("evaluated_at")) or snap.now
+    out: list[Finding] = []
+    held = [r for r in rows if r.get("expired") is True and not r.get("released")]
+    if held:
+
+        def past(row: dict[str, Any]) -> float:
+            due = parse_time(row.get("expires_at"))
+            return (now - due).total_seconds() if due is not None else 0.0
+
+        worst = max(held, key=past)
+        out.append(
+            Finding(
+                "warn",
+                "held",
+                f"{len(held)} lease(s) past their TTL, longest held "
+                f"{_span(max(0.0, past(worst)), style)} past it "
+                f"({worst.get('task_id') or '?'}): {_lease_reason(worst, style)}",
+            )
+        )
+    beyond = _int_or_none(snap.leases.get("active_beyond_window"))
+    if beyond:
+        # The console's page is 200 rows and so is this one; a live lease
+        # beyond it was not looked at, and saying nothing would count it clear.
+        out.append(
+            Finding(
+                "note",
+                "leases",
+                f"{beyond} more live lease(s) beyond the {len(rows)} read were not checked",
+            )
+        )
     return out
 
 
