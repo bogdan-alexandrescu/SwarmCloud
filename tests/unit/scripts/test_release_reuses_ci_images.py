@@ -260,7 +260,14 @@ def test_application_builds_every_commit_the_release_would_ship():
             f"a push touching only {missing} starts a release but no build in application.yml"
         )
 
-    builders = list(_steps(application, "build-images.sh"))
+    # The pull-request job (#650) runs the script too, to map a change to
+    # images and to build them WITHOUT pushing. Neither records anything a
+    # release could promote, so the one build of a commit is the step that
+    # runs it in none of those modes.
+    builders = [
+        b for b in _steps(application, "build-images.sh")
+        if not re.search(r"--(build-only|affected-by|inputs)\b", _code(b[3].get("run", "")))
+    ]
     assert len(builders) == 1, f"application.yml builds in {len(builders)} places"
     job_id, job, _, step = builders[0]
     assert _evaluate(job.get("if", "true"), **{"github.event_name": "push"}), (

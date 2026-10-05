@@ -71,6 +71,9 @@ ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 # the result is linked with the Go above, which also clears the stdlib CVEs.
 # The build then reads each binary's own module list (`go version -m`) and
 # fails if a bump did not land, so a pin that stops applying is loud.
+# terraform-ls is NOT built (owner decision 2026-10-05): its source build
+# answered 0 references in the LSP self-test (main a3621325), so it is out of
+# the image until it resolves (lsp/servers.py DISABLED_SERVERS, lane IDX).
 # Raising a pin: take the "fixed version" trivy prints, then read the pinned
 # modules' OWN requirements on the proxy (curl proxy.golang.org/<mod>/@v/<v>.mod):
 # the x/* modules require each other, so a pin below what another pin needs
@@ -85,8 +88,6 @@ ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
 # check. Move to v0.24.0 when it is released. terraform-ls takes x/tools
 # 0.48 -> 0.49 through the raised x/mod and x/text; it uses x/tools' public API.
 ARG GOPLS_VERSION=0.24.0-pre.1
-ARG TERRAFORM_LS_VERSION=0.39.0
-ARG X_CRYPTO_VERSION=0.55.0
 ARG X_MOD_VERSION=0.41.0
 ARG X_TEXT_VERSION=0.42.0
 
@@ -117,11 +118,8 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
     }; \
     build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
- && build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
-      "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/mod@v${X_MOD_VERSION}" \
-      "golang.org/x/text@v${X_TEXT_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
- && /usr/local/bin/gopls version && /usr/local/bin/terraform-ls version
+ && /usr/local/bin/gopls version
 
 # ---------------------------------------------------------------------------
 # builder: compile wheels, produce /opt/venv
@@ -773,7 +771,7 @@ RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
 # /usr/local/go is the toolchain gopls runs `go list` with; `go` is linked
 # into the servers' bin directory only, not onto the agent's PATH.
 COPY --from=languageservers /usr/local/go /usr/local/go
-COPY --from=languageservers /usr/local/bin/gopls /usr/local/bin/terraform-ls /opt/repo-index/servers/bin/
+COPY --from=languageservers /usr/local/bin/gopls /opt/repo-index/servers/bin/
 COPY images/agent-runtime-base/repo-index/lsp/ /opt/repo-index/lsp/
 RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /opt/repo-index/servers/ \
  && cd /opt/repo-index/servers \
@@ -783,7 +781,7 @@ RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /o
  && ln -s ../node_modules/.bin/typescript-language-server /opt/repo-index/servers/bin/typescript-language-server \
  && ln -s /usr/local/go/bin/go /opt/repo-index/servers/bin/go \
  && chmod -R a+rX,go-w /opt/repo-index/lsp /opt/repo-index/servers \
- && for s in pyright-langserver typescript-language-server gopls terraform-ls go; do \
+ && for s in pyright-langserver typescript-language-server gopls go; do \
       test -x "/opt/repo-index/servers/bin/$s" || { echo "language server missing: $s" >&2; exit 1; }; \
     done
 

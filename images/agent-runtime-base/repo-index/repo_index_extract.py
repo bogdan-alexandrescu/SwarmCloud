@@ -172,7 +172,8 @@ LANGUAGE_SERVERS = {
     "typescript": "tsserver",
     "javascript": "tsserver",
     "go": "gopls",
-    "hcl": "terraform-ls",
+    # "hcl": terraform-ls is out of the image for now (lsp/servers.py
+    # DISABLED_SERVERS); HCL is tree-sitter only.
 }
 
 # extension -> (language, grammar key)
@@ -2200,19 +2201,16 @@ _LSP_SELF_TEST_FILES = {
     "go/go.mod": "module example.com/selftest\n\ngo 1.22\n",
     "go/a.go": "package selftest\n\nfunc Alpha() int {\n\treturn 1\n}\n",
     "go/b.go": "package selftest\n\nfunc Beta() int {\n\treturn Alpha()\n}\n",
-    "tf/main.tf": ("variable \"zeta\" {\n  type = string\n}\n\n"
-                  "resource \"null_resource\" \"eta\" {\n  triggers = {\n    z = var.zeta\n  }\n}\n"),
 }
 _LSP_SELF_TEST_EDGES = {
     "python": ("py/b.py#beta", "py/a.py#alpha"),
     "typescript": ("ts/b.ts#beta", "ts/a.ts#alpha"),
     "go": ("go/b.go#Beta", "go/a.go#Alpha"),
-    "hcl": ("tf/main.tf#null_resource.eta", "tf/main.tf#var.zeta"),
 }
 
 
 def lsp_self_test(bin_dir: Path, request_timeout_seconds: float = 30.0) -> int:
-    """Start each of the four servers and require one `lsp` edge from each.
+    """Start each installed server and require one `lsp` edge from each.
 
     The image build runs this as the agent user, so an image whose servers
     cannot start, or start and resolve nothing, never ships to an indexer.
