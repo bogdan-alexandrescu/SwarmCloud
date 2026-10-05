@@ -375,6 +375,51 @@ def parse_repo(url: str) -> RepoRef | None:
     return RepoRef(host=host, owner=owner, name=name)
 
 
+# ---------------------------------------------------------------------------
+# The one opener for every request that carries a forge token (#645, #307)
+# ---------------------------------------------------------------------------
+#
+# `urllib.request.urlopen` follows 301/302/303/307/308 and builds the follow-up
+# request with the original's headers, `Authorization` included, wherever the
+# `Location` points. A forge answer of `302 Location: https://elsewhere/` would
+# hand the tenant's token -- or the worker actions' installation token -- to a
+# host that must never see it. So every request this worker makes with a forge
+# token goes through `_NO_REDIRECT_OPENER`, via `open_without_redirects`: a 3xx
+# comes back as an HTTPError carrying its own status and is never followed, to
+# another host or to the same one. GitHub's API has no call here it answers
+# with a redirect it needs followed; a renamed repository's 301 is refused and
+# says so, which is the safe answer to a credential question.
+#
+# `_request` (the probe and the pull-request calls), `_open` (the pinned
+# client's transport) and `issue._open` (the issue fetch) are the call sites;
+# tests/unit/worker/test_forge_no_redirect.py fails if any of them, or any
+# other module that imports this one, opens a URL another way.
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Answer every redirect with None, so urllib raises it as an HTTPError.
+
+    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
+    default one, so no other handler follows it either.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        return None
+
+
+_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
+
+
+def open_without_redirects(request: urllib.request.Request, *, timeout: float = _TIMEOUT) -> Any:
+    """Send one request through the no-redirect opener. A 3xx raises as HTTPError.
+
+    The only way a request carrying a forge token leaves this process. It
+    reads `_NO_REDIRECT_OPENER` at call time, so a test that replaces it sees
+    every call.
+    """
+    return _NO_REDIRECT_OPENER.open(request, timeout=timeout)
+
+
 def _request(
     url: str,
     *,
@@ -392,10 +437,17 @@ def _request(
         req.add_header("Content-Type", "application/json")
     host = urlparse(url).hostname
     try:
-        with urllib.request.urlopen(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_TIMEOUT) as response:
             raw = response.read().decode("utf-8", errors="replace")
             return response.status, (json.loads(raw) if raw.strip() else None)
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            # Never followed (`_NO_REDIRECT_OPENER`), and not read as an answer
+            # either: the caller learns the forge redirected, and the token
+            # went to the first host only. `Location` is not quoted -- it
+            # names wherever the redirect pointed, which is not ours to log.
+            exc.close()
+            raise ForgeRedirectRefused(exc.code, urlparse(url).path) from None
         raw = exc.read().decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None
@@ -753,24 +805,10 @@ class ForgeResponse:
 Transport = Callable[[urllib.request.Request], tuple[int, Mapping[str, str], bytes]]
 
 
-class _NoRedirect(urllib.request.HTTPRedirectHandler):
-    """Answer every redirect with None, so urllib raises it as an HTTPError.
-
-    Passed to `build_opener`, a subclass of HTTPRedirectHandler REPLACES the
-    default one, so no other handler follows it either.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        return None
-
-
-_NO_REDIRECT_OPENER = urllib.request.build_opener(_NoRedirect)
-
-
 def _open(request: urllib.request.Request) -> tuple[int, Mapping[str, str], bytes]:
     """Send one request with the no-redirect opener; a 3xx comes back as itself."""
     try:
-        with _NO_REDIRECT_OPENER.open(request, timeout=_TIMEOUT) as response:
+        with open_without_redirects(request, timeout=_TIMEOUT) as response:
             return response.status, dict(response.headers.items()), response.read()
     except urllib.error.HTTPError as exc:
         body = exc.read() if exc.fp is not None else b""

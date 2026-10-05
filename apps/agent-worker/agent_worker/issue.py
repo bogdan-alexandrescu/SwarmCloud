@@ -19,10 +19,10 @@ credential, read by the same path the clone and the publish read it
 (`Worker._git_token`, #219), and it goes in exactly one place: the
 `Authorization` header of a request this process makes. It is never written
 to the workspace, a file, an environment variable or a log, and it is never
-sent to a host other than the one the task's repository names: a redirect
-off that host is refused rather than followed, because urllib copies the
-header onto a redirect wherever it points. When the worker must not hold the
-token at all (`_git_token_refusal`), the fetch runs without it, as the clone
+sent to a host other than the one the task's repository names: no redirect
+is followed, to that host or any other, because urllib copies the header
+onto a redirect wherever it points (`forge.open_without_redirects`, #645).
+When the worker must not hold the token at all (`_git_token_refusal`), the fetch runs without it, as the clone
 does, and a private repository's refusal says why.
 
 **THE FILE IS IN THE WORKSPACE, NEVER IN THE ARTIFACTS.** `work/issue.md` is
@@ -77,6 +77,7 @@ from .forge import (
     ForgeUnavailable,
     RepoRef,
     RetryPolicy,
+    open_without_redirects,
     parse_repo,
     retry_after_from_headers,
     retry_transient,
@@ -195,31 +196,6 @@ def reserved_names(task_input: Any, profile: RunnerProfile) -> frozenset[str]:
 # ---------------------------------------------------------------------------
 
 
-class _SameHostRedirects(urllib.request.HTTPRedirectHandler):
-    """Follow a redirect on the same https host; refuse any other.
-
-    urllib copies every header but the body's onto a redirected request,
-    `Authorization` included, wherever the redirect points. GitHub redirects
-    an issue of a renamed or transferred repository within api.github.com,
-    which is followed. Anything else would hand the tenant's credential to a
-    host the task never named.
-    """
-
-    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
-        old = urlparse(req.full_url)
-        new = urlparse(newurl)
-        if new.scheme != "https" or (new.hostname or "").lower() != (old.hostname or "").lower():
-            raise IssueUnavailable(
-                f"the forge redirected the issue request from {old.hostname} to "
-                f"{new.scheme}://{new.hostname}; the tenant credential is not sent to "
-                "another host, so the issue was not fetched"
-            )
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
-
-
-_OPENER = urllib.request.build_opener(_SameHostRedirects)
-
-
 def _read_capped(source: Any, *, req: urllib.request.Request) -> bytes:
     """Read at most `MAX_RESPONSE_BYTES` from `source`; refuse anything longer.
 
@@ -246,11 +222,21 @@ def _open(req: urllib.request.Request) -> tuple[int, Any, Mapping[str, str]]:
     GitHub's rate-limit headers to tell a rate limit from a refusal.
     """
     try:
-        with _OPENER.open(req, timeout=_TIMEOUT) as response:
+        with open_without_redirects(req, timeout=_TIMEOUT) as response:
             raw = _read_capped(response, req=req).decode("utf-8", errors="replace")
             headers = dict(response.headers.items()) if response.headers else {}
             return response.status, (json.loads(raw) if raw.strip() else None), headers
     except urllib.error.HTTPError as exc:
+        if 300 <= exc.code < 400:
+            # `forge.open_without_redirects` never follows a redirect: urllib
+            # would copy `Authorization` onto it wherever it points. Same host
+            # or not, a 3xx ends the fetch here, and `Location` is not quoted.
+            exc.close()
+            raise IssueUnavailable(
+                f"{urlparse(req.full_url).hostname} answered {exc.code}, a redirect; a "
+                "request carrying the tenant credential never follows one, so the "
+                "issue was not fetched"
+            ) from None
         raw = _read_capped(exc, req=req).decode("utf-8", errors="replace")
         try:
             parsed = json.loads(raw) if raw.strip() else None

@@ -29,6 +29,7 @@ from __future__ import annotations
 import ast
 import http.server
 import threading
+import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any, Iterator
@@ -217,8 +218,6 @@ def test_every_token_carrying_call_goes_through_the_one_no_redirect_opener(monke
     through `forge._NO_REDIRECT_OPENER`: replace it, and every one of them is
     seen by the replacement. A call site that builds its own opener or calls
     `urlopen` would reach the network instead, and not be recorded."""
-    import urllib.error  # noqa: F401  (used by _RecordingOpener)
-
     recorder = _RecordingOpener()
     monkeypatch.setattr(forge, "_NO_REDIRECT_OPENER", recorder)
     # An address nothing listens on: a call that escaped the recorder fails to
@@ -248,12 +247,25 @@ def test_the_opener_has_no_handler_that_follows_a_redirect():
         )
 
 
-def _forge_modules(package: Path, forge_import: str) -> list[Path]:
+def _imports_forge(tree: ast.AST) -> bool:
+    """True when the module imports its package's forge module, in any spelling."""
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module.split(".")[-1] == "forge" or any(a.name == "forge" for a in node.names):
+                return True
+        elif isinstance(node, ast.Import):
+            if any(a.name.split(".")[-1] == "forge" for a in node.names):
+                return True
+    return False
+
+
+def _forge_modules(package: Path) -> list[Path]:
     """Every module of `package` that is, or imports, its forge module."""
     found = []
     for path in sorted(package.rglob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        if path.name == "forge.py" and path.parent == package or forge_import in text:
+        is_forge = path.name == "forge.py" and path.parent == package
+        if is_forge or _imports_forge(ast.parse(path.read_text(encoding="utf-8"))):
             found.append(path)
     return found
 
@@ -270,17 +282,11 @@ def _opener_calls(path: Path) -> list[tuple[str, int]]:
     return calls
 
 
-@pytest.mark.parametrize(
-    ("package", "forge_import"),
-    [
-        ("apps/agent-worker/agent_worker", "forge"),
-        ("apps/swarm-api/swarm_api", "forge"),
-    ],
-)
-def test_no_module_that_handles_the_forge_token_builds_its_own_opener(package, forge_import):
+@pytest.mark.parametrize("package", ["apps/agent-worker/agent_worker", "apps/swarm-api/swarm_api"])
+def test_no_module_that_handles_the_forge_token_builds_its_own_opener(package):
     """forge.py builds the one opener; nothing that imports it opens a URL another way."""
     root = REPO_ROOT / package
-    modules = _forge_modules(root, forge_import)
+    modules = _forge_modules(root)
     assert len(modules) >= 3, f"the scan found too little to mean anything: {modules}"
     offenders = []
     for path in modules:
