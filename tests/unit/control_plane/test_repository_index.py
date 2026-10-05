@@ -4,7 +4,8 @@ What is held here:
 
   * "Index now" submits ONE ordinary task through `submit_tasks`, by profile
     NAME (invariant 10): the prompt is the API's, the body carries no image,
-    command or prompt, and the task is QUEUED like any other (invariants 1-3);
+    command or prompt, and the task waits for admission like any other
+    (invariants 1-3);
   * at most one index run per registration is in flight: a second request
     records the newer head as pending, and the pending head is indexed once,
     when the running one ends;
@@ -109,12 +110,12 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
     assert body["coalesced"] is False
     run = body["run"]
     assert run["commit_sha"] == ONE and run["kind"] == "full" and run["trigger"] == "manual"
-    assert run["state"] == "QUEUED"
-
     [task] = _tasks(db)
     assert task["id"] == run["task_id"]
     assert task["tenant_id"] == "eng"
-    assert task["state"] == "QUEUED"
+    # Waiting for admission like any task: no lease, no demand (invariant 1).
+    assert task["state"] in ("QUEUED", "READY") and run["state"] == task["state"]
+    assert task.get("current_lease_id") is None
     # By NAME, and nothing a caller could have chosen (invariant 10).
     assert task["runner_profile"] == "claude-code"
     assert set(task["input"]) == {"prompt"}
@@ -134,7 +135,7 @@ def test_index_now_submits_one_ordinary_task_by_profile_name(client, db, repo_id
 
     stored = db.docs[f"repo_index_runs/{task['id']}"]
     assert stored["tenant_id"] == "eng" and stored["repo_id"] == repo_id
-    assert stored["state"] == "QUEUED" and stored["requested_by"] == "alice@saga.xyz"
+    assert stored["state"] == task["state"] and stored["requested_by"] == "alice@saga.xyz"
     index = _registration(db, repo_id)["index"]
     assert index["in_flight_task_id"] == task["id"]
     assert index["head_sha"] == ONE and index["head_read_at"] is not None

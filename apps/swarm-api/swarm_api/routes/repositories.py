@@ -14,11 +14,20 @@ Who may register: any member of the tenant, as for issue runs. The design's
 "an admin of the tenant" (repo-index.md §1, git-tokens.md §1) names a role
 this API does not have yet; a platform admin acts in a tenant only as a member
 of it, like everywhere else here.
+
+THE INDEX ROUTES (lane RI2, repo-index.md §6.1) are below the registration
+routes: `GET/POST /{repo_id}/index` (and `POST /{repo_id}/index:run`, the
+design's name for "Index now"), `GET /{repo_id}/index/runs` and
+`POST /{repo_id}/tests:select`. Each starts from the registration read with
+the caller's tenant, so another tenant's `repo_id` is the same 404 before any
+forge read or submission. Everything else is `swarm_api.repoindex`'s.
 """
 
 from __future__ import annotations
 
 import logging
+
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Query, Response, status
 
@@ -27,6 +36,18 @@ from swarm_common.models import Tenant
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
 from ..forge import ForgeReadError
+from ..repoindex import (
+    RUNS_PAGE_MAX,
+    IndexRunRequest,
+    RepoIndex,
+    SelectRequest,
+    check_run_kind,
+    freshness,
+    render_markdown,
+    run_to_api,
+    select_tests,
+    version_to_api,
+)
 from ..repositories import (
     MAX_READABLE_PAGES,
     Repositories,
@@ -160,3 +181,165 @@ def delete_repository(
     _store(ctx).delete(tenant_id, repo_id)
     log.info("repository delete tenant=%s repo_id=%s by=%s", tenant_id, repo_id, auth.email)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# --------------------------------------------------------------------------
+# the index (lane RI2)
+# --------------------------------------------------------------------------
+
+def _index(ctx: AppContext) -> RepoIndex:
+    return RepoIndex.from_context(ctx)
+
+
+def _start_index(
+    repo_id: str, body: IndexRunRequest, tenant_id: str, auth: AuthContext, ctx: AppContext
+) -> dict:
+    kind = check_run_kind(body.kind)
+    service = _index(ctx)
+    # The registration first: another tenant's id is a 404 before the forge.
+    service.registrations.get(tenant_id, repo_id)
+    tenant = _tenant(ctx, tenant_id, auth)
+    try:
+        answer = service.request_run(auth, tenant_id, repo_id, tenant=tenant, kind=kind)
+    except ForgeReadError as refused:
+        log.info("repository index run tenant=%s repo_id=%s outcome=%s",
+                 tenant_id, repo_id, refused.code)
+        raise
+    log.info(
+        "repository index run tenant=%s repo_id=%s by=%s outcome=%s", tenant_id, repo_id,
+        auth.email, "coalesced" if answer["coalesced"] else "submitted",
+    )
+    return {**answer, "repo_id": repo_id, "tenant_id": tenant_id}
+
+
+@router.post("/{repo_id}/index", status_code=status.HTTP_202_ACCEPTED)
+def index_now(
+    repo_id: str,
+    body: IndexRunRequest | None = None,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    return _start_index(repo_id, body or IndexRunRequest(), tenant_id, auth, ctx)
+
+
+@router.post("/{repo_id}/index:run", status_code=status.HTTP_202_ACCEPTED)
+def index_run(
+    repo_id: str,
+    body: IndexRunRequest | None = None,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    return _start_index(repo_id, body or IndexRunRequest(), tenant_id, auth, ctx)
+
+
+@router.get("/{repo_id}/index")
+def get_index(
+    repo_id: str,
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    format: Literal["markdown", "json"] = Query(default="markdown"),
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The promoted index (or a kept one, `?sha=`), its freshness, the run that made it.
+
+    Reading settles the registration's runs first -- a finished run is
+    promoted, a pending head submitted -- the way reading an issue run
+    advances it, so the answer is never older than the tasks behind it.
+    """
+    service = _index(ctx)
+    service.registrations.get(tenant_id, repo_id)
+    tenant = _tenant(ctx, tenant_id, auth)
+    service.settle(tenant_id, repo_id, auth=auth, tenant=tenant)
+    service.refresh_relation(tenant_id, repo_id, tenant)
+    record = service.registrations.get(tenant_id, repo_id)
+    index_state = dict(record.get("index") or {})
+    in_flight_id = index_state.get("in_flight_task_id")
+    in_flight = None
+    if in_flight_id:
+        runs = [r for r in service.runs(tenant_id, repo_id) if r.get("task_id") == in_flight_id]
+        in_flight = run_to_api(runs[0]) if runs else None
+    version = service.version(tenant_id, repo_id, sha)
+    if version is not None and sha is not None and sha != index_state.get("current_sha"):
+        # A kept version: its own sha against the head, its own build time.
+        index_state.update(current_sha=sha, current_built_at=version.get("built_at"))
+    fresh = freshness(index_state, now=ctx.now())
+    body: dict = {
+        "repo_id": repo_id,
+        "tenant_id": tenant_id,
+        "index": None,
+        "summary": None,
+        "document": None,
+        "freshness": fresh,
+        "produced_by": None,
+        "in_flight": in_flight,
+        "pending_sha": index_state.get("pending_sha"),
+    }
+    if version is None:
+        return body
+    document = service.read_version(tenant_id, version)
+    produced = [r for r in service.runs(tenant_id, repo_id, limit=RUNS_PAGE_MAX)
+                if r.get("task_id") == version.get("task_id")]
+    body.update(
+        index=version_to_api(version),
+        produced_by={
+            "task_id": version.get("task_id"),
+            "attempt_id": version.get("attempt_id"),
+            "run": run_to_api(produced[0]) if produced else None,
+        },
+    )
+    if format == "json":
+        body["document"] = document
+    else:
+        body["summary"] = render_markdown(
+            document, repository=f"{record['owner']}/{record['repo']}", freshness=fresh
+        )
+    return body
+
+
+@router.get("/{repo_id}/index/runs")
+def list_index_runs(
+    repo_id: str,
+    limit: int = Query(default=20, ge=1, le=RUNS_PAGE_MAX),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    service = _index(ctx)
+    service.registrations.get(tenant_id, repo_id)
+    return {
+        "repo_id": repo_id,
+        "tenant_id": tenant_id,
+        "runs": [run_to_api(row) for row in service.runs(tenant_id, repo_id, limit=limit)],
+    }
+
+
+@router.post("/{repo_id}/tests:select")
+def select_repository_tests(
+    repo_id: str,
+    body: SelectRequest,
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Which tests cover the changed paths, from the promoted index (§4.3)."""
+    service = _index(ctx)
+    record = service.registrations.get(tenant_id, repo_id)
+    fresh = freshness(record.get("index") or {}, now=ctx.now())
+    answer = {
+        "repo_id": repo_id,
+        "tenant_id": tenant_id,
+        "index_sha": fresh["index_sha"],
+        "head_sha": fresh["head_sha"],
+        "behind_by": fresh["behind_by"],
+        "stale": fresh["stale"],
+        "freshness": fresh,
+    }
+    version = service.version(tenant_id, repo_id)
+    if version is None:
+        paths = list(dict.fromkeys(body.paths))
+        return {**answer, "tests": [], "always": [], "unmapped": paths, "fallback": None,
+                "fallback_covers_every_unmapped_path": None,
+                "reason": "no index has been promoted for this repository, so no path is mapped"}
+    document = service.read_version(tenant_id, version)
+    return {**answer, **select_tests(document, body.paths)}
