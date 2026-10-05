@@ -46,14 +46,24 @@
 # auto-merge off and removes `ready`, because a still-armed auto-merge on an
 # old head would otherwise merge the next time the required checks go green.
 #
+# A MERGE CLOSES THE ISSUES ITS KEYWORDS NAME (#621). GitHub parsed the
+# closing keywords of the pull requests this App merged and left 28 of their
+# 33 issues open (history analysis, 2026-10-05). Owner decision, 2026-10-05:
+# the `close-issues` job below closes them on the `closed` event of a merged
+# pull request, with the GITHUB_TOKEN's issues: write -- on that job only --
+# and no change to the App's permissions. It runs main's
+# scripts/close-merged-issues.sh, which closes exactly GitHub's
+# closingIssuesReferences: `part of #N` is never one.
+#
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
-# runs both jobs' shells against a fake `gh`.
+# runs the enable and disable jobs' shells against a fake `gh`;
+# test_close_merged_issues.py runs the close script the same way.
 
 name: auto-merge
 
 on:
   pull_request_target:
-    types: [labeled, synchronize, reopened, edited]
+    types: [labeled, synchronize, reopened, edited, closed]
 
 permissions: {}
 
@@ -262,9 +272,12 @@ jobs:
     # label in `github.event.pull_request.labels`, so without excluding that
     # action this job would disable the auto-merge the `enable` job just
     # turned on. `edited` only when the base branch changed: a title or body
-    # edit does not move the head and does not need a fresh `ready`.
+    # edit does not move the head and does not need a fresh `ready`. Never
+    # for `closed`: a merged pull request still carries `ready`, and its head
+    # did not change -- `close-issues` handles that event.
     if: >-
       github.event.action != 'labeled' &&
+      github.event.action != 'closed' &&
       contains(github.event.pull_request.labels.*.name, 'ready') &&
       (github.event.action != 'edited' || github.event.changes.base.ref.from != null)
     permissions:
@@ -292,3 +305,40 @@ jobs:
             echo "A new head needs a new \`ready\` label to queue auto-merge again."
           } >"${body}"
           gh pr comment "${PR_NUMBER}" --body-file "${body}"
+
+  close-issues:
+    name: close the merged pull request's issues
+    runs-on: ubuntu-24.04
+    # Every merge into the default branch, not only the App's: the event does
+    # not reliably say who merged, an owner merge's issues are already closed
+    # by the time this reads them (the script leaves a closed issue alone),
+    # and a merge the worker's `merge` step made (#581) is covered the same
+    # way. Unmerged closes and other bases do nothing: closing keywords act
+    # only on a merge into the default branch.
+    if: >-
+      github.event.action == 'closed' &&
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    permissions:
+      # contents: read -- check out the default branch's scripts/.
+      # pull-requests: read -- the pull request's closingIssuesReferences.
+      # issues: write -- comment on and close each issue. This job only.
+      contents: read
+      pull-requests: read
+      issues: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+    steps:
+      # The default branch, which the merge has just made: reviewed code, the
+      # same main the release builds. Never the pull request's head or fork.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: close each open issue its closing keywords name
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/close-merged-issues.sh --pr "${PR_NUMBER}"

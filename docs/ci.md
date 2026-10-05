@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
+| `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
@@ -1327,6 +1327,57 @@ tfvars) and the App is installed on this repository only, not on the
 organization or another repository.
 [`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
 holds all of that and runs the gate against a fake `gh`.
+
+### A merge closes the issues its keywords name
+
+**GitHub did not close the issues named by the pull requests the App
+merged.** Of 65 merged pull requests with a closing keyword, owner merges
+closed 77 of 77 referenced issues; the `swarmcloud-merge` App's merges left 28
+of 33 open (history analysis, 2026-10-05; #487 → #124/#125/#127/#128, #481 →
+#89–#93, #541 → #503, #490 → #307), although GraphQL `closingIssuesReferences`
+listed every one of them (#621). Owner decision, 2026-10-05: close them
+explicitly after the merge, as the workflow `merge` step does (#581), with no
+change to the App's permissions.
+
+So `auto-merge.yml` also runs on `closed`, and its `close-issues` job runs
+[`scripts/close-merged-issues.sh`](../scripts/close-merged-issues.sh) on every
+pull request **merged into the default branch**:
+
+* it reads the pull request's `closingIssuesReferences` and closes each one
+  that is **open and in this repository**, with the comment "Closed by #N,
+  merged into main ..." naming the merging pull request;
+* it closes nothing else. It never reads the pull request's text, so a
+  `part of #N` — which GitHub does not list as a closing reference — is never
+  closed. Write `part of #N` for a partial fix, and a closing keyword only when
+  it is unconditionally true (CLAUDE.md, "Issues");
+* an issue that is already closed is left alone, with no second comment, and
+  one in another repository is recorded in the run summary, not touched;
+* an unreadable answer or an unmerged pull request fails the job and closes
+  nothing; a refused close fails it after the others have been tried, naming
+  the issue; more than 100 references (one page) fails it after the page.
+
+It runs on every merge, not only the App's, because the event does not
+reliably say who merged and an owner's merge costs it one read: GitHub has
+closed those issues already, and the script skips a closed issue. A merge into
+any other branch does nothing, because GitHub's keywords act only on the
+default branch.
+
+**Least privilege:** the job's GITHUB_TOKEN holds `issues: write` (comment and
+close), `pull-requests: read` (the references) and `contents: read` (a sparse
+checkout of the default branch's `scripts/`, without persisted credentials);
+no other job in the workflow holds `issues`, and the job mints no App token.
+It checks out the default branch — the code the merge just made, the same main
+the release builds — never the pull request's head. A close made with the
+GITHUB_TOKEN starts no workflow, which is right here: nothing should.
+[`test_close_merged_issues.py`](../tests/unit/scripts/test_close_merged_issues.py)
+runs the script against a fake `gh` (`Closes` vs `part of` vs already closed,
+another repository, an unmerged or unreadable pull request), and
+[`test_auto_merge_workflow.py`](../tests/unit/scripts/test_auto_merge_workflow.py)
+holds the job's trigger, permissions and checkout.
+
+The issues App merges left open before this existed are not closed by it: it
+acts on the merge event only, so they are checked against main and closed by
+hand (#621).
 
 ### What the owner applies, once
 
