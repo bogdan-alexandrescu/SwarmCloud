@@ -123,12 +123,12 @@ function landingTab(counts: Readonly<Record<Tab, number>>): Tab {
  * finishes, it is reclaimed, its cancel lands -- and a waiting or finished one
  * does not. Hidden tabs do not read at all; that half is `Screen`'s.
  *
- * THE COST IS THE PAYLOAD, NOT THE QUERY. Every row carries `input`,
+ * THE COST IS THE PAYLOAD, NOT THE QUERY. A full row carries `input`,
  * `metadata` and `result_summary`, so a 200-row page is 2-4 MB (§2.5), and at
  * 5s that is roughly 600 KB/s. Only the Live tab earns the fast cadence, and
- * only while it has rows; the `view=summary` parameter §8/P2 proposes is what
- * would make it cheap. Until it exists, a phone reads `PHONE_PAGE_LIMIT` rows
- * rather than 200 -- see below.
+ * only while it has rows. The list asks for `view=summary` (§8/P2, #168),
+ * which leaves those three out of every row; a phone still reads
+ * `PHONE_PAGE_LIMIT` rows rather than 200 -- see below.
  */
 export const LIVE_POLL_MS = 5_000
 export const IDLE_POLL_MS = 30_000
@@ -143,10 +143,15 @@ export function pollInterval(page: TaskPage | null): number {
  *
  * §2.5 states the condition this screen's 5s poll ships under: "Until
  * [view=summary] exists, the phone build must cap at limit=50 and say 'showing
- * the 50 most recent' rather than ship a 4 MB poll." `view=summary` does not
- * exist (routes/tasks.py and codec.py take no such parameter), and the list
- * polled the full 200-row page on every viewport -- 2-4 MB every 5s over
- * cellular, for as long as Live held a row and the tab was visible.
+ * the 50 most recent' rather than ship a 4 MB poll." The list polled the full
+ * 200-row page on every viewport -- 2-4 MB every 5s over cellular, for as
+ * long as Live held a row and the tab was visible.
+ *
+ * `view=summary` EXISTS NOW (#168) AND THE CAP STAYS. The summary view cuts
+ * each row; the cap cuts the row count, and the Overview's failures check
+ * counts over this same phone page (OV-10), so lifting it changes what two
+ * screens' figures describe at once. Whether a phone should go back to 200
+ * summary rows is a decision #168 left open, not one this read makes.
  *
  * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
  * which this list already draws as cards and a `?` takes a fingertip. §2.1
@@ -170,7 +175,10 @@ interface AgentsPage extends TaskPage {
 
 async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   const asked = phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT
-  const read = await loadTasks(asked)
+  // The summary view (#168): no row on this screen draws `input`, `metadata`
+  // or `result_summary` -- the inspector reads its own task, full, through
+  // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
+  const read = await loadTasks(asked, { view: 'summary' })
   return read.status === 'ok' || read.status === 'stale'
     ? { ...read, data: { ...read.data, asked } }
     : read

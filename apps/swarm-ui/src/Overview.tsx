@@ -345,12 +345,21 @@ const STATS_POLL_MS = 60_000
  * `TASK_PAGE_LIMIT` is still the api's constant, so this is a reference to
  * the one statement of it rather than a second one.
  *
- * 50 on a phone is §2.5's interim rule, and it holds until `GET /v1/tasks`
- * gains `view=summary`: every row carries `input`, `metadata` and
- * `result_summary`, 10-20 KiB each, and nothing on this screen reads them.
+ * AND IN THE SUMMARY VIEW (#168): `GET /v1/tasks?view=summary` serves each
+ * row without `input`, `metadata` and `result_summary`, most of a row's
+ * 10-20 KiB, and nothing on this screen reads them -- the trap in
+ * `overview.summaryview.test.tsx` renders the screen from summary rows and
+ * fails on any read of the three. The spend rollup samples this page for
+ * task ids and `attempt_count` alone; its figures come from each task's
+ * attempts read.
+ *
+ * 50 on a phone was §2.5's interim rule until `view=summary` existed. It
+ * stays: the agent list caps its phone page at the same 50, and this screen
+ * counts over the page the list shows (OV-10), so the two move together or
+ * not at all.
  */
 function loadListPage(): Promise<Result<TaskPage>> {
-  return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT)
+  return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
 }
 
 /** `document.hidden`, false where there is no document (tests/run.mjs). */

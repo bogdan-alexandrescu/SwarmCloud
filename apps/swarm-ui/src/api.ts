@@ -60,12 +60,24 @@ export { TASK_PAGE_LIMIT }
  * A page of the task list. `limit` is the full page unless a caller has a
  * reason to ask for less -- the Agents list at phone width asks for 50
  * (Agents.tsx, `PHONE_PAGE_LIMIT`).
+ *
+ * `view: 'summary'` (#168) asks for `GET /v1/tasks?view=summary`: each row
+ * WITHOUT `input`, `metadata` and `result_summary` and their redaction counts
+ * -- the keys absent, not null (`codec.task_to_api`). Those three are most of
+ * a row's 10-20 KiB (docs/web-ui §2.5), so a polled list that draws none of
+ * them asks for it: the Overview and the Agents list. Anything that reads a
+ * row's input, metadata or result summary reads `loadTask` instead, which is
+ * always the full row. No `view` is the full row, as before.
  */
-export async function loadTasks(limit: number = TASK_PAGE_LIMIT): Promise<Result<TaskPage>> {
+export async function loadTasks(
+  limit: number = TASK_PAGE_LIMIT,
+  options: { view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size the caller asked for.
-  return read<TaskPage>(route('/v1/tasks', {}, `limit=${limit}`), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for.
+  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
+  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
 }
 
 /**
