@@ -659,6 +659,21 @@ RUN /usr/local/bin/python3.11 -m venv --without-pip /opt/repo-index/venv \
       > /usr/local/bin/swarm-repo-index \
  && chmod 0755 /usr/local/bin/swarm-repo-index
 
+# The graph shard writer and blob sweep (docs/repo-index.md §2.5, lane RI9):
+# `swarm-repo-graph write --graph <the --graph-out file> --store gs://<bucket>
+# --tenant <t> --repo-id <r> --index <repo-index.json>` stores the graph as
+# content-addressed blobs and a manifest under tenants/<t>/repos/<r>/graph/,
+# records the manifest's digest in the index, then sweeps blobs no manifest
+# names. Standard library only, so it runs on the image's own python3.11
+# (`-I`, as the extractor) and reaches the bucket through `gcloud storage`
+# with the step's own account; root-owned and read-only to the agent.
+COPY images/agent-runtime-base/repo-index/repo_graph_shards.py /opt/repo-index/
+RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
+ && printf '%s\n' '#!/bin/sh' \
+      'exec /usr/local/bin/python3.11 -I /opt/repo-index/repo_graph_shards.py "$@"' \
+      > /usr/local/bin/swarm-repo-graph \
+ && chmod 0755 /usr/local/bin/swarm-repo-graph
+
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
@@ -700,6 +715,8 @@ RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.life
 # file with each, as the agent user, or the indexer step would find out
 # instead of the build.
 RUN swarm-repo-index --self-test
+# And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
+RUN swarm-repo-graph --self-test
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

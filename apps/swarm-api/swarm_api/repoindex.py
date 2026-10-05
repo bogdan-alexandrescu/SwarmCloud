@@ -97,6 +97,7 @@ from .forge import (
     IssueReadFailed,
     neutral_line,
 )
+from .repograph import GraphDigestMismatch, GraphUnavailable, InvalidGraph, RepoGraph
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import Repositories
 from .schemas import TaskCreate
@@ -1455,6 +1456,22 @@ class RepoIndex:
             )
             return
         digest = content_digest(content)
+        # §2.5: the graph the index names is checked here, against the digest
+        # the index carries, and recorded with it -- or the run is refused.
+        graph_digest = (document.get("graph") or {}).get("manifest_digest")
+        graph_manifest = None
+        if graph_digest:
+            try:
+                graph_manifest = RepoGraph.from_inspection(self._inspection).verify(
+                    tenant_id, repo_id, new, graph_digest
+                )
+            except UpstreamUnavailable:
+                log.warning("repo index run %s: the graph manifest could not be read yet",
+                            task.id)
+                return
+            except (GraphDigestMismatch, GraphUnavailable, InvalidGraph) as refused:
+                self._refuse(tenant_id, repo_id, run, f"graph: {refused.message}")
+                return
         relations: dict[tuple[str, str], str | None] = {}
 
         def relate(base: str, other: str) -> str | None:
@@ -1486,8 +1503,8 @@ class RepoIndex:
             "bytes": len(content.encode("utf-8")),
             "truncated": list(document.get("truncated") or []),
             "extractor": dict(document.get("extractor") or {}),
-            "graph_manifest": None,
-            "graph_digest": (document.get("graph") or {}).get("manifest_digest"),
+            "graph_manifest": graph_manifest,
+            "graph_digest": graph_digest if graph_manifest else None,
             "languages": [row["language"] for row in document.get("languages") or []],
             "recorded_at": now,
         }
