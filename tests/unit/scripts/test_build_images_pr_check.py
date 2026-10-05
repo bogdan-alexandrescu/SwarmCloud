@@ -30,7 +30,8 @@ each against the REAL scripts and workflow:
 WHAT THIS CANNOT PROVE: that Cloud Build accepts the generated configs, that
 BuildKit resolves the locally built base without a pull, or that the
 pull-request identity exists. Only a pull request run after the owner creates
-that identity shows those (docs/ci.md, "Images are built on a pull request").
+that identity shows those (docs/ci.md, "Images are built on a pull request,
+without pushing").
 """
 
 from __future__ import annotations
@@ -249,7 +250,6 @@ if args[:2] == ["builds", "submit"]:
     event["config"] = config
     with open(config) as fh:
         event["text"] = fh.read()
-    subs = [a for a in args if a.startswith("--substitutions")]
     if "--substitutions" in args:
         event["subs"] = args[args.index("--substitutions") + 1]
     target = re.search(r"cloudbuild-(.+)\.yaml$", config).group(1)

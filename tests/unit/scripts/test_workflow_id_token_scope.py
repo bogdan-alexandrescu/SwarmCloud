@@ -44,7 +44,7 @@ from .test_release_reuses_ci_images import REPO, WORKFLOWS, _code, _workflow
 # (test_release_id_token_scope.py) and is included here for the string and
 # trust-pin properties.
 NEEDS_ID_TOKEN = {
-    "application.yml": {"build"},
+    "application.yml": {"build", "build-check"},
     "terraform.yml": {"plan"},
     "security.yml": {"images"},
     "iam-refusal-probe.yml": {"probe"},
