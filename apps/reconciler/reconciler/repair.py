@@ -1647,7 +1647,7 @@ class Reconciler:
                 lease_id=finding.lease_id,
                 generation=finding.generation,
             )
-            self._release_fenced_holds(finding, outcome)
+            self._release_attempt_holds(finding, outcome)
         if done.release_refused:
             outcome.actions.append(
                 f"did NOT release {finding.lease_id}: its task still holds it at its generation"
@@ -1850,17 +1850,19 @@ class Reconciler:
             lease_id=finding.lease_id,
             generation=finding.generation,
         )
-        self._release_fenced_holds(finding, outcome)
+        self._release_attempt_holds(finding, outcome)
         outcome.actions.append(f"then: {_AFTER_THE_FENCE}")
         self._log_eviction(finding, outcome)
         return outcome
 
-    def _release_fenced_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
-        """Give back the account holds of the attempt this pass just fenced (#380).
+    def _release_attempt_holds(self, finding: Finding, outcome: RepairOutcome) -> None:
+        """Give back the account holds of the attempt this pass just ended (#380).
 
-        CALLED ONLY ONCE THE FENCE HAS COMMITTED -- `invalidate_generation`
-        returned the new generation. A fence that was refused or lost its race
-        (#372) returns None, and then nothing is released: the attempt may be
+        CALLED ONLY ONCE THE ATTEMPT IS PROVABLY OVER: its fence has COMMITTED
+        -- `invalidate_generation` returned the new generation -- or, for a
+        `left_running` Job, which has no generation left to fence, its kill was
+        confirmed. A fence that was refused or lost its race (#372) returns
+        None, and then nothing is released: the attempt may be
         a live worker still using its account, and taking its hold away would
         let `choose()` stack another agent onto it. After a committed fence the
         worker can no longer write anything for its generation and stops at its
@@ -1868,8 +1870,10 @@ class Reconciler:
 
         A fenced worker never reaches its own release (`lifecycle._give_back`),
         so without this the hold counted for its whole TTL. Never raises: the
-        TTL, pruned by the broker's sweep, is still the backstop, and a broker
-        outage must not stop the rest of the repair.
+        broker's own sweep releases the holds of an attempt whose record shows
+        it ended (`quota_broker.main._release_ended_attempt_holds`), the TTL is
+        the backstop behind that, and a broker outage must not stop the rest
+        of the repair.
         """
         if self._holds is None or not finding.task_id or not finding.attempt_id:
             return
@@ -1879,8 +1883,8 @@ class Reconciler:
             )
         except Exception as exc:
             self._log.warning(
-                "could not release a fenced attempt's account holds; they will "
-                "age out on their TTL",
+                "could not release an ended attempt's account holds; the "
+                "broker's sweep or their TTL will",
                 task_id=finding.task_id,
                 attempt_id=finding.attempt_id,
                 error=str(exc)[:300],
@@ -1919,6 +1923,12 @@ class Reconciler:
             return outcome
         if not self._terminate(finding, outcome, handles):
             return outcome
+        # The Job's worker died with it, before its own `finally` could give
+        # its account back, and with no fence here nothing else releases for
+        # this attempt until the hold's TTL (#380). The confirmed kill is the
+        # evidence: the same strength as a committed fence, which is why it
+        # sits after `_terminate` and never before.
+        self._release_attempt_holds(finding, outcome)
         if finding.lease_id:
             outcome.released = self._store.release_lease(
                 finding.lease_id, f"reconciler:{finding.kind.value}"
