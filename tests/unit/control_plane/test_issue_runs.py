@@ -212,7 +212,8 @@ def test_anything_else_is_refused(value):
 def test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds():
     body = RunCreate(issue=REF)
     assert body.plan_approval == "required"
-    assert body.auto_merge is False
+    # Absent: the run takes the platform's `merge_by_default` (contract request 47).
+    assert body.auto_merge is None
     assert body.fix_rounds == 3
     assert body.issue == REF
 
@@ -249,25 +250,46 @@ def test_a_pull_request_reference_is_a_422_saying_so(client, db):
     assert not _docs(db, "tasks")
 
 
-def test_auto_merge_is_refused_until_the_merge_chain_is_enabled(client, db):
+def test_auto_merge_is_accepted_and_recorded_on_the_run(client, db):
+    """Contract request 47 enabled the merge step: the "refused until #295"
+    state is gone, and the run records the choice its workflow will carry."""
     response = _create(client, auto_merge=True)
-    assert response.status_code == 422, response.text
-    assert response.json()["code"] == "auto_merge_unavailable"
-    assert "#295" in response.json()["message"]
-    # Refused before anything was created.
-    assert not _docs(db, "tasks")
-    assert not _docs(db, issueruns.RUNS_COLLECTION)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is True
 
 
-def test_auto_merge_availability_says_what_the_refusal_does():
+@pytest.mark.parametrize("default", [False, True])
+def test_a_run_that_does_not_say_takes_the_platform_default(client, default):
+    put = client.put("/v1/admin/settings", headers=auth_header("root"),
+                     json={"merge_by_default": default})
+    assert put.status_code == 200, put.text
+    response = _create(client)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is default
+    # A run that says overrides the default either way.
+    assert _create(client, auto_merge=not default).json()["run"]["auto_merge"] is (not default)
+
+
+def test_auto_merge_availability_says_what_the_refusal_does(monkeypatch):
     # The console reads availability; POST /v1/runs enforces the refusal.
     # They must never disagree: unavailable exactly while the refusal raises.
     availability = issueruns.auto_merge_availability()
-    assert availability["available"] is False
+    assert availability["available"] is True and availability["reason"] is None
+    issueruns.refuse_auto_merge(True)
+
+    from dataclasses import replace
+
+    from swarm_common.profiles import RUNNER_PROFILES
+
+    monkeypatch.setitem(RUNNER_PROFILES, "merge", replace(
+        RUNNER_PROFILES["merge"], available=False, disabled_reason="switched off for a drill"))
+    availability = issueruns.auto_merge_availability(default=True)
+    assert availability["available"] is False and availability["default"] is False
     assert availability["requires"] == "#295"
     with pytest.raises(issueruns.AutoMergeUnavailable) as refused:
         issueruns.refuse_auto_merge(True)
     assert availability["reason"] == refused.value.message
+    assert "switched off for a drill" in refused.value.message
 
 
 def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
@@ -605,9 +627,34 @@ def test_the_plan_compiles_to_implement_review_and_a_gated_fix():
     assert spec.metadata["issue_run"]["fix_rounds"] == 3
 
 
-def test_auto_merge_compilation_refuses_naming_295():
-    with pytest.raises(issueruns.AutoMergeUnavailable, match="#295"):
-        compile_plan(_stored_run(auto_merge=True))
+@pytest.mark.parametrize(("auto_merge", "choice"), [(True, "on"), (False, "off")])
+def test_the_compiled_workflow_states_the_runs_merge_choice(auto_merge, choice):
+    """Stated, so the platform default at compile time cannot override the
+    choice the run resolved when it was created."""
+    spec = compile_plan(_stored_run(auto_merge=auto_merge))
+    assert spec.metadata["merge"] == choice
+    # The compiled steps are unchanged: swarm-api appends the merge step.
+    assert [s.step_id for s in spec.steps] == ["impl-sort-key", "impl-ui", "review", "fix"]
+
+
+def test_an_auto_merge_run_submits_with_a_merge_step_after_the_fix_and_the_review(client):
+    spec = compile_plan(_stored_run(auto_merge=True))
+    response = client.post("/v1/workflows", headers=auth_header("alice"),
+                           json=spec.model_dump(exclude_none=True))
+    assert response.status_code == 201, response.text
+    merges = [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
+    assert len(merges) == 1
+    assert merges[0]["depends_on"] == ["fix", "review"]
+    assert merges[0]["input_from"] == {"review": "verdict.json"}
+
+
+def test_a_run_without_auto_merge_submits_no_merge_step_even_when_the_default_is_on(client):
+    client.put("/v1/admin/settings", headers=auth_header("root"), json={"merge_by_default": True})
+    spec = compile_plan(_stored_run(auto_merge=False))
+    response = client.post("/v1/workflows", headers=auth_header("alice"),
+                           json=spec.model_dump(exclude_none=True))
+    assert response.status_code == 201, response.text
+    assert not [s for s in response.json()["workflow"]["steps"] if s["runner_profile"] == "merge"]
 
 
 def test_the_digest_is_of_the_plan_and_order_of_keys_does_not_change_it():
@@ -735,7 +782,10 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     assert issueruns.parse_plan(PLAN) == PLAN
     assert plan_digest(issueruns.parse_plan(PLAN)) == plan_digest(PLAN)
     spec = compile_plan(_stored_run())
-    assert spec.model_dump(mode="json", exclude_defaults=True) == CHAIN_AS_BEFORE
+    dumped = spec.model_dump(mode="json", exclude_defaults=True)
+    # The one addition (contract request 47): the run's merge choice, stated.
+    assert dumped["metadata"].pop("merge") == "off"
+    assert dumped == CHAIN_AS_BEFORE
 
 
 def test_dependencies_compile_to_parallel_stages():

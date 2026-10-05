@@ -82,9 +82,14 @@ strictly; only a complete one with every entry met lets the pull request say
 `Closes #N` (`issueci.evaluate_requirements`). Every compiled prompt tells
 its agent not to write a closing keyword itself (`NO_CLOSING_KEYWORD`).
 
-`auto_merge` -- a `single-pr` chain ending in its own merge (#295) -- is
-phase 2 and is refused here naming #295 rather than compiled into something
-else.
+`auto_merge` ends the run's workflow in a `merge` step (#295, contract
+request 47, owner decisions 2026-10-04): the compiled workflow says
+`metadata.merge` "on" or "off", and swarm-api appends the step -- depending
+on the gated fix (the integrator) and the review, whose verdict must be
+MERGE -- when it is on. A run created without saying takes the platform's
+`merge_by_default`, and records what it resolved. The CI loop's fix rounds
+(`issueci`) carry the same choice, so a round that turns CI green merges
+exactly when the run would have.
 
 STAGES, NOT ONLY A CHAIN (owner decision, 2026-10-03). A step may state
 `depends_on`: earlier steps whose code or files it needs. A plan that states it
@@ -121,12 +126,14 @@ from swarm_common.models import utcnow
 from .errors import Conflict, NotFound, ValidationFailed
 from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from swarm_common.profiles import RUNNER_PROFILES
+
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
-    SINGLE_PR,
+    MERGE_METADATA_KEY,
+    MERGE_STEP_ID,
     IssueRef,
-    dispatchable_strategies,
 )
 
 log = logging.getLogger(__name__)
@@ -657,44 +664,44 @@ def planner_task(
     )
 
 
-#: The merge step auto-merge waits for. Named once: the refusal and the
-#: availability the console reads both carry it.
+#: What auto-merge is: the workflow's `merge` step (#295, contract request 47).
+#: Named once: the refusal and the availability the console reads both carry it.
 AUTO_MERGE_REQUIRES = "#295"
 
 
 def _auto_merge_refusal() -> str | None:
     """Why auto-merge is refused for a new run now, or None when it is not.
 
-    The first refusal is the platform's: `single-pr` is not dispatchable while
-    the catalogue disables the merge and post-verdict profiles for every tenant
-    (`validation.dispatchable_strategies`). The second is this module's: the
-    compile branch for a run that ends in a merge does not exist yet, so today
-    this never returns None.
+    Only when the catalogue disables the `merge` profile: since contract
+    request 47 (2026-10-04) it is enabled, so this returns None, and a
+    platform that disabled it again would be told why here.
     """
-    if SINGLE_PR not in dispatchable_strategies():
+    profile = RUNNER_PROFILES.get(MERGE_STEP_ID)
+    if profile is None or not profile.available:
+        reason = profile.disabled_reason if profile is not None else "it is not in the catalogue"
         return (
-            "auto_merge requires the merge chain (#295), which is not enabled for this "
-            "tenant; create the run with auto_merge false and merge its pull request "
+            f"auto_merge needs the merge step (#295), and the 'merge' profile is disabled: "
+            f"{reason}; create the run with auto_merge false and merge its pull request "
             "yourself"
         )
-    return (
-        "auto_merge requires #295 phase 2 (a single-pr chain ending in merge), which "
-        "issue runs do not compile yet; create the run with auto_merge false"
-    )
+    return None
 
 
-def auto_merge_availability() -> dict[str, Any]:
+def auto_merge_availability(default: bool = False) -> dict[str, Any]:
     """What the submit form draws for auto-merge: the same answer the refusal gives.
 
     Served on the issue preview (routes/issues.py) so the console never offers
     a switch POST /v1/runs would refuse, and never hides one it would accept.
+    `default` is the platform's `merge_by_default`: what a run created without
+    saying `auto_merge` gets.
     """
     reason = _auto_merge_refusal()
-    return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason}
+    return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason,
+            "default": bool(default) and reason is None}
 
 
 def refuse_auto_merge(auto_merge: bool) -> None:
-    """`auto_merge` is refused until #295's chain runs, and until phase 2 is built."""
+    """`auto_merge` is refused only while the catalogue disables the merge step."""
     if not auto_merge:
         return
     reason = _auto_merge_refusal()
@@ -1052,6 +1059,9 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "repository_url": ref.repository_url,
         "steps": steps,
         "metadata": {
+            # The run's own choice, stated, so the platform default at compile
+            # time cannot override what the run resolved when it was created.
+            MERGE_METADATA_KEY: "on" if run.auto_merge else "off",
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,

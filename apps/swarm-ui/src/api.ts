@@ -3218,7 +3218,7 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "claude-code": {"available": true, "disabled_reason": ""},
   "codex": {"available": false, "disabled_reason": "codex is disabled on this platform. The provider refused the registered credential and the platform is focused on Claude. Use claude-code."},
   "browser": {"available": true, "disabled_reason": ""},
-  "merge": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
+  "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."}
 }

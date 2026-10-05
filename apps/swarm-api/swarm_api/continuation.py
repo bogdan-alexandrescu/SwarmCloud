@@ -44,7 +44,8 @@ THE RULES, and why each is a refusal rather than a quiet adjustment:
     account cannot reach an integrator through a member's continuation of
     one.
   * The workflow must be `direct-pr` and have ONE step. Two steps pushing to
-    one branch race to a non-fast-forward, and the loser's work is lost.
+    one branch race to a non-fast-forward, and the loser's work is lost. A
+    `merge` step (contract request 47) pushes nothing and is not counted.
   * No `repository_ref`. The continued branch IS the ref; a second one could
     only disagree with it.
   * The repository is the continued task's. A different one is refused; an
@@ -62,7 +63,7 @@ from typing import Any
 from .errors import NotFound
 from .schemas import WorkflowCreate
 from .store import Store
-from .validation import DISPATCH_METADATA_KEY, DispatchOptionError
+from .validation import DISPATCH_METADATA_KEY, DispatchOptionError, is_merge_step
 
 #: The shape `swarm_common.models.new_id("task")` mints. Checked here rather
 #: than as a schema pattern so a malformed id is refused with the same code and
@@ -138,12 +139,13 @@ def resolve_continuation(
             f"{strategy!r}.",
             detail={"continues_task": requested, "strategy": strategy},
         )
-    if len(spec.steps) != 1:
+    pushing = [s for s in spec.steps if not is_merge_step(s.runner_profile)]
+    if len(pushing) != 1:
         raise DispatchOptionError(
             "continues_task takes a workflow of exactly one step: every step would "
             "push to the same branch, and all but the first would be refused as a "
             "non-fast-forward.",
-            detail={"continues_task": requested, "steps": len(spec.steps)},
+            detail={"continues_task": requested, "steps": len(pushing)},
         )
     if spec.repository_ref:
         raise DispatchOptionError(

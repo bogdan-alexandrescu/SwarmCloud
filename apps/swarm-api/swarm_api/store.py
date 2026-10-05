@@ -105,6 +105,20 @@ CONTROL = "control"
 EVENTS = "events"
 
 CONTROL_DOC = "dispatch"
+#: The platform's own settings, beside the dispatch switch in `control` but in
+#: a document of their own: `set_dispatch_paused` REPLACES its document, so a
+#: setting kept there would be erased by every pause and resume.
+SETTINGS_DOC = "settings"
+
+#: Every platform setting, and its value when nobody has set it. Read by
+#: `Store.get_platform_settings`, served and set by `/v1/admin/settings`.
+#:
+#:   merge_by_default  append a `merge` step to every workflow that opens one
+#:                     pull request and does not say `metadata.merge`
+#:                     (contract request 47). OFF until an operator turns it
+#:                     on: a merge lands code on a default branch, and the
+#:                     owner made it opt-in (2026-10-04).
+PLATFORM_SETTINGS_DEFAULTS: dict[str, Any] = {"merge_by_default": False}
 
 #: Firestore caps a write batch at 500 operations. Each task costs two (the
 #: document and its `submitted` event), so a chunk of 200 tasks is the ceiling.
@@ -1856,6 +1870,34 @@ class Store:
         data["dispatch_state"] = "paused" if data["dispatch_paused"] else "running"
         data["control_document"] = "present"
         return data
+
+    def get_platform_settings(self) -> dict[str, Any]:
+        """The platform settings, each at its default when the document lacks it.
+
+        `settings_document` says whether the values were read or defaulted,
+        as `get_control` says it for the dispatch switch: "off because an
+        operator turned it off" and "off because nobody ever set it" are
+        different facts.
+        """
+        snap = self._db.collection(CONTROL).document(SETTINGS_DOC).get()
+        data = dict(snap.to_dict() or {}) if snap.exists else {}
+        out: dict[str, Any] = {
+            key: (bool(data[key]) if key in data else default)
+            for key, default in PLATFORM_SETTINGS_DEFAULTS.items()
+        }
+        out["updated_at"] = data.get("updated_at")
+        out["updated_by"] = data.get("updated_by")
+        out["settings_document"] = "present" if snap.exists else "missing"
+        return out
+
+    def set_platform_settings(self, changes: dict[str, Any], *, by: str) -> dict[str, Any]:
+        """Merge `changes` -- known settings only -- into the settings document."""
+        unknown = sorted(set(changes) - set(PLATFORM_SETTINGS_DEFAULTS))
+        if unknown:
+            raise ValueError(f"unknown platform settings: {', '.join(unknown)}")
+        payload = {**changes, "updated_at": self._now(), "updated_by": by}
+        self._db.collection(CONTROL).document(SETTINGS_DOC).set(payload, merge=True)
+        return self.get_platform_settings()
 
     def set_dispatch_paused(self, paused: bool, *, by: str, reason: str | None = None) -> dict:
         payload = {

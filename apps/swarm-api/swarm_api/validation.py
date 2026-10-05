@@ -83,24 +83,50 @@ def known_providers() -> tuple[str, ...]:
     GitHub App keys that only the merge and post-verdict Jobs' own service
     accounts may read (contract request 33's #364 amendment, accepted
     2026-10-01), so neither may ever enter through that path.
+
+    AND THE FORGE TOKEN, `git`, which the `merge` profile names since contract
+    request 47 (2026-10-04). It is the tenant's own forge token, registered
+    only by `scripts/register-tenant.sh --add-provider git` and stored only
+    with `scripts/create-secrets.sh --stdin` (owner rule, 2026-09-25: a forge
+    token never passes through anything else). It was never in this set, and
+    naming it in the catalogue does not put it there.
     """
     return tuple(
         sorted(
             {p.provider for p in RUNNER_PROFILES.values() if p.provider}
             - APP_CREDENTIAL_PROVIDERS
+            - {FORGE_PROVIDER}
         )
     )
 
 
-#: The providers of the `worker_action` profiles: `git-merge` (contract request
-#: 33) and `git-review` (35). Derived from the catalogue rather than named, so a
-#: third worker action is left out of `known_providers()` the day it is added
-#: rather than the day someone remembers this line. A worker action's
-#: credential is read by its own Job's service account at action time and is
-#: never registered against the worker account.
+#: The tenant's forge token's provider, `swarm-tenant-<tenant>-git` (the
+#: worker's `secrets.GIT_PROVIDER`, swarm-api's `forge.GIT_PROVIDER`). The
+#: `merge` profile reads it since contract request 47.
+FORGE_PROVIDER = "git"
+
+#: The providers of the `worker_action` profiles that are GitHub App keys:
+#: `git-review` (contract request 35), and `git-merge` until contract request
+#: 47 moved the merge onto the tenant's `-git` token. Derived from the
+#: catalogue rather than named, so a third worker action is left out of
+#: `known_providers()` the day it is added rather than the day someone
+#: remembers this line. An App key is read by its own Job's service account at
+#: action time and is never registered against the worker account.
+#: `scripts/register-tenant.sh` reads this set to refuse binding one to the
+#: worker; the forge token is the one worker-action provider the worker DOES
+#: read, so it is not in it.
+#:
+#: `git-merge` STAYS IN THE SET after contract request 47 retired it from the
+#: catalogue (`RETIRED_APP_CREDENTIAL_PROVIDERS`). A `-git-merge` secret that
+#: exists holds a GitHub App key; dropping the name here would let
+#: `register-tenant.sh` grant the tenant's worker account read on it, which is
+#: the one thing that secret's design forbids. It goes when the merge account
+#: leaves `terraform/modules/service_account_ids`.
+RETIRED_APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset({"git-merge"})
 APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
-    p.provider for p in RUNNER_PROFILES.values() if p.worker_action is not None and p.provider
-)
+    p.provider for p in RUNNER_PROFILES.values()
+    if p.worker_action is not None and p.provider and p.provider != FORGE_PROVIDER
+) | RETIRED_APP_CREDENTIAL_PROVIDERS
 
 
 def validate_runner_profile(name: str) -> RunnerProfile:
@@ -524,6 +550,51 @@ SINGLE_PR = "single-pr"
 #: each: the step that posts the review's verdict to GitHub and the step that
 #: merges. Neither runs an agent (contract requests 33 and 35).
 SINGLE_PR_WORKER_ACTIONS = (WorkerAction.POST_VERDICT, WorkerAction.MERGE)
+
+# --- the `merge` step outside `single-pr` (contract request 47) -----------
+#
+# Owner decisions of 2026-10-04, recorded on #295: merging moves off the
+# GitHub-side App into a workflow `merge` step, on the tenant's existing
+# `-git` token, in any repository a workflow runs on, as an OPT-IN final step
+# chosen by a platform default or per job (docs/merge-step.md, "Revised
+# 2026-10-04 (owner)"; docs/workflows.md).
+
+#: The strategies whose workflow opens a pull request a `merge` step can merge:
+#: `integrate`'s one, and a `direct-pr` workflow's when it has one agent step.
+MERGE_STRATEGIES = ("direct-pr", "integrate")
+
+#: The key inside a workflow's `metadata` that chooses the merge step per job.
+#: NOT reserved: the caller writes it, and it is stored as written.
+#:
+#:   on    append a `merge` step (when the spec states none); refused for a
+#:         workflow that opens no single pull request, rather than ignored.
+#:   off   append none, and refuse a spec that states one: the two disagree.
+#:   absent  the platform's `merge_by_default` decides whether one is
+#:         appended; a spec's own merge step is honoured whatever it says.
+MERGE_METADATA_KEY = "merge"
+MERGE_CHOICES = ("on", "off")
+
+#: The signed dispatch block on a merge step naming what it merges. The
+#: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
+#: tests/unit/worker/test_merge_action.py holds the two equal.
+MERGE_TARGET_FIELD = "merge_target"
+
+#: The forge hosts a merge step can act on: github.com, the only host the
+#: tenant's token is ever sent to (`agent_worker.forge.may_receive_forge_token`,
+#: #307), where `agent_worker.merge.GitHubMerger` is the one `ForgeMerger`.
+#: Another host is refused at SUBMISSION, never at merge time. The worker's
+#: `merge.MERGEABLE_HOSTS` is held equal to this by test_merge_action.py.
+MERGE_FORGE_HOSTS = frozenset({"github.com", "www.github.com"})
+
+#: Attempts a merge step gets. A required check still running fails the
+#: attempt retryably and the step waits READY, holding nothing, for the
+#: worker's `CHECKS_PENDING_RETRY_SECONDS` (300 s) before reading again; ten
+#: attempts is about 45 minutes of CI, against the three a task gets by
+#: default. The API's own ceiling on `max_attempts` is 10.
+MERGE_STEP_MAX_ATTEMPTS = 10
+
+#: The step id an appended merge step takes, suffixed when a step already has it.
+MERGE_STEP_ID = "merge"
 
 
 def dispatchable_strategies() -> tuple[str, ...]:
@@ -1009,6 +1080,12 @@ class DispatchOptions:
     #: `(MERGES_KEYS key, upstream TASK id)`, on the `merge` step only: the
     #: tasks whose `result_summary.git` and signed specs it checks (§4.1, §4.2).
     merges: tuple[tuple[str, str], ...] = ()
+    #: `(key, value)` of the `merge_target` block, on a `merge` step outside
+    #: `single-pr` only (contract request 47): `pull_request`, the TASK id
+    #: whose pull request it merges, and -- when the workflow has a review --
+    #: `review`, that review's task id, and `verdict_file`, the file it stages
+    #: from it. Inside the dispatch block, so the spec signature covers it.
+    merge_target: tuple[tuple[str, str], ...] = ()
 
     @property
     def needs_repository(self) -> bool:
@@ -1061,6 +1138,20 @@ class DispatchOptions:
             merges=tuple((k, merges[k]) for k in MERGES_KEYS if k in (merges or {})),
         )
 
+    def with_merge_target(
+        self,
+        *,
+        pull_request: str,
+        review: str | None = None,
+        verdict_file: str | None = None,
+    ) -> "DispatchOptions":
+        """The `merge` step's target, already resolved to task ids. No role:
+        it runs no agent, clones nothing and is integrated by nobody."""
+        target = [("pull_request", pull_request)]
+        if review is not None and verdict_file is not None:
+            target += [("review", review), ("verdict_file", verdict_file)]
+        return replace(self, role=None, integrates=(), merge_target=tuple(target))
+
     def to_metadata(self) -> dict[str, Any]:
         """The `task.metadata["dispatch"]` block, exactly as the worker reads it."""
         block: dict[str, Any] = {"strategy": self.strategy, "carrier": self.carrier}
@@ -1095,6 +1186,10 @@ class DispatchOptions:
             block["verdict_source"] = {"review": self.verdict_source}
         if self.merges:
             block["merges"] = dict(self.merges)
+        # Absent on every step but a merge step (contract request 47), so
+        # every other step stores exactly the block it stored before.
+        if self.merge_target:
+            block[MERGE_TARGET_FIELD] = dict(self.merge_target)
         return block
 
 
@@ -1268,6 +1363,10 @@ def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
     is only one of those. Transitive feeding is what matters, so a chain
     a -> b -> c is a legal `integrate` workflow with c as the integrator.
     """
+    # A `merge` step (contract request 47) comes after the integrator and
+    # integrates nothing: the integrator is the sink of the OTHER steps.
+    # `plan_merge` holds the merge step to depending on it.
+    steps = [step for step in steps if _worker_action(step) is not WorkerAction.MERGE]
     if len(steps) < 2:
         raise DispatchOptionError(
             "strategy 'integrate' needs something to integrate: it names a final "
@@ -1311,18 +1410,35 @@ def _ancestors(steps: Sequence[StepSpec]) -> dict[str, set[str]]:
 def refuse_worker_action_outside_single_pr(
     profile: RunnerProfile, strategy: str, *, step_id: str | None = None
 ) -> None:
-    """A worker-action profile (merge, post-verdict) runs only inside `single-pr`.
+    """Where a worker-action profile may run. Refuses everywhere else.
 
-    It acts on the one pull request that chain opens, after the steps that
-    order it -- the merge after the posted verdict and the proof, the verdict
-    before any later agent. As a standalone task, or a step of any other
-    strategy, there is no such pull request and no such ordering, so it is
-    refused at submission (#295). Called for a task by `_build_task` and for a
-    workflow step by `validate_step_routing`.
+    `post-verdict` runs only inside `single-pr`: it acts on the one pull
+    request that chain opens, after the steps that order it.
+
+    `merge` (contract request 47, owner decisions 2026-10-04) runs as the
+    final step of a WORKFLOW that opens a pull request -- `direct-pr`,
+    `integrate`, or `single-pr`'s own chain -- and nowhere else: a standalone
+    task, or a `collect` workflow, has no pull request to merge.
+    `plan_merge` then checks where in the workflow it sits. Called for a task
+    by `_build_task` and for a workflow step by `validate_step_routing`.
     """
     if profile.worker_action is None or strategy == SINGLE_PR:
         return
     where = f"step {step_id!r}" if step_id is not None else "this task"
+    if profile.worker_action is WorkerAction.MERGE:
+        if step_id is not None and strategy in MERGE_STRATEGIES:
+            return
+        raise DispatchOptionError(
+            f"{where} runs the 'merge' worker action, which merges the pull request "
+            "a workflow opens: it is the final step of a workflow whose strategy is "
+            + " or ".join(repr(s) for s in MERGE_STRATEGIES)
+            + (f", and strategy {strategy!r} opens no pull request." if step_id is not None
+               else ", never a task on its own.")
+            + f" Or set the workflow's metadata.{MERGE_METADATA_KEY} to 'on' and the "
+            "step is appended for you.",
+            detail={"step_id": step_id, "runner_profile": profile.name,
+                    "strategy": strategy, "merge_strategies": list(MERGE_STRATEGIES)},
+        )
     raise DispatchOptionError(
         f"{where} runs the {profile.name!r} worker action, which only a "
         "'single-pr' workflow may contain: it acts on the one pull request that "
@@ -1733,6 +1849,223 @@ def validate_step_routing(
                             "builds_on": step.builds_on},
                 )
     return plan
+
+
+# --------------------------------------------------------------------------
+# The `merge` step (contract request 47)
+# --------------------------------------------------------------------------
+
+
+def resolve_merge_choice(metadata: Mapping[str, Any]) -> str | None:
+    """A workflow's `metadata.merge`: "on", "off", or None when it says nothing."""
+    if MERGE_METADATA_KEY not in metadata:
+        return None
+    value = metadata[MERGE_METADATA_KEY]
+    if value not in MERGE_CHOICES:
+        raise DispatchOptionError(
+            f"metadata.{MERGE_METADATA_KEY} is {str(value)[:40]!r}; it is one of "
+            + ", ".join(repr(c) for c in MERGE_CHOICES)
+            + ", or absent for the platform's default.",
+            detail={"field": f"metadata.{MERGE_METADATA_KEY}",
+                    "accepted": list(MERGE_CHOICES)},
+        )
+    return value
+
+
+def is_merge_step(runner_profile: str | None) -> bool:
+    profile = RUNNER_PROFILES.get(runner_profile or "")
+    return profile is not None and profile.worker_action is WorkerAction.MERGE
+
+
+@dataclass(frozen=True)
+class MergeSources:
+    """What a workflow's merge step acts on, all STEP ids."""
+
+    #: The step that opens the pull request: the integrator, or a `direct-pr`
+    #: workflow's one agent step.
+    pull_request: str
+    #: The review whose verdict must be MERGE -- the step the publishing
+    #: step's verdict gate reads -- and the file that step stages from it.
+    review: str | None = None
+    verdict_file: str | None = None
+
+    def depends_on(self) -> list[str]:
+        return [self.pull_request] + ([self.review] if self.review else [])
+
+    def input_from(self) -> dict[str, str]:
+        return {self.review: self.verdict_file} if self.review and self.verdict_file else {}
+
+
+@dataclass(frozen=True)
+class MergePlan:
+    merge_step: str
+    sources: MergeSources
+
+
+def merge_sources(steps: Sequence[StepSpec], strategy: str) -> MergeSources | None:
+    """The pull request a merge step would merge, or None when there is not ONE.
+
+    `steps` are the AGENT steps (no merge step), after `validate_dag`. Under
+    `integrate` the pull request is the integrator's -- the agent steps' one
+    sink -- and the review is the step its verdict gate reads (#264), the
+    only gate `integrate` allows. Under `direct-pr` every step opens its own
+    pull request, so there is ONE only when there is one agent step, and no
+    review (`direct-pr` refuses a gate). `collect` opens none, and
+    `single-pr` ends in its own merge.
+    """
+    agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if strategy == "direct-pr":
+        return MergeSources(agents[0].step_id) if len(agents) == 1 else None
+    if strategy != "integrate" or len(agents) < 2:
+        return None
+    depended_on = {dep for step in agents for dep in step.depends_on}
+    sinks = [step for step in agents if step.step_id not in depended_on]
+    if len(sinks) != 1:
+        return None
+    integrator = sinks[0]
+    review = integrator.when_step
+    if review is None:
+        return MergeSources(integrator.step_id)
+    return MergeSources(integrator.step_id, review, integrator.input_from.get(review))
+
+
+def merge_step_for(steps: Sequence[StepSpec], strategy: str) -> dict[str, Any] | None:
+    """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
+
+    `depends_on` names every step that must finish first -- the step that
+    opens the pull request, and the review when there is one -- and the
+    review's verdict file is staged, so the merge reads the verdict the
+    publishing step's gate read.
+    """
+    sources = merge_sources(steps, strategy)
+    if sources is None:
+        return None
+    taken = {step.step_id for step in steps}
+    step_id, n = MERGE_STEP_ID, 1
+    while step_id in taken:
+        n += 1
+        step_id = f"{MERGE_STEP_ID}-{n}"
+    return {
+        "step_id": step_id,
+        "runner_profile": MERGE_STEP_ID,
+        "depends_on": sources.depends_on(),
+        "input_from": sources.input_from(),
+    }
+
+
+def plan_merge(steps: Sequence[StepSpec], strategy: str) -> MergePlan | None:
+    """Refuse a merge step that could not merge what the workflow opened, else plan it.
+
+    Call AFTER `validate_dag` and `validate_step_routing`. None when the
+    workflow has no merge step, or is `single-pr` (`resolve_single_pr`
+    plans that chain's own). The rules, each a way the step would otherwise
+    merge something other than what the workflow produced and its review
+    judged:
+
+    * at most one merge step, and nothing depends on it: it is the last
+      thing the workflow does;
+    * the workflow opens ONE pull request (`merge_sources`);
+    * no `when`, `builds_on`, `pr_role` or `merges` on it: it runs no agent
+      and clones nothing;
+    * it depends directly on the step that opens the pull request and on the
+      review, so neither can still be running when it reads them;
+    * it stages exactly the review's verdict file and nothing else.
+    """
+    if strategy == SINGLE_PR:
+        return None
+    found = [step for step in steps if is_merge_step(step.runner_profile)]
+    if not found:
+        return None
+    if len(found) > 1:
+        raise DagError(
+            "a workflow has at most one 'merge' step: it merges the one pull request "
+            f"the workflow opens; this one has {len(found)}: "
+            + ", ".join(step.step_id for step in found) + ".",
+            detail={"merge_steps": [step.step_id for step in found]},
+        )
+    merge = found[0]
+    dependants = [step.step_id for step in steps if merge.step_id in step.depends_on]
+    if dependants:
+        raise DagError(
+            f"the merge step {merge.step_id!r} is the last thing a workflow does, but "
+            + ", ".join(repr(d) for d in dependants) + " depend on it.",
+            detail={"merge_step_id": merge.step_id, "dependants": dependants},
+        )
+    for name, value in (("when", merge.when_step), ("builds_on", merge.builds_on),
+                        ("pr_role", merge.pr_role), ("merges", merge.merges)):
+        if value is not None:
+            raise DispatchOptionError(
+                f"step {merge.step_id!r} runs the 'merge' worker action, which runs no "
+                f"agent and clones nothing, so it takes no `{name}`. Remove it.",
+                detail={"step_id": merge.step_id, "field": name},
+            )
+    sources = merge_sources(steps, strategy)
+    if sources is None:
+        raise DispatchOptionError(
+            f"step {merge.step_id!r} merges the pull request this workflow opens, and "
+            + ("under 'direct-pr' every agent step opens its own, so it needs exactly "
+               "one agent step; use 'integrate' to open one pull request from several."
+               if strategy == "direct-pr" else
+               f"strategy {strategy!r} opens no single pull request."),
+            detail={"step_id": merge.step_id, "strategy": strategy},
+        )
+    if sources.review is not None and not sources.verdict_file:
+        raise DagError(
+            f"the merge step reads the verdict of {sources.review!r} from the file the "
+            "gated step stages from it, and that step stages none.",
+            detail={"merge_step_id": merge.step_id, "review": sources.review},
+        )
+    missing = [sid for sid in sources.depends_on() if sid not in merge.depends_on]
+    if missing:
+        raise DagError(
+            f"the merge step {merge.step_id!r} must depend directly on "
+            + ", ".join(repr(m) for m in missing)
+            + ": the step that opens the pull request"
+            + (" and the review whose verdict it requires" if sources.review else "")
+            + f". Add them to its depends_on, or omit the step and set metadata."
+            f"{MERGE_METADATA_KEY} 'on' to have it derived.",
+            detail={"merge_step_id": merge.step_id, "missing": missing,
+                    "derived_depends_on": sources.depends_on()},
+        )
+    if dict(merge.input_from) != sources.input_from():
+        raise DagError(
+            f"the merge step {merge.step_id!r} stages "
+            + (f"exactly {sources.input_from()!r}, the review's verdict file"
+               if sources.review else "nothing")
+            + f", not {dict(merge.input_from)!r}.",
+            detail={"merge_step_id": merge.step_id, "input_from": dict(merge.input_from),
+                    "derived_input_from": sources.input_from()},
+        )
+    return MergePlan(merge.step_id, sources)
+
+
+def refuse_unmergeable_forge(repository_url: str | None) -> None:
+    """A merge step's repository must be on a host a `ForgeMerger` serves.
+
+    Refused HERE, at submission, so a workflow never runs every agent step to
+    completion and then fails at its merge for a host nothing can merge on.
+    """
+    from urllib.parse import urlsplit
+
+    text = (repository_url or "").strip()
+    if text.startswith("git@"):
+        head, _, tail = text.partition(":")
+        text = f"ssh://{head}/{tail}"
+    try:
+        parts = urlsplit(text)
+        host = (parts.hostname or "").lower()
+        port = parts.port
+    except ValueError:
+        host, port = "", None
+    if host in MERGE_FORGE_HOSTS and port is None:
+        return
+    raise DispatchOptionError(
+        "the merge step merges on github.com only, and this workflow's repository "
+        f"{'is on ' + repr(host) if host else 'names no forge host'}. Set the "
+        f"workflow's metadata.{MERGE_METADATA_KEY} to 'off', or remove the merge step.",
+        detail={"repository_host": host or None,
+                "supported_forge_hosts": sorted(MERGE_FORGE_HOSTS)},
+    )
 
 
 def validate_timeout(profile: RunnerProfile, requested: int | None) -> int:

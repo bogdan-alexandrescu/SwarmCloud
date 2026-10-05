@@ -194,9 +194,9 @@ class RunCreate(StrictModel):
     #: default, because the plan is an agent's and its steps run with the
     #: tenant's forge token.
     plan_approval: Literal["required", "auto"] = "required"
-    #: End the run in a merge (#295). False by default, and refused while the
-    #: merge chain is disabled for the tenant (`issueruns.refuse_auto_merge`).
-    auto_merge: bool = False
+    #: End the run in a merge step (#295, contract request 47). Absent takes
+    #: the platform's `merge_by_default`; the run records what was resolved.
+    auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
 
     @field_validator("issue")
@@ -242,6 +242,14 @@ class CredentialCreate(StrictModel):
 
 class PauseRequest(StrictModel):
     reason: str | None = Field(default=None, max_length=512)
+
+
+class PlatformSettingsRequest(StrictModel):
+    """`PUT /v1/admin/settings`: the settings to change; one omitted is left as it is."""
+
+    #: Append a `merge` step to every workflow that opens one pull request and
+    #: does not say `metadata.merge` (contract request 47). Off by default.
+    merge_by_default: bool | None = None
 
 
 class LimitRequest(StrictModel):

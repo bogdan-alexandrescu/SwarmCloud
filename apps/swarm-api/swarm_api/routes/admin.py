@@ -37,6 +37,7 @@ from ..schemas import (
     DrainRequest,
     LimitRequest,
     PauseRequest,
+    PlatformSettingsRequest,
     ProviderEnableRequest,
     TenantLimitsRequest,
 )
@@ -123,6 +124,42 @@ def resume_dispatch(
     # wake it explicitly or the queue waits for the next safety tick.
     ctx.waker.wake("dispatch_resumed", by=auth.email)
     return payload
+
+
+# -- platform settings ------------------------------------------------------
+
+@router.get("/settings")
+def get_platform_settings(
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The platform settings (`Store.get_platform_settings`), each at its
+    default when unset, and whether the document behind them exists."""
+    return ctx.store.get_platform_settings()
+
+
+@router.put("/settings")
+def put_platform_settings(
+    body: PlatformSettingsRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Change the settings the body names, and only those.
+
+    `merge_by_default` (contract request 47): whether a workflow that opens
+    one pull request and does not say `metadata.merge` gets a `merge` step
+    appended at submission. It applies to workflows submitted AFTER the
+    change; a workflow already submitted keeps the steps it was signed with.
+    """
+    changes = body.model_dump(exclude_none=True)
+    if not changes:
+        raise ValidationFailed(
+            "name at least one setting to change",
+            detail={"settings": sorted(PlatformSettingsRequest.model_fields)},
+        )
+    settings = ctx.store.set_platform_settings(changes, by=auth.email)
+    ctx.metrics.admin_actions.labels(action="platform_settings").inc()
+    return settings
 
 
 # -- concurrency limits ---------------------------------------------------

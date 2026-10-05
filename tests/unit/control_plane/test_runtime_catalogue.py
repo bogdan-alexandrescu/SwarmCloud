@@ -205,9 +205,15 @@ def test_every_named_provider_is_one_a_tenant_can_register(client):
     # #364 keeps it off both routes on purpose, because they grant the
     # tenant's worker account. It is registered out of band, against the
     # action's own service account, and only a worker-action profile names it.
+    #
+    # AND the forge token, `git` (contract request 47: the merge profile reads
+    # it). It is registered by `scripts/register-tenant.sh --add-provider git`
+    # and stored only with `create-secrets.sh --stdin`, never through a route.
+    from swarm_api.validation import FORGE_PROVIDER
+
     registrable = set(known_providers())
     for name, entry in _runtimes(client).items():
-        if entry["provider"] in APP_CREDENTIAL_PROVIDERS:
+        if entry["provider"] in APP_CREDENTIAL_PROVIDERS | {FORGE_PROVIDER}:
             assert RUNNER_PROFILES[name].worker_action is not None, name
             continue
         if entry["provider"] is not None:

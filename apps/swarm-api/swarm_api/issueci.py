@@ -129,6 +129,7 @@ from .issueruns import (
 from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
 from .schemas import WorkflowCreate
+from .validation import MERGE_METADATA_KEY
 
 log = logging.getLogger(__name__)
 
@@ -468,6 +469,9 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str) -
             "input": {"prompt": prompt, "issue": ref.number},
         }],
         "metadata": {
+            # The run's merge choice (contract request 47): a round that turns
+            # CI green merges exactly when the run would have.
+            MERGE_METADATA_KEY: "on" if run.auto_merge else "off",
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,

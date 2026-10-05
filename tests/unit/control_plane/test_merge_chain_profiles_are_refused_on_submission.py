@@ -22,7 +22,17 @@ import pytest
 
 from .conftest import auth_header
 
-MERGE_CHAIN = ("merge", "post-verdict", "claude-code-review")
+#: `merge` left this list on 2026-10-04: contract request 47 enabled it on the
+#: tenant's `-git` token (test_merge_step_submission.py holds where it may run).
+MERGE_CHAIN = ("post-verdict", "claude-code-review")
+
+
+def test_merge_is_no_longer_refused_as_disabled(client):
+    response = client.post(
+        "/v1/tasks", headers=auth_header("alice"), json={"runner_profile": "merge", "input": {}}
+    )
+    assert response.status_code == 422, response.text
+    assert response.json()["detail"].get("disabled") is not True
 
 
 def _assert_refused_as_disabled(response, name):
