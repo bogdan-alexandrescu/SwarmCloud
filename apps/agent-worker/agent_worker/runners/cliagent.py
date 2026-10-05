@@ -42,10 +42,10 @@ import shutil
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
 from .. import issue as issue_mod
@@ -171,6 +171,10 @@ class CliAgentSpec:
     #: another account mid-run and carry on where it stopped (S13/S14); None,
     #: the runner never watches its stream for that and behaves as before.
     resume_flag: str | None = None
+    #: Resume the session ONCE, with `FINISH_PROMPT`, when the run ends on an
+    #: answer that announces pending work or with a background shell open
+    #: (owner decision 2026-10-05; see `pending_work`). Needs `resume_flag`.
+    finish_on_pending: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -617,11 +621,190 @@ def _tail(path: Path, limit: int = 8000) -> str:
     return path.read_text(errors="replace")[-limit:]
 
 
+# ---------------------------------------------------------------------------
+# Pending work: an answer that ends the session before the work is finished
+# ---------------------------------------------------------------------------
+#
+# Owner decision 2026-10-05 (lane review W1+G5). In 3 of 17 implement steps the
+# agent backgrounded its test run and ended its turn with "the suite is still
+# running, I'll report". In `--print` mode that answer ENDS the session: nobody
+# is there to be reported to, the CLI exits 0, and the worker commits a tree
+# whose tests never finished. The runner refuses background calls up front
+# (claude_code's generated settings); this is the net under that: an answer
+# that announces pending work, or a run that left a background shell open, is
+# resumed ONCE with `FINISH_PROMPT`, inside what is left of the step's budget.
+# Once: an agent that still announces pending work after being told to finish
+# is not going to be talked out of it by a third start, and every resume costs
+# a model turn.
+
+#: The one user message a session resumed to finish is given.
+FINISH_PROMPT = "Finish: wait for every command you started, report its result, then end."
+
+#: Below this much of the step's budget a finish pass is not started: one model
+#: turn that waits for a test run and reports needs about a minute, and a pass
+#: killed at the deadline turns a success that announced pending work into a
+#: timeout, which is worse for everyone reading the result.
+FINISH_MIN_SECONDS = 60.0
+
+#: Phrases that announce work still in flight, each in the shape a pending
+#: announcement takes rather than as a bare word, so a finished report that
+#: merely uses the words ("the suite was still running when I first checked;
+#: it has since passed", "nothing is waiting on review") does not fire.
+_PENDING_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("still running", re.compile(
+        r"\b(?:is|are|'s|'re)\s+still\s+running\b|\bstill\s+running\s+in\s+the\s+background\b",
+        re.IGNORECASE,
+    )),
+    ("I'll report", re.compile(
+        r"\bI(?:'ll|\s+will)\s+(?:report|post|share|check)\b"
+        r"(?=\s*(?:back\b|when\b|once\b|as\s+soon\b|after\b|[.!;,]|$)"
+        r"|[^.!?\n]{0,60}\b(?:when|once|as\s+soon\s+as|after)\b)",
+        re.IGNORECASE,
+    )),
+    ("waiting on", re.compile(
+        r"\b(?:I'm|I\s+am|still|currently|now)\s+waiting\s+(?:on|for)\b",
+        re.IGNORECASE,
+    )),
+    ("once it finishes", re.compile(
+        r"\b(?:once|when|after|as\s+soon\s+as)\s+(?:it|they|that|this|the\s+[\w-]+(?:\s+[\w-]+)?)\s+"
+        r"(?:finish(?:es)?|completes?|is\s+done|are\s+done)\b",
+        re.IGNORECASE,
+    )),
+)
+
+#: A finish clause ("once it finishes") is pending only when it is about this
+#: agent's own next step; "the runner resumes once it finishes" describes code.
+_FIRST_PERSON_FUTURE = re.compile(r"\b(?:I(?:'ll|\s+will)|let\s+me|I'm\s+going\s+to)\b", re.IGNORECASE)
+
+#: What is QUOTED is mentioned, not said: fenced and inline code, and text in
+#: double, curly or single quotes. A single quote opens only where no letter
+#: precedes it and closes only where none follows, so "I'll" and "it's" are
+#: never taken for quotes; an apostrophe inside a quote is kept when a letter
+#: follows it ('I'll report').
+_QUOTED = re.compile(
+    r"```.*?```|`[^`\n]*`|\"[^\"\n]*\"|“[^”\n]*”|‘[^’\n]*’"
+    r"|(?<![\w])'(?:[^'\n]|'(?=\w))*'(?!\w)",
+    re.DOTALL,
+)
+
+#: The tools that read or stop a background shell. A call to one after a
+#: background start means the agent went back for it.
+_BACKGROUND_READERS = frozenset({"BashOutput", "KillShell", "KillBash", "TaskOutput", "TaskStop"})
+
+
+def announces_pending_work(answer: str | None) -> str | None:
+    """The pending-work phrase `answer` announces, or None for a finished one."""
+    if not isinstance(answer, str) or not answer.strip():
+        return None
+    said = _QUOTED.sub(" ", answer)
+    for sentence in re.split(r"(?<=[.!?])\s+|\n+", said):
+        for label, pattern in _PENDING_PATTERNS:
+            if not pattern.search(sentence):
+                continue
+            if label == "once it finishes" and not _FIRST_PERSON_FUTURE.search(sentence):
+                continue
+            return label
+    return None
+
+
+def _content_blocks(event: Any) -> list[dict[str, Any]]:
+    message = event.get("message") if isinstance(event, dict) else None
+    content = message.get("content") if isinstance(message, dict) else None
+    return [block for block in content or [] if isinstance(block, dict)] if isinstance(
+        content, list
+    ) else []
+
+
+def open_background_shells(parsed: Any) -> int:
+    """How many background shells the streamed run started and never went back to.
+
+    A `run_in_background` tool call whose result was not an error started a
+    shell; a later call to one of `_BACKGROUND_READERS` collects every shell
+    started before it. A refused call (the hook's exit 2 comes back as an
+    error result) started nothing. Heuristic by necessity -- the stream does
+    not say which shell a reader read -- and erring towards "collected", since
+    the answer's own words are the other half of the test.
+    """
+    if not isinstance(parsed, list):
+        return 0
+    started: dict[str, bool] = {}
+    for event in parsed:
+        for block in _content_blocks(event):
+            kind = block.get("type")
+            if kind == "tool_use":
+                tool_input = block.get("input")
+                if block.get("name") in _BACKGROUND_READERS:
+                    started.clear()
+                elif isinstance(tool_input, dict) and tool_input.get("run_in_background") is True:
+                    started[str(block.get("id"))] = False
+            elif kind == "tool_result":
+                tool_id = str(block.get("tool_use_id"))
+                if tool_id in started:
+                    if block.get("is_error"):
+                        del started[tool_id]
+                    else:
+                        started[tool_id] = True
+    return sum(1 for ran in started.values() if ran)
+
+
+def _final_answer(parsed: Any) -> str | None:
+    """The `result` text of the run's last result event, or None."""
+    events = [parsed] if isinstance(parsed, dict) else list(reversed(parsed or []))
+    for event in events:
+        if isinstance(event, dict) and isinstance(event.get("result"), str):
+            return event["result"]
+    return None
+
+
+def pending_work(parsed: Any) -> str | None:
+    """Why this run ended before its work did, or None when it did not."""
+    phrase = announces_pending_work(_final_answer(parsed))
+    if phrase is not None:
+        return f"the answer announces pending work ({phrase!r})"
+    shells = open_background_shells(parsed)
+    if shells:
+        return f"{shells} background shell(s) left open"
+    return None
+
+
+def _session_of(parsed: Any) -> str | None:
+    """The last well-formed session id the stream carried, or None."""
+    events = [parsed] if isinstance(parsed, dict) else list(reversed(parsed or []))
+    for event in events:
+        sid = event.get("session_id") if isinstance(event, dict) else None
+        if isinstance(sid, str) and _SESSION_ID.match(sid):
+            return sid
+    return None
+
+
+def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
+    """The spend of two invocations of one session: numbers summed, at any depth.
+
+    A resumed invocation's `result` event totals that invocation only, so the
+    step's spend is both. A value that is not a number on both sides is the
+    later one's.
+    """
+    out = dict(first)
+    for key, value in second.items():
+        prior = out.get(key)
+        if isinstance(prior, dict) and isinstance(value, dict):
+            out[key] = _combined_spend(prior, value)
+        elif (
+            isinstance(prior, (int, float)) and isinstance(value, (int, float))
+            and not isinstance(prior, bool) and not isinstance(value, bool)
+        ):
+            out[key] = prior + value
+        else:
+            out[key] = value
+    return out
+
+
 def run_cli_agent(
     ctx: RunnerContext,
     spec: CliAgentSpec,
     *,
     extra_args: Sequence[str] = (),
+    extra_env: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
     payload = ctx.payload
     prompt = payload.get("prompt")
@@ -715,6 +898,9 @@ def run_cli_agent(
     # session it stopped: `--resume <id>` and one short user message, in the
     # same workspace. The original prompt is already in the session.
     resume = os.environ.get(RESUME_SESSION_ENV, "").strip()
+    # The argv every start of this step shares; a finish pass (below) adds its
+    # own `--resume <id>` and prompt to it.
+    base_argv = list(argv)
     if resume and not (spec.resume_flag and _SESSION_ID.match(resume)):
         raise RunnerFailure(f"{spec.name} was asked to resume a session it cannot resume")
     if resume:
@@ -822,47 +1008,145 @@ def run_cli_agent(
         "SWARM_WORK_DIR": str(ctx.work_dir),
         credential_env: os.environ[credential_env],
     }
+    # The runner's own switches for the CLI (claude_code: background tasks
+    # off). Platform constants from the runner module, never caller input;
+    # they cannot replace the credential or the paths above.
+    for name, value in (extra_env or {}).items():
+        if name not in env:
+            env[name] = value
     for passthrough in (*_SENSITIVE_PASSTHROUGH, *_PLAIN_PASSTHROUGH):
         if os.environ.get(passthrough):
             env[passthrough] = os.environ[passthrough]
 
-    watcher = _account_watcher(spec, stdout_path)
-    if watcher is None:
-        result = run_child(
-            argv,
-            cwd=cwd,
-            env=env,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            timeout_seconds=limits.timeout_seconds,
-            grace_seconds=limits.grace_seconds,
-            max_stdout_bytes=limits.max_stdout_bytes,
-            max_stderr_bytes=limits.max_stderr_bytes,
-            logger=log,
-            log_argv=log_argv,
-            # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under stream-json
-            # the stdout is the whole conversation, and its LAST line is the
-            # `result` event: the answer, the spend, the evidence the rate-limit
-            # decision below reads. A capture that kept only the first
-            # `max_stdout_bytes` lost exactly that line on every long session.
-            keep_tail=True,
+    # `env` is the set of values this process was given, so it is exactly the
+    # set of secrets it could have leaked.
+    secrets = collect_secrets(
+        env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
+    )
+
+    def start(
+        run_argv: list[str], run_log_argv: list[str], timeout_seconds: float
+    ) -> tuple[ChildResult, AccountStreamWatcher | None]:
+        """One start of the CLI, its captures redacted before anything reads them."""
+        run_limits = replace(limits, timeout_seconds=timeout_seconds)
+        run_watcher = _account_watcher(spec, stdout_path)
+        if run_watcher is None:
+            run_result = run_child(
+                run_argv,
+                cwd=cwd,
+                env=env,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                timeout_seconds=run_limits.timeout_seconds,
+                grace_seconds=run_limits.grace_seconds,
+                max_stdout_bytes=run_limits.max_stdout_bytes,
+                max_stderr_bytes=run_limits.max_stderr_bytes,
+                logger=log,
+                log_argv=run_log_argv,
+                # THE END OF A CAPPED STREAM IS KEPT (#188 review). Under
+                # stream-json the stdout is the whole conversation, and its
+                # LAST line is the `result` event: the answer, the spend, the
+                # evidence the rate-limit decision below reads. A capture that
+                # kept only the first `max_stdout_bytes` lost exactly that line
+                # on every long session.
+                keep_tail=True,
+            )
+        else:
+            # On a pool account: the same child, the stream read as it is
+            # written (see `AccountStreamWatcher`), so the readings reach the
+            # worker while the agent runs and a swap can happen at a turn
+            # boundary.
+            run_result = _run_watched(
+                run_argv,
+                ctx=ctx,
+                cwd=cwd,
+                env=env,
+                stdout_path=stdout_path,
+                stderr_path=stderr_path,
+                limits=run_limits,
+                log=log,
+                log_argv=run_log_argv,
+                watcher=run_watcher,
+            )
+        # Redact before anything is read back out. Everything below this
+        # either becomes an artifact in GCS or a field in Firestore, and both
+        # outlive the pod.
+        for captured in (stdout_path, stderr_path):
+            scrub_file(captured, secrets)
+        return run_result, run_watcher
+
+    def judge(
+        run_result: ChildResult,
+        run_watcher: AccountStreamWatcher | None,
+        spend: dict[str, Any],
+        combined: str,
+    ) -> None:
+        """Raise the signal or failure one start of the CLI ended in, if any."""
+        if (
+            run_watcher is not None
+            and run_watcher.stopped_for is not None
+            and not run_result.timed_out
+        ):
+            # STOPPED HERE, AT A TURN BOUNDARY, FOR A SWAP. Not a failure of the
+            # task: the worker reads the channel, moves the hold and resumes the
+            # session. If it cannot -- no other account -- it checkpoints and
+            # parks exactly as for a rate limit, which this is the cheap form of.
+            if run_watcher.stopped_for == STOP_EXHAUSTED:
+                raise QuotaExhaustedSignal(
+                    provider=spec.provider,
+                    detail=f"{spec.name} stopped at a turn boundary: the account's quota is spent",
+                    spend=spend,
+                )
+            raise RunnerFailure(
+                f"{spec.name} stopped at a turn boundary to move to another account "
+                f"({run_watcher.stopped_for})",
+                spend=spend,
+            )
+
+        if run_result.exit_code != 0 or run_result.timed_out:
+            hit, retry_after, reset_at = detect_rate_limit(combined)
+            if hit:
+                raise QuotaExhaustedSignal(
+                    provider=spec.provider,
+                    retry_after_seconds=retry_after,
+                    reset_at=reset_at,
+                    detail=f"{spec.name} reported a provider rate limit",
+                    spend=spend,
+                )
+            # Checked only after the rate-limit test has said no: a 429 body
+            # sometimes mentions authentication in passing, and reading that as a
+            # dead credential would reload a perfectly good secret and restart
+            # straight back into the same 429 -- turning a wait into a hot loop.
+            refused, marker = detect_credential_failure(combined)
+            if refused:
+                raise CredentialRevokedSignal(
+                    provider=spec.provider,
+                    detail=f"{spec.name} was refused its credential",
+                    marker=marker or "",
+                    spend=spend,
+                )
+        if run_result.timed_out:
+            raise RunnerFailure(
+                f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend
+            )
+        if run_result.exit_code != 0:
+            raise RunnerFailure(
+                f"{spec.name} exited {run_result.exit_code}: {_tail(stderr_path, 2000).strip()}",
+                spend=spend,
+            )
+
+    def detection_text(raw: str, parsed_run: Any) -> str:
+        # What the rate-limit and credential heuristics read. For a streamed
+        # run this is NOT the raw stdout tail -- see `_detection_text`. Neither
+        # half includes the capture's own notices, which count bytes: `429` is
+        # a marker.
+        return (
+            _detection_text(raw, parsed_run)
+            + "\n"
+            + _without_capture_notices(_tail(stderr_path))
         )
-    else:
-        # On a pool account: the same child, the stream read as it is written
-        # (see `AccountStreamWatcher`), so the readings reach the worker while
-        # the agent runs and a swap can happen at a turn boundary.
-        result = _run_watched(
-            argv,
-            ctx=ctx,
-            cwd=cwd,
-            env=env,
-            stdout_path=stdout_path,
-            stderr_path=stderr_path,
-            limits=limits,
-            log=log,
-            log_argv=log_argv,
-            watcher=watcher,
-        )
+
+    result, watcher = start(argv, log_argv, limits.timeout_seconds)
     # Reported on every outcome from here on -- `write_result` carries it --
     # so a run that failed or parked after passing its cap still says so.
     capture = result.capture_report()
@@ -876,16 +1160,6 @@ def run_cli_agent(
             max_stderr_bytes=limits.max_stderr_bytes,
         )
 
-    # Redact before anything is read back out. Everything below this line either
-    # becomes an artifact in GCS or a field in Firestore, and both outlive the
-    # pod. `env` is the set of values this process was given, so it is exactly
-    # the set of secrets it could have leaked.
-    secrets = collect_secrets(
-        env.get(name) for name in (spec.key_env, *spec.alt_key_envs, *_SENSITIVE_PASSTHROUGH)
-    )
-    for captured in (stdout_path, stderr_path):
-        scrub_file(captured, secrets)
-
     # PARSED BEFORE THE EXIT CODE IS JUDGED, not after. A CLI that fails still
     # prints its result object -- `claude --output-format json` reports
     # `is_error: true` WITH `usage` and `total_cost_usd` -- and every raise
@@ -896,69 +1170,95 @@ def run_cli_agent(
     raw_stdout = stdout_path.read_text(errors="replace") if stdout_path.exists() else ""
     parsed = _parse_cli_output(raw_stdout)
     spend = _scrub_json(_spend_of(parsed), secrets)
+    combined = detection_text(raw_stdout, parsed)
+    judge(result, watcher, spend, combined)
 
-    # What the rate-limit and credential heuristics read. For a streamed run
-    # this is NOT the raw stdout tail -- see `_detection_text`. Neither half
-    # includes the capture's own notices, which count bytes: `429` is a marker.
-    combined = (
-        _detection_text(raw_stdout, parsed)
-        + "\n"
-        + _without_capture_notices(_tail(stderr_path))
-    )
-
-    if watcher is not None and watcher.stopped_for is not None and not result.timed_out:
-        # STOPPED HERE, AT A TURN BOUNDARY, FOR A SWAP. Not a failure of the
-        # task: the worker reads the channel, moves the hold and resumes the
-        # session. If it cannot -- no other account -- it checkpoints and
-        # parks exactly as for a rate limit, which this is the cheap form of.
-        if watcher.stopped_for == STOP_EXHAUSTED:
-            raise QuotaExhaustedSignal(
-                provider=spec.provider,
-                detail=f"{spec.name} stopped at a turn boundary: the account's quota is spent",
-                spend=spend,
+    # RESUMED ONCE TO FINISH (owner decision 2026-10-05; see `pending_work`).
+    # The run succeeded, but its answer announces work still in flight -- or
+    # it left a background shell open -- and in print mode nobody will hear
+    # the report it promised. Continue the same session once, told to wait
+    # and report, inside what is left of the step's budget, never more.
+    resumed_to_finish = False
+    finish_skipped: str | None = None
+    duration_seconds = result.duration_seconds
+    stdout_bytes, stderr_bytes = result.stdout_bytes, result.stderr_bytes
+    pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
+    if pending is not None:
+        remaining = limits.timeout_seconds - result.duration_seconds
+        session = _session_of(parsed)
+        if session is None:
+            finish_skipped = "no_session"
+            log.warning(
+                "the agent ended before its work did, and the stream carried no "
+                "session to resume; the result stands as it is",
+                why=pending,
             )
-        raise RunnerFailure(
-            f"{spec.name} stopped at a turn boundary to move to another account "
-            f"({watcher.stopped_for})",
-            spend=spend,
-        )
-
-    if result.exit_code != 0 or result.timed_out:
-        hit, retry_after, reset_at = detect_rate_limit(combined)
-        if hit:
-            raise QuotaExhaustedSignal(
-                provider=spec.provider,
-                retry_after_seconds=retry_after,
-                reset_at=reset_at,
-                detail=f"{spec.name} reported a provider rate limit",
-                spend=spend,
+        elif remaining < FINISH_MIN_SECONDS:
+            finish_skipped = "budget"
+            log.warning(
+                "the agent ended before its work did, and too little of the step's "
+                "budget is left to resume it; the result stands as it is",
+                why=pending,
+                remaining_seconds=round(remaining, 1),
+                minimum_seconds=FINISH_MIN_SECONDS,
             )
-        # Checked only after the rate-limit test has said no: a 429 body
-        # sometimes mentions authentication in passing, and reading that as a
-        # dead credential would reload a perfectly good secret and restart
-        # straight back into the same 429 -- turning a wait into a hot loop.
-        refused, marker = detect_credential_failure(combined)
-        if refused:
-            raise CredentialRevokedSignal(
-                provider=spec.provider,
-                detail=f"{spec.name} was refused its credential",
-                marker=marker or "",
-                spend=spend,
+        else:
+            log.register_secret(session)
+            log.warning(
+                "the agent ended before its work did; resuming the session once to finish",
+                why=pending,
+                remaining_seconds=round(remaining, 1),
             )
-    if result.timed_out:
-        raise RunnerFailure(
-            f"{spec.name} timed out after {limits.timeout_seconds:.0f}s", spend=spend
-        )
-    if result.exit_code != 0:
-        raise RunnerFailure(
-            f"{spec.name} exited {result.exit_code}: {_tail(stderr_path, 2000).strip()}",
-            spend=spend,
-        )
+            first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+            first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
+            first_spend = spend
+            finish_argv = [*base_argv, str(spec.resume_flag), session, FINISH_PROMPT]
+            finish_log_argv = [("<session>" if arg == session else arg) for arg in finish_argv]
+            result, watcher = start(finish_argv, finish_log_argv, remaining)
+            # ONE RECORD OF THE STEP. Each start truncates the captures, so the
+            # first start's are put back in front of the second's: the stdout
+            # log stays the whole conversation, in order.
+            finish_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+            stdout_path.write_bytes(first_stdout + finish_stdout)
+            stderr_path.write_bytes(
+                first_stderr + (stderr_path.read_bytes() if stderr_path.exists() else b"")
+            )
+            second = result.capture_report()
+            capture = {
+                "stdout_truncated": capture["stdout_truncated"] or second["stdout_truncated"],
+                "stderr_truncated": capture["stderr_truncated"] or second["stderr_truncated"],
+                "stdout_dropped_bytes": capture["stdout_dropped_bytes"]
+                + second["stdout_dropped_bytes"],
+                "stderr_dropped_bytes": capture["stderr_dropped_bytes"]
+                + second["stderr_dropped_bytes"],
+            }
+            ctx.report.update(capture)
+            # The finish pass's own output is what its outcome is judged on;
+            # the whole conversation is what the transcript and summary read.
+            finish_raw = finish_stdout.decode("utf-8", errors="replace")
+            finish_parsed = _parse_cli_output(finish_raw)
+            raw_stdout = stdout_path.read_text(errors="replace")
+            parsed = _parse_cli_output(raw_stdout)
+            spend = _combined_spend(first_spend, _scrub_json(_spend_of(finish_parsed), secrets))
+            combined = detection_text(finish_raw, finish_parsed)
+            resumed_to_finish = True
+            ctx.report["resumed_to_finish"] = True
+            judge(result, watcher, spend, combined)
+            duration_seconds += result.duration_seconds
+            stdout_bytes += result.stdout_bytes
+            stderr_bytes += result.stderr_bytes
+            still = pending_work(finish_parsed)
+            if still is not None:
+                log.warning(
+                    "the resumed session still ended before its work did; it is not "
+                    "resumed again",
+                    why=still,
+                )
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
     transcript_skipped: str | None = None
-    if result.stdout_truncated:
+    if capture["stdout_truncated"]:
         # A transcript re-serialised from a stream whose middle was dropped
         # would be valid JSON that says nothing of the gap. The stdout capture
         # carries the notice at the cut; it is the record.
@@ -1012,13 +1312,17 @@ def run_cli_agent(
         # Read by the worker into `result_summary.agent_streams`; null when the
         # transcript was written (or there was no parsed output to write).
         "transcript_skipped": transcript_skipped,
+        # Whether the session was resumed once to finish work its answer left
+        # in flight, and, when that was called for but not done, why not.
+        "resumed_to_finish": resumed_to_finish,
+        "finish_skipped": finish_skipped,
         # Also in `ctx.report`, which `write_result` merges anyway; stated here
         # so this function's own return value is the whole answer.
         **capture,
         "metrics": {
-            "duration_seconds": round(result.duration_seconds, 3),
-            "stdout_bytes": result.stdout_bytes,
-            "stderr_bytes": result.stderr_bytes,
+            "duration_seconds": round(duration_seconds, 3),
+            "stdout_bytes": stdout_bytes,
+            "stderr_bytes": stderr_bytes,
         },
     }
 
