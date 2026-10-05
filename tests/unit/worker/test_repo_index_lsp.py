@@ -633,8 +633,11 @@ def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> N
 
 def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
-    for arg in ("GO_VERSION", "GOPLS_VERSION", "TERRAFORM_LS_VERSION"):
+    for arg in ("GO_VERSION", "TERRAFORM_LS_VERSION"):
         assert re.search(rf"^ARG {arg}=\d+\.\d+\.\d+$", text, re.M), arg
+    # gopls may be pinned to a pre-release (v0.24.0-pre.1 carries the fixed
+    # golang.org/x modules); still an exact version, never a range or latest.
+    assert re.search(r"^ARG GOPLS_VERSION=\d+\.\d+\.\d+(-pre\.\d+)?$", text, re.M)
     assert re.search(r"^ARG GO_SHA256=[0-9a-f]{64}$", text, re.M)
     assert re.search(r'sha256sum -c -', text)
     # gopls and terraform-ls are compiled here with the golang.org/x modules
