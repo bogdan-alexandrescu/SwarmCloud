@@ -131,9 +131,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.
         (["apps/swarm-ui/package-lock.json"], {"swarm-ui"}),
         # #671: the four service images export their requirements from the
-        # lockfile, so a single-file COPY at the repo root is an input.
-        (["uv.lock"], PYTHON_SERVICES),
-        (["pyproject.toml"], PYTHON_SERVICES),
+        # lockfile, so a single-file COPY at the repo root is an input. #663
+        # did the same for agent-runtime-base, which reaches the images built
+        # FROM it.
+        (["uv.lock"], PYTHON_SERVICES | WORKER),
+        (["pyproject.toml"], PYTHON_SERVICES | WORKER),
         (["Makefile"], {"swarm-verify"}),
         (["scripts/lib/common.sh"], {"swarm-verify"}),
         (["tests/acceptance/fixtures/claude-code/calc.py"], {"swarm-verify"}),

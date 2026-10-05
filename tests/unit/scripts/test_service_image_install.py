@@ -1,5 +1,6 @@
-"""The four control-plane images install third-party packages from uv.lock by
-hash, and our own packages from the local wheelhouse only (#663).
+"""The four control-plane images and the agent runtime install third-party
+packages from uv.lock by hash, and our own packages from the local wheelhouse
+only (#663).
 
 THE DEFECT THIS PINS. Every service image installed with
 `uv pip install --find-links /wheels <service>`. `--find-links` ADDS the
@@ -13,6 +14,12 @@ wheelhouse and keeps PyPI as an index, so:
     control-plane image;
   * third-party dependencies were resolved at build time, unpinned, although
     the repository has a uv.lock.
+
+images/agent-runtime-base installed `swarm-agent-worker` the same way, so the
+same properties hold for it. images/agent-runtime-indexer installs none of our
+packages (it is built FROM agent-runtime-base and adds a hashed tree-sitter
+environment), so for it the assertion is that it stays that way, and no stage
+of any image passes `--find-links` without `--no-index`.
 
 The properties asserted here, against the real Dockerfiles and the real
 uv.lock:
@@ -56,7 +63,20 @@ SERVICES = {
     "swarm-quota-broker": "swarm-quota-broker",
     "swarm-reconciler": "swarm-reconciler",
     "swarm-scheduler": "swarm-scheduler",
+    "agent-runtime-base": "swarm-agent-worker",
 }
+
+# image -> packages the builder may install OUTSIDE the two #663 installs, by
+# name from an index. agent-runtime-base keeps pip in its venv for the agent, so
+# it raises the venv's setuptools and wheel to their patched floors and adds
+# pytest for the generic runner's `python -m pytest`. None is one of our names,
+# so none can be substituted by a same-named public package.
+EXTRA_INSTALLS = {
+    "agent-runtime-base": {"setuptools", "wheel", "pytest"},
+}
+
+# Images that must install none of our packages at all.
+NO_INTERNAL = ("agent-runtime-indexer",)
 
 
 def _lock() -> dict:
@@ -103,6 +123,11 @@ def _closure(root: str) -> tuple[set[str], set[str]]:
 
 def _builder_runs(image: str) -> list[str]:
     """The builder stage's RUN bodies, continuation lines joined, comments dropped."""
+    return _runs(image, "builder")
+
+
+def _runs(image: str, only_stage: str | None = None) -> list[str]:
+    """RUN bodies of one stage (or of every stage), continuation lines joined."""
     lines = (REPO / "images" / image / "Dockerfile").read_text().splitlines()
     instructions: list[str] = []
     current = ""
@@ -118,14 +143,14 @@ def _builder_runs(image: str) -> list[str]:
         instructions.append(current + stripped)
         current = ""
     stage: list[str] = []
-    in_builder = False
+    in_stage = False
     for ins in instructions:
         if ins.upper().startswith("FROM "):
-            in_builder = ins.split()[-1] == "builder"
+            in_stage = only_stage is None or ins.split()[-1] == only_stage
             continue
-        if in_builder:
+        if in_stage:
             stage.append(ins)
-    assert stage, f"{image}: no builder stage found"
+    assert stage, f"{image}: no {only_stage or 'any'} stage found"
     return [ins[4:].strip() for ins in stage if ins.upper().startswith("RUN ")]
 
 
@@ -141,10 +166,10 @@ def _builder_copies(image: str) -> list[str]:
     return out
 
 
-def _commands(image: str) -> list[list[str]]:
-    """Every simple command in the builder's RUNs, split on && and tokenised."""
+def _commands(image: str, only_stage: str | None = "builder") -> list[list[str]]:
+    """Every simple command in a stage's RUNs, split on && and tokenised."""
     out: list[list[str]] = []
-    for body in _builder_runs(image):
+    for body in _runs(image, only_stage):
         for part in re.split(r"&&|\|\||;", body):
             tokens = shlex.split(part.replace(">", " > "))
             if tokens:
@@ -152,8 +177,21 @@ def _commands(image: str) -> list[list[str]]:
     return out
 
 
-def _pip_installs(image: str) -> list[list[str]]:
-    return [c for c in _commands(image) if c[:3] == ["uv", "pip", "install"]]
+def _pip_installs(image: str, only_stage: str | None = "builder") -> list[list[str]]:
+    if only_stage is not None:
+        return [c for c in _commands(image, only_stage) if c[:3] == ["uv", "pip", "install"]]
+    # Every stage: the runtime stages carry shell (case, printf with quoted
+    # `;`) that the && split cannot tokenise, so cut out each `uv pip install`
+    # up to the next command separator and tokenise only that.
+    out: list[list[str]] = []
+    for body in _runs(image):
+        for m in re.finditer(r"\buv pip install\b(?:(?!&&|\|\||;).)*", body):
+            out.append(shlex.split(m.group(0)))
+    return out
+
+
+def _all_images() -> list[str]:
+    return sorted(p.parent.name for p in (REPO / "images").glob("*/Dockerfile"))
 
 
 def _exports(image: str) -> list[list[str]]:
@@ -201,10 +239,25 @@ def test_third_party_install_requires_hashes_from_the_lock_export(image: str) ->
     )
     assert written == req, f"{image}: installs {req} but the export writes {written}"
 
-    # Every other install is the wheelhouse one; nothing else may install.
+    # Every other install is the wheelhouse one, or one of the image's named
+    # extras; nothing else may install.
     others = [c for c in installs if c is not cmd]
-    assert len(others) == 1, f"{image}: expected one wheelhouse install, got {others}"
-    wheel = others[0]
+    wheels = [c for c in others if any(t.startswith("--find-links") for t in c)]
+    assert len(wheels) == 1, f"{image}: expected one wheelhouse install, got {wheels}"
+    wheel = wheels[0]
+    allowed = EXTRA_INSTALLS.get(image, set())
+    for extra in (c for c in others if c is not wheel):
+        assert "-r" not in extra and "--requirement" not in extra, (
+            f"{image}: a second requirements-file install: {extra}"
+        )
+        names = {
+            re.split(r"[=<>!~\[; ]", tok, maxsplit=1)[0].lower()
+            for tok in _positional(extra, {"--python"})
+        }
+        assert names and names <= allowed, (
+            f"{image}: installs {sorted(names - allowed)} outside the lock export "
+            f"and the wheelhouse: {' '.join(extra)}"
+        )
     for flag in ("--no-index", "--no-deps", "--find-links"):
         assert flag in wheel, f"{image}: the wheelhouse install lacks {flag}: {wheel}"
     assert wheel[wheel.index("--find-links") + 1] == "/wheels"
@@ -240,7 +293,11 @@ def test_export_and_wheelhouse_cover_exactly_the_services_packages(image: str) -
         f"needed={sorted(internal_needed)}"
     )
 
-    wheel = [c for c in _pip_installs(image) if "--require-hashes" not in c][0]
+    wheel = [
+        c
+        for c in _pip_installs(image)
+        if "--require-hashes" not in c and any(t.startswith("--find-links") for t in c)
+    ][0]
     names = set(_positional(wheel, {"--python", "--find-links"}))
     assert names == internal_needed, (
         f"{image}: the wheelhouse install must name exactly {sorted(internal_needed)}, "
@@ -261,6 +318,42 @@ def test_builder_copies_the_lock_and_root_project(image: str) -> None:
     assert re.search(r"\buv\.lock\b", copies), f"{image}: builder does not COPY uv.lock"
     assert re.search(r"(?<![\w/-])pyproject\.toml\b", copies), (
         f"{image}: builder does not COPY the root pyproject.toml"
+    )
+
+
+@pytest.mark.parametrize("image", _all_images())
+def test_no_stage_of_any_image_reaches_an_index_through_find_links(image: str) -> None:
+    """Every stage, not only `builder`: a runtime-stage install is as exposed."""
+    for cmd in _pip_installs(image, None):
+        if any(t == "--find-links" or t.startswith("--find-links=") for t in cmd):
+            assert "--no-index" in cmd, (
+                f"{image}: `--find-links` without `--no-index` keeps PyPI as an "
+                f"index for our own package names (#663): {' '.join(cmd)}"
+            )
+
+
+@pytest.mark.parametrize("image", NO_INTERNAL)
+def test_images_without_a_wheelhouse_install_none_of_our_packages(image: str) -> None:
+    """The indexer adds only a hashed third-party environment (#663 does not
+    apply to it today); this holds it there. Should it ever ship one of our
+    packages, it must move to SERVICES and the two-install pattern."""
+    internal = set(_internal_packages())
+    installs = _pip_installs(image, None)
+    assert installs, f"{image}: no `uv pip install` found; the parser lost the image"
+    for cmd in installs:
+        names = {
+            re.split(r"[=<>!~\[; ]", tok, maxsplit=1)[0].lower()
+            for tok in _positional(cmd, {"--python", "--only-binary", "-r", "--find-links"})
+        }
+        assert not names & internal, f"{image}: installs our {sorted(names & internal)}"
+        for flag in ("--require-hashes", "--no-deps", "-r"):
+            assert flag in cmd, f"{image}: its install lacks {flag}: {' '.join(cmd)}"
+        assert not any(t.startswith("--find-links") for t in cmd), (
+            f"{image}: a wheelhouse install in an image that ships none of our packages"
+        )
+    text = (REPO / "images" / image / "Dockerfile").read_text()
+    assert not re.search(r"^COPY\s+(?!--from)\S*apps/", text, re.M), (
+        f"{image}: COPYs an app directory, so it may be building one of our packages"
     )
 
 

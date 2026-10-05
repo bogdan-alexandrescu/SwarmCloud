@@ -879,6 +879,36 @@ def check_repository_url(value: str | None) -> str | None:
     return value
 
 
+#: What the worker reads as a commit sha rather than a branch or tag name:
+#: `agent_worker.gitops._SHA_RE`, restated because this image cannot import the
+#: worker. Every ref this matches is fetched BY SHA, and a forge serves a fetch
+#: by sha only for the full 40 characters.
+_WORKER_SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
+_FULL_SHA_LENGTH = 40
+
+
+def check_repository_ref(value: str | None) -> str | None:
+    """Refuse a `repository_ref` the worker would fetch as an abbreviated sha.
+
+    task_531f0eeb was submitted with `b7bda42e` and failed in the clone, after
+    admission, a lease and a container start (history analysis 2026-10-05,
+    F4). The worker treats 7-40 lowercase hex as a sha and only a full one can
+    be fetched, so 7-39 is refused here, before anything holds capacity. A
+    branch or tag name -- anything the worker passes to `--branch` -- and a
+    full sha are accepted unchanged.
+    """
+    if not value:
+        return value
+    if _WORKER_SHA_RE.match(value) and len(value) != _FULL_SHA_LENGTH:
+        raise ValidationFailed(
+            f"repository_ref {value!r} is an abbreviated commit sha, which the clone "
+            f"cannot fetch; send the full {_FULL_SHA_LENGTH}-character sha "
+            f"(`git rev-parse {value}`) or a branch or tag name instead",
+            detail={"field": "repository_ref", "repository_ref": value},
+        )
+    return value
+
+
 # --------------------------------------------------------------------------
 # An issue reference: `owner/repo#N` or the issue's URL (#454)
 # --------------------------------------------------------------------------
