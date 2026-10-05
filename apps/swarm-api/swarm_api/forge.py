@@ -493,6 +493,9 @@ class GitHubIssues:
         self._send = send or _urllib_send
         self.probe_send: ProbeSend = probe_send or urllib_probe_send
         self._timeout = timeout
+        #: Public for callers that send through `probe_send` themselves
+        #: (repoindex.read_head_if_changed), so they keep this client's timeout.
+        self.timeout = timeout
         self._clock = clock
         self._budget = budget_seconds
 

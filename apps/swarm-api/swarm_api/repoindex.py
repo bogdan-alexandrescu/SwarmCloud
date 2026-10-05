@@ -646,7 +646,7 @@ def read_head_if_changed(
     if etag and known_sha:
         headers["If-None-Match"] = etag
     try:
-        answer = forge.probe_send(url, headers, forge._timeout)
+        answer = forge.probe_send(url, headers, forge.timeout)
     except Exception as exc:
         # The type only. A transport's message can quote the request.
         raise IssueReadFailed(
@@ -681,7 +681,7 @@ def read_head_if_changed(
     return HeadRead(sha=head, etag=tag, not_modified=False)
 
 
-def _minutes(value: Any, default: int) -> int:
+def _int_or(value: Any, default: int) -> int:
     return value if isinstance(value, int) and not isinstance(value, bool) else default
 
 
@@ -699,7 +699,7 @@ def interval_due(
     hours = index.get("interval_hours", INTERVAL_HOURS_DEFAULT)
     if hours == "off":
         return False
-    hours = _minutes(hours, INTERVAL_HOURS_DEFAULT)
+    hours = _int_or(hours, INTERVAL_HOURS_DEFAULT)
     marks = [
         moment for moment in (
             _parse_time(index.get("last_indexed_at")),
@@ -731,7 +731,7 @@ def poll_trigger(
         and head != index.get("current_sha")
         and head != last_sha
     ):
-        minimum = timedelta(minutes=_minutes(
+        minimum = timedelta(minutes=_int_or(
             index.get("min_change_interval_minutes"), MIN_CHANGE_INTERVAL_DEFAULT
         ))
         if last_queued is None or now - last_queued >= minimum:
@@ -1525,6 +1525,9 @@ class RepoIndex:
         record = self.registrations.get(tenant_id, repo_id)
         index = record.get("index") or {}
         pending = index.get("pending_sha")
+        if pending and pending == index.get("current_sha"):
+            self._drop_pending(tenant_id, repo_id, pending)
+            return
         if pending and not index.get("paused") and (
             not index.get("in_flight_task_id") or _claim_expired(index, self._now())
         ):
@@ -1916,11 +1919,18 @@ class RepoIndex:
         trigger = poll_trigger(
             index, head, newest_run=newest, created_at=record.get("created_at"), now=now
         )
-        busy = bool(index.get("in_flight_task_id")) and not _claim_expired(index, now)
+        in_flight = index.get("in_flight_task_id")
+        busy = bool(in_flight) and not _claim_expired(index, now)
         if busy:
             # §3.1 coalescing: one run in flight. A newer head is recorded as
-            # pending (once), and indexed when the running one has ended.
-            if trigger is None or index.get("pending_sha") == head:
+            # pending (once), and indexed when the running one has ended. The
+            # head the running one was given is never pending: the interval
+            # counts from that run's queueing, so a run still queued after
+            # `interval_hours` (it is priority -50, behind all tenant work)
+            # would otherwise be followed by a second run of the same commit.
+            if trigger is None or head in (
+                index.get("pending_sha"), self._in_flight_sha(in_flight, newest)
+            ):
                 return
             self._start(
                 owner_auth(record), tenant_id, record, head, kind="full", trigger=trigger,
@@ -1929,6 +1939,10 @@ class RepoIndex:
             report.coalesced += 1
             return
         pending = index.get("pending_sha")
+        if not trigger and pending and pending == index.get("current_sha"):
+            # The pending head is already the promoted index: nothing to run.
+            self._drop_pending(tenant_id, repo_id, pending)
+            return
         sha = head if trigger else pending
         if not sha:
             return
@@ -1945,6 +1959,34 @@ class RepoIndex:
             report.coalesced += 1
         else:
             report.submitted += 1
+
+
+    def _in_flight_sha(self, in_flight: Any, newest: Mapping[str, Any] | None) -> str | None:
+        """The commit the run holding the in-flight slot was given, if known."""
+        if not isinstance(in_flight, str) or in_flight.startswith(CLAIM_PREFIX):
+            return None
+        if newest is not None and newest.get("task_id") == in_flight:
+            return newest.get("commit_sha")
+        snap = self._run_ref(in_flight).get()
+        return (snap.to_dict() or {}).get("commit_sha") if snap.exists else None
+
+    def _drop_pending(self, tenant_id: str, repo_id: str, sha: str) -> None:
+        """Clear `pending_sha` if it is still `sha`."""
+        ref = self._repo_ref(repo_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            if index.get("pending_sha") == sha:
+                index.update(pending_sha=None, pending_requested_by=None, pending_at=None)
+                txn.update(ref, {"index": index})
+
+        _apply(transaction)
 
 
 def _claim_expired(index: Mapping[str, Any], now: datetime) -> bool:

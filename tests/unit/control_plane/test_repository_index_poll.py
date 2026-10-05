@@ -342,7 +342,8 @@ def test_a_run_in_flight_is_not_duplicated(client, db, objects, repo_id, github,
     assert _index(db, repo_id)["pending_sha"] == TWO
 
     clock.advance(minutes=5)
-    _poll(client)
+    repeat = _poll(client).json()["report"]
+    assert repeat["coalesced"] == 0, "a pending head is recorded once, not again"
     assert len(_tasks(db)) == 1, "a pending head is recorded once, not resubmitted"
 
     finish_index_task(db, objects, manual, fixture_index(ONE))
@@ -357,6 +358,40 @@ def test_a_run_in_flight_is_not_duplicated(client, db, objects, repo_id, github,
     clock.advance(minutes=5)
     assert _poll(client).json()["report"]["submitted"] == 0
     assert len(_tasks(db)) == 2
+
+
+def test_an_interval_passing_while_a_run_is_queued_does_not_index_its_commit_twice(
+    client, db, objects, repo_id, clock
+):
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    _index(db, repo_id)["interval_hours"] = 1
+    assert _poll(client).json()["report"]["submitted"] == 1
+    [task] = _tasks(db)
+
+    # Still queued behind tenant work when the next interval comes round.
+    clock.advance(hours=1, minutes=5)
+    late = _poll(client).json()["report"]
+    assert late["submitted"] == 0 and late["coalesced"] == 0
+    assert _index(db, repo_id).get("pending_sha") is None
+
+    finish_index_task(db, objects, task["id"], fixture_index(ONE))
+    clock.advance(minutes=5)
+    after = _poll(client).json()["report"]
+    assert after["submitted"] == 0
+    assert len(_tasks(db)) == 1
+    assert _index(db, repo_id).get("pending_sha") is None
+
+
+def test_a_pending_head_already_promoted_is_dropped_not_run(client, db, repo_id, clock):
+    _indexed(db, repo_id, ONE, clock() - timedelta(minutes=10))
+    # Recorded before this lane's guard, or by a run that promoted it since.
+    _index(db, repo_id).update(pending_sha=ONE, pending_requested_by="alice@saga.xyz")
+
+    report = _poll(client).json()["report"]
+
+    assert report["submitted"] == 0
+    assert _tasks(db) == []
+    assert _index(db, repo_id).get("pending_sha") is None
 
 
 def test_a_paused_registration_is_neither_read_nor_indexed(client, db, repo_id, polls, clock):
