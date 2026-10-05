@@ -549,6 +549,16 @@ disabled until #295 is enabled, and declares what `claude-code` does:
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:claude-code-review -->
 
+`indexer` is `claude-code` on `agent-runtime-indexer`, the image that carries
+the repository index's toolchain (contract request 48, #625). swarm-api runs
+index runs on it; it declares what `claude-code` does:
+
+<!-- runner-inputs:indexer generated from RUNNER_PROFILES["indexer"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the indexer runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:indexer -->
+
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
 on a step, points a `claude-code` step at an issue of its repository. The
 issue's text is data for the agent: the worker scrubs it of every secret the

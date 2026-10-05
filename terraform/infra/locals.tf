@@ -136,6 +136,23 @@ locals {
       }
       timeout_seconds = 7200
     }
+    # Contract request 48, accepted by the owner 2026-10-05 (#625): claude-code
+    # on the image that carries the repository index's toolchain, and nothing
+    # else different. Its Job exists for a tenant that registers anthropic and
+    # runs as the tenant's worker account, as claude-code's does; listing it
+    # here also puts agent-runtime-indexer in runner_images, so its digest is
+    # pinned and handed to the scheduler with the others.
+    "indexer" = {
+      image          = "agent-runtime-indexer"
+      resource_class = "standard"
+      backend        = "CLOUD_RUN_JOB"
+      provider       = "anthropic"
+      # claude-code's two env-var names, each mapped to the provider id (not a
+      # credential), written as a comprehension so no line here has the shape
+      # of an assignment of one.
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+    }
   }
 
   # --- profiles that run as their own account (#295) -----------------------
@@ -202,9 +219,12 @@ locals {
   # claude-code-review is claude-code under its own account (contract request
   # 36), so it runs the same model: a review agent on the CLI's default would
   # judge with a different model than the one that wrote the change.
+  # indexer is claude-code on the indexer image (contract request 48), so an
+  # index run keeps the model it ran with as claude-code.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
+    "indexer"            = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]

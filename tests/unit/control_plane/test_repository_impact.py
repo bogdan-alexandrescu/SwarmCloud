@@ -45,7 +45,7 @@ from .repo_index_fakes import REPOSITORY, IndexGitHub, finish_index_task, fixtur
 
 BASE, HEAD, OTHER = sha("impact-base"), sha("impact-head"), sha("impact-other")
 REPO = "repo_" + "c" * 16
-WRITER = (Path(__file__).resolve().parents[3] / "images" / "agent-runtime-base" / "repo-index"
+WRITER = (Path(__file__).resolve().parents[3] / "images" / "agent-runtime-indexer" / "repo-index"
           / "repo_graph_shards.py")
 FULL_SUITE = "uv run pytest tests -q"
 NOW = datetime(2026, 10, 5, 9, 0, tzinfo=timezone.utc)

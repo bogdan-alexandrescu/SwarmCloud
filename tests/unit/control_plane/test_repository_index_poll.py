@@ -224,7 +224,7 @@ def test_a_changed_head_submits_one_index_run(client, db, repo_id, github, polls
     assert first.json()["report"]["submitted"] == 1
     [task] = _tasks(db)
     assert task["repository_ref"] == TWO
-    assert task["runner_profile"] == "claude-code"  # by name (invariant 10)
+    assert task["runner_profile"] == "indexer"  # by name (invariant 10)
     assert task["tenant_id"] == "eng"
     # As the registration's creator, never as the scheduler's identity.
     assert task["submitted_by"] == "alice@saga.xyz"

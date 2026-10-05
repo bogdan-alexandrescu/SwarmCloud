@@ -61,6 +61,7 @@ OTHER_SHA = "0badc0de" * 5
 IMAGES = [
     "agent-runtime-base",
     "agent-runtime-browser",
+    "agent-runtime-indexer",
     "swarm-api",
     "swarm-scheduler",
     "swarm-quota-broker",

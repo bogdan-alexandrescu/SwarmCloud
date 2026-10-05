@@ -1,7 +1,7 @@
 """The repository graph's shards, read for the API (docs/repo-index.md §2.5, lane RI9).
 
 The indexer stores a commit's symbol and call graph with `swarm-repo-graph`
-(images/agent-runtime-base/repo-index/repo_graph_shards.py) under the
+(images/agent-runtime-indexer/repo-index/repo_graph_shards.py) under the
 tenant's own prefix:
 
     tenants/<tenant>/repos/<repo_id>/graph/<commit_sha>/manifest.json

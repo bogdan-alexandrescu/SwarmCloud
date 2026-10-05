@@ -119,6 +119,7 @@ variables {
     "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
     "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
   }
 }
 
@@ -137,10 +138,10 @@ run "workers_trust_every_enabled_version_and_no_other" {
     error_message = "SPEC_VERIFY_KEYS must hold every ENABLED version by its full name, and a DISABLED version (a revoked one) must not be trusted"
   }
 
-  # The control for every Job assertion below: six Jobs, not an empty map.
+  # The control for every Job assertion below: seven Jobs, not an empty map.
   assert {
-    condition     = length(output.job_spec_env) == 6
-    error_message = "job_spec_env must cover every worker Job: 4 Cloud Run profiles for eng plus 2 credential-free ones for smoke"
+    condition     = length(output.job_spec_env) == 7
+    error_message = "job_spec_env must cover every worker Job: 5 Cloud Run profiles for eng (indexer included) plus 2 credential-free ones for smoke"
   }
 
   assert {

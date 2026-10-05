@@ -140,9 +140,12 @@ INDEX_FILE = "repo-index.json"
 MAX_INDEX_BYTES = 512 * 1024
 MAX_SUMMARY_BYTES = 24 * 1024
 
-#: §3.1. `claude-code` is the only enabled agent profile; a purpose-built
-#: `repo-indexer` profile is the frozen-contract request (B) of §6.3.
-INDEXER_PROFILE = "claude-code"
+#: §3.1. Contract request 48, accepted by the owner 2026-10-05 (#625):
+#: `indexer` is claude-code on agent-runtime-indexer, the image that carries
+#: the toolchain below, so an index run reaches the extractor, the LSP pass
+#: and the shard writer. Named here, by swarm-api, never by a caller's image
+#: (invariant 10). The agent-free shape of §6.3 (B) is a later change.
+INDEXER_PROFILE = "indexer"
 #: Below the tenant's default-0 work: an index makes work better, it is not the work.
 INDEX_PRIORITY = -50
 #: §3.1's timeouts: a run that cannot finish a full read in 30 minutes needs
@@ -150,8 +153,9 @@ INDEX_PRIORITY = -50
 #: the profile's own. §3.5's larger table applies once the LSP pass exists.
 FULL_TIMEOUT_SECONDS = 1800
 INCREMENTAL_TIMEOUT_SECONDS = 900
-#: The mechanical extractor lane RI3 ships in the agent image
-#: (`/usr/local/bin/swarm-repo-index`, images/agent-runtime-base/Dockerfile).
+#: The mechanical extractor lane RI3 ships in the indexer image
+#: (`/usr/local/bin/swarm-repo-index`, images/agent-runtime-indexer/Dockerfile),
+#: which `INDEXER_PROFILE` runs; agent-runtime-base no longer carries it (#625).
 #: The prompt tells the agent to run it first when it is installed, and to
 #: record that it was not when it is not. This named `swarm-repo-extract`, a
 #: command the image never carried, until lane RI9b: every production run
@@ -534,8 +538,9 @@ def indexer_prompt(
     """The indexer's instructions. Composed here from the registration; never a caller's text.
 
     The repo_id and the graph's destination travel in the prompt, the one
-    input key every profile takes: `claude-code` declares no other that could
-    hold them, and an undeclared key is refused at submission (invariant 10).
+    input key every profile takes: `indexer`, which takes claude-code's inputs,
+    declares no other that could hold them, and an undeclared key is refused
+    at submission (invariant 10).
     The bucket and the tenant the writer checks the destination against are
     the step's own configuration, never named here (repo_graph_shards.py
     `resolve_target`).

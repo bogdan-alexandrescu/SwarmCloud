@@ -7,7 +7,7 @@ found, `callHierarchy/incomingCalls` for every exported function where the
 server has call hierarchy, and `textDocument/references` where it does not.
 A resolved site becomes an `lsp` edge; everything else stays `ast`.
 
-These tests drive the driver in images/agent-runtime-base/repo-index/lsp/
+These tests drive the driver in images/agent-runtime-indexer/repo-index/lsp/
 against fake_lsp_server.py, which speaks the same wire format and answers
 from a scenario: no real server runs here (the image's `--lsp-self-test`
 does that at build time). What they hold, and why it matters:
@@ -40,10 +40,10 @@ import pytest
 import repo_index_fixtures as fx
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TOOL_DIR = REPO_ROOT / "images" / "agent-runtime-base" / "repo-index"
+TOOL_DIR = REPO_ROOT / "images" / "agent-runtime-indexer" / "repo-index"
 SCRIPT = TOOL_DIR / "repo_index_extract.py"
 LSP_DIR = TOOL_DIR / "lsp"
-DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-base" / "Dockerfile"
+DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-indexer" / "Dockerfile"
 FAKE = Path(__file__).resolve().parent / "fake_lsp_server.py"
 
 EVIDENCE = {"lsp", "ast", "import", "naming", "co-change"}
@@ -680,4 +680,4 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
     assert "go" in checked  # gopls runs `go list`
     # The build proves each server starts and resolves, as the agent user.
     assert "RUN swarm-repo-index --lsp-self-test" in text
-    assert "COPY images/agent-runtime-base/repo-index/lsp/ /opt/repo-index/lsp/" in text
+    assert "COPY images/agent-runtime-indexer/repo-index/lsp/ /opt/repo-index/lsp/" in text

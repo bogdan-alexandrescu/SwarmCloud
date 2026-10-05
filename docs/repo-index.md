@@ -454,7 +454,7 @@ the language of each module, the import graph that grounds `test_map`
 `import` edges, the naming-convention edges (`src/x/y.py` ↔
 `tests/**/test_y.py`), the co-change pairs and the hot-spot counts from `git
 log --numstat --since=90.days` are deterministic and cheap. Lane RI3 ships
-them as one script in the `agent-runtime-base` image, which the indexer
+them as one script in the `agent-runtime-indexer` image (in `agent-runtime-base` until #625; see [worker-images.md](worker-images.md)), which the indexer
 prompt tells the agent to run first; the agent then spends its tokens on what
 needs reading: purposes, territory, notes, and checking the edges the tool
 was unsure of. That is what keeps a full run on a 2,000-file repository under
@@ -550,6 +550,14 @@ their shards (smaller images, a language upgrade without rebuilding the
 rest, more steps per index). The recommendation is the single image for
 phase 1. Either way it is a pinned image in the platform's registry, not
 something a caller names (invariant 10).
+
+*Revised 2026-10-05 (#625):* the single image exists as
+`images/agent-runtime-indexer`, built FROM `agent-runtime-base` by digest.
+The toolchain had shipped in the base, where it added +188 MB (compressed)
+to every agent start and only an index run used it. Contract request 48 (the
+image half of request B, §6.3), accepted by the owner the same day, added
+the `indexer` profile: claude-code on that image, and what index runs are
+submitted as. [worker-images.md](worker-images.md) has the measurement.
 
 ---
 
@@ -979,6 +987,12 @@ the tool pass runs as a worker-run step, as `merge` and `post-verdict` do, so
 no agent in the tenant writes the graph a merge gate reads. The agent's
 reading (purposes, territory, notes) stays a `claude-code` step after it.
 
+*Revised 2026-10-05 (#625):* the image half of (B) is contract request 48,
+accepted by the owner: the `indexer` profile is `claude-code` on
+`agent-runtime-indexer` (same resource class, timeouts and inputs), and index
+runs are submitted as it. The agent-free, worker-run shape above is still
+the later change.
+
 **Request (C), revised 2026-10-04, needed only for execution mode X1 (§4.4):**
 
 * *What is true today:* no runner profile runs a list of test commands
@@ -1025,7 +1039,7 @@ registration.
 |---|---|---|---|---|
 | RI1 | 1 | registrations: the `repositories` module, `POST/GET/PATCH/DELETE /v1/repositories`, the registration forge read, tenant scoping, unit tests | new `repositories.py` and `routes/repositories.py` in `apps/swarm-api/swarm_api/`, the router line in `main.py`, tests | — |
 | RI2 | 1 | index runs and promotion: `RepoIndexSpec`, the indexer prompt, `index:run`, promotion with the sha-order rule and digest, `repo_index_runs`, the markdown renderer, `GET .../index`, `tests:select` | new `repoindex.py` in `apps/swarm-api/swarm_api/`, the index routes in `routes/repositories.py`, tests | RI1 |
-| RI3 | 1 | *(revised 2026-10-04)* the mechanical extractor, now a **tree-sitter** pass: one parse per file for Python, TypeScript/TSX, JavaScript, Go and HCL; `symbols` with line ranges, routes, `import` and candidate `ast` edges, naming edges, co-change, hot-spots, the `languages` table; and its tests | `images/agent-runtime-base/` (the indexer image once request B is accepted), `tests/unit/worker/` | — |
+| RI3 | 1 | *(revised 2026-10-04)* the mechanical extractor, now a **tree-sitter** pass: one parse per file for Python, TypeScript/TSX, JavaScript, Go and HCL; `symbols` with line ranges, routes, `import` and candidate `ast` edges, naming edges, co-change, hot-spots, the `languages` table; and its tests | `images/agent-runtime-indexer/` (moved out of `images/agent-runtime-base/` by #625), `tests/unit/worker/` | — |
 | RI4 | 2 | triggers: `POST /v1/admin/repositories/poll`, ETag polling, interval check, in-flight coalescing; the per-tenant `repo_index_poll` Cloud Scheduler job (description says `managed-by=swarm-terraform`) and its OIDC grant | the poll in `repoindex.py`, `terraform/modules/scheduler/` | RI2 |
 | RI5 | 2 | consumption: the planner's REPO INDEX section and `index_sha` on the run, `tests:select` slices in compiled step prompts, the `swarm_repo_tests` MCP tool | `apps/swarm-api/swarm_api/issueruns.py`, `plugin/` | RI2 |
 | RI6 | 2 | the console section from the owner's pick in the mock-ups: Repositories list, Register form, repository detail, the "context used" chip on a run and in an agent's Details | `apps/swarm-ui/` | RI1, RI2 |
