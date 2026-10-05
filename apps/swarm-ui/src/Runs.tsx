@@ -14,6 +14,7 @@ import {
 } from './RunSteps'
 import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
+import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -438,6 +439,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
     }
   }, [served])
   const title = run.issue_read?.title || run.issue.ref
+  // The repository's index and the pull request's impact (screens 5 and 10), read once for both cards.
+  const indexRead = useRunIndex(run)
   // On the title alone: `onHeading` is a new function on every render of the screen.
   useEffect(() => onHeading(title), [title])
   const [acting, setActing] = useState<Acting>({ kind: 'idle' })
@@ -535,7 +538,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
         {run.error !== null && (
           <p className="rn-error" role="alert"><b>Why:</b> {run.error}</p>
         )}
-        {prLeads && <CiCard run={run} go={go} wfPr={wfPr} />}
+        {prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} />}
         <StepsCard run={run} read={read} go={go} now={now} />
         {run.state === 'REJECTED' && (
           <p className="sb-note">
@@ -582,6 +585,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
             </Banner>
           </div>
         )}
+
+        <RunContextCard run={run} ctx={indexRead} go={go} />
 
         {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} ended={run.terminal} />}
 
@@ -635,7 +640,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </Fold>
         </section>
 
-        {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} />}
+        {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} index={indexRead} />}
         {textList(run.plan?.risks) !== null && (
           <section className="rn-risks" aria-label="Risks">
             <h3>Risks the planner named</h3>
@@ -1370,7 +1375,7 @@ function hasCi(run: IssueRun): boolean {
  * keyword the requirements finding chose, and a FAILED run's excerpt -- the
  * server's redacted text, drawn as text.
  */
-function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => void; wfPr: WfPrRead }) {
+function CiCard({ run, go, wfPr: read, index }: { run: IssueRun; go: (to: string) => void; wfPr: WfPrRead; index: RunIndexRead }) {
   if (!hasCi(run)) {
     // A FINISHED RUN DRAWS THE CARD ANYWAY (browser QA N15): no card at all
     // read as "nothing to say", on a run whose workflow opened a PR. The CI
@@ -1499,6 +1504,7 @@ function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => vo
               : <i className="ctl-em">not decided · the review has not reported on the requirements</i>}
         </li>
       </ul>
+      <SelectedTestsGate ctx={index} go={go} />
       {run.requirements_met === false && (
         <p className="sb-note">
           The review left {pluralise((run.requirements_unmet ?? []).length, 'requirement')} open
