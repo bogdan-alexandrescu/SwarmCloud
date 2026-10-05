@@ -67,6 +67,7 @@ from ..issueruns import (
     compile_plan,
     failure_text,
     issue_read_from_preview,
+    parse_edited_plan,
     parse_plan,
     plan_digest,
     planner_task,
@@ -612,8 +613,11 @@ def edit_plan(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     runs = _runs(ctx)
-    runs.get(tenant_id, run_id)  # 404 before 422: another tenant's run is not there
-    plan = parse_plan(body.plan)
+    current = runs.get(tenant_id, run_id)  # 404 before 422: another tenant's run is not there
+    # An overlap carried over unchanged from a plan stored before
+    # `PlanOverlap.action` (#587) may still lack one; any other may not. The
+    # transition's digest check refuses the edit if the plan moved since.
+    plan = parse_edited_plan(body.plan, current.plan)
     run = runs.transition(
         tenant_id, run_id, RunState.PLANNED, by=auth.email, digest=body.plan_digest,
         from_states=_PLANNED_ONLY,

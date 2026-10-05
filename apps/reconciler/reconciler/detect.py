@@ -283,6 +283,7 @@ def scope_executions_to_their_tenant(
 def ended_executions_by_attempt(
     executions: Iterable[ExecutionView],
     active_by_attempt: dict[str, ExecutionView],
+    attempts: dict[str, AttemptView] | None = None,
 ) -> dict[str, ExecutionView]:
     """attempt id -> an execution its backend's own record shows has ENDED.
 
@@ -298,17 +299,67 @@ def ended_executions_by_attempt(
     indexed by attempt, so a listed FAILED execution counted for nothing:
     the lease read as having no execution at all, and its absence findings
     waited on a by-name probe whose answer held them on every pass.
+
+    AN EXECUTION WITH NO ATTEMPT ID IS ITS ATTEMPT'S WHEN IT HAS THE NAME THAT
+    ATTEMPT RECORDED (#532). The #372 shape is an execution under our own job
+    that the listing returns with its task id and no attempt id. The scheduler
+    wrote that execution's exact name on the attempt document, which ties it to
+    the attempt more firmly than any env var or label. Read only by attempt id,
+    an ended execution of that shape proved nothing, and the lease waited on a
+    GET by name that could be refused on every pass. The name is the whole
+    match, and the attribution goes no further:
+
+    * same backend, and an execution tenant (from the enclosing Job) and task
+      id that agree with the attempt's where they are present, with no
+      refused claim;
+    * never the dispatcher's placeholder, which no real execution carries;
+    * the generation, when the execution records none, is the attempt's own,
+      so `detect_stale_leases` still compares it with the lease's.
+
+    Only ENDED executions are attributed this way. A live one of the same
+    shape is still settled by the probe (`repair.Reconciler._probe`), which
+    knows how to kill before it releases.
     """
+    # Lazily: `backends` imports `sanitised` from this module.
+    from .backends import is_placeholder_execution_name
+
+    by_name: dict[str, AttemptView] = {
+        attempt.execution_name: attempt
+        for attempt in (attempts or {}).values()
+        if attempt.execution_name and not is_placeholder_execution_name(attempt.execution_name)
+    }
     ended: dict[str, ExecutionView] = {}
     for execution in executions:
-        if (
-            execution.attempt_id
-            and execution.ended
-            and not execution.is_active
-            and execution.attempt_id not in active_by_attempt
-        ):
+        if not execution.ended or execution.is_active:
+            continue
+        if not execution.attempt_id:
+            attempt = by_name.get(execution.name)
+            if attempt is None or not _is_attempts_own(execution, attempt):
+                continue
+            execution = replace(
+                execution,
+                task_id=attempt.task_id,
+                attempt_id=attempt.attempt_id,
+                generation=(
+                    execution.generation
+                    if execution.generation is not None
+                    else attempt.generation
+                ),
+            )
+        if execution.attempt_id not in active_by_attempt:
             ended.setdefault(execution.attempt_id, execution)
     return ended
+
+
+def _is_attempts_own(execution: ExecutionView, attempt: AttemptView) -> bool:
+    """Nothing on an execution named as `attempt` recorded contradicts it."""
+    if execution.claim_refused or execution.backend != attempt.backend:
+        return False
+    if execution.task_id and execution.task_id != attempt.task_id:
+        return False
+    return not (
+        execution.tenant_id and attempt.tenant_id and execution.tenant_id != attempt.tenant_id
+    )
 
 
 def detect_stale_leases(
@@ -1604,7 +1655,7 @@ def detect_all(
         for execution in executions
         if execution.attempt_id and execution.is_active
     }
-    ended = ended_executions_by_attempt(executions, by_attempt)
+    ended = ended_executions_by_attempt(executions, by_attempt, snapshot.attempts)
     findings = [
         *detect_orphan_executions(snapshot, executions, config, now),
         *detect_stale_leases(snapshot, by_attempt, config, now, ended_by_attempt=ended),
