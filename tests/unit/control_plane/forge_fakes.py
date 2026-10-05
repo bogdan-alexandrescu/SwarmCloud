@@ -66,9 +66,6 @@ class GitHub:
         self.pulls = pulls or []
         self.files = files or {}
         self.status = status or {}
-        #: `(method, path)` -> the status that one route answers instead, so a
-        #: test can refuse one write (closing an issue) and not the others.
-        self.refuse: dict[tuple[str, str], int] = {}
         self.raises = raises
         self.calls: list[tuple[str, dict[str, str]]] = []
 
@@ -112,6 +109,9 @@ class GitHubWrites:
     def __init__(self, *, login: str = "swarm-bot", status: dict[str, int] | None = None) -> None:
         self.login = login
         self.status = status or {}
+        #: `(method, path)` -> the status that one route answers instead, so a
+        #: test can refuse one write (closing an issue) and not the others.
+        self.refuse: dict[tuple[str, str], int] = {}
         self.comments: dict[int, dict[str, Any]] = {}
         self.pulls: dict[int, dict[str, Any]] = {}
         #: Each issue an `already_on_main` run closed (#646), by number: the
