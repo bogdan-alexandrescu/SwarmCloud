@@ -263,3 +263,59 @@ def test_an_abandoned_task_stops_with_an_unknown_result_and_no_null(swarm, world
 def test_a_reply_that_does_not_stop_carries_no_result(swarm, world, clock):
     _running(world)
     assert "result" not in _follow(swarm)
+
+
+# --------------------------------------------------------------------------
+# The row and the workflow script
+# --------------------------------------------------------------------------
+
+
+def test_the_step_row_returns_state_and_the_bridges_result_as_given():
+    from test_plugin_agents_and_workflows import _PLUGIN, _load
+
+    _, body = _load(_PLUGIN / "agents" / "step.md")
+    flat = " ".join(body.split())
+    assert "`result`" in flat and "{state, result}" in flat.replace("`", ""), (
+        "the row must return `{state, result}` copied from the bridge's ready-made result"
+    )
+    lowered = flat.lower()
+    assert "never drop `since`" in lowered, "the row must be told never to drop its cursor"
+    assert "omit `since`" not in lowered and "omit it" not in lowered
+    assert "no null" in lowered, "the row must be told the result holds no null, and to add none"
+
+
+def test_run_js_asks_the_row_for_state_and_result():
+    from test_plugin_agents_and_workflows import _RUN_JS
+
+    source = _RUN_JS.read_text()
+    start = source.index("const STEP_RESULT = {")
+    block = source[start:source.index("\n}\n", start)]
+    assert "result: STEP_FIELDS" in block, block
+    assert "required: ['state', 'result']" in block, block
+
+
+def test_run_js_reads_a_rows_state_and_result_as_the_flat_step_result(tmp_path):
+    from test_plugin_agents_and_workflows import _ANSWERS, _SPEC, _run
+
+    answers = {
+        **_ANSWERS,
+        "step:scan-01": {"state": "SUCCEEDED", "result": {
+            "state": "SUCCEEDED", "answer_excerpt": "", "cost_usd": 0.21, "duration_s": 252,
+            "pr_url": "https://github.com/acme/widgets/pull/231", "artifacts": ["a.md"],
+            "last_error": "", "console": ""}},
+        "step:scan-02": {"state": "FAILED", "result": {
+            "state": "FAILED", "answer_excerpt": "", "pr_url": "", "artifacts": [],
+            "last_error": "claude-code exited 1: boom", "console": ""}},
+    }
+    got = _run(tmp_path, _SPEC, answers)
+
+    assert "error" not in got, got.get("error")
+    rows = {row["step_id"]: row for row in got["result"]["steps"]}
+    one, two = rows["scan-01"], rows["scan-02"]
+    assert (one["state"], one["cost_usd"], one["duration_s"]) == ("SUCCEEDED", 0.21, 252)
+    assert one["pr_url"] == "https://github.com/acme/widgets/pull/231" and one["artifacts"] == ["a.md"]
+    assert one["last_error"] is None and one["answer_excerpt"] is None, "an empty text is read back as null"
+    assert "result" not in one, "the row's nesting is not carried into the step result"
+    assert two["state"] == "FAILED" and two["last_error"] == "claude-code exited 1: boom"
+    assert two["cost_usd"] is None and two["duration_s"] is None, "a figure left out is not recorded, never 0"
+    assert any(line.startswith("scan-01 SUCCEEDED") for line in got["logs"]), got["logs"]
