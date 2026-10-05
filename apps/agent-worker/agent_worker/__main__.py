@@ -184,6 +184,7 @@ def build_worker(
         generation=config.generation,
         logger=logger,
         heartbeat_extension_seconds=settings.lease_timeout_seconds,
+        heartbeat_interval_seconds=config.heartbeat_interval_seconds,
         startup_call_options=firestore_startup_call_options(),
         quota_reporter=BrokerQuotaReporter.for_broker(
             config.quota_broker_url, config.quota_broker_audience

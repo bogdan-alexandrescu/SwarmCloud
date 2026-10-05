@@ -658,6 +658,10 @@ class Worker:
         self._restored_workdir: frozenset[str] = frozenset()
         self._workdir_baseline: frozenset[str] | None = None
         self._heartbeats = 0
+        # When the last beat that returned started (monotonic), from whichever
+        # thread made it: the beat thread under a long operation counts its
+        # next beat from here, not from its own start (#426).
+        self._last_beat_started: float | None = None
         self._deadline = time.monotonic() + config.timeout_seconds
         # The account this attempt holds, if the pool gave it one. Set once and
         # kept: a credential reload must re-read the SAME account's secret, not
@@ -1754,6 +1758,10 @@ class Worker:
             # it. Head-only is git's rule -- a patch with its middle removed
             # must never read as one that fitted -- and a log is not a patch.
             keep_tail=True,
+            # BELOW THE WORKER (#426): the agent and every process it forks
+            # run `runner_niceness` under the worker, so a build on every core
+            # cannot starve the heartbeat (`config.RUNNER_NICENESS_DEFAULT`).
+            niceness=cfg.runner_niceness,
             logger=self.log,
         )
         self._child = child
@@ -5310,6 +5318,7 @@ class Worker:
             # beat started (#70). A refused beat (False) extends nothing, and
             # the control poll meets the fence behind it.
             self._lease_live_until = started + self.control.heartbeat_extension_seconds
+        self._last_beat_started = started
         self._heartbeats += 1
         if self._heartbeats % HEARTBEAT_EVENT_EVERY == 1:
             self.control.emit(EventType.HEARTBEAT, self._usage_reading())
@@ -5466,9 +5475,25 @@ class Worker:
         costs storage and reads as this task's work). The second is in
         the pointer's own transaction (`ControlPlane.record_checkpoint`),
         because a fence can land during the upload.
+
+        THE LEASE IS BEATEN THROUGH ALL OF IT (#426), not only under the
+        archive (#286): the owner check, the start event and the pointer's
+        transaction are Firestore calls with budgets of 30-60 s each, and they
+        ran with nothing beating. The carrier push after it beats on its own.
         """
         if self.ws is None:
             return None
+        with self._heartbeat_meanwhile(f"checkpoint ({label})"):
+            record = self._write_checkpoint(label)
+        if record is None:
+            return None
+        self._last_checkpoint = record
+        self._push_carrier_branch(label)
+        return record
+
+    def _write_checkpoint(self, label: str) -> CheckpointRecord | None:
+        """`_checkpoint`'s owner check, archive and record, under its heartbeat."""
+        assert self.ws is not None  # checked by `_checkpoint`
         try:
             self.control.ensure_owner(write=f"checkpoint ({label})")
         except (FencedError, TenantMismatchError):
@@ -5498,8 +5523,7 @@ class Worker:
                 error=f"{type(exc).__name__}: {exc}",
             )
         try:
-            with self._heartbeat_meanwhile(f"checkpoint ({label})"):
-                record = self.checkpoints.create(self.ws, label=label)
+            record = self.checkpoints.create(self.ws, label=label)
         except CheckpointError as exc:
             self.log.error("CHECKPOINT FAILED", label=label, error=str(exc))
             return None
@@ -5533,8 +5557,6 @@ class Worker:
                 error=f"{type(exc).__name__}: {exc}",
             )
             return None
-        self._last_checkpoint = record
-        self._push_carrier_branch(label)
         return record
 
     # -- carrier: branches (D13) --------------------------------------------
@@ -5959,6 +5981,13 @@ class Worker:
         logged and ends this thread only: the loop's next heartbeat meets the
         same condition and handles it as it always has.
 
+        COUNTED FROM THE LAST BEAT, NOT FROM THE BLOCK'S START (#426). The
+        first beat is due one interval after the last beat started
+        (`_last_beat_started`), at once if that is already past. Counted from
+        the block's start, a checkpoint begun just before the loop's next beat
+        added a whole interval of silence, and on 2026-10-01 a worker
+        compiling on every core was reclaimed alive after 98 s of it.
+
         BOUNDED, AND IT ASKS BEFORE EVERY BEAT (the PR #288 review). A thread
         that beats for as long as the block runs keeps the lease -- and the
         capacity reserved behind it -- alive for a checkpoint that never ends,
@@ -5988,11 +6017,23 @@ class Worker:
         stop = threading.Event()
         interval = self.cfg.heartbeat_interval_seconds
         bound = self.cfg.heartbeat_meanwhile_max_seconds
-        deadline = time.monotonic() + bound
+        opened = time.monotonic()
+        deadline = opened + bound
+
+        # When this thread last asked for a beat: it never asks twice within
+        # an interval, whatever `_last_beat_started` says.
+        asked: list[float] = []
+
+        def due() -> float:
+            # A fixed time, never "now": with no beat on record the first is
+            # due at the block's start, which is at once.
+            starts = [t for t in (self._last_beat_started, *asked) if t is not None]
+            return max(starts) + interval if starts else opened
 
         def beat() -> None:
             while True:
-                remaining = deadline - time.monotonic()
+                now = time.monotonic()
+                remaining = deadline - now
                 if remaining <= 0:
                     self.log.warning(
                         "stopped heartbeating the lease during a long operation: it "
@@ -6001,10 +6042,13 @@ class Worker:
                         bound_seconds=bound,
                     )
                     return
-                if stop.wait(min(interval, remaining)):
+                if stop.wait(max(0.0, min(due() - now, remaining))):
                     return
                 if time.monotonic() >= deadline:
                     continue  # the top of the loop logs the bound and ends
+                if time.monotonic() < due():
+                    continue  # another beat landed meanwhile; wait for the next
+                asked[:] = [time.monotonic()]
                 try:
                     signals = self.control.poll()
                     if signals.is_fenced(self.cfg.generation):
@@ -6019,12 +6063,24 @@ class Worker:
                         return
                     self._heartbeat()
                 except Exception as exc:
+                    # A beat that could not reach the control plane is one of
+                    # the missed beats the interval is sized for (#426): its
+                    # budget is one interval now, not the whole grace, so the
+                    # next is asked for on time rather than the thread ending
+                    # with the block still running. A fence, a tenant mismatch
+                    # or a defect ends the thread, as before.
+                    unreachable = not isinstance(
+                        exc, (FencedError, TenantMismatchError)
+                    ) and _control_plane_unreachable(exc)
                     self.log.warning(
-                        "a heartbeat during a long operation failed; the loop will retry it",
+                        "a heartbeat during a long operation failed; "
+                        + ("the next beat is asked for on time" if unreachable
+                           else "the loop will retry it"),
                         during=what,
                         error=f"{type(exc).__name__}: {exc}",
                     )
-                    return
+                    if not unreachable:
+                        return
 
         thread = threading.Thread(target=beat, name="heartbeat-meanwhile", daemon=True)
         thread.start()
