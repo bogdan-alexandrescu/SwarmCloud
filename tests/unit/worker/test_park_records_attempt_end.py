@@ -123,3 +123,83 @@ def test_a_failed_attempt_end_write_still_releases_the_lease():
     assert db.doc("tasks/task_1")["state"] == TaskState.PARKED.value
     assert db.doc("leases/lease_1")["released_at"] is not None
     assert EventType.PARKED.value in db.event_types("task_1")
+
+
+# -- the await park (child tasks, docs/design/child-tasks.md §3.3) -----------
+#
+# `park_awaiting_children` is a park too, in its own transaction rather than
+# through `park()`, and it closed no attempt document: a parent cancelled
+# while it waited on its children read its last start to the cancel as one
+# open attempt, the defect #163 is about.
+
+
+def test_an_await_park_records_the_attempt_end_with_exit_75_and_the_reason():
+    db = FakeFirestore()
+    seed_attempt(db, state=TaskState.RUNNING)
+    control = _control(db)
+    control.record_attempt_start(backend="cloud_run_job", execution_name=None)
+
+    control.park_awaiting_children(max_resumes=3)
+
+    attempt = db.doc("attempts/att_1")
+    assert attempt["exit_code"] == ExitCode.PARKED == 75
+    assert attempt["error"] == ParkReason.CHILDREN_INCOMPLETE.value
+    assert attempt["completed_at"] is not None
+    assert db.doc("tasks/task_1")["state"] == TaskState.PARKED.value
+
+
+def test_an_await_park_writes_the_end_after_its_transition_and_before_the_release():
+    db = FakeFirestore()
+    seed_attempt(db, state=TaskState.RUNNING)
+    control = _control(db)
+    control.record_attempt_start(backend="cloud_run_job", execution_name=None)
+    db.writes.clear()
+
+    control.park_awaiting_children(max_resumes=3)
+
+    parked_at = next(
+        index for index, (op, path, data) in enumerate(db.writes)
+        if op == "update" and path == "tasks/task_1" and data.get("state") == "PARKED"
+    )
+    ended_at = next(
+        index for index, (op, path, data) in enumerate(db.writes)
+        if path == "attempts/att_1" and data.get("exit_code") == ExitCode.PARKED
+    )
+    released_at = next(
+        index for index, (op, path, data) in enumerate(db.writes)
+        if path == "leases/lease_1" and data.get("released_at") is not None
+    )
+    assert parked_at < ended_at < released_at, db.writes
+
+
+def test_a_fenced_await_park_writes_no_attempt_end():
+    db = FakeFirestore()
+    seed_attempt(db, state=TaskState.RUNNING, generation=1, task_generation=2)
+    control = _control(db, generation=1)
+    control.record_attempt_start(backend="cloud_run_job", execution_name=None)
+    db.writes.clear()
+
+    with pytest.raises(FencedWriteRefused):
+        control.park_awaiting_children(max_resumes=3)
+
+    assert db.writes == [], "a fenced await park wrote something"
+    assert db.doc("attempts/att_1")["completed_at"] is None
+    assert db.doc("attempts/att_1")["exit_code"] is None
+
+
+def test_a_failed_await_park_attempt_end_write_still_releases_the_lease():
+    db = FakeFirestore()
+    seed_attempt(db, state=TaskState.RUNNING)
+    control = _control(db)
+    control.record_attempt_start(backend="cloud_run_job", execution_name=None)
+
+    def unreachable(**_kwargs):
+        raise OSError("firestore unavailable")
+
+    control.record_attempt_end = unreachable  # type: ignore[method-assign]
+
+    control.park_awaiting_children(max_resumes=3)
+
+    assert db.doc("tasks/task_1")["state"] == TaskState.PARKED.value
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert EventType.PARKED.value in db.event_types("task_1")
