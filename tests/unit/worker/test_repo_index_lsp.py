@@ -635,9 +635,21 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
     for arg in ("GO_VERSION", "GOPLS_VERSION", "TERRAFORM_LS_VERSION"):
         assert re.search(rf"^ARG {arg}=\d+\.\d+\.\d+$", text, re.M), arg
-    for arg in ("GO_SHA256", "TERRAFORM_LS_SHA256"):
-        assert re.search(rf"^ARG {arg}=[0-9a-f]{{64}}$", text, re.M), arg
+    assert re.search(r"^ARG GO_SHA256=[0-9a-f]{64}$", text, re.M)
     assert re.search(r'sha256sum -c -', text)
+    # gopls and terraform-ls are compiled here with the golang.org/x modules
+    # trivy flagged raised to their fixed versions (release 37289476429 was
+    # refused on them), never taken as a vendor binary, and the build fails
+    # if a raised version is not what the binary was linked with.
+    for arg in ("X_CRYPTO_VERSION", "X_MOD_VERSION", "X_TEXT_VERSION"):
+        assert re.search(rf"^ARG {arg}=\d+\.\d+\.\d+$", text, re.M), arg
+    assert "releases.hashicorp.com/terraform-ls" not in text
+    assert 'go version -m "${out}"' in text
+    builds = dict(re.findall(r'build_server (\S+) "\$\{(\w+)\}" /usr/local/bin/', text))
+    assert builds == {
+        "golang.org/x/tools/gopls": "GOPLS_VERSION",
+        "github.com/hashicorp/terraform-ls": "TERRAFORM_LS_VERSION",
+    }, builds
     # npm packages from the lockfile, its integrity hashes, no install scripts.
     assert "npm ci --ignore-scripts" in text
     package = json.loads((LSP_DIR / "package.json").read_text(encoding="utf-8"))
