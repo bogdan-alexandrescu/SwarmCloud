@@ -459,7 +459,7 @@ def test_the_staleness_line_comes_first():
 def test_the_extractor_missing_is_said():
     document = fixture_index(ONE, extractor={"ran": False, "reason": "not in the image"})
     text = repoindex.render_markdown(document, repository=REPOSITORY)
-    assert ("The extractor `swarm-repo-extract` did not run (not in the image): the "
+    assert ("The extractor `swarm-repo-index` did not run (not in the image): the "
             "mechanical fields are the agent's own reading.") in text.splitlines()
 
 

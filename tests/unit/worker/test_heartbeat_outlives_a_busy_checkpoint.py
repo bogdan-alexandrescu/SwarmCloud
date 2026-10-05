@@ -24,6 +24,10 @@ was left, and what each test below holds:
    the worker. A process may lower its own priority without a capability but
    not raise it, so "the heartbeat above the agent" is reached by lowering the
    agent, not by raising the worker.
+6. THE LOOP'S OTHER I/O HELD THE BEAT. Between beats the supervision loop
+   publishes the live log tails to GCS and asks the account broker over HTTP;
+   either held the beat for as long as it took. Both now run with the lease
+   beaten from a thread, as the checkpoint does.
 """
 
 from __future__ import annotations
@@ -45,6 +49,7 @@ from swarm_common.states import EventType
 
 from conftest import seed_attempt
 import fakes
+from test_account_hot_swap import FakeBroker, _run, cli  # noqa: F401 - `cli` is a fixture
 
 
 # ---------------------------------------------------------------------------
@@ -325,3 +330,74 @@ def test_the_runner_niceness_defaults_to_ten_and_is_bounded(monkeypatch):
         _from_env(monkeypatch, RUNNER_NICENESS="20")
     with pytest.raises(ConfigError, match="niceness"):
         _from_env(monkeypatch, RUNNER_NICENESS="-1")
+
+
+# ---------------------------------------------------------------------------
+# 6. the loop's other I/O is beaten through too, not only the checkpoint
+# ---------------------------------------------------------------------------
+#
+# The issue's expectation is a heartbeat independent of I/O, and the checkpoint
+# was only the I/O it was seen under. The supervision loop beats between its
+# other jobs, and two of them leave the control plane: the live log tails, up
+# to four GCS uploads every `live_log_interval_seconds`, each a 60 s request
+# timeout; and the account broker's hold status, an HTTP call with a 10 s
+# timeout, once per agent turn. Either held the loop -- and so the beat -- for
+# as long as the upload or the broker took.
+
+
+def test_the_lease_is_heartbeaten_while_the_live_log_tails_upload(db, worker_factory):
+    """The first publish of the live tails is held for 2.5 beat intervals (the
+    mock runner flushes nothing to stdout before it exits, so the publisher is
+    held rather than one upload); the lease's `heartbeat_at` must move while it
+    is. The checkpoint and the control poll are pushed past the run, so nothing
+    else can beat meanwhile."""
+    seed_attempt(db, task_input={"prompt": "x", "steps": 2, "sleep_seconds": 4})
+    worker, _, _ = worker_factory(
+        heartbeat_interval_seconds=1, checkpoint_interval_seconds=60,
+        control_poll_seconds=60, live_log_interval_seconds=1,
+    )
+    real = worker._publish_live_logs
+    seen: list[tuple[object, object]] = []
+
+    def slow():
+        if not seen:
+            before = db.doc("leases/lease_1").get("heartbeat_at")
+            time.sleep(2.5)
+            seen.append((before, db.doc("leases/lease_1").get("heartbeat_at")))
+        return real()
+
+    worker._publish_live_logs = slow  # type: ignore[method-assign]
+    assert worker.run() == ExitCode.OK
+    assert seen, "the live log tails were never published while the agent ran"
+    before, after = seen[0]
+    assert after is not None and after != before, (
+        "publishing the live log tails held the lease's heartbeat for 2.5 intervals"
+    )
+
+
+def test_the_lease_is_heartbeaten_while_the_account_broker_answers(
+    db, worker_factory, tmp_path, cli, log_stream
+):
+    """The hold-status read at the agent's first turn boundary is held for 2.5
+    beat intervals; the lease's `heartbeat_at` must move while it is. The
+    broker then answers `drain`, so the run swaps and finishes."""
+    seen: list[tuple[object, object]] = []
+
+    class SlowBroker(FakeBroker):
+        def hold_status(self, assignment):
+            if not seen:
+                before = db.doc("leases/lease_1").get("heartbeat_at")
+                time.sleep(2.5)
+                seen.append((before, db.doc("leases/lease_1").get("heartbeat_at")))
+            return super().hold_status(assignment)
+
+    code, _worker, _runs, _tokens, _sessions = _run(
+        db, worker_factory, tmp_path, SlowBroker(move="drain"), modes=["turns", "finish"],
+        heartbeat_interval_seconds=1, checkpoint_interval_seconds=60, control_poll_seconds=60,
+    )
+    assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
+    assert seen, "the broker's hold status was never read"
+    before, after = seen[0]
+    assert after is not None and after != before, (
+        "the account broker's answer held the lease's heartbeat for 2.5 intervals"
+    )

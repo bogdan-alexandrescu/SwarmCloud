@@ -14,6 +14,21 @@ import type { ViewMode } from './storage'
 export const ROW_H = 22
 export const FILE_H = 36
 
+/**
+ * A file of MORE changed lines than this (additions + deletions) opens
+ * collapsed, its header saying `collapsed: large` (owner decision 2026-10-05).
+ * Around 400 because past that a file is read by its hunks, not top to bottom,
+ * and a reader stepping with n through a patch should not be dropped into a
+ * generated lockfile's thousands of lines on the way. It costs nothing to
+ * draw either way -- the rows are windowed -- so this is about reading, not speed.
+ */
+export const LARGE_FILE_LINES = 400
+
+/** Whether a file opens collapsed: more than LARGE_FILE_LINES changed lines. */
+export function startsCollapsed(f: DiffFile): boolean {
+  return f.additions + f.deletions > LARGE_FILE_LINES
+}
+
 /** Where a gap's hidden lines come from, once `getFile` has answered. */
 export type ContextState =
   | { status: 'loading' }
@@ -113,6 +128,8 @@ export interface RowInput {
   context: ReadonlyMap<number, ContextState>
   /** `${file}:${gap}` for each gap the reader opened. */
   opened: ReadonlySet<string>
+  /** The file is collapsed: only its header row is built. */
+  collapsed?: boolean
 }
 
 function pairs(h: DiffHunk): Array<[number | null, number | null]> {
@@ -162,6 +179,7 @@ export function buildRows(input: RowInput): Row[] {
   const f = input.files[fi]
   if (f === undefined) return out
   out.push({ t: 'file', file: fi })
+  if (input.collapsed) return out
   if (f.binary) {
     out.push({ t: 'note', file: fi, text: 'binary file not shown' })
     return out
