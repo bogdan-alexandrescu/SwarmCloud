@@ -20,10 +20,31 @@ class SchedulerWaker(Protocol):
     def wake(self, reason: str, **attributes: str) -> bool: ...
 
 
+def topic_path(project_id: str, topic: str) -> str:
+    """`projects/<project>/topics/<name>` from a bare name; a full path as given.
+
+    terraform renders DISPATCH_TOPIC as the bare name (terraform/infra/locals.tf
+    `wake_topic`), and Pub/Sub's publish accepts only the full path. Handed the
+    bare name, every wake was refused -- counted in
+    `swarm_api_scheduler_wake_failures_total` and otherwise silent, because the
+    safety tick drained the queue anyway, a minute later (#636).
+    """
+    topic = (topic or "").strip()
+    if not topic or topic.startswith("projects/"):
+        return topic
+    return f"projects/{project_id}/topics/{topic}"
+
+
 class PubSubWaker:
-    def __init__(self, topic: str, *, publisher: Any | None = None) -> None:
-        self._topic = topic
+    def __init__(
+        self, topic: str, *, project_id: str = "", publisher: Any | None = None
+    ) -> None:
+        self._topic = topic_path(project_id, topic) if project_id else topic.strip()
         self._publisher = publisher
+
+    @property
+    def topic(self) -> str:
+        return self._topic
 
     @property
     def enabled(self) -> bool:
@@ -62,3 +83,11 @@ class NullWaker:
     def wake(self, reason: str, **attributes: str) -> bool:
         self.calls.append((reason, dict(attributes)))
         return False
+
+
+def waker_for(settings: Any) -> SchedulerWaker:
+    """The deployment's waker: Pub/Sub on DISPATCH_TOPIC, or none without one."""
+    topic = str(getattr(settings, "dispatch_topic", "") or "").strip()
+    if not topic:
+        return NullWaker()
+    return PubSubWaker(topic, project_id=str(getattr(settings, "project_id", "") or ""))
