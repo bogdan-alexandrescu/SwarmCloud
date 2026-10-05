@@ -512,6 +512,13 @@ module "scheduler" {
     quota_broker = module.iam.service_account_members["swarm-quota-broker"]
   }
 
+  # #627: swarm-api publishes a cancelled task's attempt; the reconciler, the
+  # identity that already holds the stop permissions, is pushed it.
+  execution_cancel_topic_name = local.execution_cancel_topic
+  execution_cancel_publisher_members = {
+    api = module.iam.service_account_members["swarm-api"]
+  }
+
   labels = local.labels
 
   # NOT `depends_on = [module.cloud_run]`, though the ordering it would buy is

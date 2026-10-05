@@ -1,6 +1,8 @@
 """The reconciler as a Cloud Run service on a Cloud Scheduler trigger.
 
-Cloud Scheduler POSTs to `/reconcile` with an OIDC token; Cloud Run's IAM check
+Cloud Scheduler POSTs to `/reconcile` with an OIDC token, and Pub/Sub pushes
+a cancelled task's attempt to `/stop-execution` with the same identity (#627).
+Cloud Run's IAM check
 (`roles/run.invoker`, granted only to the scheduler's service account) is the
 authentication boundary, and this service adds a second, cheap one: when
 `RECONCILER_ALLOWED_INVOKERS` is set, the caller's verified email must be in it.
@@ -19,7 +21,7 @@ import os
 import threading
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Response
+from fastapi import Body, FastAPI, Header, HTTPException, Response
 from swarm_common.config import Settings
 from swarm_common.logging_setup import configure_logging
 
@@ -28,6 +30,7 @@ from .checkpoints import GcsCheckpointStore
 from .config import ReconcilerConfig
 from .logs import build_logger
 from .repair import ReconcileReport, Reconciler
+from .stopexec import ExecutionStopper, parse_push
 from .store import ControlStore
 
 _PASS_LOCK = threading.Lock()
@@ -85,6 +88,15 @@ def build_reconciler(config: ReconcilerConfig, settings: Settings, logger: Any) 
     )
 
 
+def build_stopper(config: ReconcilerConfig, settings: Settings, logger: Any) -> ExecutionStopper:
+    """The `/stop-execution` worker: the same backends a pass uses, keyed by name."""
+    return ExecutionStopper(
+        store=ControlStore(_firestore_client(settings), logger=logger),
+        backends={backend.name: backend for backend in build_backends(config, logger)},
+        logger=logger,
+    )
+
+
 def _verify_invoker(authorization: str | None, logger: Any) -> None:
     allowed = [
         entry.strip()
@@ -110,7 +122,11 @@ def _verify_invoker(authorization: str | None, logger: Any) -> None:
         raise HTTPException(status_code=403, detail="caller is not an allowed invoker")
 
 
-def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) -> FastAPI:
+def create_app(
+    reconciler: Reconciler | None = None,
+    logger: Any | None = None,
+    stopper: ExecutionStopper | None = None,
+) -> FastAPI:
     # FIRST, before anything can log. Nothing configured the root logger, so
     # every record this service produced was discarded -- which is why a
     # failing drain showed only uvicorn access lines and never a reason.
@@ -118,7 +134,7 @@ def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) 
 
     logger = logger or build_logger()
     app = FastAPI(title="swarm-reconciler", version="0.1.0")
-    state: dict[str, Any] = {"reconciler": reconciler, "last_report": None}
+    state: dict[str, Any] = {"reconciler": reconciler, "last_report": None, "stopper": stopper}
 
     def _get_reconciler() -> Reconciler:
         if state["reconciler"] is None:
@@ -127,6 +143,12 @@ def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) 
                 ReconcilerConfig.from_env(settings), settings, logger
             )
         return state["reconciler"]
+
+    def _get_stopper() -> ExecutionStopper:
+        if state["stopper"] is None:
+            settings = Settings.from_env()
+            state["stopper"] = build_stopper(ReconcilerConfig.from_env(settings), settings, logger)
+        return state["stopper"]
 
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
@@ -160,6 +182,39 @@ def create_app(reconciler: Reconciler | None = None, logger: Any | None = None) 
             return {"status": "ok", **report.as_dict()}
         finally:
             _PASS_LOCK.release()
+
+    @app.post("/stop-execution")
+    def stop_execution(
+        response: Response,
+        envelope: Any = Body(default=None),
+        authorization: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """A cancelled task's execution, stopped now (#627; `stopexec`).
+
+        Pushed by Pub/Sub from EXECUTION_CANCEL_TOPIC, which only swarm-api may
+        publish to. Not under the pass lock: it releases nothing, and a stop
+        racing a pass's own stop of the same execution is the same idempotent
+        call twice. Every decision is acknowledged; only a failed read or a
+        stop call that raised answers 503, so Pub/Sub retries it.
+        """
+        _verify_invoker(authorization, logger)
+        ids = parse_push(envelope)
+        if ids is None:
+            # Acked, not retried: a malformed message is malformed every time.
+            logger.warning("ignored a malformed stop request")
+            return {"status": "malformed"}
+        try:
+            outcome = _get_stopper().stop(**ids)
+        except Exception as exc:
+            logger.error(
+                "stop request failed; Pub/Sub will retry it",
+                task_id=ids["task_id"],
+                attempt_id=ids["attempt_id"],
+                error=type(exc).__name__,
+            )
+            response.status_code = 503
+            return {"status": "retry"}
+        return {"status": outcome}
 
     return app
 
