@@ -2,14 +2,26 @@
 """The mechanical half of a repository index: one tree-sitter pass.
 
 docs/repo-index.md §3.4 and §3.5 (lane RI3). The indexer prompt runs this
-first, as `swarm-repo-index --repo <checkout> --out <file>`, and the agent then
+first, as `swarm-repo-index --repo <checkout> --out <file> [--graph-out <file>]`, and the agent then
 spends its tokens on what needs reading -- purposes, territory, notes, and
 checking the edges this tool was unsure of. Everything here is deterministic
 and cheap, which is what keeps a full run on a 2,000-file repository inside
 its timeout.
 
-WHAT IT EMITS. A JSON object with the mechanical keys of §2.1, schema
-`swarm.repo-index/v1`:
+WHAT IT EMITS. Two documents, because §2.2 (revised 2026-10-04) keeps the
+graph out of the 512 KiB index:
+
+  --out        repo-index.json, schema `swarm.repo-index/v1`, at most
+               --max-index-bytes (512 KiB): commit_sha, branch, kind, base_sha,
+               built_at, modules, routes, test_map, hot_spots, languages, and
+               `graph`, the graph's summary -- counts per language, files by
+               status, the 100 most-called symbols, and the sha256 digest of
+               the graph document. Over the budget, lists give way in a fixed
+               order and are named in `truncated`.
+  --graph-out  the graph, schema `swarm.repo-graph/v1`, for the shard writer
+               (lane RI9): symbols, call_edges, symbol_test_map and every file.
+
+extract() returns the facts both are cut from:
 
   commit_sha, branch, kind, base_sha, built_at   what the index describes
   modules          per directory holding code: language, files, lines
@@ -62,6 +74,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.metadata
+import hashlib
 import json
 import os
 import posixpath
@@ -85,6 +98,13 @@ import tree_sitter_python
 import tree_sitter_typescript
 
 SCHEMA = "swarm.repo-index/v1"
+# The graph's own document, for the shard writer (lane RI9). §2.2 keeps the
+# graph out of repo-index.json, so it never travels under the index's schema.
+GRAPH_SCHEMA = "swarm.repo-graph/v1"
+# §2.2: repo-index.json is at most 512 KiB, whatever the repository's size.
+MAX_INDEX_BYTES = 512 * 1024
+# §2.2: the summary carries the 100 most-called symbols.
+MOST_CALLED = 100
 EXTRACTOR_NAME = "swarm-repo-index"
 EXTRACTOR_VERSION = "1"
 
@@ -1717,7 +1737,6 @@ def extract(root: Path, budget: Budget | None = None) -> dict:
     modules = _modules(files, truncated)
 
     return {
-        "schema": SCHEMA,
         "kind": "full",
         "commit_sha": commit_sha,
         "branch": branch,
@@ -1878,6 +1897,179 @@ def dumps(index: dict) -> bytes:
     return (text + "\n").encode("utf-8")
 
 
+# --- the two documents (§2.2) -----------------------------------------------
+
+# The keys of extract()'s result that are the graph, and go only to the graph
+# document. Everything else is small and per-list bounded.
+_GRAPH_LISTS = ("symbols", "call_edges", "symbol_test_map", "files")
+_GRAPH_TRUNCATIONS = {"symbols", "call_edges", "symbol_test_map", "files"}
+# The lists repo-index.json may cut when it is over its byte budget, least
+# load-bearing first (the tie-break when two weigh the same). `test_map` goes
+# to directory granularity before any entry is cut, and `modules` comes last,
+# because §2.2 says a repository too large for the budget keeps its module map.
+_INDEX_CUT_ORDER = ("hot_spots", "graph.most_called", "routes", "test_map", "modules")
+
+
+def graph_document(facts: dict) -> dict:
+    """The graph for the shard writer: symbols, edges, the symbol test map and
+    every file with its status and reason. Never repo-index.json (§2.2)."""
+    graph = {
+        "schema": GRAPH_SCHEMA,
+        "kind": facts["kind"],
+        "commit_sha": facts["commit_sha"],
+        "branch": facts["branch"],
+        "base_sha": facts["base_sha"],
+        "languages": facts["languages"],
+        "truncated": sorted(set(facts["truncated"]) & _GRAPH_TRUNCATIONS),
+        "extractor": facts["extractor"],
+    }
+    for key in _GRAPH_LISTS:
+        graph[key] = facts[key]
+    return graph
+
+
+def _graph_summary(facts: dict, graph_bytes: bytes) -> dict:
+    """What repo-index.json says about the graph: counts and the most called."""
+    language_of = {s["id"]: s["language"] for s in facts["symbols"]}
+    by_language: dict[str, dict[str, int]] = {}
+    for symbol in facts["symbols"]:
+        entry = by_language.setdefault(symbol["language"], {"symbols": 0, "call_edges": 0})
+        entry["symbols"] += 1
+    callers: dict[str, set[str]] = {}
+    for edge in facts["call_edges"]:
+        language = language_of.get(edge["from"]) or language_of.get(edge["to"])
+        if language is not None:
+            by_language.setdefault(language, {"symbols": 0, "call_edges": 0})["call_edges"] += 1
+        if edge["kind"] != "import" and edge["to"] in language_of and edge["from"] != edge["to"]:
+            callers.setdefault(edge["to"], set()).add(edge["from"])
+    by_id = {s["id"]: s for s in facts["symbols"]}
+    ranked = sorted(callers, key=lambda sid: (-len(callers[sid]), sid))[:MOST_CALLED]
+    statuses: dict[str, int] = {}
+    for f in facts["files"]:
+        statuses[f["status"]] = statuses.get(f["status"], 0) + 1
+    return {
+        "schema": GRAPH_SCHEMA,
+        "digest": "sha256:" + hashlib.sha256(graph_bytes).hexdigest(),
+        "bytes": len(graph_bytes),
+        "symbols": len(facts["symbols"]),
+        "call_edges": len(facts["call_edges"]),
+        "symbol_test_map": len(facts["symbol_test_map"]),
+        "files": len(facts["files"]),
+        "files_by_status": statuses,
+        "by_language": {name: by_language[name] for name in sorted(by_language)},
+        "most_called": [
+            {"symbol": sid, "kind": by_id[sid]["kind"], "path": by_id[sid]["path"],
+             "start_line": by_id[sid]["start_line"], "callers": len(callers[sid])}
+            for sid in ranked
+        ],
+    }
+
+
+def _test_map_by_directory(entries: list[dict]) -> list[dict]:
+    """§2.2's fallback: the test map with each source at directory granularity."""
+    merged: dict[tuple[str, str], dict] = {}
+    for entry in entries:
+        directory = posixpath.dirname(entry["source"])
+        source = f"{directory}/**" if directory else "**"
+        key = (source, entry["test"])
+        current = merged.get(key)
+        if current is None:
+            merged[key] = {"source": source, "test": entry["test"], "evidence": entry["evidence"],
+                           "confidence": entry["confidence"],
+                           "also_evidence": list(entry["also_evidence"])}
+            continue
+        others = set(current["also_evidence"]) | set(entry["also_evidence"])
+        if (entry["confidence"], EVIDENCE_RANK[entry["evidence"]]) > \
+                (current["confidence"], EVIDENCE_RANK[current["evidence"]]):
+            others.add(current["evidence"])
+            current["evidence"], current["confidence"] = entry["evidence"], entry["confidence"]
+        else:
+            others.add(entry["evidence"])
+        others.discard(current["evidence"])
+        current["also_evidence"] = sorted(others)
+    return sorted(merged.values(), key=lambda t: (t["source"], t["test"]))
+
+
+def index_document(facts: dict, graph_bytes: bytes | None = None,
+                   max_bytes: int = MAX_INDEX_BYTES) -> dict:
+    """repo-index.json (§2.2): the mechanical keys and the graph's summary,
+    held to `max_bytes`. Over the budget, the test map goes to directory
+    granularity and the hot spots lose their partners; then the heaviest list
+    is halved (most certain kept) until the document fits. Every list that
+    gave way is named in `truncated`. A truncated index says so; it is
+    never padded to look complete."""
+    if graph_bytes is None:
+        graph_bytes = dumps(graph_document(facts))
+    truncated = set(facts["truncated"]) - _GRAPH_TRUNCATIONS
+    index: dict[str, Any] = {
+        "schema": SCHEMA,
+        "kind": facts["kind"],
+        "commit_sha": facts["commit_sha"],
+        "branch": facts["branch"],
+        "base_sha": facts["base_sha"],
+        "built_at": facts["built_at"],
+        "modules": facts["modules"],
+        "routes": facts["routes"],
+        "test_map": facts["test_map"],
+        "hot_spots": facts["hot_spots"],
+        "languages": facts["languages"],
+        "graph": _graph_summary(facts, graph_bytes),
+        "extractor": dict(facts["extractor"], max_index_bytes=max_bytes),
+    }
+    # The graph's own cuts are named too, so the index never hides them.
+    index["graph"]["truncated"] = sorted(set(facts["truncated"]) & _GRAPH_TRUNCATIONS)
+
+    def size() -> int:
+        index["truncated"] = sorted(truncated)
+        return len(dumps(index))
+
+    def get(name: str) -> list[dict]:
+        if name == "graph.most_called":
+            return index["graph"]["most_called"]
+        return index[name]
+
+    def put(name: str, items: list[dict]) -> None:
+        if name == "graph.most_called":
+            index["graph"]["most_called"] = items
+        else:
+            index[name] = items
+
+    # Which entries a cut keeps: the ones a consumer leans on most.
+    keep_first: dict[str, Callable[[dict], Any]] = {
+        "hot_spots": lambda h: (-h["changes"], h["path"]),
+        "graph.most_called": lambda m: (-m["callers"], m["symbol"]),
+        "routes": lambda r: (r["file"], r["start_line"], r["method"], r["path"]),
+        "test_map": lambda t: (-t["confidence"], t["source"], t["test"]),
+        "modules": lambda m: (-m["lines"], m["path"]),
+    }
+    # First the cuts that lose detail, not entries: the test map at directory
+    # granularity (§2.2), then the hot spots without their partners.
+    if size() > max_bytes and index["test_map"]:
+        coarse = _test_map_by_directory(index["test_map"])
+        if coarse != index["test_map"]:
+            index["test_map"] = coarse
+            truncated.add("test_map")
+    if size() > max_bytes and any(h["changed_with"] for h in index["hot_spots"]):
+        index["hot_spots"] = [dict(h, changed_with=[]) for h in index["hot_spots"]]
+        truncated.add("hot_spots")
+    # Then entries: always halve the list spending the most bytes, so one huge
+    # list never empties the small ones; ties go by _INDEX_CUT_ORDER.
+    while size() > max_bytes:
+        weights = [(len(dumps(get(name))), -rank, name)
+                   for rank, name in enumerate(_INDEX_CUT_ORDER) if get(name)]
+        if not weights:
+            break
+        name = max(weights)[2]
+        items = get(name)
+        kept = sorted(items, key=keep_first[name])[: len(items) // 2]
+        # Back to the list's own order, so a cut list reads like an uncut one.
+        position = {id(item): n for n, item in enumerate(items)}
+        put(name, sorted(kept, key=lambda item: position[id(item)]))
+        truncated.add(name)
+    size()
+    return index
+
+
 _SELF_TEST_FILES = {
     "a.py": "def alpha():\n    return 1\n",
     "b.ts": "export function beta(): number {\n  return 1;\n}\n",
@@ -1918,7 +2110,12 @@ def main(argv: list[str] | None = None) -> int:
         description="The mechanical half of a repository index (docs/repo-index.md §3.5).",
     )
     parser.add_argument("--repo", default=".", help="the checkout to index (default: .)")
-    parser.add_argument("--out", help="write the JSON here (default: stdout)")
+    parser.add_argument("--out", help="write repo-index.json here (default: stdout)")
+    parser.add_argument("--graph-out",
+                        help="also write the graph (symbols, call_edges, symbol_test_map, "
+                             "files) here, for the shard writer; never the artifact")
+    parser.add_argument("--max-index-bytes", type=int, default=MAX_INDEX_BYTES,
+                        help="repo-index.json's byte budget (default: §2.2's 512 KiB)")
     defaults = Budget()
     parser.add_argument("--max-file-bytes", type=int, default=defaults.max_file_bytes)
     parser.add_argument("--max-total-bytes", type=int, default=defaults.max_total_bytes)
@@ -1935,22 +2132,28 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     budget = Budget(max_file_bytes=args.max_file_bytes, max_total_bytes=args.max_total_bytes,
                     max_files=args.max_files, file_timeout_seconds=args.file_timeout_seconds)
-    index = extract(root, budget)
+    facts = extract(root, budget)
+    graph_payload = dumps(graph_document(facts))
+    index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)
     payload = dumps(index)
+    if args.graph_out:
+        graph_out = Path(args.graph_out)
+        graph_out.parent.mkdir(parents=True, exist_ok=True)
+        graph_out.write_bytes(graph_payload)
     if args.out:
         out = Path(args.out)
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(payload)
     else:
         sys.stdout.buffer.write(payload)
-    statuses: dict[str, int] = {}
-    for f in index["files"]:
-        statuses[f["status"]] = statuses.get(f["status"], 0) + 1
+    summary = index["graph"]
     print(
-        f"{EXTRACTOR_NAME}: files={len(index['files'])} symbols={len(index['symbols'])} "
-        f"edges={len(index['call_edges'])} routes={len(index['routes'])} "
-        f"statuses={json.dumps(statuses, sort_keys=True)} "
-        f"truncated={','.join(index['truncated']) or 'none'}",
+        f"{EXTRACTOR_NAME}: files={summary['files']} symbols={summary['symbols']} "
+        f"edges={summary['call_edges']} routes={len(index['routes'])} "
+        f"statuses={json.dumps(summary['files_by_status'], sort_keys=True)} "
+        f"index_bytes={len(payload)} graph_bytes={len(graph_payload)} "
+        f"truncated={','.join(index['truncated']) or 'none'} "
+        f"graph_truncated={','.join(summary['truncated']) or 'none'}",
         file=sys.stderr,
     )
     return 0

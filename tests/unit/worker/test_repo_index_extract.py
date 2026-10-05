@@ -24,6 +24,7 @@ What each group holds, and why it matters to a consumer of the index:
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import re
@@ -102,7 +103,6 @@ def _test_edge(index: dict, source: str, test: str) -> dict:
 def test_the_output_carries_the_mechanical_keys_of_section_2(tool: Any, tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
     index = tool.extract(repo, tool.Budget())
-    assert index["schema"] == "swarm.repo-index/v1"
     assert index["kind"] == "full"
     for key in (
         "commit_sha", "branch", "modules", "routes", "symbols", "call_edges",
@@ -488,6 +488,143 @@ def test_a_per_file_timeout_marks_the_file_and_the_run_still_succeeds(
     )
 
 
+def test_the_walk_deadline_times_a_file_out_mid_walk(
+    tool: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # A positive timeout: the parse is given its budget, and the clock passes
+    # the deadline while the tree is being walked. The file is timed_out, the
+    # parse is not what stopped it, and the run still succeeds.
+    repo = fx.build_repo(tmp_path / "repo", {"src/pkg/users.py": fx.PYTHON_APP["src/pkg/users.py"]})
+    readings = iter([0.0, 0.0])
+
+    def clock() -> float:
+        return next(readings, 1_000.0)
+
+    monkeypatch.setattr(tool, "_CLOCK_EVERY", 1)
+    monkeypatch.setattr(tool.time, "monotonic", clock)
+    index = tool.extract(repo, tool.Budget(file_timeout_seconds=5.0))
+    users = _file(index, "src/pkg/users.py")
+    assert users["status"] == "timed_out"
+    assert "5-second" in users["reason"]
+    assert index["symbols"] == []
+
+
+def test_the_parser_timeout_is_set_from_the_remaining_budget(
+    tool: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The parse itself is bounded: timeout_micros is the budget left, and a
+    # parse the grammar abandons is a timed_out file, not a failed run.
+    repo = fx.build_repo(tmp_path / "repo", {"src/pkg/users.py": fx.PYTHON_APP["src/pkg/users.py"]})
+    seen: list[int] = []
+    real_get = tool._Parsers.get
+
+    class Abandoning:
+        def __init__(self, parser: Any) -> None:
+            self._parser = parser
+            self.timeout_micros = 0
+
+        def parse(self, data: bytes) -> None:
+            seen.append(self.timeout_micros)
+            return None  # what an over-time parse returns
+
+    monkeypatch.setattr(tool._Parsers, "get", lambda self, grammar: Abandoning(real_get(self, grammar)))
+    index = tool.extract(repo, tool.Budget(file_timeout_seconds=2.0))
+    assert _file(index, "src/pkg/users.py")["status"] == "timed_out"
+    assert len(seen) == 1 and 0 < seen[0] <= 2_000_000
+
+
+# ---------------------------------------------------------------------------
+# The two documents of §2.2: the 512 KiB index and the graph
+# ---------------------------------------------------------------------------
+
+
+def test_the_index_holds_the_graph_summary_not_the_graph(tool: Any, tmp_path: Path) -> None:
+    facts = tool.extract(fx.build_repo(tmp_path / "repo", fx.PYTHON_APP), tool.Budget())
+    graph_bytes = tool.dumps(tool.graph_document(facts))
+    graph = json.loads(graph_bytes)
+    index = tool.index_document(facts, graph_bytes)
+    assert index["schema"] == "swarm.repo-index/v1"
+    assert graph["schema"] == "swarm.repo-graph/v1"
+    for key in ("symbols", "call_edges", "symbol_test_map", "files"):
+        assert key not in index, key
+        assert key in graph, key
+    for key in ("commit_sha", "branch", "kind", "modules", "routes", "test_map",
+                "hot_spots", "languages", "truncated", "graph"):
+        assert key in index, key
+    summary = index["graph"]
+    # The summary counts exactly what the graph document holds.
+    assert summary["symbols"] == len(graph["symbols"]) > 0
+    assert summary["call_edges"] == len(graph["call_edges"]) > 0
+    assert summary["symbol_test_map"] == len(graph["symbol_test_map"])
+    assert summary["files"] == len(graph["files"])
+    assert summary["by_language"]["python"]["symbols"] == len(
+        [s for s in graph["symbols"] if s["language"] == "python"])
+    assert sum(summary["files_by_status"].values()) == len(graph["files"])
+    assert summary["digest"] == "sha256:" + hashlib.sha256(graph_bytes).hexdigest()
+    # The most called, by distinct callers, every one a symbol in the graph.
+    ids = {s["id"] for s in graph["symbols"]}
+    most = summary["most_called"]
+    assert most and len(most) <= 100
+    assert all(m["symbol"] in ids for m in most)
+    assert [m["callers"] for m in most] == sorted((m["callers"] for m in most), reverse=True)
+    top = most[0]
+    callers = {e["from"] for e in graph["call_edges"]
+               if e["to"] == top["symbol"] and e["kind"] != "import" and e["from"] != e["to"]}
+    assert top["callers"] == len(callers)
+    assert len(tool.dumps(index)) <= tool.MAX_INDEX_BYTES
+
+
+def test_the_index_stays_under_its_byte_budget_and_says_what_it_cut(
+    tool: Any, tmp_path: Path
+) -> None:
+    files = _all_fixtures()
+    history = [(1_780_000_000 + DAY * i, {"src/pkg/users.py": f"# {i}\n",
+                                          "tests/test_users.py": f"# {i}\n"})
+               for i in range(1, 7)]
+    facts = tool.extract(fx.build_repo(tmp_path / "repo", files, history=history), tool.Budget())
+    full = tool.index_document(facts)
+    full_size = len(tool.dumps(full))
+    assert full["truncated"] == []
+    # A cap well below the document's natural size: it must fit, and name cuts.
+    cap = full_size // 2
+    cut = tool.index_document(facts, max_bytes=cap)
+    assert len(tool.dumps(cut)) <= cap
+    assert cut["truncated"], "a cut index must say what it cut"
+    assert set(cut["truncated"]) <= {"hot_spots", "graph.most_called", "routes",
+                                     "test_map", "modules"}
+    for name in cut["truncated"]:
+        if name == "graph.most_called":
+            assert len(cut["graph"]["most_called"]) < len(full["graph"]["most_called"])
+        elif name == "test_map":
+            assert cut["test_map"] != full["test_map"]
+        else:
+            assert cut[name] != full[name], name
+    # Halving the heaviest list first: one big list never empties the others.
+    for name in ("hot_spots", "routes", "test_map", "modules"):
+        assert bool(cut[name]) == bool(full[name]), name
+    assert bool(cut["graph"]["most_called"]) == bool(full["graph"]["most_called"])
+    # The graph summary's counts are never cut: they describe the whole graph.
+    assert cut["graph"]["symbols"] == full["graph"]["symbols"]
+    assert cut["graph"]["digest"] == full["graph"]["digest"]
+    # Cutting is deterministic too.
+    assert tool.dumps(tool.index_document(facts, max_bytes=cap)) == tool.dumps(cut)
+
+
+def test_the_test_map_goes_to_directory_granularity_before_it_is_cut(
+    tool: Any, tmp_path: Path
+) -> None:
+    facts = tool.extract(fx.build_repo(tmp_path / "repo", fx.PYTHON_APP), tool.Budget())
+    full = tool.index_document(facts)
+    coarse = tool._test_map_by_directory(full["test_map"])
+    assert coarse and all(t["source"].endswith("**") for t in coarse)
+    assert len(coarse) <= len(full["test_map"])
+    # Every file-level edge is still represented by its directory's edge.
+    pairs = {(t["source"], t["test"]) for t in coarse}
+    for t in full["test_map"]:
+        directory = t["source"].rsplit("/", 1)[0] if "/" in t["source"] else ""
+        assert ((f"{directory}/**" if directory else "**"), t["test"]) in pairs
+
+
 # ---------------------------------------------------------------------------
 # Determinism and the command line
 # ---------------------------------------------------------------------------
@@ -513,22 +650,39 @@ def test_the_same_input_gives_byte_identical_json(tool: Any, tmp_path: Path) -> 
     assert out_one == out_two
     assert tool.dumps(tool.extract(first, tool.Budget())) == out_one
     assert str(tmp_path) not in out_one.decode("utf-8")
-    assert json.loads(out_one)["schema"] == "swarm.repo-index/v1"
+    # Both documents the command line writes are byte-identical too.
+    facts_one = tool.extract(first, tool.Budget())
+    facts_two = tool.extract(second, tool.Budget())
+    graph_one = tool.dumps(tool.graph_document(facts_one))
+    assert graph_one == tool.dumps(tool.graph_document(facts_two))
+    index_one = tool.dumps(tool.index_document(facts_one, graph_one))
+    assert index_one == tool.dumps(tool.index_document(facts_two))
+    assert json.loads(index_one)["schema"] == "swarm.repo-index/v1"
+    assert json.loads(graph_one)["schema"] == "swarm.repo-graph/v1"
 
 
 def test_the_command_line_writes_the_json(tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", fx.GO_APP)
     out = tmp_path / "artifacts" / "repo-index.json"
+    graph_out = tmp_path / "graph" / "repo-graph.json"
     done = subprocess.run(
         [sys.executable, str(SCRIPT), "--repo", str(repo), "--out", str(out),
-         "--file-timeout-seconds", "5"],
+         "--graph-out", str(graph_out), "--file-timeout-seconds", "5"],
         capture_output=True, text=True, timeout=120,
         env=fx.git_env(tmp_path),
     )
     assert done.returncode == 0, done.stderr
     index = json.loads(out.read_text(encoding="utf-8"))
     assert index["schema"] == "swarm.repo-index/v1"
-    assert _symbol(index, "internal/cart/cart.go#Show")
+    # §2.2: the graph is not in the artifact; the artifact points at it.
+    for graph_key in ("symbols", "call_edges", "symbol_test_map", "files"):
+        assert graph_key not in index, graph_key
+    graph_bytes = graph_out.read_bytes()
+    graph = json.loads(graph_bytes)
+    assert graph["schema"] == "swarm.repo-graph/v1"
+    assert _symbol(graph, "internal/cart/cart.go#Show")
+    assert index["graph"]["digest"] == "sha256:" + hashlib.sha256(graph_bytes).hexdigest()
+    assert out.stat().st_size <= 512 * 1024
     # A one-line summary with the counts the run actually produced.
     assert re.search(r"files=\d+ symbols=\d+ edges=\d+", done.stderr)
     selftest = subprocess.run(

@@ -637,7 +637,9 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
 
 # The repository-index extractor (docs/repo-index.md §3.5, lane RI3): one
 # tree-sitter pass the indexer prompt runs first, as
-# `swarm-repo-index --repo <checkout> --out "$SWARM_ARTIFACTS_DIR/..."`.
+# `swarm-repo-index --repo <checkout> --out "$SWARM_ARTIFACTS_DIR/repo-index.json"`
+# (the 512 KiB index of §2.2; `--graph-out <file>` writes the graph, which
+# §2.2 keeps out of the artifact, for the shard writer).
 # Like checkov it gets its OWN environment, /opt/repo-index, so its grammars
 # never change the worker's /opt/venv or the agent's `pip install` target.
 # --require-hashes with --only-binary: every wheel is the exact bytes
