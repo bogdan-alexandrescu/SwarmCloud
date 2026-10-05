@@ -231,10 +231,10 @@ CHECKPOINT_INTERVAL_SECONDS=120   # RunnerProfile's default; `mock` declares 30 
 
 The worker does not choose this. The dispatcher sets `CHECKPOINT_INTERVAL_SECONDS`
 on every attempt from the task's runner profile
-(`apps/scheduler/scheduler/dispatch.py:479`), so the value lives in the frozen
+(`apps/scheduler/scheduler/dispatch.py::worker_env`), so the value lives in the frozen
 catalogue: 120 s for every profile except `mock`, which declares 30 s
-(`apps/common/swarm_common/profiles.py:1130`). The worker's own 120
-(`apps/agent-worker/agent_worker/config.py:83`) is only the fallback for a
+(`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`). The worker's own 120
+(`apps/agent-worker/agent_worker/config.py::WorkerConfig.checkpoint_interval_seconds`) is only the fallback for a
 process started without the variable. This block said 60 until 2026-10-02, which
 nothing in the repository sets; change the interval in the catalogue (a contract
 change request), not in an environment.

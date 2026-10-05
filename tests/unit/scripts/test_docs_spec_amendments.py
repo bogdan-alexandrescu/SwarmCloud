@@ -135,38 +135,100 @@ def test_build_prompt_no_longer_lists_cloud_run_jobs_for_deletion():
     assert "CLOUD_RUN_JOB` member and every branch" not in deleted
 
 
-_CITE_WINDOW = 150  # a merge above the code moves a cited line; see test_docs_describe_what_was_built._line
-
-
-def _cited_line(path: str, line: int) -> str:
-    """The lines within +/-150 of the cited one, joined: the cited text must be near the line the doc names."""
-    lines = (REPO / path).read_text(encoding="utf-8").splitlines()
-    lo = max(0, line - 1 - _CITE_WINDOW)
-    return "\n".join(lines[lo : line + _CITE_WINDOW])
-
-
 def _cited_symbol(path: str, qualname: str) -> str:
-    """The source of the function or class `qualname` (dotted, e.g. `Worker._lease_account`) in `path`.
+    """The source of the function, class or assigned name `qualname` (dotted, e.g. `Worker._lease_account`) in `path`.
 
     #647: a line number in a 10,000-line module moves whenever a lane edits
     above it, so a large Python file is cited as `path::qualname` instead and
     the cited call must sit inside that symbol's body. A call that moves out
     of the function, or a function that is renamed, still fails here.
+
+    The source includes what a reader sees as part of the symbol: a function's
+    decorators (a route's `@router.post("/authorize")`), and for a module or
+    class level name (`TOKEN_ENDPOINT`, `WorkerConfig.checkpoint_interval_seconds`)
+    the `#:` comment block directly above it, the convention that documents a
+    name in this repository.
     """
     source = (REPO / path).read_text(encoding="utf-8")
     scope: ast.AST = ast.parse(source, filename=path)
     for part in qualname.split("."):
-        scope = next(
-            (
-                node
-                for node in ast.iter_child_nodes(scope)
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-                and node.name == part
-            ),
-            None,
-        )
+        scope = next((node for node in ast.iter_child_nodes(scope) if _defines(node, part)), None)
         assert scope is not None, f"{path} has no {qualname} (no {part!r})"
-    return ast.get_source_segment(source, scope)
+    lines = source.splitlines()
+    start = scope.lineno
+    if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        start = min([start] + [d.lineno for d in scope.decorator_list])
+    else:
+        while start > 1 and lines[start - 2].strip().startswith("#:"):
+            start -= 1
+    return "\n".join(lines[start - 1 : scope.end_lineno])
+
+
+def _defines(node: ast.AST, name: str) -> bool:
+    """Whether `node` is the def, class or single-name assignment of `name`."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return node.name == name
+    if isinstance(node, ast.Assign):
+        return any(isinstance(t, ast.Name) and t.id == name for t in node.targets)
+    if isinstance(node, ast.AnnAssign):
+        return isinstance(node.target, ast.Name) and node.target.id == name
+    return False
+
+
+def _cited_anchor(path: str, text: str, *, once: bool = True) -> str:
+    """The line of `path` that holds `text`, which a doc cites as `path` (`text`).
+
+    A non-Python file (a Dockerfile, a script, Terraform, markdown) has no
+    symbol to name, so a doc cites the exact text it points at instead of a
+    line number: #675 added 12 lines to the Dockerfile and pushed
+    `USER swarm:swarm` past the +/-150-line window this replaced, which turned
+    main red over a citation that was still true. An anchor never drifts; it
+    fails only when the text is gone, which is when the doc is wrong.
+
+    `once` (the default) also holds that the text names ONE place: an anchor
+    that occurs twice does not say which of the two the doc means.
+    """
+    assert "\n" not in text, f"an anchor is one line of {path}: {text!r}"
+    target = REPO / path
+    assert target.is_file(), f"cited {path}, which does not exist"
+    source = target.read_text(encoding="utf-8")
+    count = source.count(text)
+    assert count, f"{path} no longer contains the cited text {text!r}"
+    if once:
+        assert count == 1, f"{path} contains the cited text {text!r} {count} times: cite one place"
+    return next(line for line in source.splitlines() if text in line)
+
+
+#: The prefixes a citation into this repository starts with.
+_ROOTS = r"(?:apps|terraform|kubernetes|scripts|tests|images|plugin|docs|\.github)/"
+
+#: `path:N` or `path:N-M`: the form #647 and lane CITD retired. Any match fails.
+_LINE_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.\w+:\d+(?:-\d+)?)`")
+
+#: `path::qualname`, a Python function, class or name.
+_SYMBOL_CITE = re.compile(rf"`({_ROOTS}[\w./-]+\.py)::([\w.]+)`")
+
+#: `path` (`text`): the exact text a non-Python citation points at. `\s+`, not
+#: one space, so a citation the doc wraps between `path` and (`text`) is still
+#: checked rather than silently skipped.
+_ANCHOR_CITE = re.compile(rf"`({_ROOTS}[\w./-]+)`\s+\(`([^`]+)`\)")
+
+#: Anchors a doc cites that occur more than once in their file, and why each
+#: cannot be narrowed to one. Every other anchor must occur exactly once.
+_REPEATED_ANCHORS: frozenset[tuple[str, str]] = frozenset()
+
+
+def _assert_cites_resolve(doc: Path) -> None:
+    """Every citation in `doc` is a symbol or an anchor that resolves, and none is a line number."""
+    text = _text(doc)
+    stale = _LINE_CITE.findall(text)
+    assert not stale, f"{doc.name} still cites line numbers, which drift: {stale}"
+    for path, qualname in _SYMBOL_CITE.findall(text):
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+        _cited_symbol(path, qualname)
+    for path, anchor in _ANCHOR_CITE.findall(text):
+        assert "\n" not in anchor, f"{doc.name} wraps the anchor it cites in {path}: keep it on one line"
+        _cited_anchor(path, anchor, once=(path, anchor) not in _REPEATED_ANCHORS)
 
 
 def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
@@ -176,11 +238,12 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     text = _text(BUILD_PROMPT)
     isolation = _section(text, "### 2.2 Isolation: root inside the pod, gVisor underneath")
     assert "Amended 2026-10-01" in isolation
-    assert "`images/agent-runtime-base/Dockerfile:810`" in isolation
-    assert "`kubernetes/render.py:390`" in isolation
-    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 810)
-    assert "--runtime gvisor" in _cited_line("kubernetes/render.py", 390)
-    assert "NOT the" in _cited_line("kubernetes/render.py", 390)
+    assert "`images/agent-runtime-base/Dockerfile` (`USER swarm:swarm`)" in isolation
+    assert _cited_anchor("images/agent-runtime-base/Dockerfile", "USER swarm:swarm").strip() == "USER swarm:swarm"
+    assert "`kubernetes/render.py::JOB_FILES_GVISOR`" in isolation
+    gvisor = _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR")
+    assert "--runtime gvisor" in gvisor
+    assert "NOT the" in gvisor
 
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch
@@ -284,27 +347,33 @@ def test_budget_exhausted_is_recorded_as_a_request_not_an_edit():
 
 
 # --------------------------------------------------------------------------
-# every file:line an amended document cites resolves
+# every citation an amended document makes resolves, and none is a line number
 # --------------------------------------------------------------------------
 
-_CITE = re.compile(r"`((?:apps|terraform|kubernetes|scripts|tests|images)/[\w./-]+\.\w+):(\d+)`")
+CHILD_TASKS = REPO / "docs" / "design" / "child-tasks.md"
+
+#: The amended documents, and the child-tasks design, whose lifecycle.py line
+#: numbers drifted the same way #647's did.
+CITING = AMENDED + (CHILD_TASKS,)
 
 
-@pytest.mark.parametrize("doc", AMENDED, ids=lambda p: p.name)
-def test_every_cited_line_exists(doc: Path):
-    for path, line in _CITE.findall(_text(doc)):
-        target = REPO / path
-        assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
-        lines = target.read_text(encoding="utf-8").count("\n") + 1
-        assert int(line) <= lines, f"{doc.name} cites {path}:{line}, past its end ({lines})"
+@pytest.mark.parametrize("doc", CITING, ids=lambda p: p.name)
+def test_every_citation_is_a_symbol_or_an_anchor_that_resolves(doc: Path):
+    """No `path:N`; every `path::qualname` names a def, class or name; every `path` (`text`) finds its text."""
+    _assert_cites_resolve(doc)
 
 
-_SYMBOL_CITE = re.compile(r"`((?:apps|kubernetes|scripts|tests)/[\w./-]+\.py)::([\w.]+)`")
-
-
-@pytest.mark.parametrize("doc", AMENDED, ids=lambda p: p.name)
-def test_every_cited_symbol_exists(doc: Path):
-    """Every `path::qualname` an amended document cites names a function or class that is there."""
-    for path, qualname in _SYMBOL_CITE.findall(_text(doc)):
-        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
-        _cited_symbol(path, qualname)
+def test_an_anchor_that_is_gone_or_ambiguous_fails():
+    """The helpers' own failure modes: the reason a moved line no longer turns main red is
+    that the anchor is checked for presence instead, so presence must really be checked."""
+    dockerfile = "images/agent-runtime-base/Dockerfile"
+    with pytest.raises(AssertionError, match="no longer contains"):
+        _cited_anchor(dockerfile, "USER swarm:swarm-that-is-not-there")
+    with pytest.raises(AssertionError, match="times: cite one place"):
+        _cited_anchor(dockerfile, "RUN ")
+    assert _cited_anchor(dockerfile, "RUN ", once=False).lstrip().startswith("RUN ")
+    with pytest.raises(AssertionError, match="has no"):
+        _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR_GONE")
+    # A name's `#:` block is part of what it cites; a function's decorator is too.
+    assert _cited_symbol("kubernetes/render.py", "JOB_FILES_GVISOR").startswith("#: v2: root inside a gVisor sandbox.")
+    assert _cited_symbol("apps/swarm-api/swarm_api/routes/platform.py", "runtimes").startswith("@router.get(")

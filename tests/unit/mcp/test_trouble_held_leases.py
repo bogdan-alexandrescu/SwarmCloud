@@ -147,6 +147,11 @@ class FakeClient:
             "/v1/capacity": {"pools": []},
             "/v1/tasks": {"tasks": []},
             "/v1/accounts": {"accounts": [{"account_id": "a", "state": "ACTIVE"}]},
+            # `sc trouble` reads the reconciler's stalled workflows too (#616).
+            "/v1/workflows": {
+                "workflows": [],
+                "stalled_workflows": {"count": 0, "workflows": [], "check_error": None},
+            },
         }[path.split("?")[0]]
 
 

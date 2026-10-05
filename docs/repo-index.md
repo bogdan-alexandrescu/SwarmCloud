@@ -94,13 +94,13 @@ graph-storage, impact, selected-tests and graph-explorer lanes.
 
 Today a repository is not a thing the platform knows about. It is a string on
 a task: `TaskCreate.repository_url`, checked by one rule,
-`check_repository_url` (`apps/swarm-api/swarm_api/validation.py:792`), which
+`check_repository_url` (`apps/swarm-api/swarm_api/validation.py::check_repository_url`), which
 accepts any https, ssh or `git@` URL that carries no credential. An issue run
 derives its repository from the issue reference (`IssueRef`,
-`apps/swarm-api/swarm_api/validation.py:854`; GitHub only, `ISSUE_FORGE_HOSTS`)
+`apps/swarm-api/swarm_api/validation.py::IssueRef`; GitHub only, `ISSUE_FORGE_HOSTS`)
 and reads the forge for that one run: the issue for the preview, and the
 repository's open issues and pull requests for the planner
-(`read_open_work`, `apps/swarm-api/swarm_api/forge.py:531`). Nothing outlives
+(`read_open_work`, `apps/swarm-api/swarm_api/forge.py::read_open_work`). Nothing outlives
 the run. Every planner therefore starts from nothing: it clones the
 repository and spends the first part of its budget discovering the layout,
 the test conventions and the territory rules that the previous planner on the
@@ -137,7 +137,7 @@ runs (§2.4 says why indexes are not shared).
 **The credential is the tenant's existing forge token,
 `swarm-tenant-<tenant>-git`, by name.** It is the secret the worker clones and
 publishes with, that swarm-api already reads through
-`SecretManagerForgeTokens` (`apps/swarm-api/swarm_api/forge.py:156`) for the
+`SecretManagerForgeTokens` (`apps/swarm-api/swarm_api/forge.py::SecretManagerForgeTokens`) for the
 issue preview and the open-work read, and that `scripts/create-secrets.sh
 --stdin` stores. Registration does not accept a token, does not store one,
 and does not echo one: the record holds no credential field at all.
@@ -217,7 +217,7 @@ Two objects per indexed commit:
   the API from the JSON (never written by the agent, so it cannot say
   something the JSON does not). 24 KiB is chosen against the planner's prompt:
   `MAX_PLANNER_PROMPT_BYTES` is 64 KiB
-  (`apps/swarm-api/swarm_api/issueruns.py:162`) because the claude-code runner
+  (`apps/swarm-api/swarm_api/issueruns.py::MAX_PLANNER_PROMPT_BYTES`) because the claude-code runner
   passes the prompt as one argv string and Linux refuses one argument over
   128 KiB. The open-work section, the instructions and the summary together
   must fit; 24 KiB leaves the open work more than half the remaining budget.
@@ -323,7 +323,7 @@ lane.
 **Invariant 9 holds without a new grant.** The prefix is under
 `tenants/<tenant>/`, which the tenant's own worker service account may
 already write — everything there except `verdicts/`
-(`terraform/modules/tenancy/main.tf:169`) — and which no other tenant's
+(`terraform/modules/tenancy/main.tf` (`!${local.verdicts_prefix[t]}`)) — and which no other tenant's
 account can read. The indexer writes the shards directly; swarm-api reads
 them as it reads `plan.json`. The digest of the manifest is recorded in the
 `index_versions` entry at promotion (§2.3), so a shard rewritten after
@@ -410,7 +410,7 @@ Each registration carries:
 **Polling the forge (phase 1).** A per-tenant Cloud Scheduler job,
 `repo_index_poll`, calls `POST /v1/admin/repositories/poll?tenant_id=<tenant>`
 every 5 minutes, the pattern `issue_run_advance` already uses
-(`terraform/modules/scheduler/jobs.tf:214`), and like it says
+(`terraform/modules/scheduler/jobs.tf` (`resource "google_cloud_scheduler_job" "issue_run_advance"`)), and like it says
 `managed-by=swarm-terraform` in its description because a Cloud Scheduler job
 has no labels. The route reads, for each of the tenant's registrations whose
 `on_change` is `poll`, `GET /repos/{owner}/{repo}/commits/{default_branch}`
@@ -567,7 +567,7 @@ submitted as. [worker-images.md](worker-images.md) has the measurement.
 
 `POST /v1/runs` already reads the forge for the planner and puts the open work
 in its prompt between two delimiter lines carrying the run id, as data
-(`planner_prompt`, `apps/swarm-api/swarm_api/issueruns.py:591`). The index
+(`planner_prompt`, `apps/swarm-api/swarm_api/issueruns.py::planner_prompt`). The index
 joins it the same way, **in phase 1, with no frozen-contract change**: when a
 registration matches the issue's `owner/repo` and has a current index,
 `planner_prompt` adds a section
@@ -617,7 +617,7 @@ missing index is context missing, not an input failure, so it never ends a
 task `INPUTS_UNAVAILABLE`.
 
 Phase 2 needs the frozen-contract request in §6.3, because `_CLI_AGENT_INPUTS`
-(`apps/common/swarm_common/profiles.py:1100`) declares `issue` as the only
+(`apps/common/swarm_common/profiles.py::_CLI_AGENT_INPUTS`) declares `issue` as the only
 input those profiles take, and swarm-api refuses an undeclared input.
 
 ### 4.3 "What tests should run for this diff"
@@ -904,7 +904,7 @@ routes are in [git-tokens.md](git-tokens.md) §7.
 
 Kept by their own module, read and written there only, not through
 `store.py` or `codec.py`, for the reason `issue_runs` gives
-(`apps/swarm-api/swarm_api/issueruns.py:135`): the shape is not the frozen
+(`apps/swarm-api/swarm_api/issueruns.py` (`THIS MODULE KEEPS ITS OWN DOCUMENT`)): the shape is not the frozen
 contract's and must not leak into it.
 
     repositories/{repo_id}

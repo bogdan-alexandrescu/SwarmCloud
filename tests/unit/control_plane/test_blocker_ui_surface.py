@@ -160,6 +160,16 @@ def test_no_screen_declares_its_own_grouping_of_reasons():
                 for r in BlockedReason
                 if re.search(rf"(?<![A-Z_]){re.escape(r.value)}(?![A-Z_])", line)
             ]
+            # A ternary that PICKS one reason is not a grouping: `poolGroup`
+            # chooses the refusal a pool would give, pause before unset, in
+            # `evaluate_capacity`'s own order. That pair only became two
+            # members when request 38 made POOL_LIMIT_UNSET a BlockedReason.
+            # A list or a Set never puts each member right after a `?`.
+            if all(
+                re.search(rf"\?\s*'?(?<![A-Z_]){re.escape(hit)}(?![A-Z_])", line)
+                for hit in hits
+            ):
+                continue
             assert len(hits) < 2, (
                 f"{name}:{number} lists {hits} together, which is a grouping. "
                 "The grouping is served as `blocked_reason_groups`; a copy "

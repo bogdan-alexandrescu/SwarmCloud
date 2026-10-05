@@ -8,12 +8,12 @@ TENANT_LIMIT / RESOURCE_CLASS_LIMIT "at 0", the API served `hard_limit: 0`,
 and the console told the reader an operator had set the pool to zero. Nobody
 had. The ceiling was never written, so it was never read.
 
-WHAT IS STILL TRUE, AND WHY ADMISSION STILL REFUSES. The frozen admission
-transaction (`acquire_lease_in_transaction`) reads the same document with the
-same default, so a task through such a pool is still refused -- refusing is the
-safe answer to "how much may run here" when nobody has said. What changes is
-that the refusal is named for what it is (`POOL_LIMIT_UNSET`, limit null), and
-the API serves the limit as unknown (null), never as a 0 somebody chose.
+WHAT IS STILL TRUE, AND WHY ADMISSION STILL REFUSES. Refusing is the safe
+answer to "how much may run here" when nobody has said. Since contract request
+38 (accepted 2026-10-05) the frozen contract says it itself:
+`SlotPool.hard_limit` is None for a ceiling nobody set, and admission refuses
+through it with `BlockedReason.POOL_LIMIT_UNSET`, limit null -- never as a 0,
+never as unlimited. The API serves the limit as unknown (null).
 
 A pool set to 0 on purpose is unaffected: it is still a 0, with the pool's own
 reason.
@@ -26,13 +26,15 @@ from datetime import datetime, timezone
 from swarm_api.codec import pool_from_dict as api_pool_from_dict
 from swarm_api.codec import pool_to_api
 
-from scheduler.codec import POOL_LIMIT_UNSET, hard_limit_known
+from swarm_common.states import BlockedReason
+
 from scheduler.codec import pool_from_dict as scheduler_pool_from_dict
 
 from .conftest import auth_header, seed_pool, seed_task, seed_tenant
 
 TENANT = "eng"
 NOW = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
+POOL_LIMIT_UNSET = BlockedReason.POOL_LIMIT_UNSET.value
 
 
 def unset(name: str, **fields) -> dict:
@@ -47,17 +49,18 @@ def unset(name: str, **fields) -> dict:
 
 def test_the_scheduler_codec_reads_a_missing_hard_limit_as_unknown():
     pool = scheduler_pool_from_dict("tenant:eng", unset("tenant:eng"))
-    assert hard_limit_known(pool) is False
+    assert pool.hard_limit is None
+    assert pool.effective_limit is None
 
 
 def test_the_scheduler_codec_reads_a_null_hard_limit_as_unknown():
     pool = scheduler_pool_from_dict("tenant:eng", unset("tenant:eng", hard_limit=None))
-    assert hard_limit_known(pool) is False
+    assert pool.hard_limit is None
+    assert pool.effective_limit is None
 
 
 def test_the_scheduler_codec_still_reads_an_explicit_zero_as_zero():
     pool = scheduler_pool_from_dict("tenant:eng", unset("tenant:eng", hard_limit=0))
-    assert hard_limit_known(pool) is True
     assert pool.hard_limit == 0
     assert pool.effective_limit == 0
 
@@ -196,12 +199,12 @@ def test_capacity_still_measures_a_pool_set_to_zero_on_purpose(client, db):
 # An explicit null is unset too, and must not crash the drain
 # --------------------------------------------------------------------------
 #
-# Both codecs read `hard_limit: null` as unset, but the frozen transaction
-# reads it with `d.get("hard_limit", 0)` -- which returns the None, not the 0
-# -- and `SlotPool.effective_limit` is then `max(0, min([None]))`: a
-# TypeError. Before the fix it escaped `_admit_one` (which catches only
-# AdmissionDenied) and ended the WHOLE drain, so one tenant's hand-edited pool
-# stopped admission for every tenant behind it.
+# Before contract request 38 the frozen transaction read `hard_limit: null`
+# with `d.get("hard_limit", 0)` -- which returns the None, not the 0 -- and
+# `SlotPool.effective_limit` was then `max(0, min([None]))`: a TypeError. It
+# escaped `_admit_one` (which catches only AdmissionDenied) and ended the WHOLE
+# drain, so one tenant's hand-edited pool stopped admission for every tenant
+# behind it. The contract now reads a null exactly as a missing key.
 
 OTHER = "ops"
 
@@ -264,22 +267,31 @@ def test_a_paused_null_limit_pool_is_still_reported_paused(db, make_scheduler):
     assert blocker["reason"] == "MANUAL_PAUSE"
 
 
-def test_the_null_limit_read_handles_the_generator_a_real_transaction_returns(db):
-    """`Transaction.get` yields in google-cloud-firestore; the fakes return a snapshot."""
-    from scheduler.store import _UnsetLimitReads
+def test_capacity_serves_a_paused_unset_pool_as_paused_with_no_headroom(client, db):
+    """A paused pool with no limit stays in the analysis (a pause is a known refusal).
 
-    db.docs["pools/tenant:eng"] = unset("tenant:eng", hard_limit=None, active=1)
-    db.docs["tasks/t"] = {"id": "t", "hard_limit": None}
+    Its limit is the contract's None, so the headroom bound must not take a
+    `min` over it: the profile reports 0, refused by the pause, and resuming
+    it would still buy nothing, because the limit is still unset.
+    """
+    seed_tenant(db, TENANT, credentials=("anthropic",))
+    seed_pool(db, "global", hard_limit=64)
+    db.docs[f"pools/tenant:{TENANT}"] = unset(f"tenant:{TENANT}", enabled=False)
 
-    class YieldingTxn:
-        def get(self, ref, **kwargs):
-            yield ref.get()
+    served = _capacity_profiles(client)
 
-    reads = _UnsetLimitReads(YieldingTxn())
-    pool = reads.get(db.collection("pools").document("tenant:eng"))
-    assert pool.exists
-    assert "hard_limit" not in pool.to_dict()
-    assert pool.to_dict()["active"] == 1
-    # Only a pool document is touched: anything else is passed through as read.
-    task = next(iter(reads.get(db.collection("tasks").document("t"))))
-    assert task.to_dict()["hard_limit"] is None
+    pool = next(p for p in served["pools"] if p["name"] == f"tenant:{TENANT}")
+    assert pool["hard_limit"] is None
+    assert pool["enabled"] is False
+    through = {
+        name: p for name, p in served["runner_profiles"].items()
+        if f"tenant:{TENANT}" in p["pools"]
+    }
+    assert through
+    for name, profile in through.items():
+        admission = profile["admission"]
+        assert admission["headroom"] == 0, name
+        assert admission["basis"] == "measured", name
+        [blocker] = [b for b in admission["blockers"] if b["pool"] == f"tenant:{TENANT}"]
+        assert blocker["reason"] == "MANUAL_PAUSE", name
+        assert blocker["limit"] is None, name

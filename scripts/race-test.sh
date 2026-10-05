@@ -585,7 +585,7 @@ assert_eq "0" "${STUCK}" "tasks still holding capacity after cancellation"
 
 # ---------------------------------------------------------------------------
 t_case "Accounting is consistent: no negative pools, none over limit"
-BROKEN="$(fs_list_docs pools | jq -s "${FS_JQ}"' [ .[] | select((.active // 0) < 0 or (.active // 0) > effective_limit) | .id ] | join(", ")')"
+BROKEN="$(fs_list_docs pools | jq -s "${FS_JQ}"' [ .[] | select((.active // 0) < 0 or (.active // 0) > (effective_limit // 0)) | .id ] | join(", ")')"
 if [[ "${BROKEN}" == '""' || -z "${BROKEN//\"/}" ]]; then
   t_pass "every pool is within [0, effective_limit]"
 else

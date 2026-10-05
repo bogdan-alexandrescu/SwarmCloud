@@ -7,6 +7,9 @@ description = "Reconciles control-plane state against Cloud Run Jobs and GKE rea
 requires-python = ">=3.11"
 dependencies = [
     "swarm-common",
+    # The workflow state derivation the API serves, so the workflow stall
+    # check (#616) judges drift by the same rule (`detect_stalled_workflows`).
+    "swarm-workflow-rollup",
     "fastapi>=0.115",
     "uvicorn>=0.30",
     "google-cloud-firestore>=2.16",
@@ -27,3 +30,4 @@ packages = ["reconciler"]
 
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
+swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }

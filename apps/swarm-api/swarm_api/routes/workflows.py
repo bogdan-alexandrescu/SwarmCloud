@@ -39,6 +39,7 @@ from ..deps import (
     tenant_scope,
 )
 from ..schemas import WorkflowCreate
+from ..stalls import stalled_workflows
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +139,11 @@ def list_workflows(
         # UNKNOWN because this route stopped reading, not because anything is
         # wrong with those workflows.
         "rollup_report": report.to_api(),
+        # What the reconciler's workflow stall check last found for this
+        # tenant (#616): the console's Overview "Needs a look" and `sc trouble`
+        # read it here. `count` is null, with `check_error` saying why, when
+        # the check's result is not known -- never zero (swarm_api.stalls).
+        "stalled_workflows": stalled_workflows(ctx.store.db, tenant_id),
     }
 
 
