@@ -55,6 +55,16 @@ that refuses any call asking for `run_in_background` and tells the agent to run
 it in the foreground. The hook is the layer that holds when a CLI release
 renames or ignores the variable. And when an answer still announces pending
 work, `cliagent` resumes the session once to finish (`finish_on_pending`).
+
+WHY REPAIR TURNS (#624, owner decision 2026-10-05, history I1). About $201 --
+14.9% of all spend -- went to agents that finished and then failed a check
+they were never shown: an expected output not written, or a credential-shaped
+line in the final tree, both checked by the worker only after the agent had
+exited. So after the turn ends (and after any finish pass) `cliagent` runs the
+same expected-outputs check and the same publish credential scan
+(`agent_worker.publish_scan`) against the tree, and when either fails resumes
+the session for up to two repair turns, naming each missing file's path or
+each flagged `path:line rule` -- never the matched text (`repair_checks`).
 """
 
 from __future__ import annotations
@@ -175,6 +185,10 @@ SPEC = CliAgentSpec(
     # An answer that announces pending work is resumed once to finish it
     # (owner decision 2026-10-05; `cliagent.pending_work`).
     finish_on_pending=True,
+    # After the turn ends, the expected-outputs check and the publish
+    # credential scan run against the tree, and a failure is resumed for up
+    # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
+    repair_checks=True,
 )
 
 

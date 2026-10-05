@@ -31,6 +31,7 @@ import {
 } from './listSnap'
 import { useRead } from './RunFiles'
 import { StopRun } from './StopRun'
+import { TaskIdLine } from './TaskIdLine'
 import { useResourceClasses } from './Blockers'
 import { HelpCard } from './HelpCard'
 import {
@@ -524,11 +525,12 @@ const COPY_SAID_MS = 4000
  * THE DETAIL'S HEADER, IN TWO LINES (agent-details-v3.html A, picked
  * 2026-10-04). Line 1: the state pill, the agent's name -- its step, or what
  * it is when it stands alone -- the headline `elapsed · attempt n of N` in
- * sans, and Copy link, Stop and ✕. Line 2: one sans meta line -- profile ·
- * class · workflow · account -- the task id behind a copy button whose title
- * is the whole id, and the dispatch as plain-language chips.
+ * sans, and Copy link, Stop and ✕. Under it the whole task id, printed in
+ * mono with its copy button (`TaskIdLine`, #94 -- it was only the button's
+ * tooltip). Then one sans meta line -- profile · class · workflow · account --
+ * and the dispatch as plain-language chips.
  *
- * WHAT LEFT IT, AND WHERE TO: the printed id (behind `copy id`), the tenant
+ * WHAT LEFT IT, AND WHERE TO: the tenant
  * (the panel's tenant tile says it), gen and units (the Attempts tab), and
  * started (the strip's Elapsed sub-line). The actions share line 1 again:
  * the title takes the slack and clamps at two lines, and the headline and
@@ -612,7 +614,10 @@ function AgHead({
           </Button>
         </span>
       </div>
-      <AgHeadMeta taskId={taskId} task={task} />
+      {/* UNDER THE NAME, THE WHOLE ID, PRINTED (#94): it was only the copy
+          button's tooltip, so it had to be hovered to be read. */}
+      <TaskIdLine id={taskId} className="ag-head-id" />
+      <AgHeadMeta task={task} />
     </header>
   )
 }
@@ -644,10 +649,11 @@ const ROLE_SAY: Readonly<Record<DispatchRole, string>> = {
 
 /**
  * Profile · class (with its size, once the catalogue answers) · workflow ·
- * account, the id's copy button, and the dispatch chips. Sans; mono only for
- * the ids. An account not read is a dash with its reason, never blank.
+ * account, and the dispatch chips. Sans; mono only for the ids. An account
+ * not read is a dash with its reason, never blank. The task id is the line
+ * above this one (`TaskIdLine`).
  */
-export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null }) {
+export function AgHeadMeta({ task }: { task: Task | null }) {
   const classes = useResourceClasses()
   const cls = task === null ? null : (classes?.[task.resource_class] ?? null)
   const account = task === null ? null : accountText(task.account)
@@ -678,9 +684,6 @@ export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null
           )}
         </>
       )}
-      <li className="is-nodot">
-        <AgCopyId value={taskId} />
-      </li>
       {task !== null && (
         // ONE `?` FOR THE DISPATCH CHIPS, after them: what the strategy and
         // the role mean is one topic. The carrier gets no chip -- no worker
@@ -698,47 +701,5 @@ export function AgHeadMeta({ taskId, task }: { taskId: string; task: Task | null
         </li>
       )}
     </ul>
-  )
-}
-
-/**
- * THE TASK ID, BEHIND ITS COPY (agent-details-v3.html A). Not printed: the
- * button's title is the whole id, and the status says whether the copy
- * happened -- `navigator.clipboard` is undefined outside a secure context.
- */
-function AgCopyId({ value }: { value: string }) {
-  const [said, setSaid] = useState('')
-  useEffect(() => {
-    if (said === '') return
-    const t = setTimeout(() => setSaid(''), COPY_SAID_MS)
-    return () => clearTimeout(t)
-  }, [said])
-  const copy = () => {
-    const clipboard = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clipboard === undefined) {
-      setSaid('copy refused')
-      return
-    }
-    clipboard.writeText(value).then(
-      () => setSaid('task id copied'),
-      () => setSaid('copy refused'),
-    )
-  }
-  return (
-    <>
-      <button
-        type="button"
-        className="ag-head-idcopy"
-        title={`${value} (click to copy)`}
-        aria-label={`Copy task id ${value}`}
-        onClick={copy}
-      >
-        <CIcon name="copy" />
-        copy id
-      </button>
-      <span className="ag-head-said" role="status">
-        {said}
-      </span>
-    </>
   )
 }

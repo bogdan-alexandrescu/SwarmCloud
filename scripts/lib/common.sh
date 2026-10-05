@@ -1542,12 +1542,19 @@ def fv:
 def doc: { id: (.name | split("/") | last) }
          + ( (.fields // {}) | with_entries(.value |= fv) );
 # Mirrors swarm_common.models.SlotPool.effective_limit exactly: the minimum of
-# the hard limit and any adaptive or quota-derived cap, floored at zero.
+# the hard limit and any adaptive or quota-derived cap, floored at zero. A pool
+# with no hard_limit (absent or null) has NO effective limit: null, not 0 and not
+# unlimited -- admission refuses through it as POOL_LIMIT_UNSET (contract
+# request 38, #374). A caller that compares against this must handle null; in jq
+# every number is greater than null.
 def effective_limit:
-  [ (.hard_limit // 0) ]
-  + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
-  + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
-  | min | if . < 0 then 0 else . end;
+  if .hard_limit == null then null
+  else
+    [ .hard_limit ]
+    + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
+    + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
+    | min | if . < 0 then 0 else . end
+  end;
 '
 
 # fs_query COLLECTION WHERE_JSON [LIMIT] -> one document JSON per line
@@ -1757,9 +1764,11 @@ require_fs_database() {
 iam_policy_binds_member() {
   local policy_file="$1" role="$2" member="$3"
   [[ -s "${policy_file}" ]] || return 1
+  # Exactly 0 or 1: jq's own non-zero code for an unparseable file is
+  # version-dependent (4 under jq-1.6, 2026-10-05), and "not bound" is one answer.
   jq -e --arg role "${role}" --arg member "${member}" \
     'any((.bindings? // [])[]; .role == $role and any(.members[]?; . == $member))' \
-    "${policy_file}" >/dev/null 2>&1
+    "${policy_file}" >/dev/null 2>&1 || return 1
 }
 
 # ---------------------------------------------------------------------------

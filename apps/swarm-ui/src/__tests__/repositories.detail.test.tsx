@@ -331,7 +331,7 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(text).toContain('expires in 41 days')
     expect(text).toContain('last verified 3h ago')
     expect(text).toContain('order R2: repository token, then tenant token')
-    // The caller's own token is not derivable from the token list, so no attribution line is drawn.
+    // No record in the list is marked yours, so no attribution line is drawn.
     expect(text).not.toContain('your user token')
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })

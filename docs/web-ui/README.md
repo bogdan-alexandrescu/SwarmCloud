@@ -194,60 +194,60 @@ is under `/v1`.
 
 | screen | 2026-10-02 | evidence |
 |---|---|---|
-| Screen A — Operations Home | partly shipped: `GET /v1/admin/leases` and `GET /v1/admin/quota` exist; the Overview reads leases, and only the quota screen reads quota | `apps/swarm-api/swarm_api/routes/admin.py:410`, `apps/swarm-api/swarm_api/routes/admin.py:524`, `apps/swarm-ui/src/Overview.tsx:151`, `apps/swarm-ui/src/QuotaDetail.tsx:53` |
-| Screen C — Live capacity holders | shipped: `GET /v1/admin/leases`, rendered by Capacity ▸ Holders | `apps/swarm-api/swarm_api/routes/admin.py:410`, `apps/swarm-ui/src/Holders.tsx:131` |
-| Screen D — Backend reality | still blocked: only the reconciler reads Cloud Run; swarm-api serves no backend inventory | `apps/reconciler/reconciler/backends.py:506` |
+| Screen A — Operations Home | partly shipped: `GET /v1/admin/leases` and `GET /v1/admin/quota` exist; the Overview reads leases, and only the quota screen reads quota | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-api/swarm_api/routes/admin.py::list_quota`, `apps/swarm-ui/src/Overview.tsx` (`const leases = useRead(loadLeases, live)`), `apps/swarm-ui/src/QuotaDetail.tsx` (`export function QuotaDetailScreen() {`) |
+| Screen C — Live capacity holders | shipped: `GET /v1/admin/leases`, rendered by Capacity ▸ Holders | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/Holders.tsx` (`export function HoldersScreen() {`) |
+| Screen D — Backend reality | still blocked: only the reconciler reads Cloud Run; swarm-api serves no backend inventory | `apps/reconciler/reconciler/backends.py::CloudRunBackend` |
 | Screen E — GKE Autopilot nodes | still blocked, and still recommended not to build | nothing reads nodes |
-| Screen F — Throughput over time | partly shipped: a Firestore-backed throughput lane over `GET /v1/outcomes`; no Monitoring series and no utilisation history | `apps/swarm-api/swarm_api/routes/outcomes.py:47`, `apps/swarm-ui/src/Activity.tsx:137` |
-| Screen G — Reconciler last pass | still blocked: the report is held in process memory and never written to Firestore | `apps/reconciler/reconciler/service.py:121` |
-| Agents table — cost and token column | partly shipped: the attempt carries typed spend and the agent detail shows it; the Agents table has no cost column | `apps/swarm-api/swarm_api/codec.py:578`, `apps/swarm-ui/src/AgentDetail.tsx:935` |
-| Agents table — fencing-generation indicator | partly shipped: `task_to_api` serves `current_generation` and `current_lease_id`; no screen reads them | `apps/swarm-api/swarm_api/codec.py:266` |
-| Agent detail — attempt and pod panel | shipped: `GET /v1/tasks/{id}/attempts` and `GET /v1/attempts`; execution name, peak RSS and OOM near miss on the detail | `apps/swarm-api/swarm_api/routes/tasks.py:337`, `apps/swarm-api/swarm_api/routes/attempts.py:37`, `apps/swarm-ui/src/AgentDetail.tsx:1643` |
-| Per-engineer agent grouping / owner filter | still blocked: `GET /v1/tasks` takes no `submitted_by` filter; the owner column is client-side | `apps/swarm-api/swarm_api/routes/tasks.py:106` |
-| Cross-tenant 'all agents' admin table | still blocked: every task list is scoped to the caller's tenant | `apps/swarm-api/swarm_api/deps.py:287` |
+| Screen F — Throughput over time | partly shipped: a Firestore-backed throughput lane over `GET /v1/outcomes`; no Monitoring series and no utilisation history | `apps/swarm-api/swarm_api/routes/outcomes.py::get_outcomes`, `apps/swarm-ui/src/Activity.tsx` (`export function ActivityScreen({`) |
+| Screen G — Reconciler last pass | still blocked: the report is held in process memory and never written to Firestore | `apps/reconciler/reconciler/service.py::create_app.reconcile` |
+| Agents table — cost and token column | partly shipped: the attempt carries typed spend and the agent detail shows it; the Agents table has no cost column | `apps/swarm-api/swarm_api/codec.py::attempt_to_api`, `apps/swarm-ui/src/AgentDetail.tsx` (`const spent = attempts.filter((a) => a.cost_usd !== null)`) |
+| Agents table — fencing-generation indicator | partly shipped: `task_to_api` serves `current_generation` and `current_lease_id`; no screen reads them | `apps/swarm-api/swarm_api/codec.py::task_to_api` |
+| Agent detail — attempt and pod panel | shipped: `GET /v1/tasks/{id}/attempts` and `GET /v1/attempts`; execution name, peak RSS and OOM near miss on the detail | `apps/swarm-api/swarm_api/routes/tasks.py::list_attempts`, `apps/swarm-api/swarm_api/routes/attempts.py::list_attempts`, `apps/swarm-ui/src/AgentDetail.tsx` (`function AttemptCard({`) |
+| Per-engineer agent grouping / owner filter | still blocked: `GET /v1/tasks` takes no `submitted_by` filter; the owner column is client-side | `apps/swarm-api/swarm_api/routes/tasks.py::list_tasks` |
+| Cross-tenant 'all agents' admin table | still blocked: every task list is scoped to the caller's tenant | `apps/swarm-api/swarm_api/deps.py::tenant_scope` |
 | Agent-spawns-sub-agent social graph | still blocked: a worker still cannot create a task | — |
-| Worker Console | partly shipped: `GET /v1/tasks/{id}/logs` serves a live tail the worker publishes to the bucket; still no Cloud Logging relay | `apps/swarm-api/swarm_api/routes/tasks.py:457`, `apps/swarm-ui/src/Artifacts.tsx:226` |
-| Live Transcript | shipped: the worker runs stream-json and `GET /v1/tasks/{id}/transcript` serves it redacted | `apps/agent-worker/agent_worker/procman.py:67`, `apps/swarm-api/swarm_api/routes/tasks.py:524` |
-| Browser Filmstrip | partly shipped: the artifact byte route exists and images render inline, one artifact at a time | `apps/swarm-api/swarm_api/routes/tasks.py:374`, `apps/swarm-ui/src/Artifacts.tsx:1175` |
+| Worker Console | partly shipped: `GET /v1/tasks/{id}/logs` serves a live tail the worker publishes to the bucket; still no Cloud Logging relay | `apps/swarm-api/swarm_api/routes/tasks.py::read_logs`, `apps/swarm-ui/src/Artifacts.tsx` (`export function LogBody({`) |
+| Live Transcript | shipped: the worker runs stream-json and `GET /v1/tasks/{id}/transcript` serves it redacted | `apps/agent-worker/agent_worker/procman.py::StreamCapture`, `apps/swarm-api/swarm_api/routes/tasks.py::read_transcript` |
+| Browser Filmstrip | partly shipped: the artifact byte route exists and images render inline, one artifact at a time | `apps/swarm-api/swarm_api/routes/tasks.py::read_artifact_raw`, `apps/swarm-ui/src/Artifacts.tsx` (`function ImageFigure({`) |
 | Live Browser View | still blocked, and still not to be promised | — |
-| ACC-1 Account pool | shipped: `GET /v1/accounts`, rendered by Capacity ▸ Accounts | `apps/swarm-api/swarm_api/routes/accounts.py:165`, `apps/swarm-ui/src/Accounts.tsx:160` |
-| ACC-2 Account detail drawer | partly shipped: the read and the drawer exist; refresh health is still not persisted | `apps/swarm-api/swarm_api/routes/accounts.py:165`, `apps/swarm-ui/src/Accounts.tsx:1067` |
-| ACC-3 Add account | shipped: the browser sign-in, `POST /v1/accounts/authorize` then `POST /v1/accounts/exchange`; no CLI handoff is needed | `apps/swarm-api/swarm_api/routes/accounts.py:283`, `apps/swarm-api/swarm_api/routes/accounts.py:310` |
-| ACC-4 State changes and danger zone | partly shipped: pause, resume, drain, remove and refresh routes are used by the UI; no `expected_state`, actor or audit trail | `apps/swarm-api/swarm_api/routes/accounts.py:359`, `apps/swarm-api/swarm_api/routes/accounts.py:377`, `apps/swarm-api/swarm_api/routes/accounts.py:328` |
-| ACC-5 Quota panel | partly shipped: a usage poller now writes the windows; refresh TTL is not stored | `apps/quota-broker/quota_broker/usagepoll.py:140`, `apps/swarm-ui/src/Accounts.tsx:740` |
+| ACC-1 Account pool | shipped: `GET /v1/accounts`, rendered by Capacity ▸ Accounts | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen() {`) |
+| ACC-2 Account detail drawer | partly shipped: the read and the drawer exist; refresh health is still not persisted | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`function Detail({`) |
+| ACC-3 Add account | shipped: the browser sign-in, `POST /v1/accounts/authorize` then `POST /v1/accounts/exchange`; no CLI handoff is needed | `apps/swarm-api/swarm_api/routes/accounts.py::begin_sign_in`, `apps/swarm-api/swarm_api/routes/accounts.py::finish_sign_in` |
+| ACC-4 State changes and danger zone | partly shipped: pause, resume, drain, remove and refresh routes are used by the UI; no `expected_state`, actor or audit trail | `apps/swarm-api/swarm_api/routes/accounts.py::set_account_state`, `apps/swarm-api/swarm_api/routes/accounts.py::remove_account`, `apps/swarm-api/swarm_api/routes/accounts.py::refresh_account` |
+| ACC-5 Quota panel | partly shipped: a usage poller now writes the windows; refresh TTL is not stored | `apps/quota-broker/quota_broker/usagepoll.py::UsagePoller.poll_round`, `apps/swarm-ui/src/Accounts.tsx` (`function AllWindows({`) |
 | ACC-6 Pool refresh-health banner | still blocked: `last_refresh_at` is still not persisted | — |
-| ACC-7 Who is using this account | shipped: the broker records holds; `GET /v1/accounts/{id}/holders` and `/history` | `apps/quota-broker/quota_broker/accounts.py:352`, `apps/swarm-api/swarm_api/routes/accounts.py:441`, `apps/swarm-api/swarm_api/routes/accounts.py:548` |
-| Trouble board — silent workers | shipped: `GET /v1/admin/leases`, counted by the Overview checks | `apps/swarm-api/swarm_api/routes/admin.py:410`, `apps/swarm-ui/src/checks.ts:205` |
-| Trouble board — admitted but never dispatched | shipped: the same route, filtered on `dispatch_overdue` | `apps/swarm-api/swarm_api/routes/admin.py:410`, `apps/swarm-ui/src/checks.ts:233` |
-| Trouble board — failures that need a human, platform-wide | partly shipped: a FAILED check over the caller's own tenant; no cross-tenant route | `apps/swarm-api/swarm_api/routes/tasks.py:106`, `apps/swarm-ui/src/checks.ts:438` |
-| Task timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py:337`, `apps/swarm-ui/src/AttemptTimeline.tsx:321` |
-| Activity stream | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py:190` |
-| Signals — the eleven metric charts | still blocked: no Monitoring proxy, and swarm-api holds no `monitoring.viewer` | `terraform/modules/iam/bindings.tf:75` |
-| Signals — alert policy register | still blocked, for the same reason | `terraform/modules/iam/bindings.tf:75` |
+| ACC-7 Who is using this account | shipped: the broker records holds; `GET /v1/accounts/{id}/holders` and `/history` | `apps/quota-broker/quota_broker/accounts.py::Hold`, `apps/swarm-api/swarm_api/routes/accounts.py::account_holders`, `apps/swarm-api/swarm_api/routes/accounts.py::account_history` |
+| Trouble board — silent workers | shipped: `GET /v1/admin/leases`, counted by the Overview checks | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/checks.ts` (`leaseLiveliness(l, page.thresholds).kind === 'silent'`) |
+| Trouble board — admitted but never dispatched | shipped: the same route, filtered on `dispatch_overdue` | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/checks.ts` (`const overdue = rows.filter((l) => l.dispatch_state === 'LEASED' && l.dispatch_overdue)`) |
+| Trouble board — failures that need a human, platform-wide | partly shipped: a FAILED check over the caller's own tenant; no cross-tenant route | `apps/swarm-api/swarm_api/routes/tasks.py::list_tasks`, `apps/swarm-ui/src/checks.ts` (`function failureCheck(`) |
+| Task timeline — per-attempt facts strip | shipped: `GET /v1/tasks/{id}/attempts`, drawn with exit code, RSS and OOM | `apps/swarm-api/swarm_api/routes/tasks.py::list_attempts`, `apps/swarm-ui/src/AttemptTimeline.tsx` (`function AttemptCard({`) |
+| Activity stream | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
+| Signals — the eleven metric charts | still blocked: no Monitoring proxy, and swarm-api holds no `monitoring.viewer` | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
+| Signals — alert policy register | still blocked, for the same reason | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
 | Signals — what is firing right now | still refused for v1 | — |
-| Attempt log viewer | partly shipped: `GET /v1/tasks/{id}/logs?attempt_id=` serves the worker's output from the bucket; no Cloud Logging lines | `apps/swarm-api/swarm_api/routes/tasks.py:457` |
-| Reconciler passes / 'what is broken right now' | still blocked: the report is memory-only | `apps/reconciler/reconciler/service.py:121` |
-| Admin action log | partly shipped: pool writes stamp the latest actor; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py:134` |
+| Attempt log viewer | partly shipped: `GET /v1/tasks/{id}/logs?attempt_id=` serves the worker's output from the bucket; no Cloud Logging lines | `apps/swarm-api/swarm_api/routes/tasks.py::read_logs` |
+| Reconciler passes / 'what is broken right now' | still blocked: the report is memory-only | `apps/reconciler/reconciler/service.py::create_app.reconcile` |
+| Admin action log | partly shipped: pool writes stamp the latest actor; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py::set_global_limit` |
 | Dead-letter queue | still refused | — |
 | Pub/Sub dead-lettered message list | still refused | — |
-| A2 — Workflows per engineer by outcome | partly shipped: the rollup now writes `workflow.state`; no per-engineer workflow outcome view | `apps/swarm-api/swarm_api/rollup.py:626`, `apps/swarm-api/swarm_api/routes/admin.py:562` |
-| A3 — Agents started (Cloud Monitoring) | still blocked: no `monitoring.viewer` and no proxy | `terraform/modules/iam/bindings.tf:75` |
-| A3 — Agents started per engineer | partly shipped: `GET /v1/outcomes` groups by `submitted_by` from Firestore; the Monitoring path is still blocked | `apps/swarm-api/swarm_api/routes/outcomes.py:58` |
-| A4 — Per-tenant budget column | still blocked, permanently: there are no budgets (owner, 2026-10-01) and the column is omitted | `apps/swarm-api/swarm_api/routes/admin.py:266` |
-| O2 — Capacity Ledger (Leases tab) | shipped as Capacity ▸ Holders | `apps/swarm-api/swarm_api/routes/admin.py:410`, `apps/swarm-ui/src/Holders.tsx:131` |
-| O2 — Capacity Ledger (Attempts & sizing tab) | partly shipped: `GET /v1/attempts` exists, tenant-scoped; no screen calls it | `apps/swarm-api/swarm_api/routes/attempts.py:37` |
-| O2 — reconciler pass panel | still blocked: memory-only | `apps/reconciler/reconciler/service.py:121` |
+| A2 — Workflows per engineer by outcome | partly shipped: the rollup now writes `workflow.state`; no per-engineer workflow outcome view | `apps/swarm-api/swarm_api/rollup.py::WorkflowRollups._persist`, `apps/swarm-api/swarm_api/routes/admin.py::rollup_workflows` |
+| A3 — Agents started (Cloud Monitoring) | still blocked: no `monitoring.viewer` and no proxy | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
+| A3 — Agents started per engineer | partly shipped: `GET /v1/outcomes` groups by `submitted_by` from Firestore; the Monitoring path is still blocked | `apps/swarm-api/swarm_api/routes/outcomes.py::get_outcomes` |
+| A4 — Per-tenant budget column | still blocked, permanently: there are no budgets (owner, 2026-10-01) and the column is omitted | `apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits` |
+| O2 — Capacity Ledger (Leases tab) | shipped as Capacity ▸ Holders | `apps/swarm-api/swarm_api/routes/admin.py::list_leases`, `apps/swarm-ui/src/Holders.tsx` (`export function HoldersScreen() {`) |
+| O2 — Capacity Ledger (Attempts & sizing tab) | partly shipped: `GET /v1/attempts` exists, tenant-scoped; no screen calls it | `apps/swarm-api/swarm_api/routes/attempts.py::list_attempts` |
+| O2 — reconciler pass panel | still blocked: memory-only | `apps/reconciler/reconciler/service.py::create_app.reconcile` |
 | O3 — Config vs Reality (pool + tenant rows) | still blocked | — |
 | O3 — Config vs Reality (service env + alert policy rows) | still blocked | — |
 | O4 — Deploy Truth | still blocked | — |
-| O5 — Control-Action Trail | partly shipped: the latest actor on pools; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py:134` |
-| O6 — Alerts panel | still blocked | `terraform/modules/iam/bindings.tf:75` |
-| O6 — Platform error feed | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py:190` |
-| O7 — Account health (admin slice) | partly shipped: accounts, refresh and history routes and the Accounts screen exist, tenant-scoped; no admin slice | `apps/swarm-api/swarm_api/routes/accounts.py:165`, `apps/swarm-ui/src/Accounts.tsx:195` |
-| F1 — The gate | partly shipped: the external ALB, IAP and assertion verification exist (where `enable_frontend` is set); no "authenticated but not admitted" page | `terraform/modules/frontend/main.tf:1`, `apps/swarm-api/swarm_api/auth.py:139` |
-| F2 — Identity and tenant bar | shipped: `GET /v1/tenants/me`, in the shell | `apps/swarm-api/swarm_api/routes/tenants.py:24`, `apps/swarm-ui/src/Spine.tsx:351` |
-| F4 — System status and reachability panel | partly shipped: per-route data-source cells; rate-limit headroom is still not exposed | `apps/swarm-ui/src/DataSources.tsx:90`, `apps/swarm-api/swarm_api/ratelimit.py:80` |
-| F5 — Session expiry and degraded-mode overlay | shipped: a 401 renders "Session expired" with a reload | `apps/swarm-ui/src/Overview.tsx:169`, `apps/swarm-ui/src/Dock.tsx:231` |
+| O5 — Control-Action Trail | partly shipped: the latest actor on pools; no audit collection | `apps/swarm-api/swarm_api/routes/admin.py::set_global_limit` |
+| O6 — Alerts panel | still blocked | `terraform/modules/iam/bindings.tf` (`"swarm-api" = concat(local.telemetry_roles, [`) |
+| O6 — Platform error feed | still blocked: events are per task only | `apps/swarm-api/swarm_api/routes/tasks.py::list_events` |
+| O7 — Account health (admin slice) | partly shipped: accounts, refresh and history routes and the Accounts screen exist, tenant-scoped; no admin slice | `apps/swarm-api/swarm_api/routes/accounts.py::list_accounts`, `apps/swarm-ui/src/Accounts.tsx` (`export function AccountsScreen() {`) |
+| F1 — The gate | partly shipped: the external ALB, IAP and assertion verification exist (where `enable_frontend` is set); no "authenticated but not admitted" page | `terraform/modules/frontend/main.tf` (`# The front door. An external Application Load Balancer, with IAP, in front of`), `apps/swarm-api/swarm_api/auth.py::IapAssertionVerifier` |
+| F2 — Identity and tenant bar | shipped: `GET /v1/tenants/me`, in the shell | `apps/swarm-api/swarm_api/routes/tenants.py::get_me`, `apps/swarm-ui/src/Spine.tsx` (`const loadFrameMe = () => loadMe({ frame: true })`) |
+| F4 — System status and reachability panel | partly shipped: per-route data-source cells; rate-limit headroom is still not exposed | `apps/swarm-ui/src/DataSources.tsx` (`export function DataSourceCells({`), `apps/swarm-api/swarm_api/ratelimit.py::TokenBucketLimiter` |
+| F5 — Session expiry and degraded-mode overlay | shipped: a 401 renders "Session expired" with a reload | `apps/swarm-ui/src/Overview.tsx` (`if (reads.some((r) => isKind(r, 'unauthenticated') || isKind(r, 'session_expired'))) {`), `apps/swarm-ui/src/Dock.tsx` (`Session expired — reload to sign in`) |
 
 **[cluster-state](02-cluster-state.md)**
 

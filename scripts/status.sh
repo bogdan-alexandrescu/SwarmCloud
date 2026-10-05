@@ -403,8 +403,10 @@ render() {
             | ($p | effective_limit) as $eff
             | "  " + (($p.id) | .[0:33] | . + " " * (34 - length))
               + (($p.active // 0)|tostring | . + " " * (8 - length))
-              + (($eff|tostring) | . + " " * (7 - length))
-              + ((($p.hard_limit // 0)|tostring) | . + " " * (6 - length))
+              # A pool with no hard_limit has no limit at all (POOL_LIMIT_UNSET,
+              # #374): print "unset", never 0, which says an operator chose zero.
+              + ((if $eff == null then "unset" else ($eff|tostring) end) | . + " " * (7 - length))
+              + ((if $p.hard_limit == null then "unset" else ($p.hard_limit|tostring) end) | . + " " * (6 - length))
               # `.enabled == false`, NOT `.enabled // true`. jq'"'"'s alternative
               # operator treats FALSE as absent, so `false // true` is `true` --
               # a paused pool rendered as "open", which is the one thing this

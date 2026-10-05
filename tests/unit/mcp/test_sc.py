@@ -33,6 +33,11 @@ HEALTHY = {
     "/v1/tasks": {"tasks": []},
     "/v1/accounts": {"accounts": []},
     "/v1/admin/leases": {"leases": [], "active_beyond_window": 0},
+    # `sc trouble` reads the reconciler's stalled workflows here (#616).
+    "/v1/workflows": {
+        "workflows": [],
+        "stalled_workflows": {"count": 0, "workflows": [], "check_error": None},
+    },
 }
 
 

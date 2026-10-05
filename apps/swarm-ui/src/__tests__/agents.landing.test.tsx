@@ -652,7 +652,11 @@ describe('a reason shared by neighbouring rows is said once (#100)', () => {
     expect(shown[3]).not.toBe(WAIT)
     // Hidden from sight, never from the row's name.
     for (const r of rows.slice(0, 3)) {
-      expect(screen.getByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).textContent).toContain(WAIT)
+      // The row, not its id line's copy button, whose name carries the id
+      // too (#94).
+      const named = screen.getAllByRole('button', { name: new RegExp(r.querySelector('.id')!.textContent!) }).filter((b) => b.classList.contains('row'))
+      expect(named).toHaveLength(1)
+      expect(named[0]!.textContent).toContain(WAIT)
       expect(r.textContent).toContain(WAIT)
     }
   })

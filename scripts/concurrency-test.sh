@@ -157,7 +157,9 @@ consistent_sample() {
 
 GLOBAL_LIMIT="$(pool_doc global | jq -r "${FS_JQ} effective_limit")" \
   || die "could not read the global pool from Firestore; see the Firestore error above -- this is a failed read, not proof the pool is unconfigured"
-[[ "${GLOBAL_LIMIT}" -gt 0 ]] || die "the global pool has no limit configured; run 'make infra' first"
+# effective_limit is null for a pool with no hard_limit (POOL_LIMIT_UNSET, #374);
+# test the string before the arithmetic, which would read "null" as a variable.
+[[ "${GLOBAL_LIMIT}" != "null" && "${GLOBAL_LIMIT}" -gt 0 ]] || die "the global pool has no limit configured; run 'make infra' first"
 info "global effective limit: ${GLOBAL_LIMIT} units"
 
 # Deliberately oversubscribe: three times the global limit guarantees that the
@@ -206,7 +208,9 @@ while [[ "$(date -u +%s)" -lt "${DEADLINE}" ]]; do
   jq -r '.pool_mismatches[] | "    POOL/LEASE MISMATCH: \(.pool) active=\(.active) held-by-leases=\(.lease_units)"' \
     <<<"${JUDGED}" >&2
 
-  OVER="$(jq -c '[ .[] | select(.active > .effective) ]' <<<"${SNAPSHOT}")"
+  # An unset pool's effective is null and every number exceeds null in jq; it
+  # admits nothing, so any active unit on it is over (#374).
+  OVER="$(jq -c '[ .[] | select(.active > (.effective // 0)) ]' <<<"${SNAPSHOT}")"
   N_OVER="$(jq -r 'length' <<<"${OVER}")"
   if [[ "${N_OVER}" -gt 0 ]]; then
     VIOLATIONS=$(( VIOLATIONS + N_OVER ))
