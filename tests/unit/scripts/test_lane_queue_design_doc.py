@@ -384,7 +384,7 @@ def test_the_mockup_ends_with_all_screens_to_pick_linking_every_variant():
     parsed = _parsed()
     assert "pick" in parsed.ids
     text = _text(MOCKUP)
-    tail = text[text.index('id="pick"'):]
+    tail = text[text.index('<h2 id="pick"'):]
     assert "All screens to pick" in tail
     variant_ids = [i for i in parsed.ids if re.fullmatch(r"(board|detail|add|ledger)-[abc]", i)]
     for vid in variant_ids:
