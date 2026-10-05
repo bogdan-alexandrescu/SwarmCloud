@@ -126,6 +126,10 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.
         (["apps/swarm-ui/package-lock.json"], {"swarm-ui"}),
+        # #671: the four service images export their requirements from the
+        # lockfile, so a single-file COPY at the repo root is an input.
+        (["uv.lock"], PYTHON_SERVICES),
+        (["pyproject.toml"], PYTHON_SERVICES),
         (["Makefile"], {"swarm-verify"}),
         (["scripts/lib/common.sh"], {"swarm-verify"}),
         (["tests/acceptance/fixtures/claude-code/calc.py"], {"swarm-verify"}),
@@ -153,7 +157,9 @@ def test_changed_paths_reach_exactly_the_images_that_take_them_in(tmp_path, chan
 def test_the_mapping_is_read_from_the_dockerfiles_not_restated(tmp_path):
     """A COPY added to a Dockerfile changes the answer with nothing else edited."""
     root = _sandbox(tmp_path)
-    before = _affected(tmp_path, ["pyproject.toml"], root)
+    # A root file no image on main copies (uv.lock and pyproject.toml are
+    # inputs of the four service images since #671, so they cannot be the probe).
+    before = _affected(tmp_path, ["probe-input.txt"], root)
     assert before.returncode == 0, before.stderr
     assert before.stdout.split() == [], before.stdout
 
@@ -162,13 +168,13 @@ def test_the_mapping_is_read_from_the_dockerfiles_not_restated(tmp_path):
     anchor = "COPY apps/common/ /src/apps/common/\n"
     assert anchor in text
     dockerfile.write_text(
-        text.replace(anchor, anchor + "COPY pyproject.toml \\\n     uv.lock /src/\n", 1)
+        text.replace(anchor, anchor + "COPY probe-input.txt \\\n     probe-second.txt /src/\n", 1)
     )
-    after = _affected(tmp_path, ["pyproject.toml"], root)
+    after = _affected(tmp_path, ["probe-input.txt"], root)
     assert after.returncode == 0, after.stderr
     assert after.stdout.split() == ["swarm-api"], after.stdout
     # The continuation line's source is read too.
-    cont = _affected(tmp_path, ["uv.lock"], root)
+    cont = _affected(tmp_path, ["probe-second.txt"], root)
     assert cont.stdout.split() == ["swarm-api"], cont.stdout
 
 
