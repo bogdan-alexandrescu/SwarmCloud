@@ -251,7 +251,7 @@ const PERMS_TOKENS = {
     ...t,
     probe: {
       repositories: PERMS.rows
-        .filter((r) => r.token.token_id === t.token_id)
+        .filter((r) => r.token?.token_id === t.token_id)
         .map(({ repo_id, repository, capabilities }) => ({ repo_id, repository, capabilities })),
     },
   })),
