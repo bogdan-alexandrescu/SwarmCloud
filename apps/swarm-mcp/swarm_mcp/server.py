@@ -1694,6 +1694,10 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     # `outputs`, not `produced`: a workflow read already names the whole
     # of `describe_task` `produced`, and one word for two shapes misleads.
     described["outputs"] = outputs_of(task, listing, listing_error=listing_error)
+    # WHAT THE AGENT ASKS THE OWNER (owner decision, 2026-10-05): its
+    # questions.json, read back through the artifacts route. `[]`, and no
+    # extra read, when it asked none. Data for the reader, never acted on.
+    described.update(progress.owner_questions(client, task))
     # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
     # as the API served them, the last attempt's beside them, and `cost` --
     # the total in words, `at least` when an attempt recorded none.

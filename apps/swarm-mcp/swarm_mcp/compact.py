@@ -71,6 +71,8 @@ from .progress import (
     _payload,
     clip,
     outcome,
+    questions_count,
+    questions_words,
 )
 from .render import describe_blocker, parse_time, task_label
 
@@ -333,6 +335,11 @@ def progress_line(client: SwarmClient, task: dict[str, Any], now: datetime) -> t
         parts.append(words)
     tokens, cost = _spend(client, str(task.get("task_id")))
     parts += [tokens, cost]
+    asked = questions_count(task) if task.get("terminal") else 0
+    if asked:
+        # WHAT THE AGENT ASKS THE OWNER (owner decision, 2026-10-05): on the
+        # final line, so the row that writes one line per change says it.
+        parts.append(questions_words(asked))
     return " · ".join(parts), f"{wake}|{stamp}"
 
 
@@ -370,7 +377,12 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
         "artifacts": [a.get("name") for a in full.get("artifacts") or [] if isinstance(a, dict)],
         "last_error": full.get("last_error"),
         "end_cause": full.get("end_cause"),
+        # The agent's questions for the owner, whole: they are the reason a
+        # person reads this step's result (`progress.owner_questions`).
+        "questions": list(full.get("questions") or []),
     }
+    if full.get("questions_unavailable_because"):
+        out["questions_unavailable_because"] = clip(full["questions_unavailable_because"], 300)
     if full.get("answer_unavailable_because"):
         out["answer_unavailable_because"] = clip(full["answer_unavailable_because"], 200)
     if full.get("console"):
@@ -416,7 +428,24 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
     result["artifacts"] = [str(name) for name in found.get("artifacts") or [] if name]
     result["last_error"] = _text(row.get("abandoned_because") if row.get("abandoned") else found.get("last_error"))
     result["console"] = _text(found.get("console") or row.get("console"))
+    # The agent's questions for the owner (2026-10-05), with "" for a text it
+    # left out, so this object still holds no null. `[]` when it asked none.
+    result["questions"] = [_no_null_question(q) for q in found.get("questions") or [] if isinstance(q, dict)]
     return result
+
+
+def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
+    """One of `progress.owner_questions`' questions, every missing text as ""."""
+    return {
+        "question": _text(question.get("question")),
+        "options": [
+            {"label": _text(option.get("label")), "description": _text(option.get("description"))}
+            for option in question.get("options") or []
+            if isinstance(option, dict)
+        ],
+        "recommended": _text(question.get("recommended")),
+        "context": _text(question.get("context")),
+    }
 
 
 def watch_progress(

@@ -833,6 +833,12 @@ def watch(
         elif task.get("read") == "ok" and task.get("terminal"):
             try:
                 row["outcome"] = outcome(client, client.task(task_id))
+                asked = len(row["outcome"].get("questions") or [])
+                if asked:
+                    # WHAT THE AGENT ASKS THE OWNER (2026-10-05), as a line of
+                    # its own after the window's: the outcome holds the text.
+                    label = task_label(task_id, task.get("step_id"))
+                    shown.append(f"[{label}] {questions_words(asked)}")
             except SwarmError as exc:
                 # NOT all finished, then: a caller that stopped here would stop
                 # with no outcome to return. The next call re-reads it.
@@ -980,6 +986,9 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     out.update(totals)
     out["pr_url"] = described.get("pull_request")
     out["artifacts"] = _artifacts(task)
+    # The agent's questions for the owner, read back from its questions.json
+    # (`owner_questions`); `[]` and no extra read when it asked none.
+    out.update(owner_questions(client, task))
     out["last_error"] = task.get("last_error")
     # Contract request 23 (#217): the outcome ledger's own classification,
     # read first and typed, rather than a workflow row sorting free-text
@@ -1001,6 +1010,110 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     if link is not None:
         out["console"] = link
     return out
+
+
+# --------------------------------------------------------------------------
+# What the agent asks the owner
+# --------------------------------------------------------------------------
+
+#: The artifact an agent writes its questions for the owner into, and the
+#: `result_summary` key the worker counts them under (`agent_worker.questions`,
+#: owner decision 2026-10-05). Spelled again here: the bridge does not import
+#: the worker.
+QUESTIONS_NAME = "questions.json"
+QUESTIONS_KEY = "questions"
+
+#: The worker takes no file larger than this, so one window of the artifacts
+#: route reads it whole; one byte more says whether it was cut.
+QUESTIONS_MAX_BYTES = 64 * 1024
+
+
+def questions_count(task: dict[str, Any]) -> int:
+    """How many questions the worker counted in the task's `questions.json`, else 0.
+
+    The worker counts only a file it validated AND uploaded; a rejected file
+    is 0 here, with `questions_rejected` beside it in the summary.
+    """
+    count = (task.get("result_summary") or {}).get(QUESTIONS_KEY)
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return 0
+    return count
+
+
+def questions_words(count: int) -> str:
+    """The progress line's words for `count` questions (owner decision, 2026-10-05)."""
+    return f"? {count} question(s) for the owner"
+
+
+def _question_text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def owner_questions(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
+    """`{"questions": [...]}`: what the agent asked the owner, read from its artifact.
+
+    WHY (owner decision, 2026-10-05). An agent that meets a decision that is
+    the owner's writes it into `questions.json` instead of guessing (I310,
+    W532), and the worker counts a valid one in `result_summary.questions`.
+    This reads the file back through the artifacts route -- by NAME, from the
+    task's own manifest, redacted by the API -- so `swarm_result` and the
+    follow outcome hand the questions to whoever reads the result.
+
+    DATA, NEVER ACTED ON. The questions are returned for a person to read;
+    nothing in the bridge answers, dispatches or decides on them.
+
+    A task that asked none reads nothing more and answers `[]`. A counted file
+    that cannot be read answers `[]` with `questions_unavailable_because`, so
+    "asked none" and "asked some we could not read" are never the same.
+    """
+    count = questions_count(task)
+    if count == 0:
+        return {"questions": []}
+    task_id = task_id_of(task)
+    why = None
+    try:
+        window = client.artifact_content(
+            task_id, QUESTIONS_NAME, limit_bytes=QUESTIONS_MAX_BYTES + 1
+        )
+    except SwarmError as exc:
+        window, why = None, f"the artifact route could not be read: {exc}"
+    if window is not None:
+        if window.get("status") != "ok" or not isinstance(window.get("content"), str):
+            why = f"the artifact route says {window.get('status')}"
+        elif window.get("truncated"):
+            why = f"the file is larger than the {QUESTIONS_MAX_BYTES} bytes the worker takes"
+    if why is None:
+        try:
+            parsed = json.loads(window["content"])
+        except ValueError:
+            parsed = None
+        if isinstance(parsed, list):
+            return {"questions": [_question(entry) for entry in parsed if isinstance(entry, dict)]}
+        why = "the file the API served is not a JSON list"
+    return {
+        "questions": [],
+        "questions_unavailable_because": (
+            f"the worker counted {count} question(s) in {QUESTIONS_NAME}, and {why}; "
+            "it is in the task's artifacts"
+        ),
+    }
+
+
+def _question(entry: dict[str, Any]) -> dict[str, Any]:
+    """One question with exactly its four keys, as the worker checked them."""
+    options = []
+    for option in entry.get("options") or []:
+        if isinstance(option, dict):
+            options.append({
+                "label": _question_text(option.get("label")),
+                "description": _question_text(option.get("description")),
+            })
+    return {
+        "question": _question_text(entry.get("question")),
+        "options": options,
+        "recommended": _question_text(entry.get("recommended")),
+        "context": _question_text(entry.get("context")),
+    }
 
 
 def final_answer(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:

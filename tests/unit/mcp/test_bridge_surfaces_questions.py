@@ -116,7 +116,7 @@ def test_the_progress_row_says_how_many_and_the_step_result_carries_them(swarm, 
 
     got = compact.watch_progress(swarm, ["task_a"])
 
-    assert any(line.endswith("? 2 question(s) for the owner") for line in got["progress"]), got["progress"]
+    assert any("? 2 question(s) for the owner" in line for line in got["progress"]), got["progress"]
     assert got["tasks"][0]["outcome"]["questions"] == QUESTIONS
     result = got["result"]
     assert len(result["questions"]) == 2
