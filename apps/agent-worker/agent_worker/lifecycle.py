@@ -198,6 +198,7 @@ from .gitops import (
     ATTRIBUTION_MARKERS,
     EMPTY_CLONE_BASE,
     GitError,
+    GitTransient,
     MergeOutcome,
     clone_at_commit,
     commit_dirty,
@@ -210,6 +211,7 @@ from .gitops import (
     prepare_publish_repo,
     push_branch,
     read_agent_excludes,
+    retry_clone,
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
@@ -536,6 +538,21 @@ class Outcome:
     exit_code: int
     state: TaskState | None = None
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+class _CloneUnreachable(WorkerError):
+    """The clone's forge did not answer through every in-process try (#623).
+
+    Raised by `_maybe_clone` and turned by `_prepare` into a retryable end of
+    the attempt (`_fail_clone_unreachable`). A `WorkerError`, so a caller
+    that does not tell it apart still fails deliberately rather than crashing.
+    `reason` is already scrubbed.
+    """
+
+    def __init__(self, reason: str, tries: int) -> None:
+        super().__init__(f"repository clone failed: {reason}")
+        self.reason = reason
+        self.tries = tries
 
 
 class Worker:
@@ -1506,7 +1523,12 @@ class Worker:
 
         # ---- STEP 5: optional shallow clone -----------------------------
         self.phases.enter("clone")
-        repo_info = self._maybe_clone(task)
+        try:
+            repo_info = self._maybe_clone(task)
+        except _CloneUnreachable as exc:
+            # The forge did not answer through every in-process try (#623):
+            # the ATTEMPT ends retryably, after the startup window closes.
+            return functools.partial(self._fail_clone_unreachable, exc.reason, exc.tries)
         # A clone is the single slowest step before the agent starts, and the
         # one most likely to vary with repository size.
         self._heartbeat()
@@ -3109,9 +3131,26 @@ class Worker:
         # clones; a private one fails, and the error below says why.
         refusal = self._git_token_refusal()
         clone = None
+        # A clone or fetch the forge did not answer -- a connect or read
+        # timeout, DNS, a reset, a 5xx (`gitops.GitTransient`) -- is tried
+        # again in this process after 10 s and 30 s, within the platform's
+        # in-worker wait and the step's deadline (`gitops.retry_clone`). Past
+        # that the attempt ends RETRYABLY (`_fail_clone_unreachable`), so the
+        # task's attempt budget applies. A missing repository, refused
+        # authentication or a bad ref is a plain `GitError` and stays
+        # terminal, at once (#623).
+        retry = functools.partial(
+            retry_clone,
+            destination=destination,
+            max_wait_seconds=self.cfg.max_in_worker_retry_delay_seconds,
+            remaining_seconds=self._remaining_seconds,
+            logger=self.log,
+            sleep=self.forge_sleep,
+            on_retry=self._heartbeat,
+        )
         if pinned_sha is not None:
             try:
-                clone = clone_at_commit(
+                clone = retry(lambda: clone_at_commit(
                     url=url,
                     branch=ref,
                     commit=pinned_sha,
@@ -3121,7 +3160,11 @@ class Worker:
                     timeout_seconds=self.cfg.git_clone_timeout_seconds,
                     logger=self.log,
                     token=None if refusal else self._git_token(),
-                )
+                ))
+            except GitTransient as exc:
+                # Not a fall back to the branch tip: the tip is on the same
+                # forge, and an unpinned clone would be a silent change of base.
+                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
                 # Not the end of the step: the branch tip is what every step
                 # started from before the pin existed. Said, so a patch that
@@ -3134,7 +3177,7 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         try:
-            clone = clone or shallow_clone(
+            clone = clone or retry(lambda: shallow_clone(
                 url=url,
                 ref=ref,
                 destination=destination,
@@ -3147,7 +3190,9 @@ class Worker:
                 timeout_seconds=self.cfg.git_clone_timeout_seconds,
                 logger=self.log,
                 token=None if refusal else self._git_token(),
-            )
+            ))
+        except GitTransient as exc:
+            raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -3193,6 +3238,42 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
+        """A retryable failure before the agent ran: the clone's forge did not answer.
+
+        Measured 2026-10-05 (#623): task_943349914a88 and task_cb020e97d585
+        failed for good on attempt 1 of 3 on "Failed to connect to github.com
+        port 443 after 134 s". An outage says nothing about the repository,
+        so this ends only the ATTEMPT (`fail_retryably`), as
+        `_fail_issue_unreachable` does for the issue fetch: the task goes back
+        to READY while it has attempts left, its lease and capacity are
+        released, and a task whose attempts are spent ends CANNOT_START.
+        """
+        error = self._scrub(
+            f"{FORGE_UNREACHABLE}: the repository could not be cloned, the forge "
+            f"did not answer after {tries} tries: {reason}. The agent was not "
+            "started; the attempt is retried while the task has attempts left."
+        )
+        self.log.warning(
+            "the clone's forge did not answer; failing the attempt retryably "
+            "before the agent runs",
+            cause=FORGE_UNREACHABLE,
+            tries=tries,
+        )
+        summary = self._upload_outputs()
+        summary["clone_check"] = {"cause": FORGE_UNREACHABLE, "tries": tries}
+        self._export_metrics()
+        state = self.control.fail_retryably(
+            exit_code=None,
+            error=error,
+            cause=FORGE_UNREACHABLE,
+            result_summary=summary,
+            retry_delay_seconds=FORGE_UNREACHABLE_RETRY_DELAY_SECONDS,
+            detail={"clone": "repository", "tries": tries},
+            end_cause=EndCause.CANNOT_START,
+        )
+        return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _upstream_base_pin(
         self, task: dict[str, Any]
