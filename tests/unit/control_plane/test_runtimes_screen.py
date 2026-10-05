@@ -58,10 +58,13 @@ ROUTE = "/v1/runtimes"
 #: discovering them from the app object would make this test agree with whatever
 #: main.py happens to do.
 #: "outcomes" is GET /v1/outcomes (#185), which the Timeline calls.
-ROUTER_MODULES = (
-    "platform", "tasks", "attempts", "workflows", "tenants", "admin", "accounts", "outcomes",
-    "leases", "runs", "issues",
-)
+# READ FROM main.py, NOT LISTED HERE. A hand-kept tuple of router names is a
+# second copy of create_app()'s include_router lines, and it drifted the first
+# time a router was added: repositories and gittokens (RI1, GT1) were mounted
+# and served while this test called every one of their routes unserved (#591).
+_MAIN_PY = Path(__file__).resolve().parents[3] / "apps" / "swarm-api" / "swarm_api" / "main.py"
+ROUTER_MODULES = tuple(re.findall(r"app\.include_router\((\w+)\.router", _MAIN_PY.read_text()))
+assert ROUTER_MODULES, f"no include_router lines found in {_MAIN_PY}; the seam test would compare nothing"
 
 
 def _src(path: Path) -> str:

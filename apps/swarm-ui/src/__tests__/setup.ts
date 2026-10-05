@@ -12,9 +12,15 @@
 // than only the first.
 
 import { afterEach, beforeEach, expect } from 'vitest'
-import { cleanup } from '@testing-library/react'
+import { cleanup, configure } from '@testing-library/react'
 
 import { forgetProbes } from '../fetch'
+
+// The default 1000 ms for findBy*/waitFor is shorter than a loaded CI runner needs to render an agent
+// split: the same QA files (qa.u11a.logs, qa.u10a.agent) timed out on unrelated branches' runs
+// on 2026-10-05 while 215 other files shared the box. A wait that succeeds returns at once, so
+// the longer ceiling costs a passing test nothing.
+configure({ asyncUtilTimeout: 8000 })
 
 const forbidden = (): never => {
   throw new Error(
