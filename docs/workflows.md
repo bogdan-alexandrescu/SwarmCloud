@@ -408,6 +408,74 @@ relative filename, with no empty, `.` or `..` segment, and the API refuses any
 other shape at submission (HTTP 422 `invalid_dag`, naming the step, the parents
 and the file) rather than letting the worker refuse it after every parent has run.
 
+## An agent asks the owner: `questions.json`
+
+**A remote agent that meets a decision that is the owner's asks, in a file,
+instead of guessing.** Owner decision, 2026-10-05. Until then the agent had one
+place for such a question: its answer. It wrote the question into prose and
+shipped `part of #N` (I310, W532), and a workflow row cuts that answer to 500
+characters, so the question could be cut off with the rest. Now every
+claude-code and codex prompt says, in one sentence after the line naming
+`$SWARM_ARTIFACTS_DIR`, that the agent may write `questions.json` there
+(`expected_outputs.questions_line`). Both runners get it, because both are
+told about the folder in the same place.
+
+The file is a JSON list:
+
+```json
+[
+  {
+    "question": "Should the retry budget be per task or per workflow?",
+    "options": [
+      {"label": "per task", "description": "Each step keeps its own three attempts."},
+      {"label": "per workflow", "description": "One budget shared by every step."}
+    ],
+    "recommended": "per task",
+    "context": "CONTRACT.md fixes three attempts per task; a shared budget changes it."
+  }
+]
+```
+
+**The worker checks the shape and the size, and the task never depends on
+it** (`agent_worker/questions.py`). The file is at most 64 KiB and holds at most 20
+questions. Each question has exactly these four keys, and `recommended` and
+`context` may be null or left out. `options` holds 1 to 10 `{label,
+description}` objects with distinct labels, and `recommended` is one of those
+labels or null. Every text has a length bound. The file is uploaded like any
+other artifact, and it comes first in the 500-file cap, so the cap never drops
+it. The attempt's `result_summary` then says one of three things:
+
+| the file | `result_summary` |
+|---|---|
+| valid, and uploaded | `questions: N` |
+| any other shape, too large, not JSON, a link, or not uploaded | `questions: 0`, `questions_rejected: <why>` |
+| absent | `questions: 0` |
+
+A rejected file is still an ordinary artifact, so the operator can read what
+the agent wrote, but it is not counted, so nothing shows it as questions. It is
+a WARNING line and a summary field, not a failed attempt: the task finishes
+exactly as it would have without the file. The reason names a position and a
+key (``question 2: `recommended` is not one of its options' labels``) and never
+quotes the file.
+
+**The bridge shows them to whoever reads the result.** When `questions` is
+above 0, `swarm_result` and the follow outcome read the file back through the
+artifacts route. That route looks it up by name in the task's own manifest and
+redacts it, and the bridge returns it as `questions`, a list. A task that asked
+nothing has `questions: []` and costs no extra read. A counted file that cannot
+be read has `[]` with `questions_unavailable_because`, so "asked nothing" and
+"asked something nobody could read" never look the same. The final progress
+line of a `format: "progress"` row says `? N question(s) for the owner`, and a
+`format: "lines"` row gets that as a line of its own. The `sc:step` result
+carries `questions` with `""` for a missing text, keeping its no-null rule, and
+`plugin/agents/step.md` tells the row to put them in its result as given.
+
+**Data for the operator, never a channel to the platform.** Nothing executes,
+answers or acts on the file. No state, retry, dispatch, merge or verdict reads
+it, and no part of the platform takes an instruction from it. The agent asks,
+and a person decides. If the answer changes the work, that is a new task,
+dispatched by a person.
+
 ## Dependencies and state
 
 A step with unmet dependencies is `PARKED(DEPENDENCY_INCOMPLETE)`. Parked costs

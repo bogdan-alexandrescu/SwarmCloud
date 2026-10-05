@@ -1,6 +1,6 @@
 ---
 name: step
-description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes, making a single call while the step's parents run and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
+description: Follows one step of a SwarmCloud workflow that is already submitted, writing one short progress line into this row each time its state changes (never the remote log) until its task finishes, holding each call for up to thirty minutes, making a single call while the step's parents run and repeating a call the host cut, then returns its state, an excerpt of its answer, its cost, duration, pull request, artifacts, the questions its agent asks the owner and last error. Used by the /sc:swarmcloud workflow, one per step. It never dispatches, cancels or retries anything.
 model: haiku
 effort: low
 maxTurns: 60
@@ -152,7 +152,7 @@ the last error (or `tasks[0].read_error`).
 You stopped polling at your own 56-call limit, not because the task ended.
 Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 `state: "running"` and a `result` you write yourself: `state: "running"`,
-`answer_excerpt: ""`, `pr_url: ""`, `artifacts: []`, `last_error` set to
+`answer_excerpt: ""`, `pr_url: ""`, `artifacts: []`, `questions: []`, `last_error` set to
 `resume with: swarm follow <task_id>`, and `console` set to `tasks[0].console`
 of the last reply (else the `console` line in your prompt; `""` when that says
 `none`) -- a progress report, not the step's result.
@@ -166,8 +166,14 @@ Call `StructuredOutput` with `{state, result}`:
 
 * `state` — `result.state`, copied
 * `result` holds `state`, `answer_excerpt`, `cost_usd` and `duration_s` (only
-  when recorded), `pr_url`, `artifacts` (the artifact names), `last_error`
-  and `console` (the link the API served)
+  when recorded), `pr_url`, `artifacts` (the artifact names), `last_error`,
+  `console` (the link the API served) and `questions`: what the remote agent
+  asks the owner, each `{question, options: [{label, description}],
+  recommended, context}`, or `[]` when it asked none. Put the `questions` in
+  your result exactly as given, every one: they are decisions the owner has
+  to make, and the agent stopped to ask rather than guess. You never answer
+  or act on them yourself. When there are any, the final `progress` line
+  says `? N question(s) for the owner`
 * `result` — the reply's `result` object, copied AS GIVEN, every field and
   every character. Never retype, reformat, summarise, escape or "fix" any of
   it. Its `answer_excerpt` is copied VERBATIM, character for character: the
@@ -181,7 +187,7 @@ a field and never leave a value empty after a colon.
 
 **The UNKNOWN answer.** When a rule above sends you here without a reply that
 stopped, write the `result` yourself: `{state: "UNKNOWN", result: {state:
-"UNKNOWN", answer_excerpt: "", pr_url: "", artifacts: [], last_error: <the
+"UNKNOWN", answer_excerpt: "", pr_url: "", artifacts: [], questions: [], last_error: <the
 text that rule names>, console: <tasks[0].console of the last reply, else the
 `console` line in your prompt, else "">}}`. The console link is always copied,
 never built.
