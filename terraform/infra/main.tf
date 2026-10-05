@@ -512,6 +512,15 @@ module "scheduler" {
     quota_broker = module.iam.service_account_members["swarm-quota-broker"]
   }
 
+  # #636: a worker publishes `task_finished` when it ends a task, so that
+  # task's dependants are released at once, not on the next safety tick. Every
+  # identity a task runs as: the tenant's worker account, and the #295
+  # per-profile accounts. Keys are known at plan; the emails are not.
+  worker_publisher_members = merge(
+    { for t, m in module.tenancy.worker_members : "worker:${t}" => m },
+    { for k, m in module.tenancy.action_members : "action:${k}" => m },
+  )
+
   # #627: swarm-api publishes a cancelled task's attempt; the reconciler, the
   # identity that already holds the stop permissions, is pushed it.
   execution_cancel_topic_name = local.execution_cancel_topic

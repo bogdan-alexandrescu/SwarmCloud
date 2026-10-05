@@ -44,12 +44,13 @@ If you believe it needs a change, say so in your report rather than editing it.
   Reaffirmed by owner decision 2026-10-01, over `docs/BUILD_PROMPT_V2.md`'s
   plan to make GKE the only backend (which was never built): `mock`, `generic`,
   `claude-code` and `codex` run on Cloud Run Jobs and `browser` alone on GKE
-  Autopilot (`apps/common/swarm_common/profiles.py:1073`, `RUNNER_PROFILES`),
+  Autopilot (`apps/common/swarm_common/profiles.py::RUNNER_PROFILES`),
   routed by `BackendRouter.for_backend`
-  (`apps/scheduler/scheduler/dispatch.py:1696`). No GPU or >32 GiB profile
-  exists: `ResourceClass` refuses one at import
-  (`apps/common/swarm_common/profiles.py:65`). Why: Cloud Run Jobs has no nodes
-  to upgrade, repair or compact, so far fewer things can end a running agent
+  (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`). No GPU
+  or >32 GiB profile exists: `ResourceClass` refuses one at import
+  (`apps/common/swarm_common/profiles.py::ResourceClass.__post_init__`). Why:
+  Cloud Run Jobs has no nodes to upgrade, repair or compact, so far fewer
+  things can end a running agent
   (`docs/architecture.md` §5); the browser runner is on GKE because Chromium
   needs a large `/dev/shm`.
 - "Pod" in the invariants above means the container an attempt runs in, on

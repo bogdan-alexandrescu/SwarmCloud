@@ -358,6 +358,21 @@ def fetch_leases(client: SwarmClient) -> dict[str, Any]:
     return data
 
 
+#: The console's Overview reads `/v1/workflows` for its Workflows check, and
+#: that response carries the reconciler's `stalled_workflows` (#616). One row
+#: is asked for: the stalled list does not depend on the page, and every
+#: workflow on the page costs a read per step to derive.
+WORKFLOWS_PATH = "/v1/workflows?limit=1"
+
+
+def fetch_workflows(client: SwarmClient) -> dict[str, Any]:
+    """The workflow page whose `stalled_workflows` `sc trouble` lists."""
+    data = client.request("GET", WORKFLOWS_PATH)
+    if not isinstance(data, dict) or not isinstance(data.get("workflows"), list):
+        raise SwarmError("the workflows response carried no `workflows` list")
+    return data
+
+
 class AccountsRouteAbsent(SwarmError):
     """swarm-api has no `/v1/accounts` route on this deployment.
 
@@ -427,7 +442,7 @@ NEEDS = {
     "accounts": ("accounts",),
     "agents": ("tasks",),
     "capacity": ("capacity",),
-    "trouble": ("tenant", "stats", "capacity", "accounts", "tasks", "leases"),
+    "trouble": ("tenant", "stats", "capacity", "accounts", "tasks", "leases", "workflows"),
 }
 
 
@@ -458,6 +473,8 @@ def collect(client: SwarmClient, wanted: tuple[str, ...]) -> Snapshot:
         jobs["tasks"] = lambda: fetch_tasks(client)
     if "leases" in wanted:
         jobs["leases"] = lambda: fetch_leases(client)
+    if "workflows" in wanted:
+        jobs["workflows"] = lambda: fetch_workflows(client)
 
     if jobs:
         with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
@@ -509,6 +526,7 @@ def _cluster_exit(snap: Snapshot, findings: Sequence[Finding]) -> int:
             snap.tasks_error,
             None if snap.accounts_absent else snap.accounts_error,
             None if snap.leases_refused else snap.leases_error,
+            snap.workflows_error,
         )
         if error
     ]

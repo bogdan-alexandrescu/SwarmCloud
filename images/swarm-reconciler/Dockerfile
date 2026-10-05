@@ -64,12 +64,15 @@ WORKDIR /src
 # still copies only the packages this image ships.
 COPY pyproject.toml uv.lock /src/
 COPY apps/common/ /src/apps/common/
+# The workflow state derivation the API and the reconciler share (#616).
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/reconciler/ /src/apps/reconciler/
 
 # Build our own packages into a local wheelhouse. No index has ever heard of
 # them, and the install below never asks one: it reads them from /wheels with
 # `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/reconciler
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
@@ -109,7 +112,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-reconciler
+      swarm-common swarm-workflow-rollup swarm-reconciler
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the

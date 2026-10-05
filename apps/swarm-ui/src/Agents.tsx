@@ -8,6 +8,7 @@ import { createPortal } from 'react-dom'
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
 import { Em, Mark, type ChipTone } from './AgentDetail'
+import { TaskIdLine } from './TaskIdLine'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
 import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
@@ -1033,8 +1034,8 @@ type CardAt = { top: number; left: number }
  *
  * THE NAME IS THE STEP, OR THE TASK ID. A task carries no title; the step id
  * is the name a workflow gave it (#94), and a lone task is named by the id
- * prefix the rest of the product prints (`shortTaskId`). The full id is in the
- * title either way, and on line 2 when the step is the name.
+ * prefix the rest of the product prints (`shortTaskId`). Either way the whole
+ * id is printed under the name, with its copy (`TaskIdLine`, #94).
  *
  * FOLDED TO THE STRIP, the sheet leaves only the mark (`:root[data-agent-list
  * ='strip']`), and a mark alone says nothing about which agent it is. So
@@ -1128,6 +1129,9 @@ function CompactRow({
             </>
           )}
         </b>
+        {/* THE WHOLE ID, PRINTED, under the name (#94): it was a hover
+            title, and an id read off the screen had to be hovered for. */}
+        <TaskIdLine id={task.id} />
         {whyHidden && <span className="why is-shared">{why.text}</span>}
       </span>
       <span
@@ -1150,14 +1154,6 @@ function CompactRow({
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
               try {task.attempt_count}/{task.max_attempts}
-            </span>
-          </>
-        )}
-        {task.step_id && (
-          <>
-            {' · '}
-            <span className="id" title={task.id}>
-              {shortTaskId(task.id)}
             </span>
           </>
         )}

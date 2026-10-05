@@ -1714,6 +1714,11 @@ class Snapshot:
     #: `accounts_absent` gives: a non-admin's `sc trouble` must not be a red
     #: screen forever over a check the console gates the same way.
     leases_refused: bool = False
+    #: The page `GET /v1/workflows` serves, read for its `stalled_workflows`:
+    #: the reconciler's workflow stall check, as the console's Overview
+    #: Workflows check reads it (#616). None when not fetched or not read.
+    workflows: dict[str, Any] | None = None
+    workflows_error: str | None = None
     api_url: str = ""
     tier: str = ""
     now: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
@@ -1865,7 +1870,10 @@ def find_trouble(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
             out.append(Finding("note", "failed", f"{failed} {scope} failed{since}"))
 
     out += lease_findings(snap, style)
+    out += workflow_findings(snap, style)
 
+    # Stable: findings that share a severity and a WHERE keep the order they
+    # were added in, which is how the stalled workflows stay worst first.
     out.sort(key=lambda f: (f.rank, f.where))
     return out
 
@@ -1946,6 +1954,79 @@ def lease_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
                 f"{beyond} more live lease(s) beyond the {len(rows)} read were not checked",
             )
         )
+    return out
+
+
+#: The reconciler grades each stalled-workflow row (`WorkflowStall.entry`,
+#: `bad`/`warn`/`note`); this is the trouble list's word for each. A stalled
+#: workflow is `warn`, as a lease held past its TTL is: one tenant's work has
+#: stopped, the platform has not.
+_STALL_SEVERITY = {"bad": "warn", "warn": "warn", "note": "note"}
+
+#: Rows printed before the rest are summarised in one line.
+_STALL_ROWS = 10
+
+
+def _stall_line(entry: dict[str, Any], style: Style) -> str:
+    what = str(entry.get("workflow_id") or "?")
+    if entry.get("step_id"):
+        what += f" step {entry['step_id']}"
+        if entry.get("task_id"):
+            what += f" ({entry['task_id']})"
+    what += f" {entry.get('kind') or '?'}"
+    age = entry.get("age_seconds")
+    if isinstance(age, (int, float)) and not isinstance(age, bool):
+        what += f" {_span(max(0.0, float(age)), style)}"
+    what += f": {entry.get('reason') or 'no reason given'}"
+    if entry.get("repaired"):
+        what += f" {style.dash} repaired: {entry.get('repair') or 'yes'}"
+    elif entry.get("repair"):
+        what += f" {style.dash} {entry['repair']}"
+    return what
+
+
+def workflow_findings(snap: Snapshot, style: Style = PLAIN) -> list[Finding]:
+    """The reconciler's stalled workflows: the console's Workflows check.
+
+    WORST FIRST, IN THE RECONCILER'S ORDER. The pass sorts its rows once
+    (`reconciler.detect._STALL_ORDER`) and the API keeps that order, so this
+    lists them as served rather than re-ranking them by a second rule.
+
+    THREE WAYS TO KNOW NOTHING, and each is a finding, never silence: the
+    route failed (`workflows_error`), the reconciler's check was blind
+    (`check_error`), or the API is older than the field.
+    """
+    if snap.workflows_error:
+        return [Finding("down", "workflows", f"not read ({snap.workflows_error})")]
+    if snap.workflows is None:
+        return []
+    report = snap.workflows.get("stalled_workflows")
+    if not isinstance(report, dict):
+        return [
+            Finding(
+                "note",
+                "workflows",
+                "this deployment's API does not report stalled workflows; "
+                "whether any has stopped is unknown",
+            )
+        ]
+    if report.get("check_error") or report.get("count") is None:
+        return [
+            Finding(
+                "warn",
+                "workflows",
+                f"stall check not known {style.dash} "
+                f"{report.get('check_error') or 'the API gave no count'}",
+            )
+        ]
+    rows = [r for r in (report.get("workflows") or []) if isinstance(r, dict)]
+    out = [
+        Finding(_STALL_SEVERITY.get(str(r.get("severity")), "warn"), "workflow", _stall_line(r, style))
+        for r in rows[:_STALL_ROWS]
+    ]
+    more = (_int_or_none(report.get("count")) or len(rows)) - len(out)
+    if more > 0:
+        out.append(Finding("note", "workflow", f"{more} more stalled workflow row(s) not shown"))
     return out
 
 

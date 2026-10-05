@@ -97,6 +97,7 @@ RUN python -m venv --without-pip /opt/venv
 RUN uv export --frozen --no-dev --no-emit-local --no-editable \
       --prune swarm-agent-worker --prune swarm-api --prune swarm-mcp \
       --prune swarm-reconciler --prune swarm-redaction \
+      --prune swarm-workflow-rollup \
       > /tmp/requirements.txt
 
 # Installed at exactly the versions and hashes in uv.lock, with nothing

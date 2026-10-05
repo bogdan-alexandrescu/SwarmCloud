@@ -508,6 +508,16 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # would override one terraform had baked into the Job. The worker's own
     # default for an absent switch is OFF and for an absent origin is "no
     # link", so omission means off unless the Job itself says otherwise.
+    # THE FINISH WAKE (#636). The topic the worker publishes `task_finished`
+    # on once it has ended its task, so the scheduler releases that task's
+    # dependants at once rather than on its next safety tick. The scheduler's
+    # own wake topic, from its own settings -- a platform endpoint like the
+    # broker URL, never a caller's (invariant 10) -- and omitted when unset,
+    # for the same merge reason. No topic means no wake; the tick still
+    # releases the dependants.
+    wake_topic = str(getattr(settings, "dispatch_topic", "") or "").strip()
+    if wake_topic:
+        env["DISPATCH_TOPIC"] = wake_topic
     console_url = str(getattr(settings, "console_url", "") or "").strip()
     if console_url:
         env["SWARM_CONSOLE_URL"] = console_url

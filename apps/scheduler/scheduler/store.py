@@ -351,6 +351,36 @@ class SchedulerStore:
             query = query.start_after({doc_id: after})
         return [task_from_dict(snap.to_dict()) for snap in query.limit(limit).stream()]
 
+    def dependants_waiting_on(self, parent: Task, limit: int) -> list[Task]:
+        """`parent`'s own tenant's tasks PARKED on DEPENDENCY_INCOMPLETE that name it.
+
+        The finish event's half of `Scheduler._promote_dependencies` (#636):
+        the same tasks that sweep would reach, narrowed to one parent.
+
+        ONE FILTER IN THE QUERY, the rest in memory. `depends_on
+        array_contains` alone is served by the built-in single-field index, so
+        this needs no composite index and cannot fail on one still building
+        after a release. Its answer is bounded by how many tasks name this one
+        parent, which a workflow's step limit caps. Tenant, state and park
+        reason are checked on what it returns: a task of another tenant that
+        names this id is never touched (invariant 9).
+        """
+        query = (
+            self._db.collection(TASKS)
+            .where(filter=FieldFilter("depends_on", "array_contains", parent.id))
+            .limit(limit)
+        )
+        out: list[Task] = []
+        for snap in query.stream():
+            task = task_from_dict(snap.to_dict())
+            if (
+                task.tenant_id == parent.tenant_id
+                and task.state is TaskState.PARKED
+                and task.park_reason is ParkReason.DEPENDENCY_INCOMPLETE
+            ):
+                out.append(task)
+        return out
+
     def get_task(self, task_id: str) -> Task | None:
         snap = self._db.collection(TASKS).document(task_id).get()
         if not snap.exists:
