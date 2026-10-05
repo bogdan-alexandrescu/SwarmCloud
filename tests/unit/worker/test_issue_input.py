@@ -45,6 +45,14 @@ from conftest import TENANT, seed_attempt
 needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
 
 REPO = "https://github.com/octo/widgets.git"
+#: The sentence after the deliverables line (owner decision, 2026-10-05): the
+#: agent may ask the owner in `questions.json`. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
 TOKEN = "ghp_issuefetchtoken0123456789abcdef"
 
 
@@ -494,6 +502,7 @@ def test_the_prompt_names_the_issue_file_between_the_callers_prompt_and_the_inst
     assert str((work / "issue.md").resolve()) in prompt or str(work / "issue.md") in prompt
     assert prompt.endswith(
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
+        f"\n{QUESTIONS_LINE}"
     )
     # The number is in the file, not the prompt: a bare `429` in what a CLI
     # echoes reads as a rate limit (`cliagent._RATE_LIMIT_MARKERS`).
@@ -505,7 +514,7 @@ def test_a_task_that_asks_for_no_issue_gets_the_prompt_it_got_before(tmp_path, m
 
     assert prompt == (
         f"do it\n\nFiles written to {artifacts} ($SWARM_ARTIFACTS_DIR) are uploaded and "
-        "shown in Artifacts."
+        f"shown in Artifacts.\n{QUESTIONS_LINE}"
     )
 
 

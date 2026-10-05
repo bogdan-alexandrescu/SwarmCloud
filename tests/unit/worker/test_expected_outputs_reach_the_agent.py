@@ -212,15 +212,27 @@ def test_the_agent_is_told_the_names_and_the_absolute_artifacts_path(tmp_path, m
     assert "outside the repository" in prompt
 
 
+#: The sentence that follows the deliverables line (owner decision,
+#: 2026-10-05): the agent may ask the owner in `questions.json` instead of
+#: guessing. Spelled out, not imported.
+QUESTIONS_LINE = (
+    "If a decision is the owner's to make, ask instead of guessing: write "
+    "questions.json there, a JSON list of {question, options: [{label, "
+    "description}], recommended, context}; it is shown to the owner and "
+    "never acted on."
+)
+
+
 def _deliverables_line(artifacts: Path) -> str:
-    """The one line every CLI prompt ends with (#184, owner decision of 2026-09-26).
+    """The lines every CLI prompt ends with (#184, owner decision of 2026-09-26).
 
     In the owner's words, information and not an order (#225 review): a
-    repository task gets this line too, and its deliverable is its diff.
+    repository task gets this line too, and its deliverable is its diff. Then
+    the questions sentence (2026-10-05).
     """
     return (
         f"Files written to {artifacts} ($SWARM_ARTIFACTS_DIR) "
-        "are uploaded and shown in Artifacts."
+        f"are uploaded and shown in Artifacts.\n{QUESTIONS_LINE}"
     )
 
 
