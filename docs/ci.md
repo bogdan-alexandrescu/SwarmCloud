@@ -274,122 +274,124 @@ after merge, where `swarm-repo-index --lsp-self-test` failed (Cloud Build
 fix landed. An image's build-time self-tests are checks like any other, and a
 check that first runs after merge is not a pull-request check.
 
-`application.yml`'s `build changed images without pushing` job, on every pull
-request:
+### Why there is no pull-request identity
 
-1. **Maps the change to images.** `scripts/build-images.sh --affected-by`
+**Owner decision, 2026-10-05: pull requests get no Google identity.** A pull
+request's checkout chooses what runs — the workflow file, `build-images.sh`,
+every `cloudbuild.yaml` — so whatever an identity minted for a pull request
+can do, anyone who can push a branch can do. An identity that could submit
+Cloud Builds would let code on any branch run builds in
+this repository's GCP project, which is a **shared project**: its Cloud Build quota,
+its logs and the other team's resources in it are not this repository's to expose.
+The deployer stays pinned to `refs/heads/main` (`terraform/bootstrap/wif.tf`,
+and `build images` in `application.yml` says why that pin must never widen),
+and no second, narrower identity is created either. #673 first shipped this
+job waiting for one; that path is gone.
+
+So a pull request builds on the GitHub-hosted runner, with `docker buildx`,
+holding nothing: no Google authentication, no `id-token`, no registry login, no
+secret.
+
+### What `build changed images without pushing` does
+
+`application.yml`'s `build changed images without pushing` job (`build-check`),
+on every pull request:
+
+1. **Skips a fork's pull request in seconds**, before checking anything out,
+   as the owner's brief for this job (2026-10-05) requires. A maintainer who
+   wants a fork's images built pushes its branch to this repository.
+2. **Maps the change to images.** `scripts/build-images.sh --affected-by`
    reads `git diff base...head` against each image's inputs: its recipe's
    directory (`images/<image>/**`), every `COPY`/`ADD` source its Dockerfile
    names, and `.dockerignore` and `.gcloudignore`, which filter every build's
    context. An image built `FROM` a reached one (`build_after`) is reached too,
-   so a base change builds the browser image. The `COPY` sources are **read from
-   the Dockerfiles** (`dockerfile_copy_sources`, `scripts/lib/common.sh`), never
-   listed by hand: a `COPY` added to a Dockerfile is an input the day it lands.
-   A `COPY` form the reader cannot map — JSON form, a heredoc, a variable, a
-   URL — fails the job rather than being skipped, because a skipped source is a
-   file whose change would not build the image. `build-images.sh --inputs`
-   prints the whole map. A `COPY`'d file outside `images/` counts: `Makefile`,
-   `scripts/**` and `tests/acceptance/fixtures/**` reach `swarm-verify`;
-   `apps/common/**` reaches every Python service and both worker images.
-2. **Builds them with Cloud Build and pushes nothing.**
-   `build-images.sh --build-only <images>` submits the same Dockerfile steps
-   main does — `swarm-repo-index --self-test`, `--lsp-self-test`,
-   `swarm-repo-graph --self-test`, the Chromium smoke check — from configs with
-   **no `images:` list**, so Cloud Build pushes nothing; the images are tagged
-   `swarm-build-only/<image>` on the build worker and discarded with it. A
-   checked-in `cloudbuild.yaml` is submitted with its `images:` block removed
-   (`swarm-verify` keeps its context-assembly step). `agent-runtime-browser`'s
-   recipe pulls `agent-runtime-base:<tag>` from the registry, which a
-   build-only run never pushed, so it is built as one Cloud Build that builds
-   the base and then the browser `FROM` it. No Artifact Registry call is made,
-   no manifest is written, and `--build-only` refuses `--reuse-ci`,
-   `--digests-only`, `--async` and `--create-repo`. Every config is read once
-   more before submission and refused if it would push.
-3. **Says what it did.** The run summary names the images the change reached
-   and either that they were built or why not.
+   so a base change builds the browser and indexer images. The `COPY` sources
+   are **read from the Dockerfiles** (`dockerfile_copy_sources`,
+   `scripts/lib/common.sh`), never listed by hand: a `COPY` added to a
+   Dockerfile is an input the day it lands. A `COPY` form the reader cannot
+   map — JSON form, a heredoc, a variable, a URL — fails the job rather than
+   being skipped, because a skipped source is a file whose change would not
+   build the image. `build-images.sh --inputs` prints the whole map. A `COPY`'d
+   file outside `images/` counts: `Makefile`, `scripts/**` and
+   `tests/acceptance/fixtures/**` reach `swarm-verify`; `apps/common/**`
+   reaches every Python service and the worker images. No image input changed:
+   the job ends here, green, and its summary says so.
+3. **Frees runner disk.** `agent-runtime-base` is ~900 MB compressed and
+   several GB unpacked, and BuildKit holds its builder stage, its runtime and
+   its exported layout at once before the browser image (Chromium) and the
+   indexer (a Go toolchain and two compiled language servers) are built on it.
+   The job deletes toolchains it never uses (Android, .NET, GHC, CodeQL,
+   Swift) and the runner's cached images, and writes the free space on `/`
+   before and after to its summary. **How much was needed is not measured
+   yet**: the first pull request that builds the base records it there, and
+   that number belongs here.
+4. **Builds them with `docker buildx` and pushes nothing.**
+   `build-images.sh --build-only --local <images>` writes exactly the configs
+   `--build-only` would submit to Cloud Build — `generate_config`'s for a
+   Dockerfile, a checked-in `cloudbuild.yaml` with its `images:` block removed,
+   `generate_chain_config`'s base-then-derived pair — and `refuse_if_pushes`
+   reads each one, as before. Then, instead of submitting, it replays them on
+   a local `docker-container` buildx builder, one at a time:
+   * a `docker build` step becomes `docker buildx build` with the step's own
+     arguments (main's Dockerfile, `--platform linux/amd64`, `GIT_SHA`,
+     `VITE_SWARM_ENV` for `swarm-ui`), plus `--no-cache` — a cached `RUN` is a
+     self-test that did not run — and an output that is never a registry:
+     `type=cacheonly`, or `type=oci` into `build/build-only/local/` for an
+     image something is built `FROM`;
+   * **order as on main**: `agent-runtime-browser` and `agent-runtime-indexer`
+     are built after `agent-runtime-base`, from the base this run built — its
+     digest passed as `BASE_IMAGE=swarm-build-only/agent-runtime-base@sha256:…`
+     and resolved by `--build-context …=oci-layout://…`, so `FROM` never pulls
+     and the indexer's refusal of an undigested base still holds. The base is
+     built once per run even when both derived images need it, and a base that
+     failed builds nothing from it;
+   * any other step — `swarm-verify`'s context assembly — runs in its own
+     image with the checkout at `/workspace`, as the runner's user, with no
+     docker socket;
+   * a docker step that is not a build (push, pull, login, tag), and a config
+     that asks for a secret, are refused.
 
-It concludes `success`, with the build steps skipped, when no image input
-changed, when the pull request comes from a fork (GitHub gives a fork's
-`pull_request` run no OIDC token), and **while the identity below is not
-configured** — that last case also raises a warning annotation naming the
-images that would have been built. So a required check and `ci-gate` pass on
-the pull requests that build nothing, and are not held red by a grant only the
-owner can make. A failed build, or an identity configured by halves (some of
-the four variables set), fails the job and with it `ci-gate`. `main`'s `build
-images` is unchanged. Only pull requests that reach an image pay the minutes,
-and a newer push to the branch cancels the run but **not** a Cloud Build it
-already submitted (`build-images.sh`, `on_interrupt`).
+   No `gcloud` call is made, no manifest is written, and `--local` is only a
+   mode of `--build-only`.
+5. **Runs main's self-tests, and says which.** The self-tests are `RUN`
+   steps of the Dockerfiles main's Cloud Build builds — the base's
+   agent-worker import and toolbox checks, `swarm-repo-index --self-test`,
+   `--lsp-self-test` and `swarm-repo-graph --self-test` in the indexer, the
+   Chromium launch in the browser — so building the same Dockerfile to its
+   last stage, uncached, is running them; a failing one fails the build and
+   the job, naming the image. The script **reads** each Dockerfile's `RUN`
+   steps into `build/build-only/local-report.md`, which the job appends to its
+   summary; the workflow names none of them.
 
-### Which identity builds, and the grant the owner makes
+The job concludes `success` with its build steps skipped when no image input
+changed and on a fork's pull request. It runs on every pull request, so a
+failed build fails `application.yml`'s run and `ci-gate` with it. `main`'s
+`build images` is unchanged, and only pull requests that reach an image pay
+the minutes. A newer push to the branch cancels the run, and with it the
+build, which lives on the runner.
 
-**The deployer cannot, and must not.** `GCP_DEPLOY_SA` could technically build
-without pushing — it holds `roles/cloudbuild.builds.editor`, acts as the
-compute account builds run as, and writes the `<project>_cloudbuild` staging
-bucket — but no pull request can mint it: the pool's attribute condition admits
-only `github_allowed_refs`, whose validation refuses `refs/pull/*`, and its
-`workloadIdentityUser` binding names `application.yml@refs/heads/main`
-(`terraform/bootstrap/wif.tf`). That pin stays. A pull request's checkout
-chooses what runs — the workflow file, `build-images.sh`, every
-`cloudbuild.yaml` — so **whatever the pull-request identity can do, anyone who
-can push a branch can do.** It is therefore a separate, narrower pair of
-accounts, read from four repository variables:
-
-| variable | what it is |
-|---|---|
-| `GCP_PR_BUILD_WIF_PROVIDER` | a workload identity provider that admits this repository's `pull_request` runs of `application.yml` |
-| `GCP_PR_BUILD_SA` | the account the job federates as — it submits builds and nothing else |
-| `GCP_PR_BUILD_RUNNER_SA` | the account the build **runs as** (`CLOUDBUILD_SERVICE_ACCOUNT`); required, because unset Cloud Build would run a pull request's steps as the default compute account |
-| `GCP_PR_BUILD_STAGING` | `gs://<bucket>/source`, where the source tarball goes (`CLOUDBUILD_SOURCE_STAGING_DIR`) |
-
-**Not made by this change** — it is IAM in a shared project, and the owner's
-to make. What it needs, every resource labelled `managed-by=swarm-terraform`
-where it has labels:
-
-1. **A provider, in its own pool** (so nothing about the deployer's pool
-   widens), with the condition
-   `assertion.repository == "<owner>/<repo>" && assertion.event_name == "pull_request" && assertion.job_workflow_ref.startsWith("<owner>/<repo>/.github/workflows/application.yml@refs/pull/")`,
-   and `attribute.repository` mapped. `job_workflow_ref` carries
-   `@refs/pull/<n>/merge`, which differs per pull request, so the binding in 2
-   is on the repository within this pool, and the pool's condition is what
-   pins the workflow file and the event.
-2. **The submitting account** (`GCP_PR_BUILD_SA`): `roles/iam.workloadIdentityUser`
-   on it for `principalSet://…/<pr pool>/attribute.repository/<owner>/<repo>`;
-   a custom project role holding only `cloudbuild.builds.create` and
-   `cloudbuild.builds.get` (not `roles/cloudbuild.builds.editor`, which can
-   also cancel and update every build in the project, the other team's
-   included); `roles/iam.serviceAccountUser` **on the runner account only**,
-   never at project level; `roles/storage.objectAdmin` on the staging bucket
-   only. Reading build output needs `logging.logEntries.list`; grant it
-   through a log view on `_Default` filtered to `resource.type="build"`
-   (`roles/logging.viewAccessor` conditioned on that view), not
-   `roles/logging.viewer`, which reads the whole shared project's logs. Without
-   it the build still runs and still fails the job when it fails; gcloud
-   only cannot stream its log.
-3. **The runner account** (`GCP_PR_BUILD_RUNNER_SA`): `roles/logging.logWriter`
-   and `roles/storage.objectViewer` on the staging bucket. **Nothing else** —
-   in particular no `roles/artifactregistry.writer`, so a pull request that
-   edits the script to push is refused by IAM, not just by
-   `refuse_if_pushes`. The base images come from public registries
-   (`docker.io`, `ghcr.io`), so it needs no registry read either.
-4. **The staging bucket**, `swarm-`-prefixed, uniform bucket-level access, a
-   short lifecycle delete rule (a day), labelled
-   `managed-by=swarm-terraform`.
-
-Then set the four repository variables. The next pull request touching an
-image builds it; until then the job says, on every such pull request, which
-images it did not build and why.
+**One difference from main, by construction.** Cloud Build receives the
+checkout filtered by `.gcloudignore`, then `docker build` filters it again by
+`.dockerignore`; the runner builds the checkout filtered by `.dockerignore`
+only. A Dockerfile that `COPY`s a file `.gcloudignore` excludes and
+`.dockerignore` does not would pass here and fail on main.
 
 **What a pull request proves about this, and what it cannot.**
-`tests/unit/scripts/test_build_images_pr_check.py` runs the real script: the
-path → image map for paths in and outside `images/` (a planted `COPY` changes
-the answer; an unreadable `COPY` fails), `--build-only` against a fake `gcloud`
-(no call but `builds submit`, no `images:`, no registry name, the browser built
-on a base built in the same config, no manifest), and every input path firing
-`application.yml` on a pull request (`ci-gate.sh expected`). It cannot show that
-Cloud Build accepts the generated configs, that BuildKit builds `FROM` a base
-that exists only on the build worker without trying to pull it, or that the
-identity above works. The first pull request touching an image after the
-variables are set is that proof — read its run.
+`tests/unit/scripts/test_build_images_local.py` runs the real script against a
+fake `docker` and a `gcloud` that fails if called: every docker call is a
+`buildx build` or a socket-less `run`, no push, no login, no registry output;
+the base built first and once, the derived images `FROM` its digest through an
+`oci-layout` context; every build of the Dockerfile main's recipe names, to its
+last stage, uncached; a planted `RUN` showing up in the report; a recipe asking
+for a secret refused. It reads the workflow job (buildx, no `secrets.`, no
+`id-token`, no login, no `vars.GCP_*`, no self-test restated), runs its fork
+and plan steps (a fork skips before the checkout; a docs change builds nothing;
+an image change builds), and drives `ci-gate` with this job failed.
+`test_build_images_pr_check.py` holds the path → image map and every input
+path firing `application.yml` on a pull request. They cannot show that BuildKit
+resolves the base through the `oci-layout://` context on a real runner, that
+the disk suffices, or how long it takes. The first pull request touching an
+image after this lands is that proof — read its `build-check` summary.
 
 ## A prod release waits for approval before anything prod-facing
 

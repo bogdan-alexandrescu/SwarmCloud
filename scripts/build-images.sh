@@ -53,11 +53,25 @@
 #                         Artifact Registry call. The Dockerfiles' RUN steps --
 #                         `swarm-repo-index --self-test`, `--lsp-self-test` and
 #                         the rest -- run exactly as on main.
+#   --build-only --local  the same build on THIS machine's docker, with
+#                         `docker buildx build`, and no gcloud at all. This is
+#                         what a pull request runs (application.yml
+#                         `build-check`): the owner chose not to give pull
+#                         requests a Google identity, because code on any
+#                         branch could then run Cloud Build in the shared
+#                         project. The two reasons above against a local build
+#                         are this workstation's; the GitHub runner is amd64
+#                         and its daemon works. Images built FROM another are
+#                         built after it, FROM the digest this run exported to
+#                         a local OCI layout -- never pulled -- and every build
+#                         is uncached, so every RUN self-test runs. Nothing is
+#                         pushed, loaded, tagged in a registry or logged in to.
 #
 # Usage: scripts/build-images.sh [TARGET...] [--tag SHA] [--parallel N]
 #                                [--create-repo] [--async] [--digests-only]
 #        scripts/build-images.sh --reuse-ci only|or-build
 #        scripts/build-images.sh --build-only [TARGET...] [--tag SHA] [--parallel N]
+#        scripts/build-images.sh --build-only --local [TARGET...] [--tag SHA]
 #        scripts/build-images.sh --affected-by FILE|-
 #        scripts/build-images.sh --inputs
 #        TARGET defaults to every image the repo knows how to build.
@@ -217,6 +231,7 @@ ASYNC=0
 DIGESTS_ONLY=0
 REUSE_CI=""
 BUILD_ONLY=0
+LOCAL_BUILD=0
 AFFECTED_BY=""
 LIST_INPUTS=0
 
@@ -260,9 +275,10 @@ while [[ $# -gt 0 ]]; do
     --digests-only) DIGESTS_ONLY=1; shift ;;
     --reuse-ci)    REUSE_CI="$2"; shift 2 ;;
     --build-only)  BUILD_ONLY=1; shift ;;
+    --local)       LOCAL_BUILD=1; shift ;;
     --affected-by) AFFECTED_BY="$2"; shift 2 ;;
     --inputs)      LIST_INPUTS=1; shift ;;
-    -h|--help)     sed -n '2,63p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,77p' "$0"; exit 0 ;;
     -*)            die "unknown flag: $1" ;;
     *)             TARGETS+=("$1"); shift ;;
   esac
@@ -274,7 +290,7 @@ if [[ -n "${AFFECTED_BY}" || "${LIST_INPUTS}" -eq 1 ]]; then
   MODE="--inputs"
   [[ -z "${AFFECTED_BY}" ]] || MODE="--affected-by"
   [[ "${#TARGETS[@]}" -eq 0 && -z "${TAG}" && -z "${REUSE_CI}" \
-     && "${BUILD_ONLY}${DIGESTS_ONLY}${ASYNC}${CREATE_REPO}" == 0000 \
+     && "${BUILD_ONLY}${LOCAL_BUILD}${DIGESTS_ONLY}${ASYNC}${CREATE_REPO}" == 00000 \
      && ( -z "${AFFECTED_BY}" || "${LIST_INPUTS}" -eq 0 ) ]] \
     || die "${MODE} reads every image's inputs and builds nothing; it takes no target and no other flag"
   if [[ "${LIST_INPUTS}" -eq 1 ]]; then
@@ -297,6 +313,8 @@ if [[ "${BUILD_ONLY}" -eq 1 ]]; then
   [[ -z "${REUSE_CI}" && "${DIGESTS_ONLY}" -eq 0 && "${ASYNC}" -eq 0 && "${CREATE_REPO}" -eq 0 ]] \
     || die "--build-only pushes nothing and reads no registry; it cannot be combined with --reuse-ci, --digests-only, --async or --create-repo"
 fi
+[[ "${LOCAL_BUILD}" -eq 0 || "${BUILD_ONLY}" -eq 1 ]] \
+  || die "--local builds without pushing on this machine's docker, so it is a mode of --build-only; pass both"
 
 # --reuse-ci takes CI's build WHOLE, at the tag CI gives it. A narrower or
 # retagged request is a different build, and quietly building that instead of
@@ -324,7 +342,7 @@ fi
 # The scheduler below cannot use bash 4.3's "wait for any child" either, so a
 # finished build is found by the status file it writes when it exits.
 
-require_cmd gcloud jq
+if [[ "${LOCAL_BUILD}" -eq 1 ]]; then require_cmd docker jq; else require_cmd gcloud jq; fi
 TAG="${TAG:-$(git_sha)}"
 CLOUDBUILD_REGION="${CLOUDBUILD_REGION:-${REGION}}"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-3600s}"
@@ -544,8 +562,7 @@ if [[ -n "${CLOUDBUILD_SERVICE_ACCOUNT:-}" ]]; then
 fi
 # Where the source tarball goes. Unset, gcloud uses <project>_cloudbuild. Set,
 # it is a bucket a narrower identity can be given objects in without the
-# project's own staging bucket -- the pull-request build's identity
-# (docs/ci.md, "Images are built on a pull request, without pushing").
+# project's own staging bucket.
 if [[ -n "${CLOUDBUILD_SOURCE_STAGING_DIR:-}" ]]; then
   SUBMIT_ARGS+=(--gcs-source-staging-dir="${CLOUDBUILD_SOURCE_STAGING_DIR}")
 fi
@@ -666,6 +683,268 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
   T_NAME+=("${target}"); T_CONFIG+=("${config}"); T_SUBS+=("${subs}")
   T_STATE+=(pending); T_PID+=(""); T_START+=(0); T_NOTE+=(""); T_RETRIED+=("")
 done
+
+# ---------------------------------------------------------------------------
+# --build-only --local: the same build-only configs, on this machine's docker.
+# ---------------------------------------------------------------------------
+# What a pull request runs (application.yml `build-check`, #650). The owner
+# chose NOT to give pull requests a Google identity (2026-10-05): a pull
+# request's checkout chooses what runs, so whatever that identity could do --
+# run Cloud Build in the shared project -- anyone able to push a branch could
+# do. So the runner builds, and it holds nothing to push with.
+#
+# NOTHING IS RESTATED. Every config above -- generate_config's, a checked-in
+# recipe with its push stripped, generate_chain_config's base-then-derived
+# pair -- is exactly what --build-only would submit to Cloud Build, and
+# refuse_if_pushes has already read it. LOCAL_REPLAY runs it step by step:
+#
+#   * a `docker build` step of the docker builder becomes
+#     `docker buildx build` with the step's own arguments, --no-cache (a
+#     cached RUN is a self-test that did not run) and an explicit output that
+#     is never a registry: `type=cacheonly`, or, for an image a later step is
+#     built FROM, `type=oci` into build/build-only/local/. The later step then
+#     takes BASE_IMAGE=<name>@<digest>, resolved by a `--build-context
+#     <name>@<digest>=oci-layout://...` -- no pull, no registry, and the
+#     indexer's refusal of a BASE_IMAGE without a digest still holds. A base
+#     exported once is reused by the next chain in the run, never rebuilt;
+#   * any other step (swarm-verify's context assembly) runs in its own image
+#     with the checkout at /workspace, as the invoking user, with no docker
+#     socket -- so no step can push or pull an image itself;
+#   * a docker-builder step that is not a build (push, pull, login, tag), and
+#     any config that asks for a secret, are refused.
+#
+# The RUN steps each build ran are READ from its Dockerfile into
+# build/build-only/local-report.md, which the job puts in its summary. They
+# are the self-tests main's Cloud Build runs, because they are the same
+# Dockerfile steps: `swarm-repo-index --self-test`, `--lsp-self-test`,
+# `swarm-repo-graph --self-test`, the base's agent-worker and toolbox checks,
+# the browser's Chromium launch.
+#
+# One build at a time: they share one runner's disk and CPUs, and the derived
+# images wait for the base anyway.
+LOCAL_REPLAY="$(cat <<'PY'
+import json, os, re, subprocess, sys
+import yaml
+
+config, repo, target, builder, state, report, why_file = sys.argv[1:8]
+DOCKER = "gcr.io/cloud-builders/docker"
+
+
+def fail(msg):
+    with open(why_file, "w") as fh:
+        fh.write(msg)
+    print(f"{target}: {msg}", flush=True)
+    sys.exit(1)
+
+
+with open(config) as fh:
+    doc = yaml.safe_load(fh) or {}
+steps = doc.get("steps") or []
+if "availableSecrets" in doc or "secrets" in doc or any("secretEnv" in s for s in steps):
+    fail(f"{config} asks for a secret, and a local build-only run is given none; refusing")
+if "images" in doc or "artifacts" in doc:
+    fail(f"{config} pushes or uploads; refusing")
+
+subs = {k: str(v) for k, v in (doc.get("substitutions") or {}).items()}
+subs.update(json.loads(os.environ["LOCAL_SUBS"]))
+
+
+def sub(value):
+    def one(m):
+        if m.group(1) not in subs:
+            fail(f"{config} uses ${{{m.group(1)}}}, which a local build has no value for")
+        return subs[m.group(1)]
+    return re.sub(r"(?<!\$)\$\{(_[A-Z0-9_]+)\}", one, str(value)).replace("$$", "$")
+
+
+def workspace(path):
+    return repo + path[len("/workspace"):] if path == "/workspace" or path.startswith("/workspace/") else path
+
+
+def flag(args, name):
+    return [args[i + 1] for i, a in enumerate(args[:-1]) if a == name]
+
+
+def safe(ref):
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", ref)
+
+
+def repo_of(ref):
+    name = ref.split("@", 1)[0]
+    return name.rsplit(":", 1)[0] if ":" in name.rsplit("/", 1)[-1] else name
+
+
+def run_steps(dockerfile):
+    """Each RUN instruction's line number and first line, read as Docker
+    reads the file: continuations joined, heredoc bodies skipped."""
+    out, cont, heredoc = [], False, None
+    if not os.path.isfile(dockerfile):
+        return None
+    with open(dockerfile) as fh:
+        for n, raw in enumerate(fh, 1):
+            line = raw.rstrip("\n")
+            if heredoc is not None:
+                if line.lstrip("\t") == heredoc:
+                    heredoc = None
+                continue
+            if not cont and re.match(r"\s*RUN\s", line, re.I):
+                out.append((n, line.strip()))
+            m = re.search(r"<<-?['\"]?([A-Za-z_][A-Za-z0-9_]*)['\"]?", line)
+            if m and not line.lstrip().startswith("#"):
+                heredoc = m.group(1)
+            cont = line.endswith("\\") and not line.lstrip().startswith("#") or (cont and line.lstrip().startswith("#"))
+    return out
+
+
+def stream(cmd, cwd, sid):
+    print(f"step {sid}: {' '.join(cmd[:3])}", flush=True)
+    proc = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            stdin=subprocess.DEVNULL, text=True, errors="replace")
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+    return proc.wait()
+
+
+parsed = []
+for i, step in enumerate(steps):
+    name, args = sub(step.get("name", "")), [sub(a) for a in step.get("args") or []]
+    sid = str(step.get("id") or f"step-{i}")
+    is_build = name.startswith(DOCKER) and not step.get("entrypoint") and args[:1] == ["build"]
+    if name.startswith(DOCKER) and not step.get("entrypoint") and not is_build:
+        fail(f"step {sid} runs `docker {' '.join(args[:1])}`, which is not a build; a local build-only run builds and does nothing else")
+    parsed.append((sid, step, name, args, is_build))
+
+# The tags a later step is built FROM: those are exported, the rest are not.
+from_refs = set()
+for _, _, _, args, is_build in parsed:
+    if is_build:
+        for arg in flag(args, "--build-arg"):
+            if arg.startswith("BASE_IMAGE="):
+                from_refs.add(arg.split("=", 1)[1])
+
+exported = {}
+section = [f"### {target}", ""]
+for sid, step, name, args, is_build in parsed:
+    cwd = os.path.join(repo, sub(step.get("dir", "")))
+    if not is_build:
+        cmd = ["docker", "run", "--rm", "--user", f"{os.getuid()}:{os.getgid()}",
+               "-v", f"{repo}:/workspace", "-w", "/workspace/" + sub(step.get("dir", ""))]
+        for env in step.get("env") or []:
+            cmd += ["-e", sub(env)]
+        if step.get("entrypoint"):
+            cmd += ["--entrypoint", sub(step["entrypoint"])]
+        cmd += [name, *args]
+        if stream(cmd, repo, sid) != 0:
+            fail(f"step {sid} failed")
+        section.append(f"- step `{sid}` ran in `{name}`")
+        continue
+
+    rest = [workspace(a) for a in args[1:]]
+    tag = (flag(rest, "-t") or flag(rest, "--tag") or [""])[0]
+    extra = []
+    for j, arg in enumerate(rest):
+        if rest[j - 1] == "--build-arg" and arg.startswith("BASE_IMAGE="):
+            ref = arg.split("=", 1)[1]
+            if ref not in exported:
+                fail(f"step {sid} is built FROM {ref}, which no earlier step of this run exported")
+            layout, digest = exported[ref]
+            pinned = f"{repo_of(ref)}@{digest}"
+            rest[j] = f"BASE_IMAGE={pinned}"
+            extra += ["--build-context", f"{pinned}=oci-layout://{layout}@{digest}"]
+    dockerfile = (flag(rest, "-f") or flag(rest, "--file") or [os.path.join(rest[-1], "Dockerfile")])[0]
+    dockerfile = dockerfile if os.path.isabs(dockerfile) else os.path.join(cwd, dockerfile)
+
+    if tag in from_refs:
+        layout = os.path.join(state, safe(tag) + ".oci")
+        meta = os.path.join(state, safe(tag) + ".json")
+        if os.path.exists(os.path.join(state, safe(tag) + ".failed")):
+            fail(f"step {sid}: {tag} already failed to build earlier in this run")
+        if os.path.exists(meta):
+            with open(meta) as fh:
+                exported[tag] = (layout, json.load(fh)["containerimage.digest"])
+            print(f"{tag}: built earlier in this run; reusing {exported[tag][1]}", flush=True)
+            section.append(f"- step `{sid}`: `{tag}` was built earlier in this run (its steps are listed there)")
+            continue
+        out = ["--output", f"type=oci,dest={layout},tar=false", "--metadata-file", meta]
+    else:
+        out = ["--output", "type=cacheonly"]
+    cmd = ["docker", "buildx", "build", "--builder", builder, "--progress=plain", "--no-cache",
+           "--provenance=false", *out, *extra, *rest]
+    rc = stream(cmd, cwd, sid)
+    if rc != 0:
+        if tag in from_refs:
+            open(os.path.join(state, safe(tag) + ".failed"), "w").close()
+        fail(f"step {sid} failed (exit {rc})")
+    if tag in from_refs:
+        with open(meta) as fh:
+            exported[tag] = (layout, json.load(fh)["containerimage.digest"])
+    shown = os.path.relpath(dockerfile, repo)
+    steps_ran = run_steps(dockerfile)
+    if steps_ran is None:
+        section.append(f"- step `{sid}` built `{shown}`, which is gone after the build, so its RUN steps are not listed")
+        continue
+    section.append(f"- step `{sid}` built `{shown}`, running its {len(steps_ran)} RUN step(s):")
+    section += [f"  - `{shown}:{n}` `{text[:160]}`" for n, text in steps_ran]
+
+with open(report, "a") as fh:
+    fh.write("\n".join(section) + "\n\n")
+PY
+)"
+
+build_locally() {
+  local i target log why state report python builder rc failed=() notes=()
+  python="${SWARM_PYTHON:-python3}"
+  "${python}" -c 'import yaml' 2>/dev/null \
+    || die "--local reads each build config with PyYAML; ${python} cannot import yaml (set SWARM_PYTHON to one that can)"
+  docker buildx version >/dev/null 2>&1 \
+    || die "--local builds with docker buildx, which this docker does not have"
+  # A docker-container builder: the docker driver cannot export an OCI
+  # layout, which is how a derived image is built FROM a base never pushed.
+  builder="${BUILD_ONLY_BUILDER:-swarm-build-only}"
+  if ! docker buildx inspect "${builder}" >/dev/null 2>&1; then
+    docker buildx create --name "${builder}" --driver docker-container --bootstrap >/dev/null \
+      || die "could not create the buildx builder ${builder}"
+  fi
+  state="${BUILD_DIR}/build-only/local"
+  report="${BUILD_DIR}/build-only/local-report.md"
+  log="${BUILD_DIR}/build-logs/${TAG}/local"
+  rm -rf "${state}"
+  mkdir -p "${state}" "${log}"
+  printf '%s\n\n' "Built at ${TAG} with docker buildx, uncached, pushing nothing. Every RUN step listed ran and passed unless its image is marked FAILED." >"${report}"
+
+  step "Build ${#T_NAME[@]} image build(s) here, one at a time, pushing nothing"
+  for ((i = 0; i < ${#T_NAME[@]}; i++)); do
+    target="${T_NAME[$i]}"
+    why="${state}/${target}.why"
+    info "${target}: building $(basename "${T_CONFIG[$i]}") with docker buildx"
+    rc=0
+    LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" \
+      '{_IMAGE: $i, _TAG: $t, _TARGET: $n}')" \
+      "${python}" -c "${LOCAL_REPLAY}" "${T_CONFIG[$i]}" "${REPO_ROOT}" "${target}" "${builder}" \
+        "${state}" "${report}" "${why}" 2>&1 \
+      | redact | tee "${log}/${target}.log" | awk -v p="[${target}] " '{ print p $0; fflush() }' >&2 \
+      || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then
+      ok "${target}: built, nothing pushed"
+    else
+      failed+=("${target}")
+      notes+=("${target} ($( [[ -s "${why}" ]] && cat "${why}" || printf 'exit %s' "${rc}"))")
+      printf '### %s: FAILED\n\n%s\n\n' "${target}" "$( [[ -s "${why}" ]] && cat "${why}" || printf 'exit %s' "${rc}")" >>"${report}"
+      err "${target}: FAILED; output in ${log#"${REPO_ROOT}/"}/${target}.log"
+    fi
+  done
+  hr
+  if [[ "${#failed[@]}" -gt 0 ]]; then
+    die "${#failed[@]} of ${#T_NAME[@]} image build(s) failed: ${notes[*]}"
+  fi
+  ok "built ${#T_NAME[@]} image build(s) at ${TAG} and pushed nothing: no registry, no login, no manifest"
+}
+
+if [[ "${LOCAL_BUILD}" -eq 1 ]]; then
+  build_locally
+  exit 0
+fi
 
 # ---------------------------------------------------------------------------
 # No credential file goes up with the source.
