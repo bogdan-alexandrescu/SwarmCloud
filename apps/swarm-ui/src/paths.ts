@@ -95,7 +95,9 @@ function isAgentTab(s: string | undefined): s is AgentTab {
 export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
 
 /** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
-export const REPO_TABS: readonly string[] = ['test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
+export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
+/** The one query a repository tab carries in the bar: the pull request the Impact tab opens on. */
+const REPO_TAB_QUERY: readonly string[] = ['pr']
 
 export function addressToPath(address: string, agentTab: AgentTab = 'live'): string {
   const q = address.indexOf('?')
@@ -141,7 +143,13 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     if (repo !== null && repo !== '') {
       const tab = q.get('tab')
       const base = `/repositories/${encodeURIComponent(repo)}`
-      return tab !== null && REPO_TABS.includes(tab) ? `${base}/${tab}` : base
+      if (tab === null || !REPO_TABS.includes(tab)) return base
+      const rest = new URLSearchParams()
+      for (const k of REPO_TAB_QUERY) {
+        const v = q.get(k)
+        if (v !== null) rest.set(k, v)
+      }
+      return rest.toString() === '' ? `${base}/${tab}` : `${base}/${tab}?${rest.toString()}`
     }
   }
   // Help: a topic lands at its group's page, scrolled to it; a group is a page.
@@ -210,7 +218,14 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     if (seg[1] === 'tokens') return seg[2] === 'permissions' ? at({ page: 'permissions' }) : at({ page: 'tokens' })
     const repo = decodeURIComponent(seg[1] ?? '')
     const tab = seg[2]
-    return tab !== undefined && REPO_TABS.includes(tab) ? at({ repo, tab }) : at({ repo })
+    if (tab === undefined || !REPO_TABS.includes(tab)) return at({ repo })
+    const extra: Record<string, string> = {}
+    const given = new URLSearchParams(query)
+    for (const k of REPO_TAB_QUERY) {
+      const v = given.get(k)
+      if (v !== null) extra[k] = v
+    }
+    return at({ repo, tab, ...extra })
   }
 
   if (seg[0] === 'help' && seg.length >= 2) {

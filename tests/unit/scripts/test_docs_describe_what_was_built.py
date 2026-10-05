@@ -356,9 +356,9 @@ def test_contract_amendments_section_records_gvisor_and_the_account_pool():
     body = _spec("## 9. CONTRACT.md amendments required")
     assert f"Amended {STAMP}" in body
     # gVisor: not requested, because nothing runs as root.
-    assert "USER swarm:swarm" in _line("images/agent-runtime-base/Dockerfile", 658)
+    assert "USER swarm:swarm" in _line("images/agent-runtime-base/Dockerfile", 810)
     assert '"runAsNonRoot": True' in _line("apps/scheduler/scheduler/dispatch.py", 193)
-    assert "`images/agent-runtime-base/Dockerfile:658`" in body
+    assert "`images/agent-runtime-base/Dockerfile:810`" in body
     assert "`apps/scheduler/scheduler/dispatch.py:192`" in body
     # The account pool: one account held per attempt, no mid-run swap in the worker.
     assert "`apps/agent-worker/agent_worker/accountlease.py:3`" in body

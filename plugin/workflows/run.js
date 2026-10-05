@@ -304,19 +304,62 @@ const READ = {
 // restated because a script cannot import it; a unit test holds the two equal.
 const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED']
 
+// What an sc:step row returns: `{state, result}`, `result` copied as given
+// from the bridge's last reply (owner decision, 2026-10-05, lane review B2).
+// Every one of the 14 StructuredOutput calls refused that day was a bare null
+// -- `"pr_url": ,` -- typed by a Haiku relay retyping the outcome field by
+// field, and one review row lost a SUCCEEDED result that way. The bridge now
+// builds `result` with NO null in it (swarm_mcp.compact.step_result): an empty
+// text is "", a figure that was not recorded is left out, never 0.
+// stepAnswer() reads it back into the flat step result the rest of this
+// script takes. The other way -- this script reading every outcome itself
+// with a swarm_workflow_status call -- was not taken: that read names each
+// step's state but not its answer, cost, duration or pull request, and it is
+// one more relay row returning StructuredOutput, the very thing that failed.
+const STEP_FIELDS = {
+  type: 'object',
+  properties: {
+    state: { type: 'string' },
+    answer_excerpt: { type: 'string' },
+    cost_usd: { type: 'number' },
+    duration_s: { type: 'number' },
+    pr_url: { type: 'string' },
+    artifacts: { type: 'array', items: { type: 'string' } },
+    last_error: { type: 'string' },
+    console: { type: 'string' },
+  },
+  required: ['state', 'answer_excerpt', 'pr_url', 'artifacts', 'last_error', 'console'],
+}
+
 const STEP_RESULT = {
   type: 'object',
   properties: {
     state: { type: 'string' },
-    answer_excerpt: { type: ['string', 'null'] },
-    cost_usd: { type: ['number', 'null'] },
-    duration_s: { type: ['number', 'null'] },
-    pr_url: { type: ['string', 'null'] },
-    artifacts: { type: 'array', items: { type: 'string' } },
-    last_error: { type: ['string', 'null'] },
-    console: CONSOLE,
+    result: STEP_FIELDS,
   },
-  required: ['state', 'answer_excerpt', 'cost_usd', 'duration_s', 'pr_url', 'artifacts', 'last_error', 'console'],
+  required: ['state', 'result'],
+}
+
+// A row's `{state, result}` as the flat step result: an empty text is null, a
+// figure left out is null (not recorded, never 0), and a link is kept only
+// when there is one. The bridge's own `result.state` wins over the row's copy
+// of it. An answer already flat (a row from before 0.5.17) is taken as it is.
+function stepAnswer(answer) {
+  if (!answer || typeof answer !== 'object' || !answer.result || typeof answer.result !== 'object') return answer
+  const given = answer.result
+  const text = (value) => (typeof value === 'string' && value !== '' ? value : null)
+  const figure = (value) => (typeof value === 'number' && isFinite(value) ? value : null)
+  const flat = {
+    state: text(given.state) || text(answer.state),
+    answer_excerpt: text(given.answer_excerpt),
+    cost_usd: figure(given.cost_usd),
+    duration_s: figure(given.duration_s),
+    pr_url: text(given.pr_url),
+    artifacts: Array.isArray(given.artifacts) ? given.artifacts.filter((name) => typeof name === 'string' && name) : [],
+    last_error: text(given.last_error),
+  }
+  if (text(given.console)) flat.console = given.console
+  return flat
 }
 
 const WORKFLOW_STATE = {
@@ -780,7 +823,7 @@ async function followRow(wf, step, prompt, opts) {
   let result = null
   for (let tried = 1; tried <= BRIDGE_TRIES; tried++) {
     try {
-      result = await agent(prompt, opts)
+      result = stepAnswer(await agent(prompt, opts))
     } catch (error) {
       return { row_error: failureText(error) }
     }

@@ -1072,14 +1072,18 @@ def test_a_long_workflow_label_is_cut_so_the_stage_and_step_survive(tmp_path):
 def test_the_step_result_shape_is_unchanged(tmp_path):
     """Callers of the workflow read these seven fields per step; the slim
     follow format must not change them. `console` (owner decision 2026-10-01)
-    is added after them: the step's console link, as the API served it."""
+    is added after them: the step's console link, as the API served it.
+
+    The ROW answers `{state, result}` (owner decision 2026-10-05, B2): it
+    copies the bridge's null-free `result` rather than retyping each field,
+    and run.js reads that back into the same seven fields."""
     got = _run(tmp_path, _SPEC, _ANSWERS)
     steps = [c for c in got["calls"] if c["agentType"] == "sc:step"]
-    assert steps and all(
-        c["schema"] == ["state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error",
-                        "console"]
-        for c in steps
-    ), steps[0]["schema"]
+    assert steps and all(c["schema"] == ["state", "result"] for c in steps), steps[0]["schema"]
+    source = _RUN_JS.read_text()
+    fields = source[source.index("const STEP_FIELDS = {"):source.index("const STEP_RESULT = {")]
+    for name in ("state", "answer_excerpt", "cost_usd", "duration_s", "pr_url", "artifacts", "last_error", "console"):
+        assert f"    {name}: " in fields, name
     scan = got["result"]["steps"][0]
     assert {k: scan[k] for k in ("state", "cost_usd", "duration_s", "pr_url", "artifacts")} == {
         "state": "SUCCEEDED", "cost_usd": 0.21, "duration_s": 252,
@@ -1161,10 +1165,12 @@ def test_the_step_relay_copies_the_answer_excerpt_verbatim_and_never_retypes_it(
     """#285: the relay retyped the raw excerpt into JSON and failed five times
     on backticks, quotes, masks, paths and backslashes. The bridge now serves
     it JSON-safe; the relay copies it, and on a refused StructuredOutput sends
-    null for it rather than rewriting it, so the state still arrives."""
+    it empty rather than rewriting it, so the state still arrives."""
     _, body = _load(_PLUGIN / "agents" / "step.md")
     flat = " ".join(body.split()).lower()
     assert "verbatim" in flat and "character for character" in flat
     assert "json-safe" in flat
     assert "never retype" in flat
-    assert "`answer_excerpt: null`" in flat or "`answer_excerpt` set to null" in flat
+    # B2 (owner, 2026-10-05): the fallback is an EMPTY excerpt, not a null --
+    # every one of the 14 refused StructuredOutput calls that day was a null.
+    assert "`result.answer_excerpt` set to `\"\"`" in flat

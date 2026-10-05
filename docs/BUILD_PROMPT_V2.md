@@ -126,7 +126,7 @@ verify that against the actual bill rather than trusting this sentence.
 > **Amended 2026-10-01: this section is unbuilt v2 design, not what runs.**
 > No profile runs as root and no profile runs under gVisor by default. The agent
 > image drops to `USER swarm:swarm`, uid 10001
-> (`images/agent-runtime-base/Dockerfile:658`), on both backends, and an agent
+> (`images/agent-runtime-base/Dockerfile:810`), on both backends, and an agent
 > installs into its own user paths (§2.12). gVisor is the `--runtime gvisor`
 > render option for GKE pods (`kubernetes/render.py:390`), not the default, and
 > Cloud Run Jobs has no runtime class at all. So the boundary this section
@@ -403,11 +403,11 @@ refresh disabled, and let the broker own it.
 
 > **Amended 2026-10-01: there is no init container.** The flow below is unbuilt
 > v2 design. What runs: the worker process itself asks the broker for an
-> account at start (`apps/agent-worker/agent_worker/lifecycle.py:4923`), gets a
+> account at start (`apps/agent-worker/agent_worker/lifecycle.py::Worker._lease_account`), gets a
 > Secret Manager secret NAME back, reads the value under its own service
 > account and shapes it into the agent child's environment
-> (`apps/agent-worker/agent_worker/lifecycle.py:5293`,
-> `apps/agent-worker/agent_worker/accountlease.py:650`). That is the same on a
+> (`apps/agent-worker/agent_worker/lifecycle.py::Worker._account_credential_env`,
+> `apps/agent-worker/agent_worker/accountlease.py::credential_env_from_account`). That is the same on a
 > Cloud Run Job execution and on a GKE pod, which is why it lives in the worker
 > rather than in a pod spec only one backend has. The broker stays the single
 > writer (§7.3); the worker never refreshes.
@@ -708,7 +708,7 @@ installs into its own user paths -- `uv tool`, `npm` prefix, `pip --user`.)
 > `claude-code` and `codex`, and GKE Autopilot for `browser`, routed by
 > `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py:1696`).
 > Neither box is "root, sandboxed": the worker runs as uid 10001
-> (`images/agent-runtime-base/Dockerfile:658`) and gVisor is opt-in
+> (`images/agent-runtime-base/Dockerfile:810`) and gVisor is opt-in
 > (`kubernetes/render.py:390`), see §2.2. There is no credential sidecar; the
 > worker leases its account itself (§2.6.3).
 
@@ -775,7 +775,7 @@ v1 built these and they are correct. They are not rewritten:
 >
 > * **Item 5: there is no sidecar** in either backend's pod. The worker process
 >   itself leases the account (§2.6.3) and runs the checkpoint timer
->   (`apps/agent-worker/agent_worker/lifecycle.py:1486`). The reason is §2.6.3's:
+>   (`apps/agent-worker/agent_worker/lifecycle.py::Worker._run_child_supervised`). The reason is §2.6.3's:
 >   one worker runs unchanged on a Cloud Run Job execution and on a GKE pod.
 >   How events are published is §2.7's question.
 > * **Item 12 is not configuration.** The catalogue is the frozen
@@ -919,7 +919,7 @@ v2 contradicts the frozen contract in specific places. These are **requests**, p
   gVisor. The defence moved down a layer; it did not disappear, and it is not the
   same defence.~~ **Not requested (amended 2026-10-02):** nothing runs as root,
   so the contract line stands. The agent image drops to `USER swarm:swarm`,
-  uid 10001 (`images/agent-runtime-base/Dockerfile:658`). The GKE pod and its
+  uid 10001 (`images/agent-runtime-base/Dockerfile:810`). The GKE pod and its
   container keep non-root, a read-only root filesystem and every capability
   dropped (`apps/scheduler/scheduler/dispatch.py:192`,
   `apps/scheduler/scheduler/dispatch.py:205`). gVisor is the opt-in

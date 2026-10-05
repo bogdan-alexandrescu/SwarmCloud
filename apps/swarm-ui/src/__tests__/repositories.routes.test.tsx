@@ -32,6 +32,10 @@ const PAIRS: readonly (readonly [string, string])[] = [
   ['work/repositories?repo=repo_0a1b2c3d4e5f6071', '/repositories/repo_0a1b2c3d4e5f6071'],
   ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=settings', '/repositories/repo_0a1b2c3d4e5f6071/settings'],
   ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=test-map', '/repositories/repo_0a1b2c3d4e5f6071/test-map'],
+  // Screens 8 and 9; Impact carries the pull request a run's PR card opened it on.
+  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=graph', '/repositories/repo_0a1b2c3d4e5f6071/graph'],
+  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact', '/repositories/repo_0a1b2c3d4e5f6071/impact'],
+  ['work/repositories?repo=repo_0a1b2c3d4e5f6071&tab=impact&pr=57', '/repositories/repo_0a1b2c3d4e5f6071/impact?pr=57'],
 ]
 
 describe('the Work section carries Repositories', () => {
@@ -55,9 +59,11 @@ describe('paths', () => {
   it('spells every page as a path and reads it back to the same address', () => {
     for (const [address, path] of PAIRS) {
       expect(addressToPath(address), address).toBe(path)
-      expect(pathToAddress(path)?.address, path).toBe(address)
+      // The bar hands the router its path and its query apart.
+      const [pathname, search = ''] = path.split('?')
+      expect(pathToAddress(pathname!, search)?.address, path).toBe(address)
     }
-    expect(PAIRS).toHaveLength(7)
+    expect(PAIRS).toHaveLength(10)
   })
 
   it('reads a trailing slash and an unknown tab as the repository itself', () => {

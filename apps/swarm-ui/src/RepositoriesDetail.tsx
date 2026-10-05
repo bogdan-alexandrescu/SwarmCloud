@@ -11,10 +11,13 @@ import {
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { GraphTab } from './RepoGraph'
+import { ImpactTab } from './RepoImpact'
 import { formatDuration, timeAgo, TERMINAL_STATES } from './types'
 
 /**
- * ONE REPOSITORY, pick A (repositories.html screen 4): tabs Overview, Test
+ * ONE REPOSITORY, pick A (repositories.html screen 4): tabs Overview, Graph
+ * and Impact (screens 8 and 9, RepoGraph.tsx and RepoImpact.tsx), Test
  * map, Hot-spots, Index runs, Settings, Used by -- one tab per part of the
  * index -- with Settings drawn as screen 11's pick A: cards for the schedule,
  * the languages, the graph, the selection policy (P3 / X2, PICKS.md) and the
@@ -36,6 +39,9 @@ import { formatDuration, timeAgo, TERMINAL_STATES } from './types'
 
 const TABS = [
   { key: 'overview', label: 'Overview' },
+  // Screens 8 and 9 (Graph A, Impact A): the frames put them after Overview.
+  { key: 'graph', label: 'Graph' },
+  { key: 'impact', label: 'Impact' },
   { key: 'test-map', label: 'Test map' },
   { key: 'hot-spots', label: 'Hot-spots' },
   { key: 'index-runs', label: 'Index runs' },
@@ -55,7 +61,7 @@ const PATCH_WHY = 'These settings cannot be changed from this console yet: the c
 /** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
 const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
 
-export function RepositoryDetail({ repoId, tab, go }: { repoId: string; tab: string | null; go: (to: string) => void }) {
+export function RepositoryDetail({ repoId, tab, go, pr = null }: { repoId: string; tab: string | null; go: (to: string) => void; pr?: string | null }) {
   const detail = useUrRead(() => loadRepository(repoId), `detail:${repoId}`)
   const index = useUrRead(() => loadRepositoryIndex(repoId), `index:${repoId}`)
   const d = detail.state.status === 'ok' || detail.state.status === 'stale' ? detail.state.data : null
@@ -91,14 +97,14 @@ export function RepositoryDetail({ repoId, tab, go }: { repoId: string; tab: str
   return (
     <div className="ur-page ur-detail">
       {crumb}
-      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} />
+      <DetailBody d={d} index={index} tab={tabOf(tab)} go={go} onRead={detail.reload} pr={pr} />
     </div>
   )
 }
 
 type IndexRead = ReturnType<typeof useUrRead<IndexDoc | null>>
 
-function DetailBody({ d, index, tab, go, onRead }: { d: RepoDetail; index: IndexRead; tab: TabKey; go: (to: string) => void; onRead: () => void }) {
+function DetailBody({ d, index, tab, go, onRead, pr }: { d: RepoDetail; index: IndexRead; tab: TabKey; go: (to: string) => void; onRead: () => void; pr: string | null }) {
   const r = d.repository
   const f = freshness(r.index)
   const [busy, setBusy] = useState(false)
@@ -165,6 +171,8 @@ function DetailBody({ d, index, tab, go, onRead }: { d: RepoDetail; index: Index
         })}
       </nav>
       {tab === 'overview' && <Overview d={d} index={index} go={go} />}
+      {tab === 'graph' && <GraphTab r={r} />}
+      {tab === 'impact' && <ImpactTab r={r} pr={pr} />}
       {tab === 'test-map' && <TestMapTab r={r} index={index} />}
       {tab === 'hot-spots' && <HotSpotsTab r={r} index={index} />}
       {tab === 'index-runs' && (
