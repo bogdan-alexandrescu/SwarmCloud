@@ -43,8 +43,8 @@ import urllib.error
 import urllib.request
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import quote, urlparse
 
 from swarm_common.models import Tenant
@@ -174,9 +174,23 @@ class SecretManagerForgeTokens:
         return self._client
 
     def token_for(self, tenant: Tenant) -> str:
+        return self.read_slot(tenant, GIT_PROVIDER).value
+
+    def read_slot(self, tenant: Tenant, provider: str) -> "SlotValue":
+        """One git-token slot's latest version: `swarm-tenant-<tenant>-<provider>`.
+
+        The git token probe's read (docs/git-tokens.md §5.4). The name is built
+        through the frozen `Tenant.secret_name`, from the caller's own tenant,
+        so this can name no other tenant's secret. swarm-api is bound only to
+        the slots Terraform grants it (`-git` today; the narrower `git-r-`/
+        `git-u-` slots once lane GT4 declares them), and a slot it is not
+        bound to answers the PermissionDenied branch below.
+        """
         from google.api_core import exceptions as gexc
 
-        secret_id = tenant.secret_name(GIT_PROVIDER)
+        if not _SLOT_PROVIDER.match(provider or ""):
+            raise IssueReadFailed("a git token slot is git, git-r-<hex> or git-u-<hex>")
+        secret_id = tenant.secret_name(provider)
         name = f"projects/{self._project_id}/secrets/{secret_id}/versions/latest"
         try:
             version = self._secret_client().access_secret_version(request={"name": name})
@@ -203,7 +217,25 @@ class SecretManagerForgeTokens:
             raise NoForgeCredential(
                 f"tenant {tenant.tenant_id!r}'s forge credential {secret_id} is empty"
             )
-        return token
+        # `.../versions/<n>`: the number a rotation changes. A name, not a value.
+        version_name = getattr(version, "name", "") or ""
+        return SlotValue(value=token, version=version_name.rsplit("/", 1)[-1] or None)
+
+
+@dataclass(frozen=True)
+class SlotValue:
+    """A slot's value and the Secret Manager version it came from.
+
+    `repr=False` on the value: a dataclass's repr is what a traceback, a log
+    line or a debugger prints, and it must never print the token.
+    """
+
+    value: str = field(repr=False)
+    version: str | None = None
+
+
+#: The providers a git-token slot is stored under (docs/git-tokens.md §2).
+_SLOT_PROVIDER = re.compile(r"^git(-r-[0-9a-f]{16}|-u-[0-9a-f]{16})?$")
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +294,88 @@ def _urllib_send(url: str, headers: dict[str, str], timeout: float) -> tuple[int
         return answer.code, body
 
 
+# --------------------------------------------------------------------------
+# the git token probe's transport (docs/git-tokens.md §5, §5.4)
+# --------------------------------------------------------------------------
+
+#: The hosts a forge token may be sent to from swarm-api: the REST API, and
+#: github.com for the one git-protocol read the probe makes (the push
+#: service advertisement). The worker's rule, `agent_worker.forge.
+#: may_receive_forge_token`, names github.com and www.github.com; this is
+#: swarm-api's own, smaller set, because the API never clones.
+FORGE_TOKEN_HOSTS = frozenset({GITHUB_API_HOST, "github.com"})
+
+
+def may_receive_forge_token(url: str) -> bool:
+    """True only for an https URL, with no port and no userinfo, on FORGE_TOKEN_HOSTS."""
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and port is None
+        and parsed.username is None
+        and (parsed.hostname or "").lower() in FORGE_TOKEN_HOSTS
+    )
+
+
+@dataclass(frozen=True)
+class ProbeResponse:
+    """One answer: its status, its headers (names lower-cased) and its body."""
+
+    status: int
+    headers: Mapping[str, str]
+    body: bytes = b""
+
+
+#: `(url, headers, timeout) -> ProbeResponse`. Injected by the tests;
+#: `urllib_probe_send` in production. Raises on a transport failure.
+ProbeSend = Callable[[str, dict[str, str], float], ProbeResponse]
+
+
+class ProbeHostRefused(Exception):
+    """A probe URL named a host the token may not go to. Constant text."""
+
+
+def git_basic_headers(token: str) -> dict[str, str]:
+    """The headers of the probe's one git-protocol GET (`info/refs`).
+
+    Git over HTTPS takes the token as a basic-auth password; GitHub accepts
+    `x-access-token` as the user for every kind of token.
+    """
+    import base64
+
+    pair = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {pair}", "User-Agent": _USER_AGENT}
+
+
+def urllib_probe_send(url: str, headers: dict[str, str], timeout: float) -> ProbeResponse:
+    """A GET, nothing else, to a forge host only, never following a redirect."""
+    if not may_receive_forge_token(url):
+        raise ProbeHostRefused()
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return ProbeResponse(
+                status=response.status,
+                headers={k.lower(): v for k, v in response.headers.items()},
+                body=response.read(MAX_RESPONSE_BYTES + 1),
+            )
+    except urllib.error.HTTPError as answer:
+        try:
+            body = answer.read(MAX_RESPONSE_BYTES + 1)
+        except Exception:
+            body = b""
+        answer_headers = answer.headers.items() if answer.headers is not None else ()
+        return ProbeResponse(
+            status=answer.code,
+            headers={k.lower(): v for k, v in answer_headers},
+            body=body,
+        )
+
+
 @dataclass(frozen=True)
 class IssueSnapshot:
     title: str
@@ -297,17 +411,25 @@ def _is_int(value: Any) -> bool:
 
 
 class GitHubIssues:
-    """GitHub's issue API on api.github.com, read-only: one issue, and the open work."""
+    """GitHub's issue API on api.github.com, read-only: one issue, and the open work.
+
+    It also carries the git token probe's transport (`probe_send`,
+    docs/git-tokens.md §5): the same pinned, redirect-refusing GET, answering
+    the response headers too, because the probe reads a token's scopes, its
+    expiry and its rate limit from them.
+    """
 
     def __init__(
         self,
         *,
         send: Send | None = None,
+        probe_send: "ProbeSend | None" = None,
         timeout: float = TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         budget_seconds: float = OPEN_WORK_BUDGET_SECONDS,
     ) -> None:
         self._send = send or _urllib_send
+        self.probe_send: ProbeSend = probe_send or urllib_probe_send
         self._timeout = timeout
         self._clock = clock
         self._budget = budget_seconds
