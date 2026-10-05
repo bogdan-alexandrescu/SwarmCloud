@@ -313,6 +313,7 @@ export function StepProgress({ e, now }: { e: Extract<ProgressEntry, { kind: 'st
  */
 export function CostFact({ read }: { read: RunWorkflows }) {
   let body: ReactNode
+  let absent = true
   if (read.ids.length === 0) {
     body = <Dash why="No workflow yet: cost is recorded by the workflow's step tasks, and the workflow is created on approval." />
   } else if (read.loads === null) {
@@ -336,6 +337,7 @@ export function CostFact({ read }: { read: RunWorkflows }) {
     if (covered === 0) {
       body = <Dash why={`No step has reported a cost yet: a step's cost is recorded when its task finishes.${gap}`} />
     } else {
+      absent = false
       body = (
         <span title={`Summed from the step tasks' recorded cost.${gap}`}>
           {usd(total)} · {covered} of {steps} {steps === 1 ? 'step' : 'steps'} reporting
@@ -344,7 +346,7 @@ export function CostFact({ read }: { read: RunWorkflows }) {
     }
   }
   return (
-    <li className="ctl-fact"><b>cost so far</b>{body}</li>
+    <li className={absent ? 'ctl-fact is-absent' : 'ctl-fact'}><b>cost so far</b>{body}</li>
   )
 }
 

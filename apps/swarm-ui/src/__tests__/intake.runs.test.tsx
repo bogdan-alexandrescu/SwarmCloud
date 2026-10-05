@@ -443,9 +443,13 @@ describe('/runs/<id>: one run', () => {
     const { container } = await mount('run=run_4c1e09d2')
     const ci = await waitFor(() => {
       const el = container.querySelector<HTMLElement>('.rn-ci')
-      expect(visible(el)).toContain('f00dfeed1234567')
+      expect(el).not.toBeNull()
+      expect(el!.querySelector('code[title="f00dfeed1234567"]')).not.toBeNull()
       return el!
     }, WAIT)
+    // Short, like the checks' sha; the whole one is its title (lane U14 item 6).
+    const green = [...ci.querySelectorAll('.ctl-fact')].find((f) => visible(f.querySelector('b')) === 'green at')!
+    expect(visible(green.querySelector('code'))).toBe('f00dfee')
     expect(visible(ci)).toContain('Closes #512')
     expect(visible(ci)).not.toContain('part of')
   })
