@@ -74,16 +74,17 @@ describe('B: the metadata is said once, in the header block', () => {
     // The whole id with its copy, once, in the header.
     expect(head.querySelector('button[aria-label^="Copy task id"]'), 'no id copy in the header').not.toBeNull()
     expect(pane.querySelector('button[aria-label^="Copy task id"]'), 'the pane repeats the id copy').toBeNull()
-    // The id is behind its copy button, whose title is the whole id; it is
-    // printed nowhere (the pane's own <h1> is hidden under the header, and
-    // the title names the agent -- item G).
+    // The id is printed ONCE, on the header's id line under the name, with
+    // its copy (#94); nowhere else (the pane's own <h1> is hidden under the
+    // header, and the title names the agent -- item G).
     expect(painted(pane.querySelector('.head')!, 'display', WIDE)).toBe('none')
     expect(head.querySelector<HTMLElement>('button[aria-label^="Copy task id"]')!.title).toContain(FINISHED)
     const shown = s.cloneNode(true) as HTMLElement
     // A tab not on screen is not printed (the Checkpoints pane is mounted
     // hidden, for its count -- U11a D21).
-    for (const el of shown.querySelectorAll('.ag-split-pane .head, .ag-head-title, [hidden]')) el.remove()
-    expect(times(shown, FINISHED), 'the id is printed').toBe(0)
+    expect(s.querySelector('.ag-head-id .tid-text')?.textContent).toBe(FINISHED)
+    for (const el of shown.querySelectorAll('.ag-split-pane .head, .ag-head-title, .ag-head-id, [hidden]')) el.remove()
+    expect(times(shown, FINISHED), 'the id is printed twice').toBe(0)
     // The facts the header owns are said there once; the pane keys none of them.
     const keys = (root: Element) => [...root.querySelectorAll('.ctl-fact > b')].map((b) => (b.textContent ?? '').trim())
     expect(meta.some((m) => m.startsWith('account ')), 'the header has no account').toBe(true)

@@ -304,7 +304,7 @@ describe('the agent inspector head', () => {
     expect(span.getAttribute('title')).toContain(new Date(NOW - 80 * 60_000).toISOString())
     expect(span.getAttribute('title')).toContain(new Date(NOW - 10 * 60_000).toISOString())
     expect(submitted(container).textContent).toContain(clockTime(iso(90))!.text)
-    const meta = render(<AgHeadMeta taskId={t.id} task={t} />).container
+    const meta = render(<AgHeadMeta task={t} />).container
     expect(meta.textContent).toContain('acct-eng-01 → 02 (swapped: unreadable)')
   })
 
@@ -314,7 +314,7 @@ describe('the agent inspector head', () => {
     const cell = [...container.querySelectorAll<HTMLElement>('.dt-sc')].find((x) => x.querySelector('.dt-sc-l')?.textContent === 'Elapsed')!
     expect(cell.querySelector('.dt-sc-v')?.textContent).toBe('never ran')
     expect(submitted(container).textContent).toContain(clockTime(iso(45))!.text)
-    const meta = render(<AgHeadMeta taskId={t.id} task={t} />).container
+    const meta = render(<AgHeadMeta task={t} />).container
     expect(meta.textContent).toContain('not read')
   })
 
