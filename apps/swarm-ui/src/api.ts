@@ -3154,6 +3154,7 @@ const FIXTURE_REASON_GROUPS: Record<string, string[]> = {
     "BUDGET_LIMIT",
     "DEPENDENCY",
     "MANUAL_PAUSE",
+    "POOL_LIMIT_UNSET",
     "QUOTA_EXHAUSTED"
   ],
   "no_room": [

@@ -54,7 +54,7 @@ def test_the_two_groups_partition_blocked_reason_exactly():
     """
     assert NEEDS_ACTION | NO_ROOM == set(BlockedReason)
     assert NEEDS_ACTION & NO_ROOM == set()
-    assert len(NEEDS_ACTION) + len(NO_ROOM) == len(list(BlockedReason)) == 12
+    assert len(NEEDS_ACTION) + len(NO_ROOM) == len(list(BlockedReason)) == 13
 
 
 def test_credential_missing_is_a_park_reason_and_not_a_blocked_reason():
