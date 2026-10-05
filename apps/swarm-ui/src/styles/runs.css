@@ -63,3 +63,55 @@
 }
 .rn-list-items { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 
+
+
+/* ---- lane U14: the run while it runs (owner, 2026-10-04) -------------------- */
+/* THE STEPS CARD (item 1): one 32px row per workflow step -- the state mark,
+   the step's name, elapsed and attempt, and "Open agent →" at the row's end.
+   On a phone the meta drops under the name and the link stays on the row. */
+.rn-srows { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; min-width: 0; }
+.rn-srow {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center;
+  column-gap: 10px; min-height: 32px; padding: 4px 0;
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.rn-srow + .rn-srow { border-top: 1px solid var(--line); }
+.rn-srow-n { min-width: 0; overflow-wrap: anywhere; }
+.rn-srow-t { font-weight: 600; }
+.rn-srow-id, .rn-srow-r { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.rn-srow-m { display: flex; flex-wrap: wrap; gap: 0 10px; font-size: var(--t-micro); line-height: var(--lh-micro); }
+@media (max-width: 719px) {
+  .rn-srow { grid-template-columns: auto minmax(0, 1fr) auto; }
+  .rn-srow-m { grid-column: 2 / 4; grid-row: 2; }
+}
+.rn-steps-n { font-weight: 400; color: var(--text-dim); }
+.rn-steps-err { margin: 0; padding: 0; list-style: none; display: grid; gap: 4px; overflow-wrap: anywhere; }
+.rn-open {
+  display: inline-flex; align-items: center; min-height: 32px; white-space: nowrap;
+  color: var(--sk-ac); font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.rn-open:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+
+/* A PLAN STEP'S LIVE STATE (item 2): the mark and the agent link on one line. */
+.rn-step-live { display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; }
+
+/* PROGRESS (item 3): a step's change is a quieter line than the run's own. */
+.rn-history .rn-hstep { color: var(--text-dim); padding-left: 12px; }
+
+/* FOLDED TO ONE LINE (item 5): the heading and a short line are the
+   disclosure; a 32px target, the chevron the browser's own. */
+.rn-fold { min-width: 0; }
+.rn-fold > summary {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; min-height: 32px;
+  cursor: pointer; list-style: revert;
+}
+.rn-fold > summary > h3 { display: inline; }
+.rn-fold > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
+.rn-fold-b { display: grid; gap: 8px; min-width: 0; margin-top: 8px; }
+
+/* THE PULL REQUEST CARD LEADS FROM CHECKING (item 5): the accent edge marks
+   it as the page's subject now. */
+.rn-ci.is-lead { border-color: var(--sk-ac); }
+.rn-ci .c-card-h a { color: var(--sk-ac); }
+.rn-failed-checks { margin: 0; padding: 0 0 0 18px; display: grid; gap: 2px; }
+.rn-failed-check { color: var(--bad-ink); overflow-wrap: anywhere; }

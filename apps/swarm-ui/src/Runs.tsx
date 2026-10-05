@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { approvePlan, editPlan, loadRun, loadRuns, loadWorkflow, rejectPlan } from './api'
+import { approvePlan, editPlan, loadRun, loadRuns, rejectPlan } from './api'
 import type { ApiError, Result } from './fetch'
 import { InlineText as RnText, runAddress } from './IssueSubmit'
 import { MarkGlyph, type MarkHue, type MarkName } from './marks'
@@ -8,6 +8,10 @@ import { Dash } from './components/Chip'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
+import {
+  CostFact, PlanStepLive, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
+  type RunWorkflows, type StepRow,
+} from './RunSteps'
 import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunPlan } from './types'
 import { useNow } from './useNow'
 import './styles/intake.css'
@@ -41,7 +45,8 @@ import './styles/runs.css'
  *
  * WHAT THE RUN HAS NOT GOT YET IS SAID, NOT HIDDEN: a pull request not yet
  * opened, a comment not yet posted, a keyword the review has not decided.
- * Cost is not served per run, and is a dash with that reason. A workflow not
+ * Cost is summed from the step tasks that report one, with how many do; none
+ * reporting is a dash with that reason, never $0. A workflow not
  * yet created is "none yet", because the run does serve `workflow_id`, and
  * null is a fact.
  *
@@ -51,11 +56,12 @@ import './styles/runs.css'
  * -- a short lead, numbered steps with their prompts folded, the raw plan
  * behind a disclosure -- rather than as one long paragraph.
  *
- * THE PAGE LEADS WITH THE ISSUE (lane U9, owner 2026-10-03). Its title is the
- * issue's title as the run read it at submission (`issue_read`), its meta
- * `owner/repo#N · run_… · created by …`; the plan is drawn from its schema
- * -- a short lead, numbered steps with their prompts folded, the raw plan
- * behind a disclosure -- rather than as one long paragraph.
+ * THE PAGE FOLLOWS THE RUN (lane U14, owner 2026-10-04). While the run has a
+ * workflow, a Steps card under the status line lists every step with its
+ * state and a link to its agent (RunSteps.tsx); Progress interleaves the
+ * steps' changes; cost is the step tasks' recorded cost with its coverage.
+ * From CHECKING the pull request card leads, and once the plan is approved
+ * the overlaps and the plan fold to one line each.
  *
  * Classes are `rn-` so a later pass can swap them for lane U0's components.
  */
@@ -88,11 +94,6 @@ function githubLink(url: string | null | undefined): string | null {
 function commentUrl(run: IssueRun, id: number | null | undefined): string | null {
   const issue = githubLink(run.issue.url)
   return issue === null || typeof id !== 'number' ? null : `${issue}#issuecomment-${id}`
-}
-
-/** `abc1234`: a sha short enough to read; the whole sha is its title. */
-function shortSha(sha: string): string {
-  return sha.length > 12 ? sha.slice(0, 7) : sha
 }
 
 /** The brand state marks (marks.tsx) for a run's states. */
@@ -383,9 +384,13 @@ function stateLine(run: IssueRun): string {
     case 'FIXING':
       return `CI was red: fix round ${run.ci_fix_round ?? 1} of ${run.fix_rounds} is pushing to the pull request.`
     case 'DONE':
+      // The CI loop ends a run DONE when its PR merged OR when every required
+      // check is green; the run does not serve which (`pull_request.merged`).
       return run.green_sha
-        ? 'Every required check is green on the pull request.'
-        : 'The workflow succeeded.'
+        ? 'Every required check is green on the pull request. Its merge is not reported by this run.'
+        : run.pull_request
+          ? 'The pull request ended the run before its checks were green. Whether it merged is not reported by this run.'
+          : 'The workflow succeeded.'
     case 'FAILED':
       return 'The run failed.'
     case 'REJECTED':
@@ -483,7 +488,15 @@ function RunPage({ run: served, reread, go, onHeading }: {
   }
 
   const digest = run.plan_digest
-  const wfPr = useWorkflowPullRequest(run)
+  // THE RUN'S WORKFLOWS, READ EACH TIME THE RUN IS (lane U14): the Steps
+  // card, the plan's live states, Progress, the cost and the PR the
+  // integrator opened all come from this one read.
+  const read = useRunWorkflows(run)
+  const wfPr = wfPrOf(run, read)
+  const rows = stepRows(run, read)
+  const approved = planApproved(run)
+  // From CHECKING the pull request is the subject: its card leads (item 5).
+  const prLeads = lead(run)
   /** Approve, Edit and Reject -- or the rejection form, where it was asked for. Null while editing. */
   const actions = (at: ActionsAt): ReactNode => {
     if (!canAct || open.kind === 'edit') return null
@@ -522,6 +535,8 @@ function RunPage({ run: served, reread, go, onHeading }: {
         {run.error !== null && (
           <p className="rn-error" role="alert"><b>Why:</b> {run.error}</p>
         )}
+        {prLeads && <CiCard run={run} go={go} wfPr={wfPr} />}
+        <StepsCard run={run} read={read} go={go} now={now} />
         {run.state === 'REJECTED' && (
           <p className="sb-note">
             Rejected by {run.rejected_by ?? '—'}
@@ -568,13 +583,17 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </div>
         )}
 
-        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} />}
+        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} />}
 
         <section className="rn-plan" aria-label="The plan">
-          <h3>
-            The plan
-            {digest !== null && <> · <code className="rn-digest" title={digest}>{shortDigest(digest)}</code></>}
-          </h3>
+          <Fold folded={approved && run.plan !== null}
+            line={run.plan === null ? null : <span className="sb-note">{pluralise(run.plan.steps.length, 'step')} · approved</span>}
+            head={
+              <h3>
+                The plan
+                {digest !== null && <> · <code className="rn-digest" title={digest}>{shortDigest(digest)}</code></>}
+              </h3>
+            }>
           {run.plan === null ? (
             <p className="sb-note">
               {run.state === 'PLANNING'
@@ -608,13 +627,15 @@ function RunPage({ run: served, reread, go, onHeading }: {
                   ? <Chip title="The planner's estimate for the whole plan">estimate {run.plan.estimate}</Chip>
                   : <span className="sb-note">no estimate given</span>}
               </p>
-              <PlanBody plan={run.plan} unmet={run.requirements_unmet ?? []} />
+              <PlanBody plan={run.plan} unmet={run.requirements_unmet ?? []}
+                live={approved ? { read, rows, go } : null} />
             </>
           )}
           {canAct && open.kind !== 'edit' && <div className="rn-actbar">{actions('foot')}</div>}
+          </Fold>
         </section>
 
-        <CiCard run={run} go={go} wfPr={wfPr} />
+        {!prLeads && <CiCard run={run} go={go} wfPr={wfPr} />}
         {textList(run.plan?.risks) !== null && (
           <section className="rn-risks" aria-label="Risks">
             <h3>Risks the planner named</h3>
@@ -628,9 +649,10 @@ function RunPage({ run: served, reread, go, onHeading }: {
 
         <section className="rn-history" aria-label="History">
           <h3>Progress</h3>
+          {/* THE STEPS' CHANGES UNDER THE RUN'S, OLDEST FIRST (item 3). */}
           <ol>
-            {run.history.map((h, i) => (
-              <li key={`${h.to}-${i}`}>
+            {progressEntries(run, rows).map((h) => h.kind === 'step' ? <StepProgress key={h.key} e={h} now={now} /> : (
+              <li key={h.key}>
                 <RunStateMark state={h.to} />
                 <span>{h.from === null ? 'created' : `from ${h.from}`} · by {h.by || '—'}</span>
                 <span className="sb-note" title={h.at ?? undefined}>{h.at === null ? '—' : timeAgo(h.at, now)}</span>
@@ -679,7 +701,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className="ctl-fact"><b>by</b>{run.created_by
               ? <span className="rn-id" title={run.created_by}>{run.created_by}</span>
               : <i className="ctl-em">&mdash; not recorded</i>}</li>
-            <li className="ctl-fact is-absent"><b>cost so far</b><i className="ctl-em">&mdash; not served per run</i></li>
+            <CostFact read={read} />
           </ul>
         </section>
       </aside>
@@ -802,7 +824,10 @@ function oneEllipsis(lead: string): string {
  * plan states them, and the prompt folded -- then the raw plan behind a
  * disclosure. On a phone the plan was one paragraph with no end.
  */
-function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
+/** What a plan step needs to draw its live state once the run is approved; null before. */
+type PlanLive = { read: RunWorkflows; rows: StepRow[]; go: (to: string) => void } | null
+
+function PlanBody({ plan, unmet, live }: { plan: RunPlan; unmet: string[]; live: PlanLive }) {
   const { lead, cut } = planLead(plan.summary)
   // "READ MORE" BESIDE THE CUT (owner QA F, 2026-10-04): the lead ended in
   // `…` and the rest was behind "Show the full plan", under the steps.
@@ -823,7 +848,7 @@ function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
       <Requirements plan={plan} unmet={unmet} />
       <ol className="rn-steps">
         {plan.steps.map((s, i) => (
-          <PlanStep key={s.step_id} step={s} n={i + 1} />
+          <PlanStep key={s.step_id} step={s} n={i + 1} live={live} />
         ))}
       </ol>
       <details className="rn-raw">
@@ -835,7 +860,13 @@ function PlanBody({ plan, unmet }: { plan: RunPlan; unmet: string[] }) {
   )
 }
 
-function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
+/**
+ * One plan step. BEFORE APPROVAL it says what it waits for ("starts at once",
+ * "after api"); ONCE APPROVED (lane U14 item 2) "starts at once" is replaced
+ * by the step's live state and its agent link -- a dependent step keeps
+ * "after …" beside them.
+ */
+function PlanStep({ step, n, live }: { step: PlanStepDoc; n: number; live: PlanLive }) {
   const files = textList(step.files)
   const tests = textList(step.tests)
   const estimate = typeof step.estimate === 'string' && step.estimate.trim() !== '' ? step.estimate : null
@@ -844,13 +875,17 @@ function PlanStep({ step, n }: { step: PlanStepDoc; n: number }) {
       <b className="rn-step-h">{n} · <RnText text={step.title} /></b>
       <span className="rn-step-id sb-note">
         <span className="mono">{step.step_id}</span>
-        {step.depends_on !== undefined && (
+        {step.depends_on !== undefined && (live === null || step.depends_on.length > 0) && (
           <span className="rn-deps">
             {' · '}
             {step.depends_on.length === 0 ? 'starts at once' : <>after <span className="mono">{step.depends_on.join(', ')}</span></>}
           </span>
         )}
       </span>
+      {live !== null && (
+        <PlanStepLive read={live.read} go={live.go}
+          row={live.rows.find((r) => r.round === 0 && r.stepId === step.step_id) ?? null} />
+      )}
       {files !== null && <StepList label="Touches" items={files} />}
       {tests !== null && <StepList label="Tests" items={tests} />}
       {estimate !== null && <span className="rn-step-meta sb-note">{estimate}</span>}
@@ -1098,16 +1133,16 @@ function overlapRead(o: unknown): PlanOverlap {
  * a warning. The card is neutral until an overlap needs action, and its
  * heading counts both: "5 checked · 0 need action".
  */
-function Overlaps({ plan, openWork }: { plan: RunPlan; openWork: OpenWork | null }) {
+function Overlaps({ plan, openWork, folded }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean }) {
   const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
   const verdicts = found ? overlaps!.map((o) => overlapVerdict(o.note)) : []
   const needing = verdicts.filter((v) => v.needs).length
-  return (
-    <Card level={3} className={`rn-overlaps${needing > 0 ? ' is-found' : ''}`}
-      title={found
-        ? `Overlaps the planner found · ${overlaps!.length} checked · ${needing} ${needing === 1 ? 'needs' : 'need'} action`
-        : 'Overlaps the planner found'}>
+  const title = found
+    ? `Overlaps the planner found · ${overlaps!.length} checked · ${needing} ${needing === 1 ? 'needs' : 'need'} action`
+    : 'Overlaps the planner found'
+  const body = (
+    <>
       {overlaps === undefined || overlaps === null ? (
         <p className="sb-note">
           This plan does not say: it was written without the planner&rsquo;s read of the repository&rsquo;s open issues
@@ -1145,8 +1180,39 @@ function Overlaps({ plan, openWork }: { plan: RunPlan; openWork: OpenWork | null
           })}
         </ul>
       )}
-    </Card>
+    </>
   )
+  const className = `rn-overlaps${needing > 0 ? ' is-found' : ''}`
+  // ONE LINE ONCE THE PLAN IS APPROVED (lane U14 item 5): it was read before
+  // approval; after it, it sat ~1,000px above nothing a reader needed.
+  if (folded) {
+    return (
+      <Card level={3} className={className}>
+        <Fold folded head={<h3>{title}</h3>} line={null}>{body}</Fold>
+      </Card>
+    )
+  }
+  return <Card level={3} className={className} title={title}>{body}</Card>
+}
+
+/**
+ * A CARD FOLDED TO ONE LINE (lane U14 item 5): its heading and a short line
+ * as a disclosure, the body under it. Unfolded, the heading and body as they
+ * were.
+ */
+function Fold({ folded, head, line, children }: { folded: boolean; head: ReactNode; line: ReactNode; children: ReactNode }) {
+  if (!folded) return <>{head}{children}</>
+  return (
+    <details className="rn-fold">
+      <summary>{head}{line}</summary>
+      <div className="rn-fold-b">{children}</div>
+    </details>
+  )
+}
+
+/** Whether the plan has been approved: it is no longer the page's question. */
+function planApproved(run: IssueRun): boolean {
+  return run.approved_by !== null || run.workflow_id !== null
 }
 
 /** The issue's requirements as the planner listed them; one the review left open is marked. */
@@ -1201,29 +1267,17 @@ type WfPrRead =
   | { kind: 'error'; why: string }
   | { kind: 'read'; pr: WorkflowPullRequest | null }
 
-function useWorkflowPullRequest(run: IssueRun): WfPrRead {
-  const [found, setFound] = useState<{ wf: string; read: WfPrRead } | null>(null)
-  const wf = (run.pull_request ?? null) === null ? run.workflow_id : null
-  useEffect(() => {
-    if (wf === null || found?.wf === wf) return
-    let live = true
-    void loadWorkflow(wf).then((r) => {
-      if (!live) return
-      if (r.status === 'ok' || r.status === 'stale') {
-        const pr = workflowPullRequest(r.data.workflow, new Map(r.data.tasks.map((t) => [t.id, t])))
-        setFound({ wf, read: { kind: 'read', pr } })
-      } else if (r.status === 'error') {
-        setFound({ wf, read: { kind: 'error', why: r.error.message } })
-      } else if (r.status !== 'loading') {
-        setFound({ wf, read: { kind: 'read', pr: null } })
-      }
-    })
-    return () => {
-      live = false
-    }
-  }, [wf])
-  if (wf === null) return { kind: 'none' }
-  return found?.wf === wf ? found.read : { kind: 'reading' }
+/**
+ * The PR the integrator opened, from the run's workflow read (`useRunWorkflows`,
+ * which the Steps card shares), asked only when the run names no PR itself.
+ */
+function wfPrOf(run: IssueRun, read: RunWorkflows): WfPrRead {
+  if ((run.pull_request ?? null) !== null || run.workflow_id === null) return { kind: 'none' }
+  const main = read.loads?.[0]
+  if (main === undefined || main.wf !== run.workflow_id) return { kind: 'reading' }
+  if (main.data === null) return { kind: 'error', why: main.error ?? 'the read did not finish' }
+  const pr = workflowPullRequest(main.data.workflow, new Map(main.data.tasks.map((t) => [t.id, t])))
+  return { kind: 'read', pr }
 }
 
 /** The PR the workflow's integrator opened, once read; null otherwise. */
@@ -1324,15 +1378,59 @@ function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => vo
   const round = run.ci_fix_round ?? 0
   const fixes = run.ci_fix_workflows ?? []
   const n = run.issue.number
+  const prUrl = githubLink(pr?.url)
+  const head = pr?.head_sha ?? null
+  // THE FAILED CHECKS BY NAME (lane U14 item 5): the run serves no per-check
+  // list, but its failure excerpt names them, at the sha it read them at. A
+  // reading from before the head moved is said as that, never as the head's.
+  const red = redReading(run.failure_excerpt)
+  const redAtHead = red !== null && head !== null && head.startsWith(red.sha)
+  const notServed = (what: string) =>
+    `${what} not served: the run records one aggregate reading of the required checks (pull_request.checks), not each check.`
+  const issueUrl = githubLink(run.issue.url)
   return (
-    <Card level={3} className="rn-ci" title="Pull request and checks">
+    <Card level={3} className={lead(run) ? 'rn-ci is-lead' : 'rn-ci'} title={pr === null || pr.number === null ? 'Pull request and checks' : (
+      <>
+        Pull request{' '}
+        {prUrl === null ? <span className="mono">#{pr.number}</span>
+          : <a href={prUrl} target="_blank" rel="noreferrer" className="mono" title={prUrl}>#{pr.number}</a>}
+        {' · '}
+        <Dash why="The pull request's title is not served: the run records its number, link, head and checks, and no pull_request.title." />
+      </>
+    )}>
       <ul className="ctl-facts rn-ci-facts">
         <li className="ctl-fact">
           <b>checks</b>
           {pr?.checks
-            ? <span>{pr.checks}{pr.head_sha ? <> at <code title={pr.head_sha}>{shortSha(pr.head_sha)}</code></> : null}</span>
+            ? <span>{pr.checks}{head ? <> at <code title={head}>{shortSha(head)}</code><CopyText text={head} /></> : null}</span>
             : <i className="ctl-em">not read yet</i>}
         </li>
+        <li className="ctl-fact rn-ci-counts">
+          <b>by check</b>
+          <span>
+            passed <Dash why={notServed('How many passed is')} /> · pending <Dash why={notServed('How many are pending is')} />
+            {' · '}failed {redAtHead && pr?.checks === 'red' ? red!.names.length : <Dash why={notServed('How many failed at this head is')} />}
+            {' · '}skipped <Dash why={notServed('How many were skipped is')} />
+          </span>
+        </li>
+        {red !== null && red.names.length > 0 && (
+          <li className="ctl-fact rn-ci-failed">
+            <b>{redAtHead ? 'failed' : `red at ${red.sha}, before the head moved`}</b>
+            <ul className="rn-failed-checks">
+              {red.names.map((name, i) => (
+                <li key={`${i}-${name}`}>
+                  <span className="rn-failed-check" title="Each check's own run link is not served; the checks page lists them.">{name}</span>
+                </li>
+              ))}
+            </ul>
+          </li>
+        )}
+        {prUrl !== null && (
+          <li className="ctl-fact">
+            <b>CI</b>
+            <a href={`${prUrl}/checks`} target="_blank" rel="noreferrer">checks on GitHub ↗</a>
+          </li>
+        )}
         <li className="ctl-fact">
           <b>fix rounds</b>
           <span>
@@ -1348,7 +1446,22 @@ function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => vo
         </li>
         <li className={run.green_sha ? 'ctl-fact' : 'ctl-fact is-absent'}>
           <b>green at</b>
-          {run.green_sha ? <code>{run.green_sha}</code> : <i className="ctl-em">not green yet</i>}
+          {/* SHORT, LIKE CHECKS (item 6): the whole sha is its title and its copy. */}
+          {run.green_sha
+            ? <span><code title={run.green_sha}>{shortSha(run.green_sha)}</code><CopyText text={run.green_sha} /></span>
+            : <i className="ctl-em">not green yet</i>}
+        </li>
+        {pr !== null && <MergeFact run={run} />}
+        <li className="ctl-fact">
+          <b>issue</b>
+          <span>
+            {issueUrl === null ? <span className="mono">#{n}</span>
+              : <a href={issueUrl} target="_blank" rel="noreferrer" className="mono" title={issueUrl}>#{n}</a>}
+            {' · '}
+            <i className="ctl-em" title="The issue's state now is not served: the run read the issue once, at submission (issue_read).">
+              state not served{run.issue_read?.state ? ` · ${run.issue_read.state} when the run was created` : ''}
+            </i>
+          </span>
         </li>
         <li className="ctl-fact">
           <b>keyword</b>
@@ -1369,6 +1482,30 @@ function CiCard({ run, go, wfPr: read }: { run: IssueRun; go: (to: string) => vo
         </div>
       )}
     </Card>
+  )
+}
+
+/** Whether the pull request is the run's subject now: CHECKING, FIXING or DONE. */
+function lead(run: IssueRun): boolean {
+  return run.state === 'CHECKING' || run.state === 'FIXING' || run.state === 'DONE'
+}
+
+/**
+ * WHETHER THE PULL REQUEST MERGED (lane U14 item 6). The CI loop reads it
+ * (`pull_request.merged`) and ends the run DONE on a merge OR on green, but
+ * `IssueRun.to_api` does not serve it, and no merger or merge time is kept.
+ * So a DONE run says "merge not reported"; while CHECKING or FIXING the last
+ * read found it open, since a merged PR ends the run and a closed one fails it.
+ */
+function MergeFact({ run }: { run: IssueRun }) {
+  const why = 'Not served: the CI loop reads whether the pull request merged, but the run does not serve pull_request.merged, and records no merger or merge time.'
+  return (
+    <li className="ctl-fact is-absent">
+      <b>merge</b>
+      {run.state === 'CHECKING' || run.state === 'FIXING'
+        ? <i className="ctl-em" title="A merged pull request ends the run DONE and a closed one fails it, so a CHECKING or FIXING run's was open at its last read.">open · not merged at the last read</i>
+        : <i className="ctl-em" title={why}>merge not reported{run.green_sha ? ' · green' : ''}</i>}
+    </li>
   )
 }
 
