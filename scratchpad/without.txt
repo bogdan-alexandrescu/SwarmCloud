@@ -1,0 +1,60 @@
+F                                                                        [100%]
+=================================== FAILURES ===================================
+___ test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating ___
+
+db = <fakes.FakeFirestore object at 0x7fafc519b390>
+worker_factory = <function worker_factory.<locals>._factory at 0x7fafc5087b00>
+
+    def test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating(
+        db, worker_factory
+    ):
+        """Held to one interval, a beat that cannot land is one of the missed
+        beats the interval is sized for; the thread asks for the next on time. It
+        used to end the thread, leaving the rest of the checkpoint unbeaten. The
+        control: a fence still ends it (the fenced test in
+        test_checkpoint_tool_caches.py), and here a beat after the failures lands."""
+        from google.api_core import exceptions as core_exceptions
+    
+        seed_attempt(db, task_input={"prompt": "x", "steps": 1, "sleep_seconds": 0.05})
+        worker, _, _ = worker_factory(heartbeat_interval_seconds=1)
+        real = worker.control.heartbeat
+        calls: list[str] = []
+    
+        def flaky():
+            if len(calls) < 2:
+                calls.append("unreachable")
+                raise core_exceptions.ServiceUnavailable("firestore is unreachable")
+            calls.append("landed")
+            return real()
+    
+        worker.control.heartbeat = flaky  # type: ignore[method-assign]
+        before = db.doc("leases/lease_1").get("heartbeat_at")
+        with worker._heartbeat_meanwhile("checkpoint (test)"):
+            time.sleep(3.6)
+>       assert calls[:3] == ["unreachable", "unreachable", "landed"], calls
+E       AssertionError: ['unreachable']
+E       assert ['unreachable'] == ['unreachable...le', 'landed']
+E         
+E         Right contains 2 more items, first extra item: 'unreachable'
+E         
+E         Full diff:
+E           [
+E               'unreachable',
+E         -     'unreachable',
+E         -     'landed',
+E           ]
+
+tests/unit/worker/test_heartbeat_outlives_a_busy_checkpoint.py:218: AssertionError
+=========================== short test summary info ============================
+FAILED tests/unit/worker/test_heartbeat_outlives_a_busy_checkpoint.py::test_a_beat_that_cannot_reach_the_control_plane_does_not_end_the_beating - AssertionError: ['unreachable']
+assert ['unreachable'] == ['unreachable...le', 'landed']
+  
+  Right contains 2 more items, first extra item: 'unreachable'
+  
+  Full diff:
+    [
+        'unreachable',
+  -     'unreachable',
+  -     'landed',
+    ]
+1 failed, 13 deselected in 3.75s
