@@ -66,7 +66,7 @@ edit the frozen module itself.
 
 ### The claim that is false
 
-`apps/common/swarm_common/identity.py:88`:
+`apps/common/swarm_common/identity.py::tenant_id_for_user`:
 
 ```python
 def tenant_id_for_user(email: str) -> str:
@@ -161,7 +161,7 @@ The original request follows, unchanged, as the record of what was asked for.
 
 ### What is missing
 
-`Attempt` (`apps/common/swarm_common/models.py:196-215`) carries
+`Attempt` (`apps/common/swarm_common/models.py::Attempt`) carries
 `peak_rss_bytes` and `peak_disk_bytes`. It carries no token count and no cost.
 
 So the platform records precisely how much MEMORY an agent used and nothing at
@@ -301,7 +301,7 @@ upstream dependency" -- and `:412-425` enforces it, so a step cannot stage an
 artifact from a step that may never have run. That check lives in the workflow
 path. Meanwhile `reject_reserved_metadata` (`validation.py:242-255`) reserves
 `dispatch` and nothing else, and
-`tests/unit/control_plane/test_dispatch_strategy.py:572-573` pins that
+`tests/unit/control_plane/test_dispatch_strategy.py::test_reject_reserved_metadata_allows_everything_else` pins that
 `input_from` is deliberately allowed through:
 
 ```python
@@ -573,7 +573,7 @@ start it. The reconciler, which is what would notice, was reading the same
 cluster through the copy that worked.
 
 What holds them together today is
-`tests/unit/control_plane/test_gke_client_host.py:97`:
+`tests/unit/control_plane/test_gke_client_host.py::test_the_two_copies_agree_on_every_input`:
 
 ```python
 assert scheduler_gke_api_host(endpoint) == reconciler_gke_api_host(endpoint)
@@ -676,7 +676,7 @@ the other accepts as the default.
 
 **Today this costs nothing, and the reason matters.** `_dispatch_carrier` has no
 caller in production code. Its only references are its own definition and
-`tests/unit/worker/test_integrate_strategy.py:86-88`, which asserts the default
+`tests/unit/worker/test_integrate_strategy.py::test_carrier_defaults_to_checkpoints_and_reads_branches`, which asserts the default
 is `"patches"` -- pinning the disagreement into the suite rather than catching
 it. 1cfdf57 says as much about the other end: "`carrier: "branches"` forced
 `needs_repository` at submission and then changed no behaviour at all."
@@ -715,7 +715,7 @@ vocabularies drifting apart again, which they already have. Concretely, a
 * **The tolerance rules must be part of the type's written contract.** If the
   next implementer makes `from_metadata()` strict, a version skew stops being a
   conservative downgrade and becomes a failed attempt.
-* `tests/unit/worker/test_integrate_strategy.py:86-88` has to change. It
+* `tests/unit/worker/test_integrate_strategy.py::test_carrier_defaults_to_checkpoints_and_reads_branches` has to change. It
   currently asserts the wrong vocabulary.
 
 ### If it is declined
@@ -773,7 +773,7 @@ place it CAN live and still be used by more than one service — and it is used 
 exactly one.
 
 The scheduler would have been the better home for the write. It already runs on a
-guaranteed one-minute clock (`terraform/modules/scheduler/jobs.tf:3`, the safety
+guaranteed one-minute clock (`terraform/modules/scheduler/jobs.tf` (`resource "google_cloud_scheduler_job" "safety_tick"`), the safety
 tick into the wake topic) and it already owns "state advances over time". It
 cannot have the derivation, because:
 
@@ -842,7 +842,7 @@ What ships today, which is not broken but is narrower than it should be:
 
 ### The claim that is imprecise
 
-`apps/common/swarm_common/models.py:344`:
+`apps/common/swarm_common/models.py::Workflow.state`:
 
 ```python
 @dataclass
@@ -1065,7 +1065,7 @@ What that cost, measured before the check existed:
 The `QuotaState` row is worth spelling out, because it is the one that shows why
 a typechecker would not have helped. There is no provider state called `HEALTHY`
 anywhere in this platform -- the only other occurrence of the word in the
-repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py:28`. Three
+repository is an unrelated fixture name at `tests/unit/mcp/test_sc.py::HEALTHY`. Three
 states that *do* exist (`AVAILABLE`, `THROTTLED`, `UNKNOWN`) were missing from
 the union. And the trailing `| string` widens the whole thing back to `string`,
 so even a typechecker that ran would have reported nothing: the union documented
@@ -1128,10 +1128,10 @@ seconds after admission.
 
 ### What it cost
 
-* `apps/swarm-api/swarm_api/routes/admin.py:433` — the `overdue_only=1` filter
+* `apps/swarm-api/swarm_api/routes/admin.py::list_leases` — the `overdue_only=1` filter
   is the query an operator runs during a capacity incident to find stuck
   dispatches. It returned an empty list at exactly the moment it was asked.
-* `apps/swarm-api/swarm_api/codec.py:355` — `lease_to_api` reported
+* `apps/swarm-api/swarm_api/codec.py::lease_to_api` — `lease_to_api` reported
   `dispatch_overdue: false` on every lease the API served.
 * `apps/swarm-ui/src/Overview.tsx` — narrowed again with
   `dispatch_state === 'LEASED' &&`, a second copy of a guard that had already
@@ -1445,7 +1445,7 @@ and `SWARM_TENANT_ID` are in the child environment it builds
 (`agent_worker/lifecycle.py`, the `base` env). An agent that submitted work of
 its own could therefore name itself. There is nowhere typed to put that name:
 
-* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py:33`) is a free
+* `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py::TaskCreate.metadata`) is a free
   `dict`. A child could carry `metadata.parent_task_id` by convention -- the
   same shape request #3 records for `input_from`.
 * A convention in `metadata` is **unvalidated**: any caller can claim any
@@ -1520,11 +1520,12 @@ acceptance line here, because `scripts/lib/check-frozen-contract.sh` credits
 only a line the same pull request adds.
 
 **Citations corrected.** The entry above cites `models.py:172-205` for the
-workflow fields; they are `apps/common/swarm_common/models.py:280-282` today
-(`Task` starts at `apps/common/swarm_common/models.py:255`). The "base env" it
-names is `_build_child_env` (`apps/agent-worker/agent_worker/lifecycle.py:3173`),
-with the three ids at `apps/agent-worker/agent_worker/lifecycle.py:3187-3189`.
-`TaskCreate.metadata` is still `apps/swarm-api/swarm_api/schemas.py:33`.
+workflow fields; they are `apps/common/swarm_common/models.py::Task.workflow_id`,
+`Task.step_id` and `Task.depends_on` today (`Task` is
+`apps/common/swarm_common/models.py::Task`). The "base env" it
+names is `_build_child_env` (`apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`),
+with the three ids at `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env.base`.
+`TaskCreate.metadata` is still `apps/swarm-api/swarm_api/schemas.py::TaskCreate.metadata`.
 
 **OD-B15-1 -- the field is accepted as requested**, both fields optional,
 default `None`, and set only by swarm-api from the submitting attempt. Nothing
@@ -1540,7 +1541,7 @@ worker generated in its non-dumpable heap and registered with swarm-api BEFORE
 the agent was spawned. An agent can mint its tenant's token from the metadata
 server ([security.md](security.md#cloud-metadata-abuse)), and it can read the
 whole container environment at `/proc/1/environ`, because `tini` is PID 1 and
-is not non-dumpable (`apps/agent-worker/agent_worker/hardening.py:42-45`). So
+is not non-dumpable (`apps/agent-worker/agent_worker/hardening.py` (`WHAT IT DOES NOT COVER. The container's environment is also PID 1's (tini's),`)). So
 nothing that authorises a submission travels through the environment, a
 mounted file or `work/` and stays valid while the agent runs. The scheduler
 passes only a one-use registration nonce, which the worker spends between the
@@ -6418,7 +6419,7 @@ on #351). Nothing enforces that yet outside `register-tenant.sh`
 * `terraform/modules/secret_manager` has no per-provider accessor override.
   Its `iam_binding` is authoritative and today reads `members=[cfg.accessor]`
   (`main.tf:17-28,109-116`), always the tenant's worker account
-  (`terraform/infra/main.tf:236-237`). Left as is, the next `terraform apply`
+  (`terraform/infra/main.tf` (`accessor      = cfg.accessor`)). Left as is, the next `terraform apply`
   after `git-merge`/`git-review` join the catalogue both binds the worker
   account to the secret and **removes** a separately-granted merge or review
   service account, since `iam_binding` (not `iam_member`) replaces the whole
@@ -6879,7 +6880,7 @@ close**, the workflow document).
   (`swarm-tf-deployer`) off `setIamPolicy` on the key, so **the CI pipeline**
   cannot grant itself `signer`. The binding names `swarm-api` by its email,
   `swarm-api@<project>.iam.gserviceaccount.com`, since the account itself is
-  created by `terraform/infra` (`modules/iam`).
+  created by `terraform/infra` (in `modules/iam`).
 
   **This is not a boundary against the project itself, and the owner accepted
   that rather than designing it away (2026-09-29): the key stays in the shared
@@ -7729,17 +7730,17 @@ code and its cause.
 
 * **MAJOR 1 (security review 2026-09-29, NOT_YET): the catalogue entry alone
   makes the tenant's ORDINARY worker account a reader of the review App
-  key.** `known_providers()` (`apps/swarm-api/swarm_api/validation.py:62-75`)
+  key.** `known_providers()` (`apps/swarm-api/swarm_api/validation.py::known_providers`)
   derives its accepted set from the catalogue, so `POST /me/credentials`
-  (`apps/swarm-api/swarm_api/routes/tenants.py:54-66`) and the admin route
-  (`apps/swarm-api/swarm_api/routes/admin.py:63`) both accept `git-review`
+  (`apps/swarm-api/swarm_api/routes/tenants.py::put_credential`) and the admin route
+  (`apps/swarm-api/swarm_api/routes/admin.py::_check_provider`) both accept `git-review`
   as an ordinary, registrable provider name; `credentials.py`'s
   `_grant_accessor` (202-235) then grants `tenant.service_account` — the
   tenant's ordinary worker account, not `post-verdict`'s — `secretAccessor`
-  on it; and `terraform/modules/secret_manager/main.tf:17-28,109-116` writes
+  on it; and `terraform/modules/secret_manager/main.tf` (`resource "google_secret_manager_secret_iam_binding" "accessor"`) writes
   an authoritative `iam_binding` (not an additive `iam_member`) whose
   `members` list is `[cfg.accessor]` for every listed provider
-  (`terraform/infra/main.tf:236-237` sets `cfg.accessor` to the worker
+  (`terraform/infra/main.tf` (`accessor      = cfg.accessor`) sets `cfg.accessor` to the worker
   account for every tenant), which on its next apply would also REMOVE any
   post-verdict accessor granted separately. `enable_subscription_refresh`
   compounds it: the refresher's `-refresh` twin grants the same worker
@@ -8213,28 +8214,28 @@ The owner decided on 2026-10-01 that there are NO per-tenant budgets: no
 `PARKED(BUDGET_EXHAUSTED)`. The frozen contract still carries the vocabulary of
 the feature that was dropped:
 
-* `ParkReason.BUDGET_EXHAUSTED` (`apps/common/swarm_common/states.py:134`).
+* `ParkReason.BUDGET_EXHAUSTED` (`apps/common/swarm_common/states.py::ParkReason.BUDGET_EXHAUSTED`).
   Nothing writes it, and no scheduler sweep reads it
-  (`apps/scheduler/scheduler/loop.py:836`;
+  (`apps/scheduler/scheduler/loop.py::Scheduler._stop_for_failed_workflow`;
   `tests/unit/control_plane/test_every_park_has_an_unparker.py`
   `test_no_sweep_reads_budget_exhausted` holds the second).
-* `BlockedReason.BUDGET_LIMIT` (`apps/common/swarm_common/states.py:153`).
-  `evaluate_capacity` never produces it; `apps/swarm-api/swarm_api/headroom.py:73`
+* `BlockedReason.BUDGET_LIMIT` (`apps/common/swarm_common/states.py::BlockedReason.BUDGET_LIMIT`).
+  `evaluate_capacity` never produces it; `apps/swarm-api/swarm_api/headroom.py::NEEDS_ACTION`
   lists it in the needs-action group with the advice "raise the budget", which
   there is no way to do.
-* `Tenant.monthly_budget_usd` (`apps/common/swarm_common/models.py:452`). The
+* `Tenant.monthly_budget_usd` (`apps/common/swarm_common/models.py::Tenant.monthly_budget_usd`). The
   admin route refuses it with a 422
-  (`apps/swarm-api/swarm_api/routes/admin.py:266`), so no write path sets it;
+  (`apps/swarm-api/swarm_api/routes/admin.py::set_tenant_limits`), so no write path sets it;
   the codecs still read it from a document if a hand-edit put it there.
 
 Per-attempt cost IS recorded, which is what made the old refusal message
 ("no cost attribution source") stale: `record_spend`
-(`apps/agent-worker/agent_worker/control.py:1119`) writes `cost_usd` onto the
-attempt (`apps/common/swarm_common/models.py:372`). The decision is not "budgets
+(`apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend`) writes `cost_usd` onto the
+attempt (`apps/common/swarm_common/models.py::Attempt.cost_usd`). The decision is not "budgets
 once attribution exists"; it is "no budgets".
 
 Readers outside the contract that name the unused value and would go with it:
-`apps/swarm-mcp/swarm_mcp/compact.py:88`, `apps/swarm-mcp/swarm_mcp/progress.py:160`,
+`apps/swarm-mcp/swarm_mcp/compact.py::_WAITS_FOR`, `apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`,
 and the UI's park-reason lists in `apps/swarm-ui/src/types.ts` (`:1822`,
 `:2088`, `:2109`, `:2134`, `:2196`).
 
@@ -8257,7 +8258,7 @@ Either of these, at the owner's choice:
   merging. A tenant document with a hand-written `monthly_budget_usd` would
   decode only if the codecs drop the key.
 * Removal: the API's `TenantLimitsRequest.monthly_budget_usd`
-  (`apps/swarm-api/swarm_api/schemas.py:200`) exists only so the refusal can
+  (`apps/swarm-api/swarm_api/schemas.py::TenantLimitsRequest.monthly_budget_usd`) exists only so the refusal can
   explain itself. It would stay, as a refusal of a field the contract no longer
   has, or go, and the refusal would become a plain `extra_forbidden`.
 * Removal: the UI and MCP lists lose a member; their tests that enumerate
@@ -8287,11 +8288,11 @@ reach, which costs nothing but a misleading line in a list.
 
 ### What is true today
 
-`ParkReason` (`apps/common/swarm_common/states.py:125`) has no value for "this
+`ParkReason` (`apps/common/swarm_common/states.py::ParkReason`) has no value for "this
 task is waiting for tasks it created". The nearest, `DEPENDENCY_INCOMPLETE`
-(`apps/common/swarm_common/states.py:132`), is the scheduler's: its sweep
+(`apps/common/swarm_common/states.py::ParkReason.DEPENDENCY_INCOMPLETE`), is the scheduler's: its sweep
 promotes a task parked on it whose `depends_on` is empty immediately, with
-reason `no_dependencies` (`apps/scheduler/scheduler/loop.py:975`). An awaiting
+reason `no_dependencies` (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`). An awaiting
 parent has an empty `depends_on`.
 
 ### The requested change
@@ -8306,7 +8307,7 @@ CHILDREN_INCOMPLETE = "CHILDREN_INCOMPLETE"
 
 Nothing that exists: no document carries the value. Every exhaustive reading
 of `ParkReason` must learn it -- `types.ts` and parity section 5, the MCP
-progress sentences (`apps/swarm-mcp/swarm_mcp/progress.py:154`) and compact
+progress sentences (`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`) and compact
 labels, and the console's blocker copy.
 
 ### If it is declined
@@ -8326,7 +8327,7 @@ document any tenant identity can rewrite.
 
 ### What is true today
 
-`EndCause` (`apps/common/swarm_common/models.py:171`) has `CANCELLED_PARENT`,
+`EndCause` (`apps/common/swarm_common/models.py::EndCause`) has `CANCELLED_PARENT`,
 which means an UPSTREAM workflow step was cancelled, and `CANCEL_REQUESTED`,
 which the outcome ledger reads as a cancel somebody pressed. A child cancelled
 because its parent was cancelled, failed, dead-lettered or out-waited its
@@ -8362,9 +8363,9 @@ request 23 was accepted to end.
 
 ### What is true today
 
-`canonical_step_spec` (`apps/common/swarm_common/specsign.py:45`) covers the
+`canonical_step_spec` (`apps/common/swarm_common/specsign.py::canonical_step_spec`) covers the
 fields a worker must trust, at `SPEC_FORMAT = 1`
-(`apps/common/swarm_common/specsign.py:28`). Any tenant identity can rewrite a
+(`apps/common/swarm_common/specsign.py::SPEC_FORMAT`). Any tenant identity can rewrite a
 task document whose id it knows ([multi-tenancy.md](multi-tenancy.md)), so a
 child's `parent_task_id` could be rewritten to attach it to, or detach it
 from, a parent's cancel cascade and await, and nothing would notice.
@@ -8396,8 +8397,9 @@ tree the console draws is a claim rather than a fact.
 ### What is true today
 
 The worker service account is `swarm-agent-worker-<tenant>`, stated privately
-as `_GSA_PREFIX` (`apps/common/swarm_common/identity.py:115`) and restated by
-`scripts/register-tenant.sh:285` and `terraform/modules/tenancy/main.tf:21`.
+as `_GSA_PREFIX` (`apps/common/swarm_common/identity.py::_GSA_PREFIX`) and restated by
+`scripts/register-tenant.sh` (`GSA_PREFIX="swarm-agent-worker-"`) and
+`terraform/modules/tenancy/main.tf` (`sa_account_id = { for t, _ in var.tenants`).
 The children route must derive the identity it accepts from the tenant id,
 because `tenants/<id>.service_account` is a document any tenant identity can
 rewrite.
@@ -8432,7 +8434,7 @@ another branch has taken it.
 
 The worker records a subscription account's lifecycle on the task's events
 with a `cause` on an event type the frozen `EventType`
-(`apps/common/swarm_common/states.py:161`) already has:
+(`apps/common/swarm_common/states.py::EventType`) already has:
 
 * `account_assigned` is `EventType.RUNNING` with `cause: "account_assigned"`
   (`Worker` in `apps/agent-worker/agent_worker/lifecycle.py`).

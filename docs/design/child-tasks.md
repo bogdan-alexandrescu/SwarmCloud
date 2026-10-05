@@ -16,29 +16,29 @@ symbol named beside each one is what to search for when they have.
 ## 1. Why
 
 The owner named three dispatch scales on 2026-09-21
-(`docs/design/dispatch-and-integration.md:129`): a single agent, a **main
+(`docs/design/dispatch-and-integration.md` (`### 4.1 Dispatch scales`)): a single agent, a **main
 agent with helpers**, and a workflow. The middle one is the one that makes a
 remote run feel like a local Claude Code session that spawns subagents, and it
 is the one the cluster does not have. Section 5 of that document lists it last
-(`docs/design/dispatch-and-integration.md:181`) because it depends on
+(`docs/design/dispatch-and-integration.md` (`## 5. What would have to be built`)) because it depends on
 everything else.
 
 What exists today, verified:
 
 * **No relationship between tasks except order.** A workflow step is a `Task`
   with `workflow_id`, `step_id` and `depends_on`
-  (`apps/common/swarm_common/models.py:280-282`). `depends_on` is ORDER, not
+  (`apps/common/swarm_common/models.py::Task`). `depends_on` is ORDER, not
   parentage: the step that produced your input did not create you, cannot
   cancel you and is not waiting on you. S1 forbids drawing a tree from it.
 * **No route, no credential, no worker path.** The agent's environment is built
   rather than inherited (`Workspace.child_env`,
-  `apps/agent-worker/agent_worker/workspace.py:254`) and carries its own ids
-  (`_build_child_env`, `apps/agent-worker/agent_worker/lifecycle.py:3173`; the
-  three ids at `apps/agent-worker/agent_worker/lifecycle.py:3187-3189`), but no
+  `apps/agent-worker/agent_worker/workspace.py::Workspace.child_env`) and carries its own ids
+  (`_build_child_env`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`; the
+  three ids at `apps/agent-worker/agent_worker/lifecycle.py::Worker._build_child_env`), but no
   API address and no credential. The planner's notes cited lines 3101-3117 for
   this; those lines are `_git_token` today, and the environment moved down.
 * **A free `metadata` convention would be worse than nothing.**
-  `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py:33`) is a free
+  `TaskCreate.metadata` (`apps/swarm-api/swarm_api/schemas.py::TaskCreate.metadata`) is a free
   dict: any caller could claim any parent, including one in another tenant,
   and "this task's children" would be a scan.
 
@@ -73,7 +73,7 @@ learn what a child did is to `await`, and `await` gives the slot back.
 **Spool, not a localhost endpoint (OD-B15-2 left the choice open).** The
 worker already takes signals from its agent as files in `work/`: the quota
 signal (`Workspace.quota_path`,
-`apps/agent-worker/agent_worker/workspace.py:153`) and the refused-credential
+`apps/agent-worker/agent_worker/workspace.py::Workspace.quota_path`) and the refused-credential
 signal beside it. A file spool:
 
 * adds **no listening socket**. A Cloud Run execution has no inbound surface
@@ -122,7 +122,7 @@ agent                       worker (same container,          swarm-api          
    `repository_ref`. Nothing else is accepted (§6.1).
 2. **The worker picks requests up on its control poll**, the tick that already
    reads `cancel_requested` (`control_poll_seconds`, the run loop at
-   `apps/agent-worker/agent_worker/lifecycle.py:1276`), at most
+   `apps/agent-worker/agent_worker/lifecycle.py::Worker._run_child_supervised`), at most
    `max_child_requests_per_tick` per tick. It refuses locally what the route
    would refuse anyway (size, unknown keys, a worker-action profile, depth) so
    the common mistake costs no network round trip and writes a refusal the
@@ -153,16 +153,16 @@ variable: it knows its task has a `parent_task_id`, and depth is 1.
 worker's container as the worker's uid, and nothing filters
 `169.254.169.254` ([security.md](../security.md#cloud-metadata-abuse);
 [merge-step.md §0](../merge-step.md#0-the-constraint-that-shapes-everything-else),
-`docs/merge-step.md:153`). A route that accepted "the tenant's worker service
-account" would therefore accept the agent calling it directly with
-`curl`, past every check the worker makes. Calling that identity "the worker
+`docs/merge-step.md` (`Any agent can act as its tenant's service account.`)).
+A route that accepted "the tenant's worker service account" would therefore
+accept the agent calling it directly with `curl`, past every check the worker makes. Calling that identity "the worker
 identity" would be a name for a hope.
 
 **The agent can also read the whole container environment.** `tini` is PID 1
-(`images/agent-runtime-base/Dockerfile:706`), it holds every variable the
+(`images/agent-runtime-base/Dockerfile` (`ENTRYPOINT ["/usr/bin/tini"`)), it holds every variable the
 execution was started with, and it is not non-dumpable, so the agent, as the
 same uid, reads `/proc/1/environ`. The worker's own `prctl` changes nothing
-there: `apps/agent-worker/agent_worker/hardening.py:42-45` says so, and it is
+there: `apps/agent-worker/agent_worker/hardening.py` (`WHAT IT DOES NOT COVER`) says so, and it is
 why the worker keeps no credential in its environment. The same holds for a
 file mounted into the container, which the agent opens as the same uid, and
 for anything under `work/`. **So nothing that authorises a child submission may
@@ -195,17 +195,17 @@ The tuple is `(tenant_id, task_id, attempt_id, lease_id, generation)`.
 1. **The scheduler mints a one-use registration nonce at dispatch**:
    `HMAC-SHA256(child_key, "swarm-child-nonce/v1\n" tuple)`, passed as one
    more execution override beside `LEASE_ID` and `GENERATION` (which the
-   worker already reads, `apps/agent-worker/agent_worker/config.py:350-352`).
+   worker already reads, `apps/agent-worker/agent_worker/config.py::WorkerConfig.from_env`).
    The agent WILL be able to read it later from `/proc/1/environ`. That is
    acceptable only because of step 3: by the time the agent exists, the nonce
    has been spent.
 2. **The worker generates an Ed25519 keypair after `make_non_dumpable` reports
    `PROTECTED`**, in its heap, and never writes the private key anywhere: not
    to the environment, a file, `work/`, a log line or an event. The worker
-   already depends on `cryptography` (`apps/agent-worker/pyproject.toml:27`).
+   already depends on `cryptography` (`apps/agent-worker/pyproject.toml` (`"cryptography>=42",`)).
 3. **It registers the public key before the agent exists.** Between lifecycle
    step 1 (the fence) and step 2 (`STARTING -> RUNNING`,
-   `apps/agent-worker/agent_worker/lifecycle.py:939`), the worker calls
+   `apps/agent-worker/agent_worker/lifecycle.py::Worker._prepare`), the worker calls
    `POST /v1/attempts/{attempt_id}/child-key` with its ID token, the tuple, the
    nonce and the public key (§6.1a). swarm-api verifies the nonce, re-reads the
    task and its lease in one transaction, accepts only while the task is
@@ -240,7 +240,7 @@ The tuple is `(tenant_id, task_id, attempt_id, lease_id, generation)`.
 **tombstone** (`"key": null`, `"refused": "worker_unprotected"`) in step 3's
 slot, so the nonce the agent will read is worthless, and offers no child path
 (§5 F12), exactly as it refuses to hold the tenant git token
-(`_git_token_refusal`, `apps/agent-worker/agent_worker/lifecycle.py:3159`).
+(`_git_token_refusal`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._git_token_refusal`).
 
 **The residual, stated plainly.** If neither a key nor a tombstone could be
 registered (swarm-api unreachable at startup past
@@ -302,33 +302,33 @@ worker: restore checkpoint, stage children's results, start the agent again
 3. **No live child, no park.** If every child is already terminal the await is
    logged and ignored, and the attempt ends as the agent's exit says.
    Otherwise the worker parks exactly as the quota path does
-   (`_park_for_quota`, `apps/agent-worker/agent_worker/lifecycle.py:3665`;
-   `ControlPlane.park`, `apps/agent-worker/agent_worker/control.py:1344`):
+   (`_park_for_quota`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._park_for_quota`;
+   `ControlPlane.park`, `apps/agent-worker/agent_worker/control.py::ControlPlane.park`):
    checkpoint, upload outputs, park, release, exit. `RUNNING -> PARKED` is a
    legal transition already
-   (`apps/common/swarm_common/states.py:83`).
+   (`apps/common/swarm_common/states.py::_ALLOWED`).
 4. **The park has its own reason, `ParkReason.CHILDREN_INCOMPLETE`**
    (request 40). It cannot reuse `DEPENDENCY_INCOMPLETE`: the scheduler's
    dependency sweep promotes a `DEPENDENCY_INCOMPLETE` task whose `depends_on`
    is empty at once, with reason `no_dependencies`
-   (`apps/scheduler/scheduler/loop.py:975`). A parent awaiting children has an
+   (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`). A parent awaiting children has an
    empty `depends_on`, so it would be promoted on the next drain, re-run, await
    again, and loop -- a container start per drain for as long as the children
    run. Reusing it would also be the hierarchy-from-`depends_on` S1 forbids, in
    reverse.
 5. **The await does not spend an attempt, up to a bound.** Admission increments
-   `attempt_count` on every lease (`apps/common/swarm_common/admission.py:238`),
+   `attempt_count` on every lease (`apps/common/swarm_common/admission.py::acquire_lease_in_transaction`),
    so a parent that awaits twice under `max_attempts = 3` would be failed for
    waiting. The park's own fenced transaction decrements `attempt_count` by one
    and increments `metadata.child_await_resumes`, while fewer than
    `max_child_await_resumes` are used -- the same bounded-refund shape as the
    reconciler's startup refund (`count_startup_end`,
-   `apps/reconciler/reconciler/model.py:118`, #67). Past the bound the park
+   `apps/reconciler/reconciler/model.py::count_startup_end`, #67). Past the bound the park
    counts like any attempt, so a parent that awaits forever still ends at
    `max_attempts`. `child_await_resumes` joins `RESERVED_METADATA_KEYS`
-   (`apps/swarm-api/swarm_api/validation.py:597`): a caller may not set it.
+   (`apps/swarm-api/swarm_api/validation.py::RESERVED_METADATA_KEYS`): a caller may not set it.
 6. **Promotion is the scheduler's**, in a sweep beside `_promote_dependencies`
-   (`apps/scheduler/scheduler/loop.py:948`), for the reason that sweep gives: a
+   (`apps/scheduler/scheduler/loop.py::Scheduler._promote_dependencies`), for the reason that sweep gives: a
    worker that dies right after its last child's success cannot strand the
    parent, because nothing waits for the child to announce itself. The sweep
    lists each awaiting parent's children with a tenant-scoped query (the
@@ -346,9 +346,9 @@ worker: restore checkpoint, stage children's results, start the agent again
    each `SUCCEEDED` child's artifacts under
    `$SWARM_CHILDREN/results/<child_task_id>/` through the same code that
    stages `input_from` (`stage_inputs`,
-   `apps/agent-worker/agent_worker/inputs.py:516`), which builds every object
+   `apps/agent-worker/agent_worker/inputs.py::stage_inputs`), which builds every object
    key from THIS attempt's tenant (`fetch_upstream_task`,
-   `apps/agent-worker/agent_worker/inputs.py:350`). It then starts the agent
+   `apps/agent-worker/agent_worker/inputs.py::fetch_upstream_task`). It then starts the agent
    again with the same task input; the agent knows it is resuming because
    `children.json` exists.
 8. **An agent that exits 0 with live children and no `await` is awaited
@@ -379,7 +379,7 @@ because the first screen that draws the tree will be asked:
 How it is done:
 
 1. **The API's cancel cascades at once.** After `request_cancel`'s own
-   transaction commits on the parent (`apps/swarm-api/swarm_api/store.py:846`),
+   transaction commits on the parent (`apps/swarm-api/swarm_api/store.py::Store.request_cancel`),
    the API lists the parent's non-terminal children (tenant-scoped query on the
    new index) and runs the same `request_cancel` transaction on each, recording
    `by: cascade:<parent_task_id>`. A child that holds no capacity goes straight
@@ -395,7 +395,7 @@ How it is done:
    `EndCause.CHILD_CASCADE` (request 41) and the `why` above in its event
    detail. It cannot be `CANCELLED_PARENT`, which already means "an UPSTREAM
    workflow step was cancelled" (`EndCause`,
-   `apps/common/swarm_common/models.py:171`), and folding a cascade into
+   `apps/common/swarm_common/models.py::EndCause.CANCELLED_PARENT`), and folding a cascade into
    `CANCEL_REQUESTED` would make the outcome ledger count a parent's failure as
    a cancel somebody pressed -- the confusion request 23 was accepted to end.
 4. **Tenant first.** Both the cascade and the sweep act only on a child whose
@@ -414,7 +414,7 @@ the await is a park, not a wait. Nothing about a tree is expressed as pending
 pods or pending executions; the backlog stays in Firestore. The cancel cascade
 never decrements a pool: a child that holds capacity is flagged and released
 by its worker or the reconciler, as every cancel is today
-(`request_cancel`, `apps/swarm-api/swarm_api/store.py:846`). The `children`
+(`request_cancel`, `apps/swarm-api/swarm_api/store.py::Store.request_cancel`). The `children`
 route creates documents, not infrastructure, so a burst of submissions cannot
 start a single container on its own.
 
@@ -447,7 +447,8 @@ at all, of any length. `await` checkpoints, parks, releases and exits. The
 only bounded wait inside the worker is answering outstanding submissions
 before a park, capped by `child_submit_retry_seconds`, which is below
 `max_in_worker_retry_delay_seconds` (45 s,
-`apps/common/swarm_common/config.py:65`). And because the agent gets no
+`apps/common/swarm_common/config.py::Settings.max_in_worker_retry_delay_seconds`).
+And because the agent gets no
 progress channel for a running child (§1), an agent that tries to busy-wait
 has nothing to wait on.
 
@@ -461,7 +462,7 @@ task's `current_lease_id` and `current_generation`, the lease's `task_id`,
 task `RUNNING` and not `cancel_requested`. Any mismatch is `409
 child_submit_fenced` and creates nothing. A worker that receives it is a
 superseded worker: it ends the way a fenced worker does mid-run
-(`_exit_fenced_mid_run`, `apps/agent-worker/agent_worker/lifecycle.py:1453`),
+(`_exit_fenced_mid_run`, `apps/agent-worker/agent_worker/lifecycle.py::Worker._exit_fenced_mid_run`),
 without touching the lease. The await park is a fenced transition like the
 quota park, so a stale worker cannot park the task or refund an attempt.
 Registration is fenced the same way: accepted only while the task is
@@ -504,8 +505,9 @@ A child is always created in its parent's tenant, which the route takes from
 the attested registration, never from the body. The ID token must belong to that tenant's
 worker service account, and the route derives the expected email from the
 tenant id by the same rule Terraform and `register-tenant.sh` name it
-(`swarm-agent-worker-<tenant>`: `apps/common/swarm_common/identity.py:115`,
-`scripts/register-tenant.sh:285`, `terraform/modules/tenancy/main.tf:21`) --
+(`swarm-agent-worker-<tenant>`: `apps/common/swarm_common/identity.py::worker_service_account_id`,
+`scripts/register-tenant.sh` (`GSA_PREFIX="swarm-agent-worker-"`),
+`terraform/modules/tenancy/main.tf` (`sa_account_id = { for t, _ in var.tenants`)) --
 **never** from `tenants/<id>.service_account`, a document any tenant identity
 can rewrite ([multi-tenancy.md](../multi-tenancy.md), "It CAN read and write a
 document whose id it can guess"). Request 43 asks for that rule to have one
@@ -525,7 +527,7 @@ carries no image, command, resource figure or backend parameter, and it never
 supplies `parent_task_id` or `parent_attempt_id`: those are the platform's
 decision, set from the attested registration (CR 14's own rule). `POST /v1/tasks` keeps
 refusing both fields, because `TaskCreate` is a strict model
-(`apps/swarm-api/swarm_api/schemas.py:27`). Worker-action profiles (`merge`,
+(`apps/swarm-api/swarm_api/schemas.py::StrictModel.model_config`). Worker-action profiles (`merge`,
 `post-verdict`) are refused as children: they act on a forge with a
 credential no agent may steer. `repository_url` is copied from the parent and
 never accepted, so a child cannot point the tenant's git credential at a
@@ -647,11 +649,12 @@ artifact manifest of a `SUCCEEDED` child. Used by the resumed worker to build
 ### 6.3 `GET /v1/tasks?parent_task_id=` (people and clients)
 
 A new filter on the existing list route
-(`apps/swarm-api/swarm_api/routes/tasks.py:106`), under the same
+(`apps/swarm-api/swarm_api/routes/tasks.py::list_tasks`), under the same
 `tenant_scope` and `submission_scope`, backed by a composite index
 `(tenant_id, parent_task_id, created_at)` (`tenant_id` and `parent_task_id`
 ascending, `created_at` descending), beside `tasks-tenant-workflow-created`
-(`terraform/modules/firestore/indexes.tf:72`). `GET /v1/tasks/{id}` gains the
+(`terraform/modules/firestore/indexes.tf` (`"tasks-tenant-workflow-created" = {`)).
+`GET /v1/tasks/{id}` gains the
 two fields in its body. The console can draw a tree from this; nothing else
 is a source for one.
 
@@ -696,10 +699,10 @@ design, not a bigger number.
 | Limit | Default | Enforced at | Why this value |
 |---|---|---|---|
 | `max_child_depth` | 1 | route (authority), worker (convenience) | OD-B15-3. One level keeps the cascade, the await and the console's tree a single hop, and keeps a tree's size linear in the fan-out cap instead of exponential in depth. |
-| `max_children_per_task` | 16 | route, inside the creating transaction | Sixteen children plus the parent fit inside a new tenant's `default_tenant_max_active` of 20 (`apps/common/swarm_common/config.py:84`), so a fresh tenant can run one full fan-out without an admin; it is about a third of `max_workflow_steps` (50), because these DAGs are written by an agent, not reviewed by a person. Counted per task across attempts, so retries cannot multiply it. |
+| `max_children_per_task` | 16 | route, inside the creating transaction | Sixteen children plus the parent fit inside a new tenant's `default_tenant_max_active` of 20 (`apps/common/swarm_common/config.py::Settings.default_tenant_max_active`), so a fresh tenant can run one full fan-out without an admin; it is about a third of `max_workflow_steps` (50), because these DAGs are written by an agent, not reviewed by a person. Counted per task across attempts, so retries cannot multiply it. |
 | `max_child_await_resumes` | 4 | the worker's await park transaction | A main agent with helpers fans out in a few rounds; four refunded awaits allow that, and the fifth counting as an attempt means a parent that awaits in a loop still ends at `max_attempts` rather than running forever. |
 | `child_await_max_seconds` | 86400 | scheduler await sweep | A child can sit parked on a provider's quota reset for hours; a day covers a full daily reset with margin, and past it a parent waiting on a child nobody will ever unblock gets its answer instead of waiting indefinitely. |
-| `max_child_request_bytes` | 262144 | worker (refuses to read), route (refuses to accept) | Equal to `max_input_bytes` (`apps/common/swarm_common/config.py:79`): the route would refuse a larger `input` anyway, and the worker must never read an unbounded file an agent wrote into its own memory. |
+| `max_child_request_bytes` | 262144 | worker (refuses to read), route (refuses to accept) | Equal to `max_input_bytes` (`apps/common/swarm_common/config.py::Settings.max_input_bytes`): the route would refuse a larger `input` anyway, and the worker must never read an unbounded file an agent wrote into its own memory. |
 | `max_child_requests_per_tick` | 4 | worker control poll | Four per 10-second poll keeps one worker far below `requests_per_second` (20) at the API, so one busy parent cannot starve every other caller of its tenant's rate limit. |
 | `child_submit_retry_seconds` | 30 | worker | Below `max_in_worker_retry_delay_seconds` (45), so answering a submission can never become the long in-worker wait invariant 4 forbids; past it the agent gets a retryable refusal. |
 | `child_proof_skew_seconds` | 120 | route, on every signed request | Wide enough for an ordinary clock difference between a worker and swarm-api, narrow enough that a captured signature is useless soon after; a replay inside the window is answered by the `request_id` dedupe with the child already made, so the window bounds exposure, not correctness. |
@@ -737,7 +740,7 @@ S1 per the planner):
    applied; `apps/swarm-ui/src/types.ts` gains the two fields and the two enum
    values; `scripts/lib/check-contract-parity.sh` section 5 holds them;
    `swarm_mcp` gains the park reason's sentence beside
-   `DEPENDENCY_INCOMPLETE` (`apps/swarm-mcp/swarm_mcp/progress.py:154`).
+   `DEPENDENCY_INCOMPLETE` (`apps/swarm-mcp/swarm_mcp/progress.py::_PARKED_BECAUSE`).
 2. **The registration key** (Track C and D): `swarm-child-key`, accessor
    bindings for `swarm-scheduler` and `swarm-api` only, `create-secrets.sh`
    support, the scheduler passing the one-use nonce as an execution override
