@@ -149,6 +149,16 @@ cost per checkpoint   ≈ compress + upload (typically a few hundred MB)
 storage               ≈ retained checkpoints x archive size x retention days
 ```
 
+Since #637 (2026-10-05) the second line is the cost of an attempt's FIRST
+checkpoint only. The history analysis that day measured 247 GB uploaded, a
+median of 66 MB every 120 s, of which 1.25% was ever restored. Now dependency
+and build directories are left out, every later checkpoint uploads only what
+changed since the one before, and a periodic checkpoint of an unchanged tree
+uploads nothing while its interval backs off to 10 minutes. The final, park,
+cancellation and interruption checkpoints are still always written.
+[checkpointing.md](checkpointing.md#incremental-archives-after-the-first) has
+the details.
+
 That is a real, recurring line on the bill, and the alternative is losing whole
 attempts — including their provider tokens — to a park, a cancellation, a
 reclaim or a crash. Paying 30 uploads an hour to avoid re-running two hours of an

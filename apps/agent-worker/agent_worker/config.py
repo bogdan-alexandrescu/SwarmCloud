@@ -20,6 +20,7 @@ from swarm_common.config import Settings
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, RunnerProfile, resolve_backend
 
 from . import artifact_manifest, standalone_outputs
+from .checkpoint import CHECKPOINT_BACKOFF_CAP_SECONDS
 from .errors import ConfigError
 
 
@@ -161,6 +162,14 @@ class WorkerConfig:
     #: `RUNNER_NICENESS_DEFAULT`: the runner child runs this far below the worker.
     runner_niceness: int = RUNNER_NICENESS_DEFAULT
     checkpoint_interval_seconds: int = 120
+    #: The longest the PERIODIC checkpoint backs off to while the working tree
+    #: is unchanged: 2 -> 4 -> 8 -> 10 minutes at the default interval, reset
+    #: by the first change (#637, owner decision 2026-10-05). 600 s because
+    #: an unchanged tree has nothing a checkpoint would save, and a look every
+    #: ten minutes bounds what a change made just after a look can lose. It
+    #: never shortens `checkpoint_interval_seconds`, and the final, park,
+    #: cancellation and interruption checkpoints ignore it (invariant 8).
+    checkpoint_max_interval_seconds: int = CHECKPOINT_BACKOFF_CAP_SECONDS
     max_in_worker_retry_delay_seconds: int = 45
     #: How many times one forge call the worker makes before or after the
     #: agent (the issue fetch, the push-scope probe, the publish's probe and
@@ -445,6 +454,10 @@ class WorkerConfig:
             raise ConfigError(
                 "checkpointing is mandatory; a non-positive interval would disable it"
             )
+        if self.checkpoint_max_interval_seconds <= 0:
+            raise ConfigError(
+                "checkpointing is mandatory; a non-positive backoff cap would disable it"
+            )
         if self.timeout_seconds <= 0:
             raise ConfigError("timeout must be positive")
         if self.termination_grace_seconds < 0:
@@ -502,6 +515,9 @@ class WorkerConfig:
             runner_niceness=_int_env("RUNNER_NICENESS", RUNNER_NICENESS_DEFAULT),
             checkpoint_interval_seconds=_int_env(
                 "CHECKPOINT_INTERVAL_SECONDS", profile.checkpoint_interval_seconds
+            ),
+            checkpoint_max_interval_seconds=_int_env(
+                "CHECKPOINT_MAX_INTERVAL_SECONDS", CHECKPOINT_BACKOFF_CAP_SECONDS
             ),
             max_in_worker_retry_delay_seconds=settings.max_in_worker_retry_delay_seconds,
             forge_read_attempts=max(1, _int_env("FORGE_READ_ATTEMPTS", 4)),

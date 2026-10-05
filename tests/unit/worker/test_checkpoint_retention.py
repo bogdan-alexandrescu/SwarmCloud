@@ -354,24 +354,37 @@ def test_a_failed_tasks_pointer_is_kept_and_its_superseded_checkpoints_are_not(
 ):
     """FAILED is terminal, but the frozen state machine allows FAILED -> READY.
 
-    A retry resumes from `task.latest_checkpoint`, so that one checkpoint stays
+    A retry resumes from `task.latest_checkpoint`, so that checkpoint stays
     while the superseded ones go. SUCCEEDED and CANCELLED have no such
     transition, which is why `test_a_terminal_attempt...` collects the pointer
     target too.
+
+    THE POINTER'S OWN ATTEMPT IS KEPT WHOLE (#637). After an attempt's first
+    checkpoint each one holds only what changed, and its restore replays the
+    earlier ones of the SAME attempt. Collecting `early` would leave the
+    pointer naming a checkpoint no restore can complete. A chain never crosses
+    an attempt, so an earlier attempt's checkpoints still go.
     """
     db, objects, tmp_path = db_and_objects
+    (superseded,) = write_checkpoints(
+        objects, tmp_path, log, task_id="task_failed", attempt_id="att_0", count=1
+    )
     early, pointed_at = write_checkpoints(
         objects, tmp_path, log, task_id="task_failed", attempt_id="att_1", count=2
     )
+    assert pointed_at.base_checkpoint_id == early.checkpoint_id
     seed_task(
         db, task_id="task_failed", state=TaskState.FAILED, latest_checkpoint=pointed_at.uri
     )
+    seed_attempt_doc(db, task_id="task_failed", attempt_id="att_0", completed=True)
     seed_attempt_doc(db, task_id="task_failed", attempt_id="att_1", completed=True)
 
     report = collector(db, objects, config, log).sweep(now=utcnow())
 
     assert report.reclaimed == 1
-    assert not objects.exists(early.manifest_key)
+    assert not objects.exists(superseded.manifest_key)
+    assert objects.exists(early.manifest_key)
+    assert objects.exists(early.archive_key)
     assert objects.exists(pointed_at.manifest_key)
 
 
@@ -720,6 +733,24 @@ def test_the_pointer_target_of_each_terminal_state(state, expected):
     pointer = f"gs://{BUCKET}/{ref.prefix}/"
     decision = classify(ref, task=_task(state, pointer), attempts=[_attempt()])
     assert decision.disposition is expected
+
+
+def test_a_failed_tasks_pointer_keeps_its_own_attempts_chain():
+    """The bases of an incremental checkpoint are its attempt's earlier ones (#637)."""
+    pointed = _ref(checkpoint_id="ckpt-00003")
+    pointer = f"gs://{BUCKET}/{pointed.prefix}/"
+    task = _task(TaskState.FAILED, pointer)
+    base = _ref(checkpoint_id="ckpt-00001")
+    other_attempt = _ref(attempt_id="b", checkpoint_id="ckpt-00001")
+    attempts = [_attempt(), _attempt("b")]
+    assert classify(base, task=task, attempts=attempts).disposition is Disposition.KEEP
+    assert (
+        classify(other_attempt, task=task, attempts=attempts).disposition
+        is Disposition.RECLAIM
+    )
+    # Only a task that may still return to READY keeps it.
+    done = _task(TaskState.SUCCEEDED, pointer)
+    assert classify(base, task=done, attempts=attempts).disposition is Disposition.RECLAIM
 
 
 def test_manifest_age_refuses_to_guess():
