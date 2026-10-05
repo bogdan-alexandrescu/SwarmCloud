@@ -205,17 +205,20 @@ worse than the refusal.
 
 **Links the browser fetches itself carry it as `?tenant=`.** An artifact's
 `<img src>`, its download link and its "open full" tab
-(`/v1/tasks/{id}/artifacts/raw`) are requests the browser makes on its own, and
-those carry no custom header — so without another channel every artifact of a
-task in a switched-to tenant would 404 against the default. On exactly the
-routes in `auth.TENANT_QUERY_ROUTES` (today only that one), `current_auth`
+(`/v1/tasks/{id}/artifacts/raw`), and a checkpoint's archive download
+(`/v1/tasks/{id}/checkpoints/{n}/content`, a plain link so a large archive
+streams to disk), are requests the browser makes on its own, and those carry
+no custom header — so without another channel every artifact and checkpoint of
+a task in a switched-to tenant would 404 against the default. On exactly the
+routes in `auth.TENANT_QUERY_ROUTES` (today those two), `current_auth`
 reads `?tenant=` and hands it to the **same** `_select_tenant` check as the
 header: it selects among verified memberships and never grants, and a value
 the caller is not a member of is the same `tenant_not_member` 403. Everywhere
 else the query parameter is ignored, so it cannot become a second way to name
 a tenant on a JSON route. A header and a query parameter that disagree are a
 422 rather than a silent precedence rule. The console adds it in one place,
-`tenantQuery` in `fetch.ts`, used by `artifactRawUrl`.
+`tenantQuery` in `fetch.ts`, used by `artifactRawUrl` and
+`checkpointDownloadHref`.
 
 **A switch is a fresh screen, except for an unsent form.** The shell keys the
 page on the chosen tenant, so switching remounts it and every read runs again
