@@ -27,26 +27,20 @@ const REPO = 'bogdan-alexandrescu/SwarmCloud'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 
 /**
- * NOT run_7a37942a19aa4d2c80d1's notes. #587 asks for that run's five notes
- * verbatim; they could not be read when this was written (swarm_run answered
- * 401 from IAP and the lane had no GitHub access), so these five are a
- * RECONSTRUCTION of their shape, not a copy: ref, kind and note as stored
- * before #587, no `action`, each note saying what overlaps first and putting
- * its "No action" sentence after it -- the shape the old opening-only reading
- * counted as five needing action. The refs are illustrative. Replace them with
- * the run's own notes once they can be read.
+ * run_7a37942a19aa4d2c80d1's five stored overlap notes, verbatim, read
+ * 2026-10-05: ref, kind and note as stored before #587, no `action`.
  */
-const RECONSTRUCTED_OVERLAPS = [
-  { ref: `${REPO}#560`, kind: 'pull_request', note: 'PR #560 edits apps/swarm-ui/src/Runs.tsx in the CI card, far from the plan card this issue changes. No action: the hunks do not touch.' },
-  { ref: `${REPO}#548`, kind: 'issue', note: 'Issue #548 asks for the run list to page; it reads the same /v1/runs route. No action: this plan adds no field to that route.' },
-  { ref: `${REPO}#571`, kind: 'pull_request', note: 'PR #571 changes issuecomments.py, which renders the plan comment. This plan leaves the comment as it is. No action.' },
-  { ref: `${REPO}#503`, kind: 'issue', note: 'Epic #503 tracks the run page as a whole and lists this issue as one of its items. No action -- this run is that item.' },
-  { ref: `${REPO}#566`, kind: 'pull_request', note: 'PR #566 restyles intake.css, which holds the overlap rules. The rules this plan needs already exist there; no class is renamed. No action: nothing to rebase.' },
+const RUN_7A37_OVERLAPS = [
+  { ref: "bogdan-alexandrescu/SwarmCloud#185", kind: "issue", note: "The Timeline outcome ledger reads GET /v1/outcomes, which has its own coverage section. It is a different route from /v1/attempts, and this plan touches none of its files. No action. #185's builder can reuse the not_recorded wording this plan settles." },
+  { ref: "bogdan-alexandrescu/SwarmCloud#322", kind: "issue", note: "Same spend-honesty family: the Tokens tile leaves out cached tokens. It is UI code (AgentDetail), not the attempts route or these docs. No action." },
+  { ref: "bogdan-alexandrescu/SwarmCloud#323", kind: "issue", note: "Prompt-cache cost of claude-code steps. It is about spend, but it is worker and runner configuration, with no shared files. No action." },
+  { ref: "bogdan-alexandrescu/SwarmCloud#503", kind: "issue", note: "The UI-vs-mock-ups epic may edit docs/web-ui/ui-audit-and-build-prompt.md for other screens. No open PR touches that file now. This plan's edits there are limited to §A0.1's coverage sentence. If a #503 lane opens a PR on the file first, rebase onto it rather than editing in parallel." },
+  { ref: "bogdan-alexandrescu/SwarmCloud#177", kind: "issue", note: "This epic collects comments that contradict the code, and the stale record_spend passages are in that family. If the epic has a box for them, the PR comment (not the body) should name this PR as its evidence." },
 ]
 
-function run(overlaps: unknown[]) {
+function run(overlaps: unknown[], state = 'PLANNED') {
   return {
-    id: RUN_ID, tenant_id: 'eng', state: 'PLANNED', terminal: false,
+    id: RUN_ID, tenant_id: 'eng', state, terminal: ['DONE', 'FAILED', 'REJECTED', 'CANCELLED'].includes(state),
     issue: { ref: `${REPO}#454`, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454,
       url: `https://github.com/${REPO}/issues/454`, repository_url: `https://github.com/${REPO}` },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_7f3e2c9a1b8d4e6f0a5c',
@@ -85,9 +79,9 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('#587: five legacy notes shaped like run_7a37942a19aa4d2c80d1\'s read as nothing needing action', () => {
-  it('draws its five legacy notes as 0 of 5 needing action, grey, each with its note', async () => {
-    const card = await mount(run(RECONSTRUCTED_OVERLAPS))
+describe('#587: run_7a37942a19aa4d2c80d1\'s five stored notes, on the run as it ended and as it was planned', () => {
+  it('draws them on a DONE run as 0 of 5 needing action, all "Not in this run", each with its note', async () => {
+    const card = await mount(run(RUN_7A37_OVERLAPS, 'DONE'))
     expect(card.classList.contains('is-found')).toBe(false)
     expect(heading(card)).toContain('5 checked · none need action')
     const rows = card.querySelectorAll('details.rn-overlap')
@@ -95,14 +89,27 @@ describe('#587: five legacy notes shaped like run_7a37942a19aa4d2c80d1\'s read a
     rows.forEach((row, i) => {
       expect(row.classList.contains('is-needs')).toBe(false)
       expect(visible(row.querySelector('.rn-overlap-v'))).toBe('Not in this run')
-      // The planner's note sits under the label, whole: its "No action"
-      // sentence came after what overlaps, so nothing is cut from its head.
-      expect(visible(row.querySelector('.rn-overlap-note'))).toBe(RECONSTRUCTED_OVERLAPS[i]!.note)
+      expect(visible(row.querySelector('.rn-overlap-note'))).toBe(RUN_7A37_OVERLAPS[i]!.note)
     })
   })
 
-  it('counts each of the five notes as no action, one at a time', () => {
-    for (const o of RECONSTRUCTED_OVERLAPS) expect(overlapVerdict(o).needs, o.note).toBe(false)
+  it('draws the same five on a PLANNED run with exactly #503 and #177 needing action', async () => {
+    const card = await mount(run(RUN_7A37_OVERLAPS, 'PLANNED'))
+    expect(card.classList.contains('is-found')).toBe(true)
+    expect(heading(card)).toContain('5 checked · 2 need action')
+    const rows = Array.from(card.querySelectorAll('details.rn-overlap'))
+    expect(rows.length).toBe(5)
+    rows.forEach((row, i) => {
+      const o = RUN_7A37_OVERLAPS[i]!
+      const needs = o.ref.endsWith('#503') || o.ref.endsWith('#177')
+      expect(row.classList.contains('is-needs'), o.ref).toBe(needs)
+      expect(visible(row.querySelector('.rn-overlap-v')), o.ref).toBe(needs ? 'Needs action' : 'Not in this run')
+    })
+  })
+
+  it('counts the five one at a time: ended run none, running run the note rule', () => {
+    for (const o of RUN_7A37_OVERLAPS) expect(overlapVerdict(o, true).needs, o.note).toBe(false)
+    expect(RUN_7A37_OVERLAPS.filter((o) => overlapVerdict(o, false).needs).map((o) => o.ref.split('#')[1])).toEqual(['503', '177'])
   })
 })
 
@@ -120,6 +127,15 @@ describe('#587: the action field decides, when the plan has it', () => {
     expect(none!.classList.contains('is-needs')).toBe(false)
     expect(visible(none!.querySelector('.rn-overlap-v'))).toBe('Not in this run')
     expect(visible(none!.querySelector('.rn-overlap-note'))).toBe('Touches another screen.')
+  })
+
+  it('shows action=required amber even on a DONE run', async () => {
+    const card = await mount(run([
+      { ref: `${REPO}#540`, kind: 'pull_request', action: 'required', note: 'Edits the same route.' },
+    ], 'DONE'))
+    expect(heading(card)).toContain('1 checked · 1 needs action')
+    expect(card.querySelector('details.rn-overlap')!.classList.contains('is-needs')).toBe(true)
+    expect(overlapVerdict({ note: 'x', action: 'required' }, true).needs).toBe(true)
   })
 
   it('believes the field over the note, either way', () => {

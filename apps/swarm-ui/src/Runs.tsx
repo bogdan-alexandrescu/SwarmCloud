@@ -583,7 +583,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
           </div>
         )}
 
-        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} />}
+        {run.plan !== null && <Overlaps plan={run.plan} openWork={run.open_work ?? null} folded={approved} ended={run.terminal} />}
 
         <section className="rn-plan" aria-label="The plan">
           <Fold folded={approved && run.plan !== null}
@@ -1109,13 +1109,23 @@ const NO_ACTION_SENTENCE = /(?:^|[.!?]['"’”)\]]*\s+|\n\s*)no action\b/i
  * "Not in this run", in neutral grey with the note under it (owner wording,
  * 2026-10-05): "No action" beside an amber card read as a dismissal of work
  * someone may still have to do elsewhere.
+ *
+ * A PLAN STORED BEFORE THE FIELD, ON A RUN THAT HAS ENDED (owner decision,
+ * 2026-10-05): every such overlap is "Not in this run". A note written as an
+ * instruction for while the run went cannot need action once the run is DONE,
+ * FAILED, REJECTED or CANCELLED. An overlap WITH an `action` shows exactly its
+ * field, ended run or not.
  */
-export function overlapVerdict(o: Pick<PlanOverlap, 'note' | 'action'>): { needs: boolean; word: string; why: string } {
+export function overlapVerdict(
+  o: Pick<PlanOverlap, 'note' | 'action'>,
+  runEnded = false,
+): { needs: boolean; word: string; why: string } {
   const note = typeof o?.note === 'string' ? o.note : ''
   const none = { needs: false, word: 'Not in this run' }
   const needs = { needs: true, word: 'Needs action' }
   if (o?.action === 'none') return { ...none, why: note }
   if (o?.action === 'required') return { ...needs, why: note }
+  if (runEnded) return { ...none, why: note }
   if (!NO_ACTION_SENTENCE.test(note)) return { ...needs, why: note }
   const lead = NO_ACTION_LEAD.exec(note)
   return { ...none, why: (lead === null ? note : note.slice(lead[0].length)) || note }
@@ -1151,10 +1161,10 @@ function overlapRead(o: unknown): PlanOverlap {
  * heading counts both from `overlapVerdict`: "5 checked · none need action",
  * or "5 checked · 1 needs action".
  */
-function Overlaps({ plan, openWork, folded }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean }) {
+function Overlaps({ plan, openWork, folded, ended }: { plan: RunPlan; openWork: OpenWork | null; folded: boolean; ended: boolean }) {
   const overlaps = plan.overlaps === undefined || plan.overlaps === null ? plan.overlaps : plan.overlaps.map(overlapRead)
   const found = overlaps !== undefined && overlaps !== null && overlaps.length > 0
-  const verdicts = found ? overlaps!.map(overlapVerdict) : []
+  const verdicts = found ? overlaps!.map((o) => overlapVerdict(o, ended)) : []
   const needing = verdicts.filter((v) => v.needs).length
   const title = found
     ? `Overlaps the planner found · ${overlaps!.length} checked · ${
