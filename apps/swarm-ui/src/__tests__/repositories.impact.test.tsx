@@ -20,7 +20,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, waitFor, within } from '@testing-library/react'
-import { repo, serve, sha, visible } from './repofixture'
+import { leakedValue, repo, serve, sha, tokenShapedIn, visible } from './repofixture'
 
 const WAIT = { timeout: 4000 }
 const ID = 'repo_0a1b2c3d4e5f6071'
@@ -214,6 +214,15 @@ describe('four columns (Impact A)', () => {
     expect(visible(impact().querySelector('.ri-meta'))).toContain('policy P3 · fallback: full suite')
     expect(impact().querySelector('.ri-phead .c-pill')?.className).toContain('is-bad')
     expect(visible(impact().querySelector('h2'))).toBe('Commit 9d8c7b6')
+  })
+})
+
+describe('no token reaches the page', () => {
+  it('draws nothing token-shaped even when the plan carries one', async () => {
+    routes({ status: 200, body: { ...PLAN, read_with: leakedValue() } })
+    await mount('&pr=57')
+    await waitFor(() => expect(cols()).toHaveLength(4), WAIT)
+    expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })
 })
 
