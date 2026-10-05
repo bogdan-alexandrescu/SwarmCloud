@@ -983,7 +983,7 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SwarmCloud · <name> · N steps`, at most 100 "
+            "its SwarmCloud workflow: `SC · <name> · N steps`, at most 150 "
             "characters, where <name> is the spec's `title`, else its `label` cut at "
             "a word, else (attach) the title or label SwarmCloud stored, else the "
             "workflow id. A workflow script's name is fixed when it is launched, so "
