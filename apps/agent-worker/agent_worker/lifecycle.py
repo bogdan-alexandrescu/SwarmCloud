@@ -2019,18 +2019,7 @@ class Worker:
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
             self._child_ended()
-            self._checkpoint("cancellation")
-            summary = self._upload_outputs()
-            self._add_runner_block(summary)
-            self._export_metrics()
-            self.control.finish(
-                state=TaskState.CANCELLED,
-                exit_code=None,
-                error="cancelled by request",
-                result_summary=summary,
-                end_cause=self.control.cancel_cause(),
-            )
-            return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
+            return self._finish_cancelled()
 
         quota = signal_from_control(signals, cfg.provider)
         if quota is not None:
@@ -2091,6 +2080,21 @@ class Worker:
         child.terminate(cfg.termination_grace_seconds, reason="worker interrupted")
         child.finish()
         self._child_ended()
+        if self._cancel_requested_now():
+            # THE CANCEL ARRIVING AS A SIGTERM (#627). The API's cancel route
+            # asks the backend to cancel the execution directly, and Cloud
+            # Run's cancel and a GKE Job delete both reach this process as a
+            # SIGTERM -- usually before the next control poll has read the
+            # flag. Parking would put a task somebody stopped back in line, so
+            # it ends CANCELLED here, with its spend and its end recorded, the
+            # way the control poll's cancel ends it.
+            self.log.warning("SIGTERM on a task whose cancel was requested; ending it cancelled")
+            try:
+                return self._finish_cancelled()
+            except FencedError as exc:
+                return Outcome(
+                    exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
+                )
         try:
             self._checkpoint("interrupted")
             summary = self._upload_outputs()
@@ -2105,6 +2109,42 @@ class Worker:
                 exit_code=self._stand_down(exc, where="SIGTERM"), detail={"fenced": True}
             )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _cancel_requested_now(self) -> bool:
+        """Whether the task's cancel has been requested, read now. Never raises.
+
+        A read that fails answers False: the SIGTERM path then parks as it
+        always has, and a parked task with a cancel on it is cancelled by the
+        scheduler's drain rather than run again.
+        """
+        try:
+            return bool((self.control.fetch_task() or {}).get("cancel_requested"))
+        except Exception as exc:
+            self.log.warning(
+                "could not read whether a cancel was requested",
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return False
+
+    def _finish_cancelled(self) -> Outcome:
+        """End a cancelled task once its runner has stopped and been collected.
+
+        The checkpoint, then the uploads (which record the attempt's spend,
+        `_upload_outputs`), then the terminal write, which records the
+        attempt's end and releases the lease (`control.finish`).
+        """
+        self._checkpoint("cancellation")
+        summary = self._upload_outputs()
+        self._add_runner_block(summary)
+        self._export_metrics()
+        self.control.finish(
+            state=TaskState.CANCELLED,
+            exit_code=None,
+            error="cancelled by request",
+            result_summary=summary,
+            end_cause=self.control.cancel_cause(),
+        )
+        return Outcome(exit_code=ExitCode.CANCELLED, state=TaskState.CANCELLED)
 
     # -- the fenced exits ---------------------------------------------------
     def _exit_fenced_mid_run(
@@ -2540,6 +2580,12 @@ class Worker:
         ws = self.ws
         if ws is None:
             return None
+        if self._spend.get("cost_estimated"):
+            # The attempt's `cost_usd` includes an estimate for a run stopped
+            # before it reported one (#627). Said here, at the top, because a
+            # CLI runner stopped on SIGTERM may leave no result for the block
+            # below to be written from.
+            summary["cost_estimated"] = True
         runner_result = _read_json(ws.result_path)
         if runner_result:
             # The SAME figure `_record_spend` wrote onto the attempt (it ran
@@ -8359,8 +8405,30 @@ class Worker:
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.warning("could not read the runner's spend", error=str(exc))
             return
+        if "total_cost_usd" not in usage:
+            # A RUN STOPPED BEFORE IT COULD SAY (#627): a CLI killed on a
+            # cancel, a SIGTERM, a fence or a timeout prints no result event.
+            # What its stream showed is estimated, and only the keys the run
+            # did not report itself are taken, so nothing is counted twice.
+            estimate = self._stopped_run_estimate()
+            more = {k: v for k, v in estimate.items() if k not in usage}
+            if more:
+                usage = {**usage, **more}
+                if "total_cost_usd" in more:
+                    self._spend["cost_estimated"] = True
         if usage:
             self._spend = _add_spend(self._spend, usage)
+
+    def _stopped_run_estimate(self) -> dict[str, Any]:
+        """`_stream_spend_estimate` over this profile's agent capture, or {}."""
+        files = agent_stream_files(self.cfg.runner_profile)
+        if files is None or self.ws is None:
+            return {}
+        try:
+            return _stream_spend_estimate(self.ws.artifacts / files.stdout)
+        except Exception as exc:  # pragma: no cover - defensive; teardown path
+            self.log.warning("could not estimate the stopped run's spend", error=str(exc))
+            return {}
 
     def _record_spend(self) -> None:
         """Write what this attempt has spent onto its attempt document. Never raises.
@@ -10326,6 +10394,137 @@ def _add_spend(total: dict[str, Any], more: dict[str, Any]) -> dict[str, Any]:
     if models:
         out["models"] = sorted(models)
     return out
+
+
+#: LIST PRICES, USD per million tokens: (input, output, cache read), for the
+#: one use below -- estimating what a CLI run cost when it was stopped before
+#: it could say (#627). A cache WRITE is priced at 1.25x input, the five-minute
+#: write rate. Read from Anthropic's published table on 2026-10-05. A model
+#: missing here prices NOTHING (see `_stream_spend_estimate`): an unreported
+#: cost is honest, a guessed one is a wrong figure. Add a model when the
+#: platform starts running it; change a price only with the date it changed.
+_LIST_PRICES: dict[str, tuple[float, float, float]] = {
+    "claude-fable-5-1": (10.0, 50.0, 0.25),
+    "claude-mythos-5-1": (10.0, 50.0, 0.25),
+    "claude-fable-5": (10.0, 50.0, 1.0),
+    "claude-opus-5-5": (4.0, 20.0, 0.20),
+    "claude-opus-5": (5.0, 25.0, 0.50),
+    "claude-opus-4-8": (5.0, 25.0, 0.50),
+    "claude-opus-4-7": (5.0, 25.0, 0.50),
+    "claude-opus-4-6": (5.0, 25.0, 0.50),
+    "claude-sonnet-5": (2.0, 10.0, 0.20),
+    "claude-sonnet-4-6": (3.0, 15.0, 0.30),
+    "claude-haiku-4-5": (1.0, 5.0, 0.10),
+}
+_CACHE_WRITE_FACTOR = 1.25
+
+#: `claude-haiku-4-5-20251001`, `claude-opus-4-8[1m]`: the priced name, then
+#: at most a date and a context marker. Anything else is not that model.
+_MODEL_SUFFIX = re.compile(r"(?:-\d{8})?(?:\[[a-z0-9]+\])?")
+
+#: The most of a capture file read for an estimate. The capture is itself
+#: capped (`max_stdout_bytes`), so this only bounds a misconfigured cap.
+_ESTIMATE_READ_LIMIT = 64 * 1024 * 1024
+
+
+def _list_price(model: Any) -> tuple[float, float, float] | None:
+    if not isinstance(model, str):
+        return None
+    for name, price in _LIST_PRICES.items():
+        if model.startswith(name) and _MODEL_SUFFIX.fullmatch(model[len(name):]):
+            return price
+    return None
+
+
+def _stream_spend_estimate(path: Path) -> dict[str, Any]:
+    """What a stopped CLI run spent, from the per-message usage its stream carried.
+
+    A CLI stopped on SIGTERM -- a cancel, a SIGTERM to the worker, a fence, a
+    timeout -- prints no `result` event, and that event is the only place it
+    reports `total_cost_usd`; every such attempt used to read "not reported"
+    however long it had worked (#627: cancelled attempts priced 0 of 87). Each
+    `assistant` event carries its message's `usage` and `model`, so the tokens
+    are summed per message -- the LAST copy of each message id, because the
+    stream repeats a message once per content block with the output count
+    growing -- and priced at `_LIST_PRICES`.
+
+    A FLOOR, not an exact figure: a capture past its cap keeps its head and
+    tail, so a long run's middle is not counted. The caller marks the figure
+    as an estimate. `total_cost_usd` is left out when any message's model has
+    no price, and {} comes back when the stream carried no usage at all.
+
+    The capture is in `artifacts/`, which the agent can write, so a link put
+    in its place is refused at the open, not followed (as `_publish_tail`
+    does). Never raises.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    except OSError:
+        return {}
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            raw = handle.read(_ESTIMATE_READ_LIMIT)
+    except OSError:
+        return {}
+    messages: dict[str, tuple[Any, dict[str, Any]]] = {}
+    anonymous = 0
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith(b"{"):
+            continue
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict) or event.get("type") != "assistant":
+            continue
+        message = event.get("message")
+        if not isinstance(message, dict) or not isinstance(message.get("usage"), dict):
+            continue
+        key = message.get("id")
+        if not isinstance(key, str) or not key:
+            anonymous += 1
+            key = f"\x00{anonymous}"
+        messages[key] = (message.get("model"), message["usage"])
+    if not messages:
+        return {}
+    fields = (
+        "input_tokens",
+        "output_tokens",
+        "cache_creation_input_tokens",
+        "cache_read_input_tokens",
+    )
+    totals = dict.fromkeys(fields, 0)
+    cost = 0.0
+    priced = True
+    models: set[str] = set()
+    for model, usage in messages.values():
+        counts = {
+            k: usage[k] if isinstance(usage.get(k), int) and not isinstance(usage.get(k), bool)
+            else 0
+            for k in fields
+        }
+        for k in fields:
+            totals[k] += counts[k]
+        if isinstance(model, str):
+            models.add(model)
+        price = _list_price(model)
+        if price is None:
+            priced = False
+            continue
+        inp, out, read = price
+        cost += (
+            counts["input_tokens"] * inp
+            + counts["output_tokens"] * out
+            + counts["cache_creation_input_tokens"] * inp * _CACHE_WRITE_FACTOR
+            + counts["cache_read_input_tokens"] * read
+        ) / 1_000_000
+    estimate: dict[str, Any] = dict(totals)
+    if priced:
+        estimate["total_cost_usd"] = round(cost, 10)
+    if models:
+        estimate["models"] = sorted(models)
+    return estimate
 
 
 def _workspace_label(ws: workspace_mod.Workspace, path: Path) -> str:
