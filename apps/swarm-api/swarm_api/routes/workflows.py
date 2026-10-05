@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 
 from ..auth import AuthContext
 from ..children import PARENT_CANCELLED, ChildService
@@ -192,13 +192,20 @@ def get_workflow(
 def cancel_workflow(
     workflow_id: str,
     # The scope decides whose workflow may be cancelled; `auth` records who did.
+    background: BackgroundTasks,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    targets: list = []
     result = ctx.store.cancel_workflow(
-        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member
+        tenant_id, workflow_id, by=auth.email, tenant_member=auth.tenant_member,
+        targets=targets,
     )
+    # Each running step's execution is asked to stop now, as the task route
+    # does (#627); a step cancelled before names none.
+    for target in targets:
+        background.add_task(ctx.executions.cancel, target)
     # A cancelled step's children are cancelled with it (OD-B15-4,
     # docs/design/child-tasks.md §3.4); the scheduler's sweep makes it certain.
     service = ChildService(

@@ -404,6 +404,19 @@ class ApiSettings:
     #: id dedupe with the child already made.
     child_proof_skew_seconds: int = 120
 
+    # --- stopping a cancelled task's execution (#627) ----------------------
+    #: Whether the cancel routes ask the backend to stop the execution
+    #: (`swarm_api.executioncancel`). On by default in a deployment
+    #: (EXECUTION_CANCEL_ENABLED), because waiting for the worker or the
+    #: reconciler left executions running 7-13 h after a cancel; off in this
+    #: dataclass's own default so a test or a local run never reaches Google.
+    execution_cancel_enabled: bool = False
+    #: The swarm's OWN cluster's endpoint and CA, as the reconciler reads them
+    #: (GKE_ENDPOINT, GKE_CA_CERT_B64). Empty means a GKE execution is left to
+    #: the worker and the reconciler, as before; Cloud Run needs neither.
+    gke_endpoint: str = ""
+    gke_ca_cert_b64: str = field(default="", repr=False)
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -468,6 +481,9 @@ class ApiSettings:
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
+            execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
+            gke_endpoint=os.environ.get("GKE_ENDPOINT", "").strip(),
+            gke_ca_cert_b64=os.environ.get("GKE_CA_CERT_B64", "").strip(),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),

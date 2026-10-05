@@ -31,6 +31,11 @@ from .auth import (
 )
 from .credentials import CredentialWriter, SecretManagerCredentials
 from .errors import ValidationFailed
+from .executioncancel import (
+    ExecutionCanceller,
+    NoExecutionCanceller,
+    RestExecutionCanceller,
+)
 from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
@@ -89,6 +94,9 @@ class AppContext:
     #: its pull request's keyword block (`issuesync`) -- with the same
     #: tenant token, the same pinned host and no redirects.
     forge_writer: GitHubWriter | None = None
+    #: Stops a cancelled task's execution on its backend (#627). Builds no
+    #: client until a cancel needs it; tests inject a recorder.
+    executions: ExecutionCanceller = NoExecutionCanceller()
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -142,6 +150,7 @@ def build_context(
     forge_tokens: ForgeTokens | None = None,
     forge: GitHubIssues | None = None,
     forge_writer: GitHubWriter | None = None,
+    executions: ExecutionCanceller | None = None,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -214,7 +223,19 @@ def build_context(
         forge_tokens=forge_tokens or SecretManagerForgeTokens(settings.project_id),
         forge=forge or GitHubIssues(),
         forge_writer=forge_writer or GitHubWriter(),
+        executions=executions or _execution_canceller(settings),
         now=now,
+    )
+
+
+def _execution_canceller(settings: ApiSettings) -> ExecutionCanceller:
+    if not settings.execution_cancel_enabled:
+        return NoExecutionCanceller()
+    return RestExecutionCanceller(
+        project_id=settings.project_id,
+        region=settings.core.region,
+        gke_endpoint=settings.gke_endpoint,
+        gke_ca_cert_b64=settings.gke_ca_cert_b64,
     )
 
 

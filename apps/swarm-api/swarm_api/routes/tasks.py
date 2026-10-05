@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
 from fastapi.responses import StreamingResponse
 
 from swarm_common.states import TaskState
@@ -269,13 +269,21 @@ def cancel_task(
     # Both: the scope decides WHOSE task may be cancelled, `auth` records WHO
     # cancelled it. Cancelling is a write, and it was reachable across a tenant
     # id collision until this dependency existed.
+    background: BackgroundTasks,
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    task = ctx.store.request_cancel(
+    task, target = ctx.store.request_cancel_with_target(
         tenant_id, task_id, by=auth.email, tenant_member=auth.tenant_member
     )
+    # STOP THE EXECUTION NOW (#627), rather than waiting for the worker's next
+    # poll or the reconciler: some executions ran 7-13 h past a cancel. Only
+    # the first cancel of a task names one, so a second press asks nothing.
+    # After the response, so a slow backend does not hold the caller; and it
+    # releases nothing -- the worker, SIGTERMed, ends the task and its lease.
+    if target is not None:
+        background.add_task(ctx.executions.cancel, target)
     # OD-B15-4: cancelling a parent cancels its children, at once; the
     # scheduler's sweep makes it certain (docs/design/child-tasks.md §3.4).
     cascaded = cascade_children(ctx, task, why=PARENT_CANCELLED, by=auth.email)
@@ -289,6 +297,8 @@ def cancel_task(
         # free a slot that a live container still occupies.
         "released_immediately": task.state.value == "CANCELLED",
         "children_cancelled": cascaded,
+        # Whether this call asked the backend to stop the task's execution.
+        "execution_cancel_requested": target is not None,
     }
 
 
