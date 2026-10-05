@@ -149,3 +149,49 @@ def finish_index_task(db, objects, task_id: str, document: Any, *, state: str = 
         {"name": "repo-index.json", "bytes": len(raw.encode()), "uri": f"gs://{BUCKET}/{key}"}
     ]}
     return key
+
+
+def etag_of(head: str) -> str:
+    """The entity tag the fake GitHub gives a head: a quoted digest of it."""
+    return '"' + hashlib.sha256(("etag:" + head).encode("utf-8")).hexdigest()[:32] + '"'
+
+
+class HeadPolls:
+    """`GET /repos/{o}/{r}/commits/{branch}` with the sha media type, and its ETag.
+
+    The poll's transport (`GitHubIssues.probe_send`): it answers with headers,
+    so the ETag can be read and `If-None-Match` answered `304 Not Modified`
+    the way GitHub answers an unchanged branch. The heads are `github.heads`,
+    the same map the RI2 fake reads, so "Index now" and the poll agree.
+    `status` maps a repository (`owner/repo`) to a status every read of it
+    answers instead.
+    """
+
+    def __init__(self, github: IndexGitHub, *, status: dict[str, int] | None = None) -> None:
+        self.github = github
+        self.status = dict(status or {})
+        self.calls: list[tuple[str, dict[str, str], int]] = []
+
+    def __call__(self, url: str, headers: dict[str, str], timeout: float):
+        from swarm_api.forge import ProbeResponse
+
+        parts = urlparse(url).path.strip("/").split("/")
+        if len(parts) < 5 or parts[0] != "repos" or parts[3] != "commits":
+            self.calls.append((url, dict(headers), 404))
+            return ProbeResponse(status=404, headers={}, body=b'{"message": "Not Found"}')
+        repository = f"{parts[1]}/{parts[2]}"
+        if repository in self.status:
+            code = self.status[repository]
+            self.calls.append((url, dict(headers), code))
+            return ProbeResponse(status=code, headers={}, body=b'{"message": "refused"}')
+        branch = unquote("/".join(parts[4:]))
+        head = self.github.heads.get(branch)
+        if head is None:
+            self.calls.append((url, dict(headers), 422))
+            return ProbeResponse(status=422, headers={}, body=b'{"message": "No commit found"}')
+        tag = etag_of(head)
+        if headers.get("If-None-Match") == tag:
+            self.calls.append((url, dict(headers), 304))
+            return ProbeResponse(status=304, headers={"etag": tag}, body=b"")
+        self.calls.append((url, dict(headers), 200))
+        return ProbeResponse(status=200, headers={"etag": tag}, body=head.encode("ascii"))
