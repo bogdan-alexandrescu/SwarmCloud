@@ -257,6 +257,128 @@ class ControlStore:
             attempts.append(AttemptView.from_doc(doc.to_dict() or {}, doc.id))
         return task, attempts
 
+    def finished_attempts(
+        self, *, since: datetime, until: datetime
+    ) -> list[tuple[TaskView, AttemptView]]:
+        """Each task that finished in [since, until] with its current, unended attempt (#380).
+
+        For `detect_lost_after_finish`. `snapshot()` reads attempts only through
+        unreleased leases, and the attempt this is about may have had its lease
+        released by the orphan-lease rule, or by `finish` itself, long before.
+
+        Two single-field reads, which Firestore's automatic indexes serve: a
+        range on the task's `completed_at`, then each such task's attempts by
+        `task_id`, filtered here -- the read `task_and_attempts` makes. Only an
+        attempt at the task's generation with no `completed_at` is returned.
+        `until` is the grace, applied to the query so a task still inside it
+        costs no attempt read. A malformed document is skipped: it yields no
+        finding, which is the safe side. A READ THAT FAILS raises, and the
+        caller concludes nothing.
+        """
+        query = (
+            self._db.collection("tasks")
+            .where(filter=self._filter("completed_at", ">=", since))
+            .where(filter=self._filter("completed_at", "<=", until))
+        )
+        found: list[tuple[TaskView, AttemptView]] = []
+        for doc in query.stream():
+            try:
+                task = TaskView.from_doc(doc.to_dict() or {}, doc.id)
+            except _MALFORMED_TASK_DOC as exc:
+                self._log.warning(
+                    "a finished task document is malformed and cannot be read; skipping it",
+                    task_id=doc.id,
+                    error=type(exc).__name__,
+                )
+                continue
+            if not task.is_terminal:
+                continue
+            attempts = self._db.collection("attempts").where(
+                filter=self._filter("task_id", "==", task.task_id)
+            )
+            for attempt_doc in attempts.stream():
+                try:
+                    attempt = AttemptView.from_doc(attempt_doc.to_dict() or {}, attempt_doc.id)
+                except _MALFORMED_TASK_DOC as exc:
+                    self._log.warning(
+                        "an attempt document is malformed and cannot be read; skipping it",
+                        attempt_id=attempt_doc.id,
+                        task_id=task.task_id,
+                        error=type(exc).__name__,
+                    )
+                    continue
+                if attempt.generation == task.generation and attempt.completed_at is None:
+                    found.append((task, attempt))
+        return found
+
+    def record_lost_attempt_end(
+        self,
+        task_id: str,
+        attempt_id: str,
+        *,
+        expected_generation: int,
+        error: str,
+    ) -> bool:
+        """Record the end of an attempt its worker never ended (#380). True if written.
+
+        The fence's transaction rules, for a task nothing fences: the task and
+        the attempt are re-read here, every read before the write, and the end
+        is written only while the task is still terminal AT THE ATTEMPT'S
+        GENERATION and the attempt is still unended. A task fenced past it
+        since the pass read it is a newer generation's, and nothing of it is
+        touched (invariant 5); an attempt whose worker recorded its own end
+        after all keeps the worker's account of it. The task document and
+        every lease are never written.
+
+        The fields are exactly those `ControlPlane.record_attempt_end` writes:
+        no exit code is known, and `error` carries the cause.
+        """
+        task_ref = self._db.collection("tasks").document(task_id)
+        attempt_ref = self._db.collection("attempts").document(attempt_id)
+
+        def _apply(txn: Any) -> bool:
+            task_snap = _snapshot(txn.get(task_ref))
+            attempt_snap = _snapshot(txn.get(attempt_ref))
+            if not task_snap.exists or not attempt_snap.exists:
+                return False
+            task = task_snap.to_dict() or {}
+            attempt = attempt_snap.to_dict() or {}
+            try:
+                state = TaskState(task.get("state"))
+                current = int(task.get("current_generation", -1))
+                generation = int(attempt.get("generation", -1))
+            except (ValueError, TypeError, OverflowError):
+                return False
+            if (
+                state not in TERMINAL_STATES
+                or current != expected_generation
+                or generation != expected_generation
+                or attempt.get("task_id") != task_id
+                or attempt.get("completed_at") is not None
+            ):
+                self._log.warning(
+                    "refusing to record a lost attempt's end: it moved since the pass read it",
+                    task_id=task_id,
+                    attempt_id=attempt_id,
+                    state=state.value,
+                    current_generation=current,
+                    attempt_generation=generation,
+                    expected_generation=expected_generation,
+                )
+                return False
+            txn.update(
+                attempt_ref,
+                {
+                    "completed_at": utcnow(),
+                    "exit_code": None,
+                    "error": error,
+                    "tenant_id": attempt.get("tenant_id") or task.get("tenant_id"),
+                },
+            )
+            return True
+
+        return bool(self._txn.run(_apply))
+
     def task_by_id(self, task_id: str) -> TaskView | None:
         """One task, whatever its state, or None if the document does not exist.
 
