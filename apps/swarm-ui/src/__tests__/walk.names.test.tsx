@@ -26,7 +26,6 @@ import { resolveVars } from './spaceprobe'
 import { task } from './runfixture'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 
 afterEach(() => {
   window.location.hash = ''
@@ -47,7 +46,7 @@ describe('G: an agent is named from what it is', () => {
       const r = document.querySelector<HTMLElement>('.row.is-compact[data-task-id="task_108ef29c"]')
       expect(r).not.toBeNull()
       return r!
-    }, WAIT)
+    })
     expect(row.querySelector('.cr-name b')?.textContent).toBe('mock task · 108ef29c')
     expect(row.querySelector('.cr-name b')?.getAttribute('title')).toBe('task_108ef29c')
   })
@@ -57,7 +56,7 @@ describe('G: an agent is named from what it is', () => {
     render(<App />)
     await waitFor(() => {
       expect(document.querySelector('.ctl-crumb [aria-current="page"]')?.textContent).toBe('claude-code task · a073aff5')
-    }, WAIT)
+    })
   })
 })
 

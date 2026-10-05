@@ -28,8 +28,6 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { App, SECTIONS } from '../App'
 import { PARK_REASONS, REAL_STATES } from '../types'
 
-const WAIT = { timeout: 8000 }
-
 afterEach(() => {
   window.location.hash = ''
   window.history.replaceState(null, '', '/')
@@ -110,7 +108,7 @@ describe('E: no implementation explanation in visible copy', () => {
       // Every fixture read has landed (the slowest simulated latency is
       // well under this), so the page's loaded copy is what is swept.
       await new Promise((r) => setTimeout(r, 900))
-      await waitFor(() => expect(document.querySelector('main')).not.toBeNull(), WAIT)
+      await waitFor(() => expect(document.querySelector('main')).not.toBeNull())
       for (const f of findings(visibleText(document.body))) report.push(`${path}: ${f}`)
       visited++
       unmount()

@@ -52,6 +52,7 @@ costs nothing while it waits.
 | `timeout_seconds` | optional; may only shorten the profile's own default. |
 | `when` | `{"step": upstream, "verdict_in": ["NOT_YET"]}`: run this step's agent only on those verdicts; see [review before publishing](#review-before-publishing-implement-review-fix-if-needed) |
 | `builds_on` | an upstream `step_id` whose pushed branch this step's checkout starts from, instead of `repository_ref` |
+| `allow_empty_diff` | `true`: an empty diff is this step's result, not its failure; see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff) |
 
 `max_workflow_steps` (default 50) bounds the whole thing.
 
@@ -468,9 +469,88 @@ reads FAILED through the ordinary rollup, and `on_step_failure` acts on it
 as on any failed step. A step that opens no pull request still SUCCEEDS when
 it changes nothing, because for a contributor, a review or a `collect` step
 that is a correct result. The guard also exempts a step whose verdict gate
-kept its agent from running. A forge that cannot be reached at all is not a
+kept its agent from running, and a step that declared `allow_empty_diff` and
+changed nothing ([below](#an-empty-diff-can-succeed-allow_empty_diff)). A forge that cannot be reached at all is not a
 refusal, and that step reads as it did before. Until contract request 46 is
 decided, the end cause is `outputs_missing`, the closest existing one.
+
+## An empty diff can succeed: `allow_empty_diff`
+
+**Why it exists.** A step asked to "fix it if it is broken" may find nothing
+broken. Until 2026-10-05 such a step failed: a later step staged its
+`swarm-work.patch`, the harvest wrote none because the diff was empty, and the
+attempt ended FAILED for the missing output (`empty_diff`, not retried). A
+pull-request step ended FAILED `published_nothing:`. Both are right for a step
+that was meant to change something, and wrong for one whose correct answer was
+"nothing to change". The owner's decision (lane review P2) is that the step
+says which it is.
+
+```json
+{"step_id": "implement", "runner_profile": "claude-code",
+ "allow_empty_diff": true,
+ "input": {"prompt": "Fix the flaky test if it is still flaky; run it either way."}}
+```
+
+| the step's diff | without the flag | with `allow_empty_diff: true` |
+|---|---|---|
+| empty | FAILED, `empty_diff` (or `published_nothing:` for a pull-request step) | SUCCEEDED, `result_summary.no_change: true` |
+| not empty | unchanged | unchanged |
+| over the patch cap (`patch_omitted`), no clone base | FAILED | FAILED: the flag covers an empty diff and nothing else |
+
+* **Its other artifacts are kept.** A `no_change` step's uploads (the test
+  report, the check it ran) are uploaded as from any clean attempt, and a later
+  step can stage them. Only `swarm-work.patch` and, for a pull-request step,
+  `pr-title.txt` stop being owed; every other expected output still is, and a
+  missing one still fails the step.
+* **"Empty" is the harvest's measurement**: a base to diff against, no commit
+  beyond it, no uncommitted path, and no patch written because the diff was
+  empty. An integrator still owed its contributors' merge is never `no_change`:
+  its deliverable is their work.
+* **The flag is stored where the worker reads it**, `metadata.dispatch.
+  allow_empty_diff`, inside the block the spec signature covers, and served in
+  the task's `dispatch`. It must be a JSON boolean: `"yes"` is refused with 422.
+
+### The steps that needed the change are SKIPPED
+
+A step that needs the change a `no_change` step did not make ends SUCCEEDED
+with `result_summary.skipped: {"reason": "nothing to change", "upstream":
+[task ids]}`. It starts no agent, clones nothing (the branch it would start
+from was never pushed), stages nothing and publishes nothing. A step needs an
+upstream's change when it:
+
+* stages that upstream's `swarm-work.patch` through `input_from`;
+* starts from that upstream's branch: `builds_on`, a `single-pr` reader or
+  amender's author, a merge step's pull request;
+* integrates it, and every step it integrates changed nothing or was skipped.
+  An integrator with at least one contributor that changed something runs, and
+  merges only those; the others are listed under `git.integrated.no_change`,
+  not as `missing`.
+
+**A skip is transitive**: a step that stages anything from a SKIPPED step is
+skipped too, because a skipped step wrote nothing. A step that stages only the
+verification files of a `no_change` step still runs: those files exist. In the
+review shape below, an implementer with nothing to change skips the review
+(it stages the patch and builds on the implementer) and the fix (it builds on
+the implementer), and the workflow SUCCEEDS with no pull request.
+
+**Why SKIPPED is a SUCCEEDED task and not a state of its own.** The frozen
+`TaskState` has no SKIPPED, and the frozen transitions forbid PARKED ->
+SUCCEEDED, so the scheduler cannot end a parked step as skipped. The skip is
+made the way the verdict gate's no-agent ending is (#264): the dependency
+sweep promotes the step, admission leases it, and the worker reads its
+upstreams' `result_summary` through the tenant-checked upstream read, before
+any checkpoint restore, clone, staging or credential, and ends it. The step
+holds a lease for that read and that write, and counts against the pools like
+any other (invariants 1 and 3); no agent, provider quota or clone is spent.
+Not CANCELLED: a cancel is a stop, and under `fail_workflow` a cancelled
+dependant reads as the cascade of a fault there was not. A real `SKIPPED`
+state, which would let the scheduler skip a step without leasing it, is a
+frozen-contract change and has not been made.
+
+**The workflow derivation counts a skipped step as a success.** It is a
+SUCCEEDED task, so it ranks as one ([workflow state](#workflow-state)), and the
+rollup names it in `rollup.skipped_steps`, so a reader can tell it from a step
+that ran. `rollup.counts` keeps counting it under `SUCCEEDED`.
 
 ## Review before publishing: implement, review, fix-if-needed
 
@@ -520,8 +600,10 @@ What each step does, and why each field is there:
   that name, so `input_from` stages it like any file. The implementer is not
   told to write it: it is the platform's (see "Artifacts pass by reference").
   An implementer that changes nothing writes no patch, so it fails for the
-  missing output, retryably, like any step that did not write what a later
-  step stages.
+  missing output (`empty_diff`), not retried, unless it says changing nothing
+  is a correct result with `allow_empty_diff: true`: then it SUCCEEDS with
+  `no_change`, and the review and the fix, which need its change, are SKIPPED
+  (see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
 * **The verdict is a file the review writes**, `{"verdict": "MERGE" |
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
@@ -572,6 +654,38 @@ What each step does, and why each field is there:
   integration. If it did edit the repository, those edits are unreviewed
   work, which is what the gate keeps out.
 
+### What a MERGE verdict publishes
+
+On MERGE the fix step starts **no agent** (owner decision, 2026-10-05: a fix
+agent after a MERGE was paid for and could only add unreviewed change). The
+integrator path still runs: it merges the implementer's branch and opens the
+one pull request, and the step ends SUCCEEDED with
+`result_summary.skipped_agent: "review verdict MERGE"` beside
+`verdict_gate.agent_ran: false`. NOT_YET is unchanged: the fix agent runs.
+
+What titles that pull request, since no agent wrote the `pr-title.txt` an
+integrator owes:
+
+1. **the implementer's own `pr-title.txt` and `pr-body.md`**, the uploaded
+   artifacts of the `builds_on` step. They are read through the same
+   tenant-checked upstream read staging uses, located in the implementer's
+   successful attempt's manifest (a key outside this tenant's prefix for
+   that task is refused), at most 256 KiB each;
+2. for whichever is absent, or for a title the publish would refuse (two
+   lines, attribution, a task id): text made from the **workflow's label**,
+   the submission's `metadata.unit` (what `swarm_workflow_launch` sends a
+   spec's `label` as), else its `metadata.title`. swarm-api copies it into
+   the gated step's `dispatch.pr_label`, because the worker reads no
+   metadata key the spec signature does not cover.
+
+Both are written into the fix attempt's artifacts folder and read by the
+publish exactly as an agent's text is: scrubbed of every registered secret,
+refused on attribution or a task id, every mention neutralised.
+`result_summary.pull_request_text_from` says where each came from
+(`implementer`, `label`, or null). With neither -- no implementer text and no
+label -- nothing is generated, and the missing title fails the attempt as it
+always has; a step given an `issue` input is titled from the issue instead.
+
 ### What is refused at submission
 
 Every refusal is a 422 before anything is created, naming the step.
@@ -605,7 +719,8 @@ published, which is the safe outcome, and the review has to be run again.
 
 The two fields travel in `task.metadata.dispatch`, which is already reserved,
 keyed by upstream task id as `integrates` is: `builds_on: <task id>` and
-`verdict_gate: {"task_id", "verdict_in"}`. `GET /v1/tasks/{id}` returns them in
+`verdict_gate: {"task_id", "verdict_in"}`, and on the gated step the label a
+MERGE titles its pull request with, `pr_label`. `GET /v1/tasks/{id}` returns them in
 `dispatch` on the steps that have them. The workflow document's steps do NOT
 carry them: `WorkflowStep` is frozen, so typing them there is contract request
 29 in [contract-change-requests.md](contract-change-requests.md).
@@ -620,6 +735,65 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
 * **It does not check the verdict where it is written.** A malformed verdict
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
+
+### Minor findings are filed on the tenant's wave epic
+
+CLAUDE.md's rule is that minor findings go to a wave epic, one comment per
+finding. Until #638 that depended on an operator copying them out of
+`verdict.json` by hand, and the 2026-10-05 history analysis counted 530 minors
+across 122 reviews that never left the file. Now the gated step files them.
+
+* **What a minor is.** A finding that is an object with `"severity":
+  "minor"` (any case) and a `summary`, `title`, `message`, `problem` or
+  `what`. It may also name `file`, a call site (`call_site`, or `where`) and
+  how it was found (`evidence`; failing that, a `fix` trails the comment as
+  "suggested fix: ..."). Both of these are read:
+  `{"severity": "minor", "summary": "...", "file": "apps/x/a.py", "call_site":
+  "run()", "evidence": "..."}` and the shape the review briefs prescribe,
+  `{"severity": "minor", "file": "apps/x/a.py", "where": "run()", "problem":
+  "...", "fix": "..."}`. The second is the shape of the 530 minors #638
+  counted; reading only the first filed none of them. A string finding, or a `blocker` or `major`, is
+  the fix step's and is **never** filed: blockers and majors are what the fix
+  agent fixes, and a NOT_YET with only minors would otherwise be filed and
+  fixed twice. Every finding, minor or not, still reaches the pull request
+  body and the fix agent exactly as before.
+* **Where.** The tenant's `findings_epic`, an issue number in the repository
+  the run works on, set by an admin with `PUT
+  /v1/admin/tenants/{tenant}/findings-epic {"findings_epic": 638}` (`null`
+  stops it; `GET` reads it). It is a field of the tenant document beside the
+  frozen `Tenant` fields, not one of them. swarm-api copies it at submission
+  into the GATED step's `dispatch.findings_epic`, inside the block the spec
+  signature covers, so no agent of the tenant can point the worker at another
+  issue, and a change reaches workflows submitted after it.
+* **Who posts.** The gated step's WORKER, after the agent ended (or, on
+  MERGE, where no agent ran) and after its publish, with the tenant's own
+  `swarm-tenant-<tenant>-git` token: never the agent, which never sees the
+  token, and never another tenant's. The token goes only to github.com
+  (#307); it is registered with the log redaction and appears in no log line,
+  event or result. Each comment is one line in the epic shape, the agent's
+  text scrubbed of registered secrets and with every `@`-mention broken:
+
+      - [ ] **<the defect>** · `<file>` `<call site>` · found by review `<task>` of workflow `<wf>`; <evidence>
+
+* **Once.** Every comment already on the epic is read first (at most 30 pages
+  of 100), and a finding whose (text, file, call site) is already there, filed
+  by an earlier run or by a person in the same shape, ticked or not, is not
+  posted again. An epic that cannot be read whole files nothing: a partial
+  read taken as whole would file duplicates.
+* **The result says what happened.** `result_summary.findings_epic` on the
+  gated step: `epic`, `repository`, `minors` (how many the verdict marked),
+  `filed` (`text`, `file`, `call_site`, `comment_id` of each posted),
+  `already_filed`, and `not_filed` with the reason when anything was not
+  posted. With no epic configured, `epic` is null, nothing is posted and
+  `not_filed` says so.
+* **It never fails the step.** The step's pull request is already open when
+  this runs. A forge that refuses or is down is recorded in `not_filed`; the
+  comment POST is not retried (one whose answer was lost may have landed), and
+  the next run's dedup posts what this one did not.
+* **What it does not cover.** A review with no gated step after it (a review
+  whose verdict nothing reads), and the `single-pr` chain's `review.json`,
+  whose `summary` is free text with no per-finding severity: neither files
+  anything.
 
 ## `metadata.input_from` belongs to the service, not the caller
 
@@ -775,6 +949,11 @@ The rule, in `apps/swarm-api/swarm_api/rollup.py`, in the order it is applied:
 | any step holds capacity (`LEASED`/`DISPATCHED`/`STARTING`/`RUNNING`) | `RUNNING` |
 | every step terminal | the worst present: `DEAD_LETTERED` > `FAILED` > `CANCELLED` > `SUCCEEDED` |
 | otherwise | the most advanced pending: `READY` > `PARKED` > `QUEUED` |
+
+A step the worker SKIPPED for "nothing to change" (`result_summary.skipped`,
+[above](#the-steps-that-needed-the-change-are-skipped)) is a SUCCEEDED task and
+ranks as one; `rollup.skipped_steps` names it. A `skipped` marker on a task
+that did not SUCCEED is not a skip.
 
 `UNKNOWN` is not a `TaskState` and is never written to Firestore. It is what a
 read says when it could not establish an answer, and it exists so that a

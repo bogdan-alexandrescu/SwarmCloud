@@ -92,6 +92,7 @@ from .validation import (
     validate_step_routing,
     validate_storable,
     validate_timeout,
+    workflow_label,
 )
 from .waker import SchedulerWaker
 
@@ -506,6 +507,9 @@ class SubmissionService:
         # Topological order, so a child task document is never written before
         # the parent it names in `depends_on`.
         step_task_id: dict[str, str] = {}
+        # Read once, at submission (#638): the gated step files its review's
+        # minors on this issue, and a later change reaches later workflows.
+        findings_epic = self._store.get_findings_epic(tenant.tenant_id)
         for step_id in order:
             source = by_id[step_id]
             parent_task_ids = [step_task_id[dep] for dep in source.depends_on]
@@ -524,6 +528,13 @@ class SubmissionService:
                 builds_on=step_task_id[source.builds_on] if source.builds_on else None,
                 gate_task_id=step_task_id[source.when.step] if source.when else None,
                 gate_verdicts=source.when.verdict_in if source.when else (),
+                allow_empty_diff=source.allow_empty_diff,
+                # Kept on a gated step only (`with_routing`): the MERGE path's
+                # pull request title when the implementer wrote none.
+                pr_label=workflow_label(spec.metadata),
+                # Kept on a gated step only too: the step that reads the
+                # verdict files its minors on the tenant's epic.
+                findings_epic=findings_epic,
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in

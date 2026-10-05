@@ -39,7 +39,6 @@ import { painted } from './marks'
 import { cellStyle, fixedColumns, nowrap, textPx } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const LIST_AT_1440 = 1440 - 84 - 236 - 64
 /** The mark beside a state word: 12px glyph and its 6px gap. */
 const MARK = 18
@@ -56,7 +55,7 @@ async function list(): Promise<HTMLTableElement> {
     expect(t).not.toBeNull()
     expect(t!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
     return t!
-  }, WAIT)
+  })
 }
 
 describe('D8: the Workflows list never cuts a state, a count or a duration', () => {
@@ -114,7 +113,7 @@ async function steps(): Promise<HTMLElement> {
     const t = document.querySelector<HTMLElement>('.wf-card .wf-table')
     expect(t?.querySelectorAll('tbody tr[data-step]').length ?? 0).toBeGreaterThan(1)
     return t!
-  }, WAIT)
+  })
 }
 
 describe('D12: the step table of an issue run', () => {
@@ -190,7 +189,7 @@ describe('D30: the same-step scrubber keeps its arrows with the position', () =>
       const r = document.querySelector<HTMLElement>('[data-scrub="workflow"]')
       expect(r).not.toBeNull()
       return r!
-    }, WAIT)
+    })
     const nav = row.querySelector<HTMLElement>(':scope > .wf-scrub-nav')!
     expect(nav, 'the arrows and the position are not one unit').not.toBeNull()
     expect([...nav.querySelectorAll('button')].map((b) => b.textContent)).toEqual(['◀', '▶'])

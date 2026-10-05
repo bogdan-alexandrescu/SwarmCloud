@@ -404,6 +404,19 @@ class ApiSettings:
     #: id dedupe with the child already made.
     child_proof_skew_seconds: int = 120
 
+    # --- stopping a cancelled task's execution (#627) ----------------------
+    #: Whether the cancel routes ask for the execution to be stopped
+    #: (`swarm_api.executioncancel`). On by default in a deployment
+    #: (EXECUTION_CANCEL_ENABLED), because waiting for the worker or the
+    #: reconciler left executions running 7-13 h after a cancel; off in this
+    #: dataclass's own default so a test or a local run never reaches Google.
+    execution_cancel_enabled: bool = False
+    #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
+    #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
+    #: service, holds the stop permissions. Empty means a cancel is left to the
+    #: worker's poll and the reconciler's pass, as before.
+    execution_cancel_topic: str = ""
+
     @property
     def project_id(self) -> str:
         return self.core.project_id
@@ -468,6 +481,8 @@ class ApiSettings:
             groups_impersonate_user=os.environ.get("GROUPS_IMPERSONATE_USER", "").strip(),
             group_cache_ttl_seconds=_int("GROUP_CACHE_TTL_SECONDS", 120),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
+            execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
+            execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             quota_broker_url=os.environ.get("QUOTA_BROKER_URL", "").strip(),
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             max_page_size=_int("MAX_PAGE_SIZE", 200),

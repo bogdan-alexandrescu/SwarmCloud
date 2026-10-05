@@ -43,6 +43,7 @@ from ..schemas import (
     PauseRequest,
     PlatformSettingsRequest,
     ProviderEnableRequest,
+    TenantFindingsEpicRequest,
     TenantLimitsRequest,
 )
 from ..task_accounts import accounts_for
@@ -347,6 +348,38 @@ def set_tenant_limits(
         "tenant": tenant_to_api(tenant),
         "pool": pool_to_api(pool) if pool is not None else None,
     }
+
+
+@router.get("/tenants/{tenant_id}/findings-epic")
+def get_findings_epic(
+    tenant_id: str,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The tenant's wave epic (#638), or null when none is set."""
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} does not exist")
+    return {"tenant_id": tenant_id, "findings_epic": ctx.store.get_findings_epic(tenant_id)}
+
+
+@router.put("/tenants/{tenant_id}/findings-epic")
+def set_findings_epic(
+    tenant_id: str,
+    body: TenantFindingsEpicRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Set the issue a review's MINOR findings are filed on, per tenant (#638).
+
+    Read at workflow submission and copied into the gated step's signed
+    dispatch block (`DispatchOptions.findings_epic`), so a change reaches the
+    workflows submitted after it, never one already running. The number names
+    an issue in the repository each run works on; the worker posts with the
+    tenant's own git token. Null stops the filing.
+    """
+    epic = ctx.store.set_findings_epic(tenant_id, body.findings_epic)
+    ctx.metrics.admin_actions.labels(action="findings_epic").inc()
+    return {"tenant_id": tenant_id, "findings_epic": epic}
 
 
 # -- drains and provider switches ----------------------------------------

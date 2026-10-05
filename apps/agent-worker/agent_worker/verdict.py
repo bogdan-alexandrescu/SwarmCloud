@@ -14,6 +14,10 @@ the gate in `task.metadata["dispatch"]["verdict_gate"]` as
 `{"task_id": <review task>, "verdict_in": ["NOT_YET"]}`. This module reads the
 two; `lifecycle.Worker` decides what to do with them.
 
+A finding that is an object marked `"severity": "minor"` is also read out as a
+`MinorFinding`, which the gated step files on the tenant's wave epic rather
+than leaving in this file (#638, `agent_worker.findings_epic`).
+
 WHY THE GATE IS IN THE WORKER AND NOT THE SCHEDULER. The gated step is the
 one that publishes, so it has to run whatever the verdict: on NOT_YET its
 agent fixes the findings and then it publishes, on MERGE it publishes without
@@ -67,6 +71,28 @@ class VerdictGate:
     verdict_in: tuple[str, ...]
 
 
+#: The severity that sends a finding to the tenant's wave epic instead of the
+#: fix step (#638). Blockers and majors are what the fix step fixes; a string
+#: finding has no severity and is read as the convention's blocker.
+SEVERITY_MINOR = "minor"
+
+#: How many minors one verdict files, and how long a file or call site may be.
+#: Each is one comment on a public issue, posted one request at a time.
+MAX_MINORS = MAX_FINDINGS
+MAX_WHERE_CHARS = 300
+
+
+@dataclass(frozen=True)
+class MinorFinding:
+    """One finding the review marked `"severity": "minor"` (#638)."""
+
+    text: str
+    file: str = ""
+    call_site: str = ""
+    #: How the review found it, in its own words, when it said.
+    evidence: str = ""
+
+
 @dataclass(frozen=True)
 class Verdict:
     """A verdict file, read and bounded."""
@@ -74,6 +100,8 @@ class Verdict:
     verdict: str
     findings: tuple[str, ...] = field(default=())
     findings_dropped: int = 0
+    minors: tuple[MinorFinding, ...] = field(default=())
+    minors_dropped: int = 0
 
 
 def _normalise(value: Any) -> str | None:
@@ -141,6 +169,67 @@ def _finding_text(item: Any) -> str | None:
     return text
 
 
+def _one_line(value: Any, bound: int) -> str:
+    if not isinstance(value, str):
+        return ""
+    text = " ".join(value.split())
+    return text if len(text) <= bound else text[: bound - 1] + "…"
+
+
+#: What a minor says its defect is, in the order read: the `summary` shape
+#: first, then the review briefs' `problem` shape (#638).
+_MINOR_TEXT_FIELDS = ("summary", "title", "message", "problem", "what")
+
+
+def _first_text(item: dict[str, Any], names: tuple[str, ...]) -> str:
+    """The first of `names` that holds a non-blank string, "" when none does."""
+    for name in names:
+        value = item.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
+def minor_findings(items: Any) -> tuple[tuple[MinorFinding, ...], int]:
+    """The findings marked minor, bounded, and how many past the bound were left.
+
+    Only an OBJECT whose `severity` is `minor` (any case) is one, and only
+    when it says what the defect is (`summary`, `title`, `message`,
+    `problem` or `what`). A string finding, or an object with any other
+    severity or none, is the fix step's and never filed (#638).
+
+    Both shapes are read. The review steps' briefs prescribe
+    `{"severity", "file", "where", "problem", "fix"}`, which is the shape of
+    the minors #638 counted, so `where` is the call site when `call_site` is
+    absent, and the suggested `fix` trails the comment when the review gave no
+    `evidence`. Reading only `summary`/`call_site` filed nothing on the
+    verdicts that exist.
+    """
+    if not isinstance(items, list):
+        items = [items] if items not in (None, "") else []
+    minors: list[MinorFinding] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        severity = item.get("severity")
+        if not isinstance(severity, str) or severity.strip().lower() != SEVERITY_MINOR:
+            continue
+        text = _one_line(_first_text(item, _MINOR_TEXT_FIELDS), MAX_FINDING_CHARS)
+        if not text:
+            continue
+        evidence = _first_text(item, ("evidence",))
+        if not evidence:
+            fix = _first_text(item, ("fix",))
+            evidence = f"suggested fix: {fix}" if fix else ""
+        minors.append(MinorFinding(
+            text=text,
+            file=_one_line(item.get("file"), MAX_WHERE_CHARS),
+            call_site=_one_line(_first_text(item, ("call_site", "where")), MAX_WHERE_CHARS),
+            evidence=_one_line(evidence, MAX_WHERE_CHARS),
+        ))
+    return tuple(minors[:MAX_MINORS]), max(len(minors) - MAX_MINORS, 0)
+
+
 def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
     """Read a staged verdict file, or refuse it by name."""
     where = f"the verdict file {filename!r} staged from task {task_id}"
@@ -174,10 +263,13 @@ def read_verdict(path: Path, *, task_id: str, filename: str) -> Verdict:
         [raw_findings] if raw_findings not in (None, "") else []
     )
     texts = [t for t in (_finding_text(item) for item in items) if t]
+    minors, minors_dropped = minor_findings(items)
     return Verdict(
         verdict=verdict,
         findings=tuple(texts[:MAX_FINDINGS]),
         findings_dropped=max(len(texts) - MAX_FINDINGS, 0),
+        minors=minors,
+        minors_dropped=minors_dropped,
     )
 
 

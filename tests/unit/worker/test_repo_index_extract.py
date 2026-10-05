@@ -744,6 +744,15 @@ def test_the_script_has_no_dependency_outside_its_pins() -> None:
     allowed = {
         "tree_sitter", "tree_sitter_python", "tree_sitter_javascript",
         "tree_sitter_typescript", "tree_sitter_go", "tree_sitter_hcl", "__future__",
+        # The LSP pass (RI10), shipped beside the script in the image.
+        "lsp",
     }
     assert third_party <= allowed, third_party - allowed
+    # And the LSP package itself is standard library only: its servers are
+    # child processes, not Python dependencies.
+    for module in sorted((TOOL_DIR / "lsp").glob("*.py")):
+        names = set(re.findall(r"^\s*(?:import|from)\s+([a-zA-Z_][\w]*)",
+                               module.read_text(encoding="utf-8"), re.MULTILINE))
+        outside = {n for n in names if n not in sys.stdlib_module_names} - {"__future__"}
+        assert not outside, f"{module.name} imports {sorted(outside)}"
     assert shutil.which("git") is not None

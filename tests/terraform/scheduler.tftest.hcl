@@ -431,3 +431,52 @@ run "a_rollup_job_without_an_https_api_endpoint_is_refused" {
 
   expect_failures = [var.api_endpoint]
 }
+
+# #627: a cancel is published here by swarm-api and pushed to the reconciler,
+# which holds the stop permissions swarm-api deliberately does not.
+run "a_cancel_reaches_the_reconciler_and_only_swarm_api_publishes_it" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    execution_cancel_publisher_members = {
+      api = "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+    }
+  }
+
+  assert {
+    condition     = google_pubsub_topic.execution_cancel.name == "swarm-execution-cancel"
+    error_message = "the root derives the same name for swarm-api's EXECUTION_CANCEL_TOPIC; the two must agree"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.push_config[0].push_endpoint == "https://swarm-reconciler-abcdef-uc.a.run.app/stop-execution"
+    error_message = "the push must reach the route reconciler/service.py serves, @app.post(\"/stop-execution\")"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.push_config[0].oidc_token[0].service_account_email == var.tick_service_account
+    error_message = "the reconciler's only invoker is the tick identity; any other push identity is refused at Cloud Run's edge"
+  }
+
+  assert {
+    condition     = google_pubsub_subscription.execution_cancel.expiration_policy[0].ttl == ""
+    error_message = "cancels are rare; an expired subscription would put every cancel back on the 7-13 h path"
+  }
+
+  assert {
+    condition     = google_pubsub_topic.execution_cancel.labels["managed-by"] == "swarm-terraform" && google_pubsub_subscription.execution_cancel.labels["managed-by"] == "swarm-terraform"
+    error_message = "every resource carries managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition = keys(google_pubsub_topic_iam_member.execution_cancel_publishers) == ["api"] && alltrue([
+      for k, m in google_pubsub_topic_iam_member.execution_cancel_publishers :
+      m.role == "roles/pubsub.publisher" && m.member != "allUsers" && m.member != "allAuthenticatedUsers"
+    ])
+    error_message = "only swarm-api writes a cancel, so only swarm-api may publish a stop request"
+  }
+}

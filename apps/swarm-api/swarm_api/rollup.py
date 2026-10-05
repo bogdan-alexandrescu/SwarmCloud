@@ -63,6 +63,13 @@ from swarm_common.states import (
 
 log = logging.getLogger(__name__)
 
+#: `result_summary.skipped` on a step the worker skipped because a step it
+#: needed changed nothing (owner decision, 2026-10-05): `{"reason": "nothing
+#: to change", "upstream": [task ids]}`. Spelled here and in
+#: `agent_worker.expected_outputs.SKIPPED_SUMMARY_KEY`; the API image cannot
+#: import the worker's.
+SKIPPED_SUMMARY_KEY = "skipped"
+
 #: The state a reader is given when the derivation could not be completed. It is
 #: deliberately NOT a TaskState: it must be impossible to write this into
 #: Firestore, where `codec.workflow_from_dict` would reject it, and impossible
@@ -157,6 +164,10 @@ class StepReading:
     task_id: str | None
     state: TaskState | None
     absent: bool = False
+    #: The worker skipped this step: something it needed changed nothing
+    #: (`SKIPPED_SUMMARY_KEY`). Only ever true on a SUCCEEDED step, which is
+    #: what lets SKIPPED rank as a success with no TaskState of its own.
+    skipped: bool = False
 
     @property
     def unstarted(self) -> bool:
@@ -184,6 +195,10 @@ class WorkflowRollup:
     unreadable_steps: list[str] = field(default_factory=list)
     unstarted_steps: list[str] = field(default_factory=list)
     steps_read: int = 0
+    #: The steps that ended SKIPPED ("nothing to change"). Each is also
+    #: counted under SUCCEEDED in `counts`, because that is what it is in the
+    #: frozen state machine and what a "done" count reads.
+    skipped_steps: list[str] = field(default_factory=list)
 
     @property
     def terminal(self) -> bool:
@@ -198,6 +213,7 @@ class WorkflowRollup:
             "unreadable_steps": list(self.unreadable_steps),
             "unstarted_steps": list(self.unstarted_steps),
             "steps_read": self.steps_read,
+            "skipped_steps": list(self.skipped_steps),
         }
 
 
@@ -206,14 +222,18 @@ def read_steps(
     states: Mapping[str, TaskState],
     *,
     absent: Iterable[str] = (),
+    skipped: Iterable[str] = (),
 ) -> list[StepReading]:
     """Join each step to its task state.
 
     `states` maps task_id -> state for every step task that WAS read. `absent`
     names the task_ids that were read and found missing, which is how a data
-    fault is told apart from a read that never happened.
+    fault is told apart from a read that never happened. `skipped` names the
+    task_ids whose `result_summary` says the worker skipped them
+    (`skipped_task_ids`); one that did not SUCCEED is not a skip.
     """
     absent_ids = set(absent)
+    skipped_ids = set(skipped)
     readings: list[StepReading] = []
     for step in steps:
         if not step.task_id:
@@ -226,6 +246,7 @@ def read_steps(
                 task_id=step.task_id,
                 state=state,
                 absent=state is None and step.task_id in absent_ids,
+                skipped=state is TaskState.SUCCEEDED and step.task_id in skipped_ids,
             )
         )
     return readings
@@ -255,6 +276,10 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
       5. OTHERWISE -> the most advanced pending state present
          (`_PENDING_PRECEDENCE`); an unstarted step counts as QUEUED, because a
          step with no task is work this workflow has not begun.
+
+    A SKIPPED step ("nothing to change", 2026-10-05) is a SUCCEEDED task, so
+    it ranks as a success at step 4 and needs no state of its own; it is
+    named in `skipped_steps` so a reader can tell it from one that ran.
     """
     if not readings:
         return WorkflowRollup(
@@ -268,6 +293,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
     counts: dict[str, int] = {}
     unreadable: list[str] = []
     unstarted: list[str] = []
+    skipped = [r.step_id for r in readings if r.skipped]
     read = 0
     for r in readings:
         if r.unstarted:
@@ -298,6 +324,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             unreadable_steps=unreadable,
             unstarted_steps=unstarted,
             steps_read=read,
+            skipped_steps=skipped,
         )
 
     present = [r.state for r in readings if r.state is not None]
@@ -315,6 +342,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             counts=counts,
             unstarted_steps=unstarted,
             steps_read=read,
+            skipped_steps=skipped,
         )
 
     if not unstarted and present and all(s in TERMINAL_STATES for s in present):
@@ -329,6 +357,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             reason=reason,
             counts=counts,
             steps_read=read,
+            skipped_steps=skipped,
         )
 
     pending = [s for s in present if s in PENDING_STATES]
@@ -341,6 +370,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             counts=counts,
             unstarted_steps=unstarted,
             steps_read=read,
+            skipped_steps=skipped,
         )
 
     # Everything terminal except steps that were never started. The workflow has
@@ -352,6 +382,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
         counts=counts,
         unstarted_steps=unstarted,
         steps_read=read,
+        skipped_steps=skipped,
     )
 
 
@@ -360,9 +391,24 @@ def derive_for(
     states: Mapping[str, TaskState],
     *,
     absent: Iterable[str] = (),
+    skipped: Iterable[str] = (),
 ) -> WorkflowRollup:
     """`derive` over a workflow's steps. The one entry point the routes use."""
-    return derive(read_steps(workflow.steps, states, absent=absent))
+    return derive(read_steps(workflow.steps, states, absent=absent, skipped=skipped))
+
+
+def skipped_task_ids(tasks: Iterable[Any]) -> list[str]:
+    """The ids of the tasks whose `result_summary` records a skip.
+
+    Read from the task documents the caller already loaded, so a skip costs
+    no read of its own. Whether the task SUCCEEDED is `read_steps`' check.
+    """
+    out: list[str] = []
+    for task in tasks:
+        summary = getattr(task, "result_summary", None)
+        if isinstance(summary, dict) and isinstance(summary.get(SKIPPED_SUMMARY_KEY), dict):
+            out.append(task.id)
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -501,8 +547,9 @@ class WorkflowRollups:
         *,
         absent: Iterable[str] = (),
         persist: bool = True,
+        skipped: Iterable[str] = (),
     ) -> RollupResult:
-        rollup = derive_for(workflow, states, absent=absent)
+        rollup = derive_for(workflow, states, absent=absent, skipped=skipped)
         result = RollupResult(
             workflow=workflow, rollup=rollup, drift=drift_of(rollup, workflow.state)
         )
@@ -527,13 +574,17 @@ class WorkflowRollups:
         the reason come out as `step_tasks_unread` rather than accusing the data
         of a fault the read cannot establish.
         """
+        tasks = list(tasks)
         states = {t.id: t.state for t in tasks}
         absent = (
             [s.task_id for s in workflow.steps if s.task_id and s.task_id not in states]
             if complete
             else []
         )
-        return self.for_workflow(workflow, states, absent=absent, persist=persist)
+        return self.for_workflow(
+            workflow, states, absent=absent, persist=persist,
+            skipped=skipped_task_ids(tasks),
+        )
 
     # -- many workflows --------------------------------------------------
 
@@ -550,9 +601,11 @@ class WorkflowRollups:
             step_read_budget_exhausted=bool(read.unread),
         )
         results: list[RollupResult] = []
+        skipped = skipped_task_ids(read.tasks.values())
         for workflow in workflows:
             result = self.for_workflow(
-                workflow, read.states, absent=read.absent, persist=persist
+                workflow, read.states, absent=read.absent, persist=persist,
+                skipped=skipped,
             )
             result.step_tasks = {
                 step.task_id: read.tasks[step.task_id]

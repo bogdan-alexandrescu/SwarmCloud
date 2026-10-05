@@ -231,7 +231,7 @@ def test_the_account_sweep_and_the_credential_sweep_are_reported_separately(brok
         def sweep(self, pairs, keep_going=None):
             return [RefreshOutcome("eng", "anthropic", True, "refreshed")]
 
-        def sweep_accounts(self, secrets, keep_going=None):
+        def sweep_accounts(self, secrets, keep_going=None, held=()):
             raise RuntimeError("the pool is unreachable")
 
     class _Store:
@@ -272,7 +272,7 @@ def test_a_broken_account_pool_does_not_break_the_quota_sweep(broker):
         def sweep(self, pairs, keep_going=None):
             return []
 
-        def sweep_accounts(self, secrets, keep_going=None):
+        def sweep_accounts(self, secrets, keep_going=None, held=()):
             return []
 
     response = TestClient(

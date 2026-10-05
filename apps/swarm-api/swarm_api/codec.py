@@ -220,6 +220,9 @@ def dispatch_of(task: Task) -> dict[str, Any]:
         out["builds_on"] = block["builds_on"]
     if isinstance(block.get("verdict_gate"), dict):
         out["verdict_gate"] = dict(block["verdict_gate"])
+    # The step's empty-diff permission (2026-10-05), only when it was given.
+    if block.get("allow_empty_diff") is True:
+        out["allow_empty_diff"] = True
     return out
 
 

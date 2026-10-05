@@ -43,6 +43,75 @@ FROM ${UV_IMAGE} AS uvbin
 FROM ${NODE_IMAGE} AS nodebin
 
 # ---------------------------------------------------------------------------
+# languageservers: the Go toolchain, gopls and terraform-ls for the
+# repository index's LSP pass (docs/repo-index.md §3.5, lane RI10). The two
+# npm servers (pyright, typescript-language-server) are installed in the
+# runtime stage from images/agent-runtime-base/repo-index/lsp/package-lock.json.
+# ---------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS languageservers
+
+# Go 1.27.1 (2026-10-05, the newest stable on https://go.dev/dl/?mode=json,
+# whose sha256 for go1.27.1.linux-amd64.tar.gz this is). gopls needs the
+# toolchain at run time, not only to build: it loads packages through
+# `go list`, so the runtime stage carries /usr/local/go too.
+ARG GO_VERSION=1.27.1
+ARG GO_SHA256=63d339f0da5ab53635a56f2490a7984dfe12dfcff22ad749f63edaf590168445
+# gopls 0.23.0 (2026-07-07, proxy.golang.org's @latest on 2026-10-05) and
+# terraform-ls 0.39.0 (checkpoint-api.hashicorp.com's current_version on
+# 2026-10-05) are both COMPILED HERE from their module source, not taken as
+# the vendor's build. Release 37289476429 (2026-10-05) refused this image:
+# trivy found HIGH CVEs in both binaries, all in what they were linked
+# against -- golang.org/x/mod v0.37/v0.38 (CVE-2026-56864, -56865),
+# x/text v0.38 (CVE-2026-56852), x/crypto v0.54 (CVE-2026-56854), and, in
+# HashiCorp's terraform-ls zip, the go1.25.12 standard library (seven CVEs).
+# Owner decision 2026-10-05: rebuild from source rather than ignore them.
+# So each server's module is fetched through the module proxy (sum.golang.org
+# verifies every module's bytes), the flagged golang.org/x modules are raised
+# to the fixed versions below with `go get` (which verifies those too), and
+# the result is linked with the Go above, which also clears the stdlib CVEs.
+# The build then reads each binary's own module list (`go version -m`) and
+# fails if a bump did not land, so a pin that stops applying is loud.
+# Raising a pin: take the "fixed version" trivy prints, and check the
+# module's go.mod `go` line is not newer than GO_VERSION (GOTOOLCHAIN=local).
+ARG GOPLS_VERSION=0.23.0
+ARG TERRAFORM_LS_VERSION=0.39.0
+ARG X_CRYPTO_VERSION=0.55.0
+ARG X_MOD_VERSION=0.40.0
+ARG X_TEXT_VERSION=0.39.0
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y ca-certificates curl \
+ && rm -rf /var/lib/apt/lists/*
+RUN curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+ && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
+ && tar -C /usr/local -xzf /tmp/go.tar.gz \
+ && rm -rf /tmp/go.tar.gz /usr/local/go/test
+# build_server MODULE VERSION OUT MODULE@FIX...: copy the module's verified
+# source out of the read-only module cache, raise the named dependencies,
+# build, and assert each raised version is what the binary was linked with.
+RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/gocache \
+      GOTOOLCHAIN=local GOTELEMETRY=off CGO_ENABLED=0 GOFLAGS=-trimpath; \
+    build_server() { \
+      local module="$1" version="$2" out="$3"; shift 3; \
+      local dir; dir="$(go mod download -json "${module}@v${version}" \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["Dir"])')" || return 1; \
+      rm -rf /tmp/src && cp -r "${dir}" /tmp/src && chmod -R u+w /tmp/src || return 1; \
+      (cd /tmp/src && go get "$@" && go build -o "${out}" .) || return 1; \
+      local fix; for fix in "$@"; do \
+        go version -m "${out}" | grep -qE "[[:space:]]${fix%@*}[[:space:]]+${fix#*@}([[:space:]]|$)" \
+          || { echo "${out}: ${fix} did not land" >&2; return 1; }; \
+      done; \
+      chmod 0755 "${out}"; \
+    }; \
+    build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
+      "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
+ && build_server github.com/hashicorp/terraform-ls "${TERRAFORM_LS_VERSION}" /usr/local/bin/terraform-ls \
+      "golang.org/x/crypto@v${X_CRYPTO_VERSION}" "golang.org/x/mod@v${X_MOD_VERSION}" \
+ && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
+ && /usr/local/bin/gopls version && /usr/local/bin/terraform-ls version
+
+# ---------------------------------------------------------------------------
 # builder: compile wheels, produce /opt/venv
 # ---------------------------------------------------------------------------
 FROM ${PYTHON_IMAGE} AS builder
@@ -674,6 +743,38 @@ RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
       > /usr/local/bin/swarm-repo-graph \
  && chmod 0755 /usr/local/bin/swarm-repo-graph
 
+# The language servers of the index's LSP pass (docs/repo-index.md §3.5,
+# lane RI10): pyright, tsserver (through typescript-language-server), gopls
+# and terraform-ls, each linked into /opt/repo-index/servers/bin, the ONLY
+# place lsp/servers.py resolves a server from -- never PATH, which an agent
+# can change. The lsp/ package is the driver swarm-repo-index imports.
+#
+# The npm servers come from lsp/package-lock.json with `npm ci`: exact
+# versions and each tarball's sha512 integrity, nothing resolved at build
+# time, and --ignore-scripts so no package runs code while installing. The
+# three pins: pyright 1.1.414, typescript-language-server 6.0.1 (it needs
+# Node >= 22.22.2; NODE_IMAGE is Node 24), and typescript 6.0.3 -- NOT 7.x,
+# whose package is the native compiler and has no tsserver for
+# typescript-language-server to start. The cache goes to /tmp, not the agent
+# user's ~/.npm, and is removed in the same layer.
+#
+# /usr/local/go is the toolchain gopls runs `go list` with; `go` is linked
+# into the servers' bin directory only, not onto the agent's PATH.
+COPY --from=languageservers /usr/local/go /usr/local/go
+COPY --from=languageservers /usr/local/bin/gopls /usr/local/bin/terraform-ls /opt/repo-index/servers/bin/
+COPY images/agent-runtime-base/repo-index/lsp/ /opt/repo-index/lsp/
+RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /opt/repo-index/servers/ \
+ && cd /opt/repo-index/servers \
+ && NPM_CONFIG_CACHE=/tmp/npm-cache npm ci --ignore-scripts --omit=optional --no-audit --no-fund \
+ && rm -rf /tmp/npm-cache \
+ && ln -s ../node_modules/.bin/pyright-langserver /opt/repo-index/servers/bin/pyright-langserver \
+ && ln -s ../node_modules/.bin/typescript-language-server /opt/repo-index/servers/bin/typescript-language-server \
+ && ln -s /usr/local/go/bin/go /opt/repo-index/servers/bin/go \
+ && chmod -R a+rX,go-w /opt/repo-index/lsp /opt/repo-index/servers \
+ && for s in pyright-langserver typescript-language-server gopls terraform-ls go; do \
+      test -x "/opt/repo-index/servers/bin/$s" || { echo "language server missing: $s" >&2; exit 1; }; \
+    done
+
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
@@ -715,6 +816,9 @@ RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.life
 # file with each, as the agent user, or the indexer step would find out
 # instead of the build.
 RUN swarm-repo-index --self-test
+# And each of the four language servers must start, as the agent user, and
+# resolve one call across two files -- not merely start.
+RUN swarm-repo-index --lsp-self-test
 # And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
 RUN swarm-repo-graph --self-test
 

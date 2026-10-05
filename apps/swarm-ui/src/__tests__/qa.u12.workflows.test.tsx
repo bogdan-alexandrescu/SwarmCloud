@@ -41,7 +41,6 @@ const { usd } = await import('../measure')
 const { workflowStartText } = await import('../types')
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const WF = 'wf_8fa28bbc798e4b8a8e7e'
 const T0 = Date.parse('2026-10-04T09:00:00.000Z')
 const iso = (ms: number) => new Date(T0 + ms).toISOString()
@@ -114,8 +113,8 @@ describe('R8: the page joins its own steps\' tasks', () => {
 
   it('draws no step of a finished workflow as unread', async () => {
     const { container } = render(<WorkflowsScreen view={`wf=${WF}`} />)
-    await waitFor(() => expect(container.querySelector('[data-step="ship"], .wf-node')).not.toBeNull(), WAIT)
-    await waitFor(() => expect(container.textContent).toMatch(/succeeded/i), WAIT)
+    await waitFor(() => expect(container.querySelector('[data-step="ship"], .wf-node')).not.toBeNull())
+    await waitFor(() => expect(container.textContent).toMatch(/succeeded/i))
     expect(container.textContent).not.toMatch(/state unread/)
     expect(container.textContent).not.toMatch(/no task joined/)
   })
@@ -163,7 +162,7 @@ describe('R10: one money format, and Cost and Owner hold what they show', () => 
       const el = document.querySelector<HTMLTableElement>('.wfl .wfl-table')
       expect(el!.querySelectorAll('tbody tr.wfl-row:not(.is-skel)').length).toBeGreaterThan(0)
       return el!
-    }, WAIT)
+    })
     const { cols } = fixedColumns(t, 1440 - 84 - 236 - 64, WIDE)
     const row = t.querySelector('tbody tr.wfl-row')!
     const room = (col: string) => {
