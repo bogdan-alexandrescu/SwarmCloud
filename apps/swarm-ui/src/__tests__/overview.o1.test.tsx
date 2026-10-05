@@ -318,7 +318,7 @@ describe('O1: Running now', () => {
     expect(text(row)).toContain('claude-code')
   })
 
-  it('draws Cost so far as a dash with its reason, because no task route serves it', async () => {
+  it('draws Cost so far as a dash with its reason for a row served without attempt totals', async () => {
     const el = await mount()
     const cell = el.querySelector('#ov-running tbody tr td:last-child')!
     expect(text(cell)).toBe('—')
