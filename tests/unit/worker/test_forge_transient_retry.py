@@ -285,7 +285,7 @@ class _RaisingOpener:
 def test_an_issue_fetch_that_cannot_reach_the_forge_is_transient_not_an_unavailable_input(
     monkeypatch, exc
 ):
-    monkeypatch.setattr(issue_mod, "_OPENER", _RaisingOpener(exc))
+    monkeypatch.setattr(forge_mod, "_NO_REDIRECT_OPENER", _RaisingOpener(exc))
     with pytest.raises(forge_mod.ForgeUnavailable) as raised:
         issue_mod.fetch_issue(repository_url=REPO, number=72, token=None)
     assert not isinstance(raised.value, InputUnavailable)
@@ -314,7 +314,7 @@ class _AnsweringOpener:
 def test_a_success_whose_body_is_not_json_is_transient_not_an_unavailable_input(monkeypatch):
     """A proxy's page or a body cut short is not GitHub saying the issue is
     missing: retried, then the attempt fails retryably."""
-    monkeypatch.setattr(issue_mod, "_OPENER", _AnsweringOpener(b"<html>Bad gateway</html>"))
+    monkeypatch.setattr(forge_mod, "_NO_REDIRECT_OPENER", _AnsweringOpener(b"<html>Bad gateway</html>"))
     with pytest.raises(issue_mod.IssueUnreachable) as raised:
         issue_mod.fetch_issue(repository_url=REPO, number=72, token=None)
     assert not isinstance(raised.value, InputUnavailable)
@@ -442,22 +442,24 @@ def test_stage_issue_ends_transient_when_the_forge_stays_down(tmp_path, monkeypa
 
 
 def test_the_tenant_client_turns_a_read_timeout_into_an_outage(monkeypatch):
-    def timed_out(req, timeout=None):  # noqa: ANN001
-        raise TimeoutError("The read operation timed out")
+    class TimedOut:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise TimeoutError("The read operation timed out")
 
-    monkeypatch.setattr(urllib.request, "urlopen", timed_out)
+    monkeypatch.setattr(forge_mod, "_NO_REDIRECT_OPENER", TimedOut())
     with pytest.raises(forge_mod.ForgeUnavailable):
         forge_mod.probe_repository(url=REPO, token=fresh_token())
 
 
 def test_the_tenant_client_reads_a_secondary_rate_limit_as_an_outage(monkeypatch):
-    def limited(req, timeout=None):  # noqa: ANN001
-        raise urllib.error.HTTPError(
-            req.full_url, 403, "Forbidden", {"Retry-After": "30"},
-            io.BytesIO(json.dumps({"message": SECONDARY}).encode()),
-        )
+    class Limited:
+        def open(self, req, timeout=None):  # noqa: ANN001
+            raise urllib.error.HTTPError(
+                req.full_url, 403, "Forbidden", {"Retry-After": "30"},
+                io.BytesIO(json.dumps({"message": SECONDARY}).encode()),
+            )
 
-    monkeypatch.setattr(urllib.request, "urlopen", limited)
+    monkeypatch.setattr(forge_mod, "_NO_REDIRECT_OPENER", Limited())
     with pytest.raises(forge_mod.ForgeUnavailable) as raised:
         forge_mod.probe_repository(url=REPO, token=fresh_token())
     assert raised.value.retry_after_seconds == 30
