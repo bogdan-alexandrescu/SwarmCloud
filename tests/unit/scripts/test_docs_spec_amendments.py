@@ -21,6 +21,7 @@ fails here rather than leaving the spec quietly wrong again.
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
@@ -142,6 +143,30 @@ def _cited_line(path: str, line: int) -> str:
     return "\n".join(lines[lo : line + _CITE_WINDOW])
 
 
+def _cited_symbol(path: str, qualname: str) -> str:
+    """The source of the function or class `qualname` (dotted, e.g. `Worker._lease_account`) in `path`.
+
+    #647: a line number in a 10,000-line module moves whenever a lane edits
+    above it, so a large Python file is cited as `path::qualname` instead and
+    the cited call must sit inside that symbol's body. A call that moves out
+    of the function, or a function that is renamed, still fails here.
+    """
+    source = (REPO / path).read_text(encoding="utf-8")
+    scope: ast.AST = ast.parse(source, filename=path)
+    for part in qualname.split("."):
+        scope = next(
+            (
+                node
+                for node in ast.iter_child_nodes(scope)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+                and node.name == part
+            ),
+            None,
+        )
+        assert scope is not None, f"{path} has no {qualname} (no {part!r})"
+    return ast.get_source_segment(source, scope)
+
+
 def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     """§2.2, §2.6.3 and §3 describe root + gVisor, an init container and a
     sidecar: none of it runs. Each carries a dated note saying what does, and
@@ -149,22 +174,31 @@ def test_build_prompt_marks_the_unbuilt_root_gvisor_shape():
     text = _text(BUILD_PROMPT)
     isolation = _section(text, "### 2.2 Isolation: root inside the pod, gVisor underneath")
     assert "Amended 2026-10-01" in isolation
-    assert "`images/agent-runtime-base/Dockerfile:658`" in isolation
+    assert "`images/agent-runtime-base/Dockerfile:778`" in isolation
     assert "`kubernetes/render.py:390`" in isolation
-    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 658)
+    assert "USER swarm:swarm" in _cited_line("images/agent-runtime-base/Dockerfile", 778)
     assert "--runtime gvisor" in _cited_line("kubernetes/render.py", 390)
     assert "NOT the" in _cited_line("kubernetes/render.py", 390)
 
     dispatch = _section(text, "#### 2.6.3 Dispatch — the pod starts already logged in")
     assert "Amended 2026-10-01" in dispatch
     assert "no init container" in dispatch
-    assert "assign(" in _cited_line("apps/agent-worker/agent_worker/lifecycle.py", 4923)
-    assert "credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/lifecycle.py", 5293
+    lifecycle = "apps/agent-worker/agent_worker/lifecycle.py"
+    accountlease = "apps/agent-worker/agent_worker/accountlease.py"
+    assert f"`{lifecycle}::Worker._lease_account`" in dispatch
+    assert "self._account_broker.assign(" in _cited_symbol(lifecycle, "Worker._lease_account")
+    assert f"`{lifecycle}::Worker._account_credential_env`" in dispatch
+    assert "credential_env_from_account(" in _cited_symbol(lifecycle, "Worker._account_credential_env")
+    assert f"`{accountlease}::credential_env_from_account`" in dispatch
+    assert _cited_symbol(accountlease, "credential_env_from_account").startswith(
+        "def credential_env_from_account("
     )
-    assert "def credential_env_from_account(" in _cited_line(
-        "apps/agent-worker/agent_worker/accountlease.py", 650
-    )
+
+    built = _section(text, "## 5. What gets built")
+    assert f"`{lifecycle}::Worker._run_child_supervised`" in built
+    assert 'self._checkpoint("periodic")' in _cited_symbol(lifecycle, "Worker._run_child_supervised")
+    # #647: no line number into lifecycle.py is left for a lane to shift.
+    assert not re.search(r"lifecycle\.py:\d", text)
 
     architecture = _section(text, "## 3. Architecture")
     assert "Amended 2026-10-01" in architecture
@@ -261,3 +295,14 @@ def test_every_cited_line_exists(doc: Path):
         assert target.is_file(), f"{doc.name} cites {path}, which does not exist"
         lines = target.read_text(encoding="utf-8").count("\n") + 1
         assert int(line) <= lines, f"{doc.name} cites {path}:{line}, past its end ({lines})"
+
+
+_SYMBOL_CITE = re.compile(r"`((?:apps|kubernetes|scripts|tests)/[\w./-]+\.py)::([\w.]+)`")
+
+
+@pytest.mark.parametrize("doc", AMENDED, ids=lambda p: p.name)
+def test_every_cited_symbol_exists(doc: Path):
+    """Every `path::qualname` an amended document cites names a function or class that is there."""
+    for path, qualname in _SYMBOL_CITE.findall(_text(doc)):
+        assert (REPO / path).is_file(), f"{doc.name} cites {path}, which does not exist"
+        _cited_symbol(path, qualname)
