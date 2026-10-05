@@ -42,6 +42,17 @@ graph that is `lsp` in the files the server reached and `ast` in the rest
 with nothing to say which. The run still succeeds; a timeout is never a
 failed index, it is a less certain one, and says so.
 
+TWO PHASES. Every site's definition is asked first, across all files; the
+workspace queries (call hierarchy, references) run after. A workspace query
+searches the whole repository -- pyright's incomingCalls took up to 60 s a
+symbol on this repository on 2026-10-05, against milliseconds a definition
+-- so a timed-out one is a slow answer and never counts toward
+`max_consecutive_timeouts`, and the budget running out in phase 2 ends
+phase 2 only: the language stays `ok`, keeps every definition edge, and its
+reason says how many symbols were asked ("call hierarchy and references cut
+at the N-second budget: a of b symbols asked"). The budget running out in
+phase 1 is `timed_out` as above.
+
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
 caches, the locale and the spec's own variables -- and none of the
@@ -286,7 +297,7 @@ class _ServerRun:
         self.server_version: str | None = None
         self.edges: list[LspEdge] = []
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
-                       "errors": 0, "edges": 0}
+                       "errors": 0, "edges": 0, "symbols_skipped": 0}
         self._warming = True
         self._consecutive = 0
         self._lines: dict[str, list[str] | None] = {}
@@ -416,21 +427,54 @@ class _ServerRun:
         self._hierarchy = self._hierarchy and bool(capabilities.get("callHierarchyProvider"))
         self._references = self._references and bool(capabilities.get("referencesProvider"))
         client.notify("initialized", {})
+        paths = []
         for path in sorted(self.files):
             if self.files[path] not in self.languages:
                 continue
             language_id = self.spec.language_ids.get(posixpath.splitext(path)[1])
-            if language_id is None:
-                continue
-            self._file(client, path, language_id)
+            if language_id is not None:
+                paths.append((path, language_id))
+        # Phase 1, every site's definition: the per-site answer §3.5 is for.
+        for path, language_id in paths:
+            sites = sorted(self.sites_by_path.get(path, []),
+                           key=lambda s: (s.line, s.name, s.caller, s.kind))
+            if sites:
+                self._open(client, path, language_id,
+                           lambda document, lines: [self._definition(client, document, lines, site)
+                                                    for site in sites])
+        # Phase 2, the workspace queries: callers the syntax could not see.
+        # Each one searches the whole workspace (pyright took up to 60 s a
+        # symbol on this repository, against milliseconds a definition), so
+        # they run after every definition, a timeout here is a slow answer
+        # rather than a hung server, and the budget running out here cuts
+        # this phase only: phase 1's edges are complete and are kept, and
+        # the row's reason says how many symbols were asked.
+        todo = []
+        for path, language_id in paths:
+            own = self.symbols_by_path.get(path, [])
+            symbols = [s for s in own if self._hierarchy and s["kind"] in CALLABLE_KINDS and s["exported"]]
+            symbols += [s for s in own if self._references and s["kind"] in self.spec.reference_kinds]
+            if symbols:
+                todo.append((path, language_id, symbols))
+        total = sum(len(symbols) for _, _, symbols in todo)
+        asked = 0
+        try:
+            for path, language_id, symbols in todo:
+                def workspace(document: dict, lines: list[str], symbols: list = symbols) -> None:
+                    nonlocal asked
+                    for symbol in symbols:
+                        if self._hierarchy and symbol["kind"] in CALLABLE_KINDS:
+                            self._incoming(client, document, lines, symbol)
+                        else:
+                            self._referenced(client, document, lines, symbol)
+                        asked += 1
+                self._open(client, path, language_id, workspace)
+        except BudgetExceeded:
+            self.counts["symbols_skipped"] = total - asked
+            self.reason = (f"call hierarchy and references cut at the {self.budget:g}-second budget: "
+                           f"{asked} of {total} symbols asked")
 
-    def _file(self, client: LspClient, path: str, language_id: str) -> None:
-        sites = sorted(self.sites_by_path.get(path, []), key=lambda s: (s.line, s.name, s.caller, s.kind))
-        own = self.symbols_by_path.get(path, [])
-        callables = [s for s in own if self._hierarchy and s["kind"] in CALLABLE_KINDS and s["exported"]]
-        referenced = [s for s in own if self._references and s["kind"] in self.spec.reference_kinds]
-        if not (sites or callables or referenced):
-            return
+    def _open(self, client: LspClient, path: str, language_id: str, queries: Any) -> None:
         lines = self._read(path)
         if lines is None:
             return
@@ -438,12 +482,7 @@ class _ServerRun:
         client.notify("textDocument/didOpen", {"textDocument": {
             "uri": uri, "languageId": language_id, "version": 1, "text": "\n".join(lines)}})
         document = {"uri": uri}
-        for site in sites:
-            self._definition(client, document, lines, site)
-        for symbol in callables:
-            self._incoming(client, document, lines, symbol)
-        for symbol in referenced:
-            self._referenced(client, document, lines, symbol)
+        queries(document, lines)
         client.notify("textDocument/didClose", {"textDocument": document})
 
     # --- the three queries -------------------------------------------------
@@ -477,10 +516,10 @@ class _ServerRun:
         if position is None:
             return
         items = self._ask(client, "textDocument/prepareCallHierarchy",
-                          {"textDocument": document, "position": position})
+                          {"textDocument": document, "position": position}, workspace=True)
         if not isinstance(items, list) or not items or not isinstance(items[0], dict):
             return
-        calls = self._ask(client, "callHierarchy/incomingCalls", {"item": items[0]})
+        calls = self._ask(client, "callHierarchy/incomingCalls", {"item": items[0]}, workspace=True)
         if not isinstance(calls, list):
             return
         for call in calls:
@@ -504,7 +543,7 @@ class _ServerRun:
             return
         result = self._ask(client, "textDocument/references", {
             "textDocument": document, "position": position,
-            "context": {"includeDeclaration": False}})
+            "context": {"includeDeclaration": False}}, workspace=True)
         for uri, start in _locations(result):
             path = self._relative(uri)
             if path is None:
@@ -525,7 +564,8 @@ class _ServerRun:
             return self.budget
         return self.options.request_timeout_seconds
 
-    def _ask(self, client: LspClient, method: str, params: dict) -> Any:
+    def _ask(self, client: LspClient, method: str, params: dict, workspace: bool = False) -> Any:
+        """One request. A timed-out `workspace` query never counts as hung."""
         timeout = self._timeout()
         self._warming = False
         self.counts["requests"] += 1
@@ -533,6 +573,8 @@ class _ServerRun:
             result = client.request(method, params, timeout=timeout)
         except RequestTimeout:
             self.counts["request_timeouts"] += 1
+            if workspace:
+                return None
             self._consecutive += 1
             if self._consecutive >= self.options.max_consecutive_timeouts:
                 raise _Hung(f"{self.spec.name} stopped answering: {self._consecutive} consecutive requests "
