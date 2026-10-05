@@ -186,11 +186,11 @@ def test_closes_keyword_references_are_closed_with_a_comment_naming_the_pr(run_c
 def test_the_graphql_query_asks_for_this_pull_requests_closing_references(run_close):
     proc, _closed, calls, _comments, _summary = run_close(_answer([]))
     assert proc.returncode == 0, proc.stderr
-    graphql = [line for line in calls.splitlines() if line.startswith("api graphql")]
-    assert len(graphql) == 1, calls
-    assert "closingIssuesReferences" in graphql[0]
-    assert "owner=bogdan-alexandrescu" in graphql[0] and "name=SwarmCloud" in graphql[0], graphql[0]
-    assert "number=4242" in graphql[0], graphql[0]
+    # The query spans lines, so the one call is the whole log here.
+    assert calls.count("api graphql") == 1 and calls.startswith("api graphql"), calls
+    assert "closingIssuesReferences" in calls
+    assert "-f owner=bogdan-alexandrescu" in calls and "-f name=SwarmCloud" in calls, calls
+    assert "-F number=4242" in calls, calls
 
 
 def test_a_part_of_reference_is_never_closed(run_close):
