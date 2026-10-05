@@ -35,10 +35,9 @@ from typing import Any, Callable
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import PENDING_STATES, BlockedReason, EventType, ParkReason, TaskState
+from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
 
 from . import children as children_mod
-from .codec import POOL_LIMIT_UNSET, hard_limit_known
 from .credentials import AccountPool, CredentialSource, credential_for
 from .dispatch import BackendRouter, DispatchError
 from .fairness import AgingConfig, round_robin_order
@@ -289,7 +288,6 @@ class Scheduler:
         # the next drain, so a sibling admitted in between starts, holds
         # capacity and runs to completion (docs/workflows.md says so).
         self._workflow_verdicts: dict[tuple[str, str], FailedWorkflow | None] = {}
-        self._unset_limit_pools: frozenset[str] | None = None
         # Where each paged park sweep resumes (`_parked_window`). Kept across
         # drains on purpose: that is what moves the window.
         self._park_cursors: dict[ParkReason, str | None] = {}
@@ -330,7 +328,6 @@ class Scheduler:
         self._tenant_cache: dict[str, Tenant | None] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
-        self._unset_limit_pools = None
         self._swept_workflows = set()
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
@@ -577,7 +574,7 @@ class Scheduler:
                 task, units=units, backend=backend.value, config=self._admission
             )
         except AdmissionDenied as denied:
-            reasons = self._name_unset_limits(denied.reasons)
+            reasons = denied.reasons
             recorded = self._store.record_blockers(task, reasons)
             if not recorded.applied:
                 # A `not_ready` denial: another scheduler admitted it first.
@@ -757,42 +754,6 @@ class Scheduler:
         self._metrics.stale_writes.labels(
             write=outcome.write, reason=outcome.reason or "unknown"
         ).inc()
-
-    def _name_unset_limits(self, reasons: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Admission's blockers, with a ceiling nobody set named as that (#374).
-
-        The frozen admission transaction reads a pool document with no
-        `hard_limit` as limit 0 and refuses with the pool's ordinary reason --
-        TENANT_LIMIT at 0, which says an operator set the pool to zero. Nobody
-        did. Refusing is still right (nothing says how much may run there), so
-        the refusal stands; only its record changes: `POOL_LIMIT_UNSET`, limit
-        null. A pause stays a pause, since it refuses at any ceiling.
-
-        Which pools have no limit is read once per drain, and only once a
-        denial needs it. A blocker is renamed only when admission reported it
-        at 0, which a stand-in 0 always is: a limit written during the drain
-        and actually full is reported at its own positive limit, untouched.
-        """
-        if not any(isinstance(b, dict) and b.get("pool") for b in reasons):
-            return reasons
-        if self._unset_limit_pools is None:
-            self._unset_limit_pools = frozenset(
-                name for name, pool in self._store.pools().items() if not hard_limit_known(pool)
-            )
-        unset = self._unset_limit_pools
-        if not unset:
-            return reasons
-        named: list[dict[str, Any]] = []
-        for blocker in reasons:
-            if (
-                isinstance(blocker, dict)
-                and blocker.get("pool") in unset
-                and blocker.get("reason") != BlockedReason.MANUAL_PAUSE.value
-                and blocker.get("limit") == 0
-            ):
-                blocker = {**blocker, "reason": POOL_LIMIT_UNSET, "limit": None}
-            named.append(blocker)
-        return named
 
     def _park(
         self,

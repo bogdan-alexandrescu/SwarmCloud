@@ -72,6 +72,7 @@ NEEDS_ACTION: frozenset[BlockedReason] = frozenset(
         BlockedReason.DEPENDENCY,         # an upstream step has to finish or be fixed
         BlockedReason.BUDGET_LIMIT,       # raise the budget
         BlockedReason.QUOTA_EXHAUSTED,    # register a key, or buy quota
+        BlockedReason.POOL_LIMIT_UNSET,   # set the pool's limit (contract request 38)
     }
 )
 
@@ -158,6 +159,10 @@ def _ceiling(pools: dict[str, SlotPool], required: Sequence[str], units: int) ->
     limits = [pools[name].effective_limit for name in required if name in pools]
     if not limits:
         return None
+    # A pool with no limit set (None, contract request 38) refuses at every n,
+    # so nothing fits through it: a bound of 0, never "unbounded".
+    if any(limit is None for limit in limits):
+        return 0
     return min(limits) // max(1, units)
 
 

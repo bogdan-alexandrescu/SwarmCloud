@@ -160,6 +160,10 @@ class BlockedReason(str, Enum):
     DEPENDENCY = "DEPENDENCY"
     SCHEDULED_RETRY = "SCHEDULED_RETRY"
     MANUAL_PAUSE = "MANUAL_PAUSE"
+    #: The pool's document carries no `hard_limit`: nobody set its ceiling, so
+    #: admission refuses through it (contract request 38, #374). Not a limit of
+    #: 0, which says an operator chose zero, and never read as unlimited.
+    POOL_LIMIT_UNSET = "POOL_LIMIT_UNSET"
 
 
 class EventType(str, Enum):
