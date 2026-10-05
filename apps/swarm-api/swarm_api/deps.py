@@ -49,7 +49,7 @@ from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
 from .settings import ApiSettings
 from .store import Store
-from .waker import NullWaker, PubSubWaker, SchedulerWaker
+from .waker import SchedulerWaker, waker_for
 
 #: Sentinel for "the caller did not pass this", kept distinct from None because
 #: None is a real value for `objects` -- it is how a deployment says it has no
@@ -171,8 +171,7 @@ def build_context(
         ttl_seconds=settings.group_cache_ttl_seconds,
     )
     credentials = credentials or SecretManagerCredentials(settings.project_id)
-    waker = waker or (PubSubWaker(settings.dispatch_topic)
-                      if settings.dispatch_topic else NullWaker())
+    waker = waker or waker_for(settings)
     # OFF unless an audience is pinned. A verifier that accepts an assertion
     # without checking which backend minted it would accept one issued to any
     # IAP-protected resource anywhere, so "not configured" must mean "not used"

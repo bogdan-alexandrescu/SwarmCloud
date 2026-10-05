@@ -208,6 +208,24 @@ variable "publisher_members" {
   default     = {}
 }
 
+variable "worker_publisher_members" {
+  description = <<-EOT
+    The identities tasks run as -- each tenant's worker account and its #295
+    per-profile accounts -- allowed to publish a wake message, keyed by a name
+    known at plan time ("worker:<tenant>", "action:<tenant>:<profile>").
+
+    The worker publishes `task_finished` once it has ended its task, so the
+    scheduler releases that task's dependants at once instead of on the next
+    safety tick (#636; agent_worker/finishwake.py). A wake is a doorbell: it
+    carries ids, the scheduler re-reads everything it acts on, and these
+    accounts can already write task documents directly, which is more than a
+    wake can do. Kept apart from `publisher_members` so the platform services
+    and the task identities stay separately visible in a plan.
+  EOT
+  type        = map(string)
+  default     = {}
+}
+
 variable "safety_tick_schedule" {
   description = <<-EOT
     The one-minute safety tick. Pub/Sub is the fast path; this exists so a

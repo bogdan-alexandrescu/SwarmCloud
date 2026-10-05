@@ -103,6 +103,7 @@ from . import hardening, startup
 from .config import WorkerConfig
 from .control import BrokerQuotaReporter, ControlPlane
 from .errors import ConfigError, ExitCode
+from .finishwake import PubSubFinishAnnouncer
 from .lifecycle import Worker, WorkerDeps, _execution_name
 from .logs import build_logger
 from .metrics import build_metrics_exporter
@@ -189,6 +190,7 @@ def build_worker(
         quota_reporter=BrokerQuotaReporter.for_broker(
             config.quota_broker_url, config.quota_broker_audience
         ),
+        finish_announcer=PubSubFinishAnnouncer.for_topic(config.project_id, config.wake_topic),
     )
     if phases is not None:
         phases.rebind(logger)

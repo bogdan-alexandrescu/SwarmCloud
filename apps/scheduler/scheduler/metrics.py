@@ -26,6 +26,15 @@ class SchedulerMetrics:
             registry=self.registry,
             buckets=(0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60),
         )
+        # Kept apart from `runs` so the drain's stop reasons, which dashboards
+        # already read, do not change meaning when finish events arrive (#636).
+        self.finish_events = Counter(
+            "swarm_scheduler_finish_events_total",
+            "task_finished wakes handled by the event path, by outcome: "
+            "task_finished (handled), not_terminal (no-op), dispatch_paused.",
+            ["outcome"],
+            registry=self.registry,
+        )
         self.leased = Counter(
             "swarm_scheduler_leases_total",
             "Leases acquired, by tenant and runner profile.",
