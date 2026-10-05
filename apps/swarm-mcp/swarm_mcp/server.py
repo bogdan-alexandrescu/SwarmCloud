@@ -1348,7 +1348,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Everything wrong right now, worst first: paused dispatch, accounts "
             "needing re-auth, stale quota readings, exhausted windows, full or "
-            "paused pools, parked and dead-lettered tasks. A subsystem that "
+            "paused pools, leases held past their TTL, parked and dead-lettered "
+            "tasks. A subsystem that "
             "could not be READ is itself reported -- silence about one is how "
             "an operator concludes it is fine."
         ),
