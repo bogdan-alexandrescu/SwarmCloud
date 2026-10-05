@@ -5,11 +5,13 @@ slot names), §4.1 (registration by the command line) and the R2 resolution
 order the operator picked on 2026-10-05 (docs/web-ui/mockups/PICKS.md).
 
 A RECORD DESCRIBES ONE SECRET MANAGER SLOT AND NEVER HOLDS A VALUE. There is
-no field for one, no route that accepts one (Git tokens B: no console paste
-box) and nothing here reads Secret Manager. A value enters only through
-`scripts/create-secrets.sh --stdin` (CLAUDE.md, owner rule 2026-09-25), and
-`store_command` is the exact line for a slot. `last4` is served when an
-earlier rotation recorded it and is never derived here.
+no field for one and no route that accepts one (Git tokens B: no console
+paste box). A value enters only through `scripts/create-secrets.sh --stdin`
+(CLAUDE.md, owner rule 2026-09-25), and `store_command` is the exact line
+for a slot. The one read of a value is the probe's (lane GT2a, §5 below):
+it holds the value in a local for one probe, registers it with the
+redaction filter first, and keeps `last4` -- the only part of a value ever
+stored, recorded from memory at registration or rotation (§1).
 
 THREE SCOPES, EACH NAMED THROUGH THE FROZEN `Tenant.secret_name`:
 
@@ -95,9 +97,10 @@ class TokenState(str, Enum):
     ACTIVE = "active"
     EXPIRED = "expired"
     REVOKED = "revoked"
-    #: Registered and not yet probed. The resolver USES it: refusing on "not
-    #: measured" would refuse every slot until lane GT2's probe exists, the
-    #: same reason §3.2 uses a capability the probe calls `unknown`.
+    #: Registered and not yet completely probed (no value stored yet, or the
+    #: forge did not answer). The resolver USES it: refusing on "not measured"
+    #: would refuse a slot for a forge outage, the same reason §3.2 uses a
+    #: capability the probe calls `unknown`.
     UNVERIFIED = "unverified"
 
 
