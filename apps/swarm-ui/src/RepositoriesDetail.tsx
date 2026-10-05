@@ -565,7 +565,7 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
   const policy = pol.inherited_from_tenant === true ? 'inherit' : pol.policy
   return (
     <>
-      <p className="ur-hint ur-locked" data-notserved={PATCH_ROUTE} title={`Not served: ${PATCH_ROUTE}`}>
+      <p className="ur-hint ur-locked" data-route={PATCH_ROUTE} title={`Not served: ${PATCH_ROUTE}`}>
         {PATCH_WHY}
       </p>
       <div className="ur-cols">

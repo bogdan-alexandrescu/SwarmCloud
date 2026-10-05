@@ -313,7 +313,7 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(visible(document.querySelector('.ur-graph'))).toContain('0.2')
     // The route is named on the element; the words say it in plain language (walkthrough E).
     const locked = document.querySelector('.ur-locked')!
-    expect(locked.getAttribute('data-notserved')).toBe('PATCH /v1/repositories/{repo_id}')
+    expect(locked.getAttribute('data-route')).toBe('PATCH /v1/repositories/{repo_id}')
     expect(visible(locked)).toContain('cannot be changed from this console yet')
     expect(visible(locked)).not.toContain('/v1/')
   })
