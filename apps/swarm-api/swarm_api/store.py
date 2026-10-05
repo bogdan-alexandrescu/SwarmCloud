@@ -97,6 +97,8 @@ log = logging.getLogger(__name__)
 TASKS = "tasks"
 WORKFLOWS = "workflows"
 TENANTS = "tenants"
+#: The tenant document's wave-epic field (#638); see `Store.get_findings_epic`.
+TENANT_FINDINGS_EPIC = "findings_epic"
 POOLS = "pools"
 QUOTA = "quota"
 LEASES = "leases"
@@ -807,6 +809,29 @@ class Store:
         ref.update({"credentials": providers})
         tenant.credentials = providers
         return tenant
+
+    def get_findings_epic(self, tenant_id: str) -> int | None:
+        """The tenant's wave epic (#638): the issue a review's minors are filed on.
+
+        A field of the tenant DOCUMENT, beside the frozen `Tenant` type's
+        fields rather than one of them (rule 1), so `tenant_from_dict` never
+        sees it. None when unset, cleared, or not an issue number.
+        """
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        if not snap.exists:
+            return None
+        value = (snap.to_dict() or {}).get(TENANT_FINDINGS_EPIC)
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            return None
+        return value
+
+    def set_findings_epic(self, tenant_id: str, epic: int | None) -> int | None:
+        """Set (or, with None, clear) the tenant's wave epic. NotFound for no tenant."""
+        ref = self._db.collection(TENANTS).document(tenant_id)
+        if not ref.get().exists:
+            raise NotFound(f"tenant {tenant_id!r} does not exist")
+        ref.update({TENANT_FINDINGS_EPIC: epic})
+        return epic
 
     # -- tasks ------------------------------------------------------------
 

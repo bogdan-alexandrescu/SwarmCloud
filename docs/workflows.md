@@ -736,6 +736,60 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
 
+### Minor findings are filed on the tenant's wave epic
+
+CLAUDE.md's rule is that minor findings go to a wave epic, one comment per
+finding. Until #638 that depended on an operator copying them out of
+`verdict.json` by hand, and the 2026-10-05 history analysis counted 530 minors
+across 122 reviews that never left the file. Now the gated step files them.
+
+* **What a minor is.** A finding that is an object with `"severity":
+  "minor"` (any case) and a `summary`, `title` or `message`. It may also name
+  `file`, `call_site` and `evidence`:
+  `{"severity": "minor", "summary": "...", "file": "apps/x/a.py", "call_site":
+  "run()", "evidence": "..."}`. A string finding, or a `blocker` or `major`, is
+  the fix step's and is **never** filed: blockers and majors are what the fix
+  agent fixes, and a NOT_YET with only minors would otherwise be filed and
+  fixed twice. Every finding, minor or not, still reaches the pull request
+  body and the fix agent exactly as before.
+* **Where.** The tenant's `findings_epic`, an issue number in the repository
+  the run works on, set by an admin with `PUT
+  /v1/admin/tenants/{tenant}/findings-epic {"findings_epic": 638}` (`null`
+  stops it; `GET` reads it). It is a field of the tenant document beside the
+  frozen `Tenant` fields, not one of them. swarm-api copies it at submission
+  into the GATED step's `dispatch.findings_epic`, inside the block the spec
+  signature covers, so no agent of the tenant can point the worker at another
+  issue, and a change reaches workflows submitted after it.
+* **Who posts.** The gated step's WORKER, after the agent ended (or, on
+  MERGE, where no agent ran) and after its publish, with the tenant's own
+  `swarm-tenant-<tenant>-git` token: never the agent, which never sees the
+  token, and never another tenant's. The token goes only to github.com
+  (#307); it is registered with the log redaction and appears in no log line,
+  event or result. Each comment is one line in the epic shape, the agent's
+  text scrubbed of registered secrets and with every `@`-mention broken:
+
+      - [ ] **<the defect>** · `<file>` `<call site>` · found by review `<task>` of workflow `<wf>`; <evidence>
+
+* **Once.** Every comment already on the epic is read first (at most 30 pages
+  of 100), and a finding whose (text, file, call site) is already there, filed
+  by an earlier run or by a person in the same shape, ticked or not, is not
+  posted again. An epic that cannot be read whole files nothing: a partial
+  read taken as whole would file duplicates.
+* **The result says what happened.** `result_summary.findings_epic` on the
+  gated step: `epic`, `repository`, `minors` (how many the verdict marked),
+  `filed` (`text`, `file`, `call_site`, `comment_id` of each posted),
+  `already_filed`, and `not_filed` with the reason when anything was not
+  posted. With no epic configured, `epic` is null, nothing is posted and
+  `not_filed` says so.
+* **It never fails the step.** The step's pull request is already open when
+  this runs. A forge that refuses or is down is recorded in `not_filed`; the
+  comment POST is not retried (one whose answer was lost may have landed), and
+  the next run's dedup posts what this one did not.
+* **What it does not cover.** A review with no gated step after it (a review
+  whose verdict nothing reads), and the `single-pr` chain's `review.json`,
+  whose `summary` is free text with no per-finding severity: neither files
+  anything.
+
 ## `metadata.input_from` belongs to the service, not the caller
 
 The worker stages a task's inputs from `metadata.input_from`, a map of

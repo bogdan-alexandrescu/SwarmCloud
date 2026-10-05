@@ -11,7 +11,15 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, StrictBool, field_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    StrictBool,
+    StrictInt,
+    field_validator,
+)
 
 from .validation import (
     DEFAULT_CARRIER,
@@ -294,6 +302,18 @@ class TenantLimitsRequest(StrictModel):
     #: and echoed back but never enforced, and ParkReason.BUDGET_EXHAUSTED would
     #: never be reached. The route rejects it; see routes/admin.py.
     monthly_budget_usd: float | None = Field(default=None, ge=0)
+
+
+class TenantFindingsEpicRequest(StrictModel):
+    """`PUT /v1/admin/tenants/{id}/findings-epic` (#638).
+
+    The issue number, in the repository each run works on, that a review's
+    minor findings are filed on as comments; null stops the filing. Required,
+    so an empty body is a 422 rather than a silent clear. Strict, so `"638"`
+    and `true` are refused rather than coerced to an issue nobody chose.
+    """
+
+    findings_epic: StrictInt | None = Field(..., ge=1, le=2_147_483_647)
 
 
 # --------------------------------------------------------------------------
