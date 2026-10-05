@@ -1533,12 +1533,19 @@ def fv:
 def doc: { id: (.name | split("/") | last) }
          + ( (.fields // {}) | with_entries(.value |= fv) );
 # Mirrors swarm_common.models.SlotPool.effective_limit exactly: the minimum of
-# the hard limit and any adaptive or quota-derived cap, floored at zero.
+# the hard limit and any adaptive or quota-derived cap, floored at zero. A pool
+# with no hard_limit (absent or null) has NO effective limit: null, not 0 and not
+# unlimited -- admission refuses through it as POOL_LIMIT_UNSET (contract
+# request 38, #374). A caller that compares against this must handle null; in jq
+# every number is greater than null.
 def effective_limit:
-  [ (.hard_limit // 0) ]
-  + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
-  + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
-  | min | if . < 0 then 0 else . end;
+  if .hard_limit == null then null
+  else
+    [ .hard_limit ]
+    + (if (.adaptive_target // null) == null then [] else [.adaptive_target] end)
+    + (if (.quota_derived_limit // null) == null then [] else [.quota_derived_limit] end)
+    | min | if . < 0 then 0 else . end
+  end;
 '
 
 # fs_query COLLECTION WHERE_JSON [LIMIT] -> one document JSON per line

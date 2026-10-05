@@ -8187,6 +8187,13 @@ scheduler's drain (none today) would still say `TENANT_LIMIT` at 0.
   now `pool.hard_limit is not None`, for `service.py`'s `/v1/capacity` filter.
 * `swarm_api/headroom.py` `_ceiling`: a None limit bounds headroom at 0, never
   "unbounded" (a paused pool with no limit reaches it).
+* The jq restatement `effective_limit` in `scripts/lib/common.sh` returns null
+  for an absent or null `hard_limit`, as the model returns None, and
+  `scripts/lib/check-contract-parity.sh` holds it there with three
+  null-`hard_limit` rows. `status.sh` prints such a pool's LIMIT and HARD as
+  `unset`; `resume-swarm.sh` says `POOL_LIMIT_UNSET`, not `hard_limit 0`; the
+  over-limit checks in `concurrency-test.sh` and `race-test.sh` treat a null
+  limit as admitting nothing, because in jq every number is greater than null.
 * Proved by `tests/unit/common/test_pool_limit_unset_contract.py` and the
   updated `tests/unit/control_plane/test_pool_limit_unset.py`.
 
