@@ -24,7 +24,6 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 
 afterEach(() => {
   window.history.replaceState(null, '', '/')
@@ -38,7 +37,7 @@ describe('F: a check still reading is a skeleton card, not an empty dashed box',
       const l = document.querySelector<HTMLElement>('#ov-needs')
       expect(l).not.toBeNull()
       return l!
-    }, WAIT)
+    })
     // The first render: every check is still reading.
     expect(lead.querySelector('.ov-cnt')?.textContent).toMatch(/still reading/)
     expect(lead.querySelector('.ctl-mark.is-pending'), 'the dashed pending box is back').toBeNull()
@@ -50,7 +49,7 @@ describe('F: a check still reading is a skeleton card, not an empty dashed box',
     // Its sentence is still said, to a screen reader.
     expect(skel!.getAttribute('aria-label')).toMatch(/checks are still reading/)
     // Once the checks have run, the skeleton is gone.
-    await waitFor(() => expect(lead.querySelector('.ov-atts[aria-busy="true"]')).toBeNull(), WAIT)
+    await waitFor(() => expect(lead.querySelector('.ov-atts[aria-busy="true"]')).toBeNull())
   })
 })
 
@@ -68,7 +67,7 @@ describe('F, revised by browser QA D19 (2026-10-04): each card keeps its own hei
       const r = [...document.querySelectorAll<HTMLElement>('.ov-g21 > .ov-col')]
       expect(r.length).toBe(2)
       return r
-    }, WAIT)
+    })
     expect(painted(cols[0]!.parentElement!, 'align-items', WIDE), 'a short column is stretched to its neighbour').toBe('start')
     for (const col of cols) {
       expect(painted(col, 'align-items', WIDE), 'a short card is stretched').toBe('start')

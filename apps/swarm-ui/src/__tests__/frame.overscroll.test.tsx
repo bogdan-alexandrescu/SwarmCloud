@@ -33,7 +33,6 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 
 afterEach(() => {
   window.location.hash = ''
@@ -80,7 +79,7 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
   it('the workflow graph page', async () => {
     window.history.replaceState(null, '', '/workflows/wf_5e5ad3b6f7da4299a839')
     render(<App />)
-    await waitFor(() => expect(document.querySelectorAll('.wfp-steps tbody tr[data-step]').length).toBeGreaterThan(1), WAIT)
+    await waitFor(() => expect(document.querySelectorAll('.wfp-steps tbody tr[data-step]').length).toBeGreaterThan(1))
     frameHolds()
     const { checked, out } = escapes()
     // The hidden state words in the Steps table are the boxes that escaped.
@@ -91,7 +90,7 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
   it('the agent page', async () => {
     window.location.hash = '#work/task/task_a073aff5'
     render(<App />)
-    await waitFor(() => expect(document.querySelector('.ag-split .ag-head-facts')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('.ag-split .ag-head-facts')).not.toBeNull())
     frameHolds()
     const { checked, out } = escapes()
     expect(checked, 'no absolutely positioned element was visited').toBeGreaterThan(0)
@@ -101,7 +100,7 @@ describe('item 3: no box escapes the app frame, so the window never scrolls', ()
   it('the timeline page', async () => {
     window.history.replaceState(null, '', '/timeline')
     render(<App />)
-    await waitFor(() => expect(document.querySelector('.ctl-scroll h1')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('.ctl-scroll h1')).not.toBeNull())
     frameHolds()
     expect(escapes().out).toEqual([])
   }, 60_000)

@@ -27,7 +27,6 @@ import { painted } from './marks'
 import { cellStyle, crowded, fixedColumns, nowrap, textBox, type CellStyle, type TextBox } from './tablefit'
 
 const WIDE: CascadeEnv = { width: 1440 }
-const WAIT = { timeout: 8000 }
 const WF = 'wf_5e5ad3b6f7da4299a839'
 /** The table's box at 1440: 1440 less the 84px spine, the 236px panel, two 32px gutters and the card's 16px padding and borders. */
 const AT_1440 = 1440 - 84 - 236 - 64 - 34
@@ -55,7 +54,7 @@ async function table(): Promise<HTMLElement> {
     expect(t).not.toBeNull()
     expect(t!.querySelectorAll('tbody tr[data-step]').length).toBeGreaterThan(1)
     return t!
-  }, WAIT)
+  })
 }
 
 /** Each column's cell style, read once off the first row (the cascade is the slow part). */
@@ -177,7 +176,7 @@ describe('A: the sampling chip is in the table head row, inside the card', () =>
       const h = document.querySelector<HTMLElement>('.wf-card .wfp-steps .wf-table-head')
       expect(h).not.toBeNull()
       return h!
-    }, WAIT)
+    })
     expect(head.querySelector('h3')?.textContent).toBe('Steps')
     // The table sits in the box its stacked form asks about (D12), and that
     // box is the head row's next sibling: nothing is drawn between them.
