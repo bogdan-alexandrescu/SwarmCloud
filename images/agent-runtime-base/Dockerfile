@@ -76,15 +76,20 @@ RUN apt-get update \
 COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
+# The root project and its lock. `uv export` below reads the worker's
+# third-party dependency set, at the versions and hashes uv.lock records, from
+# them (#663). With --frozen it reads no other app's directory, so the builder
+# still copies only the packages this image ships.
+COPY pyproject.toml uv.lock /src/
 # Only what the image needs to build: the frozen contract, the credential
 # patterns the worker's per-commit secret scan matches (#259), and the worker.
 COPY apps/common/ /src/apps/common/
 COPY apps/redaction/ /src/apps/redaction/
 COPY apps/agent-worker/ /src/apps/agent-worker/
 
-# Wheels first, then install from the local wheelhouse. Resolving
-# `swarm-common` from a wheel we just built -- rather than from an index that
-# has never heard of it -- is what makes this build reproducible offline.
+# Build our own packages into a local wheelhouse. No index has ever heard of
+# them, and the install below never asks one: it reads them from /wheels with
+# `--no-index` (#663).
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
  && uv build --wheel --out-dir /wheels /src/apps/agent-worker
@@ -113,9 +118,48 @@ ARG PYTEST_VERSION=8.4.2
 # precisely BECAUSE an agent may build a package.
 RUN python -m venv /opt/venv \
  && uv pip install --python /opt/venv/bin/python \
-      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}" \
- && uv pip install --python /opt/venv/bin/python --find-links /wheels swarm-agent-worker \
- && uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
+      "setuptools>=${SETUPTOOLS_VERSION}" "wheel>=${WHEEL_VERSION}"
+
+# Third-party dependencies, exported from uv.lock for the worker alone. The
+# root project depends on every app, so the export prunes the internal packages
+# swarm-agent-worker does not depend on (`swarm-api`, `swarm-mcp`,
+# `swarm-quota-broker`, `swarm-reconciler`, `swarm-scheduler`,
+# `swarm-workflow-rollup`), and the third-party packages only they need go with
+# them. `--no-emit-local` leaves our own packages out of the file: they come
+# from /wheels, below. The export carries a hash for every file; `--no-hashes`
+# must never be added here.
+RUN uv export --frozen --no-dev --no-emit-local --no-editable \
+      --prune swarm-api --prune swarm-mcp \
+      --prune swarm-quota-broker --prune swarm-reconciler \
+      --prune swarm-scheduler --prune swarm-workflow-rollup \
+      > /tmp/requirements.txt
+
+# Installed at exactly the versions and hashes in uv.lock, with nothing
+# resolved at build time (#663). This used to be one `uv pip install
+# --find-links /wheels swarm-agent-worker` that resolved every third-party
+# package unpinned against PyPI. `--require-hashes` refuses any file whose hash
+# the lock does not record, so an index can fail this step but never substitute
+# a package; `--no-deps` because the export is already the complete closure.
+RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /tmp/requirements.txt
+
+# Our own packages, from the wheelhouse ONLY. `--find-links` alone ADDS
+# /wheels and keeps PyPI as an index, so every internal name was looked up on
+# pypi.org -- the control-plane images' build on 3a0d488c failed on a 503 from
+# pypi.org/simple/swarm-redaction/ -- and a public package published under one
+# of these names at a higher version could have been installed instead of ours:
+# dependency confusion into the image every tenant's agent runs in. `--no-index`
+# means no index is ever asked for them; `--no-deps` because their third-party
+# dependencies are already installed above, by hash.
+RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
+      swarm-common swarm-redaction swarm-agent-worker
+
+# pytest for the generic runner's `python -m pytest` (see the venv step above).
+RUN uv pip install --python /opt/venv/bin/python "pytest==${PYTEST_VERSION}"
+
+# With `--no-deps` on both installs nothing above notices a dependency the
+# export left out. `uv pip check` does, here, instead of an ImportError at the
+# runtime stage's import check or inside a tenant's task.
+RUN uv pip check --python /opt/venv/bin/python
 
 # ---------------------------------------------------------------------------
 # runtime

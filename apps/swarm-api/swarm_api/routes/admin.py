@@ -489,6 +489,7 @@ def list_leases(
     state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
     overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
     limit: int | None = Query(default=None, ge=1),
+    page_token: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
@@ -541,9 +542,15 @@ def list_leases(
     ran over. Those two filters narrow the window; they do not change
     `active_beyond_window`, so with either set `units_held` is a filtered sum
     and not the drift check's input.
+
+    PAGED (F8). `truncated: true` used to be a dead end at the window; the
+    page now carries `next_page_token`, set exactly when `truncated` is, and
+    the rows behind it are the next page. `active_beyond_window` is per page:
+    live leases not in THESE rows.
     """
     scan = ctx.store.scan_leases(
-        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit)
+        tenant_id, active_only=active_only, limit=paged_limit(ctx, limit),
+        page_token=page_token,
     )
     leases = scan.leases
     now = ctx.now()
@@ -602,6 +609,8 @@ def list_leases(
         "truncated": scan.truncated,
         # Rows state / overdue_only ran over.
         "examined": scan.examined,
+        # The rows behind this page; null on the last one.
+        "next_page_token": scan.next_page_token,
     }
 
 
@@ -624,7 +633,7 @@ def list_failures(
     own masker, `tenant_id` included, which says whose it is -- with its
     account read per tenant on the page (`accounts_for` never reads across
     tenants). A FAILED task holds no lease, so `waiting_for` and the heartbeat
-    fields are null. Paged by the same `created_at` cursor as `GET /v1/tasks`.
+    fields are null. Paged by the same (created_at, id) keyset as `GET /v1/tasks`.
     """
     page = ctx.store.list_failures(limit=paged_limit(ctx, limit), page_token=page_token)
     by_tenant: dict[str, list] = {}

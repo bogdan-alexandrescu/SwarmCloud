@@ -812,7 +812,11 @@ def tenant_from_dict(data: dict[str, Any]) -> Tenant:
         tenant_id=data["tenant_id"],
         kind=data.get("kind", "user"),
         principal=data.get("principal", ""),
-        created_at=as_datetime(data.get("created_at")) or datetime.now(timezone.utc),
+        # None when the document holds none (F10): the read time here was a
+        # fabricated creation date that moved on every read. The frozen
+        # `Tenant.created_at` is typed `datetime`; nothing reads it but the
+        # API's tenant view, which serves the None as null.
+        created_at=as_datetime(data.get("created_at")),  # type: ignore[arg-type]
         display_name=data.get("display_name"),
         max_active=int(data.get("max_active", 20)),
         capacity_units=int(data.get("capacity_units", 40)),
