@@ -43,8 +43,8 @@ import urllib.error
 import urllib.request
 import re
 import time
-from dataclasses import dataclass
-from typing import Any, Callable, Protocol
+from dataclasses import dataclass, field
+from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import quote, urlparse
 
 from swarm_common.models import Tenant
@@ -174,9 +174,23 @@ class SecretManagerForgeTokens:
         return self._client
 
     def token_for(self, tenant: Tenant) -> str:
+        return self.read_slot(tenant, GIT_PROVIDER).value
+
+    def read_slot(self, tenant: Tenant, provider: str) -> "SlotValue":
+        """One git-token slot's latest version: `swarm-tenant-<tenant>-<provider>`.
+
+        The git token probe's read (docs/git-tokens.md §5.4). The name is built
+        through the frozen `Tenant.secret_name`, from the caller's own tenant,
+        so this can name no other tenant's secret. swarm-api is bound only to
+        the slots Terraform grants it (`-git` today; the narrower `git-r-`/
+        `git-u-` slots once lane GT4 declares them), and a slot it is not
+        bound to answers the PermissionDenied branch below.
+        """
         from google.api_core import exceptions as gexc
 
-        secret_id = tenant.secret_name(GIT_PROVIDER)
+        if not _SLOT_PROVIDER.match(provider or ""):
+            raise IssueReadFailed("a git token slot is git, git-r-<hex> or git-u-<hex>")
+        secret_id = tenant.secret_name(provider)
         name = f"projects/{self._project_id}/secrets/{secret_id}/versions/latest"
         try:
             version = self._secret_client().access_secret_version(request={"name": name})
@@ -203,7 +217,25 @@ class SecretManagerForgeTokens:
             raise NoForgeCredential(
                 f"tenant {tenant.tenant_id!r}'s forge credential {secret_id} is empty"
             )
-        return token
+        # `.../versions/<n>`: the number a rotation changes. A name, not a value.
+        version_name = getattr(version, "name", "") or ""
+        return SlotValue(value=token, version=version_name.rsplit("/", 1)[-1] or None)
+
+
+@dataclass(frozen=True)
+class SlotValue:
+    """A slot's value and the Secret Manager version it came from.
+
+    `repr=False` on the value: a dataclass's repr is what a traceback, a log
+    line or a debugger prints, and it must never print the token.
+    """
+
+    value: str = field(repr=False)
+    version: str | None = None
+
+
+#: The providers a git-token slot is stored under (docs/git-tokens.md §2).
+_SLOT_PROVIDER = re.compile(r"^git(-r-[0-9a-f]{16}|-u-[0-9a-f]{16})?$")
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +294,88 @@ def _urllib_send(url: str, headers: dict[str, str], timeout: float) -> tuple[int
         return answer.code, body
 
 
+# --------------------------------------------------------------------------
+# the git token probe's transport (docs/git-tokens.md §5, §5.4)
+# --------------------------------------------------------------------------
+
+#: The hosts a forge token may be sent to from swarm-api: the REST API, and
+#: github.com for the one git-protocol read the probe makes (the push
+#: service advertisement). The worker's rule, `agent_worker.forge.
+#: may_receive_forge_token`, names github.com and www.github.com; this is
+#: swarm-api's own, smaller set, because the API never clones.
+FORGE_TOKEN_HOSTS = frozenset({GITHUB_API_HOST, "github.com"})
+
+
+def may_receive_forge_token(url: str) -> bool:
+    """True only for an https URL, with no port and no userinfo, on FORGE_TOKEN_HOSTS."""
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "https"
+        and port is None
+        and parsed.username is None
+        and (parsed.hostname or "").lower() in FORGE_TOKEN_HOSTS
+    )
+
+
+@dataclass(frozen=True)
+class ProbeResponse:
+    """One answer: its status, its headers (names lower-cased) and its body."""
+
+    status: int
+    headers: Mapping[str, str]
+    body: bytes = b""
+
+
+#: `(url, headers, timeout) -> ProbeResponse`. Injected by the tests;
+#: `urllib_probe_send` in production. Raises on a transport failure.
+ProbeSend = Callable[[str, dict[str, str], float], ProbeResponse]
+
+
+class ProbeHostRefused(Exception):
+    """A probe URL named a host the token may not go to. Constant text."""
+
+
+def git_basic_headers(token: str) -> dict[str, str]:
+    """The headers of the probe's one git-protocol GET (`info/refs`).
+
+    Git over HTTPS takes the token as a basic-auth password; GitHub accepts
+    `x-access-token` as the user for every kind of token.
+    """
+    import base64
+
+    pair = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {pair}", "User-Agent": _USER_AGENT}
+
+
+def urllib_probe_send(url: str, headers: dict[str, str], timeout: float) -> ProbeResponse:
+    """A GET, nothing else, to a forge host only, never following a redirect."""
+    if not may_receive_forge_token(url):
+        raise ProbeHostRefused()
+    request = urllib.request.Request(url, headers=headers, method="GET")
+    try:
+        with _OPENER.open(request, timeout=timeout) as response:
+            return ProbeResponse(
+                status=response.status,
+                headers={k.lower(): v for k, v in response.headers.items()},
+                body=response.read(MAX_RESPONSE_BYTES + 1),
+            )
+    except urllib.error.HTTPError as answer:
+        try:
+            body = answer.read(MAX_RESPONSE_BYTES + 1)
+        except Exception:
+            body = b""
+        answer_headers = answer.headers.items() if answer.headers is not None else ()
+        return ProbeResponse(
+            status=answer.code,
+            headers={k.lower(): v for k, v in answer_headers},
+            body=body,
+        )
+
+
 @dataclass(frozen=True)
 class IssueSnapshot:
     title: str
@@ -292,22 +406,92 @@ class OpenWork:
     pull_requests_truncated: bool
 
 
+@dataclass(frozen=True)
+class RepositoryRead:
+    """One repository as GitHub described it to the tenant's token (repo-index.md §1).
+
+    `can_read` is GitHub's own `permissions.pull` for that token; a token that
+    can see a repository's metadata but not pull it cannot clone it.
+    """
+
+    owner: str
+    repo: str
+    default_branch: str
+    visibility: str
+    archived: bool
+    can_read: bool
+    can_push: bool
+    can_admin: bool
+
+
+@dataclass(frozen=True)
+class ReadablePage:
+    """One page of `GET /user/repos`: the entries as listed, and whether it was full."""
+
+    entries: tuple[Any, ...]
+    full: bool
+
+
+def _visibility(data: dict[str, Any]) -> str:
+    visibility = data.get("visibility")
+    if visibility in ("public", "private", "internal"):
+        return visibility
+    private = data.get("private")
+    if isinstance(private, bool):
+        return "private" if private else "public"
+    return "unknown"
+
+
+def repository_from(data: Any) -> RepositoryRead | None:
+    """A `/repos/{owner}/{repo}` or `/user/repos` entry -> RepositoryRead, or None
+    when it is not shaped like one. The names are GitHub's, unvalidated: the
+    caller checks them against its own patterns before using them."""
+    if not isinstance(data, dict):
+        return None
+    full_name = data.get("full_name")
+    if not isinstance(full_name, str) or full_name.count("/") != 1:
+        return None
+    owner, repo = full_name.split("/")
+    branch = data.get("default_branch")
+    permissions = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+    return RepositoryRead(
+        owner=owner,
+        repo=repo,
+        default_branch=branch if isinstance(branch, str) else "",
+        visibility=_visibility(data),
+        archived=data.get("archived") is True,
+        # Absent means GitHub did not say, which for a token-authenticated
+        # read it always does; not saying is not a grant.
+        can_read=permissions.get("pull") is True,
+        can_push=permissions.get("push") is True,
+        can_admin=permissions.get("admin") is True,
+    )
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
 class GitHubIssues:
-    """GitHub's issue API on api.github.com, read-only: one issue, and the open work."""
+    """GitHub's issue API on api.github.com, read-only: one issue, and the open work.
+
+    It also carries the git token probe's transport (`probe_send`,
+    docs/git-tokens.md §5): the same pinned, redirect-refusing GET, answering
+    the response headers too, because the probe reads a token's scopes, its
+    expiry and its rate limit from them.
+    """
 
     def __init__(
         self,
         *,
         send: Send | None = None,
+        probe_send: "ProbeSend | None" = None,
         timeout: float = TIMEOUT_SECONDS,
         clock: Callable[[], float] = time.monotonic,
         budget_seconds: float = OPEN_WORK_BUDGET_SECONDS,
     ) -> None:
         self._send = send or _urllib_send
+        self.probe_send: ProbeSend = probe_send or urllib_probe_send
         self._timeout = timeout
         self._clock = clock
         self._budget = budget_seconds
@@ -380,6 +564,46 @@ class GitHubIssues:
             # GitHub's own URL when it is the issue on github.com; ours otherwise.
             url=html_url if isinstance(html_url, str) and html_url.startswith(ref.repository_url + "/issues/") else ref.url,
         )
+
+    # -- a repository, and what the token can read (repository registration) --
+
+    def repository(self, owner: str, repo: str, token: str) -> RepositoryRead:
+        """`GET /repos/{owner}/{repo}` with the tenant's token: one read.
+
+        Status mapping is `_get`'s: 404/410 `IssueNotFound` (GitHub's answer
+        for a private repository the token cannot see, too), 401/403
+        `IssueNoAccess`, anything else that is not a 200 `IssueReadFailed`.
+        """
+        what = f"{owner}/{repo}"
+        url = f"https://{GITHUB_API_HOST}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+        raw = self._get(url, token, what)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise IssueReadFailed(f"GitHub's answer for {what} is larger than a repository")
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            data = None
+        read = repository_from(data)
+        if read is None or (read.owner.lower(), read.repo.lower()) != (owner.lower(), repo.lower()):
+            # A renamed repository answers 301, which is never followed; a 200
+            # naming some other repository is not this one either.
+            raise IssueReadFailed(f"GitHub's answer for {what} is not that repository")
+        return read
+
+    def readable_page(self, token: str, page: int) -> ReadablePage:
+        """Page `page` of `GET /user/repos`, PAGE_SIZE entries, ordered by full name.
+
+        Every repository the token can reach as owner, collaborator or
+        organisation member; for a fine-grained token, exactly the ones it was
+        granted. One request: the caller decides how far it pages.
+        """
+        url = (
+            f"https://{GITHUB_API_HOST}/user/repos?affiliation=owner,collaborator,"
+            f"organization_member&sort=full_name&direction=asc"
+            f"&per_page={PAGE_SIZE}&page={int(page)}"
+        )
+        entries = self._get_list(url, token, "the repositories the tenant's forge credential can read")
+        return ReadablePage(entries=tuple(entries), full=len(entries) >= PAGE_SIZE)
 
     # -- the open work --------------------------------------------------------
 

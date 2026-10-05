@@ -1689,7 +1689,14 @@ export function tokenKinds(task: Task, attempts: readonly AttemptRow[]): TokenKi
   const ordered = [...attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
   const out = structuredOutput(task)
   const models = record(out?.modelUsage)
-  const perModel = models === null ? [] : Object.values(models).map(record).filter((m) => m !== null)
+  // AN ENTRY WITH NONE OF THE FOUR COUNTS IS NOT A MEASUREMENT: a cost-only
+  // `modelUsage` displaced the newest attempt's own fields, and a run whose
+  // document said `in 100 · out 50` read `tokens not reported`.
+  const perModel = (models === null ? [] : Object.values(models).map(record)).filter(
+    (m): m is Record<string, unknown> =>
+      m !== null &&
+      [m.inputTokens, m.outputTokens, m.cacheReadInputTokens, m.cacheCreationInputTokens].some((v) => count(v) !== null),
+  )
   const newest = ordered.at(-1)
   const summed =
     perModel.length > 0 && resultIsNewest(task) && (newest === undefined || newest.completed_at !== null)

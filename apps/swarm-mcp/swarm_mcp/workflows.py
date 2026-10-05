@@ -118,7 +118,7 @@ SPEC_KEYS = frozenset(
         "priority",
         "label",
         # A short NAME for the workflow (owner, 2026-10-04): what Claude Code
-        # titles its run (`SwarmCloud · <title> · N steps`) and what the
+        # titles its run (`SC · <title> · N steps`) and what the
         # console can show beside it. Sent as `metadata.title`, the way `label`
         # goes as `metadata.unit`: WorkflowCreate forbids extra top-level
         # fields, so it never travels as one.
@@ -443,11 +443,13 @@ def submit(
 # --------------------------------------------------------------------------
 
 #: The most characters a SwarmCloud workflow's run title has in Claude Code
-#: (owner, 2026-10-04): `SwarmCloud · <name> · N steps`, whole, never longer.
-#: plugin/workflows/run.js cuts the same way (`workflowTitle`), and
-#: test_plugin_rows_match_console holds the two equal.
-TITLE_CHARS = 100
-TITLE_PREFIX = "SwarmCloud · "
+#: `SC · <name> · N steps`, whole, never longer. Owner 2026-10-04: SwarmCloud
+#: prefix, at most 100; owner 2026-10-05: prefix `SC · ` because Claude Code's
+#: task panel shows ~28 characters of a name, and at most 150 because Enter
+#: shows the full name. plugin/workflows/run.js cuts the same way
+#: (`workflowTitle`), and test_plugin_rows_match_console holds the two equal.
+TITLE_CHARS = 150
+TITLE_PREFIX = "SC · "
 
 
 def _flat(text: Any) -> str | None:
@@ -480,7 +482,7 @@ def _steps_text(steps: int) -> str:
 
 
 def workflow_title(name: str, steps: int) -> str:
-    """`SwarmCloud · <name> · N steps`, at most TITLE_CHARS characters.
+    """`SC · <name> · N steps`, at most TITLE_CHARS characters.
 
     The NAME is cut, never the step count: at the last word boundary that
     fits, with `…`; a single word longer than the room is cut inside it."""

@@ -82,8 +82,8 @@ the session may ask once before the first read.
 
 ### Every run is titled after its workflow
 
-A SwarmCloud workflow run here is titled `SwarmCloud · <name> · N steps` (at
-most 100 characters), not `swarmcloud`: <name> is the spec's `title`, else
+A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at
+most 150 characters), not `swarmcloud`: <name> is the spec's `title`, else
 its `label` cut at a word, else the title or label SwarmCloud stored, else the
 workflow id. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
