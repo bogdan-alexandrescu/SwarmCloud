@@ -726,10 +726,15 @@ is a different step.
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
 
-All three agents run on **haiku at low effort** (`model` and `effort` in their
+All four agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
 need — `sc:remote` dispatch and follow, `sc:step` follow, `sc:workflow` read a
 spec file, submit and read — and only through the sc plugin's own server (above).
+`sc:wait` holds no SwarmCloud tool: it is the pause between two tries of a step
+row whose bridge was not connected or not responding, one `sleep 30` through
+Bash, because a workflow script has no timer of its own. A session that asks
+before running Bash will ask for it; refused, the next try comes at once and
+the run logs that the wait could not be made.
 
 ### Every running workflow, shown without asking for it
 
