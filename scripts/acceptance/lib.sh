@@ -295,10 +295,20 @@ acc_declares() {
 #     exhausted budget (printed as HELD:<state>:<why>). A pool that is merely
 #     full is waited on for the whole timeout.
 #
-# The caller turns either into a SKIP naming the reason. A PARKED task that
-# HAS held a lease (a quota park) is not "held": it ran, and the wait goes on.
+# And a third: a workflow step PARKED on DEPENDENCY_INCOMPLETE whose ANCESTOR
+# is held by either of the above (printed as UPSTREAM:<ancestor>:<its state>).
+# The dependant's own document says only "waiting on a parent", so without
+# following depends_on a wait on the last step of a chain whose root has no
+# credential runs its whole timeout and reports FAIL -- release 37324226899,
+# 2026-10-05: the integrate chain's implement parked on CREDENTIAL_MISSING in
+# 2 s and the wait on fix ran 900 s. The ancestor's verdict is the same one it
+# would get waited on directly (_acc_hold), clocked from when THIS wait began.
+#
+# The caller turns any of these into a SKIP naming the reason. A PARKED task
+# that HAS held a lease (a quota park) is not "held": it ran, and the wait
+# goes on -- for an ancestor as for the task itself.
 acc_settle() {
-  local task="$1" timeout="$2" started deadline doc state reason
+  local task="$1" timeout="$2" started deadline doc state hold
   started="$(date -u +%s)"
   deadline=$(( started + timeout ))
   while :; do
@@ -309,35 +319,18 @@ acc_settle() {
     case "${state}" in
       SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED)
         printf '%s' "${state}"; return 0 ;;
-      PARKED)
-        reason="$(jq -r '.park_reason // ""' <<<"${doc}")"
-        if [[ "${reason}" == "CREDENTIAL_MISSING" ]]; then
-          printf 'PARKED:CREDENTIAL_MISSING'; return 0
-        fi
-        ;;
     esac
-    case "${state}" in
-      QUEUED|READY|PARKED)
-        if [[ $(( $(date -u +%s) - started )) -ge "${ACC_ADMIT_WAIT}" ]] \
-            && [[ "$(jq -r '.attempt_count // 0' <<<"${doc}")" == "0" ]]; then
-          # CLOSED, not merely full. A pool at its limit because this suite's
-          # own tasks fill it will open, and waiting is right; a pool an
-          # operator paused (MANUAL_PAUSE) or set to 0 will not. The
-          # scheduler's own blockers say which (swarm_common.admission writes
-          # {pool, reason, limit, active}), so nothing is re-derived here.
-          reason="$(jq -r '
-              [ (.blocked_by // [])[]
-                | select(.reason == "MANUAL_PAUSE" or .limit == 0)
-                | "\(.pool // "?") \(.reason // "?") limit \(.limit // "?")" ]
-              + (if (.park_reason // "") == "MANUAL_PAUSE" or (.park_reason // "") == "BUDGET_EXHAUSTED"
-                 then [.park_reason] else [] end)
-              | join(", ")' <<<"${doc}")"
-          if [[ -n "${reason}" ]]; then
-            printf 'HELD:%s:%s' "${state}" "${reason}"; return 0
-          fi
-        fi
-        ;;
-    esac
+    hold="$(_acc_hold "${doc}" "${started}")"
+    if [[ -n "${hold}" ]]; then
+      printf '%s' "${hold}"; return 0
+    fi
+    if [[ "${state}" == "PARKED" ]] \
+        && [[ "$(jq -r '.park_reason // ""' <<<"${doc}")" == "DEPENDENCY_INCOMPLETE" ]]; then
+      hold="$(_acc_upstream_hold "${doc}" "${started}")"
+      if [[ -n "${hold}" ]]; then
+        printf 'UPSTREAM:%s' "${hold}"; return 0
+      fi
+    fi
     if [[ "$(date -u +%s)" -ge "${deadline}" ]]; then
       printf '%s' "${state}"; return 1
     fi
@@ -345,17 +338,109 @@ acc_settle() {
   done
 }
 
+# _acc_hold DOC STARTED -> prints PARKED:CREDENTIAL_MISSING or HELD:<state>:<why>
+# when the task in DOC will not run however long the suite waits (see
+# acc_settle), and nothing otherwise. STARTED is the epoch the wait began.
+_acc_hold() {
+  local doc="$1" started="$2" state reason
+  state="$(jq -r '.state // "MISSING"' <<<"${doc}")"
+  case "${state}" in
+    PARKED)
+      reason="$(jq -r '.park_reason // ""' <<<"${doc}")"
+      if [[ "${reason}" == "CREDENTIAL_MISSING" ]]; then
+        printf 'PARKED:CREDENTIAL_MISSING'; return 0
+      fi
+      ;;
+  esac
+  case "${state}" in
+    QUEUED|READY|PARKED)
+      if [[ $(( $(date -u +%s) - started )) -ge "${ACC_ADMIT_WAIT}" ]] \
+          && [[ "$(jq -r '.attempt_count // 0' <<<"${doc}")" == "0" ]]; then
+        # CLOSED, not merely full. A pool at its limit because this suite's
+        # own tasks fill it will open, and waiting is right; a pool an
+        # operator paused (MANUAL_PAUSE) or set to 0 will not. The
+        # scheduler's own blockers say which (swarm_common.admission writes
+        # {pool, reason, limit, active}), so nothing is re-derived here.
+        reason="$(jq -r '
+            [ (.blocked_by // [])[]
+              | select(.reason == "MANUAL_PAUSE" or .limit == 0)
+              | "\(.pool // "?") \(.reason // "?") limit \(.limit // "?")" ]
+            + (if (.park_reason // "") == "MANUAL_PAUSE" or (.park_reason // "") == "BUDGET_EXHAUSTED"
+               then [.park_reason] else [] end)
+            | join(", ")' <<<"${doc}")"
+        if [[ -n "${reason}" ]]; then
+          printf 'HELD:%s:%s' "${state}" "${reason}"; return 0
+        fi
+      fi
+      ;;
+  esac
+  return 0
+}
+
+# _acc_upstream_hold DOC STARTED -> prints "<ancestor task id>:<its hold>" for
+# the first ancestor of DOC's task, through depends_on, that _acc_hold says
+# will not run; nothing when every ancestor is running, finished or merely
+# waiting. Breadth-first, each ancestor read once per call: a SUCCEEDED
+# ancestor is not climbed past (its own parents are done), and a terminal
+# failure is the scheduler's to cascade, which ends the wait on its own.
+# A space-delimited string, not an associative array: bash 3.2.
+_acc_upstream_hold() {
+  local doc="$1" started="$2" queue seen id parent state hold
+  queue="$(jq -r '(.depends_on // [])[]' <<<"${doc}" | tr '\n' ' ')"
+  seen=" "
+  while [[ -n "${queue// /}" ]]; do
+    queue="${queue#"${queue%%[! ]*}"}"
+    id="${queue%% *}"
+    queue="${queue#"${id}"}"
+    [[ "${seen}" != *" ${id} "* ]] || continue
+    seen="${seen}${id} "
+    if ! doc="$(task_doc "${id}")"; then
+      die "could not read task ${id}, an ancestor of the task being waited on; see the Firestore error above -- a failed read is not a result"
+    fi
+    state="$(jq -r '.state // "MISSING"' <<<"${doc}")"
+    case "${state}" in
+      SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) continue ;;
+    esac
+    hold="$(_acc_hold "${doc}" "${started}")"
+    if [[ -n "${hold}" ]]; then
+      printf '%s:%s' "${id}" "${hold}"; return 0
+    fi
+    while IFS= read -r parent; do
+      [[ -z "${parent}" ]] || queue="${queue} ${parent}"
+    done < <(jq -r '(.depends_on // [])[]' <<<"${doc}")
+  done
+  return 0
+}
+
+# _acc_hold_reason HOLD -> the words acc_settled_or_skip uses for one of
+# _acc_hold's verdicts, for an ancestor's SKIP line.
+_acc_hold_reason() {
+  case "$1" in
+    PARKED:CREDENTIAL_MISSING)
+      printf "PARKED on CREDENTIAL_MISSING: the caller's tenant holds no credential for its profile's provider" ;;
+    HELD:*)
+      printf 'admission held it for %ss without leasing it: %s -- a closed pool or a limit, not a result' "${ACC_ADMIT_WAIT}" "${1#HELD:}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
 # acc_settled_or_skip TASK STATE -> 0 when STATE is a state the task RAN to;
-# otherwise records a SKIP (the platform holding it on purpose) or a FAIL (the
-# wait timed out) and returns 1.
+# otherwise records a SKIP (the platform holding it, or an ancestor it waits
+# on, on purpose) or a FAIL (the wait timed out) and returns 1.
 acc_settled_or_skip() {
-  local task="$1" state="$2"
+  local task="$1" state="$2" upstream ancestor
   case "${state}" in
     SUCCEEDED|FAILED|CANCELLED|DEAD_LETTERED) return 0 ;;
     PARKED:CREDENTIAL_MISSING)
       acc_skip "not measured: the caller's tenant holds no credential for this profile's provider (PARKED on CREDENTIAL_MISSING)" "${task}" ;;
     HELD:*)
       acc_skip "not measured: admission held the task for ${ACC_ADMIT_WAIT}s without leasing it (${state#HELD:}) -- a closed pool or a limit, not a result" "${task}" ;;
+    UPSTREAM:*)
+      # UPSTREAM:<ancestor>:<the ancestor's own verdict>, from acc_settle.
+      upstream="${state#UPSTREAM:}"
+      ancestor="${upstream%%:*}"
+      acc_skip "not measured: it waits on upstream step ${ancestor}, which will not run ($(_acc_hold_reason "${upstream#*:}"))" "${task}"
+      cancel_all "${ancestor}" ;;
     *)
       acc_fail "did not finish within ${ACC_TIMEOUT}s (last state ${state})" "${task}" ;;
   esac
