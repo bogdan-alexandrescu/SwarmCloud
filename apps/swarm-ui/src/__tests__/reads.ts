@@ -19,6 +19,11 @@
 // as a plain synchronous `getByRole` -- it still asserts the element's role,
 // name and accessibility, and no timeout can expire while it runs.
 //
+// `calls` is how many calls to wait for before settling them; `0` settles
+// whatever calls were made, for a read a case may or may not have started
+// (walk.agent.test.tsx, whose running agent's Details read can outlive its
+// pane).
+//
 // Only for a read the test made resolve or reject (`mockResolvedValue`,
 // `mockRejectedValue`): a read stubbed as `new Promise(() => {})` never
 // settles, and waiting on it would hang until the test's own timeout.
