@@ -525,11 +525,15 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
         assert entry["version"] == version and entry["integrity"].startswith("sha512-")
     # tsserver comes from TypeScript 6: TypeScript 7's package has no tsserver.
     assert pins["typescript"].startswith("6.")
-    # Every server command is linked into the directory the driver resolves from.
+    # Every server command is in the directory the driver resolves from, and
+    # the build fails if one is not executable there.
     bin_dir = str(lsp.DEFAULT_BIN_DIR)
+    check = re.search(r"for s in ([^;]+); do \\\n\s*test -x \"" + re.escape(bin_dir) + r"/\$s\"", text)
+    assert check, "the Dockerfile does not check the servers' bin directory"
+    checked = set(check.group(1).split())
     for spec in lsp.SERVERS.values():
-        assert f"{bin_dir}/{spec.command[0]}" in text, spec.command[0]
-    assert f"{bin_dir}/go" in text  # gopls runs `go list`
+        assert spec.command[0] in checked, spec.command[0]
+    assert "go" in checked  # gopls runs `go list`
     # The build proves each server starts and resolves, as the agent user.
     assert "RUN swarm-repo-index --lsp-self-test" in text
     assert "COPY images/agent-runtime-base/repo-index/lsp/ /opt/repo-index/lsp/" in text
