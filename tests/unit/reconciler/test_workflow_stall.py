@@ -479,3 +479,21 @@ def test_findings_are_worst_first(db, config):
     order = kinds(detect(db, config))
 
     assert order.index("start_overdue") < order.index("state_drift"), order
+
+
+def test_the_rows_kept_on_the_pass_are_bounded_and_the_rest_counted(db, config):
+    from dataclasses import replace
+
+    for n in range(3):
+        seed_workflow(db, [(f"s{n}", f"task_{n}", ())], workflow_id=f"wf_{n}")
+        seed_task(db, f"task_{n}", TaskState.PARKED, ago=timedelta(hours=1),
+                  park_reason=ParkReason.PROVIDER_QUOTA_EXHAUSTED)
+
+    report = reconciler(db, replace(config, max_findings_per_pass=2)).run_once()
+
+    # Three drifted workflows (stored RUNNING, steps PARKED): all three are
+    # repaired, two rows kept, one counted.
+    assert len(report.stalled_workflows) == 2
+    assert report.workflow_check["rows_dropped"] == 1
+    assert report.workflow_check["repaired"] == 3
+    assert all(db.doc(f"workflows/wf_{n}")["state"] == "PARKED" for n in range(3))

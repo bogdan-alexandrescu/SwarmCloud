@@ -761,6 +761,8 @@ class Reconciler:
             "truncated": False,
             "repaired": 0,
             "read_error": None,
+            # Rows found but not kept on the pass: see below.
+            "rows_dropped": 0,
         }
         report.workflow_check = check
         try:
@@ -787,7 +789,14 @@ class Reconciler:
             if repaired:
                 check["repaired"] += 1
             entry = stall.entry(repaired=repaired, repair=repair)
-            report.stalled_workflows.append(entry)
+            # Every finding is repaired, but at most `max_findings_per_pass`
+            # rows are kept: the pass is one Firestore document (1 MiB), and
+            # `record_pass` bounds only `outcomes`. The rows are worst first,
+            # so what is dropped is the least urgent, and it is counted.
+            if len(report.stalled_workflows) >= self._config.max_findings_per_pass:
+                check["rows_dropped"] += 1
+            else:
+                report.stalled_workflows.append(entry)
             # `severity` is the structured logger's own field, so the row's
             # grade travels as `grade`. A repair that landed is routine.
             fields = {k: v for k, v in entry.items() if k != "severity"}
