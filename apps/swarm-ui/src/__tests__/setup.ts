@@ -16,11 +16,15 @@ import { cleanup, configure } from '@testing-library/react'
 
 import { forgetProbes } from '../fetch'
 
-// The default 1000 ms for findBy*/waitFor is shorter than a loaded CI runner needs to render an agent
-// split: the same QA files (qa.u11a.logs, qa.u10a.agent) timed out on unrelated branches' runs
-// on 2026-10-05 while 215 other files shared the box. A wait that succeeds returns at once, so
-// the longer ceiling costs a passing test nothing.
-configure({ asyncUtilTimeout: 8000 })
+// 2000 ms for findBy*/waitFor, twice Testing Library's default and no more (#605). #591 set
+// 8000 after qa.u11a.logs and qa.u10a.agent timed out on unrelated branches' runs on 2026-10-05.
+// The cause was the waits, not the box: each poll of a `findByRole` over the agent split cost
+// ~850 ms of `getComputedStyle` even idle, so those waits took 1.5-1.9 s in a full run on
+// 2026-10-05 and a loaded runner fit one poll in the window. They now wait on the read their
+// assertion depends on (`landed` in reads.ts) and query once. A ceiling this high stays only
+// as headroom for a runner busier than the one measured; a wait that needs more is a test to
+// fix like those, not a reason to raise this. Files that pass their own `{ timeout }` keep it.
+configure({ asyncUtilTimeout: 2000 })
 
 const forbidden = (): never => {
   throw new Error(
