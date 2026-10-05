@@ -38,7 +38,7 @@ export const meta = {
 //
 // THE RUN IS NAMED AFTER THE WORKFLOW. `meta` is a literal and a running
 // script cannot rename its run, so the plugin launches each run from a copy
-// of this script whose meta.name is `SwarmCloud · <name> · N steps`
+// of this script whose meta.name is `SC · <name> · N steps`
 // (swarm_mcp.launch, the swarm_workflow_launch tool). Inside, the same name
 // and step count open the first row's label, and the Result row adds the
 // workflow id, which only exists once SwarmCloud has answered.
@@ -470,13 +470,15 @@ function stagePhase(stage) {
   return 'Stage ' + stage
 }
 
-// THE RUN'S TITLE (owner, 2026-10-04): `SwarmCloud · <name> · N steps`, at
-// most TITLE_CHARS characters, the name cut at the last word that fits, with
-// `…`. swarm_mcp.workflows.workflow_title writes the same title into the
-// per-run copy's meta.name; the plugin's tests hold the two equal. Counted in
-// code points, as Python counts.
-const TITLE_CHARS = 100
-const TITLE_PREFIX = 'SwarmCloud · '
+// THE RUN'S TITLE: `SC · <name> · N steps`, at most TITLE_CHARS characters,
+// the name cut at the last word that fits, with `…`. Owner 2026-10-04:
+// SwarmCloud prefix, at most 100; owner 2026-10-05: prefix `SC · ` because
+// Claude Code's task panel shows ~28 characters of a name, and at most 150
+// because Enter shows the full name. swarm_mcp.workflows.workflow_title writes
+// the same title into the per-run copy's meta.name; the plugin's tests hold
+// the two equal. Counted in code points, as Python counts.
+const TITLE_CHARS = 150
+const TITLE_PREFIX = 'SC · '
 
 // `text` with every run of whitespace one space and none at either end; null
 // for anything that is not text or holds none.
