@@ -47,7 +47,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 35 | `profiles.py` / `models.py`: the `post-verdict` worker-action profile, and its own end causes (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 36 | `profiles.py`: the `claude-code-review` profile, and a typed `never_restore_checkpoint` (part of #295) | APPLIED 2026-10-01 (accepted by the owner 2026-10-01) |
 | 37 | `config.py` / `admission.py`: the lease's dispatch deadline is 300 s, shorter than a slow cold start plus the worker's startup read (#401) | ACCEPTED 2026-09-30 by the owner, applied by this PR (#404) |
-| 38 | `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374) | ACCEPTED 2026-10-05 by the owner (recorded on #374), IMPLEMENTED 2026-10-05 (functionality wave 7, lane CR38) |
+| 38 | `states.py` / `admission.py`: a pool with no `hard_limit` is refused as "set to 0" (#374) | accepted by the owner 2026-10-05 (recorded on #374), IMPLEMENTED 2026-10-05 (functionality wave 7, lane CR38) |
 | 39 | `states.py` / `models.py`: `ParkReason.BUDGET_EXHAUSTED` names a park nothing writes, because there are no budgets (owner, 2026-10-01) | open |
 | 40 | `states.py`: an agent awaiting its children has no park reason, and `DEPENDENCY_INCOMPLETE` would be promoted at once (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
 | 41 | `models.py`: a child cancelled because of its parent has no end cause (filed in request 14's amendment) | APPLIED 2026-10-02 (accepted by the owner 2026-10-02 with request 14) |
