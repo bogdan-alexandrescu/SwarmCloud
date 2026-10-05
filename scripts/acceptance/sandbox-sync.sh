@@ -133,4 +133,9 @@ git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptanc
   commit --quiet -m "Acceptance fixtures as of ${source_sha}"
 git -C "${clone}" push --quiet origin "HEAD:refs/heads/${ACC_REF}" 2>"${WORK}/git.err" \
   || die "could not push ${FIXTURES}/ to ${ACC_GITHUB_REPO}@${ACC_REF}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
-ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} ($(git -C "${clone}" diff --stat HEAD~1 HEAD 2>/dev/null | tail -n 1 || printf 'first commit'))"
+if git -C "${clone}" rev-parse -q --verify HEAD~1 >/dev/null; then
+  pushed="$(git -C "${clone}" diff --stat HEAD~1 HEAD | tail -n 1)"
+else
+  pushed="the sandbox's first commit"
+fi
+ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} (${pushed})"

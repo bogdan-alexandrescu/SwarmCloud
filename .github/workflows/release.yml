@@ -1069,10 +1069,13 @@ jobs:
   # fails this job, and so the release.
   #
   # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
-  # handed to two steps only, and never to the suite: the swarm-verify job
+  # handed to three steps only, and never to the suite: the swarm-verify job
   # holds no GitHub credential. Before the suite, sandbox-sync.sh writes this
   # commit's tests/acceptance/fixtures/ to the sandbox's main and checks the
-  # fixture issue; after it, github-cleanup.sh closes the pull requests and
+  # fixture issue; after it, github-verify.sh reads the pull requests the
+  # suite opened back (title, body, diff, merged branches -- the assertions
+  # the suite itself cannot make without a token) and fails the job on any
+  # defect, and then github-cleanup.sh closes the pull requests and
   # branches the direct-pr and integrate checks opened there (only swarm/task_
   # branches whose changes lie entirely under tests/acceptance/fixtures/). The
   # job's own GITHUB_TOKEN reaches only this repository, so it is read-only
@@ -1106,12 +1109,29 @@ jobs:
           SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
         run: ./scripts/acceptance/sandbox-sync.sh
 
+      # When the suite starts, so github-verify.sh judges only the pull
+      # requests this run opened, not one an earlier, unswept run left.
+      - name: note when the suite starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
       - name: acceptance suite (inside the VPC)
         id: suite
         # Every group runs even when an earlier one failed: verify-remote.sh
         # runs all its targets and exits non-zero at the end naming the ones
         # that failed.
         run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
+
+      # The suite cannot read the private sandbox back (swarm-verify holds no
+      # GitHub token) and SKIPs those assertions; this step makes them here,
+      # with the sandbox token, before the sweep closes anything. A failure
+      # here fails the job; the sweep still runs after it.
+      - name: read the suite's pull requests back from the sandbox
+        if: ${{ !cancelled() && steps.started.outputs.at != '' }}
+        env:
+          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          SWARM_ACCEPTANCE_SINCE: ${{ steps.started.outputs.at }}
+        run: ./scripts/acceptance/github-verify.sh
 
       - name: close the pull requests and branches the suite opened on the sandbox
         if: ${{ !cancelled() }}

@@ -1621,23 +1621,46 @@ read, and asks `GET /tenants/me` with the header and refuses any tenant but
 caller's default tenant: that fallback is how acceptance came to fill eng.
 
 **What the release job holds.** `contents: read` and `id-token: write`. The
-repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to two steps and never to
-the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
+repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
+to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
 commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
-differ, and no other path) and opens or checks the fixture issue; and
-`scripts/acceptance/github-cleanup.sh` after it, which closes the pull requests
-and branches the suite opened there. The job's `GITHUB_TOKEN` reaches only
-this repository, which is why it is no longer write-scoped.
+differ, and no other path) and opens or checks the fixture issue;
+`scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
+requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
+closes the pull requests and branches the suite opened there. The job's
+`GITHUB_TOKEN` reaches only this repository, which is why it is no longer
+write-scoped.
 
-**What the release no longer measures on GitHub.** The swarm-verify job holds
-no GitHub credential, by design, and the sandbox is private, so every
-read-back of a pull request -- its title against `pr-title.txt`, its body, its
-head, its diff, and the fixture file the `collect` patch is applied to -- is a
-SKIP in the release, naming why. The platform-side assertions still run there:
-the pull request was opened, its title is the agent's
-(`pull_request_text.title`), the artifacts exist and the patch replaces the
-bug line. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set to a token
-that reads the sandbox measures the rest.
+**Where the GitHub read-backs moved.** The swarm-verify job holds no GitHub
+credential, by design, and the sandbox is private, so the suite cannot read a
+pull request back and SKIPs those assertions, naming the step that makes them.
+Dropping them would have let a release go green with the pull-request half of
+the direct-pr and integrate checks unexercised, so they run on the GitHub
+runner instead, which does hold the sandbox token:
+
+* `github-verify.sh` runs after the suite (even a failed one) and before the
+  sweep closes anything. It judges every open `swarm/task_` pull request of the
+  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
+  `started` step), and fails the job when one has an empty title or a title
+  carrying a task id, a body without its task id, a change outside
+  `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
+  `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
+  that lists no merged branch or leaves one out. It only reads; the sweep still
+  runs when it fails. Finding no pull request at all is printed with a workflow
+  warning, not a failure: a claude-code group without a provider credential
+  SKIPs without opening one.
+* The `collect` check's patch is applied in the suite itself, to this build's
+  own `calc.py`: the swarm-verify image now carries
+  `tests/acceptance/fixtures/`, and `sandbox-sync.sh` put the same commit's
+  copy on the sandbox's `main` first, so the two are the same bytes.
+
+What still runs only in the suite: the pull request was opened, its title is
+the agent's (`pull_request_text.title`), the artifacts exist and the patch
+replaces the bug line. The one comparison the runner cannot make is the PR
+title against the task's `pr-title.txt` artifact, which lives behind the API
+inside the VPC; it checks the title is a non-empty fact rather than a task id
+instead. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set measures that
+in the suite too.
 
 ### What the owner applies, once, in this order
 

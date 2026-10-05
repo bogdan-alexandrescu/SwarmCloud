@@ -114,6 +114,12 @@ acc_require_private_repository() {
     esac
     [[ "${attempt}" -eq 2 ]] || sleep 5
   done
+  # 403 and 429 are what GitHub answers an anonymous caller over its 60
+  # requests an hour, counted per source IP -- the swarm-verify job's NAT
+  # address. Not a platform failure, and not a public repository: say so.
+  case "${code}" in
+    403|429) die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read, which is its unauthenticated rate limit (60 an hour per source IP), not an answer about the repository; re-run the job once the hour has passed" ;;
+  esac
   die "could not confirm ${ACC_GITHUB_REPO} is private: GitHub answered HTTP ${code} twice to an anonymous read"
 }
 
@@ -456,15 +462,17 @@ ACC_GITHUB_TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}
 # anything else), so without a token every read is a 404. A check asks this
 # first and SKIPs what it cannot look at, naming why -- never a FAIL for a
 # read it could not make, and never a PASS for one it did not. In the release
-# that is every GitHub read-back: the platform-side assertions (the pull
-# request was opened, its title is the agent's, the artifacts exist) still
-# run there, and an operator run with SWARM_ACCEPTANCE_GITHUB_TOKEN measures
-# the rest.
+# that is every pull-request read-back: the platform-side assertions (the
+# pull request was opened, its title is the agent's, the artifacts exist) run
+# here, and the release's acceptance job then makes the read-back ones on the
+# GitHub runner, with the sandbox token, before anything is closed
+# (scripts/acceptance/github-verify.sh). An operator run with
+# SWARM_ACCEPTANCE_GITHUB_TOKEN measures them here too.
 acc_github_can_read() { [[ -n "${ACC_GITHUB_TOKEN}" ]]; }
 
 # acc_github_skip_reason -> the one sentence every such SKIP gives.
 acc_github_skip_reason() {
-  printf 'not measured on GitHub: %s is private and this run holds no token to read it (the swarm-verify job carries none; set SWARM_ACCEPTANCE_GITHUB_TOKEN to measure it)' "${ACC_GITHUB_REPO}"
+  printf 'not measured here: %s is private and this run holds no token to read it (the swarm-verify job carries none). The release measures it after the suite with scripts/acceptance/github-verify.sh; set SWARM_ACCEPTANCE_GITHUB_TOKEN to measure it here' "${ACC_GITHUB_REPO}"
 }
 
 # acc_github METHOD PATH [BODY] -> the response body; fails on non-2xx.

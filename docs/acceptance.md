@@ -223,8 +223,17 @@ whether a page rendered is decided at its top.
 The direct-pr and integrate checks open real pull requests on the sandbox,
 never on this repository. A check closes its own when its run holds a token
 for the sandbox. The release's run does not: it runs in the swarm-verify job,
-which holds no GitHub credential, on purpose. So the release's acceptance job
-runs `scripts/acceptance/github-cleanup.sh` afterwards with the sandbox's own
+which holds no GitHub credential, on purpose, and so cannot read its pull
+requests back either: those assertions SKIP in the suite. The release's
+acceptance job makes them after the suite, on the GitHub runner, with
+`scripts/acceptance/github-verify.sh` -- the title is a fact and not a task
+id, the body carries the task id, the diff stays under
+`tests/acceptance/fixtures/` and removes the bug line, an integrate body lists
+its merged branches and leaves none out -- and fails the job on any defect
+([ci.md](ci.md#release-acceptance-runs-in-the-smoke-tenant-against-a-private-sandbox)).
+The `collect` patch is applied in the suite to the swarm-verify image's own
+copy of `calc.py`, the same commit `sandbox-sync.sh` put on the sandbox. Then
+the job runs `scripts/acceptance/github-cleanup.sh` with the sandbox's own
 token (the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`; the job's
 `GITHUB_TOKEN` reaches only this repository). It closes only an open pull request from a
 `swarm/task_` branch whose every changed file lies under

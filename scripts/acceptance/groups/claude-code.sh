@@ -20,7 +20,7 @@ CC_FIXTURE="tests/acceptance/fixtures/claude-code/calc.py"
 CC_BUG_LINE="    return a - b"
 CC_FIX_LINE="    return a + b"
 # The issue check reads the sandbox's fixture issue, ACC_ISSUE, and expects
-# AACC_ISSUE_EXPECT, a string only its text carries, so an agent cannot produce
+# ACC_ISSUE_EXPECT, a string only its text carries, so an agent cannot produce
 # it without reading the issue. Both are config.sh's; sandbox-sync.sh opens the
 # issue and refuses a sandbox whose issue says something else.
 
@@ -95,18 +95,25 @@ _cc_check_collect() {
     acc_fail "the patch does not replace the bug line in ${CC_FIXTURE}" "${task}"
   fi
 
-  # Apply it to the file as it is at the ref the task cloned. Read from GitHub
-  # directly: the swarm-verify image carries scripts/, not tests/. The
-  # sandbox is private, so that read needs a token this run may not hold.
-  if ! acc_github_can_read; then
-    acc_skip "applying the patch to ${CC_FIXTURE} at ${ACC_REF}: $(acc_github_skip_reason)" "${task}"
-    return 0
-  fi
+  # Apply it to the file as it is at the ref the task cloned. With a token,
+  # read it from the sandbox itself. Without one -- the release, whose
+  # swarm-verify job holds none -- apply it to this build's own copy: the
+  # swarm-verify image carries tests/acceptance/fixtures/ (#628), and
+  # sandbox-sync.sh put that same commit's fixtures on the sandbox's main
+  # before the suite started, so at main the two are the same bytes.
   dir="${ACC_WORK}/cc-apply"
   mkdir -p "${dir}/$(dirname "${CC_FIXTURE}")"
   original="${dir}/${CC_FIXTURE}"
-  if ! acc_github_raw "${CC_FIXTURE}" "${original}" 2>/dev/null; then
-    acc_skip "not measured: could not fetch ${CC_FIXTURE} at ${ACC_REF} from ${ACC_GITHUB_REPO} to apply the patch to" "${task}"
+  if acc_github_can_read; then
+    if ! acc_github_raw "${CC_FIXTURE}" "${original}" 2>/dev/null; then
+      acc_skip "not measured: could not fetch ${CC_FIXTURE} at ${ACC_REF} from ${ACC_GITHUB_REPO} to apply the patch to" "${task}"
+      return 0
+    fi
+  elif [[ "${ACC_REF}" == "main" && -f "${REPO_ROOT}/${CC_FIXTURE}" ]]; then
+    cp "${REPO_ROOT}/${CC_FIXTURE}" "${original}"
+    t_info "applying to this build's ${CC_FIXTURE}, which sandbox-sync.sh put on ${ACC_GITHUB_REPO}@main"
+  else
+    acc_skip "applying the patch to ${CC_FIXTURE} at ${ACC_REF}: $(acc_github_skip_reason)" "${task}"
     return 0
   fi
   if command -v git >/dev/null 2>&1; then

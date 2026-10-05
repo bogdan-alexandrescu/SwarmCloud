@@ -37,7 +37,7 @@ GROUPS = ("mock", "generic", "claude-code", "workflow", "browser")
 #: What is run rather than sourced. lib.sh and the group files are sourced by
 #: run.sh and checked through it (-x); on their own they would report every
 #: variable common.sh and lib.sh set.
-ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "sandbox-sync.sh", "parsers.sh")
+ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "github-verify.sh", "sandbox-sync.sh", "parsers.sh")
 
 
 def _job() -> dict:

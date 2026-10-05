@@ -482,3 +482,275 @@ def test_swarm_verify_is_not_a_listed_service_account_anywhere():
     # swarm-verify runs would stop.
     for name, cfg in _tenants().items():
         assert SWARM_VERIFY not in cfg.get("service_accounts", ""), name
+
+
+# ---------------------------------------------------------------------------
+# The read-back the suite cannot make: github-verify.sh on the GitHub runner
+# ---------------------------------------------------------------------------
+#
+# The suite runs in swarm-verify, which holds no GitHub token, so against the
+# private sandbox it SKIPs every pull-request read-back. Without the step
+# below, a release went green with the direct-pr title/body/diff and the
+# integrate merged-branch list never checked (review of #628). These pin that
+# the release makes them with the sandbox token before the sweep closes the
+# pull requests, and that the script fails on each defect it exists to catch.
+
+VERIFY = ACCEPTANCE / "github-verify.sh"
+CALC = "tests/acceptance/fixtures/claude-code/calc.py"
+BUG_PATCH = "@@ -12,4 +12,4 @@\n def add(a, b):\n-    return a - b\n+    return a + b\n"
+FAKE_GH_API = "http://gh.invalid"
+
+#: A curl that answers GitHub's API from files: the URL's path, every
+#: non-alphanumeric character turned to `_`, names the file under FAKE_DIR.
+#: Anything else is a 404. It reads the token header from stdin and records
+#: whether one arrived, never what it was.
+FAKE_GH_CURL = r"""#!/usr/bin/env bash
+out=""; url=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    -K|-m|-H|-w|-X|--data-binary) shift 2 ;;
+    -*) shift ;;
+    *) url="$1"; shift ;;
+  esac
+done
+grep -q 'Authorization: Bearer' && echo yes >>"${FAKE_DIR}/auth" || echo no >>"${FAKE_DIR}/auth"
+key="$(printf '%s' "${url#*://*/}" | sed 's#[^A-Za-z0-9]#_#g')"
+if [[ -f "${FAKE_DIR}/gh/${key}" ]]; then cp "${FAKE_DIR}/gh/${key}" "${out}"; printf 200
+else printf '{"message":"Not Found"}' >"${out}"; printf 404; fi
+"""
+
+
+def _gh_key(path: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "_", path.lstrip("/"))
+
+
+def _pr(number: int, task: str, *, title: str = "add() returns the sum of its arguments",
+        body: str | None = None, created: str = "2026-10-05T12:00:00Z", fork: bool = False) -> dict:
+    repo = {"full_name": SANDBOX}
+    return {
+        "number": number,
+        "title": title,
+        "body": f"Opened by swarm task {task}.\n" if body is None else body,
+        "created_at": created,
+        "head": {"ref": f"swarm/{task}", "repo": {"full_name": "someone/fork"} if fork else repo},
+        "base": {"repo": repo},
+    }
+
+
+def _calc_file(patch: str = BUG_PATCH) -> dict:
+    return {"filename": CALC, "patch": patch}
+
+
+def _verify(tmp_path: Path, pulls: list[dict], files: dict[int, list[dict]], *args: str,
+            token: bool = True) -> subprocess.CompletedProcess:
+    import json
+
+    gh = tmp_path / "gh"
+    gh.mkdir()
+    repo_path = f"repos/{SANDBOX}"
+    (gh / _gh_key(f"{repo_path}/pulls?state=open&per_page=100")).write_text(json.dumps(pulls))
+    for number, listed in files.items():
+        (gh / _gh_key(f"{repo_path}/pulls/{number}/files?per_page=100")).write_text(json.dumps(listed))
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fake = bin_dir / "curl"
+    fake.write_text(FAKE_GH_CURL)
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    env = _clean_env(
+        PATH=f"{bin_dir}:{os.environ['PATH']}",
+        HOME=str(tmp_path),
+        TMPDIR=str(tmp_path),
+        FAKE_DIR=str(tmp_path),
+        SWARM_ENV_FILE=str(tmp_path / "no.env"),
+        SWARM_ACCEPTANCE_GITHUB_API=FAKE_GH_API,
+    )
+    if token:
+        env["SWARM_ACCEPTANCE_GITHUB_TOKEN"] = "t" + "k" * 12
+    return subprocess.run(
+        ["bash", str(VERIFY), *args],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+
+
+def _integrate_body(task: str, merged: list[str], extra: str = "") -> str:
+    lines = [f"Opened by swarm task {task}.", "", f"Integrates {len(merged)} contributor branch(es):"]
+    lines += [f"- merged: `{b}`" for b in merged]
+    return "\n".join(lines) + "\n" + extra
+
+
+def _good_pulls() -> tuple[list[dict], dict[int, list[dict]]]:
+    direct, fix, impl = "task_" + "a1" * 8, "task_" + "b2" * 8, "task_" + "c3" * 8
+    pulls = [
+        _pr(7, direct),
+        _pr(8, fix, title="Integrate the add() fix", body=_integrate_body(fix, [f"swarm/{impl}"])),
+    ]
+    return pulls, {7: [_calc_file()], 8: [_calc_file()]}
+
+
+def test_verify_passes_the_pull_requests_the_platform_should_open(tmp_path):
+    pulls, files = _good_pulls()
+    result = _verify(tmp_path, pulls, files)
+    assert result.returncode == 0, result.stderr
+    assert "verified 2 pull request(s): 1 direct-pr, 1 integrate" in result.stderr
+    # Every read carried the sandbox token: the repository is private.
+    assert set((tmp_path / "auth").read_text().split()) == {"yes"}
+
+
+def test_verify_refuses_to_run_without_the_sandbox_token(tmp_path):
+    pulls, files = _good_pulls()
+    result = _verify(tmp_path, pulls, files, token=False)
+    assert result.returncode != 0
+    assert "SWARM_ACCEPTANCE_GITHUB_TOKEN" in result.stderr
+
+
+def _broken(case: str) -> tuple[list[dict], dict[int, list[dict]]]:
+    pulls, files = _good_pulls()
+    direct_task = pulls[0]["head"]["ref"].removeprefix("swarm/")
+    if case == "title-is-task-id":
+        pulls[0]["title"] = f"[swarm] {direct_task}"
+    elif case == "empty-title":
+        pulls[0]["title"] = "  "
+    elif case == "body-lacks-task-id":
+        pulls[0]["body"] = "acceptance-run:x\n"
+    elif case == "file-outside-fixtures":
+        files[7] = [_calc_file(), {"filename": "README.md", "patch": "+x\n"}]
+    elif case == "direct-pr-changes-another-fixture":
+        files[7] = [_calc_file(), {"filename": "tests/acceptance/fixtures/claude-code/test_calc.py", "patch": "+x\n"}]
+    elif case == "bug-line-not-removed":
+        files[7] = [_calc_file("@@ -1 +1 @@\n-x\n+y\n")]
+    elif case == "integrate-merged-nothing":
+        task = pulls[1]["head"]["ref"].removeprefix("swarm/")
+        pulls[1]["body"] = _integrate_body(task, [])
+    elif case == "integrate-left-a-branch-out":
+        task = pulls[1]["head"]["ref"].removeprefix("swarm/")
+        pulls[1]["body"] = _integrate_body(task, ["swarm/task_" + "d4" * 8], "- conflicted: `swarm/task_" + "e5" * 8 + "`\n")
+    elif case == "files-unreadable":
+        del files[8]
+    else:
+        raise AssertionError(case)
+    return pulls, files
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "title-is-task-id",
+        "empty-title",
+        "body-lacks-task-id",
+        "file-outside-fixtures",
+        "direct-pr-changes-another-fixture",
+        "bug-line-not-removed",
+        "integrate-merged-nothing",
+        "integrate-left-a-branch-out",
+        "files-unreadable",
+    ],
+)
+def test_verify_fails_the_job_on_each_defect_it_exists_to_catch(tmp_path, case):
+    pulls, files = _broken(case)
+    result = _verify(tmp_path, pulls, files)
+    assert result.returncode != 0, f"{case} passed:\n{result.stderr}"
+    assert "assertion(s) failed" in result.stderr
+
+
+def test_verify_judges_only_this_runs_same_repository_task_pull_requests(tmp_path):
+    pulls, files = _good_pulls()
+    stale_task = "task_" + "f6" * 8
+    stale = _pr(3, stale_task, title=f"[swarm] {stale_task}", created="2026-10-04T09:00:00Z")
+    fork = _pr(4, "task_" + "a7" * 8, title="[swarm] fork", fork=True)
+    human = dict(_pr(5, "x", title=""), head={"ref": "feature/x", "repo": {"full_name": SANDBOX}})
+    result = _verify(tmp_path, [stale, fork, human, *pulls], files, "--since", "2026-10-05T11:00:00Z")
+    assert result.returncode == 0, result.stderr
+    assert "verified 2 pull request(s)" in result.stderr
+    # Without --since the stale one, opened by an earlier unswept run, is judged.
+    other = tmp_path / "again"
+    other.mkdir()
+    result = _verify(other, [stale, *pulls], {**files, 3: [_calc_file()]})
+    assert result.returncode != 0
+
+
+def test_verify_finding_nothing_says_so_and_does_not_fail(tmp_path):
+    result = _verify(tmp_path, [], {})
+    assert result.returncode == 0, result.stderr
+    assert "verified 0 pull request(s)" in result.stderr
+    assert "no direct-pr pull request" in result.stderr
+    assert "no integrate pull request" in result.stderr
+
+
+def test_verify_refuses_a_since_that_is_not_utc_iso8601(tmp_path):
+    result = _verify(tmp_path, [], {}, "--since", "yesterday")
+    assert result.returncode != 0
+    assert "--since" in result.stderr
+
+
+def test_verify_writes_nothing_to_github():
+    code = "\n".join(l for l in VERIFY.read_text().splitlines() if not l.lstrip().startswith("#"))
+    for verb in ("PATCH", "DELETE", "POST", "PUT", "--data-binary"):
+        assert verb not in code, f"github-verify.sh must only read; it mentions {verb}"
+
+
+def test_the_release_reads_the_pull_requests_back_with_the_sandbox_token_before_the_sweep():
+    steps = _job()["steps"]
+
+    def at(script: str) -> int:
+        return next(i for i, s in enumerate(steps) if script in str(s.get("run", "")))
+
+    suite, verify, sweep = at("verify-remote.sh"), at("github-verify.sh"), at("github-cleanup.sh")
+    assert suite < verify < sweep, "the read-back runs after the suite and before anything is closed"
+    step = steps[verify]
+    assert "!cancelled()" in str(step.get("if", "")), "a failed suite's pull requests are read back too"
+    env = step.get("env", {})
+    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(env.get("SWARM_ACCEPTANCE_GITHUB_TOKEN", ""))
+    assert "github.token" not in str(step)
+    # It judges only what this run opened: SINCE comes from a step that ran
+    # before the suite started.
+    started = next(i for i, s in enumerate(steps) if s.get("id") == "started")
+    assert started < suite
+    assert "steps.started.outputs.at" in str(env.get("SWARM_ACCEPTANCE_SINCE", ""))
+    # The sweep is not skipped when the read-back fails.
+    assert "!cancelled()" in str(steps[sweep].get("if", ""))
+
+
+# ---------------------------------------------------------------------------
+# The collect check applies the patch without reading the private sandbox
+# ---------------------------------------------------------------------------
+
+
+def test_the_swarm_verify_image_carries_the_acceptance_fixtures():
+    dockerfile = (ROOT / "images" / "swarm-verify" / "Dockerfile").read_text()
+    assert "COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/" in dockerfile
+    build = yaml.safe_load((ROOT / "images" / "swarm-verify" / "cloudbuild.yaml").read_text())
+    assemble = next(s for s in build["steps"] if s.get("id") == "assemble-context")
+    script = "\n".join(assemble["args"])
+    assert "cp -R tests/acceptance/fixtures /workspace/verify-ctx/tests/acceptance/fixtures" in script
+    assert "test -f /workspace/verify-ctx/tests/acceptance/fixtures/claude-code/calc.py" in script
+
+
+def test_collect_applies_the_patch_to_the_builds_own_fixture_when_it_holds_no_token():
+    text = (ACCEPTANCE / "groups" / "claude-code.sh").read_text()
+    fn = text[text.index("_cc_check_collect() {"):text.index("_cc_check_direct_pr() {")]
+    local = fn.index('cp "${REPO_ROOT}/${CC_FIXTURE}" "${original}"')
+    gate = fn.index("if acc_github_can_read; then")
+    skip = fn.index("acc_github_skip_reason")
+    # Token first (reads the sandbox itself), then this build's copy at main,
+    # and only then a SKIP.
+    assert gate < local < skip
+    assert '"${ACC_REF}" == "main"' in fn
+
+
+def test_the_privacy_probe_names_githubs_rate_limit_rather_than_a_platform_failure(tmp_path):
+    stub = """
+curl() { printf 403; }
+sleep() { :; }
+acc_require_private_repository
+echo REACHED
+"""
+    result = _lib(stub)
+    assert result.returncode == 9
+    assert "REACHED" not in result.stdout
+    assert "rate limit" in result.stderr
