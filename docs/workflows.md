@@ -744,10 +744,15 @@ finding. Until #638 that depended on an operator copying them out of
 across 122 reviews that never left the file. Now the gated step files them.
 
 * **What a minor is.** A finding that is an object with `"severity":
-  "minor"` (any case) and a `summary`, `title` or `message`. It may also name
-  `file`, `call_site` and `evidence`:
+  "minor"` (any case) and a `summary`, `title`, `message`, `problem` or
+  `what`. It may also name `file`, a call site (`call_site`, or `where`) and
+  how it was found (`evidence`; failing that, a `fix` trails the comment as
+  "suggested fix: ..."). Both of these are read:
   `{"severity": "minor", "summary": "...", "file": "apps/x/a.py", "call_site":
-  "run()", "evidence": "..."}`. A string finding, or a `blocker` or `major`, is
+  "run()", "evidence": "..."}` and the shape the review briefs prescribe,
+  `{"severity": "minor", "file": "apps/x/a.py", "where": "run()", "problem":
+  "...", "fix": "..."}`. The second is the shape of the 530 minors #638
+  counted; reading only the first filed none of them. A string finding, or a `blocker` or `major`, is
   the fix step's and is **never** filed: blockers and majors are what the fix
   agent fixes, and a NOT_YET with only minors would otherwise be filed and
   fixed twice. Every finding, minor or not, still reaches the pull request

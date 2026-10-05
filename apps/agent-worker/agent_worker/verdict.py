@@ -176,13 +176,34 @@ def _one_line(value: Any, bound: int) -> str:
     return text if len(text) <= bound else text[: bound - 1] + "…"
 
 
+#: What a minor says its defect is, in the order read: the `summary` shape
+#: first, then the review briefs' `problem` shape (#638).
+_MINOR_TEXT_FIELDS = ("summary", "title", "message", "problem", "what")
+
+
+def _first_text(item: dict[str, Any], names: tuple[str, ...]) -> str:
+    """The first of `names` that holds a non-blank string, "" when none does."""
+    for name in names:
+        value = item.get(name)
+        if isinstance(value, str) and value.strip():
+            return value
+    return ""
+
+
 def minor_findings(items: Any) -> tuple[tuple[MinorFinding, ...], int]:
     """The findings marked minor, bounded, and how many past the bound were left.
 
     Only an OBJECT whose `severity` is `minor` (any case) is one, and only
-    when it says what the defect is (`summary`, `title` or `message`). A
-    string finding, or an object with any other severity or none, is the fix
-    step's and never filed (#638).
+    when it says what the defect is (`summary`, `title`, `message`,
+    `problem` or `what`). A string finding, or an object with any other
+    severity or none, is the fix step's and never filed (#638).
+
+    Both shapes are read. The review steps' briefs prescribe
+    `{"severity", "file", "where", "problem", "fix"}`, which is the shape of
+    the minors #638 counted, so `where` is the call site when `call_site` is
+    absent, and the suggested `fix` trails the comment when the review gave no
+    `evidence`. Reading only `summary`/`call_site` filed nothing on the
+    verdicts that exist.
     """
     if not isinstance(items, list):
         items = [items] if items not in (None, "") else []
@@ -193,18 +214,18 @@ def minor_findings(items: Any) -> tuple[tuple[MinorFinding, ...], int]:
         severity = item.get("severity")
         if not isinstance(severity, str) or severity.strip().lower() != SEVERITY_MINOR:
             continue
-        text = next(
-            (item[key] for key in ("summary", "title", "message") if isinstance(item.get(key), str)),
-            None,
-        )
-        text = _one_line(text, MAX_FINDING_CHARS)
+        text = _one_line(_first_text(item, _MINOR_TEXT_FIELDS), MAX_FINDING_CHARS)
         if not text:
             continue
+        evidence = _first_text(item, ("evidence",))
+        if not evidence:
+            fix = _first_text(item, ("fix",))
+            evidence = f"suggested fix: {fix}" if fix else ""
         minors.append(MinorFinding(
             text=text,
             file=_one_line(item.get("file"), MAX_WHERE_CHARS),
-            call_site=_one_line(item.get("call_site"), MAX_WHERE_CHARS),
-            evidence=_one_line(item.get("evidence"), MAX_WHERE_CHARS),
+            call_site=_one_line(_first_text(item, ("call_site", "where")), MAX_WHERE_CHARS),
+            evidence=_one_line(evidence, MAX_WHERE_CHARS),
         ))
     return tuple(minors[:MAX_MINORS]), max(len(minors) - MAX_MINORS, 0)
 

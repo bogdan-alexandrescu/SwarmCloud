@@ -45,6 +45,13 @@ MINOR_A = {"severity": "minor", "summary": "The docstring names a retired flag",
            "file": "apps/x/a.py", "call_site": "run()", "evidence": "read by lane MIN"}
 MINOR_B = {"severity": "Minor", "summary": "A log line repeats its own field",
            "file": "apps/x/b.py", "call_site": "Worker.finish()"}
+# The shape the review steps' briefs prescribe, and the shape of the minors
+# #638 counted: `problem` is the defect, `where` the call site.
+MINOR_BRIEF = {"severity": "minor", "file": "apps/x/e.py", "where": "Worker.park()",
+               "problem": "The park reason is logged twice",
+               "fix": "Log it once in park()"}
+MAJOR_BRIEF = {"severity": "major", "file": "apps/x/f.py", "where": "lease()",
+               "problem": "The lease outlives its generation", "fix": "Fence it"}
 MAJOR = {"severity": "major", "summary": "The lease is released twice",
          "file": "apps/x/c.py", "call_site": "release()"}
 BLOCKER = {"severity": "blocker", "summary": "A token reaches the log",
@@ -105,6 +112,25 @@ def test_only_findings_marked_minor_are_minors(tmp_path):
     assert len(read.findings) == 6
 
 
+def test_a_minor_in_the_review_brief_shape_is_read(tmp_path):
+    path = tmp_path / "verdict.json"
+    path.write_text(json.dumps({"verdict": "NOT_YET",
+                                "findings": [MAJOR_BRIEF, MINOR_BRIEF]}))
+    read = verdict_mod.read_verdict(path, task_id="task_up", filename="verdict.json")
+    assert len(read.minors) == 1
+    minor = read.minors[0]
+    assert minor.text == MINOR_BRIEF["problem"]
+    assert minor.file == "apps/x/e.py"
+    assert minor.call_site == "Worker.park()"
+    assert minor.evidence == "suggested fix: Log it once in park()"
+
+
+def test_call_site_and_evidence_win_over_where_and_fix():
+    (minor,) = _minors({**MINOR_BRIEF, "call_site": "park()", "evidence": "read by lane MIN"})
+    assert minor.call_site == "park()"
+    assert minor.evidence == "read by lane MIN"
+
+
 def test_a_comment_names_the_defect_the_file_and_the_call_site():
     line = epic_mod.render_comment(
         verdict_mod.MinorFinding(text="It is wrong", file="a.py", call_site="f()"),
@@ -161,6 +187,20 @@ def test_a_rerun_posts_nothing_new(github):
     assert len(github.posted) == 2
     assert again["filed"] == []
     assert again["already_filed"] == 2
+
+
+def test_a_review_brief_minor_is_posted_once_and_deduped_on_rerun(github):
+    first = _file(_minors(MINOR_BRIEF, MAJOR_BRIEF))
+    assert len(github.posted) == 1
+    assert github.posted[0][1] == (
+        "- [ ] **The park reason is logged twice** · `apps/x/e.py` `Worker.park()` · "
+        "found by review `task_up`; suggested fix: Log it once in park()"
+    )
+    assert [f["text"] for f in first["filed"]] == [MINOR_BRIEF["problem"]]
+    again = _file(_minors(MINOR_BRIEF))
+    assert again["filed"] == []
+    assert again["already_filed"] == 1
+    assert len(github.posted) == 1
 
 
 def test_a_finding_a_person_already_filed_by_hand_is_not_filed_again(github):
@@ -259,6 +299,22 @@ def test_the_gated_step_does_not_file_twice_on_a_rerun(
     assert second["findings_epic"]["filed"] == []
     assert second["findings_epic"]["already_filed"] == 1
     assert len(github.posted) == 1
+
+
+def test_the_gated_step_files_a_review_brief_minor_once(
+    db, worker_factory, monkeypatch, github, log_stream
+):
+    token = _token()
+    verdict = {"verdict": "NOT_YET", "findings": [MINOR_BRIEF, MAJOR_BRIEF]}
+    first = _run_fix(db, worker_factory, monkeypatch, verdict, token)
+    assert [f["text"] for f in first["findings_epic"]["filed"]] == [MINOR_BRIEF["problem"]]
+    assert [f["call_site"] for f in first["findings_epic"]["filed"]] == ["Worker.park()"]
+    second = _run_fix(db, worker_factory, monkeypatch, None, _token(), n=3)
+    assert second["findings_epic"]["filed"] == []
+    assert second["findings_epic"]["already_filed"] == 1
+    assert len(github.posted) == 1
+    assert MAJOR_BRIEF["problem"] not in github.posted[0][1]
+    assert token not in log_stream.getvalue()
 
 
 def test_no_epic_configured_posts_nothing_and_says_so(
