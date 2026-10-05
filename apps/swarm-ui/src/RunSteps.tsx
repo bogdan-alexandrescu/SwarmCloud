@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { loadWorkflow, type WorkflowRead } from './api'
+import { loadWorkflow, loadWorkflowUsage, type StepUsage, type WorkflowRead } from './api'
 import { Dash } from './components/Chip'
 import { workflowSpend } from './dag'
 import { spanText } from './duration'
@@ -42,6 +42,13 @@ export interface WfLoad {
 export interface RunWorkflows {
   ids: string[]
   loads: WfLoad[] | null
+  /**
+   * Each step task's attempts, summed (`loadWorkflowUsage`, the board's read):
+   * the only cost a RUNNING step has, since its result is written when it
+   * finishes. Null before the first read lands or when every read failed --
+   * the result's figure is then all a finished step can offer.
+   */
+  usage: ReadonlyMap<string, StepUsage> | null
 }
 
 /** The run's workflow, then each fix round's, in order. */
@@ -59,6 +66,7 @@ export function useRunWorkflows(run: IssueRun): RunWorkflows {
   const ids = workflowIds(run)
   const key = ids.join(' ')
   const [state, setState] = useState<{ key: string; loads: WfLoad[] } | null>(null)
+  const [usage, setUsage] = useState<{ key: string; byTaskId: ReadonlyMap<string, StepUsage> } | null>(null)
   useEffect(() => {
     if (ids.length === 0) return
     let live = true
@@ -76,12 +84,30 @@ export function useRunWorkflows(run: IssueRun): RunWorkflows {
           }),
         }
       })
+      // The steps' attempts, on the same read: a running step's cost lives
+      // only there. Re-read every time (unlike the board, which re-reads on a
+      // changed set of tasks) because a running attempt's figure moves while
+      // the set stays the same. A failed read keeps the last one.
+      const taskIds = reads.flatMap((r) =>
+        r.status === 'ok' || r.status === 'stale'
+          ? r.data.workflow.steps.map((s) => s.task_id ?? '').filter((id) => id !== '')
+          : [],
+      )
+      if (taskIds.length === 0) return
+      void loadWorkflowUsage(taskIds).then((u) => {
+        if (!live) return
+        if (u.status === 'ok' || u.status === 'stale') setUsage({ key, byTaskId: u.data.byTaskId })
+      })
     })
     return () => {
       live = false
     }
   }, [run])
-  return { ids, loads: state !== null && state.key === key ? state.loads : null }
+  return {
+    ids,
+    loads: state !== null && state.key === key ? state.loads : null,
+    usage: usage !== null && usage.key === key ? usage.byTaskId : null,
+  }
 }
 
 /** One row of the Steps card: a workflow step, its task when the read has it. */
@@ -307,9 +333,11 @@ export function StepProgress({ e, now }: { e: Extract<ProgressEntry, { kind: 'st
 }
 
 /**
- * COST SO FAR (item 4): the step tasks' recorded cost, summed by the board's
- * one rule (`workflowSpend`: a finished task's reported figure), with how many
- * steps report. No step reporting is a dash with its reason, never $0.
+ * COST SO FAR (item 4): the step tasks' cost, summed by the board's one rule
+ * (`workflowSpend`): a step's attempts where they carry a cost -- which is
+ * how a RUNNING step reports -- otherwise a finished task's result. With how
+ * many steps report, and how many of those figures are the result's. No step
+ * reporting is a dash with its reason, never $0.
  */
 export function CostFact({ read }: { read: RunWorkflows }) {
   let body: ReactNode
@@ -321,6 +349,7 @@ export function CostFact({ read }: { read: RunWorkflows }) {
   } else {
     let total = 0
     let covered = 0
+    let fromResult = 0
     let steps = 0
     const unread: string[] = []
     for (const l of read.loads) {
@@ -328,18 +357,27 @@ export function CostFact({ read }: { read: RunWorkflows }) {
         unread.push(l.wf)
         continue
       }
-      const spend = workflowSpend(l.data.workflow.steps, new Map(l.data.tasks.map((t) => [t.id, t])))
+      const spend = workflowSpend(l.data.workflow.steps, new Map(l.data.tasks.map((t) => [t.id, t])), read.usage)
       steps += spend.steps
       covered += spend.covered
+      fromResult += spend.fromResult
       total += spend.usd ?? 0
     }
     const gap = unread.length === 0 ? '' : ` ${unread.length === 1 ? 'One workflow' : `${unread.length} workflows`} could not be read (${unread.join(', ')}), so its steps are not counted.`
+    const attempts = read.usage === null
+      ? ' The steps\' attempts have not been read, so only a finished step\'s result can report.'
+      : ''
     if (covered === 0) {
-      body = <Dash why={`No step has reported a cost yet: a step's cost is recorded when its task finishes.${gap}`} />
+      body = <Dash why={`No step has reported a cost yet: a step reports through its attempts while it runs, and through its result once it finishes.${attempts}${gap}`} />
     } else {
       absent = false
+      const source = fromResult === 0
+        ? 'Summed from the step tasks\' attempts.'
+        : fromResult === covered
+          ? 'Summed from the finished step tasks\' results.'
+          : `Summed from the step tasks' attempts; ${fromResult} of ${covered} from a finished task's result.`
       body = (
-        <span title={`Summed from the step tasks' recorded cost.${gap}`}>
+        <span title={`${source}${attempts}${gap}`}>
           {usd(total)} · {covered} of {steps} {steps === 1 ? 'step' : 'steps'} reporting
         </span>
       )

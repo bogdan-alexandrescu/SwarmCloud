@@ -104,10 +104,29 @@ function workflow(tasks = [
   }
 }
 
+/** Each task's attempts, served at `/v1/tasks/<id>/attempts`; a task not named here 404s. */
+let attemptsByTask: Record<string, unknown[]> = {}
+
+/** One attempt row with the figures the cost read sums. */
+function attempt(taskId: string, costUsd: number | null) {
+  return {
+    attempt_id: `att_${taskId}`, task_id: taskId, tenant_id: 'eng', generation: 1, lease_id: `lease_${taskId}`,
+    backend: 'cloudrun', execution_name: null, created_at: '2026-10-04T20:11:00Z', started_at: '2026-10-04T20:11:00Z',
+    completed_at: null, exit_code: null, error: null, peak_rss_bytes: null, peak_disk_bytes: null, oom_near_miss: false,
+    checkpoints: [], input_tokens: null, output_tokens: null, cache_read_input_tokens: null,
+    cache_creation_input_tokens: null, cost_usd: costUsd,
+  }
+}
+
 function serve(body: unknown, workflows: Record<string, unknown> = {}) {
   globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
     const url = String(input)
     if (url === `/v1/runs/${RUN_ID}`) return new Response(JSON.stringify({ run: body }), { status: 200, headers: JSON_HEADERS })
+    for (const [id, rows] of Object.entries(attemptsByTask)) {
+      if (url.startsWith(`/v1/tasks/${id}/attempts`)) {
+        return new Response(JSON.stringify({ attempts: rows }), { status: 200, headers: JSON_HEADERS })
+      }
+    }
     for (const [id, wf] of Object.entries(workflows)) {
       if (url === `/v1/workflows/${id}`) return new Response(JSON.stringify(wf), { status: 200, headers: JSON_HEADERS })
     }
@@ -127,6 +146,7 @@ async function mount(served: unknown, workflows: Record<string, unknown> = {}) {
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  attemptsByTask = {}
 })
 
 const stepsCard = async (container: HTMLElement) =>
@@ -257,6 +277,15 @@ describe('4: cost so far sums the steps\' recorded cost with its coverage', () =
     await waitFor(() => expect(visible(costFact(container))).toContain('$0.42 · 2 of 4 steps reporting'), WAIT)
   })
 
+  it('counts a RUNNING step through its attempts, which is how it reports before it finishes', async () => {
+    // The stage the owner measured: one step running, its cost only on its
+    // attempt (no result_summary yet). Results-only summing reads a dash here.
+    attemptsByTask = { task_impl: [attempt('task_impl', 0.42)], task_docs: [attempt('task_docs', null)] }
+    const { container } = await mount(run(), { [WF]: workflow() })
+    await waitFor(() => expect(visible(costFact(container))).toContain('$0.42 · 1 of 4 steps reporting'), WAIT)
+    expect(costFact(container).querySelector('[title]')!.getAttribute('title')).toMatch(/attempts/)
+  })
+
   it('is a dash with its reason when no step reports, never $0', async () => {
     const { container } = await mount(run(), { [WF]: workflow() })
     await stepsCard(container)
@@ -358,5 +387,16 @@ describe('6: at DONE the card says what is known about the merge and the issue',
     expect(visible(fact('issue'))).toMatch(/state not served/)
     expect(visible(fact('keyword'))).toContain('Closes #72')
     expect(visible(container.querySelector('.rn-state'))).toMatch(/merge is not reported/)
+  })
+
+  it('says the pull request ended a run that closed without a green sha, not that the workflow succeeded', async () => {
+    const { container } = await mount(run({
+      state: 'DONE', terminal: true, green_sha: null,
+      pull_request: { number: 564, url: PR_URL, head_sha: HEAD, checks: 'pending' },
+    }), { [WF]: workflow() })
+    const line = visible(container.querySelector('.rn-state'))
+    expect(line).toMatch(/pull request ended the run/)
+    expect(line).toMatch(/not reported/)
+    expect(line).not.toMatch(/workflow succeeded/)
   })
 })

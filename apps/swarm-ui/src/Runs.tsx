@@ -388,7 +388,9 @@ function stateLine(run: IssueRun): string {
       // check is green; the run does not serve which (`pull_request.merged`).
       return run.green_sha
         ? 'Every required check is green on the pull request. Its merge is not reported by this run.'
-        : 'The workflow succeeded.'
+        : run.pull_request
+          ? 'The pull request ended the run before its checks were green. Whether it merged is not reported by this run.'
+          : 'The workflow succeeded.'
     case 'FAILED':
       return 'The run failed.'
     case 'REJECTED':
