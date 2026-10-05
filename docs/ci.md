@@ -666,9 +666,8 @@ there as success.
 **`contents: write` is granted on that job, not on the workflow.** The workflow
 default stays `contents: read`. The jobs that build, plan and deploy run a lot
 of code, and none of it needs to write to the repository. `plugin-tag` runs
-only checkout, `jq` and `git`. (`acceptance` held the same grant for its own
-sweep until #628 moved its pull requests to the private sandbox; it is
-`contents: read` now, and the sweep uses the sandbox's own token.)
+only checkout, `jq` and `git`. (`acceptance` holds the same grant for its own
+sweep. See its header.)
 
 **A bump that touches only `plugin/` starts no release,** because `plugin/**`
 is not in `release.yml`'s `on.push.paths`. That filter was left alone. The
@@ -1628,143 +1627,6 @@ Before sending, compare the body with a fresh read of the ruleset: a rule
 added since 2026-09-29 that is not in this body would be removed by the PUT.
 [`test_ci_gate.py`](../tests/unit/scripts/test_ci_gate.py) holds this body to
 `security.yml`'s always-run jobs plus `ci-gate`, none pinned.
-
-## Release acceptance runs in the smoke tenant, against a private sandbox
-
-The release's `acceptance (dev)` job runs `scripts/acceptance/` after every dev
-deploy ([acceptance.md](acceptance.md) says what each check asserts). Until
-2026-10-05 its tasks were submitted as swarm-verify, which resolves to `eng`,
-and cloned and opened pull requests on this platform's own public repository.
-The history analysis of that day (#628) counted 58 fixture pull requests
-("Fix add()...") opened and closed there since 09-30, each one running full CI,
-and acceptance as 62% of eng's tasks, so eng's success rates and failure
-classes could not be read; the `smoke` tenant had none. The owner decided the
-same day that acceptance runs in `smoke` against a private sandbox repository,
-and that nothing in acceptance can name the public one.
-
-**Where the target is stated.** Once, in
-[`scripts/acceptance/config.sh`](../scripts/acceptance/config.sh): the tenant
-(`smoke`), the repository (`bogdan-alexandrescu/swarmcloud-sandbox`, private,
-default branch `main`), the ref, and the sandbox's fixture issue. The suite,
-the sweep and the sync all read it; none of them reads
-`GITHUB_REPOSITORY` for a target, and `config.sh` refuses a target that is the
-repository a CI run is for or the one the checkout was cloned from.
-[`test_acceptance_target.py`](../tests/unit/scripts/test_acceptance_target.py)
-holds the configuration to smoke and the sandbox, and fails if any file under
-`scripts/acceptance/` or the release's acceptance job names the public
-repository.
-
-**How the suite gets into `smoke`.** It sends `X-Swarm-Tenant: smoke` on every
-API call (`SWARM_API_TENANT`, which `common.sh`'s `api_request` turns into the
-header). The header *selects* among the caller's confirmed memberships of
-registered directory groups and never grants, so swarm-verify must be a member
-of smoke's group. Its default tenant stays `eng`: `smoke` sorts after `eng` in
-`TENANT_GROUPS`, so smoke-test, e2e and race-test are unchanged. A
-`tenants.smoke.service_accounts` listing would have been simpler to write and
-would have stopped every suite: a listed account is continuation-scoped
-(`swarm_api.auth.CONTINUATION_ROUTES`) and may submit nothing but a
-continuation.
-
-**What the suite refuses.** Before any group runs, `run.sh` asks GitHub
-anonymously for the repository and refuses a 200 (public) or an unanswered
-read, and asks `GET /tenants/me` with the header and refuses any tenant but
-`smoke`, including a 403 `tenant_not_member`. It never falls back to the
-caller's default tenant: that fallback is how acceptance came to fill eng.
-
-**What the release job holds.** `contents: read` and `id-token: write`. The
-repository secret `SWARM_SANDBOX_GITHUB_TOKEN` goes to three steps and never
-to the suite: `scripts/acceptance/sandbox-sync.sh` before it, which writes this
-commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only when they
-differ, and no other path) and opens or checks the fixture issue;
-`scripts/acceptance/github-verify.sh` after it, which reads the suite's pull
-requests back (below); and `scripts/acceptance/github-cleanup.sh` last, which
-closes the pull requests and branches the suite opened there. The job's
-`GITHUB_TOKEN` reaches only this repository, which is why it is no longer
-write-scoped.
-
-**Where the GitHub read-backs moved.** The swarm-verify job holds no GitHub
-credential, by design, and the sandbox is private, so the suite cannot read a
-pull request back and SKIPs those assertions, naming the step that makes them.
-Dropping them would have let a release go green with the pull-request half of
-the direct-pr and integrate checks unexercised, so they run on the GitHub
-runner instead, which does hold the sandbox token:
-
-* `github-verify.sh` runs after the suite (even a failed one) and before the
-  sweep closes anything. It judges every open `swarm/task_` pull request of the
-  sandbox opened since the suite started (`SWARM_ACCEPTANCE_SINCE`, from the
-  `started` step), and fails the job when one has an empty title or a title
-  carrying a task id, a body without its task id, a change outside
-  `tests/acceptance/fixtures/`, a diff that does not remove `return a - b` from
-  `calc.py`, a direct-pr change to anything but `calc.py`, or an integrate body
-  that lists no merged branch or leaves one out. It only reads; the sweep still
-  runs when it fails. Finding no pull request at all is printed with a workflow
-  warning, not a failure: a claude-code group without a provider credential
-  SKIPs without opening one.
-* The `collect` check's patch is applied in the suite itself, to this build's
-  own `calc.py`: the swarm-verify image now carries
-  `tests/acceptance/fixtures/`, and `sandbox-sync.sh` put the same commit's
-  copy on the sandbox's `main` first, so the two are the same bytes.
-
-What still runs only in the suite: the pull request was opened, its title is
-the agent's (`pull_request_text.title`), the artifacts exist and the patch
-replaces the bug line. The one comparison the runner cannot make is the PR
-title against the task's `pr-title.txt` artifact, which lives behind the API
-inside the VPC; it checks the title is a non-empty fact rather than a task id
-instead. An operator run with `SWARM_ACCEPTANCE_GITHUB_TOKEN` set measures that
-in the suite too.
-
-### What the owner applies, once, in this order
-
-1. **Create the Workspace group `smoke@saga.xyz`** and add
-   `swarm-verify@saga-agents-staging.iam.gserviceaccount.com` as a member.
-   It must exist before step 3 is applied: `dev.tfvars` registers it as a
-   directory group, and a registered group whose lookup fails 503s every
-   caller in no group above it.
-2. **Re-point the tenant document.** `tenants/smoke` in Firestore still says
-   `principal: swarm-smoke@saga.xyz`, and Terraform will not change it (the
-   tenant documents are under `ignore_changes`). swarm-api refuses a tenant
-   whose stored principal differs from the selecting group with a 409, so set
-   that one field to `smoke@saga.xyz`, for example:
-
-   ```bash
-   # The access token reaches curl as a config file, never in argv.
-   curl -sS -X PATCH -K <(printf 'oauth2-bearer = "%s"\n' "$(gcloud auth print-access-token)") \
-     -H "x-goog-user-project: saga-agents-staging" -H "Content-Type: application/json" \
-     "https://firestore.googleapis.com/v1/projects/saga-agents-staging/databases/swarm/documents/tenants/smoke?updateMask.fieldPaths=principal" \
-     -d '{"fields": {"principal": {"stringValue": "smoke@saga.xyz"}}}'
-   ```
-
-   `smoke` has never run a task, so no work changes hands.
-3. **Merge the `dev.tfvars` change** (the release applies it): `tenants.smoke`
-   gets `principal = "smoke@saga.xyz"`, `directory_group = true` and
-   `providers = ["anthropic"]`, and `pool_limits.providers.anthropic` goes from
-   100 to 120, because three tenants now declare anthropic and the plan refuses
-   a provider pool below 3 x `provider_tenant`. The live pool documents are
-   under `ignore_changes`, so raise the live one too:
-   `scripts/pool-limit.sh --pool provider:anthropic --limit 120`.
-4. **Give `smoke` its credentials**, with the scripts that keep them out of the
-   repository and out of Terraform state:
-   * the forge token, slot **`swarm-tenant-smoke-git`**:
-     `scripts/register-tenant.sh --tenant smoke --add-provider git`, then
-     `scripts/create-secrets.sh --tenant smoke --provider git --stdin`. A
-     fine-grained token scoped to the sandbox alone, with Contents, Pull
-     requests and Issues read and write (the worker clones, pushes and opens
-     the pull request with it; the `issue` input reads the fixture issue);
-   * the Anthropic credential, slot `swarm-tenant-smoke-anthropic`:
-     `scripts/register-tenant.sh --tenant smoke --add-provider anthropic`,
-     then `scripts/create-secrets.sh --tenant smoke --provider anthropic
-     --stdin` (or `--subscription`), or lend `smoke` an account
-     (`PUT /v1/accounts/<id>/lending`). Without one, every claude-code check
-     SKIPs on `CREDENTIAL_MISSING`.
-5. **Add the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`** (Settings ->
-   Secrets and variables -> Actions): a fine-grained token scoped to the
-   sandbox alone, with Contents, Pull requests and Issues read and write. It
-   may be the same token as step 4's. Without it the sync step fails and the
-   suite does not start.
-
-Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
-with the sentence that names this section, and nothing is submitted: a red
-acceptance job, not a quiet return to eng.
 
 ## The finishing sequence
 

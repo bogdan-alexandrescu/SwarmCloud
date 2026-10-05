@@ -36,41 +36,13 @@ id, and the run exits non-zero when any check failed. The release runs every
 group in the `acceptance (dev)` job after `deploy and smoke`, and a `FAIL` fails
 the release.
 
-## Where it runs: the smoke tenant and a private sandbox
-
-Every task is submitted for the **`smoke` tenant** (`X-Swarm-Tenant: smoke`)
-and clones the **private sandbox repository**
-`bogdan-alexandrescu/swarmcloud-sandbox`, where the direct-pr and integrate
-checks open their pull requests. Both are stated once, in
-`scripts/acceptance/config.sh` (owner decision 2026-10-05, #628). Until then
-acceptance ran in `eng` against this platform's public repository: 58 fixture
-pull requests there in five days, each running full CI, and 62% of eng's tasks.
-
-Before any group runs the suite refuses to start when the API does not resolve
-it to `smoke`, or when an anonymous read of the repository succeeds (a public
-repository) or cannot be had. Nothing in `scripts/acceptance/` names the
-public repository, and `config.sh` refuses it as an override.
-`tests/unit/scripts/test_acceptance_target.py` holds all three. Why `smoke` is
-reached through the header and not a service-account listing, and what the
-owner applies for it, is in
-[ci.md](ci.md#release-acceptance-runs-in-the-smoke-tenant-against-a-private-sandbox).
-
-The sandbox holds nothing of this repository unless something puts it there.
-In the release, `scripts/acceptance/sandbox-sync.sh` runs before the suite and
-writes this commit's `tests/acceptance/fixtures/` to the sandbox's `main` (only
-when they differ; no other path), and opens or checks the fixture issue. A
-local run against a branch you pushed to the sandbox yourself sets
-`SWARM_ACCEPTANCE_REF`.
-
 | variable | default | what it changes |
 |---|---|---|
-| `SWARM_ACCEPTANCE_TENANT` | `smoke` | the tenant every call selects with `X-Swarm-Tenant`; the caller must be a confirmed member of its group |
-| `SWARM_ACCEPTANCE_REPOSITORY_URL` | the sandbox | the repository the tasks clone; refused when it is the repository the checkout or CI run is for, or publicly readable |
-| `SWARM_ACCEPTANCE_REF` | `main` | the ref of the sandbox the tasks clone. A release run cannot set it (verify-remote passes no environment), and reads main, where `sandbox-sync.sh` just wrote the deployed commit's fixtures |
+| `SWARM_ACCEPTANCE_REF` | `main` | the ref of this repository the tasks clone. A release run cannot set it (verify-remote passes no environment), and reads main, which is what the release deployed |
 | `SWARM_ACCEPTANCE_TIMEOUT` | `900` | how long one task may take |
 | `SWARM_ACCEPTANCE_ADMIT_WAIT` | `300` | how long a never-admitted task is waited on before it is a SKIP |
-| `SWARM_ACCEPTANCE_ISSUE`, `_ISSUE_EXPECT` | `1`, `sandbox-probe.sh` | the sandbox issue the `issue` input fetches, and a string only its text contains |
-| `SWARM_ACCEPTANCE_GITHUB_TOKEN` (or `GH_TOKEN`, `GITHUB_TOKEN`) | unset | a token that reads and writes the sandbox: lets each check read its pull request back and close it. Without one, those reads are SKIPs (the sandbox is private) |
+| `SWARM_ACCEPTANCE_ISSUE`, `_ISSUE_EXPECT` | `77`, `bootstrap.sh` | the issue the `issue` input fetches, and a string only its text contains |
+| `SWARM_ACCEPTANCE_GITHUB_TOKEN` (or `GH_TOKEN`, `GITHUB_TOKEN`) | unset | lets each check close its own pull request and branches |
 
 ## SKIP is not PASS
 
@@ -125,7 +97,7 @@ slowest task.
 ### generic
 
 Every command in `GENERIC_COMMANDS` (`apps/agent-worker/agent_worker/runners/generic.py`)
-runs against `tests/acceptance/fixtures/generic` in a clone of the sandbox.
+runs against `tests/acceptance/fixtures/generic` in a clone of this repository.
 Each check asserts the command the runner *recorded*, its exit code, and the
 output the fixture prints: pytest's summary line reads `3 passed` (and `1
 passed` for the `paths` variant, which names one file), and `npm test`, `npm
@@ -152,22 +124,17 @@ that file.**
   exactly `    return a - b` and adds a line in its place, and applies (with
   `git apply`, or `patch` where git is absent) to `calc.py` as it is at the
   cloned ref, after which `add()` reads `return a + b`. The original is fetched
-  through GitHub's contents API, because the swarm-verify image carries
-  `scripts/` and not `tests/`; the sandbox is private, so without a token that
-  step is a SKIP.
+  from raw.githubusercontent.com, because the swarm-verify image carries
+  `scripts/` and not `tests/`.
 * **direct-pr.** A pull request opens; its title on GitHub is the line in the
   task's `pr-title.txt` artifact, `pull_request_text.title` is `agent`, the
   title carries no task id (the owner's 2026-09-28 rule), the body carries the
   task id, the head is the branch the task pushed, and the diff changes only
-  the fixture and removes the bug line. Everything after "the title is the
-  agent's" is read back from the sandbox and needs a token; the release's run
-  has none, so there it is a SKIP naming why. Then the pull request is closed
-  and the branch deleted.
-* **issue.** With `issue: 1`, the sandbox's fixture issue, the agent is asked
-  only for the file name the issue is about, and the answer
-  (`GET /tasks/{id}/answer`) must name `sandbox-probe.sh` -- which only that
-  issue's text says. `sandbox-sync.sh` opens it on an empty sandbox and
-  refuses a sandbox whose #1 says something else. Contract request 28 (#265);
+  the fixture and removes the bug line. Then the pull request is closed and the
+  branch deleted.
+* **issue.** With `issue: 77`, the agent is asked only for the file name the
+  issue is about, and the answer (`GET /tasks/{id}/answer`) must name
+  `bootstrap.sh` -- which only #77's text says. Contract request 28 (#265);
   whether it is deployed is probed at the door.
 
 ### workflow
@@ -177,7 +144,7 @@ that file.**
 | input_from | step `a` writes a known file; step `b` stages it; the file in `b`'s own last checkpoint (its workspace as it saw it) is byte-identical to what `a` wrote |
 | expected_outputs | `a`'s `metadata.expected_outputs` names the file `b` stages; a parent that writes the wrong file ends `FAILED outputs_missing`, `result_summary.expected_outputs_missing` names the file, it was retried to `max_attempts`, and its child ends `CANCELLED` having never held a lease |
 | on_step_failure | a failing root's child and grandchild both end `CANCELLED workflow_sweep` with no lease ever, and the workflow's derived state is `FAILED` (the fail_workflow sweep in `apps/scheduler/scheduler/loop.py` `_sweep_failed_workflow` cancels every not-started step of the workflow ahead of the per-parent `failed_parent` cascade, dependent or not, and always records `end_cause=WORKFLOW_SWEEP`) |
-| integrate chain | implement (fix the bug, stage its `change.diff`) -> review (apply the staged `change.diff`, judge it, write `verdict.json`, then reverse the patch) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, review's `result_summary.staged_inputs` lists implement's `change.diff` (without it review would be judging repository_ref's unfixed fixture, not implement's work -- strategy `integrate` gives a non-integrator step no other way to see an upstream step's tree, docs/workflows.md), exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line (those two are read back from the private sandbox, and are a SKIP in a run with no token for it, as the release's is). Then the pull request and every branch are cleaned up |
+| integrate chain | implement (fix the bug, stage its `change.diff`) -> review (apply the staged `change.diff`, judge it, write `verdict.json`, then reverse the patch) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, review's `result_summary.staged_inputs` lists implement's `change.diff` (without it review would be judging repository_ref's unfixed fixture, not implement's work -- strategy `integrate` gives a non-integrator step no other way to see an upstream step's tree, docs/workflows.md), exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line. Then the pull request and every branch are cleaned up |
 
 ### browser
 
@@ -218,24 +185,13 @@ most the top 4000 rows (`--max-rows`): a real site's full-page screenshot can
 be tens of thousands of rows, which pure Python unfilters in minutes, and
 whether a page rendered is decided at its top.
 
-## Pull requests on the sandbox
+## Pull requests on this repository
 
-The direct-pr and integrate checks open real pull requests on the sandbox,
-never on this repository. A check closes its own when its run holds a token
-for the sandbox. The release's run does not: it runs in the swarm-verify job,
-which holds no GitHub credential, on purpose, and so cannot read its pull
-requests back either: those assertions SKIP in the suite. The release's
-acceptance job makes them after the suite, on the GitHub runner, with
-`scripts/acceptance/github-verify.sh` -- the title is a fact and not a task
-id, the body carries the task id, the diff stays under
-`tests/acceptance/fixtures/` and removes the bug line, an integrate body lists
-its merged branches and leaves none out -- and fails the job on any defect
-([ci.md](ci.md#release-acceptance-runs-in-the-smoke-tenant-against-a-private-sandbox)).
-The `collect` patch is applied in the suite to the swarm-verify image's own
-copy of `calc.py`, the same commit `sandbox-sync.sh` put on the sandbox. Then
-the job runs `scripts/acceptance/github-cleanup.sh` with the sandbox's own
-token (the repository secret `SWARM_SANDBOX_GITHUB_TOKEN`; the job's
-`GITHUB_TOKEN` reaches only this repository). It closes only an open pull request from a
+The direct-pr and integrate checks open real pull requests here. A check closes
+its own when its run holds a GitHub token. The release's run does not: it runs
+in the swarm-verify job, which holds no GitHub credential, on purpose. So the
+release's acceptance job runs `scripts/acceptance/github-cleanup.sh` afterwards
+with its own `GITHUB_TOKEN`. It closes only an open pull request from a
 `swarm/task_` branch whose every changed file lies under
 `tests/acceptance/fixtures/`, deletes its head and the contributor branches its
 body lists as merged, and deletes any leftover `swarm/task_` branch whose diff

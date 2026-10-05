@@ -5,9 +5,7 @@
 # here spends subscription quota.
 #
 # The fixture is tests/acceptance/fixtures/claude-code: calc.py's add()
-# subtracts, and test_calc.py fails because of it. The tasks clone it from the
-# private sandbox (config.sh), where sandbox-sync.sh put the released commit's
-# copy, and run in the smoke tenant.
+# subtracts, and test_calc.py fails because of it.
 
 # Sourced by run.sh after common.sh, testlib.sh and lib.sh: CI shellchecks
 # this file on its own too, where the variables those set and the ones this
@@ -19,10 +17,12 @@ set -euo pipefail
 CC_FIXTURE="tests/acceptance/fixtures/claude-code/calc.py"
 CC_BUG_LINE="    return a - b"
 CC_FIX_LINE="    return a + b"
-# The issue check reads the sandbox's fixture issue, ACC_ISSUE, and expects
-# ACC_ISSUE_EXPECT, a string only its text carries, so an agent cannot produce
-# it without reading the issue. Both are config.sh's; sandbox-sync.sh opens the
-# issue and refuses a sandbox whose issue says something else.
+#: A known, closed issue of this repository, and a string its title carries
+#: that an agent cannot produce without reading it. #77's title is
+#: "bootstrap.sh reports "object versioning is OFF" on a state bucket that has
+#: versioning on" (read 2026-09-29).
+CC_ISSUE="${SWARM_ACCEPTANCE_ISSUE:-77}"
+CC_ISSUE_EXPECT="${SWARM_ACCEPTANCE_ISSUE_EXPECT:-bootstrap.sh}"
 
 claude_code_checks() {
   cat <<'EOF'
@@ -55,7 +55,7 @@ run_claude_code() {
   # the door without creating anything (acc_door): a VALID issue number sent
   # with a reserved metadata key is refused for the metadata (invalid_dispatch)
   # where `issue` is declared, and for the input (invalid_input) where it is not.
-  answer="$(acc_door claude-code "$(jq -nc --argjson n "${ACC_ISSUE}" '{prompt: "acceptance door probe", issue: $n}')")"
+  answer="$(acc_door claude-code "$(jq -nc --argjson n "${CC_ISSUE}" '{prompt: "acceptance door probe", issue: $n}')")"
   case "${answer}" in
     "422 invalid_dispatch"|"400 invalid_dispatch") issue_declared=1 ;;
     "422 invalid_input") issue_declared=0 ;;
@@ -64,7 +64,7 @@ run_claude_code() {
   if [[ "${issue_declared}" == "1" ]]; then
     ACC_CHECK="claude-code: issue"
     acc_submit issue claude-code \
-      "$(jq -nc --argjson n "${ACC_ISSUE}" '{prompt: "Read issue.md in your working directory. Reply with only the file name of the script that issue is about, and nothing else. Do not edit any file.", issue: $n}')" \
+      "$(jq -nc --argjson n "${CC_ISSUE}" '{prompt: "Read issue.md in your working directory. Reply with only the file name of the script that issue is about, and nothing else. Do not edit any file.", issue: $n}')" \
       "$(acc_repo_extra '{"max_attempts": 1}')" || issue=""
   fi
 
@@ -95,25 +95,14 @@ _cc_check_collect() {
     acc_fail "the patch does not replace the bug line in ${CC_FIXTURE}" "${task}"
   fi
 
-  # Apply it to the file as it is at the ref the task cloned. With a token,
-  # read it from the sandbox itself. Without one -- the release, whose
-  # swarm-verify job holds none -- apply it to this build's own copy: the
-  # swarm-verify image carries tests/acceptance/fixtures/ (#628), and
-  # sandbox-sync.sh put that same commit's fixtures on the sandbox's main
-  # before the suite started, so at main the two are the same bytes.
+  # Apply it to the file as it is at the ref the task cloned. Read from GitHub
+  # directly: the swarm-verify image carries scripts/, not tests/.
   dir="${ACC_WORK}/cc-apply"
   mkdir -p "${dir}/$(dirname "${CC_FIXTURE}")"
   original="${dir}/${CC_FIXTURE}"
-  if acc_github_can_read; then
-    if ! acc_github_raw "${CC_FIXTURE}" "${original}" 2>/dev/null; then
-      acc_skip "not measured: could not fetch ${CC_FIXTURE} at ${ACC_REF} from ${ACC_GITHUB_REPO} to apply the patch to" "${task}"
-      return 0
-    fi
-  elif [[ "${ACC_REF}" == "main" && -f "${REPO_ROOT}/${CC_FIXTURE}" ]]; then
-    cp "${REPO_ROOT}/${CC_FIXTURE}" "${original}"
-    t_info "applying to this build's ${CC_FIXTURE}, which sandbox-sync.sh put on ${ACC_GITHUB_REPO}@main"
-  else
-    acc_skip "applying the patch to ${CC_FIXTURE} at ${ACC_REF}: $(acc_github_skip_reason)" "${task}"
+  if ! curl -sSf -m 30 -o "${original}" \
+      "https://raw.githubusercontent.com/${ACC_GITHUB_REPO}/${ACC_REF}/${CC_FIXTURE}" 2>/dev/null; then
+    acc_skip "not measured: could not fetch ${CC_FIXTURE} at ${ACC_REF} from raw.githubusercontent.com to apply the patch to" "${task}"
     return 0
   fi
   if command -v git >/dev/null 2>&1; then
@@ -163,12 +152,6 @@ _cc_check_direct_pr() {
     return 0
   fi
   title="$(tr -d '\r' <"${title_file}" | sed -e 's/[[:space:]]*$//' | sed -n 1p)"
-  # Everything below reads the pull request back from the private sandbox.
-  if ! acc_github_can_read; then
-    acc_skip "PR #${number}'s title, body, head and diff: $(acc_github_skip_reason)" "${task}"
-    acc_close_pr "${number}" "${branch}"
-    return 0
-  fi
   if ! pr="$(acc_github GET "/repos/${ACC_GITHUB_REPO}/pulls/${number}")"; then
     acc_fail "could not read PR #${number} back from GitHub" "${task}"
     acc_close_pr "${number}" "${branch}"
@@ -228,9 +211,9 @@ _cc_check_issue() {
   content="$(jq -r '.content // ""' "${answer_file}")"
   if [[ "${status}" != "ok" ]]; then
     acc_fail "the answer's status is ${status}, not ok" "${task}"
-  elif grep -qF "${ACC_ISSUE_EXPECT}" <<<"${content}"; then
-    acc_pass "the answer names ${ACC_ISSUE_EXPECT}, which only issue #${ACC_ISSUE}'s text says" "${task}"
+  elif grep -qF "${CC_ISSUE_EXPECT}" <<<"${content}"; then
+    acc_pass "the answer names ${CC_ISSUE_EXPECT}, which only issue #${CC_ISSUE}'s text says" "${task}"
   else
-    acc_fail "the answer does not name ${ACC_ISSUE_EXPECT}: $(printf '%s' "${content}" | redact | head -c 200)" "${task}"
+    acc_fail "the answer does not name ${CC_ISSUE_EXPECT}: $(printf '%s' "${content}" | redact | head -c 200)" "${task}"
   fi
 }

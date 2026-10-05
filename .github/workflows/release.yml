@@ -1045,19 +1045,9 @@ jobs:
   # docs/acceptance.md says why each check asserts what it does.
   #
   # DEV ONLY, as its name says: it spends subscription quota on six small
-  # claude-code tasks and opens real pull requests on the sandbox, which is a
-  # price for dev's confidence, not a step of a prod release. It never starts
-  # on prod (tests/unit/scripts/test_release_acceptance_job.py).
-  #
-  # THE SMOKE TENANT AND THE PRIVATE SANDBOX (owner decision 2026-10-05,
-  # #628). The suite submits for the `smoke` tenant (X-Swarm-Tenant) and its
-  # tasks clone, and open their pull requests on, the private sandbox
-  # repository -- both from scripts/acceptance/config.sh, never from this
-  # workflow's own repository, which it used to fill with fixture pull
-  # requests (58 since 09-30, each running full CI). The suite refuses to run
-  # in any other tenant or against a publicly readable repository.
-  # tests/unit/scripts/test_acceptance_target.py holds all of that, and that
-  # nothing here or in scripts/acceptance/ names this repository.
+  # claude-code tasks and opens real pull requests on this repository, which
+  # is a price for dev's confidence, not a step of a prod release. It never
+  # starts on prod (tests/unit/scripts/test_release_acceptance_job.py).
   #
   # Its own job, after `deploy`, so a red acceptance is re-run alone with
   # "Re-run failed jobs" -- without redeploying -- and so it cannot hide a
@@ -1068,19 +1058,11 @@ jobs:
   # is 30 minutes, and the groups together would not fit). A FAIL in any group
   # fails this job, and so the release.
   #
-  # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
-  # handed to three steps only, and never to the suite: the swarm-verify job
-  # holds no GitHub credential. Before the suite, sandbox-sync.sh writes this
-  # commit's tests/acceptance/fixtures/ to the sandbox's main and checks the
-  # fixture issue; after it, github-verify.sh reads the pull requests the
-  # suite opened back (title, body, diff, merged branches -- the assertions
-  # the suite itself cannot make without a token) and fails the job on any
-  # defect, and then github-cleanup.sh closes the pull requests and
-  # branches the direct-pr and integrate checks opened there (only swarm/task_
-  # branches whose changes lie entirely under tests/acceptance/fixtures/). The
-  # job's own GITHUB_TOKEN reaches only this repository, so it is read-only
-  # here: nothing in this job writes to it. A missing secret fails the sync
-  # step loudly, and the suite never starts against an unsynced sandbox.
+  # The GITHUB_TOKEN is write-scoped here for one step only, the sweep: the
+  # swarm-verify job holds no GitHub credential, so the pull requests and
+  # branches the direct-pr and integrate checks opened are closed from here
+  # (scripts/acceptance/github-cleanup.sh touches only swarm/task_ branches
+  # whose changes lie entirely under tests/acceptance/fixtures/).
   # -------------------------------------------------------------------------
   acceptance:
     name: acceptance (dev)
@@ -1088,7 +1070,8 @@ jobs:
     needs: [deploy]
     if: ${{ !cancelled() && needs.deploy.result == 'success' && github.event.inputs.environment != 'prod' }}
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
       id-token: write
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
@@ -1104,17 +1087,6 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - name: put this commit's fixtures on the sandbox
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-        run: ./scripts/acceptance/sandbox-sync.sh
-
-      # When the suite starts, so github-verify.sh judges only the pull
-      # requests this run opened, not one an earlier, unswept run left.
-      - name: note when the suite starts
-        id: started
-        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
       - name: acceptance suite (inside the VPC)
         id: suite
         # Every group runs even when an earlier one failed: verify-remote.sh
@@ -1122,21 +1094,10 @@ jobs:
         # that failed.
         run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
 
-      # The suite cannot read the private sandbox back (swarm-verify holds no
-      # GitHub token) and SKIPs those assertions; this step makes them here,
-      # with the sandbox token, before the sweep closes anything. A failure
-      # here fails the job; the sweep still runs after it.
-      - name: read the suite's pull requests back from the sandbox
-        if: ${{ !cancelled() && steps.started.outputs.at != '' }}
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-          SWARM_ACCEPTANCE_SINCE: ${{ steps.started.outputs.at }}
-        run: ./scripts/acceptance/github-verify.sh
-
-      - name: close the pull requests and branches the suite opened on the sandbox
+      - name: close the pull requests and branches the suite opened
         if: ${{ !cancelled() }}
         env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: ./scripts/acceptance/github-cleanup.sh
 
   # -------------------------------------------------------------------------

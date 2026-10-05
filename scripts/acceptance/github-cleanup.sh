@@ -1,23 +1,16 @@
 #!/usr/bin/env bash
 # Close the pull requests and delete the branches the acceptance suite left on
-# the sandbox repository.
+# GitHub.
 #
-# Usage: SWARM_ACCEPTANCE_GITHUB_TOKEN=... scripts/acceptance/github-cleanup.sh [--dry-run]
+# Usage: GITHUB_TOKEN=... scripts/acceptance/github-cleanup.sh [--dry-run]
 #
 # WHY A SWEEP. The suite's direct-pr and integrate checks open real pull
-# requests on the private sandbox (scripts/acceptance/config.sh,
-# docs/acceptance.md). A check closes its own when its run holds a GitHub
-# token, but in the release it runs in the swarm-verify job, which holds none
-# -- on purpose: that job's identity is read-only everywhere else, and a forge
-# token lives only in Secret Manager for the worker to read (CLAUDE.md). So
-# the release's acceptance job runs this afterwards with the sandbox's own
-# token, the repository secret SWARM_SANDBOX_GITHUB_TOKEN. The job's
-# GITHUB_TOKEN reaches only the repository the workflow runs in, which is
-# exactly the one acceptance must never touch (#628).
-#
-# WHICH REPOSITORY. config.sh's ACC_GITHUB_REPO, and nothing else: not
-# GITHUB_REPOSITORY, which is the repository this CI run is for, and which
-# config.sh refuses as a target.
+# requests on this repository (docs/acceptance.md). A check closes its own
+# when its run holds a GitHub token, but in the release it runs in the
+# swarm-verify job, which holds none -- on purpose: that job's identity is
+# read-only everywhere else, and a forge token lives only in Secret Manager
+# for the worker to read (CLAUDE.md). So the release's acceptance job runs this
+# afterwards with the job's own GITHUB_TOKEN.
 #
 # WHAT COUNTS AS THE SUITE'S, and nothing else is touched:
 #
@@ -39,10 +32,6 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=../lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
-# shellcheck source-path=SCRIPTDIR
-# shellcheck source=config.sh
-source "${REPO_ROOT}/scripts/acceptance/config.sh"
-acc_config_problem || die "refusing to sweep: see above"
 
 DRY_RUN=0
 case "${1:-}" in
@@ -53,9 +42,9 @@ case "${1:-}" in
 esac
 
 TOKEN="${SWARM_ACCEPTANCE_GITHUB_TOKEN:-${GH_TOKEN:-${GITHUB_TOKEN:-}}}"
-[[ -n "${TOKEN}" ]] || die "no GitHub token for ${ACC_GITHUB_REPO}: set SWARM_ACCEPTANCE_GITHUB_TOKEN (the release passes the SWARM_SANDBOX_GITHUB_TOKEN secret)"
-REPO="${ACC_GITHUB_REPO}"
-API="${ACC_GITHUB_API}"
+[[ -n "${TOKEN}" ]] || die "no GitHub token: set GITHUB_TOKEN (the release job's own) or SWARM_ACCEPTANCE_GITHUB_TOKEN"
+REPO="${SWARM_ACCEPTANCE_GITHUB_REPO:-${GITHUB_REPOSITORY:-bogdan-alexandrescu/SwarmCloud}}"
+API="${SWARM_ACCEPTANCE_GITHUB_API:-https://api.github.com}"
 FIXTURES="tests/acceptance/fixtures/"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-acc-cleanup.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT

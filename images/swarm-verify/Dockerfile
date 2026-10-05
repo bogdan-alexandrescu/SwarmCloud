@@ -78,12 +78,6 @@ WORKDIR /swarm
 # this image tests a DEPLOYED platform over HTTP, it does not import it.
 COPY scripts/ /swarm/scripts/
 COPY Makefile /swarm/Makefile
-# The acceptance fixtures (#628): the claude-code collect check applies the
-# collected patch to calc.py as the release deployed it. The sandbox those
-# tasks clone is private and this job holds no GitHub token, so the file
-# cannot be read from there; sandbox-sync.sh puts this same commit's copy on
-# the sandbox's main before the suite runs, so the two are the same bytes.
-COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/
 
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true

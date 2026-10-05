@@ -52,17 +52,6 @@ LIVE_POOLS = {
     "tenant:u-sw-c90291": 4,
 }
 
-#: Pools #628 changes in dev.tfvars, which are NOT live until an operator sets
-#: them (`scripts/pool-limit.sh --pool provider:anthropic --limit 120`; the new
-#: per-tenant pool is created by the apply that adds smoke's provider). smoke
-#: declares anthropic so release acceptance can run its claude-code checks in
-#: smoke, which lifts the provider floor to 3 x provider_tenant = 120. Move
-#: these into LIVE_POOLS, with the date read, once they are live.
-PENDING_POOLS = {
-    "provider:anthropic": 120,
-    "provider:anthropic:tenant:smoke": 40,
-}
-
 #: (max_active, capacity_units) of every live dev tenant, read 2026-10-02.
 LIVE_TENANTS = {
     "eng": (40, 40),
@@ -180,7 +169,7 @@ def test_every_live_pool_terraform_derives_is_stated_at_its_live_value():
     derived = _derived_pools()
     drift = {
         name: {"live": live, "tfvars": derived.get(name)}
-        for name, live in {**LIVE_POOLS, **PENDING_POOLS}.items()
+        for name, live in LIVE_POOLS.items()
         if name not in NOT_DERIVED_BY_TERRAFORM and derived.get(name) != live
     }
     assert not drift, f"dev.tfvars disagrees with the live pools: {drift}"
