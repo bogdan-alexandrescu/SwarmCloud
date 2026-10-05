@@ -162,13 +162,21 @@ def _to_checking(client, db, objects, writes, clock, sha=SHA_A, **body) -> dict:
 # --------------------------------------------------------------------------
 
 def test_the_ci_states_sit_between_running_and_done():
-    assert RUN_TRANSITIONS[RunState.RUNNING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
+    # RUNNING -> DONE is only the build that changed nothing (#646,
+    # test_issue_run_already_on_main.py); a pull request still goes to CHECKING.
+    assert RUN_TRANSITIONS[RunState.RUNNING] == {
+        RunState.CHECKING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
+    }
     assert RUN_TRANSITIONS[RunState.CHECKING] == {
         RunState.FIXING, RunState.DONE, RunState.FAILED, RunState.CANCELLED,
     }
     assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
-    # A run is DONE only from CHECKING: a workflow that succeeded is not CI that passed.
-    assert [s for s, exits in RUN_TRANSITIONS.items() if RunState.DONE in exits] == [RunState.CHECKING]
+    # A run is DONE only from CHECKING -- a workflow that succeeded is not CI
+    # that passed -- or from RUNNING when there was no pull request to open
+    # because nothing needed changing (`issueci._already_on_main`).
+    assert [s for s, exits in RUN_TRANSITIONS.items() if RunState.DONE in exits] == [
+        RunState.RUNNING, RunState.CHECKING,
+    ]
 
 
 # --------------------------------------------------------------------------

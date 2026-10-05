@@ -181,7 +181,10 @@ write_iam_summary() {
 require_valid_verdict() {
   local verdict="$1" field err
 
-  if ! err="$(jq -e 'type == "object"' "${verdict}" 2>&1)"; then
+  # `-n` and `input`, not a plain filter: jq 1.6 runs a filter over an EMPTY
+  # file zero times and `-e` then exits 0, so an empty verdict read as valid
+  # (jq 1.7 exits 4). `input` on no input is an error under every version.
+  if ! err="$(jq -n -e 'input | type == "object"' "${verdict}" 2>&1)"; then
     hr
     err "the plan guard's verdict is not readable JSON:"
     printf '%s\n' "${err}" | head -n 3 | sed 's/^/     /' >&2

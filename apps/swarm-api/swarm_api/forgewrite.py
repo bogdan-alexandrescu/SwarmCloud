@@ -43,6 +43,9 @@ credential with an expiry, so it is never logged, stored or put in an error.
 A token that cannot read Actions, or any failure on the way, answers None:
 the check run's own output is still the excerpt.
 
+Since #646 it also CLOSES an issue (`close_issue`, `issues: write`): an
+issue run whose build found every planned requirement already met on main.
+
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
 """
@@ -375,6 +378,22 @@ class GitHubWriter:
             if len(entries) < PAGE_SIZE:
                 return None
         return None
+
+    # -- the issue itself (#646) -------------------------------------------------
+
+    def close_issue(self, ref: IssueRef, token: str) -> None:
+        """Close the issue as completed.
+
+        Called only for an `already_on_main` run whose build steps' tables
+        say every planned requirement is met on main (`issuesync`), after the
+        table is posted: the comment is the evidence the close cites. Needs
+        the same `issues: write` as the comments.
+        """
+        self._call(
+            "PATCH", self._url(ref, f"issues/{int(ref.number)}"), token,
+            f"closing {ref.short}", needs=ISSUES_WRITE,
+            payload={"state": "closed", "state_reason": "completed"},
+        )
 
     # -- pull requests ----------------------------------------------------------
 

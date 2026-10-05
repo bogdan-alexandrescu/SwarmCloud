@@ -46,6 +46,7 @@ import shutil
 import stat
 import tempfile
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Sequence
@@ -72,6 +73,162 @@ _SAFE_PATH = re.compile(r"^[A-Za-z0-9._~%!$&'()*+,;=:@/-]*$")
 
 class GitError(RuntimeError):
     pass
+
+
+class GitTransient(GitError):
+    """A git network step failed in a way the next try may not meet (#623).
+
+    A connect or read timeout, a DNS failure, a reset connection or a 5xx from
+    the forge: github.com did not answer, which says nothing about the
+    repository. A `GitError`, so every `except GitError` still catches it;
+    `retry_clone` and `_maybe_clone` are the callers that tell it apart.
+    `tries` is how many times `retry_clone` ran the clone before giving up.
+    """
+
+    def __init__(self, message: str, *, tries: int = 1) -> None:
+        super().__init__(message)
+        self.tries = tries
+
+
+# ---------------------------------------------------------------------------
+# Transient or permanent: what git's own words say about a failed clone
+# ---------------------------------------------------------------------------
+#
+# MEASURED 2026-10-05 (#623): task_943349914a88 and task_cb020e97d585 failed
+# for good on attempt 1 of 3 with "Failed to connect to github.com port 443
+# after 134 s". git reports a network failure only as text on stderr, with
+# exit 128 for every kind of failure, so the text is all there is to read.
+#
+# PERMANENT is read FIRST and wins: a missing repository, refused
+# authentication, a ref that is not there, a 4xx other than 408/429, a
+# certificate the host could not prove. Asking again meets each unchanged,
+# and git often adds "the remote end hung up unexpectedly" after one of them,
+# which on its own would read as a dropped connection.
+
+_GIT_PERMANENT = re.compile(
+    "|".join(
+        (
+            r"repository not found",
+            r"repository '[^']*' not found",
+            r"does not appear to be a git repository",
+            r"authentication failed",
+            r"could not read (?:username|password)",
+            r"terminal prompts disabled",
+            r"permission denied",
+            r"remote branch \S+ not found",
+            r"couldn't find remote ref",
+            r"not our ref",
+            r"returned error: (?!408|429)4\d\d",
+            r"\bhttp (?!408|429)4\d\d\b",
+            r"ssl certificate problem",
+            r"certificate verify failed",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+_GIT_TRANSIENT = re.compile(
+    "|".join(
+        (
+            r"failed to connect to \S+ port \d+",
+            r"couldn't connect to server",
+            r"could not resolve (?:host|proxy)",
+            r"temporary failure in name resolution",
+            r"name or service not known",
+            r"timed out",
+            r"connection (?:reset|refused|closed)",
+            r"network is unreachable",
+            r"no route to host",
+            r"returned error: (?:408|429|5\d\d)",
+            r"\bhttp (?:408|429|5\d\d)\b",
+            r"rpc failed",
+            r"early eof",
+            r"unexpected disconnect",
+            r"remote end hung up unexpectedly",
+            r"transfer closed with outstanding read data",
+            r"empty reply from server",
+            r"(?:recv|send) failure",
+            r"gnutls recv error",
+            r"ssl_error_syscall",
+        )
+    ),
+    re.IGNORECASE,
+)
+
+
+def transient_git_failure(text: str) -> bool:
+    """True when a failed git network step's message says the forge did not answer.
+
+    Connect, timeout, DNS, a dropped connection and a 5xx are transient; a
+    missing repository, refused authentication and a bad ref are not, and
+    win over any transport complaint in the same message.
+    """
+    if not text or _GIT_PERMANENT.search(text):
+        return False
+    return bool(_GIT_TRANSIENT.search(text))
+
+
+#: The waits between tries of a clone that failed transiently: 10 s, then
+#: 30 s, so THREE tries in all and 40 s asleep at most. Not a third wait of
+#: 60 s: that would put the sleeping past `max_in_worker_retry_delay_seconds`
+#: (45 s), the platform's bound on an in-worker wait (invariant 4: a worker
+#: never sleeps through a long wait). Past these tries the forge has been down
+#: for minutes -- each try can itself take a connect timeout of 2+ minutes --
+#: and the attempt ends retryably so the scheduler's retry, with the capacity
+#: released, does the longer wait.
+CLONE_RETRY_WAITS_SECONDS: tuple[float, ...] = (10.0, 30.0)
+
+
+def retry_clone(
+    call: Callable[[], Any],
+    *,
+    destination: Path,
+    max_wait_seconds: float,
+    remaining_seconds: Callable[[], float],
+    logger: Any,
+    sleep: Callable[[float], Any] = time.sleep,
+    on_retry: Callable[[], Any] | None = None,
+    waits: Sequence[float] = CLONE_RETRY_WAITS_SECONDS,
+) -> Any:
+    """`call()`, tried again after each of `waits` while it raises `GitTransient`.
+
+    Anything else, a permanent `GitError` above all, is raised at once. A
+    wait is not slept when the sleeping so far plus it would pass
+    `max_wait_seconds`, or when it would not end before the step's deadline
+    (`remaining_seconds()`): the `GitTransient` goes to the caller, which ends
+    the attempt retryably. The one that ends it carries `tries`.
+
+    `destination` is emptied before each retry: a clone that failed part way
+    may have left files there, and `git clone` refuses a folder that is not
+    empty -- a permanent-looking failure the retry itself would have caused.
+    `on_retry` runs after each wait, before the next try (the worker's
+    heartbeat).
+    """
+    tries = 0
+    waited = 0.0
+    while True:
+        tries += 1
+        try:
+            return call()
+        except GitTransient as exc:
+            exc.tries = tries
+            if tries > len(waits):
+                raise
+            wait = float(waits[tries - 1])
+            if waited + wait > max_wait_seconds or wait >= remaining_seconds():
+                raise
+            logger.warning(
+                "the clone could not reach the forge; retrying it in-process",
+                attempt=tries,
+                attempts=len(waits) + 1,
+                wait_seconds=wait,
+                reason=str(exc)[-300:],
+            )
+            sleep(wait)
+            waited += wait
+            _empty_directory(Path(destination))
+            if on_retry is not None:
+                on_retry()
 
 
 @dataclass(frozen=True)
@@ -298,13 +455,17 @@ def _run_git_steps(
         )
         total += result.duration_seconds
         if result.timed_out:
-            raise GitError(f"{label} step {index} timed out after {timeout_seconds}s")
+            # Transient: the step's own timeout is a forge that answered too
+            # slowly, which the next try may not meet (#623).
+            raise GitTransient(f"{label} step {index} timed out after {timeout_seconds}s")
         if result.exit_code != 0:
             tail = (logs_dir / f"{label}-{index}.err.log").read_text(errors="replace")[-2000:]
-            raise GitError(
+            message = (
                 f"{label} step {index} failed with exit {result.exit_code}"
                 f"{_withheld_note(url, token)}: {tail.strip()}"
             )
+            # Classified on git's own words only, never on the withheld note.
+            raise GitTransient(message) if transient_git_failure(tail) else GitError(message)
     return total
 
 
@@ -435,6 +596,11 @@ def clone_at_commit(
                 logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
                 label="git-pin-sha",
             )
+        except GitTransient:
+            # The forge did not answer, which is not a refusal of the sha: a
+            # full fetch of the branch would meet the same outage. Raised, so
+            # `retry_clone` asks again (#623).
+            raise
         except GitError as exc:
             logger.info(
                 "the forge refused a fetch by sha; fetching the branch's history instead",
