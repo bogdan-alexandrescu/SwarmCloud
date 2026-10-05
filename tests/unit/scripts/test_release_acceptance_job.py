@@ -37,7 +37,7 @@ GROUPS = ("mock", "generic", "claude-code", "workflow", "browser")
 #: What is run rather than sourced. lib.sh and the group files are sourced by
 #: run.sh and checked through it (-x); on their own they would report every
 #: variable common.sh and lib.sh set.
-ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "parsers.sh")
+ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "github-verify.sh", "sandbox-sync.sh", "parsers.sh")
 
 
 def _job() -> dict:
@@ -96,7 +96,11 @@ def test_the_sweep_runs_after_the_suite_even_when_it_failed():
     suite = next(i for i, s in enumerate(steps) if "verify-remote.sh" in _code(s.get("run", "")))
     assert sweep > suite, names
     assert "!cancelled()" in str(steps[sweep].get("if", "")), "the sweep must run after a failed suite"
-    assert "github.token" in str(steps[sweep].get("env", {}).get("GITHUB_TOKEN", ""))
+    # The sandbox's own token (#628): the job's GITHUB_TOKEN reaches only this
+    # repository, where acceptance no longer opens anything.
+    assert "secrets.SWARM_SANDBOX_GITHUB_TOKEN" in str(
+        steps[sweep].get("env", {}).get("SWARM_ACCEPTANCE_GITHUB_TOKEN", "")
+    )
 
 
 def test_a_partial_rerun_that_restarts_acceptance_still_reaches_the_loud_job():

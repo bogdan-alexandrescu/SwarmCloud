@@ -164,9 +164,14 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + u-bogdan  = 2 x 40 = 80   (set: 100)
-    #   openai     eng             = 1 x 40 = 40   (set: 40)
-    anthropic = 100
+    #   anthropic  eng + u-bogdan + smoke  = 3 x 40 = 120   (set: 120)
+    #   openai     eng                     = 1 x 40 = 40    (set: 40)
+    #
+    # anthropic was 100 until smoke declared it for release acceptance
+    # (#628): 100 is below the new floor and the plan would refuse it. The
+    # floor is what forces 120, not a measurement; smoke's own pool is
+    # min(max_active, capacity_units) = 8, so acceptance can add at most 8.
+    anthropic = 120
 
     # Exactly the floor provider_tenant = 40 implies, and the live value since
     # the 2026-10-02 doubling. It is NOT a measurement: the account-pool reasoning
@@ -255,22 +260,45 @@ tenants = {
 
   # The mock runner needs no provider key, so this tenant can smoke-test the
   # whole path before anybody registers a credential.
+  #
+  # RELEASE ACCEPTANCE RUNS HERE (owner decision 2026-10-05, #628). The suite
+  # (scripts/acceptance/config.sh) sends `X-Swarm-Tenant: smoke` as
+  # swarm-verify, against the private sandbox repository. Until then it ran in
+  # eng, as swarm-verify's default tenant, and was 62% of eng's tasks.
+  #
+  # The header only SELECTS among the caller's confirmed memberships of
+  # registered directory groups (swarm_api.auth `_select_tenant`), so:
+  #
+  #   * the principal is smoke@saga.xyz, which swarm_common.identity slugs to
+  #     `smoke`. It was swarm-smoke@saga.xyz, which slugs to `swarm-smoke`:
+  #     no caller could ever have reached this tenant through the API.
+  #   * directory_group is true, so the group is in TENANT_GROUPS. It sorts
+  #     after `eng`, so swarm-verify's DEFAULT tenant stays eng and smoke-test,
+  #     e2e and race-test are unchanged; only acceptance selects smoke.
+  #   * NOT a service_accounts listing of swarm-verify: a listed account is
+  #     continuation-scoped (CONTINUATION_ROUTES) and could submit no ordinary
+  #     task, which would stop every suite it runs.
+  #
+  # THE GROUP MUST EXIST, WITH swarm-verify IN IT, BEFORE THIS IS APPLIED.
+  # swarm-smoke@ never existed (verified 2026-09-19: "There is no such a
+  # group"), and a registered group whose lookup fails 503s every caller who
+  # is in no group above it -- by design, because an unanswered lookup could
+  # file work under the wrong tenant. Before 2026-10-05 nothing signed in as
+  # this tenant (the smoke suite dispatched through Firestore in-process), so
+  # the group was never needed; acceptance needs it. Owner steps, in order:
+  # docs/ci.md, "Release acceptance runs in the smoke tenant".
+  #
+  # anthropic, because terraform makes a tenant's claude-code Cloud Run Job
+  # only for a declared provider, and the claude-code and integrate checks --
+  # the ones that open the sandbox's pull requests -- run on it. The key is
+  # not here: scripts/create-secrets.sh --tenant smoke --provider anthropic,
+  # or an account lent to smoke.
   smoke = {
-    kind      = "group"
-    principal = "swarm-smoke@saga.xyz"
-    # NO SUCH GROUP EXISTS. Verified 2026-09-19:
-    #   gcloud identity groups describe swarm-smoke@saga.xyz
-    #   -> "There is no such a group"
-    # while eng@saga.xyz resolves to groups/01gf8i8328uclsx.
-    #
-    # Nothing signs in as this tenant -- the smoke suite dispatches through
-    # Firestore in-process, the same way scripts/swarm.py does -- so the group
-    # was never created and never needed. Left in TENANT_GROUPS it made EVERY
-    # authenticated request 503, because a lookup that cannot be answered is
-    # fatal by design.
-    directory_group = false
+    kind            = "group"
+    principal       = "smoke@saga.xyz"
+    directory_group = true
     display_name    = "Smoke tests"
-    providers       = []
+    providers       = ["anthropic"]
     # Live values since the 2026-10-02 doubling. The tenant pool is
     # min(max_active, capacity_units), so smoke's ceiling is 8, not 20.
     max_active     = 20
