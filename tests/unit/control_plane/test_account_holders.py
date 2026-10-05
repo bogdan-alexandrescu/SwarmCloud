@@ -21,6 +21,7 @@ attempts are real documents in the fake Firestore the real `Store` reads.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -60,6 +61,13 @@ RESEARCH_TASKS = ("research-task-1",)
 
 def _iso(dt: datetime) -> str:
     return dt.isoformat()
+
+
+def _raw(served: str | None) -> str | None:
+    """The broker's cursor inside the opaque one this service serves (F12)."""
+    if served is None:
+        return None
+    return base64.urlsafe_b64decode(served + "=" * (-len(served) % 4)).decode("ascii")
 
 
 def _hold(assignment: str, tenant: str, task: str | None, attempt: str | None,
@@ -276,7 +284,7 @@ def test_history_owner_keeps_per_span_detail_with_the_borrowing_tenant(client):
     assert all("task_id" not in s for s in theirs)
     assert all(s["since"] and "until" in s and "end" in s for s in theirs)
     assert {s["end"] for s in theirs} == {"released", "unusable"}
-    assert owner["next_cursor"] == "2026-09-30T12:00:00+00:00|1"
+    assert _raw(owner["next_cursor"]) == "2026-09-30T12:00:00+00:00|1"
 
 
 def _row(tenant: str, task: str, *, hours_ago: int, end: str | None = "released") -> dict:
@@ -331,7 +339,7 @@ def test_a_borrowers_cursor_points_only_at_its_own_row(client, broker):
 
     body = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob")).json()
 
-    assert body["next_cursor"] == f"{rows[0]['assigned_at']}|1"
+    assert _raw(body["next_cursor"]) == f"{rows[0]['assigned_at']}|1"
 
 
 def test_a_borrower_counts_the_others_in_the_window_and_pages_past_them(client, broker):
@@ -647,3 +655,67 @@ def test_a_borrower_continuation_page_serves_no_count(client, broker):
                       params={"cursor": f"{own}|1"}).json()
 
     assert "others" not in body
+
+
+# -- F12: the cursor this route serves is opaque --------------------------------
+#
+# The broker's cursor is `<instant>|<skip>`, and an instant carries `+00:00`. A
+# client that put it in a URL unencoded sent a `+`, which a query string reads
+# as a space, and the route refused its own cursor. It is served base64url
+# (no `+`, `/`, `=` or `|`), and the raw form is still accepted for one release.
+
+
+def test_the_served_cursor_is_opaque_url_safe_and_round_trips(client, broker):
+    raw = "2026-09-30T12:00:00+00:00|1"
+
+    first = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice")).json()
+    served = first["next_cursor"]
+
+    assert served and not set(served) & set("+/=| :")
+    assert _raw(served) == raw
+    # Sent back exactly as served -- even pasted into a URL by hand -- it is
+    # the broker's own cursor that reaches the broker.
+    response = client.get(f"/v1/accounts/{SHARED}/history?cursor={served}",
+                          headers=auth_header("alice"))
+    assert response.status_code == 200, response.text[:200]
+    assert broker.calls[-1] == ("hold_history", SHARED, None, None, raw)
+
+
+def test_a_borrowers_opaque_cursor_round_trips_through_the_own_row_check(client, broker):
+    rows = [_row("research", "research-task-1", hours_ago=1),
+            _row("eng", "eng-task-1", hours_ago=3)]
+    raw = f"{rows[0]['assigned_at']}|1"
+    broker.history_script = {
+        None: {"spans": rows, "next_cursor": f"{rows[-1]['assigned_at']}|1"},
+        raw: {"spans": [], "next_cursor": None},
+    }
+    served = client.get(f"/v1/accounts/{SHARED}/history",
+                        headers=auth_header("bob")).json()["next_cursor"]
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("bob"),
+                          params={"cursor": served})
+
+    assert response.status_code == 200, response.text[:200]
+    assert any(c[0] == "hold_history" and c[4] == raw for c in broker.calls)
+
+
+def test_an_unencoded_raw_cursor_with_a_space_for_its_plus_is_refused_not_misread(client, broker):
+    """What a client that did not encode the old cursor actually sent."""
+    response = client.get(
+        f"/v1/accounts/{SHARED}/history?cursor=2026-09-30T12:00:00+00:00|1",
+        headers=auth_header("alice"),
+    )
+
+    assert response.status_code == 422
+    assert not [c for c in broker.calls if c[0] == "hold_history"]
+
+
+@pytest.mark.parametrize("payload", ["not a cursor", "2026-09-30T12:00:00+00:00|" + "9" * 5, ""])
+def test_an_opaque_cursor_that_does_not_hold_a_broker_cursor_is_a_422(client, broker, payload):
+    forged = base64.urlsafe_b64encode(payload.encode()).decode().rstrip("=") or "AA"
+
+    response = client.get(f"/v1/accounts/{SHARED}/history", headers=auth_header("alice"),
+                          params={"cursor": forged})
+
+    assert response.status_code == 422
+    assert not [c for c in broker.calls if c[0] == "hold_history"]

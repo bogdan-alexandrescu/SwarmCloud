@@ -71,6 +71,7 @@ from .validation import (
     MergePlan,
     SinglePrPlan,
     StepSpec,
+    check_repository_ref,
     is_merge_step,
     is_mergeable_forge,
     merge_step_for,
@@ -253,6 +254,9 @@ class SubmissionService:
         # workflow (#295). A workflow's steps were already checked by
         # `validate_step_routing`; this is what refuses one as a plain task.
         refuse_worker_action_outside_single_pr(profile, dispatch.strategy, step_id=step_id)
+        # A short sha fails in the clone, after admission (F4): refused here,
+        # for a task, a batch, a workflow step and a child alike.
+        check_repository_ref(repository_ref or spec.repository_ref)
         validate_input_size(spec.input, self._settings.core.max_input_bytes)
         # NaN and +/-Infinity, before the declaration, so the refusal names the
         # path rather than a bound a NaN compares false against (#294).
@@ -401,6 +405,9 @@ class SubmissionService:
             # Copied onto every step's task, so refused once, here, without a
             # step id: it is the workflow's (#294).
             reject_non_finite(spec.metadata, label="metadata")
+            # Every step clones it, so refused once, here and counted, rather
+            # than by `_build_task` on the first step (F4).
+            check_repository_ref(spec.repository_ref)
             # Inside the try, because resolving each step's `input_layout`
             # (#75) can refuse, and a refusal is counted like every other.
             step_specs = self._step_specs(spec)
