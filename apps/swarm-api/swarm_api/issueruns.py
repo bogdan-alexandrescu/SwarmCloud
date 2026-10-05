@@ -52,7 +52,9 @@ in the repository's open work, an `estimate`, and per step the `files` it
 touches, the `tests` it adds and its own `estimate`. Every one is text or a
 list of text -- no profile, image, command, resource class or backend: every
 compiled step is `claude-code`, chosen here. An extra key is refused, naming
-it, rather than dropped.
+it, rather than dropped. One field is not optional on a plan written now: each
+overlap's `action` (#587); a plan stored before it is read with
+`parse_plan(..., stored=True)` and keeps its digest.
 
 THE PLANNER SEES THE OPEN WORK. `POST /v1/runs` reads the repository's open
 issues, open pull requests and their changed files with the run's own
@@ -120,7 +122,8 @@ from typing import Annotated, Any, Callable, Literal, Mapping
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import (
-    BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator,
+    BaseModel, ConfigDict, Field, ValidationError, ValidationInfo, field_validator,
+    model_validator,
 )
 
 from swarm_common.admission import _snapshot
@@ -309,12 +312,41 @@ _Line = Annotated[str, Field(min_length=1, max_length=500)]
 OVERLAP_REF_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9._-]{1,100}#[1-9][0-9]{0,9}$"
 
 
+#: The `parse_plan` validation context key that marks a plan read back from a
+#: run document rather than written now (#587, `PlanOverlap.action`).
+_STORED = "stored"
+
+
 class PlanOverlap(_PlanModel):
-    """Work already in flight that this plan collides with, as the planner saw it."""
+    """Work already in flight that this plan collides with, as the planner saw it.
+
+    `action` (#587, owner decision 2026-10-05: a field, not better guessing)
+    is the planner's verdict: `none` when this plan does nothing about the
+    overlap, `required` when this plan or a person must act, the note saying
+    what. The console used to read it off the note's first words and drew
+    five "... No action." notes as five needing action.
+
+    It is MANDATORY on a plan written now and absent from a plan stored before
+    it. The field's `None` default is never dumped -- `parse_plan` keeps only
+    what a plan set -- so an old plan's canonical bytes, and with them its
+    stored `plan_digest` and `approved_digest`, are exactly what they were.
+    Only a plan read back with `stored=True` may leave it out.
+    """
 
     ref: str = Field(min_length=1, max_length=160, pattern=OVERLAP_REF_PATTERN)
     kind: Literal["issue", "pull_request"]
+    action: Literal["none", "required"] | None = None
     note: str = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def _action_said(self, info: ValidationInfo) -> "PlanOverlap":
+        if self.action is None and not (info.context or {}).get(_STORED):
+            raise ValueError(
+                f'the overlap {self.ref} has no "action": it is "none" when this plan '
+                'does nothing about it, or "required" when this plan or a person must '
+                "act, with the note saying what"
+            )
+        return self
 
 
 class PlanStep(_PlanModel):
@@ -458,8 +490,13 @@ def _stages(steps: list[Any]) -> list[list[str]]:
     return stages
 
 
-def parse_plan(value: Any) -> dict[str, Any]:
-    """A plan -- a JSON text or an object -- checked against `PlanSpec`, normalised."""
+def parse_plan(value: Any, *, stored: bool = False) -> dict[str, Any]:
+    """A plan -- a JSON text or an object -- checked against `PlanSpec`, normalised.
+
+    `stored=True` reads a plan back from a run document: one stored before
+    `PlanOverlap.action` existed still reads, compiles and digests as it did.
+    Every plan written now -- the planner's, an edit -- is checked without it.
+    """
     if isinstance(value, (str, bytes)):
         try:
             value = json.loads(value)
@@ -468,7 +505,7 @@ def parse_plan(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise InvalidPlan("a plan is a JSON object with a summary and steps")
     try:
-        spec = PlanSpec.model_validate(dict(value))
+        spec = PlanSpec.model_validate(dict(value), context={_STORED: stored})
     except ValidationError as exc:
         problems = []
         for error in exc.errors():
@@ -485,6 +522,38 @@ def parse_plan(value: Any) -> dict[str, Any]:
     return spec.model_dump(exclude_unset=True, exclude_none=True)
 
 
+def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
+    """An operator's edit of a stored plan, checked like a new plan except for
+    the overlaps it carries over from a plan stored before `PlanOverlap.action`.
+
+    The console's editor sends the plan back whole, so an edit of a legacy plan
+    -- only to fix a step prompt -- carries its action-less overlaps with it,
+    and there is no control to add one. Such an overlap is accepted when it is
+    IDENTICAL to one the stored plan already had without `action`; a new or
+    changed overlap still needs one, exactly as a planner's plan does.
+    """
+    plan = parse_plan(value, stored=True)
+    legacy = set()
+    if isinstance(stored_plan, Mapping):
+        for overlap in stored_plan.get("overlaps") or ():
+            if isinstance(overlap, Mapping) and overlap.get("action") is None:
+                legacy.add((overlap.get("ref"), overlap.get("kind"), overlap.get("note")))
+    for index, overlap in enumerate(plan.get("overlaps") or ()):
+        if "action" in overlap:
+            continue
+        if (overlap["ref"], overlap["kind"], overlap["note"]) not in legacy:
+            problem = (
+                f'overlaps.{index}: the overlap {overlap["ref"]} has no "action": it is '
+                '"none" when this plan does nothing about it, or "required" when this '
+                "plan or a person must act, with the note saying what"
+            )
+            raise InvalidPlan(
+                "the plan does not match the plan schema: " + problem,
+                detail={"errors": [problem]},
+            )
+    return plan
+
+
 def plan_stages(plan: Mapping[str, Any]) -> list[list[str]]:
     """A parsed plan's step ids, grouped into the stages `compile_plan` runs them in."""
     return _stages(list(plan["steps"]))
@@ -495,7 +564,7 @@ def plan_shape(plan: Any) -> str | None:
     if plan is None:
         return None
     try:
-        stages = plan_stages(parse_plan(plan))
+        stages = plan_stages(parse_plan(plan, stored=True))
     except InvalidPlan:
         return None
     count = sum(len(stage) for stage in stages)
@@ -523,6 +592,7 @@ _PLAN_SHAPE = (
     '   "mode": "single" or "workflow",\n'
     '   "requirements": ["<every requirement the issue states, one per entry>"],\n'
     '   "overlaps": [{"ref": "owner/repo#N", "kind": "issue" or "pull_request",\n'
+    '                 "action": "none" or "required",\n'
     '                 "note": "<what overlaps, and what this plan does about it>"}],\n'
     '   "estimate": "<the whole plan, e.g. 3 agent-hours>",\n'
     '   "steps": [{"step_id": "<lowercase-id>", "title": "<one line>",\n'
@@ -613,8 +683,8 @@ def planner_prompt(
         "\nLook for OVERLAPS with the open work listed above: a pull request that "
         "already does part of this issue, an open issue or pull request whose work "
         "edits the same files, work in flight on the same area. Name each one in "
-        '"overlaps" and say what the plan does about it; an empty list means you '
-        "found none.\n\n"
+        '"overlaps", with its "action", and say what the plan does about it; an '
+        "empty list means you found none.\n\n"
         if open_work is not None else ""
     )
     instructions = (
@@ -627,6 +697,10 @@ def planner_prompt(
         "it touches and the tests it adds, and the tests are written before the change. "
         f"Between 1 and {MAX_PLAN_STEPS} steps. step_id is lowercase letters, digits and "
         f"dashes, and may not be {REVIEW_STEP!r} or {FIX_STEP!r}.\n\n"
+        'Every overlap\'s "action" is mandatory: "none" when this plan does nothing about '
+        'it, "required" when this plan or a person must act; its "note" says what '
+        "overlaps and, when action is required, what must be done and by whom. A plan "
+        "with an overlap that has no action is refused.\n\n"
         '"depends_on" lists the step_ids of EARLIER steps this step really depends on, and '
         "steps that do not depend on each other run at the same time, each on its own "
         "branch. A step depends on another when it needs that step's code or files, or "
@@ -853,7 +927,7 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
-    plan = parse_plan(run.plan)
+    plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
         return _workflow(run, _compile_staged(run, plan))
     ref = run.issue

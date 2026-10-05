@@ -234,3 +234,36 @@ describe('#322: modelUsage stands in only for the attempt that wrote it', () => 
     expect(tile.textContent).not.toMatch(/attempts reported/)
   })
 })
+
+// A `modelUsage` WITH NO COUNT IN IT IS NOT A MEASUREMENT OF THE RUN. The CLI
+// writes per-model entries that can carry only `costUSD` (or nothing) -- and
+// such an entry still displaced the newest attempt's own four fields, so a run
+// whose document said `in 100 · out 50` read `tokens not reported`. It stands
+// in for the document only when it carries at least one of the four kinds.
+// MUTATION: count every per-model entry as `modelUsage`, counted or not.
+describe('#322: Tokens: a modelUsage with no counts does not hide the attempt document', () => {
+  const COST_ONLY = { 'claude-opus-5-5': { costUSD: 0.5 } }
+
+  it('reads the document when modelUsage carries only a cost', async () => {
+    const t = task({ ...DONE, result_summary: summary(null, COST_ONLY) })
+    const a = attempt(1, { input_tokens: 100, output_tokens: 50 })
+    expect(tokenKinds(t, [a])).toMatchObject({ input: 100, output: 50, cacheRead: null, cacheWrite: null, fromSummary: null })
+    const tile = await tokensTile(run(t, [a]))
+    expect(value(tile)).toBe('150')
+    expect(tile.textContent).toContain('in 100 · out 50')
+  })
+
+  it('reads the document when modelUsage is an empty map', () => {
+    const t = task({ ...DONE, result_summary: summary(null, {}) })
+    const k = tokenKinds(t, [attempt(1, { input_tokens: 7, cache_read_input_tokens: 9 })])
+    expect(k).toMatchObject({ input: 7, cacheRead: 9, fromSummary: null })
+  })
+
+  // THE CONTROL: one counted entry beside a cost-only one is still modelUsage,
+  // and it still outranks the last-event document.
+  it('still takes modelUsage when any entry carries a count', () => {
+    const t = task({ ...DONE, result_summary: summary(null, { ...COST_ONLY, m: { inputTokens: 52, outputTokens: 9955 } }) })
+    const a = attempt(1, { input_tokens: 3, output_tokens: 500 })
+    expect(tokenKinds(t, [a])).toMatchObject({ input: 52, output: 9955, fromSummary: a.attempt_id })
+  })
+})

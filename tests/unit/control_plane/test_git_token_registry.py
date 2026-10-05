@@ -189,7 +189,8 @@ def test_no_route_accepts_a_token_value(client, eng_with_git) -> None:
     # as one opaque entry in `app.routes`. That it IS mounted is every other
     # test in this file, which reaches it over HTTP.
     routes = list(gittokens_routes.router.routes)
-    assert len(routes) == 4
+    # GT1's four, and GT2a's `POST /{token_id}/verify`, which takes no value.
+    assert len(routes) == 5
     for route in routes:
         assert not route.path.endswith("/value"), route.path
         assert route.methods <= {"GET", "POST", "DELETE"}, (route.path, route.methods)

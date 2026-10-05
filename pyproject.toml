@@ -45,6 +45,17 @@ dev = [
     # (tests/unit/common/test_specsign.py). Never a runtime dependency:
     # swarm_common declares none (contract request 34, decision 3).
     "rfc8785>=0.1.4",
+    # The repository-index extractor's parser and grammars
+    # (images/agent-runtime-base/repo-index/), so its tests in
+    # tests/unit/worker/ run here offline. Exact pins, and the SAME pins as
+    # images/agent-runtime-base/repo-index/requirements.txt, which a test
+    # holds equal: the image and the tests must parse with one grammar build.
+    "tree-sitter==0.25.2",
+    "tree-sitter-python==0.25.0",
+    "tree-sitter-javascript==0.25.0",
+    "tree-sitter-typescript==0.23.2",
+    "tree-sitter-go==0.25.0",
+    "tree-sitter-hcl==1.2.0",
 ]
 
 [tool.pytest.ini_options]
