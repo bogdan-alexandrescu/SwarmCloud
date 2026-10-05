@@ -41,7 +41,13 @@ step "Frozen-contract parity"
 # The matrix deliberately includes the cases that separate a correct copy from a
 # plausible one: an absent adaptive target, an absent quota cap, a quota cap
 # below the hard limit, and the negative inputs that need the max(0, ...) floor.
+# The null hard_limit rows are contract request 38 (#374): an unset ceiling is
+# None in the model and must be null here -- never 0, which an operator chose,
+# and never the adaptive or quota cap standing in for it.
 CASES='[
+  {"hard_limit": null, "adaptive_target": null, "quota_derived_limit": null},
+  {"hard_limit": null, "adaptive_target": 4,    "quota_derived_limit": null},
+  {"hard_limit": null, "adaptive_target": null, "quota_derived_limit": 3},
   {"hard_limit": 10, "adaptive_target": null, "quota_derived_limit": null},
   {"hard_limit": 10, "adaptive_target": 4,    "quota_derived_limit": null},
   {"hard_limit": 10, "adaptive_target": null, "quota_derived_limit": 3},

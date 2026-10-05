@@ -173,9 +173,8 @@ def waiting_for(
                 unread.append(name)
                 continue
             # Paused is checked first and refuses at any limit, so a paused
-            # pool with no limit is still a known refusal. The 0 here never
-            # reaches a caller: `limit_unknown` serves it as null.
-            limit = 0
+            # pool with no limit is still a known refusal, carried with its
+            # hard_limit None (contract request 38) and served as null.
         readable[name] = SlotPool(
             name=name,
             hard_limit=limit,
