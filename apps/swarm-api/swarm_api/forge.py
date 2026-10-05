@@ -292,6 +292,68 @@ class OpenWork:
     pull_requests_truncated: bool
 
 
+@dataclass(frozen=True)
+class RepositoryRead:
+    """One repository as GitHub described it to the tenant's token (repo-index.md §1).
+
+    `can_read` is GitHub's own `permissions.pull` for that token; a token that
+    can see a repository's metadata but not pull it cannot clone it.
+    """
+
+    owner: str
+    repo: str
+    default_branch: str
+    visibility: str
+    archived: bool
+    can_read: bool
+    can_push: bool
+    can_admin: bool
+
+
+@dataclass(frozen=True)
+class ReadablePage:
+    """One page of `GET /user/repos`: the entries as listed, and whether it was full."""
+
+    entries: tuple[Any, ...]
+    full: bool
+
+
+def _visibility(data: dict[str, Any]) -> str:
+    visibility = data.get("visibility")
+    if visibility in ("public", "private", "internal"):
+        return visibility
+    private = data.get("private")
+    if isinstance(private, bool):
+        return "private" if private else "public"
+    return "unknown"
+
+
+def repository_from(data: Any) -> RepositoryRead | None:
+    """A `/repos/{owner}/{repo}` or `/user/repos` entry -> RepositoryRead, or None
+    when it is not shaped like one. The names are GitHub's, unvalidated: the
+    caller checks them against its own patterns before using them."""
+    if not isinstance(data, dict):
+        return None
+    full_name = data.get("full_name")
+    if not isinstance(full_name, str) or full_name.count("/") != 1:
+        return None
+    owner, repo = full_name.split("/")
+    branch = data.get("default_branch")
+    permissions = data.get("permissions") if isinstance(data.get("permissions"), dict) else {}
+    return RepositoryRead(
+        owner=owner,
+        repo=repo,
+        default_branch=branch if isinstance(branch, str) else "",
+        visibility=_visibility(data),
+        archived=data.get("archived") is True,
+        # Absent means GitHub did not say, which for a token-authenticated
+        # read it always does; not saying is not a grant.
+        can_read=permissions.get("pull") is True,
+        can_push=permissions.get("push") is True,
+        can_admin=permissions.get("admin") is True,
+    )
+
+
 def _is_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -380,6 +442,46 @@ class GitHubIssues:
             # GitHub's own URL when it is the issue on github.com; ours otherwise.
             url=html_url if isinstance(html_url, str) and html_url.startswith(ref.repository_url + "/issues/") else ref.url,
         )
+
+    # -- a repository, and what the token can read (repository registration) --
+
+    def repository(self, owner: str, repo: str, token: str) -> RepositoryRead:
+        """`GET /repos/{owner}/{repo}` with the tenant's token: one read.
+
+        Status mapping is `_get`'s: 404/410 `IssueNotFound` (GitHub's answer
+        for a private repository the token cannot see, too), 401/403
+        `IssueNoAccess`, anything else that is not a 200 `IssueReadFailed`.
+        """
+        what = f"{owner}/{repo}"
+        url = f"https://{GITHUB_API_HOST}/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
+        raw = self._get(url, token, what)
+        if len(raw) > MAX_RESPONSE_BYTES:
+            raise IssueReadFailed(f"GitHub's answer for {what} is larger than a repository")
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except Exception:
+            data = None
+        read = repository_from(data)
+        if read is None or (read.owner.lower(), read.repo.lower()) != (owner.lower(), repo.lower()):
+            # A renamed repository answers 301, which is never followed; a 200
+            # naming some other repository is not this one either.
+            raise IssueReadFailed(f"GitHub's answer for {what} is not that repository")
+        return read
+
+    def readable_page(self, token: str, page: int) -> ReadablePage:
+        """Page `page` of `GET /user/repos`, PAGE_SIZE entries, ordered by full name.
+
+        Every repository the token can reach as owner, collaborator or
+        organisation member; for a fine-grained token, exactly the ones it was
+        granted. One request: the caller decides how far it pages.
+        """
+        url = (
+            f"https://{GITHUB_API_HOST}/user/repos?affiliation=owner,collaborator,"
+            f"organization_member&sort=full_name&direction=asc"
+            f"&per_page={PAGE_SIZE}&page={int(page)}"
+        )
+        entries = self._get_list(url, token, "the repositories the tenant's forge credential can read")
+        return ReadablePage(entries=tuple(entries), full=len(entries) >= PAGE_SIZE)
 
     # -- the open work --------------------------------------------------------
 
