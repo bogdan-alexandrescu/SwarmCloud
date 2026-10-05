@@ -320,6 +320,50 @@ def test_the_server_budget_stops_it_and_discards_its_edges(tool: Any, lsp: Any, 
     _no_lsp_edges(index)
 
 
+def test_slow_workspace_queries_are_not_a_hung_server(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # pyright's incomingCalls searches the whole workspace and took up to 60 s
+    # a symbol on this repository while its definitions took milliseconds. A
+    # timed-out workspace query is a slow answer, not a server that stopped
+    # answering, so it never counts toward max_consecutive_timeouts.
+    repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
+    spec = _fake(lsp, tmp_path, {"slow_methods": {"textDocument/prepareCallHierarchy": 0.5},
+                                 "definitions": {
+        "src/pkg/users.py:8": {"path": "src/pkg/store.py", "line": 0, "character": 4, "name": "fetch"},
+    }})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, request_timeout_seconds=0.2))
+    python = _language(index, "python")
+    assert python["status"] == "ok", python["reason"]
+    assert python["lsp"]["request_timeouts"] >= 3
+    assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "lsp"
+
+
+def test_every_definition_is_asked_before_any_workspace_query(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
+    tool.extract(repo, tool.Budget(), lsp=_options(lsp, _fake(lsp, tmp_path, {})))
+    methods = [m.get("method") for m in _log(tmp_path) if m.get("method", "").startswith(
+        ("textDocument/definition", "textDocument/prepareCallHierarchy"))]
+    first_hierarchy = methods.index("textDocument/prepareCallHierarchy")
+    assert "textDocument/definition" not in methods[first_hierarchy:]
+
+
+def test_a_budget_cut_in_the_workspace_queries_keeps_the_definitions(tool: Any, lsp: Any,
+                                                                      tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
+    spec = _fake(lsp, tmp_path, {"slow_methods": {"textDocument/prepareCallHierarchy": 0.4},
+                                 "definitions": {
+        "src/pkg/users.py:8": {"path": "src/pkg/store.py", "line": 0, "character": 4, "name": "fetch"},
+    }})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(lsp, spec, server_budget_seconds=1.5))
+    python = _language(index, "python")
+    # Every site was asked; only the supplementary callers were cut, and the
+    # row says how far they got.
+    assert python["status"] == "ok"
+    assert re.fullmatch(r"call hierarchy and references cut at the 1.5-second budget: "
+                        r"\d+ of \d+ symbols asked", python["reason"])
+    assert python["lsp"]["symbols_skipped"] > 0
+    assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "lsp"
+
+
 def test_a_server_over_its_memory_is_stopped(tool: Any, lsp: Any, tmp_path: Path) -> None:
     repo = fx.build_repo(tmp_path / "repo", fx.PYTHON_APP)
     spec = _fake(lsp, tmp_path, {"mode": "memory", "memory_mib": 256, "delay": 0.5})

@@ -30,6 +30,9 @@ The scenario's keys, all optional:
   ask_config    if true, the server asks `workspace/configuration` after
                 `initialized` and logs the client's answer
   log_env       if true, the first log line is {"env": <its environment>}
+  slow_methods  {"<method>": seconds} -- that method alone answers after
+                the delay, in any mode (a workspace-wide query is slow on
+                a real server while a definition is not)
 
 Nothing here is a real server's behaviour beyond the wire format; what a
 real server returns for a real repository is the adapters' tests (RI10a-d).
@@ -148,6 +151,7 @@ def main() -> int:
             return 3
         if mode in ("slow", "memory") and scenario.get("delay"):
             time.sleep(scenario["delay"])
+        time.sleep(scenario.get("slow_methods", {}).get(method, 0))
         params = message["params"]
         if method == "callHierarchy/incomingCalls":
             item = params["item"]
