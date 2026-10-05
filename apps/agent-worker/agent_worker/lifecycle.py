@@ -8064,10 +8064,17 @@ class Worker:
         # WHY each one (#165), index for index with `skipped`: the
         # missing-output check reads it to decide whether a retry can help.
         skip_causes: list[str] = []
+        # The same causes keyed by each name AS WRITTEN, for this attempt's
+        # own check: the list above holds names scrubbed and cut to 256
+        # characters, and a declared output can be longer than that, so its
+        # cause looked up by the declared name was not found and it was
+        # called not written, and retried.
+        raw_causes: dict[str, str] = {}
         for folder in too_deep:
             # Scrubbed, then cut, like every name below (#232 review).
             skipped.append(standalone_mod.shown(self._scrub(folder)))
             skip_causes.append(expected_mod.CAUSE_REFUSED)
+            raw_causes[folder] = expected_mod.CAUSE_REFUSED
         for name in plan.unstorable:
             # A name whose bytes are not UTF-8 (#225 review): no object can be
             # named with it, and as a lone surrogate in the summary it made
@@ -8083,6 +8090,7 @@ class Worker:
             )
             skipped.append(shown)
             skip_causes.append(expected_mod.CAUSE_REFUSED)
+            raw_causes[name] = expected_mod.CAUSE_REFUSED
         for entry in plan.not_uploaded:
             if entry["reason"] == manifest_mod.NAME_TOO_LONG:
                 # Listed as #225 lists a name it could not upload: cut short,
@@ -8091,6 +8099,7 @@ class Worker:
                 # registered secret crossing character 256 survive in part.
                 skipped.append(standalone_mod.shown(self._scrub(entry["name"])))
                 skip_causes.append(expected_mod.CAUSE_REFUSED)
+                raw_causes[entry["name"]] = expected_mod.CAUSE_REFUSED
         # Past the cap: COUNTED in the summary (`artifacts_over_cap`, below),
         # and every name in the log -- the owner's shape for #228, through the
         # helper #225's working-folder cap uses. Not in `artifacts_skipped`,
@@ -8138,6 +8147,7 @@ class Worker:
                 # nothing had cut it.
                 skipped.append(standalone_mod.shown(self._scrub(rel)))
                 skip_causes.append(_skip_cause(sent.skipped))
+                raw_causes[rel] = skip_causes[-1]
                 continue
             # Listed only for a file that LEFT (#227): one the byte cap or an
             # upload failure kept in the pod was never uploaded "as-is".
@@ -8231,9 +8241,10 @@ class Worker:
                 {"name": name, "cause": cause}
                 for name, cause in zip(skipped[:50], skip_causes[:50])
             ]
-        # Every skipped name's cause, uncut, for this attempt's own check: the
-        # summary's list stops at 50, and a declared output can be the 51st.
-        self._skip_causes = dict(zip(skipped, skip_causes))
+        # Every skipped name's cause, uncut and by the name as written, for
+        # this attempt's own check: the summary's list stops at 50, and a
+        # declared output can be the 51st or longer than the cut.
+        self._skip_causes = raw_causes
         if plan.over_cap:
             # How many files the folder held past the cap, and the cap, so a
             # reader can say "N over the 500-file cap" without restating the

@@ -287,6 +287,26 @@ def test_a_declared_name_longer_than_the_manifest_bound_is_still_uploaded(
     assert long_name not in skipped_names(summary.get("artifacts_skipped"))
 
 
+def test_a_declared_name_longer_than_the_shown_cut_keeps_its_cap_cause(
+    db, worker_factory, series_cli
+):
+    """#165, owner decision 2026-09-28: a missing output the byte cap kept out
+    fails the attempt for good, because the retry writes the same file into
+    the same cap. The summary lists a skipped name cut to 256 characters, and
+    the cause the check reads was keyed by that cut name, so a declared name
+    over 256 lost its `cap` and was called not written, and retried."""
+    long_name = f"{'d' * 140}/{'e' * 159}"
+    _seed(db, {"series": [[long_name, 1]]}, metadata={"expected_outputs": [long_name]})
+
+    assert _run(worker_factory, max_artifact_bytes=1) == ExitCode.FAILED
+    task = db.doc("tasks/task_1")
+    summary = _summary(db)
+    assert summary["expected_outputs_missing_causes"] == [{"name": long_name, "cause": "cap"}]
+    assert task["state"] == "FAILED", "a retry meets the same cap"
+    assert task["end_cause"] == "outputs_missing"
+    assert "retried" not in task["last_error"]
+
+
 # ---------------------------------------------------------------------------
 # platform files first: they never lose their head-of-queue place
 # ---------------------------------------------------------------------------
