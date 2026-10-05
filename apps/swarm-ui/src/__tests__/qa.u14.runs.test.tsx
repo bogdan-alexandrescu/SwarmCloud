@@ -354,7 +354,7 @@ describe('6: at DONE the card says what is known about the merge and the issue',
     const green = fact('green at').querySelector('code')!
     expect(visible(green)).toBe(HEAD.slice(0, 7))
     expect(green.getAttribute('title')).toBe(HEAD)
-    expect(within(fact('issue')).getByRole('link', { name: /#72/ }).getAttribute('href')).toBe(ISSUE_URL)
+    expect(within(fact('issue') as HTMLElement).getByRole('link', { name: /#72/ }).getAttribute('href')).toBe(ISSUE_URL)
     expect(visible(fact('issue'))).toMatch(/state not served/)
     expect(visible(fact('keyword'))).toContain('Closes #72')
     expect(visible(container.querySelector('.rn-state'))).toMatch(/merge is not reported/)
