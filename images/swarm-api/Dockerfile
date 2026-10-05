@@ -59,6 +59,8 @@ WORKDIR /src
 COPY apps/common/ /src/apps/common/
 # The credential patterns swarm_api.redaction re-exports (#259).
 COPY apps/redaction/ /src/apps/redaction/
+# The workflow state derivation the API and the reconciler share (#616).
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/swarm-api/ /src/apps/swarm-api/
 
 # Build `swarm-common` into a local wheelhouse first and resolve it from there:
@@ -66,6 +68,7 @@ COPY apps/swarm-api/ /src/apps/swarm-api/
 # without a private registry.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
  && uv build --wheel --out-dir /wheels /src/apps/redaction \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/swarm-api
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,

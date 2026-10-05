@@ -59,12 +59,15 @@ COPY --from=uvbin /uv /usr/local/bin/uv
 
 WORKDIR /src
 COPY apps/common/ /src/apps/common/
+# The workflow state derivation the API and the reconciler share (#616).
+COPY apps/workflow-rollup/ /src/apps/workflow-rollup/
 COPY apps/reconciler/ /src/apps/reconciler/
 
 # Build `swarm-common` into a local wheelhouse first and resolve it from there:
 # no index has ever heard of it, so `--find-links` is what makes this build work
 # without a private registry.
 RUN uv build --wheel --out-dir /wheels /src/apps/common \
+ && uv build --wheel --out-dir /wheels /src/apps/workflow-rollup \
  && uv build --wheel --out-dir /wheels /src/apps/reconciler
 
 # `--without-pip`: the stdlib venv otherwise seeds pip, setuptools and wheel,
