@@ -1,0 +1,80 @@
+# Checked-in build config for agent-runtime-indexer.
+#
+# The same shape as images/agent-runtime-browser/cloudbuild.yaml, for the same
+# reason: this image is built FROM agent-runtime-base, and the config
+# `scripts/build-images.sh` generates passes only GIT_SHA and BUILD_TIME. The
+# indexer's Dockerfile has NO default BASE_IMAGE and refuses one without a
+# digest, so the generated config could not build it at all.
+#
+# `find_recipe()` prefers `images/<target>/cloudbuild.yaml` over the
+# Dockerfile, so this file is what runs. `build-images.sh` passes `_IMAGE`,
+# `_TAG` and `_TARGET`. The base ref is DERIVED from `_IMAGE` (same registry,
+# same tag), so it cannot drift from the registry and project being built
+# into, and it is passed BY DIGEST, read back from the image just pulled.
+#
+# ORDERING: this build pulls `agent-runtime-base:${_TAG}`, so the base must
+# already be pushed. `build-images.sh`'s `build_after()` holds this image back
+# until agent-runtime-base has FINISHED in the same run, and does not submit
+# it at all if the base failed; tests/unit/scripts/test_build_images_concurrency.py
+# reads this file for the base it pulls and fails if `build_after()` disagrees.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution. Every shell variable below is spelled `$$name`.
+timeout: 3600s
+options:
+  machineType: E2_HIGHCPU_8
+  # CLOUD_LOGGING_ONLY keeps builds working when the legacy Cloud Build bucket
+  # is absent and when a user-specified build service account is in use.
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes `_TARGET` to every config it submits, and this one
+  # has no use for it.
+  substitution_option: ALLOW_LOOSE
+
+substitutions:
+  _IMAGE: ""
+  _TAG: ""
+  _DOCKERFILE: images/agent-runtime-indexer/Dockerfile
+
+steps:
+  # 1. Resolve the base image to a digest. Pulling first turns "the base for
+  #    this tag was never built" into a clear failure here rather than a
+  #    confusing `FROM` error inside the build.
+  - id: resolve-base
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -eu
+      - -c
+      - |
+        image='${_IMAGE}'
+        tag='${_TAG}'
+        registry="$${image%/*}"
+        base="$${registry}/agent-runtime-base:$${tag}"
+        echo "resolving base image $${base}"
+        docker pull "$${base}"
+        digest="$$(docker image inspect --format '{{index .RepoDigests 0}}' "$${base}")"
+        echo "base resolved to $${digest}"
+        printf '%s' "$${digest}" > /workspace/base-image-ref
+
+  # 2. Build the indexer image on that exact digest. BuildKit, because the
+  #    Dockerfile declares `# syntax=docker/dockerfile:1.7`, as the base does.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - -eu
+      - -c
+      - |
+        base="$$(cat /workspace/base-image-ref)"
+        docker build \
+          --platform linux/amd64 \
+          -f '${_DOCKERFILE}' \
+          -t '${_IMAGE}:${_TAG}' \
+          --build-arg "BASE_IMAGE=$${base}" \
+          --build-arg "GIT_SHA=${_TAG}" \
+          .
+
+images:
+  - ${_IMAGE}:${_TAG}

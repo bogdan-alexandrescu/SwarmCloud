@@ -3,7 +3,7 @@
 docs/repo-index.md §3.5 (revised 2026-10-04): pyright for Python, tsserver
 (through typescript-language-server) for TypeScript and JavaScript, gopls
 for Go and terraform-ls for HCL. The image installs all four into
-DEFAULT_BIN_DIR (images/agent-runtime-base/Dockerfile, versions pinned
+DEFAULT_BIN_DIR (images/agent-runtime-indexer/Dockerfile, versions pinned
 there and in lsp/package-lock.json), and the driver resolves a command ONLY
 there: never from PATH, so nothing a checkout or an agent put on a PATH can
 stand in for a server.

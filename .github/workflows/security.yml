@@ -333,7 +333,7 @@ jobs:
           gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
           repo="${REGION}-docker.pkg.dev/${PROJECT_ID}/swarm-images"
           status=0
-          for image in agent-runtime-base agent-runtime-browser swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler; do
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1

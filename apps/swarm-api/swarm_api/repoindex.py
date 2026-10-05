@@ -150,8 +150,11 @@ INDEX_PRIORITY = -50
 #: the profile's own. §3.5's larger table applies once the LSP pass exists.
 FULL_TIMEOUT_SECONDS = 1800
 INCREMENTAL_TIMEOUT_SECONDS = 900
-#: The mechanical extractor lane RI3 ships in the agent image
-#: (`/usr/local/bin/swarm-repo-index`, images/agent-runtime-base/Dockerfile).
+#: The mechanical extractor lane RI3 ships in the indexer image
+#: (`/usr/local/bin/swarm-repo-index`, images/agent-runtime-indexer/Dockerfile),
+#: no longer in agent-runtime-base, which `INDEXER_PROFILE` runs (#625). Until
+#: a profile that runs the indexer image exists (contract request 48), an
+#: index run records "not installed in this image" and writes no graph.
 #: The prompt tells the agent to run it first when it is installed, and to
 #: record that it was not when it is not. This named `swarm-repo-extract`, a
 #: command the image never carried, until lane RI9b: every production run

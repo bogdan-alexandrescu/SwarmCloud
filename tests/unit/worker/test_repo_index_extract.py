@@ -3,7 +3,7 @@
 docs/repo-index.md §3.4 and §3.5 make the file tree, symbols, routes,
 `import` and candidate `ast` edges, naming test edges, co-change pairs and
 hot-spot counts one deterministic tree-sitter pass, shipped in the
-agent-runtime-base image (images/agent-runtime-base/repo-index/), which the
+agent-runtime-indexer image (images/agent-runtime-indexer/repo-index/), which the
 indexer prompt runs before the agent reads anything. These tests drive that
 script on small fixture repositories (repo_index_fixtures.py), offline: no
 network, no language server, nothing installed but the pinned grammars.
@@ -39,10 +39,10 @@ import pytest
 import repo_index_fixtures as fx
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-TOOL_DIR = REPO_ROOT / "images" / "agent-runtime-base" / "repo-index"
+TOOL_DIR = REPO_ROOT / "images" / "agent-runtime-indexer" / "repo-index"
 SCRIPT = TOOL_DIR / "repo_index_extract.py"
 REQUIREMENTS = TOOL_DIR / "requirements.txt"
-DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-base" / "Dockerfile"
+DOCKERFILE = REPO_ROOT / "images" / "agent-runtime-indexer" / "Dockerfile"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 
 DAY = 86_400
@@ -728,7 +728,7 @@ def test_the_tree_sitter_packages_are_pinned_identically(tool: Any) -> None:
 
 def test_the_image_installs_the_extractor_and_proves_it_runs() -> None:
     text = DOCKERFILE.read_text(encoding="utf-8")
-    assert "COPY images/agent-runtime-base/repo-index/" in text
+    assert "COPY images/agent-runtime-indexer/repo-index/" in text
     assert "--require-hashes" in text
     assert "/usr/local/bin/swarm-repo-index" in text
     # The build runs it, so an image whose grammars cannot load never ships.
