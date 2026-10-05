@@ -386,13 +386,16 @@ def parse_patch(patch: str) -> Patch:
     return out
 
 
-def _ranges(lines: Iterable[int]) -> list[list[int]]:
-    out: list[list[int]] = []
+def _ranges(lines: Iterable[int]) -> list[dict[str, int]]:
+    """Runs of consecutive lines as `{"start", "end"}` maps, never `[start, end]`
+    pairs: the plan is stored in Firestore, which refuses an array directly inside
+    an array, so a list of pairs would fail every `impact_plans` write."""
+    out: list[dict[str, int]] = []
     for line in sorted(set(lines)):
-        if out and line == out[-1][1] + 1:
-            out[-1][1] = line
+        if out and line == out[-1]["end"] + 1:
+            out[-1]["end"] = line
         else:
-            out.append([line, line])
+            out.append({"start": line, "end": line})
     return out
 
 

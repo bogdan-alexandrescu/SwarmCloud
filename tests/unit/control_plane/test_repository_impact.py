@@ -480,6 +480,36 @@ def test_a_diff_github_cut_short_falls_back(shop):
     assert_full_suite(plan([changed_line(FORMAT, 3)], shop, truncated=True), "diff_truncated")
 
 
+def arrays_inside_arrays(value: Any, where: str = "$") -> list[str]:
+    """Every place a list sits directly inside a list: Firestore refuses such a
+    write, and the in-memory fake db does not, so the shape is checked here."""
+    found: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            found += arrays_inside_arrays(item, f"{where}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for n, item in enumerate(value):
+            if isinstance(item, (list, tuple)):
+                found.append(f"{where}[{n}]")
+            found += arrays_inside_arrays(item, f"{where}[{n}]")
+    return found
+
+
+def test_line_ranges_are_maps_so_firestore_can_store_the_plan(shop):
+    files = [
+        impact.DiffFile(path=FORMAT, status="modified",
+                        patch=hunk(3, 3, ["-old", "-old too", "+new", "+new too"])),
+        impact.DiffFile(path="src/shop/coupons.py", status="added",
+                        patch=hunk(0, 1, ["+def apply():", "+    return 0"])),
+    ]
+    answer = plan(files, shop)
+    # every range-bearing list was exercised, so an empty walk proves something
+    assert answer["diff"] and answer["changed"] and answer["unindexed"]
+    assert {"start": 3, "end": 4} in next(d for d in answer["diff"] if d["path"] == FORMAT)[
+        "removed"]
+    assert arrays_inside_arrays(answer) == []
+
+
 # --------------------------------------------------------------------------
 # deterministic output
 # --------------------------------------------------------------------------
@@ -627,6 +657,7 @@ def test_a_pull_request_impact_reads_its_diff_and_stores_the_plan_per_sha(
     assert stored["tenant_id"] == indexed["tenant"] and stored["repo_id"] == repo_id
     assert (stored["head_sha"], stored["base_sha"], stored["pull_request"]) == (HEAD, BASE, 57)
     assert stored["selected"] == 1 and stored["fallback_triggers"] == []
+    assert stored["plan"]["diff"] and arrays_inside_arrays(stored) == []
     # The same sha asked again is the same plan, not a second one.
     again = client.post(f"/v1/repositories/{repo_id}/impact", json={"pull_request": 57},
                         headers=auth_header("alice"))
