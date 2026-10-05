@@ -12,7 +12,8 @@
 //
 // MUTATIONS, one per block: drop `<TaskIdLine>` from the row (or the header);
 // copy `shown` instead of `id`; skip the fallback's `selectNodeContents`;
-// delete `white-space: nowrap` from `.tid-text`, or let `.tid-tail` shrink.
+// delete `white-space: nowrap` from `.tid-text`, or let `.tid-tail` shrink;
+// drop `flex-direction: column` from `.row.is-compact > .cr-name`.
 
 import AGENTS_CSS from '../styles/agents.css?raw'
 import STYLES from '../styles.css?raw'
@@ -123,6 +124,13 @@ describe('#94: the id is printed under the name, without a hover', () => {
     // UNDER the name, in the name's cell.
     const name = r.querySelector('.cr-name b')!
     expect(name.compareDocumentPosition(text) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    // DOM order holds beside the name too: the cell must STACK, or the id is
+    // drawn on the name's line (`.row .agent` is a one-line flex row).
+    const cell = r.querySelector('.cr-name')!
+    for (const env of [WIDE, PHONE]) {
+      expect(painted(cell, 'display', env), `name cell at ${env.width}`).toBe('flex')
+      expect(painted(cell, 'flex-direction', env), `name cell at ${env.width}`).toBe('column')
+    }
     expect(painted(text, 'font-family', WIDE)).toBe('var(--mono)')
   })
 
