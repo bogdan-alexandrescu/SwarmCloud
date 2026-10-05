@@ -42,6 +42,7 @@ from agent_worker.accountlease import (
     NoAccount,
 )
 from agent_worker.errors import ExitCode
+from agent_worker.runners.cliagent import RELOAD_RESUME_PROMPT, RESUME_PROMPT
 from swarm_common.states import EventType, ParkReason, TaskState
 
 from conftest import TENANT, seed_attempt, seed_tenant
@@ -124,7 +125,8 @@ plan_dir = pathlib.Path(PLAN_DIR)
 plan = json.loads((plan_dir / "plan.json").read_text())
 token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "")
 with (plan_dir / "runs.jsonl").open("a") as f:
-    f.write(json.dumps({"resume": resume, "token": token}) + "\n")
+    f.write(json.dumps({"resume": resume, "token": token,
+                        "message": argv[-1] if resume else None}) + "\n")
 runs = sum(1 for _ in (plan_dir / "runs.jsonl").open())
 
 def say(event):
@@ -243,6 +245,7 @@ def test_an_exhausted_account_swaps_at_a_turn_boundary_and_the_run_continues(
     assert [r["resume"] for r in runs] == [None, sessions[0]]
     assert runs[0]["token"] == tokens[f"swarm-account-{TENANT}--first"]
     assert runs[1]["token"] == tokens[f"swarm-account-{TENANT}--second"]
+    assert runs[1]["message"] == RESUME_PROMPT
     # Same attempt, same lease, no park, no new attempt.
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.SUCCEEDED.value
@@ -503,6 +506,8 @@ def test_a_refused_credential_on_a_held_account_reloads_and_resumes_the_session(
 
     assert code == ExitCode.OK, log_stream.getvalue()[-3000:]
     assert [r["resume"] for r in runs] == [None, sessions[0]]
+    # Told the truth: the account did not move, and the run was cut off.
+    assert runs[1]["message"] == RELOAD_RESUME_PROMPT
     # The same account: a reload is not a move.
     assert broker.swaps == []
     assert runs[1]["token"] == tokens[f"swarm-account-{TENANT}--first"]

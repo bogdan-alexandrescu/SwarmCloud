@@ -404,6 +404,22 @@ class ControlStore:
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
 
+    def task_and_attempt_docs(
+        self, task_id: str, attempt_id: str
+    ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+        """The raw task and attempt documents a stop request names (#627).
+
+        None for a document that does not exist. A READ THAT FAILS raises, as
+        `task_by_id` does: "there is no such attempt" must never be what a
+        failed read looks like to the caller deciding whether to stop it.
+        """
+        task = self._db.collection("tasks").document(task_id).get()
+        attempt = self._db.collection("attempts").document(attempt_id).get()
+        return (
+            (task.to_dict() or {}) if task.exists else None,
+            (attempt.to_dict() or {}) if attempt.exists else None,
+        )
+
     def attempt_events(self, task_id: str, attempt_id: str) -> list[dict[str, Any]]:
         """Every event one attempt has written to its task's stream.
 

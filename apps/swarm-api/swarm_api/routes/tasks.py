@@ -286,7 +286,13 @@ def cancel_task(
         background.add_task(ctx.executions.cancel, target)
     # OD-B15-4: cancelling a parent cancels its children, at once; the
     # scheduler's sweep makes it certain (docs/design/child-tasks.md §3.4).
-    cascaded = cascade_children(ctx, task, why=PARENT_CANCELLED, by=auth.email)
+    children: list = []
+    cascaded = cascade_children(
+        ctx, task, why=PARENT_CANCELLED, by=auth.email, targets=children
+    )
+    # A child cancelled with its parent is stopped the same way (#627).
+    for child_target in children:
+        background.add_task(ctx.executions.cancel, child_target)
     accounts = accounts_for(ctx.db, tenant_id, [task])
     return {
         "task": task_to_api(

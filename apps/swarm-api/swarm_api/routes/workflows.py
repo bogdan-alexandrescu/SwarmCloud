@@ -212,9 +212,14 @@ def cancel_workflow(
         settings=ctx.settings, db=ctx.db, store=ctx.store, submissions=ctx.submissions,
         verifier=None, now=ctx.now,
     )
+    children: list = []
     for task_id in result.get("tasks_cancelled") or []:
         try:
-            service.cascade(tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email)
+            service.cascade(
+                tenant_id, task_id, why=PARENT_CANCELLED, by=auth.email, targets=children
+            )
         except Exception:
             log.exception("child cascade of step %s failed; the scheduler sweep retries it", task_id)
+    for child_target in children:
+        background.add_task(ctx.executions.cancel, child_target)
     return result

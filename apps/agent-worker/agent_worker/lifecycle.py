@@ -240,6 +240,9 @@ from .runners.base import EXIT_QUOTA_EXHAUSTED, EXIT_TERMINATED, SPEND_KEYS
 from .runners.cliagent import (
     ACCOUNT_MOVE_ENV,
     ACCOUNT_STREAM_ENV,
+    RESUME_MOVED,
+    RESUME_REASON_ENV,
+    RESUME_RELOADED,
     RESUME_SESSION_ENV,
     STOP_DRAIN,
     STOP_EXHAUSTED,
@@ -687,6 +690,9 @@ class Worker:
         # the moves so far; and whether the last start followed a swap.
         self._session_id: str | None = None
         self._resume_session: str | None = None
+        #: Why the session is resumed (RESUME_MOVED / RESUME_RELOADED), which
+        #: decides what the resumed CLI is told.
+        self._resume_reason: str | None = None
         self._readings: ReadingForwarder | None = None
         self._turns_checked = 0
         self._channel_seen: int | None = None
@@ -961,6 +967,7 @@ class Worker:
                     resumed = self._account is not None and self._session_id is not None
                     if resumed:
                         self._resume_session = self._session_id
+                        self._resume_reason = RESUME_RELOADED
                         # The next runner counts its turns from zero.
                         self._turns_checked = 0
                     self.log.warning(
@@ -4785,6 +4792,7 @@ class Worker:
         env = {ACCOUNT_STREAM_ENV: str(stream), ACCOUNT_MOVE_ENV: str(move)}
         if self._resume_session:
             env[RESUME_SESSION_ENV] = self._resume_session
+            env[RESUME_REASON_ENV] = self._resume_reason or RESUME_MOVED
         return env
 
     def _read_account_channel(self) -> dict[str, Any]:
@@ -4962,6 +4970,7 @@ class Worker:
                 current, reason = outcome, SWAP_UNUSABLE
                 continue
             self._resume_session = self._session_id
+            self._resume_reason = RESUME_MOVED
             self._just_swapped = True
             self._readings = None
             self._turns_checked = 0

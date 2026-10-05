@@ -164,6 +164,44 @@ _EXECUTION_STATES = frozenset(
 )
 
 
+def first_cancel_target(
+    db: Any, txn: Any, data: dict[str, Any], *, tenant_id: str, task_id: str
+) -> ExecutionTarget | None:
+    """The execution a task's first cancel should stop, read inside `txn` (#627).
+
+    For a caller whose transaction has not yet set `cancel_requested` -- the
+    child cascade -- and which must call this before any write. None when the
+    flag is already set (a cancel already asked), when the task holds no
+    capacity, or when its attempt recorded no execution or has ended.
+    """
+    if data.get("cancel_requested"):
+        return None
+    try:
+        state = TaskState(data.get("state"))
+    except ValueError:
+        return None
+    lease_id = data.get("current_lease_id")
+    if state not in _EXECUTION_STATES or not lease_id:
+        return None
+    lease_snap = _snapshot(txn.get(db.collection(LEASES).document(lease_id)))
+    lease = (lease_snap.to_dict() or {}) if lease_snap.exists else {}
+    attempt_id = lease.get("attempt_id")
+    if not attempt_id:
+        return None
+    attempt_snap = _snapshot(txn.get(db.collection(ATTEMPTS).document(attempt_id)))
+    attempt = (attempt_snap.to_dict() or {}) if attempt_snap.exists else {}
+    execution = attempt.get("execution_name")
+    if not isinstance(execution, str) or not execution or attempt.get("completed_at") is not None:
+        return None
+    return ExecutionTarget(
+        tenant_id=tenant_id,
+        task_id=task_id,
+        attempt_id=str(attempt_id),
+        backend=str(attempt.get("backend") or ""),
+        execution_name=execution,
+    )
+
+
 def _as_utc(value: Any) -> datetime | None:
     if not isinstance(value, datetime):
         return None
@@ -1089,8 +1127,10 @@ class Store:
                 )
 
             # Every read before any write. The lease and its attempt are read
-            # only for a task that holds capacity, to decide whether a worker
-            # can still be acting on it (`_no_live_worker`).
+            # for a task a worker may not have reached yet, to decide whether
+            # one can still be acting on it (`_no_live_worker`), and on the
+            # FIRST cancel of any task that holds capacity, to name the
+            # execution the route asks to be stopped (#627).
             lease_id = data.get("current_lease_id") or None
             lease: dict[str, Any] | None = None
             attempt: dict[str, Any] | None = None

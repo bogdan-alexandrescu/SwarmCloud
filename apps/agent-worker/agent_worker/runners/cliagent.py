@@ -200,6 +200,7 @@ class CliAgentSpec:
 # And one variable the worker sets on the restart that follows a swap:
 #
 #   RESUME_SESSION_ENV  the session to continue with `spec.resume_flag`.
+#   RESUME_REASON_ENV   why it stopped: RESUME_MOVED or RESUME_RELOADED.
 #
 # THE SESSION ID IS NEVER LOGGED. It is in the channel file and the restarted
 # CLI's argv and nowhere else: the `child started` line prints the argv with
@@ -207,6 +208,11 @@ class CliAgentSpec:
 ACCOUNT_STREAM_ENV = "SWARM_ACCOUNT_STREAM"
 ACCOUNT_MOVE_ENV = "SWARM_ACCOUNT_MOVE"
 RESUME_SESSION_ENV = "SWARM_RESUME_SESSION"
+RESUME_REASON_ENV = "SWARM_RESUME_REASON"
+
+#: Why a session is being resumed.
+RESUME_MOVED = "moved"
+RESUME_RELOADED = "credential_reloaded"
 
 #: What a resumed CLI is told. The conversation, the tool results and the
 #: workspace are all as they were; this is the one new user message.
@@ -214,6 +220,20 @@ RESUME_PROMPT = (
     "Your session was moved to another account at a turn boundary. Continue "
     "the task exactly where you left off; nothing in the workspace changed."
 )
+#: The same after a credential reload (#626): the account did NOT change, and
+#: the CLI was stopped wherever it was, possibly mid-turn, so the last step it
+#: took may not have finished.
+RELOAD_RESUME_PROMPT = (
+    "Your session was interrupted because its credential was refreshed, and "
+    "it has been restarted on the same account. Continue the task where you "
+    "left off. The last action you took may not have completed; check its "
+    "result in the workspace before relying on it."
+)
+
+
+def resume_prompt(reason: str | None) -> str:
+    """The resumed CLI's one new message, by why it was stopped."""
+    return RELOAD_RESUME_PROMPT if reason == RESUME_RELOADED else RESUME_PROMPT
 
 #: Why this runner stopped the CLI at a turn boundary.
 STOP_EXHAUSTED = "exhausted"
@@ -905,7 +925,7 @@ def run_cli_agent(
         raise RunnerFailure(f"{spec.name} was asked to resume a session it cannot resume")
     if resume:
         argv += [spec.resume_flag, resume]
-        argv.append(RESUME_PROMPT)
+        argv.append(resume_prompt(os.environ.get(RESUME_REASON_ENV, "").strip()))
     else:
         # The prompt is the only caller-controlled value that reaches argv,
         # and it is passed as a single trailing argument with no shell.

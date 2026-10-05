@@ -3,23 +3,22 @@
 A cancel used to be a flag that the worker read at its next poll, or that the
 reconciler acted on once the worker went silent; some executions ran 7-13 h
 past a cancel (the 2026-10-05 history analysis). The route now names the
-task's execution and asks its backend to stop it -- Cloud Run's cancel or a
-GKE Job delete -- straight away. Pinned here:
+task's attempt and asks the reconciler to stop its execution -- Cloud Run's
+cancel or a GKE Job delete -- straight away. Pinned here:
 
   * the first cancel of a running task asks the backend ONCE, for the
     execution its attempt recorded; a second cancel asks nothing;
   * a task with no execution (QUEUED), or whose attempt has ended, asks
     nothing; a workflow cancel asks for each running step;
   * the route releases nothing itself: the lease and pools are untouched;
-  * the REST canceller refuses any name that is not this platform's, never
-    deletes a GKE Job it did not create or that is another tenant's, and
-    calls the endpoints the reconciler calls.
+  * the request is published for the reconciler, which holds the stop
+    permissions swarm-api does not, and carries ids only, never a resource
+    name (the reconciler's side: tests/unit/reconciler/test_stop_execution.py).
 """
 
 from __future__ import annotations
 
-import base64
-from typing import Any
+import json
 
 import pytest
 
@@ -27,7 +26,7 @@ from swarm_api.deps import AppContext, _execution_canceller
 from swarm_api.executioncancel import (
     ExecutionTarget,
     NoExecutionCanceller,
-    RestExecutionCanceller,
+    PubSubExecutionCanceller,
 )
 
 from .conftest import api_settings, auth_header, seed_task, seed_tenant
@@ -134,137 +133,92 @@ def test_a_workflow_cancel_asks_for_each_running_step(client, db, make_scheduler
     assert "targets" not in r.json()
 
 
-# -- the REST canceller ------------------------------------------------------
+def test_a_child_cancelled_with_its_parent_is_stopped_too(client, db, make_scheduler, recorder):
+    """A child's execution is asked to stop with its parent's, once."""
+    child_id = running(client, db, make_scheduler)
+    _lease_id, lease = lease_of(db, child_id)
+    tenant = db.docs[f"tasks/{child_id}"]["tenant_id"]
+    seed_task(db, task_id="task_parent", tenant_id=tenant, state="QUEUED")
+    db.docs[f"tasks/{child_id}"]["parent_task_id"] = "task_parent"
+
+    first = client.post("/v1/tasks/task_parent/cancel", headers=auth_header("alice"))
+
+    assert first.status_code == 200, first.text
+    assert first.json()["children_cancelled"] == 1
+    assert [(t.task_id, t.attempt_id) for t in recorder.targets] == [
+        (child_id, lease["attempt_id"])
+    ]
+    assert db.docs[f"tasks/{child_id}"]["cancel_requested"] is True
+    # Cancelling the child itself now asks nothing more: it was already asked.
+    client.post(f"/v1/tasks/{child_id}/cancel", headers=auth_header("alice"))
+    assert len(recorder.targets) == 1
 
 
-class _Response:
-    def __init__(self, status: int, body: dict | None = None) -> None:
-        self.status_code = status
-        self._body = body or {}
-
-    def json(self) -> dict:
-        return self._body
+# -- the publisher -----------------------------------------------------------
 
 
-class _Session:
-    def __init__(self, *, post=200, get=200, delete=200, labels=None) -> None:
-        self.calls: list[tuple[str, str, dict]] = []
-        self._post, self._get, self._delete = post, get, delete
-        self._labels = labels if labels is not None else {
-            "managed-by": "swarm-scheduler", "swarm-tenant": "eng"}
+class _Future:
+    def __init__(self, error: Exception | None = None) -> None:
+        self._error = error
 
-    def post(self, url: str, **kw: Any) -> _Response:
-        self.calls.append(("POST", url, kw))
-        return _Response(self._post)
-
-    def get(self, url: str, **kw: Any) -> _Response:
-        self.calls.append(("GET", url, kw))
-        return _Response(self._get, {"metadata": {"labels": self._labels}})
-
-    def delete(self, url: str, **kw: Any) -> _Response:
-        self.calls.append(("DELETE", url, kw))
-        return _Response(self._delete)
+    def result(self, timeout: float | None = None) -> str:
+        if self._error is not None:
+            raise self._error
+        return "msg-1"
 
 
-def _rest(session: _Session, **kw: Any) -> RestExecutionCanceller:
-    return RestExecutionCanceller(project_id=PROJECT, region=REGION, session=session, **kw)
+class _Publisher:
+    def __init__(self, error: Exception | None = None) -> None:
+        self.calls: list[tuple[str, bytes, dict]] = []
+        self._error = error
 
-
-def _run_target(name: str) -> ExecutionTarget:
-    return ExecutionTarget("eng", "task_1", "att_1", "CLOUD_RUN_JOB", name)
-
-
-def _gke_target(name: str, tenant: str = "eng") -> ExecutionTarget:
-    return ExecutionTarget(tenant, "task_1", "att_1", "GKE_AUTOPILOT", name)
+    def publish(self, topic: str, data: bytes, **attributes: str) -> _Future:
+        self.calls.append((topic, data, attributes))
+        return _Future(self._error)
 
 
 RUN_NAME = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock/executions/swarm-job-eng-mock-abc12"
-CA = base64.b64encode(b"not a real certificate").decode()
+TOPIC = "projects/proj-x/topics/swarm-execution-cancel"
 
 
-def test_cloud_run_cancel_posts_to_the_execution():
-    session = _Session()
-    assert _rest(session).cancel(_run_target(RUN_NAME)) == "requested"
-    assert [(m, u) for m, u, _ in session.calls] == [
-        ("POST", f"https://run.googleapis.com/v2/{RUN_NAME}:cancel")]
+def _target() -> ExecutionTarget:
+    return ExecutionTarget("eng", "task_1", "att_1", "CLOUD_RUN_JOB", RUN_NAME)
 
 
-@pytest.mark.parametrize("status,outcome", [(404, "gone"), (400, "finished"), (403, "http_403")])
-def test_cloud_run_answers_are_named(status, outcome):
-    assert _rest(_Session(post=status)).cancel(_run_target(RUN_NAME)) == outcome
+def test_the_stop_request_carries_ids_and_never_a_resource_name():
+    """The reconciler stops what the ATTEMPT recorded; nothing here can name
+    a resource for it, least of all one of the other team's."""
+    publisher = _Publisher()
+
+    assert PubSubExecutionCanceller(TOPIC, publisher=publisher).cancel(_target()) == "requested"
+
+    [(topic, data, attributes)] = publisher.calls
+    assert topic == TOPIC
+    sent = json.loads(data)
+    assert sent == {"tenant_id": "eng", "task_id": "task_1", "attempt_id": "att_1"}
+    assert attributes == sent
+    assert RUN_NAME not in data.decode() and "CLOUD_RUN_JOB" not in data.decode()
 
 
-@pytest.mark.parametrize("name", [
-    RUN_NAME.replace(PROJECT, "someone-elses-project"),
-    RUN_NAME.replace("jobs/swarm-job", "jobs/their-job"),
-    RUN_NAME.replace(REGION, "europe-west1"),
-    "../" + RUN_NAME,
-])
-def test_a_name_that_is_not_this_platforms_execution_is_refused_without_a_call(name):
-    session = _Session()
-    assert _rest(session).cancel(_run_target(name)) == "refused_name"
-    assert session.calls == []
-
-
-def test_the_dispatchers_placeholder_is_not_cancelled():
-    session = _Session()
-    name = f"projects/{PROJECT}/locations/{REGION}/jobs/swarm-job-eng-mock/executions/pending-att_1"
-    assert _rest(session).cancel(_run_target(name)) == "placeholder"
-    assert session.calls == []
-
-
-def test_gke_without_the_clusters_endpoint_asks_nothing():
-    session = _Session()
-    assert _rest(session).cancel(_gke_target("swarm-tenant-eng/swarm-job-1")) == "gke_unconfigured"
-    assert session.calls == []
-
-
-def test_gke_reads_the_job_then_deletes_it_in_the_background():
-    session = _Session()
-    canceller = _rest(session, gke_endpoint="10.0.0.2", gke_ca_cert_b64=CA)
-
-    assert canceller.cancel(_gke_target("swarm-tenant-eng/swarm-job-1")) == "requested"
-
-    url = "https://10.0.0.2/apis/batch/v1/namespaces/swarm-tenant-eng/jobs/swarm-job-1"
-    assert [(m, u) for m, u, _ in session.calls] == [("GET", url), ("DELETE", url)]
-    assert session.calls[1][2]["json"] == {"propagationPolicy": "Background",
-                                          "gracePeriodSeconds": 30}
-
-
-@pytest.mark.parametrize("labels,outcome", [
-    ({"managed-by": "swarm-terraform", "swarm-tenant": "eng"}, "refused_unmanaged"),
-    ({"swarm-tenant": "eng"}, "refused_unmanaged"),
-    ({"managed-by": "swarm-scheduler", "swarm-tenant": "research"}, "refused_tenant"),
-])
-def test_gke_never_deletes_a_job_it_did_not_create_or_of_another_tenant(labels, outcome):
-    session = _Session(labels=labels)
-    canceller = _rest(session, gke_endpoint="10.0.0.2", gke_ca_cert_b64=CA)
-
-    assert canceller.cancel(_gke_target("swarm-tenant-eng/swarm-job-1")) == outcome
-    assert [m for m, _u, _ in session.calls] == ["GET"]
-
-
-@pytest.mark.parametrize("name", ["kube-system/swarm-job-1", "agents-staging/x", "swarm-job-1"])
-def test_gke_refuses_a_namespace_outside_the_tenant_prefix(name):
-    session = _Session()
-    canceller = _rest(session, gke_endpoint="10.0.0.2", gke_ca_cert_b64=CA)
-    assert canceller.cancel(_gke_target(name)) == "refused_name"
-    assert session.calls == []
-
-
-def test_a_canceller_that_raises_is_an_outcome_not_an_error():
-    class Broken(_Session):
-        def post(self, url: str, **kw: Any) -> _Response:
-            raise ConnectionError("no route")
-
-    assert _rest(Broken()).cancel(_run_target(RUN_NAME)) == "error:ConnectionError"
+def test_a_publish_that_fails_is_an_outcome_not_an_error():
+    publisher = _Publisher(error=TimeoutError("no answer"))
+    assert PubSubExecutionCanceller(TOPIC, publisher=publisher).cancel(_target()) == (
+        "error:TimeoutError"
+    )
 
 
 def test_the_setting_chooses_the_canceller():
     assert isinstance(_execution_canceller(api_settings()), NoExecutionCanceller)
+    # On, but no topic: nothing to publish to, so nothing is asked.
     assert isinstance(
         _execution_canceller(api_settings(execution_cancel_enabled=True)),
-        RestExecutionCanceller,
+        NoExecutionCanceller,
+    )
+    assert isinstance(
+        _execution_canceller(
+            api_settings(execution_cancel_enabled=True, execution_cancel_topic=TOPIC)
+        ),
+        PubSubExecutionCanceller,
     )
 
 
@@ -272,9 +226,11 @@ def test_a_deployment_turns_it_on_by_default(monkeypatch):
     from swarm_api.settings import ApiSettings
 
     monkeypatch.delenv("EXECUTION_CANCEL_ENABLED", raising=False)
+    monkeypatch.setenv("EXECUTION_CANCEL_TOPIC", "swarm-execution-cancel")
     monkeypatch.setenv("PROJECT_ID", PROJECT)
     try:
         settings = ApiSettings.from_env()
     except ValueError as exc:  # pragma: no cover - an environment this file did not set
         pytest.skip(f"ApiSettings.from_env needs more environment here: {exc}")
     assert settings.execution_cancel_enabled is True
+    assert settings.execution_cancel_topic == "swarm-execution-cancel"
