@@ -374,6 +374,46 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _text(value: Any) -> str:
+    """A field as text for `step_result`: "" for none, a non-string as compact JSON."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, separators=(",", ":"), default=str)
+
+
+def step_result(row: dict[str, Any]) -> dict[str, Any]:
+    """The step's answer, ready for an `sc:step` row to return as given.
+
+    WHY (owner decision, 2026-10-05, lane review B2). Every one of the 14
+    refused StructuredOutput calls that day was a bare null -- `"pr_url": ,`
+    -- typed by the Haiku relay while retyping `outcome` field by field, and
+    one review row lost a SUCCEEDED result that way. So this object holds NO
+    null anywhere: a text with no value is "", a list with none is [], and a
+    figure that was not recorded (`cost_usd`, `duration_s`) is LEFT OUT --
+    never 0, which would say it cost nothing. `plugin/workflows/run.js` reads
+    a missing figure back as null.
+
+    A task given up on (`abandoned`) answers `UNKNOWN` with its reason as
+    `last_error`, so every reply that stops carries a result to return.
+    """
+    found = row.get("outcome") or {}
+    result: dict[str, Any] = {"state": str(found.get("state") or row.get("state") or "UNKNOWN")}
+    if row.get("abandoned"):
+        result["state"] = "UNKNOWN"
+    result["answer_excerpt"] = _text(found.get("answer_excerpt"))
+    for figure in ("cost_usd", "duration_s"):
+        value = found.get(figure)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            result[figure] = value
+    result["pr_url"] = _text(found.get("pr_url"))
+    result["artifacts"] = [str(name) for name in found.get("artifacts") or [] if name]
+    result["last_error"] = _text(row.get("abandoned_because") if row.get("abandoned") else found.get("last_error"))
+    result["console"] = _text(found.get("console") or row.get("console"))
+    return result
+
+
 def watch_progress(
     client: SwarmClient,
     task_ids: list[str],
@@ -551,4 +591,8 @@ def watch_progress(
     }
     if parents:
         reply["parents"] = parent_states
+    if stop and len(rows) == 1:
+        # The step's answer, ready-made (`step_result`): the row returns it as
+        # given rather than retyping `outcome` field by field.
+        reply["result"] = step_result(rows[0])
     return reply

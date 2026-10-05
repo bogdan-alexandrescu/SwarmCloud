@@ -186,6 +186,9 @@ UNREACHED_BY_THE_SWEEP = {
     # covered by its own test rather than left unmentioned: a route quietly
     # outside the sweep is the gap this file is about.
     "/v1/admin/limits/{provider}",
+    # Serves `{"tenant_id", "findings_epic"}`, an issue number and nothing
+    # else (#638); read back in test_findings_epic_setting.py.
+    "/v1/admin/tenants/{tenant_id}/findings-epic",
 }
 
 
