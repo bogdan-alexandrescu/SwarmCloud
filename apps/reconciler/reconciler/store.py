@@ -35,6 +35,7 @@ from swarm_common.states import (
     CONCURRENCY_STATES,
     TERMINAL_STATES,
     EventType,
+    ParkReason,
     TaskState,
     can_transition,
 )
@@ -44,7 +45,10 @@ from .model import (
     AttemptView,
     ControlSnapshot,
     LeaseView,
+    StepTaskView,
     TaskView,
+    WorkflowRead,
+    WorkflowView,
     cancel_end_cause,
     count_startup_end,
     startup_refunds_used,
@@ -82,6 +86,14 @@ def _field_filter(field: str, op: str, value: Any) -> Any:
 #: also swallow a Firestore outage or a decoder bug and turn "the store is
 #: down" into "every task is malformed".
 _MALFORMED_TASK_DOC = (KeyError, ValueError, TypeError, AttributeError, OverflowError)
+
+
+def _generation_of(data: dict[str, Any]) -> int | None:
+    """A task document's generation, or None when it cannot be read as one."""
+    try:
+        return int(data.get("current_generation", 0))
+    except (TypeError, ValueError, OverflowError):
+        return None
 
 
 def _named_task(data: Any) -> str:
@@ -429,6 +441,156 @@ class ControlStore:
         """
         snap = self._db.collection("tasks").document(task_id).get()
         return TaskView.from_doc(snap.to_dict() or {}, task_id) if snap.exists else None
+
+    # -- workflows (#616) ------------------------------------------------
+    def workflows_for_stall_check(self, *, limit: int) -> WorkflowRead:
+        """Every non-terminal workflow (up to `limit`) and its step tasks.
+
+        NON-TERMINAL BY THE STORED STATE, which is the API's sweep rule too
+        (`swarm_api.rollup.WorkflowRollups.sweep`): a stored terminal state is
+        written only from a complete derivation, and re-reading every finished
+        workflow's steps each minute would make this read grow with the
+        platform's history rather than with its live work.
+
+        POINT READS for the step tasks: each step carries its task id, so a
+        query would only re-derive them. A parent a step task names outside its
+        own workflow's steps is read too, so the dependency rule never judges a
+        parent it did not read.
+
+        A QUERY THAT FAILS RAISES. The caller turns that into a finding on the
+        pass: "the workflows could not be read" must never look like "no
+        workflow is stalled". One malformed document is recorded and skipped,
+        as `snapshot()` does for a task, so it cannot blind the check to every
+        other tenant's workflows.
+        """
+        live = sorted(state.value for state in TaskState if state not in TERMINAL_STATES)
+        query = (
+            self._db.collection("workflows")
+            .where(filter=self._filter("state", "in", live))
+            .limit(limit + 1)
+        )
+        read = WorkflowRead()
+        docs = list(query.stream())
+        if len(docs) > limit:
+            read.truncated = True
+            docs = docs[:limit]
+        for doc in docs:
+            data = doc.to_dict() or {}
+            try:
+                read.workflows.append(WorkflowView.from_doc(data, doc.id))
+            except _MALFORMED_TASK_DOC as exc:
+                tenant = data.get("tenant_id") if isinstance(data, dict) else None
+                read.malformed.append(
+                    {
+                        "workflow_id": doc.id,
+                        "tenant_id": tenant if isinstance(tenant, str) else None,
+                        "error": type(exc).__name__,
+                    }
+                )
+        wanted = {
+            step.task_id for workflow in read.workflows for step in workflow.steps if step.task_id
+        }
+        self._read_step_tasks(read, wanted)
+        parents = {
+            parent
+            for task in read.tasks.values()
+            for parent in task.depends_on
+            if parent not in read.tasks and parent not in read.absent
+        }
+        self._read_step_tasks(read, parents - read.unreadable_tasks)
+        return read
+
+    def _read_step_tasks(self, read: WorkflowRead, task_ids: Iterable[str]) -> None:
+        for task_id in sorted(task_ids):
+            snap = self._db.collection("tasks").document(task_id).get()
+            if not snap.exists:
+                read.absent.add(task_id)
+                continue
+            try:
+                read.tasks[task_id] = StepTaskView.from_doc(snap.to_dict() or {}, task_id)
+            except _MALFORMED_TASK_DOC:
+                read.unreadable_tasks.add(task_id)
+
+    def promote_workflow_step(
+        self, task_id: str, *, generation: int | None, parent_task_ids: Iterable[str]
+    ) -> str | None:
+        """PARKED(DEPENDENCY_INCOMPLETE) -> READY, as the scheduler's sweep does.
+
+        The same write as `SchedulerStore.promote_to_ready` -- state READY, the
+        park reason, `next_eligible_at` and `blocked_by` cleared -- under the
+        same guard: the stored state AND park reason must still be the ones the
+        pass read. Two more, because this writer is not the scheduler: the
+        task's generation must be the one the pass read (invariant 5: nothing
+        decided at one generation lands on another), and every parent is
+        RE-READ in this transaction and must still be SUCCEEDED. Every read
+        precedes the write, as Firestore requires.
+
+        Returns None when it wrote, else why it did not. A scheduler sweep
+        that got there first reads `state_changed`, which is the guard working,
+        and the reason a step is promoted once and never twice.
+        """
+        task_ref = self._db.collection("tasks").document(task_id)
+        parent_refs = [
+            (parent, self._db.collection("tasks").document(parent)) for parent in parent_task_ids
+        ]
+
+        def _apply(txn: Any) -> str | None:
+            snap = _snapshot(txn.get(task_ref))
+            parents = [(parent, _snapshot(txn.get(ref))) for parent, ref in parent_refs]
+            if not snap.exists:
+                return "task_missing"
+            data = snap.to_dict() or {}
+            if data.get("state") != TaskState.PARKED.value:
+                return "state_changed"
+            if (data.get("park_reason") or None) != ParkReason.DEPENDENCY_INCOMPLETE.value:
+                return "park_reason_changed"
+            if generation is None or _generation_of(data) != generation:
+                return "generation_changed"
+            for _parent, parent_snap in parents:
+                stored = (parent_snap.to_dict() or {}) if parent_snap.exists else {}
+                if stored.get("state") != TaskState.SUCCEEDED.value:
+                    return "parent_not_succeeded"
+            if not can_transition(TaskState.PARKED, TaskState.READY):
+                return "illegal_transition"
+            txn.update(
+                task_ref,
+                {
+                    "state": TaskState.READY.value,
+                    "park_reason": None,
+                    "next_eligible_at": None,
+                    "blocked_by": [],
+                    "updated_at": utcnow(),
+                },
+            )
+            return None
+
+        return self._txn.run(_apply)
+
+    def write_derived_workflow_state(
+        self, workflow_id: str, *, expected: TaskState, to: TaskState
+    ) -> str | None:
+        """Write the derived state over a stored one that disagreed with it.
+
+        The write `swarm_api.store.Store.set_workflow_state` makes -- `state`
+        and `updated_at` -- as a compare-and-set: only when the stored state is
+        still `expected`, the value this pass read and found wrong. A reader of
+        the API that repaired it first, or a cancel, wins, and this writes
+        nothing. Takes a `TaskState`, so `UNKNOWN` can never be written.
+
+        Returns None when it wrote, else why it did not.
+        """
+        ref = self._db.collection("workflows").document(workflow_id)
+
+        def _apply(txn: Any) -> str | None:
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists:
+                return "workflow_missing"
+            if (snap.to_dict() or {}).get("state") != expected.value:
+                return "state_changed"
+            txn.update(ref, {"state": to.value, "updated_at": utcnow()})
+            return None
+
+        return self._txn.run(_apply)
 
     def task_and_attempt_docs(
         self, task_id: str, attempt_id: str

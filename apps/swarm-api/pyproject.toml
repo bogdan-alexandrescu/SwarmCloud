@@ -7,6 +7,9 @@ dependencies = [
     "swarm-common",
     # The credential patterns (swarm_api.redaction re-exports them).
     "swarm-redaction",
+    # The workflow state derivation (swarm_api.rollup re-exports it), shared
+    # with the reconciler's workflow stall check (#616).
+    "swarm-workflow-rollup",
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "pydantic>=2.8",
@@ -36,6 +39,7 @@ dependencies = [
 [tool.uv.sources]
 swarm-common = { path = "../common", editable = true }
 swarm-redaction = { path = "../redaction", editable = true }
+swarm-workflow-rollup = { path = "../workflow-rollup", editable = true }
 
 [build-system]
 requires = ["hatchling"]
