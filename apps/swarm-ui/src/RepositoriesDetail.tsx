@@ -745,7 +745,7 @@ function ResolvedRows({ t }: { t: ResolvedToken }) {
       <p className="ur-meta">
         <span>{t.order === 'R2' ? 'order R2: repository token, then tenant token' : t.order === null ? <>order <Dash why="The resolution order was not served" /></> : `order ${t.order}`}</span>
         {t.user_token !== null && (
-          <span>your user token ({t.user_token.forge_login ?? 'account not read'}) is used only for attribution</span>
+          <span>your user token{t.user_token.last4 !== null ? ` (…${t.user_token.last4})` : ''} is used only for attribution</span>
         )}
       </p>
       {t.capabilities === null ? (
