@@ -3,6 +3,8 @@
 Shape, and why it is this shape:
 
     woken by Pub/Sub
+      (a `task_finished` wake runs `release_dependants` instead: that task's
+       dependants, then one admission pass -- see there)
       -> promote what has become runnable (dependencies, credentials, prewarm),
          and cancel what a failed `fail_workflow` workflow will never run
       -> while admissible work exists and the run is within budget:
@@ -35,7 +37,13 @@ from typing import Any, Callable
 from swarm_common.admission import AdmissionConfig, AdmissionDenied
 from swarm_common.models import EndCause, Lease, Task, Tenant, pool_names_for, utcnow
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, resolve_backend
-from swarm_common.states import PENDING_STATES, EventType, ParkReason, TaskState
+from swarm_common.states import (
+    PENDING_STATES,
+    TERMINAL_STATES,
+    EventType,
+    ParkReason,
+    TaskState,
+)
 
 from . import children as children_mod
 from .credentials import AccountPool, CredentialSource, credential_for
@@ -322,15 +330,19 @@ class Scheduler:
 
     # -- entry point ------------------------------------------------------
 
-    def drain(self) -> DrainReport:
-        started = self._monotonic()
-        report = DrainReport()
+    def _begin_run(self) -> None:
+        """Forget what the previous run cached. Every entry point starts here."""
         self._tenant_cache: dict[str, Tenant | None] = {}
         self._topup_tenant_ids: list[str] | None = None
         self._workflow_verdicts = {}
         self._swept_workflows = set()
         # A loan made or withdrawn since the last drain is seen by this one.
         self._pool.forget()
+
+    def drain(self) -> DrainReport:
+        started = self._monotonic()
+        report = DrainReport()
+        self._begin_run()
 
         if self._store.dispatch_paused():
             self._metrics.paused.set(1)
@@ -367,35 +379,10 @@ class Scheduler:
                 report.stop_reason = "time_budget"
                 break
 
-            candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
-            if not candidates:
-                self._metrics.candidates.observe(0)
+            leased_this_pass = self._admission_pass(report, started)
+            if leased_this_pass is None:
                 report.stop_reason = "queue_empty"
                 break
-            candidates, topped_up = self._top_up_starved_tenants(candidates)
-            report.topped_up_tenants = max(report.topped_up_tenants, topped_up)
-            self._metrics.candidates.observe(len(candidates))
-
-            ordered = round_robin_order(
-                candidates,
-                now=self._now(),
-                config=self._aging,
-                active_by_tenant=self._store.active_by_tenant(),
-            )
-            tenants = {task.tenant_id for task in ordered}
-            report.tenants_seen = max(report.tenants_seen, len(tenants))
-            self._metrics.tenants_in_rotation.set(len(tenants))
-
-            leased_this_pass = 0
-            for task in ordered:
-                report.scanned += 1
-                if report.leased >= self._settings.max_leases_per_run:
-                    break
-                if self._monotonic() - started >= self._settings.max_run_seconds:
-                    break
-                if self._admit_one(task, report):
-                    leased_this_pass += 1
-            report.passes += 1
 
             if leased_this_pass == 0:
                 # Nothing in this slice could be admitted. Re-reading the same
@@ -407,6 +394,128 @@ class Scheduler:
         self._metrics.runs.labels(stop_reason=report.stop_reason).inc()
         self._metrics.run_seconds.observe(report.duration_seconds)
         log.info("drain finished %s", report.to_dict())
+        return report
+
+    def _admission_pass(
+        self, report: DrainReport, started: float, *, include: list[Task] | tuple[Task, ...] = ()
+    ) -> int | None:
+        """One pass of admission: read a slice of READY work, interleave it, try each.
+
+        Returns how many were leased, or None when there was nothing READY to
+        try. `include` adds tasks the caller knows are READY to the slice --
+        the finish event's released dependants, which a full slice of older or
+        higher-priority work might otherwise leave out -- and they are then
+        ordered with everything else by `round_robin_order`, so a released
+        task is admitted in its fair turn and never ahead of it.
+        """
+        candidates = self._store.ready_tasks(self._settings.candidate_batch_size)
+        if include:
+            seen = {task.id for task in candidates}
+            candidates = candidates + [task for task in include if task.id not in seen]
+        if not candidates:
+            self._metrics.candidates.observe(0)
+            return None
+        candidates, topped_up = self._top_up_starved_tenants(candidates)
+        report.topped_up_tenants = max(report.topped_up_tenants, topped_up)
+        self._metrics.candidates.observe(len(candidates))
+
+        ordered = round_robin_order(
+            candidates,
+            now=self._now(),
+            config=self._aging,
+            active_by_tenant=self._store.active_by_tenant(),
+        )
+        tenants = {task.tenant_id for task in ordered}
+        report.tenants_seen = max(report.tenants_seen, len(tenants))
+        self._metrics.tenants_in_rotation.set(len(tenants))
+
+        leased_this_pass = 0
+        for task in ordered:
+            report.scanned += 1
+            if report.leased >= self._settings.max_leases_per_run:
+                break
+            if self._monotonic() - started >= self._settings.max_run_seconds:
+                break
+            if self._admit_one(task, report):
+                leased_this_pass += 1
+        report.passes += 1
+        return leased_this_pass
+
+    # -- the finish event (#636) ------------------------------------------
+
+    def release_dependants(self, task_id: str) -> DrainReport:
+        """A task has ended: release what waited on it, and admit once. Now, not next tick.
+
+        Called from `/pubsub/push` for a `task_finished` wake, which the worker
+        publishes after its terminal write and its lease release. Measured
+        before it existed (#636, 2026-10-05): parent done -> child READY p50
+        27 s, p90 54 s, because only `drain()` ran `_promote_dependencies` and
+        nothing woke a drain when a task ended.
+
+        THE SAME RULE, NOT A SECOND COPY. Each of the parent's dependants goes
+        through `_resolve_dependency`, the body of `_promote_dependencies`:
+        promoted only when EVERY parent SUCCEEDED, cancelled when one did not,
+        left PARKED otherwise, with `on_step_failure` read first. Promotion is
+        `SchedulerStore.promote_to_ready`, the guarded write the sweep uses, so
+        whichever of the event and the tick gets there second finds the task
+        READY, not PARKED, and writes nothing: a duplicate event, a redelivery
+        and the tick after an event are all no-ops (the dependants query no
+        longer returns the task at all).
+
+        THEN ONE ADMISSION PASS, `_admission_pass`, with the released tasks
+        added to the slice: the same `_admit_one`, the same all-or-nothing
+        lease transaction (invariant 2) and the same fencing generation on the
+        lease (invariant 5). The pass runs even when nothing was released,
+        because the parent's lease release freed capacity some READY task may
+        have been denied. Only `_admit_one` takes a lease, and only for a task
+        that is READY, so nothing this path does creates demand for a task
+        that is not LEASED (invariant 1).
+
+        A NO-OP for a task that is missing or has not ended -- a wake is a
+        doorbell, and anyone who may publish one may ring it for any id -- and
+        while dispatch is paused, as `drain()` is.
+
+        THE TICK STAYS THE SAFETY NET. Anything that stops this path -- a wake
+        never published, a push refused, this method raising -- leaves the
+        dependant PARKED and the next drain's `_promote_dependencies` releases
+        it exactly as before #636.
+        """
+        started = self._monotonic()
+        report = DrainReport()
+        self._begin_run()
+
+        if self._store.dispatch_paused():
+            report.stop_reason = "dispatch_paused"
+            return self._end_finish_event(report, started)
+
+        parent = self._store.get_task(task_id)
+        if parent is None or parent.state not in TERMINAL_STATES:
+            report.stop_reason = "not_terminal"
+            return self._end_finish_event(report, started)
+
+        released: list[str] = []
+        for task in self._store.dependants_waiting_on(
+            parent, self._settings.dependency_sweep_size
+        ):
+            if self._resolve_dependency(task, report):
+                released.append(task.id)
+        report.promoted_dependencies = len(released)
+
+        # Re-read: each `_admit_one` write is guarded on the state it was
+        # handed, and what was handed here was the PARKED snapshot.
+        fresh = [
+            task
+            for task in (self._store.get_task(tid) for tid in released)
+            if task is not None and task.state is TaskState.READY
+        ]
+        self._admission_pass(report, started, include=fresh)
+        report.stop_reason = "task_finished"
+        return self._end_finish_event(report, started)
+
+    def _end_finish_event(self, report: DrainReport, started: float) -> DrainReport:
+        report.duration_seconds = self._monotonic() - started
+        self._metrics.finish_events.labels(outcome=report.stop_reason).inc()
+        log.info("finish event handled %s", report.to_dict())
         return report
 
     # -- candidate selection ----------------------------------------------
@@ -931,9 +1040,11 @@ class Scheduler:
         """Return DEPENDENCY_INCOMPLETE tasks to READY once every parent SUCCEEDED.
 
         This is the "returns to READY when the last parent succeeds" half of
-        dependency resolution. It runs at the top of the drain rather than being
-        triggered by the succeeding worker, so a worker that dies immediately
-        after writing SUCCEEDED cannot strand its children.
+        dependency resolution. It runs at the top of every drain, so a worker
+        that dies immediately after writing SUCCEEDED cannot strand its
+        children. The finish event (`release_dependants`, #636) applies the
+        same rule to one parent's dependants the moment it ends; this sweep is
+        what still releases them when that event is lost.
 
         A dependent whose parent did NOT succeed is cancelled here, and counted
         in `report.cancelled` (and `swarm_scheduler_cancelled_total`) exactly as
@@ -953,40 +1064,47 @@ class Scheduler:
         for task in self._store.parked_tasks(
             ParkReason.DEPENDENCY_INCOMPLETE, self._settings.dependency_sweep_size
         ):
-            if self._stop_for_failed_workflow(task, report):
-                continue
-            if not task.depends_on:
-                # Counted in the metric as well as the report. Incrementing only
-                # the report here made `swarm_scheduler_promoted{kind=
-                # "dependency"}` disagree with DrainReport.promoted_dependencies,
-                # so a dashboard built on the metric under-counted promotions.
-                if self._promote(
-                    task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
-                ):
-                    promoted += 1
-                continue
-            parents = self._store.parent_ends(task.depends_on)
-            states = {tid: end.state for tid, end in parents.items()}
-            failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
-            if failed:
-                self._cancel(
-                    task,
-                    "an upstream workflow step did not succeed",
-                    report,
-                    why="failed_parent",
-                    detail={"failed_parents": failed},
-                    end_cause=_parent_cause(parents, failed),
-                )
-                continue
-            if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
-                if self._promote(
-                    task,
-                    kind="dependency",
-                    detail={"reason": "dependencies_satisfied"},
-                    report=report,
-                ):
-                    promoted += 1
+            if self._resolve_dependency(task, report):
+                promoted += 1
         return promoted
+
+    def _resolve_dependency(self, task: Task, report: DrainReport) -> bool:
+        """The dependency rule for one DEPENDENCY_INCOMPLETE park. True only if promoted.
+
+        Shared by the sweep above and the finish event (`release_dependants`),
+        so the two cannot come to disagree about when a dependant runs.
+        """
+        if self._stop_for_failed_workflow(task, report):
+            return False
+        if not task.depends_on:
+            # Counted in the metric as well as the report. Incrementing only
+            # the report here made `swarm_scheduler_promoted{kind=
+            # "dependency"}` disagree with DrainReport.promoted_dependencies,
+            # so a dashboard built on the metric under-counted promotions.
+            return self._promote(
+                task, kind="dependency", detail={"reason": "no_dependencies"}, report=report
+            )
+        parents = self._store.parent_ends(task.depends_on)
+        states = {tid: end.state for tid, end in parents.items()}
+        failed = [tid for tid, state in states.items() if state in _FAILED_PARENT_STATES]
+        if failed:
+            self._cancel(
+                task,
+                "an upstream workflow step did not succeed",
+                report,
+                why="failed_parent",
+                detail={"failed_parents": failed},
+                end_cause=_parent_cause(parents, failed),
+            )
+            return False
+        if all(states.get(tid) is TaskState.SUCCEEDED for tid in task.depends_on):
+            return self._promote(
+                task,
+                kind="dependency",
+                detail={"reason": "dependencies_satisfied"},
+                report=report,
+            )
+        return False
 
     def _promote_credentials(self, report: DrainReport) -> int:
         """Re-ready tasks that admission would now let run.

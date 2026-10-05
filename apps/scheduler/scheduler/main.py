@@ -9,6 +9,13 @@ that says "there might be work" changes nothing -- the queue is in Firestore, no
 in Pub/Sub, so a lost nudge costs at most one safety-tick interval of latency.
 We return 5xx only when the process could not read Firestore at all, which is
 the one case where a retry is genuinely useful.
+
+One wake is more than a nudge: `task_finished`, which the worker publishes when
+it ends a task (#636). It names the task, and runs `release_dependants` -- that
+task's dependants, then one admission pass -- instead of a full drain. Its 5xx
+cases are the same plus one: a drain already holding this process's lock for
+longer than `FINISH_LOCK_WAIT_SECONDS`, because acking then could leave the
+dependant waiting for the safety tick, which is the delay the event removes.
 """
 
 from __future__ import annotations
@@ -17,6 +24,7 @@ import base64
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -139,6 +147,30 @@ def build_scheduler(
     )
 
 
+#: The wake reason the worker publishes after a task's terminal write (#636).
+TASK_FINISHED = "task_finished"
+
+#: What a task id looks like (`swarm_common.models.new_id`: a prefix and hex).
+#: Checked before the id becomes a document path: a wake is a doorbell anyone
+#: allowed to publish may ring, so its text is never trusted as a path.
+_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+#: How long a finish event waits for a drain already running in this process.
+#: Shorter than the subscription's ack deadline, so a busy answer is a 503
+#: Pub/Sub redelivers (its retry policy starts at 10 s) rather than a timeout.
+FINISH_LOCK_WAIT_SECONDS = 20.0
+
+
+def finished_task_id(envelope: dict[str, Any]) -> str | None:
+    """The task a `task_finished` wake names, or None for any other wake."""
+    if envelope.get("reason") != TASK_FINISHED:
+        return None
+    task_id = envelope.get("task_id")
+    if isinstance(task_id, str) and _TASK_ID.match(task_id):
+        return task_id
+    return None
+
+
 def decode_push_envelope(body: dict[str, Any]) -> dict[str, Any]:
     """Pull the payload out of a Pub/Sub push envelope.
 
@@ -157,6 +189,7 @@ def decode_push_envelope(body: dict[str, Any]) -> dict[str, Any]:
             payload = {}
     return {
         "reason": payload.get("reason") or attributes.get("reason") or "pubsub",
+        "task_id": attributes.get("task_id") or payload.get("task_id"),
         "attributes": attributes,
         "message_id": message.get("messageId"),
     }
@@ -196,6 +229,27 @@ def create_app(scheduler: Scheduler | None = None) -> FastAPI:
         request.app.state.last_report = report
         return {"status": "ok", "reason": reason, "report": report.to_dict()}
 
+    async def _run_finish_event(request: Request, task_id: str) -> tuple[int, dict[str, Any]]:
+        """`Scheduler.release_dependants` under the drain lock (#636).
+
+        It WAITS for a running drain, briefly, where a second drain does not:
+        a drain that started before this task ended may already be past its
+        dependency sweep, so skipping would leave the dependant for the next
+        tick -- the delay this path exists to remove. A wait that runs out is
+        a 503, which Pub/Sub redelivers.
+        """
+        lock: threading.Lock = request.app.state.drain_lock
+        acquired = await run_in_threadpool(lock.acquire, True, FINISH_LOCK_WAIT_SECONDS)
+        if not acquired:
+            return 503, {"status": "busy", "reason": TASK_FINISHED}
+        try:
+            report = await run_in_threadpool(
+                request.app.state.scheduler.release_dependants, task_id
+            )
+        finally:
+            lock.release()
+        return 200, {"status": "ok", "reason": TASK_FINISHED, "report": report.to_dict()}
+
     @app.get("/healthz")
     def healthz() -> dict[str, Any]:
         return {"status": "ok", "at": utcnow()}
@@ -227,6 +281,11 @@ def create_app(scheduler: Scheduler | None = None) -> FastAPI:
             return {"status": "unauthenticated", "detail": str(exc)}
         envelope = decode_push_envelope(body)
         try:
+            task_id = finished_task_id(envelope)
+            if task_id is not None:
+                status, answer = await _run_finish_event(request, task_id)
+                response.status_code = status
+                return answer
             return await _run_drain(request, envelope["reason"])
         except Exception as exc:
             # 5xx asks Pub/Sub to redeliver, which is only useful if the failure
