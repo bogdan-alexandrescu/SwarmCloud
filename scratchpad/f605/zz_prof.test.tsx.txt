@@ -1,0 +1,179 @@
+/**
+ * U11a (owner QA re-run, 2026-10-04): LOGS ARE A TAB.
+ *
+ * The owner does not want the log component overlapping the agent details.
+ * The bottom dock -- its strip, its resize handle, `Open full` and the page
+ * scroll it caused (D7) -- is gone; the log is a full-height Logs tab at
+ * `/agents/<tab>/<id>/logs`, with all four streams visible (D13 hid them in a
+ * scrolling pill row). A running agent opens on Logs and a finished one on
+ * Details. Escape in the log's More closes the menu and stops there (N11).
+ *
+ * MUTATIONS: render a log element outside the pane or position one over it
+ * (`position: fixed|absolute|sticky` on `.ag-logs`/`.ag-loglast`); drop a
+ * stream from the segmented control or let it spill into More; drop the
+ * default-tab effect or send a finished or waiting agent to Logs; drop `onMoreKey`'s
+ * `stopPropagation`; restore `flex-wrap: wrap` on the bar or drop the spill
+ * effect; drop `top: 16px` or the `- 16px`. Each turns a case red.
+ */
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { useState } from 'react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { Result } from '../fetch'
+import type { LogStream, Task, TaskLogs } from '../types'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
+import { attempt, task as runTask } from './runfixture'
+
+const api = vi.hoisted(() => ({
+  loadTask: vi.fn(),
+  loadChildren: vi.fn(),
+  loadAttempts: vi.fn(),
+  loadTranscript: vi.fn(),
+  loadTaskLogs: vi.fn(),
+  loadAgentRun: vi.fn(),
+  loadCheckpoints: vi.fn(),
+}))
+
+vi.mock('../api', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api')>()
+  return { ...actual, ...api }
+})
+
+const { AgentSplit } = await import('../AgentSplit')
+const { AgentLogs, BAR_SPILL } = await import('../AgentLogs')
+const { resetListSnap, setListSnap, SNAPS } = await import('../listSnap')
+const { addressToPath, pathToAddress } = await import('../paths')
+const { fromAddress, canonical } = await import('../App')
+
+const WIDE: CascadeEnv = { width: 1440 }
+const ID = 'task_0123456789abcdef0123'
+
+function ok<T>(data: T): Result<T> {
+  return { status: 'ok', data, fetchedAt: Date.now() }
+}
+
+function stream(name: LogStream['stream'], content: string): LogStream {
+  return {
+    stream: name,
+    source: 'final',
+    status: 'ok',
+    detail: null,
+    key: `tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
+    uri: `gs://swarm-artifacts/tenants/eng/tasks/${ID}/attempts/att_1/logs/${name}.log`,
+    content,
+    total_bytes: content.length,
+    offset: 0,
+    returned_bytes: content.length,
+    next_offset: null,
+    truncated: false,
+    redacted: false,
+    redaction_count: 0,
+    tail_window: null,
+    object_updated_at: new Date().toISOString(),
+    age_seconds: 3,
+  }
+}
+
+function logs(streams: LogStream[]): TaskLogs {
+  return {
+    task_id: ID,
+    tenant_id: 'eng',
+    attempt_id: 'att_1',
+    attempt: {
+      status: 'latest',
+      known: true,
+      generation: 1,
+      created_at: new Date(Date.now() - 60_000).toISOString(),
+      completed_at: null,
+      exit_code: null,
+    },
+    read_at: new Date().toISOString(),
+    streams,
+    prefix: `tenants/eng/tasks/${ID}/attempts/att_1/`,
+    redaction: { applied_at_read_time: true, rules: 12 },
+  }
+}
+
+function running(over: Partial<Task> = {}): Task {
+  // `mock` opens on the runner's two streams.
+  return runTask({ id: ID, state: 'RUNNING', runner_profile: 'mock', attempt_count: 1, completed_at: null, ...over })
+}
+
+function finished(): Task {
+  return running({ state: 'SUCCEEDED', completed_at: new Date(Date.now() - 3_600_000).toISOString() })
+}
+
+/**
+ * The header's read and the Details read of one task. The last log line is in
+ * the Details tab's leading card (agent-details-v3.html A), so it is drawn
+ * once the Details read lands.
+ */
+function serve(t: Task) {
+  api.loadTask.mockResolvedValue(ok(t))
+  api.loadAgentRun.mockResolvedValue(
+    ok({ task: t, events: [], eventsDetail: null, attempts: [], attemptsDetail: null, classes: null, classesDetail: null, classesRouteMissing: false }),
+  )
+}
+
+type Pane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+const PANES: readonly Pane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
+
+/** The split with a router that moves the pane as App's does. */
+function Routed({ start, onGo }: { start: Pane; onGo: (to: string) => void }) {
+  const [pane, setPane] = useState<Pane>(start)
+  const go = (to: string) => {
+    onGo(to)
+    const last = to.split('/').pop() as Pane
+    setPane(PANES.includes(last) ? last : 'detail')
+  }
+  return (
+    <div className="app has-inspector">
+      <AgentSplit taskId={ID} pane={pane} artifact={null} closeTo="work/running/live" go={go} base={`work/task/${ID}`} />
+    </div>
+  )
+}
+
+function tab(name: string): HTMLElement {
+  const list = screen.getByRole('tablist', { name: 'Agent panes' })
+  const t = within(list)
+    .getAllByRole('tab')
+    .find((b) => b.querySelector('.c-tab-label')?.textContent === name)
+  expect(t, `no ${name} tab`).toBeTruthy()
+  return t!
+}
+
+beforeEach(() => {
+  localStorage.clear()
+  resetListSnap()
+  api.loadAgentRun.mockReturnValue(new Promise(() => {}))
+  api.loadAttempts.mockResolvedValue(ok({ attempts: [attempt(1, { attempt_id: 'att_1' })] }))
+  api.loadTranscript.mockResolvedValue({ status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no transcript' } })
+  api.loadTaskLogs.mockResolvedValue(ok(logs([stream('stdout', 'one\ntwo\n'), stream('stderr', 'three\n')])))
+  api.loadChildren.mockReturnValue(new Promise(() => {}))
+  api.loadCheckpoints.mockReturnValue(new Promise(() => {}))
+})
+
+afterEach(() => {
+  delete document.documentElement.dataset.agentList
+  window.history.replaceState(null, '', '/')
+})
+
+
+describe('prof', () => {
+  for (const n of [1,2,3]) it('prof '+n, async () => {
+    serve(finished())
+    const t0 = performance.now()
+    const go = vi.fn()
+    let tCall = 0
+    const orig = api.loadAgentRun.getMockImplementation()
+    api.loadAgentRun.mockImplementation((...a: unknown[]) => { tCall = performance.now(); return orig ? (orig as any)(...a) : undefined })
+    const { container } = render(<Routed start="detail" onGo={go} />)
+    const t1 = performance.now()
+    await screen.findByRole('button', { name: /^Last log line/ })
+    const t2 = performance.now()
+    screen.getAllByRole('button')
+    const t3 = performance.now()
+    console.log(`head ${document.head.innerHTML.length} styles ${document.styleSheets.length} render ${Math.round(t1-t0)} call@${Math.round(tCall-t0)} found ${Math.round(t2-t0)} getAllByRole ${Math.round(t3-t2)} nodes ${container.querySelectorAll('*').length}`)
+  })
+})
