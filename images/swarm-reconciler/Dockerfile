@@ -112,7 +112,7 @@ RUN uv pip install --python /opt/venv/bin/python --require-hashes --no-deps -r /
 # is ever asked for them; `--no-deps` because their third-party dependencies
 # are already installed above, by hash.
 RUN uv pip install --python /opt/venv/bin/python --no-index --find-links /wheels --no-deps \
-      swarm-common swarm-reconciler
+      swarm-common swarm-workflow-rollup swarm-reconciler
 
 # With `--no-deps` on both installs nothing above notices a dependency the
 # export left out. `uv pip check` does, here, instead of an ImportError at the
