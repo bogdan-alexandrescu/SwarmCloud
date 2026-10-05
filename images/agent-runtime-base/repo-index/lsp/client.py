@@ -287,6 +287,9 @@ class LspClient:
     def close(self) -> None:
         """Ask the server to shut down, then kill its process group anyway."""
         if self.process.poll() is None and not self._closed:
+            # A budget that ran out ends the queries, not the shutdown: the
+            # server gets its grace to exit cleanly, and is killed after it.
+            self.deadline = max(self.deadline, time.monotonic() + SHUTDOWN_GRACE_SECONDS)
             try:
                 self.request("shutdown", None, timeout=SHUTDOWN_GRACE_SECONDS)
                 self.notify("exit", None)

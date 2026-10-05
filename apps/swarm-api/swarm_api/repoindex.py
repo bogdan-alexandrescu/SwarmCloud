@@ -460,8 +460,8 @@ _INDEX_SHAPE = (
     '   "commands": [{"name", "kind": "build" | "lint" | "test" | "ci" | "other", "command", "source"}],\n'
     '   "hot_spots": [{"path", "changes", "co_changed": ["<path>"]}],\n'
     '   "notes": [{"text": "<one line>", "source"}],\n'
-    '   "languages": [{"language", "files", "grammar", "server": null, "status": "not_run",\n'
-    '                  "fallback"}],\n'
+    '   "languages": [{"language", "files", "grammar", "server", "status": "ok" | "unsupported" |\n'
+    '                  "failing" | "timed_out" | "not_run", "fallback"}],\n'
     '   "truncated": ["<a list you cut to fit, e.g. modules>"]}\n'
 )
 
@@ -477,7 +477,13 @@ def indexer_prompt(repository: str, commit_sha: str, branch: str) -> str:
         f"installed, run `{EXTRACTOR_COMMAND}` from the repository root: it prints the "
         "mechanical fields (modules with file and line counts, test_layout, the import and "
         "naming test_map edges, commands, hot_spots, languages) as one JSON object. Start "
-        "from its output, check the edges it marks uncertain, and record "
+        "from its output and check the edges it marks uncertain. "
+        # RI10: the extractor's language rows carry more than LanguageRow
+        # allows (`reason`, `parsed`, the per-file counts, `lsp`); the
+        # document refuses any other key, so the prompt names the mapping.
+        "Copy each of its languages rows with only the six keys below: drop `reason`, "
+        "`parsed`, `lsp` and its other counts, and write `fallback` as its `reason` when it "
+        "gives one, else its `fallback`. Then record "
         f'"extractor": {{"ran": true, "command": "{EXTRACTOR_COMMAND}", "version": '
         '"<what it reports>"}. If it is not installed, this image does not carry it yet: '
         "compute those fields yourself with git and the file tree (file and line counts, "

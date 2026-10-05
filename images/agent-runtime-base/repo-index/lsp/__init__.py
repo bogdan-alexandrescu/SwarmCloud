@@ -15,7 +15,7 @@ from .client import (BudgetExceeded, LspClient, LspError, RequestTimeout, Server
 from .driver import (LSP_DECLARED, LSP_INFERRED, NO_SERVER_REASON, STATUS_FAILING, STATUS_OK,
                      STATUS_TIMED_OUT, STATUS_UNSUPPORTED, LanguageResult, LspEdge, LspOptions,
                      PassResult, Site, default_memory_limit_mib, run_pass, server_budget_seconds,
-                     simple_name)
+                     simple_name, total_budget_seconds)
 from .servers import DEFAULT_BIN_DIR, SERVERS, ServerSpec
 
 __all__ = [
@@ -24,5 +24,5 @@ __all__ = [
     "RequestTimeout", "SERVERS", "STATUS_FAILING", "STATUS_OK", "STATUS_TIMED_OUT",
     "STATUS_UNSUPPORTED", "ServerError", "ServerExited", "ServerSpec", "Site",
     "default_memory_limit_mib", "run_pass", "server_budget_seconds", "session_rss_bytes",
-    "simple_name",
+    "simple_name", "total_budget_seconds",
 ]

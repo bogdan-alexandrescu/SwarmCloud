@@ -1793,6 +1793,7 @@ def extract(root: Path, budget: Budget | None = None,
                 "servers": dict(sorted(lsp_result.servers.items())),
                 "request_timeout_seconds": lsp_result.request_timeout_seconds,
                 "server_budget_seconds": lsp_result.server_budget_seconds,
+                "total_budget_seconds": lsp_result.total_budget_seconds,
                 "memory_limit_mib": lsp_result.memory_limit_mib,
             },
         },
@@ -2274,6 +2275,9 @@ def main(argv: list[str] | None = None) -> int:
                         default=lsp_pass.LspOptions().request_timeout_seconds)
     parser.add_argument("--lsp-server-budget-seconds", type=float, default=None,
                         help="per language server (default: §3.5's table, by repository size)")
+    parser.add_argument("--lsp-total-budget-seconds", type=float, default=None,
+                        help="the whole LSP pass, every server together (default: half of "
+                             "§3.5's full-run budget, by repository size; lsp/driver.py says why)")
     parser.add_argument("--lsp-memory-mib", type=int, default=None,
                         help="stop a server above this resident memory "
                              "(default: 3/4 of the container's limit, or 4096)")
@@ -2292,7 +2296,8 @@ def main(argv: list[str] | None = None) -> int:
                     max_files=args.max_files, file_timeout_seconds=args.file_timeout_seconds)
     lsp_options = None if args.no_lsp else lsp_pass.LspOptions(
         bin_dir=Path(args.lsp_bin_dir), request_timeout_seconds=args.lsp_request_timeout_seconds,
-        server_budget_seconds=args.lsp_server_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
+        server_budget_seconds=args.lsp_server_budget_seconds,
+        total_budget_seconds=args.lsp_total_budget_seconds, memory_limit_mib=args.lsp_memory_mib)
     facts = extract(root, budget, lsp=lsp_options)
     graph_payload = dumps(graph_document(facts))
     index = index_document(facts, graph_payload, max_bytes=args.max_index_bytes)

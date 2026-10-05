@@ -33,6 +33,8 @@ The scenario's keys, all optional:
   slow_methods  {"<method>": seconds} -- that method alone answers after
                 the delay, in any mode (a workspace-wide query is slow on
                 a real server while a definition is not)
+  ignore_shutdown  if true, `shutdown` and `exit` go unanswered: the
+                server lives until the client kills it, as a wedged one does
 
 Nothing here is a real server's behaviour beyond the wire format; what a
 real server returns for a real repository is the adapters' tests (RI10a-d).
@@ -135,6 +137,8 @@ def main() -> int:
                 next_id += 1
                 write_message(stdout, {"jsonrpc": "2.0", "id": next_id, "method": "workspace/configuration",
                                        "params": {"items": [{"section": "python.analysis"}]}})
+            continue
+        if method in ("shutdown", "exit") and scenario.get("ignore_shutdown"):
             continue
         if method == "shutdown":
             write_message(stdout, {"jsonrpc": "2.0", "id": message["id"], "result": None})

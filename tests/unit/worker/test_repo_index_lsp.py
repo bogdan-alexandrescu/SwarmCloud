@@ -358,10 +358,69 @@ def test_a_budget_cut_in_the_workspace_queries_keeps_the_definitions(tool: Any, 
     # Every site was asked; only the supplementary callers were cut, and the
     # row says how far they got.
     assert python["status"] == "ok"
-    assert re.fullmatch(r"call hierarchy and references cut at the 1.5-second budget: "
-                        r"\d+ of \d+ symbols asked", python["reason"])
+    assert re.fullmatch(r"call hierarchy and references cut at their 0.8-second share "
+                        r"of the 1.5-second budget: \d+ of \d+ symbols asked", python["reason"])
     assert python["lsp"]["symbols_skipped"] > 0
     assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "lsp"
+
+
+def _two_slow_servers(lsp: Any, tmp_path: Path, scenario: dict | None = None) -> tuple[Any, Any]:
+    """A Python and a TypeScript fake whose workspace queries are each slow."""
+    slow = {"textDocument/prepareCallHierarchy": 0.5}
+    python = _fake(lsp, tmp_path, scenario or {"slow_methods": slow, "definitions": {
+        "src/pkg/users.py:8": {"path": "src/pkg/store.py", "line": 0, "character": 4, "name": "fetch"},
+    }}, name="pyfake")
+    typescript = _fake(lsp, tmp_path, {"slow_methods": slow, "definitions": {
+        # App.tsx line 4, `formatName("a", "b")` -> format.ts `export function formatName`
+        "web/src/App.tsx:3": {"path": "web/src/format.ts", "line": 0, "character": 16,
+                              "name": "formatName"},
+    }}, name="tsfake", languages=("typescript", "javascript"),
+        ids={".ts": "typescript", ".tsx": "typescriptreact", ".js": "javascript"})
+    return python, typescript
+
+
+def test_the_whole_pass_ends_inside_its_total_budget(tool: Any, lsp: Any, tmp_path: Path) -> None:
+    # The servers run one after another inside one indexer step, which
+    # swarm-api kills at its full-run timeout: a step killed there leaves no
+    # index at all. Each server's §3.5 budget here (60 s) is far more than
+    # the total (3 s), and both servers' workspace queries would run past it
+    # (0.5 s a symbol), so only the total and the workspace share can end
+    # the pass in time -- and the second server must still get its turn.
+    repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
+    python, typescript = _two_slow_servers(lsp, tmp_path)
+    started = time.monotonic()
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=3.0))
+    # The total, plus the shutdown of each server and the tree-sitter pass.
+    assert time.monotonic() - started < 3.0 + 2.5
+    assert index["extractor"]["lsp"]["total_budget_seconds"] == 3.0
+    rows = {name: _language(index, name) for name in ("python", "typescript")}
+    assert {name: row["status"] for name, row in rows.items()} == {"python": "ok", "typescript": "ok"}
+    # The first server's workspace queries were cut at their share, not run to the total.
+    assert re.fullmatch(r"call hierarchy and references cut at their [\d.]+-second share of the "
+                        r"[\d.]+-second budget: \d+ of \d+ symbols asked", rows["python"]["reason"])
+    assert rows["python"]["lsp"]["symbols_skipped"] > 0
+    # The second server still ran phase 1, and its definition edge is kept.
+    assert _asked(_log(tmp_path, "tsfake"), "textDocument/definition")
+    assert _edge(index, "web/src/App.tsx#App", "web/src/format.ts#formatName")["evidence"] == "lsp"
+    assert _edge(index, "src/pkg/users.py#load_user", "src/pkg/store.py#fetch")["evidence"] == "lsp"
+
+
+def test_a_server_whose_turn_comes_after_the_total_is_not_started(tool: Any, lsp: Any,
+                                                                  tmp_path: Path) -> None:
+    repo = fx.build_repo(tmp_path / "repo", {**fx.PYTHON_APP, **fx.TS_APP})
+    # The first server never answers, not even `shutdown`: it uses its
+    # grant (half the total) and then the shutdown grace the client allows
+    # past any budget, which leaves nothing for the second.
+    python, typescript = _two_slow_servers(lsp, tmp_path, {"mode": "hang", "ignore_shutdown": True})
+    index = tool.extract(repo, tool.Budget(), lsp=_options(
+        lsp, python, typescript, server_budget_seconds=60.0, total_budget_seconds=0.6))
+    assert _language(index, "python")["status"] == "timed_out"
+    typescript_row = _language(index, "typescript")
+    assert (typescript_row["status"], typescript_row["reason"], typescript_row["fallback"]) == \
+        ("timed_out", "the LSP pass's 0.6-second total budget ran out before tsfake started", "ast")
+    assert _log(tmp_path, "tsfake") == []
+    _no_lsp_edges(index)
 
 
 def test_a_server_over_its_memory_is_stopped(tool: Any, lsp: Any, tmp_path: Path) -> None:
@@ -497,6 +556,16 @@ def test_the_server_budget_follows_the_size_table(lsp: Any) -> None:
     assert lsp.server_budget_seconds(2_000) == 1_800
     assert lsp.server_budget_seconds(10_000) == 1_800
     assert lsp.server_budget_seconds(10_001) == 2_700
+
+
+def test_the_total_budget_is_half_the_full_run_row(lsp: Any) -> None:
+    # §3.5's full run: 20 / 60 / 120 minutes. Half goes to the LSP pass, the
+    # rest to the agent and the tree-sitter pass; under 2,000 files that is
+    # also well inside swarm-api's 1,800-second step timeout.
+    assert lsp.total_budget_seconds(0) == 600
+    assert lsp.total_budget_seconds(1_999) == 600
+    assert lsp.total_budget_seconds(2_000) == 1_800
+    assert lsp.total_budget_seconds(10_001) == 3_600
     assert lsp.LspOptions().request_timeout_seconds == 10.0
 
 
@@ -532,7 +601,8 @@ def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> N
     empty.mkdir()
     done = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), "--repo", str(repo), "--out", str(out),
-         "--graph-out", str(graph), "--lsp-bin-dir", str(empty), "--lsp-request-timeout-seconds", "2"],
+         "--graph-out", str(graph), "--lsp-bin-dir", str(empty), "--lsp-request-timeout-seconds", "2",
+         "--lsp-total-budget-seconds", "30"],
         capture_output=True, text=True, timeout=120, env=fx.git_env(tmp_path),
     )
     assert done.returncode == 0, done.stderr
@@ -541,6 +611,7 @@ def test_the_command_line_runs_the_pass_under_isolated_mode(tmp_path: Path) -> N
     assert (python["status"], python["reason"]) == \
         ("failing", f"pyright-langserver is not installed in {empty}")
     assert index["extractor"]["lsp"]["request_timeout_seconds"] == 2.0
+    assert index["extractor"]["lsp"]["total_budget_seconds"] == 30.0
     assert re.search(r"lsp=python:failing", done.stderr)
     off = subprocess.run(
         [sys.executable, "-I", str(SCRIPT), "--repo", str(repo), "--out", str(out), "--no-lsp"],

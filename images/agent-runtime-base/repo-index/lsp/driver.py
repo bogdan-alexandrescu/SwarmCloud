@@ -42,16 +42,42 @@ graph that is `lsp` in the files the server reached and `ast` in the rest
 with nothing to say which. The run still succeeds; a timeout is never a
 failed index, it is a less certain one, and says so.
 
+THE TOTAL BUDGET. §3.5's per-server budget is a cap, not a grant: the
+servers run one after another inside ONE indexer step, which swarm-api
+kills at the full-run timeout (1,800 s, apps/swarm-api/swarm_api/
+repoindex.py), and that timeout also has to cover the agent and the
+tree-sitter pass. A step killed there produces no index at all, which is
+the one outcome §3.5 rules out. So the pass as a whole gets
+`total_budget_seconds` -- by default LSP_TOTAL_SHARE of §3.5's full-run
+budget for the repository's size -- and each server, when its turn comes,
+is granted the smaller of its §3.5 budget and an equal share of what is
+left of the total among the servers still to run. Time a server does not
+use passes to the ones after it. A server whose turn comes after the total
+has run out is not started: its language is `timed_out`, with that reason.
+
 TWO PHASES. Every site's definition is asked first, across all files; the
 workspace queries (call hierarchy, references) run after. A workspace query
 searches the whole repository -- pyright's incomingCalls took up to 60 s a
 symbol on this repository on 2026-10-05, against milliseconds a definition
 -- so a timed-out one is a slow answer and never counts toward
-`max_consecutive_timeouts`, and the budget running out in phase 2 ends
-phase 2 only: the language stays `ok`, keeps every definition edge, and its
-reason says how many symbols were asked ("call hierarchy and references cut
-at the N-second budget: a of b symbols asked"). The budget running out in
-phase 1 is `timed_out` as above.
+`max_consecutive_timeouts`. Phase 2 is supplementary, and on a large
+workspace it would run until the budget ran out every time, so it gets at
+most `workspace_share` of the server's grant: what it leaves unused goes to
+the next server's phase 1, the per-site answer §3.5 is for. Its limit
+running out ends phase 2 only: the language stays `ok`, keeps every
+definition edge, and its reason says how many symbols were asked ("call
+hierarchy and references cut at their N-second share of the M-second
+budget: a of b symbols asked"). The budget running out in phase 1 is
+`timed_out` as above.
+
+Why a budget cut in phase 2 keeps phase 1's edges while a crash or a
+memory stop in phase 2 keeps none: a cut is the driver's own decision,
+taken after every definition was answered by a server that was still
+healthy, so those answers are complete and trustworthy. A server that
+crashed or was stopped over its memory may have been failing before it
+died -- a pyright out of memory answers from a half-built program -- and
+nothing in the protocol says from which answer on, so its language falls
+back to `ast` whole, as above.
 
 THE ENVIRONMENT. A server reads the checkout, which is untrusted input, so
 it gets a minimal environment built here -- PATH, a throwaway HOME and
@@ -96,6 +122,17 @@ NO_SERVER_REASON = "no language server; edges are syntactic"
 # §3.5's budget table: source files -> seconds per language server.
 SERVER_BUDGETS = ((2_000, 600), (10_001, 1_800))
 LARGEST_SERVER_BUDGET = 2_700
+# §3.5's full-run budget, same rows. The LSP pass gets half of it by default:
+# the step also runs the agent and the tree-sitter pass, and under 2,000 files
+# swarm-api's 1,800-second step timeout is already past the 20-minute row, so
+# the other half is the margin that keeps a slow server from costing the
+# whole index (module doc, "the total budget").
+FULL_RUN_BUDGETS = ((2_000, 1_200), (10_001, 3_600))
+LARGEST_FULL_RUN_BUDGET = 7_200
+LSP_TOTAL_SHARE = 0.5
+# Phase 2's share of a server's grant: half, so a slow incomingCalls never
+# takes more than half of what a server was granted and the rest passes on.
+WORKSPACE_SHARE = 0.5
 REQUEST_TIMEOUT_SECONDS = 10.0
 MAX_CONSECUTIVE_TIMEOUTS = 3
 
@@ -124,6 +161,20 @@ def server_budget_seconds(source_files: int) -> int:
     return LARGEST_SERVER_BUDGET
 
 
+def total_budget_seconds(source_files: int) -> int:
+    """The whole LSP pass's default budget: LSP_TOTAL_SHARE of §3.5's full run."""
+    full = LARGEST_FULL_RUN_BUDGET
+    for below, seconds in FULL_RUN_BUDGETS:
+        if source_files < below:
+            full = seconds
+            break
+    return int(full * LSP_TOTAL_SHARE)
+
+
+def _seconds(value: float) -> str:
+    return f"{round(value, 1):g}"
+
+
 def default_memory_limit_mib(paths: Iterable[Path] = CGROUP_LIMIT_PATHS) -> int:
     """Three quarters of the container's memory limit, or 4 GiB without one."""
     for path in paths:
@@ -147,6 +198,8 @@ class LspOptions:
     request_timeout_seconds: float = REQUEST_TIMEOUT_SECONDS
     warmup_timeout_seconds: float | None = None
     server_budget_seconds: float | None = None
+    total_budget_seconds: float | None = None
+    workspace_share: float = WORKSPACE_SHARE
     memory_limit_mib: int | None = None
     max_consecutive_timeouts: int = MAX_CONSECUTIVE_TIMEOUTS
 
@@ -190,6 +243,7 @@ class PassResult:
     servers: dict[str, str]
     request_timeout_seconds: float
     server_budget_seconds: float
+    total_budget_seconds: float
     memory_limit_mib: int
 
 
@@ -203,19 +257,30 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
     options = options or LspOptions()
     servers = SERVERS if options.servers is None else options.servers
     budget = options.server_budget_seconds or server_budget_seconds(len(files))
+    total = options.total_budget_seconds or total_budget_seconds(len(files))
+    pass_deadline = time.monotonic() + total
     memory_mib = options.memory_limit_mib or default_memory_limit_mib()
     present = set(files.values())
     languages: dict[str, LanguageResult] = {}
     edges: list[LspEdge] = []
     versions: dict[str, str] = {}
+    planned: list[tuple[ServerSpec, list[str]]] = []
+    claimed: set[str] = set()
     for name in sorted(servers):
         spec = servers[name]
-        served = [lang for lang in spec.languages if lang in present and lang not in languages]
-        if not served:
-            continue
+        served = [lang for lang in spec.languages if lang in present and lang not in claimed]
+        if served:
+            planned.append((spec, served))
+            claimed.update(served)
+    for turn, (spec, served) in enumerate(planned):
+        left = pass_deadline - time.monotonic()
         run = _ServerRun(Path(root), spec, set(served), files, symbols, sites, options,
-                         budget, memory_mib)
-        run.run()
+                         min(budget, max(left, 0.0) / (len(planned) - turn)), memory_mib)
+        if left <= 0:
+            run._stop(STATUS_TIMED_OUT, f"the LSP pass's {_seconds(total)}-second total budget "
+                                        f"ran out before {spec.name} started")
+        else:
+            run.run()
         if run.server_version is not None:
             versions[spec.name] = run.server_version
         counts = dict(run.counts, server_version=run.server_version)
@@ -227,7 +292,8 @@ def run_pass(root: Path, files: Mapping[str, str], symbols: Sequence[Mapping[str
         languages[lang] = LanguageResult(STATUS_UNSUPPORTED, NO_SERVER_REASON, None)
     return PassResult(edges=edges, languages=languages, servers=versions,
                       request_timeout_seconds=options.request_timeout_seconds,
-                      server_budget_seconds=budget, memory_limit_mib=memory_mib)
+                      server_budget_seconds=budget, total_budget_seconds=total,
+                      memory_limit_mib=memory_mib)
 
 
 # --- positions --------------------------------------------------------------
@@ -299,6 +365,7 @@ class _ServerRun:
         self.counts = {"requests": 0, "resolved": 0, "unresolved": 0, "request_timeouts": 0,
                        "errors": 0, "edges": 0, "symbols_skipped": 0}
         self._warming = True
+        self._workspace_limit: float | None = None
         self._consecutive = 0
         self._lines: dict[str, list[str] | None] = {}
         self.symbols_by_path: dict[str, list[Mapping[str, Any]]] = {}
@@ -361,7 +428,7 @@ class _ServerRun:
             try:
                 self._session(client)
             except BudgetExceeded:
-                self._stop(STATUS_TIMED_OUT, f"over the {self.budget:g}-second budget for {self.spec.name}")
+                self._stop(STATUS_TIMED_OUT, f"over the {_seconds(self.budget)}-second budget for {self.spec.name}")
             except _Hung as exc:
                 self._stop(STATUS_TIMED_OUT, str(exc))
             except _InitFailed as exc:
@@ -458,6 +525,13 @@ class _ServerRun:
                 todo.append((path, language_id, symbols))
         total = sum(len(symbols) for _, _, symbols in todo)
         asked = 0
+        # Phase 2's own limit (module doc): at most its share of the grant,
+        # counted from the server's first answer when phase 1 asked nothing,
+        # so the workspace load is not charged to it.
+        share = self.budget * self.options.workspace_share
+        self._workspace_limit = share
+        if not self._warming:
+            self._limit_workspace(client)
         try:
             for path, language_id, symbols in todo:
                 def workspace(document: dict, lines: list[str], symbols: list = symbols) -> None:
@@ -471,8 +545,8 @@ class _ServerRun:
                 self._open(client, path, language_id, workspace)
         except BudgetExceeded:
             self.counts["symbols_skipped"] = total - asked
-            self.reason = (f"call hierarchy and references cut at the {self.budget:g}-second budget: "
-                           f"{asked} of {total} symbols asked")
+            self.reason = (f"call hierarchy and references cut at their {_seconds(share)}-second share "
+                           f"of the {_seconds(self.budget)}-second budget: {asked} of {total} symbols asked")
 
     def _open(self, client: LspClient, path: str, language_id: str, queries: Any) -> None:
         lines = self._read(path)
@@ -564,14 +638,20 @@ class _ServerRun:
             return self.budget
         return self.options.request_timeout_seconds
 
+    def _limit_workspace(self, client: LspClient) -> None:
+        if self._workspace_limit is not None:
+            client.deadline = min(client.deadline, time.monotonic() + self._workspace_limit)
+
     def _ask(self, client: LspClient, method: str, params: dict, workspace: bool = False) -> Any:
         """One request. A timed-out `workspace` query never counts as hung."""
         timeout = self._timeout()
-        self._warming = False
+        warmup, self._warming = self._warming, False
         self.counts["requests"] += 1
         try:
             result = client.request(method, params, timeout=timeout)
         except RequestTimeout:
+            if warmup:
+                self._limit_workspace(client)
             self.counts["request_timeouts"] += 1
             if workspace:
                 return None
@@ -581,9 +661,13 @@ class _ServerRun:
                             f"each over {self.options.request_timeout_seconds:g} seconds") from None
             return None
         except ServerError:
+            if warmup:
+                self._limit_workspace(client)
             self.counts["errors"] += 1
             self._consecutive = 0
             return None
+        if warmup:
+            self._limit_workspace(client)
         self._consecutive = 0
         return result
 
