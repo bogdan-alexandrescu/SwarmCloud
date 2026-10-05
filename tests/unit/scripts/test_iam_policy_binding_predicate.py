@@ -115,7 +115,9 @@ def _binds(tmp_path: Path, policy: object, role: str, member: str) -> bool:
     )
     # Anything other than "bound" / "not bound" is a broken predicate, not a
     # policy answer: jq missing, common.sh failing to source, a syntax error.
-    assert proc.returncode in (0, 1, 5), (
+    # Unparseable input under `jq -e` is 5 in jq 1.7 and 4 ("no result") in
+    # jq 1.6; both are "not bound".
+    assert proc.returncode in (0, 1, 4, 5), (
         f"iam_policy_binds_member exited {proc.returncode}\n{proc.stdout}{proc.stderr}"
     )
     return proc.returncode == 0
