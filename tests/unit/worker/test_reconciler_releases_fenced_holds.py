@@ -254,7 +254,7 @@ def _left_running(db: FakeFirestore, *, terminate_returns: bool):
     """
     seed_dead_worker(db, generation=3)
     db.doc("tasks/task_1")["state"] = TaskState.CANCELLED.value
-    execution = replace(running_execution(), backend="GKE_AUTOPILOT", namespace="swarm-eng")
+    execution = replace(running_execution(), backend="GKE_AUTOPILOT", namespace="swarm-tenant-eng")
     backend = FakeBackend(
         "GKE_AUTOPILOT", executions=[execution], journal=db.writes,
         terminate_returns=terminate_returns,
