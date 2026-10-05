@@ -13,6 +13,12 @@ per-attempt records, with the last-attempt fields kept under their names. A
 missing attempt cost makes the total a floor with `cost_incomplete: true` --
 never a silent 0 -- and no recorded cost at all stays null.
 
+The member task list (`GET /v1/tasks`, both views) and the cancel response
+carry the same totals, from the same `totals_for`, one batched attempts read
+per page (owner decision 2026-10-05, P1 follow-up). The create and submit
+responses do not: a task they return was created by that call and has no
+attempt to total.
+
 Offline: the real routes over FakeFirestore.
 """
 
@@ -21,8 +27,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+import pytest
+
 from swarm_api.attempt_totals import attempt_totals
-from swarm_api.codec import attempt_from_dict
+from swarm_api.codec import SUMMARY_DROPPED_KEYS, attempt_from_dict
 
 from .conftest import auth_header, seed_task, seed_tenant
 
@@ -209,6 +217,122 @@ def test_the_workflow_read_serves_each_step_tasks_totals(client, db):
     assert got.status_code == 200, got.text
     (row,) = [t for t in got.json()["tasks"] if t["id"] == task_id]
     assert (row["attempts"], row["cost_usd_total"], row["last_attempt_cost_usd"]) == (2, 1.5, 0.25)
+
+
+# --------------------------------------------------------------------------
+# The task list and the cancel response (owner decision 2026-10-05, P1 follow-up)
+# --------------------------------------------------------------------------
+
+
+def _count_attempt_reads(db, monkeypatch) -> list[str]:
+    """Every `collection("attempts")` the routes open, in order."""
+    opened: list[str] = []
+    original = db.collection
+
+    def counting(path: str):
+        if path == "attempts":
+            opened.append(path)
+        return original(path)
+
+    monkeypatch.setattr(db, "collection", counting)
+    return opened
+
+
+def _three_tasks(db) -> None:
+    """t_two (two costly attempts), t_one (one), t_new (never attempted)."""
+    seed_tenant(db, "eng")
+    _finished_task(db, "t_two", attempt_count=2)
+    _finished_task(db, "t_one", attempt_count=1)
+    seed_task(db, task_id="t_new", tenant_id="eng", state="QUEUED")
+    _seed(
+        db,
+        _attempt_doc("a1", generation=1, started_minutes_ago=60, ran_seconds=1800, cost_usd=9.13),
+        _attempt_doc("a2", generation=2, started_minutes_ago=10, ran_seconds=120, cost_usd=0.51),
+        _attempt_doc("b1", task_id="t_one", started_minutes_ago=20, ran_seconds=60, cost_usd=0.25),
+        # Another tenant's attempt on a same-named task is never summed.
+        _attempt_doc("x1", task_id="t_one", started_minutes_ago=90, ran_seconds=60, cost_usd=50.0, tenant_id="other"),
+    )
+
+
+@pytest.mark.parametrize("view", [None, "full", "summary"])
+def test_every_list_row_carries_its_tasks_totals(client, db, view):
+    """The member task list, including the Overview poll's `view=summary` rows."""
+    _three_tasks(db)
+    params = {"view": view} if view else {}
+
+    response = client.get("/v1/tasks", headers=auth_header("alice"), params=params)
+
+    assert response.status_code == 200, response.text
+    rows = {row["id"]: row for row in response.json()["tasks"]}
+    two, one, new = rows["t_two"], rows["t_one"], rows["t_new"]
+    assert (two["attempts"], two["cost_usd_total"], two["last_attempt_cost_usd"]) == (2, 9.64, 0.51)
+    assert two["duration_s_total"] == 1920.0 and two["cost_incomplete"] is False
+    assert (one["attempts"], one["cost_usd_total"]) == (1, 0.25), "never another tenant's attempt"
+    assert (new["attempts"], new["cost_usd_total"]) == (0, None)
+    assert {row["attempts_read"] for row in rows.values()} == {"ok"}
+
+
+def test_a_list_page_reads_its_attempts_in_one_batched_query(client, db, monkeypatch):
+    """ONE attempts read per page of up to 30 tasks, never one per task."""
+    _three_tasks(db)
+    for i in range(5):
+        seed_task(db, task_id=f"t_more_{i}", tenant_id="eng", state="QUEUED")
+    opened = _count_attempt_reads(db, monkeypatch)
+
+    response = client.get("/v1/tasks", headers=auth_header("alice"), params={"view": "summary"})
+
+    assert response.status_code == 200, response.text
+    assert len(response.json()["tasks"]) == 8
+    assert len(opened) == 1, f"{len(opened)} attempt queries for one page of 8 tasks"
+
+
+def test_a_failed_attempt_read_leaves_the_list_rows_unread_not_free(client, db, monkeypatch):
+    _three_tasks(db)
+    original = db.collection
+
+    def broken(path: str):
+        if path == "attempts":
+            raise RuntimeError("firestore unavailable")
+        return original(path)
+
+    monkeypatch.setattr(db, "collection", broken)
+
+    response = client.get("/v1/tasks", headers=auth_header("alice"))
+
+    assert response.status_code == 200, "the tasks were read; only their attempts were not"
+    for row in response.json()["tasks"]:
+        assert row["attempts_read"] == "failed"
+        assert row["attempts"] is None and row["cost_usd_total"] is None
+
+
+def test_the_list_row_and_the_single_task_read_have_one_key_set(client, db):
+    _three_tasks(db)
+    alice = auth_header("alice")
+    listed = {row["id"]: row for row in client.get("/v1/tasks", headers=alice).json()["tasks"]}
+    summary = {
+        row["id"]: row
+        for row in client.get("/v1/tasks", headers=alice, params={"view": "summary"}).json()["tasks"]
+    }
+
+    single = _get(client)
+
+    assert set(listed["t_two"]) == set(single)
+    assert set(summary["t_two"]) == set(single) - set(SUMMARY_DROPPED_KEYS)
+
+
+def test_the_cancel_response_carries_the_tasks_totals(client, db):
+    """A task cancelled between attempts has already spent; the response says what."""
+    seed_tenant(db, "eng")
+    seed_task(db, task_id="t_retry", tenant_id="eng", state="READY", runner_profile="claude-code")
+    db.docs["tasks/t_retry"]["attempt_count"] = 1
+    _seed(db, _attempt_doc("r1", task_id="t_retry", started_minutes_ago=30, ran_seconds=600, cost_usd=2.5))
+
+    response = client.post("/v1/tasks/t_retry/cancel", headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text
+    task = response.json()["task"]
+    assert (task["attempts"], task["cost_usd_total"], task["attempts_read"]) == (1, 2.5, "ok")
+    assert set(task) == set(_get(client, "t_retry"))
 
 
 # --------------------------------------------------------------------------
