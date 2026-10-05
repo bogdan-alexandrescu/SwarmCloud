@@ -64,12 +64,15 @@ from .detect import (
     WORKER_EXIT_CANNOT_START,
     Finding,
     FindingKind,
+    WorkflowStall,
+    WorkflowStallKind,
     cannot_start_candidates,
     detect_all,
     detect_empty_namespaces,
     detect_lost_after_finish,
     detect_orphan_executions,
     detect_stale_leases,
+    detect_stalled_workflows,
     detect_unused_job_resources,
     normalise_executions,
     sanitised,
@@ -361,6 +364,17 @@ class ReconcileReport:
     #: Empty on a healthy pass. Persisted with the pass, so a hold is on the
     #: record even on a pass that logged no ERROR for it (see HELD_PAST_TTL).
     held_past_ttl: list[dict[str, Any]] = field(default_factory=list)
+    #: Workflows that stopped making progress (#616), worst first, one row
+    #: each: workflow id, step, task, age, reason, and whether this pass
+    #: repaired it (`WorkflowStall.entry`). Persisted with the pass, which is
+    #: where the API's workflow list, the console's Overview and `sc trouble`
+    #: read them from. Empty on a healthy pass.
+    stalled_workflows: list[dict[str, Any]] = field(default_factory=list)
+    #: What the stall check examined: `examined`, `truncated`, `repaired`,
+    #: and `read_error` -- set when the workflows could not be read at all,
+    #: so a blind check reads as blind rather than as "nothing stalled".
+    #: None only on a pass that never reached the check.
+    workflow_check: dict[str, Any] | None = None
     outcomes: list[RepairOutcome] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     dry_run: bool = False
@@ -391,6 +405,8 @@ class ReconcileReport:
                 for backend, namespaces in self.unreadable_namespaces.items()
             },
             "held_past_ttl": [dict(entry) for entry in self.held_past_ttl],
+            "stalled_workflows": [dict(entry) for entry in self.stalled_workflows],
+            "workflow_check": dict(self.workflow_check) if self.workflow_check else None,
             "slots_released": sum(1 for o in self.outcomes if o.released),
             "executions_terminated": sum(1 for o in self.outcomes if o.terminated),
             "resources_deleted": sum(1 for o in self.outcomes if o.deleted),
@@ -577,6 +593,10 @@ class Reconciler:
 
         self._watch_holds(snapshot, report)
 
+        # After the lease repairs, so a step this pass requeued is judged as it
+        # now stands. Never fatal: see `_check_workflows`.
+        self._check_workflows(snapshot, report)
+
         if self._config.enable_gc:
             self._collect_garbage(snapshot, sight, report)
 
@@ -708,6 +728,108 @@ class Reconciler:
         for lease_id in list(self._held_alerted):
             if lease_id not in still_held:
                 del self._held_alerted[lease_id]
+
+    # ------------------------------------------------------------------
+    # Workflows (#616)
+    # ------------------------------------------------------------------
+    def _check_workflows(self, snapshot: ControlSnapshot, report: ReconcileReport) -> None:
+        """Find workflows that stopped making progress; repair what is safe.
+
+        Owner decision, 2026-10-05: on this pass's existing schedule, with no
+        service of its own, so nothing runs when no workflow does. Two repairs,
+        each the guarded write another component already makes:
+
+          * DEPENDENCIES_MET -> the step is promoted to READY in one
+            transaction that re-reads the step, its generation and every
+            parent (`ControlStore.promote_workflow_step`). A step the
+            scheduler's sweep promoted first is skipped, so it is promoted
+            once and never twice; READY holds no capacity (invariant 1).
+          * STATE_DRIFT -> the derived state is written over the stored one,
+            only while the stored one is still the value read
+            (`ControlStore.write_derived_workflow_state`).
+
+        Everything else is reported. A DRY RUN writes nothing, as for every
+        other rule here: the row says what would have been done.
+
+        A READ THAT FAILS IS A FINDING. It is recorded as `read_error` on
+        `workflow_check` and in `errors`, and it never fails the pass: the
+        lease repairs before it have already happened.
+        """
+        now = snapshot.taken_at
+        check: dict[str, Any] = {
+            "examined": 0,
+            "truncated": False,
+            "repaired": 0,
+            "read_error": None,
+        }
+        report.workflow_check = check
+        try:
+            read = self._store.workflows_for_stall_check(limit=self._config.workflow_scan_limit)
+        except Exception as exc:
+            message = f"{type(exc).__name__}: {exc}"
+            check["read_error"] = message[:500]
+            report.errors.append(f"workflow_stall_check: {message[:500]}")
+            self._log.error(
+                "the workflow stall check could not read the workflows; no workflow was judged",
+                error=message[:500],
+            )
+            return
+        check["examined"] = len(read.workflows) + len(read.malformed)
+        check["truncated"] = read.truncated
+        for stall in detect_stalled_workflows(read, snapshot.leases, self._config, now):
+            try:
+                repaired, repair = self._repair_stall(stall)
+            except Exception as exc:
+                repaired, repair = False, f"repair failed: {type(exc).__name__}: {exc}"[:300]
+                report.errors.append(
+                    f"workflow_stall_check {stall.kind.value} {stall.workflow_id}: {exc}"[:500]
+                )
+            if repaired:
+                check["repaired"] += 1
+            entry = stall.entry(repaired=repaired, repair=repair)
+            report.stalled_workflows.append(entry)
+            # `severity` is the structured logger's own field, so the row's
+            # grade travels as `grade`. A repair that landed is routine.
+            fields = {k: v for k, v in entry.items() if k != "severity"}
+            log = self._log.info if entry["severity"] == "note" else self._log.warning
+            log("workflow stalled", grade=entry["severity"], **fields)
+
+    def _repair_stall(self, stall: WorkflowStall) -> tuple[bool, str | None]:
+        """Repair one finding if its kind is repairable. (repaired, what happened)."""
+        if stall.kind is WorkflowStallKind.DEPENDENCIES_MET and stall.task_id:
+            if self._config.dry_run:
+                return False, "dry run: would promote the step to READY"
+            skipped = self._store.promote_workflow_step(
+                stall.task_id, generation=stall.generation, parent_task_ids=stall.parents
+            )
+            if skipped is not None:
+                return False, f"not promoted: {skipped}"
+            self._store.emit(
+                task_id=stall.task_id,
+                tenant_id=stall.tenant_id,
+                event_type=EventType.READY,
+                detail={
+                    "reason": "dependencies_satisfied",
+                    "by": "workflow_stall_check",
+                    "workflow_id": stall.workflow_id,
+                },
+                generation=stall.generation,
+            )
+            return True, "promoted to READY"
+        if (
+            stall.kind is WorkflowStallKind.STATE_DRIFT
+            and stall.stored_state is not None
+            and stall.derived_state is not None
+        ):
+            if self._config.dry_run:
+                return False, f"dry run: would write {stall.derived_state.value}"
+            skipped = self._store.write_derived_workflow_state(
+                stall.workflow_id, expected=stall.stored_state, to=stall.derived_state
+            )
+            if skipped is not None:
+                return False, f"not written: {skipped}"
+            return True, f"stored state written as {stall.derived_state.value}"
+        return False, None
 
     # ------------------------------------------------------------------
     # Seeing
