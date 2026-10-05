@@ -1748,9 +1748,11 @@ require_fs_database() {
 iam_policy_binds_member() {
   local policy_file="$1" role="$2" member="$3"
   [[ -s "${policy_file}" ]] || return 1
+  # Exactly 0 or 1: jq's own non-zero code for an unparseable file is
+  # version-dependent (4 under jq-1.6, 2026-10-05), and "not bound" is one answer.
   jq -e --arg role "${role}" --arg member "${member}" \
     'any((.bindings? // [])[]; .role == $role and any(.members[]?; . == $member))' \
-    "${policy_file}" >/dev/null 2>&1
+    "${policy_file}" >/dev/null 2>&1 || return 1
 }
 
 # ---------------------------------------------------------------------------

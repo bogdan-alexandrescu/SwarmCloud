@@ -181,7 +181,12 @@ write_iam_summary() {
 require_valid_verdict() {
   local verdict="$1" field err
 
-  if ! err="$(jq -e 'type == "object"' "${verdict}" 2>&1)"; then
+  # SLURPED, so an EMPTY file is a refusal on every jq. jq 1.6's `-e` exits 0
+  # when the input yields no output at all, so `jq -e 'type == "object"'` over
+  # an empty verdict approved it (the self-test's "an empty verdict" case,
+  # failing under jq-1.6, 2026-10-05). `length == 1` also refuses two documents
+  # glued together.
+  if ! err="$(jq -e -s 'length == 1 and (.[0] | type == "object")' "${verdict}" 2>&1)"; then
     hr
     err "the plan guard's verdict is not readable JSON:"
     printf '%s\n' "${err}" | head -n 3 | sed 's/^/     /' >&2
