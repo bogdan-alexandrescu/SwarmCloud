@@ -44,7 +44,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Sequence
 
 from .. import expected_outputs as expected_mod
@@ -175,6 +175,11 @@ class CliAgentSpec:
     #: answer that announces pending work or with a background shell open
     #: (owner decision 2026-10-05; see `pending_work`). Needs `resume_flag`.
     finish_on_pending: bool = False
+    #: After the agent's turn ends, run the worker's expected-outputs check and
+    #: publish credential scan against the tree, and resume the session for up
+    #: to `REPAIR_MAX_TURNS` repair turns naming what failed (#624, owner
+    #: decision 2026-10-05; see `repair_problems`). Needs `resume_flag`.
+    repair_checks: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -777,6 +782,114 @@ def _session_of(parsed: Any) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Repair turns: the checks the worker would fail, shown while they can be fixed
+# ---------------------------------------------------------------------------
+#
+# Issue #624, owner decision 2026-10-05 (history I1). About $201, 14.9% of all
+# spend, went to agents that finished and then failed a check they never saw:
+# an expected output not written ($90.13 over 19 retried attempts), a
+# credential-shaped line in the final tree ($64.29 over 23), and 8 whole lanes
+# lost at the fix step ($96.28). The worker runs both checks only after this
+# process has exited (`lifecycle._finalise`: `_fail_for_missing_outputs`,
+# `_fail_for_final_tree_leak`), and then the session is gone.
+#
+# So after the agent's turn ends -- and after a finish pass, so the checks
+# read the tree its last turn left -- the runner runs the same two checks
+# against the tree and, when either fails, resumes the session with a prompt
+# naming exactly what failed, up to REPAIR_MAX_TURNS times inside what is left
+# of the step's budget (FINISH_MIN_SECONDS, the same floor as a finish pass:
+# one model turn that writes a file or edits a line and reports). Then the
+# attempt ends exactly as before: the worker's own checks still decide, and a
+# repair that did not take fails the attempt the way it always has.
+#
+# ONE IMPLEMENTATION OF EACH CHECK, NOT A COPY. The expected names are the ones
+# this runner told the agent (`told`), compared with
+# `expected_outputs.missing_outputs`. The credential scan is
+# `agent_worker.publish_scan.scan` from `publish_scan.default_base`: the
+# worker's own `_DiffLeakScanner` and `_credential_in`, over the diff the
+# publish will read (the clone base the worker exports as SWARM_CLONE_BASE
+# against the working tree, untracked files included). A task's REGISTERED
+# secrets are known only to the worker, so they are not checked here; the
+# publish still refuses one.
+#
+# NEVER THE MATCHED TEXT. A hit is `path:line rule` (`ScanHit` holds no part of
+# the value), and that is all the prompt, the log and the result carry.
+
+#: How many repair turns a step may take. Two: a third start rarely succeeds
+#: where two named failures did not, and every start costs a model turn.
+REPAIR_MAX_TURNS = 2
+
+#: At most this many items of each kind are named in a prompt or recorded per
+#: turn. The runner's whole output reaches `result_summary.runner.output`
+#: through an 8000-character cap (`lifecycle._truncate_json`), and a tree with
+#: hundreds of hits needs the first ones fixed before the rest matter.
+REPAIR_LIST_CAP = 25
+
+
+def written_outputs_missing(names: Sequence[str], artifacts_dir: Path | str) -> list[str]:
+    """The expected names not written as regular files in the artifacts directory.
+
+    A link is not counted: the worker refuses it when it uploads (`refused`),
+    so it would fail the same check a moment later.
+    """
+    root = Path(artifacts_dir)
+    produced: list[str] = []
+    for name in names:
+        path = root / name
+        try:
+            if path.is_file() and not path.is_symlink():
+                produced.append(name)
+        except OSError:
+            continue
+    return expected_mod.missing_outputs(names, produced)
+
+
+def credential_lines(repo: Path) -> tuple[list[str], str | None]:
+    """`path:line rule` for every credential-shaped line the publish would refuse.
+
+    Returns the lines and None, or no lines and why the scan could not run --
+    which is never read as clean and never as a failure to repair: a repair
+    turn needs something to name.
+    """
+    from .. import publish_scan  # lazy: imports the worker's lifecycle module
+
+    try:
+        hits = publish_scan.scan(repo, publish_scan.default_base(repo))
+    except publish_scan.ScanError as exc:
+        return [], str(exc)
+    except OSError as exc:
+        return [], f"{type(exc).__name__}: the scan could not run"
+    return [f"{hit.path}:{hit.line} {hit.rule}" for hit in hits], None
+
+
+def repair_prompt(missing: Sequence[str], flagged: Sequence[str], artifacts_dir: Path | str) -> str:
+    """The one user message a repair turn is given: what failed, exactly."""
+    directory = PurePosixPath(os.path.abspath(os.fspath(artifacts_dir)))
+    lines = [
+        "Before this step ends, the platform ran the checks it runs after you "
+        "exit, and they failed. Fix exactly these, then end with a short report."
+    ]
+    if missing:
+        lines.append(
+            "These files later steps need were not written. Write each one, as a "
+            "regular file, at exactly this path:"
+        )
+        lines += [f"- {directory / name}" for name in missing[:REPAIR_LIST_CAP]]
+        if len(missing) > REPAIR_LIST_CAP:
+            lines.append(f"- and {len(missing) - REPAIR_LIST_CAP} more")
+    if flagged:
+        lines.append(
+            "These added lines look like a credential, and the publish step refuses "
+            "a diff that adds one (path:line rule). Remove the value from each line; "
+            "a test value is built at runtime from pieces, never written as one literal:"
+        )
+        lines += [f"- {entry}" for entry in flagged[:REPAIR_LIST_CAP]]
+        if len(flagged) > REPAIR_LIST_CAP:
+            lines.append(f"- and {len(flagged) - REPAIR_LIST_CAP} more")
+    return "\n".join(lines)
+
+
 def _combined_spend(first: dict[str, Any], second: dict[str, Any]) -> dict[str, Any]:
     """The spend of two invocations of one session: numbers summed, at any depth.
 
@@ -1182,6 +1295,56 @@ def run_cli_agent(
     finish_skipped: str | None = None
     duration_seconds = result.duration_seconds
     stdout_bytes, stderr_bytes = result.stdout_bytes, result.stderr_bytes
+
+    def resume_pass(session: str, pass_prompt: str, pass_log_prompt: str, remaining: float) -> Any:
+        """Continue `session` once with `pass_prompt`; return that pass's own parsed output.
+
+        Shared by the finish pass and the repair turns. The step's record is
+        kept whole: the captures, the spend, the durations and what the
+        transcript and summary read cover every start.
+        """
+        nonlocal result, watcher, capture, raw_stdout, parsed, spend, combined
+        nonlocal duration_seconds, stdout_bytes, stderr_bytes
+        first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+        first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
+        first_spend = spend
+        pass_argv = [*base_argv, str(spec.resume_flag), session, pass_prompt]
+        pass_log_argv = [
+            ("<session>" if arg == session else arg) for arg in pass_argv[:-1]
+        ] + [pass_log_prompt]
+        result, watcher = start(pass_argv, pass_log_argv, remaining)
+        # ONE RECORD OF THE STEP. Each start truncates the captures, so the
+        # earlier starts' are put back in front of this one's: the stdout log
+        # stays the whole conversation, in order.
+        pass_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
+        stdout_path.write_bytes(first_stdout + pass_stdout)
+        stderr_path.write_bytes(
+            first_stderr + (stderr_path.read_bytes() if stderr_path.exists() else b"")
+        )
+        second = result.capture_report()
+        capture = {
+            "stdout_truncated": capture["stdout_truncated"] or second["stdout_truncated"],
+            "stderr_truncated": capture["stderr_truncated"] or second["stderr_truncated"],
+            "stdout_dropped_bytes": capture["stdout_dropped_bytes"]
+            + second["stdout_dropped_bytes"],
+            "stderr_dropped_bytes": capture["stderr_dropped_bytes"]
+            + second["stderr_dropped_bytes"],
+        }
+        ctx.report.update(capture)
+        # This pass's own output is what its outcome is judged on; the whole
+        # conversation is what the transcript and summary read.
+        pass_raw = pass_stdout.decode("utf-8", errors="replace")
+        pass_parsed = _parse_cli_output(pass_raw)
+        raw_stdout = stdout_path.read_text(errors="replace")
+        parsed = _parse_cli_output(raw_stdout)
+        spend = _combined_spend(first_spend, _scrub_json(_spend_of(pass_parsed), secrets))
+        combined = detection_text(pass_raw, pass_parsed)
+        judge(result, watcher, spend, combined)
+        duration_seconds += result.duration_seconds
+        stdout_bytes += result.stdout_bytes
+        stderr_bytes += result.stderr_bytes
+        return pass_parsed
+
     pending = pending_work(parsed) if spec.finish_on_pending and spec.resume_flag else None
     if pending is not None:
         remaining = limits.timeout_seconds - result.duration_seconds
@@ -1209,44 +1372,11 @@ def run_cli_agent(
                 why=pending,
                 remaining_seconds=round(remaining, 1),
             )
-            first_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
-            first_stderr = stderr_path.read_bytes() if stderr_path.exists() else b""
-            first_spend = spend
-            finish_argv = [*base_argv, str(spec.resume_flag), session, FINISH_PROMPT]
-            finish_log_argv = [("<session>" if arg == session else arg) for arg in finish_argv]
-            result, watcher = start(finish_argv, finish_log_argv, remaining)
-            # ONE RECORD OF THE STEP. Each start truncates the captures, so the
-            # first start's are put back in front of the second's: the stdout
-            # log stays the whole conversation, in order.
-            finish_stdout = stdout_path.read_bytes() if stdout_path.exists() else b""
-            stdout_path.write_bytes(first_stdout + finish_stdout)
-            stderr_path.write_bytes(
-                first_stderr + (stderr_path.read_bytes() if stderr_path.exists() else b"")
-            )
-            second = result.capture_report()
-            capture = {
-                "stdout_truncated": capture["stdout_truncated"] or second["stdout_truncated"],
-                "stderr_truncated": capture["stderr_truncated"] or second["stderr_truncated"],
-                "stdout_dropped_bytes": capture["stdout_dropped_bytes"]
-                + second["stdout_dropped_bytes"],
-                "stderr_dropped_bytes": capture["stderr_dropped_bytes"]
-                + second["stderr_dropped_bytes"],
-            }
-            ctx.report.update(capture)
-            # The finish pass's own output is what its outcome is judged on;
-            # the whole conversation is what the transcript and summary read.
-            finish_raw = finish_stdout.decode("utf-8", errors="replace")
-            finish_parsed = _parse_cli_output(finish_raw)
-            raw_stdout = stdout_path.read_text(errors="replace")
-            parsed = _parse_cli_output(raw_stdout)
-            spend = _combined_spend(first_spend, _scrub_json(_spend_of(finish_parsed), secrets))
-            combined = detection_text(finish_raw, finish_parsed)
+            # Said before the pass starts, so a pass that fails or parks
+            # still reports that it was resumed (`write_result` merges it).
             resumed_to_finish = True
             ctx.report["resumed_to_finish"] = True
-            judge(result, watcher, spend, combined)
-            duration_seconds += result.duration_seconds
-            stdout_bytes += result.stdout_bytes
-            stderr_bytes += result.stderr_bytes
+            finish_parsed = resume_pass(session, FINISH_PROMPT, FINISH_PROMPT, remaining)
             still = pending_work(finish_parsed)
             if still is not None:
                 log.warning(
@@ -1254,6 +1384,98 @@ def run_cli_agent(
                     "resumed again",
                     why=still,
                 )
+
+    # REPAIR TURNS (#624; see `REPAIR_MAX_TURNS`). The run, and any finish
+    # pass, succeeded; now the checks the worker runs after this process exits
+    # are run while the session can still be continued.
+    repair_turns = 0
+    repairs: list[dict[str, Any]] = []
+    repair_skipped: str | None = None
+    repair_scan_error: str | None = None
+    unresolved: dict[str, list[str]] | None = None
+    if spec.repair_checks and spec.resume_flag:
+        # The scan reads the diff the publish reads, so only a task with a
+        # checkout has one to scan.
+        scan_repo = cwd if cwd != ctx.work_dir else None
+
+        def run_checks() -> tuple[list[str], list[str]]:
+            nonlocal repair_scan_error
+            missing_now = written_outputs_missing(told, ctx.artifacts_dir)
+            flagged_now: list[str] = []
+            if scan_repo is not None:
+                flagged_now, repair_scan_error = credential_lines(scan_repo)
+            return missing_now, flagged_now
+
+        ctx.report["repair_turns"] = 0
+        missing, flagged = run_checks()
+        if repair_scan_error is not None:
+            log.warning(
+                "the publish credential scan could not run before the step ended; "
+                "the publish runs it again",
+                error=repair_scan_error,
+            )
+        while missing or flagged:
+            if repair_turns >= REPAIR_MAX_TURNS:
+                log.warning(
+                    f"the repair turns did not clear every check; after {REPAIR_MAX_TURNS} "
+                    "the attempt ends as it is and the worker's own checks decide",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                )
+                break
+            session = _session_of(parsed)
+            remaining = limits.timeout_seconds - duration_seconds
+            if session is None:
+                repair_skipped = "no_session"
+                log.warning(
+                    "a check the worker runs would fail, and the stream carried no "
+                    "session to resume; the result stands as it is",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                )
+                break
+            if remaining < FINISH_MIN_SECONDS:
+                repair_skipped = "budget"
+                log.warning(
+                    "a check the worker runs would fail, and too little of the step's "
+                    "budget is left to resume it; the result stands as it is",
+                    missing_outputs=missing[:REPAIR_LIST_CAP],
+                    credential_lines=flagged[:REPAIR_LIST_CAP],
+                    remaining_seconds=round(remaining, 1),
+                    minimum_seconds=FINISH_MIN_SECONDS,
+                )
+                break
+            repair_turns += 1
+            ctx.report["repair_turns"] = repair_turns
+            log.register_secret(session)
+            log.warning(
+                f"a check the worker runs would fail; repair turn {repair_turns} of "
+                f"{REPAIR_MAX_TURNS}, resuming the session with what failed",
+                missing_outputs=missing[:REPAIR_LIST_CAP],
+                credential_lines=flagged[:REPAIR_LIST_CAP],
+                remaining_seconds=round(remaining, 1),
+            )
+            text = repair_prompt(missing, flagged, ctx.artifacts_dir)
+            resume_pass(session, text, f"<prompt: {len(text)} characters>", remaining)
+            after_missing, after_flagged = run_checks()
+            # What a turn fixed is what it was asked to fix and no longer fails.
+            # A credential line is named by `path:line rule`, so one that only
+            # moved when an earlier line was removed reads as fixed here and as
+            # newly flagged on the next check.
+            repairs.append({
+                "turn": repair_turns,
+                "missing_outputs": missing[:REPAIR_LIST_CAP],
+                "credential_lines": flagged[:REPAIR_LIST_CAP],
+                "fixed_outputs": [n for n in missing if n not in after_missing][:REPAIR_LIST_CAP],
+                "fixed_lines": [e for e in flagged if e not in after_flagged][:REPAIR_LIST_CAP],
+            })
+            ctx.report["repairs"] = repairs
+            missing, flagged = after_missing, after_flagged
+        if missing or flagged:
+            unresolved = {
+                "missing_outputs": missing[:REPAIR_LIST_CAP],
+                "credential_lines": flagged[:REPAIR_LIST_CAP],
+            }
 
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
@@ -1316,6 +1538,16 @@ def run_cli_agent(
         # in flight, and, when that was called for but not done, why not.
         "resumed_to_finish": resumed_to_finish,
         "finish_skipped": finish_skipped,
+        # The repair turns taken after the checks the worker runs failed
+        # (#624), what each was asked to fix and what it did; what still fails
+        # after them; and, when a repair was called for but not taken, why
+        # not. A scan that could not run says so here and is never read as
+        # clean. `path:line rule` only, never a matched value.
+        "repair_turns": repair_turns,
+        "repairs": repairs,
+        "repair_unresolved": unresolved,
+        "repair_skipped": repair_skipped,
+        "repair_scan_error": repair_scan_error,
         # Also in `ctx.report`, which `write_result` merges anyway; stated here
         # so this function's own return value is the whole answer.
         **capture,
