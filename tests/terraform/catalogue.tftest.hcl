@@ -234,12 +234,13 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "4 Cloud-Run profiles for eng plus 2 credential-free ones for smoke"
   }
 
-  # #295: merge, post-verdict and claude-code-review each run as their own
-  # per-tenant account, which exists only for a tenant registering git-merge
-  # or git-review. eng holds anthropic and neither, so it gets no
+  # #295: post-verdict and claude-code-review each run as their own
+  # per-tenant account, which exists only for a tenant registering
+  # git-review. eng holds anthropic and not it, so it gets no
   # claude-code-review Job: one keyed on anthropic alone would run as exactly
-  # the worker identity that profile exists to avoid
-  # (merge_step_iam.tftest.hcl holds the tenant that does register them).
+  # the worker identity that profile exists to avoid. merge (contract request
+  # 47) is keyed on `git`, the tenant's forge token, which eng does not list
+  # here either (merge_step_iam.tftest.hcl holds a tenant that registers all).
   assert {
     condition = !anytrue([
       for name in output.job_names :
