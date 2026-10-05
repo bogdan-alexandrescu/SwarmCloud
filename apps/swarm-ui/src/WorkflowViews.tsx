@@ -85,6 +85,17 @@ export function WfStepMark({ look, word = false }: { look: Pick<StepLook, 'mark'
   )
 }
 
+/**
+ * A STEP'S TINT CLASS (#405, owner decision 2026-10-01): `t-<hue>`, the class
+ * the graph's node already carries (`dag.ts` `lookClass`), so the table row and
+ * the timeline span take their state's pair from the same rules -- the brand
+ * tokens `--s-<hue>b` (the tint) and `--s-<hue>` (the edge). An unread step is
+ * `t-unk`, which no state's pair is drawn for: it keeps the amber warning.
+ */
+export function tintClass(look: Pick<StepLook, 'hue'>): string {
+  return look.hue === 'warn' ? 't-unk' : `t-${look.hue}`
+}
+
 /** One step, built once, drawn by either view. */
 export interface StepRowModel {
   readonly step: WorkflowStep
@@ -408,19 +419,23 @@ function Spans({ row, axis }: { row: StepRowModel; axis: TimelineAxis }) {
         const d = drawnSpan(axis, s)
         const left = pctOf(axis, d.from)
         const width = pctOf(axis, d.to) - left
-        // ONLY A FAILURE OR LIVE WORK IS COLOURED (WF-11, the #122 hue
-        // ruling). A wait is an outline in every state, because waiting is not
-        // the step's verdict; a finished run is one grey whether it succeeded
-        // or was cancelled, because finishing is not a verdict either. A FAILED
-        // run is the one outcome that takes a class -- its fill and its post --
-        // and a run in flight carries `is-running` on its own kind. The row's
-        // state dot still says every state.
+        // ONLY A FAILURE OR LIVE WORK TAKES A HUE (WF-11, the #122 hue
+        // ruling, kept by the brand pairs of #405). A wait is an outline in
+        // every state, because waiting is not the step's verdict; a finished
+        // run is the one grey pair whether it succeeded or was cancelled,
+        // because finishing is not a verdict either. A FAILED run also takes
+        // `is-bad` -- its post -- and a run in flight carries `is-running` on
+        // its own kind. The row's state mark still says every state.
         const bad = s.kind === 'ran' && row.look.tone === 'bad' ? ' is-bad' : ''
+        // A RUN TAKES ITS STEP'S TINT (#405, owner 2026-10-01; workflows.html
+        // D): the state's pair, as on the node and the row. A wait does not --
+        // the mock-up draws every wait neutral, for the reason above.
+        const tint = s.kind === 'ran' || s.kind === 'running' ? ` ${tintClass(row.look)}` : ''
         const cut = d.clampedMs !== null ? ' is-clamped' : ''
         return (
           <Fragment key={i}>
             <i
-              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${cut}`}
+              className={`wf-tl-span is-${s.kind}${s.open ? ' is-open' : ''}${bad}${tint}${cut}`}
               style={{ left: `${left}%`, width: `${width}%` }}
             />
             {d.clampedMs !== null &&
@@ -715,7 +730,9 @@ function inputsRowId(stepId: string): string {
  * own, and shell.test.tsx renders this head -- `data-col`, `aria-sort`, the
  * sort buttons -- to hold that.
  * A failed step's row takes `is-bad` (a full-height rule down its first cell,
- * which survives greyscale); an unread one takes `is-warn`.
+ * which survives greyscale); an unread one takes `is-warn`. EVERY ROW also takes
+ * its state's tint class (`tintClass`, #405): the tint across its cells and the
+ * edge down its first one, in the pair the graph's node is drawn in.
  *
  * THE SORT LIVES HERE, in this component's state, and that is deliberate: the
  * only thing on this board that remounts a card is a stop-and-reload, and the
@@ -805,15 +822,15 @@ export function WorkflowTable({
             <Fragment key={r.step.step_id}>
             <tr
               data-step={r.step.step_id}
-              className={
+              className={`${tintClass(r.look)}${
                 r.look.tone === 'bad'
-                  ? 'is-bad'
+                  ? ' is-bad'
                   : r.look.tone === 'unknown'
-                    ? 'is-warn'
+                    ? ' is-warn'
                     : r.look.mark === 'skipped'
-                      ? 'is-skipped'
-                      : undefined
-              }
+                      ? ' is-skipped'
+                      : ''
+              }`}
             >
               <td data-col="step">
                 <PickButton row={r} picked={picked === r.step.step_id} onPick={onPick} withDot={false} />

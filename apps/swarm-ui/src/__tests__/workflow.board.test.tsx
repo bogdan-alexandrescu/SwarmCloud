@@ -21,6 +21,7 @@
 //     reported zero reads as a number (on the list row: workflow.v2.test.tsx).
 
 import STYLES from '../styles.css?raw'
+import WF_CSS from '../styles/workflows.css?raw'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -1304,7 +1305,7 @@ describe('semantic zoom', () => {
     expect(map.querySelectorAll('.wf-mini-node')).toHaveLength(15)
     // A FAILURE IS FINDABLE ON THE MAP TOO, including inside the stage the map
     // exists because you cannot see all of.
-    expect(map.querySelector('.wf-mini-node.is-bad')).toBeTruthy()
+    expect(map.querySelector('.wf-mini-node.t-bad')).toBeTruthy()
     expect(map.querySelector('.wf-mini-band.is-bad')).toBeTruthy()
 
     // THE jsdom LIMIT, ASSERTED RATHER THAN PAPERED OVER. There is no layout
@@ -1314,6 +1315,53 @@ describe('semantic zoom', () => {
     // where an unmeasured figure belongs. The accessible name says so too.
     expect(map.querySelector('.wf-mini-view')).toBeNull()
     expect(map.getAttribute('aria-label')).toContain('has not been measured')
+  })
+
+  /**
+   * #405, AS THE OWNER DECIDED IT (2026-10-01): a minimap node is tinted in
+   * its step's state pair -- the `--s-<hue>b` tint as its fill and the
+   * `--s-<hue>` edge as its stroke -- the pair the node, the table row and the
+   * timeline span use (workflow.tints.test.tsx). It was the old five-tone
+   * vocabulary: `--info` for live, `--bad`, and the faint grey for everything
+   * else, parked included. A step whose task was not read is the dashed amber.
+   *
+   * MUTATION: put the minimap back on `present(...).tone`.
+   */
+  it('#405: tints each map node in its step’s state pair, parked violet and unread amber', () => {
+    const states: (TaskState | null)[] = ['SUCCEEDED', 'RUNNING', 'PARKED', 'FAILED', 'DEAD_LETTERED', 'LEASED', 'CANCELLED', 'READY', 'QUEUED', null, 'SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED']
+    const { w, tasks } = wideStage(13, states)
+    // `scan-12`'s task is not in the read.
+    tasks.delete('task_scan-12')
+    const { container } = card(w, tasks)
+    expect(openEveryBand(container)).toBe(1)
+    const map = container.querySelector<HTMLElement>('.wf-minimap')!
+    expect(map).toBeTruthy()
+    const nodes = [...map.querySelectorAll<SVGElement>('.wf-mini-node')]
+    expect(nodes).toHaveLength(15)
+    const SHEET = `${WF_CSS}\n${STYLES}`
+    const sheets = { dark: resolveSheet(SHEET, 'dark'), light: resolveSheet(SHEET, 'light') }
+    const paint = (el: Element, prop: string, theme: Theme) => {
+      const v = cascade(sheets[theme], el, prop, { width: 1440, theme }).winner?.value ?? ''
+      return colour(v.trim())
+    }
+    // Map nodes are drawn in layout order: `plan`, the fan, `report`.
+    const want: (string | null)[] = ['neu', 'neu', 'live', 'park', 'bad', 'bad', 'live', 'neu', 'neu', 'neu', 'neu', 'neu', 'neu', null, 'neu']
+    let visited = 0
+    nodes.forEach((n, i) => {
+      const hue = want[i]
+      const cls = [...n.classList].filter((c) => c.startsWith('t-'))
+      expect(cls, `map node ${i}`).toEqual([hue === null ? 't-unk' : `t-${hue}`])
+      for (const theme of THEMES) {
+        if (hue === null) {
+          expect(sameColour(paint(n, 'stroke', theme), tokenColour('--s-warn', theme)), `${theme} unread stroke`).toBe(true)
+          continue
+        }
+        expect(sameColour(paint(n, 'fill', theme), tokenColour(`--s-${hue}b`, theme)), `${theme} node ${i} fill`).toBe(true)
+        expect(sameColour(paint(n, 'stroke', theme), tokenColour(`--s-${hue}`, theme)), `${theme} node ${i} stroke`).toBe(true)
+      }
+      visited += 1
+    })
+    expect(visited).toBe(15)
   })
 })
 

@@ -250,6 +250,72 @@
 .wf-xinputs-h { flex: none; font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .wf-table tr.is-skipped > td { background: repeating-linear-gradient(135deg, var(--s-neub) 0 6px, var(--surface) 6px 11px); }
 
+/* ---- Step tints: one state vocabulary in every view (#405) --------------- */
+
+/* THE OWNER'S DECISION OF 2026-10-01 ON #405 (workflows.html D, "Step tints"):
+   a step is drawn in its state's own pair wherever it is drawn -- a pale tint
+   of the state's hue across it and a stronger edge in that hue. Teal for the
+   four states that hold capacity (invariant 1), violet for parked, red for
+   failed and dead-lettered, grey for the rest. It superseded #405's own light
+   green / light blue / cream tints.
+
+   ONE TOKEN PAIR PER HUE, AND THEY ARE THE BRAND'S: `--s-<hue>b` the tint and
+   `--s-<hue>` the edge, declared once in styles.css for both themes -- dark
+   gets the deep tints, light the pale ones, with no second declaration here.
+   The class is the node's: `t-<hue>` from `dag.ts` `lookClass` (graph, map)
+   and `WorkflowViews.tsx` `tintClass` (table, timeline). The graph's node was
+   drawn this way by the rebrand (`.node.t-<hue>` in styles.css); these rules
+   take the same pair to the table's rows, the timeline's runs and the map.
+   `t-unk`, a step whose task was not read, matches none of them: it keeps
+   the dashed amber, never a state's hue.
+
+   Each edge is 3:1 or better on its own tint and `--text` 4.5:1 on every
+   tint, in both themes (workflow.tints.test.tsx). The rules out-rank
+   styles.css on specificity, because this sheet comes first in the bundle. */
+
+/* A TABLE ROW: the tint across its cells and a 4px edge down its first one.
+   The edge is an inset shadow on the cell, not a border, so it costs no
+   layout; the failed row's 3px `is-bad` rule still draws under it, and a
+   skipped row's stripes (a background IMAGE) still draw over the tint. */
+.ctl-table.wf-table tbody tr[data-step].t-live > td { background-color: var(--s-liveb); }
+.ctl-table.wf-table tbody tr[data-step].t-park > td { background-color: var(--s-parkb); }
+.ctl-table.wf-table tbody tr[data-step].t-bad > td { background-color: var(--s-badb); }
+.ctl-table.wf-table tbody tr[data-step].t-neu > td { background-color: var(--s-neub); }
+.ctl-table.wf-table tbody tr[data-step].t-live > td:first-child { box-shadow: inset 4px 0 0 var(--s-live); }
+.ctl-table.wf-table tbody tr[data-step].t-park > td:first-child { box-shadow: inset 4px 0 0 var(--s-park); }
+.ctl-table.wf-table tbody tr[data-step].t-bad > td:first-child { box-shadow: inset 4px 0 0 var(--s-bad); }
+.ctl-table.wf-table tbody tr[data-step].t-neu > td:first-child { box-shadow: inset 4px 0 0 var(--s-neu); }
+/* STACKED (below the table's minimum width, D12) the row is a flex box of
+   blocks with gaps between them, so the ROW takes the tint and the edge and
+   its cells draw none -- a tint per block would leave the gaps bare. */
+@container wf-steps (max-width: 979px) {
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step][class*="t-"] > td { background-color: transparent; box-shadow: none; }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-live { background-color: var(--s-liveb); box-shadow: inset 4px 0 0 var(--s-live); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-park { background-color: var(--s-parkb); box-shadow: inset 4px 0 0 var(--s-park); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-bad { background-color: var(--s-badb); box-shadow: inset 4px 0 0 var(--s-bad); }
+  .wf-card .ctl-table.wf-table.is-scroll tbody tr[data-step].t-neu { background-color: var(--s-neub); box-shadow: inset 4px 0 0 var(--s-neu); }
+}
+
+/* A TIMELINE RUN: the tint as its fill and the edge as a 1px inset outline
+   (a shadow, so `is-open`'s dashed end and `is-clamped`'s dashed border, both
+   borders, still draw). Only a run takes it: a wait stays the hueless outline,
+   because waiting is not the step's verdict (WF-11) and the mock-up draws every
+   wait neutral. A failed run keeps its post, in the brand red. */
+.wf-timeline .wf-tl-track > .wf-tl-span.t-live { background-color: var(--s-liveb); box-shadow: inset 0 0 0 1px var(--s-live); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-park { background-color: var(--s-parkb); box-shadow: inset 0 0 0 1px var(--s-park); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-bad { background-color: var(--s-badb); box-shadow: inset 0 0 0 1px var(--s-bad); }
+.wf-timeline .wf-tl-track > .wf-tl-span.t-neu { background-color: var(--s-neub); box-shadow: inset 0 0 0 1px var(--s-neu); }
+.wf-timeline .wf-tl-track > .wf-tl-span.is-ran.is-bad::before { background: var(--s-bad); }
+
+/* A MAP NODE: the tint as its fill and the edge as its stroke, held at 1px
+   however far the map is scaled down. Unread is the dashed amber. */
+.wf-minimap .wf-mini-node { stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.wf-minimap .wf-mini-node.t-live { fill: var(--s-liveb); stroke: var(--s-live); }
+.wf-minimap .wf-mini-node.t-park { fill: var(--s-parkb); stroke: var(--s-park); }
+.wf-minimap .wf-mini-node.t-bad { fill: var(--s-badb); stroke: var(--s-bad); }
+.wf-minimap .wf-mini-node.t-neu { fill: var(--s-neub); stroke: var(--s-neu); }
+.wf-minimap .wf-mini-node.t-unk { fill: var(--s-warnb); stroke: var(--s-warn); stroke-dasharray: 3 2; }
+
 /* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */
 .wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
 .wf-filter-n { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
