@@ -150,7 +150,8 @@ def _indexed(db, repo_id, commit, at, *, head=None, etag=True) -> None:
     """The registration as a promoted index of `commit` at `at` leaves it."""
     index = _index(db, repo_id)
     index.update(current_sha=commit, last_indexed_at=at, head_sha=head or commit,
-                 head_read_at=at, etag=etag_of(head or commit) if etag else None)
+                 head_read_at=at, etag=etag_of(head or commit) if etag else None,
+                 etag_sha=(head or commit) if etag else None)
 
 
 # --------------------------------------------------------------------------
@@ -178,6 +179,27 @@ def test_an_unchanged_branch_answers_304_and_submits_nothing(client, db, repo_id
     index = _index(db, repo_id)
     assert index["head_sha"] == ONE
     assert index["head_read_at"] == clock()
+
+
+def test_an_etag_is_sent_only_for_the_head_it_described(
+    client, db, objects, repo_id, github, polls, clock
+):
+    """"Index now" moves `head_sha` with no ETag. The tag of the earlier head
+    must not be sent for the new one: a branch force-pushed back to the
+    earlier head would answer 304 and vouch for the wrong commit."""
+    _indexed(db, repo_id, ONE, clock() - timedelta(hours=2))
+    github.heads["main"] = TWO
+    started = client.post(f"/v1/repositories/{repo_id}/index", json={},
+                          headers=auth_header("alice"))
+    assert started.status_code == 202, started.text
+    assert _index(db, repo_id)["head_sha"] == TWO
+    github.heads["main"] = ONE  # force-pushed back
+
+    _poll(client)
+
+    [(_url, headers, status)] = polls.calls
+    assert "If-None-Match" not in headers and status == 200
+    assert _index(db, repo_id)["head_sha"] == ONE
 
 
 def test_the_first_read_sends_no_etag_and_stores_the_one_it_gets(client, db, repo_id, polls):
@@ -374,8 +396,9 @@ def test_the_poll_reads_and_submits_only_the_named_tenant(
     assert research["submitted_by"] == "bob@saga.xyz"
 
 
-def test_a_creator_no_longer_in_the_tenant_submits_nothing(client, db, repo_id, group_map):
-    group_map["alice@saga.xyz"] = ()
+def test_a_creator_no_longer_in_the_tenant_submits_nothing(client, db, repo_id):
+    # carol is in no tenant group: the creator as they would read once removed.
+    db.docs[f"repositories/{repo_id}"]["created_by"] = "carol@saga.xyz"
     response = _poll(client)
     assert response.status_code == 200, response.text
     body = response.json()

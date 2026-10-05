@@ -384,8 +384,8 @@ run "the_repo_index_poll_runs_per_tenant_every_five_minutes_as_the_sweeper" {
   }
 
   assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "POST /v1/admin/repositories/poll")
-    error_message = "the sweeper account's description names every route it is admitted to"
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "repo-index-poll")
+    error_message = "the sweeper account's description names every job that presents it"
   }
 
   assert {
