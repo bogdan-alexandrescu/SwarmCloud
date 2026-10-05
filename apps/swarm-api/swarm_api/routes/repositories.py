@@ -21,6 +21,14 @@ design's name for "Index now"), `GET /{repo_id}/index/runs` and
 `POST /{repo_id}/tests:select`. Each starts from the registration read with
 the caller's tenant, so another tenant's `repo_id` is the same 404 before any
 forge read or submission. Everything else is `swarm_api.repoindex`'s.
+
+THE IMPACT AND GRAPH ROUTES (lane RI11, repo-index.md §4.3a, §6.1) are last:
+`POST /{repo_id}/impact` (a pull request, a commit or a base..head range ->
+the test plan), and the graph explorer's reads `GET /{repo_id}/graph`,
+`GET /{repo_id}/symbols` and `GET /{repo_id}/languages`. Same rule: the
+registration first, with the caller's tenant. Everything else is
+`swarm_api.impact`'s; these routes log counts and codes, never a token,
+a path or a symbol name.
 """
 
 from __future__ import annotations
@@ -35,7 +43,23 @@ from swarm_common.models import Tenant
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
+from ..errors import ValidationFailed
 from ..forge import ForgeReadError
+from ..impact import (
+    DEPTH_MAX,
+    NEIGHBOURHOOD_DEPTH_DEFAULT,
+    SEARCH_LIMIT_DEFAULT,
+    SEARCH_LIMIT_MAX,
+    ImpactRequest,
+    ImpactService,
+    check_symbol_id,
+    languages_table,
+    module_graph,
+    neighbourhood,
+    search_symbols,
+    symbol_tests,
+)
+from ..repograph import NoGraph
 from ..repoindex import (
     RUNS_PAGE_MAX,
     IndexRunRequest,
@@ -343,3 +367,123 @@ def select_repository_tests(
                 "reason": "no index has been promoted for this repository, so no path is mapped"}
     document = service.read_version(tenant_id, version)
     return {**answer, **select_tests(document, body.paths)}
+
+
+# --------------------------------------------------------------------------
+# impact and the graph explorer (lane RI11)
+# --------------------------------------------------------------------------
+
+def _impact(ctx: AppContext) -> ImpactService:
+    return ImpactService.from_context(ctx)
+
+
+@router.post("/{repo_id}/impact")
+def repository_impact(
+    repo_id: str,
+    body: ImpactRequest,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The test plan for a pull request, a commit or a range (§4.3a)."""
+    service = _impact(ctx)
+    # The registration first: another tenant's id is a 404 before the forge.
+    record = service.index.registrations.get(tenant_id, repo_id)
+    tenant = _tenant(ctx, tenant_id, auth)
+    try:
+        plan = service.query(record, body, tenant=tenant,
+                             tenant_doc=ctx.store.get_tenant(tenant_id))
+    except ForgeReadError as refused:
+        log.info("repository impact tenant=%s repo_id=%s outcome=%s",
+                 tenant_id, repo_id, refused.code)
+        raise
+    log.info(
+        "repository impact tenant=%s repo_id=%s plan=%s changed=%d affected=%d selected=%d "
+        "selection=%s triggers=%d", tenant_id, repo_id, plan["plan_id"],
+        plan["changed_symbols"], plan["affected_callers"], plan["targeted"],
+        plan["selection"], len(plan["fallback_triggers"]),
+    )
+    return {**plan, "repo_id": repo_id, "tenant_id": tenant_id}
+
+
+def _graph_read(ctx: AppContext, tenant_id: str, repo_id: str, sha: str | None):
+    """(service, version, graph, document, the staleness values) for a graph route."""
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    if version is None:
+        raise NoGraph("no index has been promoted for this repository, so it has no graph")
+    graph = service.open(tenant_id, repo_id, version)
+    if graph is None:
+        raise NoGraph(f"the index of commit {version.get('commit_sha')} has no graph")
+    document = service.index.read_version(tenant_id, version)
+    return service, version, graph, document, fresh
+
+
+def _staleness(version: dict, fresh: dict) -> dict:
+    return {"index_sha": version.get("commit_sha"), "head_sha": fresh["head_sha"],
+            "behind_by": fresh["behind_by"], "stale": fresh["stale"], "freshness": fresh}
+
+
+@router.get("/{repo_id}/graph")
+def repository_graph(
+    repo_id: str,
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    cluster: Literal["module", "package"] = Query(default="module"),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The module dependency graph, aggregated for drawing (§6.1, Graph A)."""
+    _service, version, graph, document, fresh = _graph_read(ctx, tenant_id, repo_id, sha)
+    return {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+            "graph_digest": graph.digest, **module_graph(graph, document, cluster)}
+
+
+@router.get("/{repo_id}/symbols")
+def repository_symbols(
+    repo_id: str,
+    q: str | None = Query(default=None, min_length=1, max_length=200),
+    id: str | None = Query(default=None, min_length=1, max_length=500),
+    depth: int = Query(default=NEIGHBOURHOOD_DEPTH_DEFAULT, ge=1, le=DEPTH_MAX),
+    direction: Literal["callers", "callees", "both"] = Query(default="both"),
+    tests: bool = Query(default=False),
+    limit: int = Query(default=SEARCH_LIMIT_DEFAULT, ge=1, le=SEARCH_LIMIT_MAX),
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """`?q=` search; `?id=&depth=&direction=` one symbol's call graph; `?id=&tests=1`
+    its test map."""
+    if (q is None) == (id is None):
+        raise ValidationFailed("name exactly one of q (a search) or id (a symbol)")
+    _service, version, graph, document, fresh = _graph_read(ctx, tenant_id, repo_id, sha)
+    answer: dict = {"repo_id": repo_id, "tenant_id": tenant_id, **_staleness(version, fresh),
+                    "graph_digest": graph.digest}
+    if q is not None:
+        return {**answer, **search_symbols(graph, q, limit)}
+    symbol_id = check_symbol_id(id or "")
+    if tests:
+        return {**answer, **symbol_tests(graph, document, symbol_id)}
+    return {**answer, **neighbourhood(graph, symbol_id, depth=depth, direction=direction)}
+
+
+@router.get("/{repo_id}/languages")
+def repository_languages(
+    repo_id: str,
+    sha: str | None = Query(default=None, min_length=40, max_length=40),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The `languages` table: per language, grammar, server, status and fallback."""
+    service = _impact(ctx)
+    _record, version, fresh = service.version_and_freshness(tenant_id, repo_id, sha)
+    answer: dict = {"repo_id": repo_id, "tenant_id": tenant_id, "index_sha": None,
+                    "head_sha": fresh["head_sha"], "behind_by": fresh["behind_by"],
+                    "stale": fresh["stale"], "freshness": fresh, "languages": [],
+                    "source": None}
+    if version is None:
+        return {**answer, "reason": "no index has been promoted for this repository"}
+    graph = service.open(tenant_id, repo_id, version)
+    document = service.index.read_version(tenant_id, version) if graph is None else None
+    return {**answer, **_staleness(version, fresh),
+            "languages": languages_table(graph, document),
+            "source": "graph" if graph is not None else "index"}
