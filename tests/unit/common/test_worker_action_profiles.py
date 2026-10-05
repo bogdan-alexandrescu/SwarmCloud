@@ -78,14 +78,18 @@ def test_a_worker_action_with_an_empty_argv_is_accepted():
     assert p.worker_action is profiles.WorkerAction.MERGE
 
 
-def test_merge_is_the_profile_contract_request_33_names():
+def test_merge_is_the_profile_contract_requests_33_and_47_name():
     p = RUNNER_PROFILES["merge"]
     assert p.image == "agent-runtime-base"
     assert p.resource_class == "standard"
     assert p.backend is Backend.CLOUD_RUN_JOB
     assert p.runner_argv == ()
     assert p.worker_action is profiles.WorkerAction.MERGE
-    assert p.provider == "git-merge"
+    # Contract request 47 (owner, 2026-10-04): the tenant's existing `-git`
+    # token, and enabled.
+    assert p.provider == "git"
+    assert p.available is True
+    assert p.disabled_reason is None or p.disabled_reason == ""
     assert p.secrets == ()
     assert p.timeout_seconds == 600
     assert dict(p.inputs) == {}
@@ -119,8 +123,10 @@ def test_claude_code_review_is_claude_code_but_its_name_and_never_restore_checkp
     assert dict(review.inputs) == dict(code.inputs)
 
 
-@pytest.mark.parametrize("name", NEW_PROFILES)
-def test_the_three_295_profiles_are_disabled_until_342_is_enforced(name):
+@pytest.mark.parametrize("name", ("post-verdict", "claude-code-review"))
+def test_the_two_app_profiles_stay_disabled(name):
+    """Contract request 47 enabled `merge` alone; the other two keep the owner's
+    2026-10-01 hold and its reason."""
     p = RUNNER_PROFILES[name]
     assert p.available is False, f"{name} is dispatchable; the owner holds #295 disabled"
     assert "#342" in p.disabled_reason and "#295" in p.disabled_reason, p.disabled_reason

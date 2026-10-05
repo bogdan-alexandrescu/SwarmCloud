@@ -156,16 +156,19 @@ def test_the_preview_serves_the_issue_read_with_the_tenants_token(make, caplog):
     _assert_no_token(response, caplog)
 
 
-def test_the_preview_says_auto_merge_is_unavailable_and_why(make):
-    # The submit form draws auto-merge disabled unless this says otherwise;
-    # it says the same as POST /v1/runs, which refuses auto_merge until #295.
+def test_the_preview_says_auto_merge_is_available_and_what_a_run_gets_by_default(make, db):
+    # The submit form draws the auto-merge switch from this: available since
+    # contract request 47 enabled the merge step, defaulting to the
+    # platform's `merge_by_default` (owner decisions 2026-10-04, #295).
     client, _, _ = make()
     response = _preview(client)
     assert response.status_code == 200, response.text
     merge = response.json()["auto_merge"]
-    assert merge["available"] is False
-    assert merge["requires"] == "#295"
-    assert "#295" in merge["reason"]
+    assert merge["available"] is True
+    assert merge["reason"] is None
+    assert merge["default"] is False
+    db.docs["control/settings"] = {"merge_by_default": True}
+    assert _preview(client).json()["auto_merge"]["default"] is True
 
 
 def test_an_issue_url_previews_the_same_issue(make):

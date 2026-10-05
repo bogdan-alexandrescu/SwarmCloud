@@ -44,7 +44,11 @@ THE RULES, and why each is a refusal rather than a quiet adjustment:
     account cannot reach an integrator through a member's continuation of
     one.
   * The workflow must be `direct-pr` and have ONE step. Two steps pushing to
-    one branch race to a non-fast-forward, and the loser's work is lost.
+    one branch race to a non-fast-forward, and the loser's work is lost. A
+    `merge` step (contract request 47) pushes nothing and is not counted,
+    and a workflow of ONE `merge` step alone merges the continued task's
+    pull request at the head that task pushed (a member's only: the issue
+    run's merge once CI is green, `issueci`).
   * No `repository_ref`. The continued branch IS the ref; a second one could
     only disagree with it.
   * The repository is the continued task's. A different one is refused; an
@@ -62,7 +66,7 @@ from typing import Any
 from .errors import NotFound
 from .schemas import WorkflowCreate
 from .store import Store
-from .validation import DISPATCH_METADATA_KEY, DispatchOptionError
+from .validation import DISPATCH_METADATA_KEY, DispatchOptionError, is_merge_step
 
 #: The shape `swarm_common.models.new_id("task")` mints. Checked here rather
 #: than as a schema pattern so a malformed id is refused with the same code and
@@ -94,6 +98,9 @@ class Continuation:
     root_task_id: str
     #: The continued task's repository, which the fix step clones.
     repository_url: str
+    #: The task `continues_task` named, as checked: what a merge-only
+    #: continuation merges (`validation.merge_sources`), at the head IT pushed.
+    task_id: str = ""
 
 
 def _same_repository(a: str, b: str) -> bool:
@@ -138,12 +145,24 @@ def resolve_continuation(
             f"{strategy!r}.",
             detail={"continues_task": requested, "strategy": strategy},
         )
-    if len(spec.steps) != 1:
+    pushing = [s for s in spec.steps if not is_merge_step(s.runner_profile)]
+    # A merge-only continuation -- ONE `merge` step and nothing that pushes --
+    # merges the continued task's pull request (`validation.merge_sources`).
+    merge_only = len(spec.steps) == 1 and not pushing
+    if merge_only and not allow_integrator:
+        # A merge is a wider power than the push request 30 accepted for the
+        # continuation-scoped CI fixer: a member's only.
+        raise DispatchOptionError(
+            "a continuation-scoped account continues a pull request's branch; it "
+            "does not merge one. A merge-only continuation is a tenant member's.",
+            detail={"continues_task": requested},
+        )
+    if len(pushing) != 1 and not merge_only:
         raise DispatchOptionError(
             "continues_task takes a workflow of exactly one step: every step would "
             "push to the same branch, and all but the first would be refused as a "
             "non-fast-forward.",
-            detail={"continues_task": requested, "steps": len(spec.steps)},
+            detail={"continues_task": requested, "steps": len(pushing)},
         )
     if spec.repository_ref:
         raise DispatchOptionError(
@@ -216,7 +235,7 @@ def resolve_continuation(
             root_block = {}
         if root_block.get("strategy") != CONTINUABLE_STRATEGY:
             raise _integrator_refused(requested)
-    return Continuation(root_task_id=root, repository_url=task.repository_url)
+    return Continuation(root_task_id=root, repository_url=task.repository_url, task_id=task.id)
 
 
 def _integrator_refused(requested: str) -> DispatchOptionError:

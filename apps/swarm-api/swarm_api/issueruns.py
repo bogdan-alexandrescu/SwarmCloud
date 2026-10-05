@@ -82,9 +82,17 @@ strictly; only a complete one with every entry met lets the pull request say
 `Closes #N` (`issueci.evaluate_requirements`). Every compiled prompt tells
 its agent not to write a closing keyword itself (`NO_CLOSING_KEYWORD`).
 
-`auto_merge` -- a `single-pr` chain ending in its own merge (#295) -- is
-phase 2 and is refused here naming #295 rather than compiled into something
-else.
+`auto_merge` merges the run's pull request with a `merge` step (#295,
+contract request 47, owner decisions 2026-10-04) -- but NOT inside the
+compiled workflow, which always says `metadata.merge` "off", as every CI fix
+round does. A merge there would run before the run reaches CHECKING: before
+the API writes the `Closes #N` block (so the merge would close nothing, the
+#569 defect again), and before the CI loop could fix a red check (a red or
+slow CI would fail the workflow, and the run with it). The CI loop
+(`issueci._merge`) instead submits ONE merge-only continuation once CI is
+green at the head and the keyword block is written, and only when the
+review's verdict is MERGE. A run created without saying takes the
+platform's `merge_by_default`, and records what it resolved.
 
 STAGES, NOT ONLY A CHAIN (owner decision, 2026-10-03). A step may state
 `depends_on`: earlier steps whose code or files it needs. A plan that states it
@@ -121,12 +129,14 @@ from swarm_common.models import utcnow
 from .errors import Conflict, NotFound, ValidationFailed
 from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
+from swarm_common.profiles import RUNNER_PROFILES
+
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
-    SINGLE_PR,
+    MERGE_METADATA_KEY,
+    MERGE_STEP_ID,
     IssueRef,
-    dispatchable_strategies,
 )
 
 log = logging.getLogger(__name__)
@@ -657,44 +667,44 @@ def planner_task(
     )
 
 
-#: The merge step auto-merge waits for. Named once: the refusal and the
-#: availability the console reads both carry it.
+#: What auto-merge is: the workflow's `merge` step (#295, contract request 47).
+#: Named once: the refusal and the availability the console reads both carry it.
 AUTO_MERGE_REQUIRES = "#295"
 
 
 def _auto_merge_refusal() -> str | None:
     """Why auto-merge is refused for a new run now, or None when it is not.
 
-    The first refusal is the platform's: `single-pr` is not dispatchable while
-    the catalogue disables the merge and post-verdict profiles for every tenant
-    (`validation.dispatchable_strategies`). The second is this module's: the
-    compile branch for a run that ends in a merge does not exist yet, so today
-    this never returns None.
+    Only when the catalogue disables the `merge` profile: since contract
+    request 47 (2026-10-04) it is enabled, so this returns None, and a
+    platform that disabled it again would be told why here.
     """
-    if SINGLE_PR not in dispatchable_strategies():
+    profile = RUNNER_PROFILES.get(MERGE_STEP_ID)
+    if profile is None or not profile.available:
+        reason = profile.disabled_reason if profile is not None else "it is not in the catalogue"
         return (
-            "auto_merge requires the merge chain (#295), which is not enabled for this "
-            "tenant; create the run with auto_merge false and merge its pull request "
+            f"auto_merge needs the merge step (#295), and the 'merge' profile is disabled: "
+            f"{reason}; create the run with auto_merge false and merge its pull request "
             "yourself"
         )
-    return (
-        "auto_merge requires #295 phase 2 (a single-pr chain ending in merge), which "
-        "issue runs do not compile yet; create the run with auto_merge false"
-    )
+    return None
 
 
-def auto_merge_availability() -> dict[str, Any]:
+def auto_merge_availability(default: bool = False) -> dict[str, Any]:
     """What the submit form draws for auto-merge: the same answer the refusal gives.
 
     Served on the issue preview (routes/issues.py) so the console never offers
     a switch POST /v1/runs would refuse, and never hides one it would accept.
+    `default` is the platform's `merge_by_default`: what a run created without
+    saying `auto_merge` gets.
     """
     reason = _auto_merge_refusal()
-    return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason}
+    return {"available": reason is None, "requires": AUTO_MERGE_REQUIRES, "reason": reason,
+            "default": bool(default) and reason is None}
 
 
 def refuse_auto_merge(auto_merge: bool) -> None:
-    """`auto_merge` is refused until #295's chain runs, and until phase 2 is built."""
+    """`auto_merge` is refused only while the catalogue disables the merge step."""
     if not auto_merge:
         return
     reason = _auto_merge_refusal()
@@ -1052,6 +1062,10 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "repository_url": ref.repository_url,
         "steps": steps,
         "metadata": {
+            # Always "off", stated, so the platform default cannot append a
+            # merge here: an `auto_merge` run merges from the CI loop, once CI
+            # is green and its keyword block is written (`issueci._merge`).
+            MERGE_METADATA_KEY: "off",
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,
@@ -1178,6 +1192,11 @@ class IssueRun:
     issue_read: dict[str, Any] | None = None
     #: `{"code", "message"}` of the forge read that failed at submission.
     issue_read_error: dict[str, str] | None = None
+    #: An `auto_merge` run's merge (`issueci._merge`): `{head_sha,
+    #: pushed_by, claimed_at, workflow_id}`, the one merge-only continuation
+    #: submitted for the green head. None until CI is green with the keyword
+    #: block written; never set on a run without `auto_merge`.
+    merge: dict[str, Any] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1226,6 +1245,7 @@ class IssueRun:
             "writeback_attempt": self.writeback_attempt,
             "issue_read": dict(self.issue_read) if self.issue_read is not None else None,
             "issue_read_error": dict(self.issue_read_error) if self.issue_read_error is not None else None,
+            "merge": dict(self.merge) if self.merge is not None else None,
         }
 
     @classmethod
@@ -1281,6 +1301,7 @@ class IssueRun:
             writeback_attempt=data.get("writeback_attempt"),
             issue_read=dict(data["issue_read"]) if data.get("issue_read") else None,
             issue_read_error=dict(data["issue_read_error"]) if data.get("issue_read_error") else None,
+            merge=dict(data["merge"]) if isinstance(data.get("merge"), Mapping) else None,
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -1347,6 +1368,13 @@ class IssueRun:
                 if self.issue_read is not None else None
             ),
             "issue_read_error": self.issue_read_error,
+            # An auto_merge run's merge workflow and the head it pins.
+            "merge": (
+                None if self.merge is None else {
+                    "workflow_id": self.merge.get("workflow_id"),
+                    "head_sha": self.merge.get("head_sha"),
+                }
+            ),
         }
 
 
@@ -1366,6 +1394,7 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "last_plan_posted", "last_status_posted", "forge_login",
     "writeback_error", "writeback_failed_at", "writeback_attempt",
     "requirements_met", "requirements_unmet", "requirements_note",
+    "merge",
 })
 
 

@@ -367,7 +367,16 @@ def test_the_mock_takes_every_input_it_declares(client, db, door):
 REQUIRED_BESIDES_THE_PROMPT = {"generic": {"command": "pytest"}}
 
 
-@pytest.mark.parametrize("name", sorted(n for n, p in RUNNER_PROFILES.items() if p.available))
+#: Every profile a caller may submit as a TASK. A worker action is not one:
+#: `merge`, available since contract request 47, is a workflow's final step
+#: and is refused on its own as misplaced
+#: (test_merge_step_submission.py::test_a_merge_task_on_its_own_is_refused_as_misplaced_not_disabled).
+TASK_PROFILES = sorted(
+    n for n, p in RUNNER_PROFILES.items() if p.available and p.worker_action is None
+)
+
+
+@pytest.mark.parametrize("name", TASK_PROFILES)
 def test_the_prompt_is_every_available_profiles(client, name):
     response = _task(client, name, {"prompt": "the instructions", **REQUIRED_BESIDES_THE_PROMPT.get(name, {})})
     assert response.status_code == 201, response.text
@@ -451,7 +460,7 @@ ONE_ANSWER_INPUTS = {
 
 
 @pytest.mark.parametrize("sent", ONE_ANSWER_INPUTS)
-@pytest.mark.parametrize("name", sorted(n for n, p in RUNNER_PROFILES.items() if p.available))
+@pytest.mark.parametrize("name", TASK_PROFILES)
 def test_the_api_and_the_shared_rule_give_one_answer_for_every_profile(client, db, name, sent):
     """THE RULE HAS ONE HOME, `swarm_common.profiles.check_inputs`, which the
     API and the bridge both call. The review of #213 found the API deciding the

@@ -533,7 +533,7 @@ run "each_action_job_runs_as_its_own_account_with_its_forge_record" {
       eng = {
         kind      = "group"
         principal = "eng@saga.xyz"
-        providers = ["anthropic", "git-review", "git-merge"]
+        providers = ["anthropic", "git", "git-review", "git-merge"]
         forge = {
           owner             = "saga-xyz"
           repo              = "agent-swarm-infra"
@@ -582,7 +582,7 @@ run "each_action_job_runs_as_its_own_account_with_its_forge_record" {
       for name in ["swarm-job-eng-merge", "swarm-job-eng-post-verdict", "swarm-job-eng-claude-code-review"] :
       contains(keys(local.jobs), name)
     ])
-    error_message = "a tenant registering git-merge and git-review gets the merge, post-verdict and review Jobs"
+    error_message = "a tenant registering git and git-review gets the merge, post-verdict and review Jobs"
   }
 
   assert {
@@ -590,15 +590,23 @@ run "each_action_job_runs_as_its_own_account_with_its_forge_record" {
       for name in keys(local.jobs) :
       startswith(name, "swarm-job-smoke-") && (endswith(name, "-merge") || endswith(name, "-post-verdict") || endswith(name, "-claude-code-review"))
     ])
-    error_message = "a tenant registering no App provider gets none of the three Jobs, even holding anthropic"
+    error_message = "a tenant registering neither git nor an App provider gets none of the three Jobs, even holding anthropic"
   }
 
   assert {
     condition = alltrue([
-      for name in ["swarm-job-eng-merge", "swarm-job-eng-post-verdict", "swarm-job-eng-claude-code-review"] :
+      for name in ["swarm-job-eng-post-verdict", "swarm-job-eng-claude-code-review"] :
       local.jobs[name].service_account_email == "swarm-action-mock@saga-agents-staging.iam.gserviceaccount.com"
     ])
-    error_message = "the three #295 Jobs must each run as their own account, never the tenant's worker account"
+    error_message = "the post-verdict and review Jobs must each run as their own account, never the tenant's worker account"
+  }
+
+  # Contract request 47 (owner, 2026-10-04): the merge reads the tenant's
+  # existing -git token, so its Job runs as the worker account, the one that
+  # already reads that secret, and not as the retired git-merge account.
+  assert {
+    condition     = local.jobs["swarm-job-eng-merge"].service_account_email == "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
+    error_message = "the merge Job runs as the tenant's worker account since contract request 47"
   }
 
   # The control: every other Job still runs as the worker.
@@ -606,20 +614,19 @@ run "each_action_job_runs_as_its_own_account_with_its_forge_record" {
     condition = alltrue([
       for name, job in local.jobs :
       job.service_account_email == "swarm-agent-worker-mock@saga-agents-staging.iam.gserviceaccount.com"
-      if !contains(["merge", "post-verdict", "claude-code-review"], job.runner_profile)
+      if !contains(["post-verdict", "claude-code-review"], job.runner_profile)
     ])
     error_message = "every other Job runs as the tenant's worker account"
   }
 
+  # The merge acts on the workflow's own repository_url (contract request 47),
+  # so its Job carries no forge record: any repository a workflow runs on.
   assert {
-    condition = (
-      local.jobs["swarm-job-eng-merge"].env["FORGE_HOST"] == "api.github.com"
-      && local.jobs["swarm-job-eng-merge"].env["FORGE_OWNER"] == "saga-xyz"
-      && local.jobs["swarm-job-eng-merge"].env["FORGE_REPO"] == "agent-swarm-infra"
-      && local.jobs["swarm-job-eng-merge"].env["REVIEW_APP_ID"] == "1000001"
-      && local.jobs["swarm-job-eng-merge"].env["REVIEW_APP_BOT_ID"] == "2000002"
-    )
-    error_message = "the merge Job carries the host, owner, repo, review App id and bot id, rendered by Terraform (merge-step.md §2.1b)"
+    condition = length([
+      for k in keys(local.jobs["swarm-job-eng-merge"].env) : k
+      if startswith(k, "FORGE_") || startswith(k, "REVIEW_APP_")
+    ]) == 0
+    error_message = "the merge Job carries no forge record; it reads its repository from the signed spec"
   }
 
   assert {
@@ -643,11 +650,11 @@ run "each_action_job_runs_as_its_own_account_with_its_forge_record" {
     error_message = "no agent-running Job carries the forge record"
   }
 
-  # The merge and post-verdict Jobs mount no secret: the worker reads the App
-  # key at action time as the Job's own account.
+  # The merge and post-verdict Jobs mount no secret: the worker reads its
+  # credential at action time (the -git token, the App key).
   assert {
     condition     = length(local.jobs["swarm-job-eng-merge"].secret_env) == 0 && length(local.jobs["swarm-job-eng-post-verdict"].secret_env) == 0
-    error_message = "the App key is never mounted into a Job's environment"
+    error_message = "no worker-action credential is ever mounted into a Job's environment"
   }
 
   assert {

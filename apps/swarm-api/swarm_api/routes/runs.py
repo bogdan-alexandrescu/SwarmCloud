@@ -478,8 +478,15 @@ def create_run(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    # Before anything is created: a refused option writes nothing.
-    refuse_auto_merge(body.auto_merge)
+    # Before anything is created: a refused option writes nothing. A run that
+    # does not say takes the platform's `merge_by_default` (contract request
+    # 47), resolved now and recorded on the run, so a later change to the
+    # default does not change a run already made.
+    auto_merge = (
+        body.auto_merge if body.auto_merge is not None
+        else bool(ctx.store.get_platform_settings().get("merge_by_default"))
+    )
+    refuse_auto_merge(auto_merge)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -523,7 +530,7 @@ def create_run(
             state=RunState.PLANNING,
             issue=ref,
             plan_approval=body.plan_approval,
-            auto_merge=body.auto_merge,
+            auto_merge=auto_merge,
             fix_rounds=body.fix_rounds,
             planner_task_id=planner.id,
             open_work=open_work,

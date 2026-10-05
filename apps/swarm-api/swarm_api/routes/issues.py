@@ -61,4 +61,10 @@ def preview_issue(
     log.info("issue preview tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
     # Whether POST /v1/runs would take `auto_merge: true` now, and why not:
     # the submit form draws the switch from this rather than guessing.
-    return {"issue": body, "tenant_id": tenant_id, "auto_merge": auto_merge_availability()}
+    return {
+        "issue": body,
+        "tenant_id": tenant_id,
+        "auto_merge": auto_merge_availability(
+            default=bool(ctx.store.get_platform_settings().get("merge_by_default"))
+        ),
+    }

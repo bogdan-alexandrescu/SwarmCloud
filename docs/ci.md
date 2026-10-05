@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy and smoke` — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
-| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title) |
+| `auto-merge.yml` | `pull_request_target` when a label is added; acts only on `ready` ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch or a missing merge App, with a comment; otherwise enables native squash auto-merge under the PR's title). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
 | `iam-refusal-probe.yml` | **manual dispatch on `main` only**, by the owner, once ([below](#the-deployers-refusal-is-proven-once-by-a-probe-the-owner-dispatches)) — never on a push, a pull request or a schedule | `deployer is refused an unlisted role` |
 | `ci-gate.yml` | every pull request and push to `main`, with no filter of its own | `ci-gate` — waits for this commit's `application.yml` and `terraform.yml` runs and passes only when every one that ran passed ([below](#the-ruleset-on-main-and-ci-gate)) |
 
@@ -1226,6 +1226,20 @@ it is not configured, and submits nothing.
 fixer does nothing before it has merged.
 
 ## A ready pull request is merged by GitHub, not by a session
+
+**To be retired, owner decision 2026-10-04 (#295, contract request 47):**
+merging moves off this GitHub-side App into a workflow `merge` step, which
+squash-merges with the tenant's existing `-git` token, in whatever repository
+the workflow runs on, and closes the issues the pull request closes -- the
+App path merged #564 and #562 and left #72 and #560 open although GitHub
+listed them as closing references (#569). See
+[workflows.md](workflows.md#ending-in-a-merge-the-merge-step) and
+[merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
+`auto-merge.yml` and the `swarmcloud-merge` App stay in place until the merge
+step is proven on real pull requests; retiring them (deleting the workflow,
+the App and its `MERGE_APP_*` settings, and the parity cases in
+`tests/unit/scripts/test_auto_merge_workflow.py`) is its own change, made
+after that, not before.
 
 **Status, measured 2026-10-01: the merge App is not yet configured**, so
 `auto-merge.yml` refuses every `ready` label ("The merge App is not

@@ -54,7 +54,7 @@ from .errors import Forbidden, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .metrics import ApiMetrics
 from .runnerinputs import input_contract
-from .schemas import TaskCreate, WorkflowCreate
+from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
 from .settings import ApiSettings
 from .specsigning import SpecSigner, sign_task_specs
@@ -63,15 +63,26 @@ from .validation import (
     DISPATCH_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
+    MERGE_METADATA_KEY,
+    MERGE_STEP_MAX_ATTEMPTS,
+    SINGLE_PR,
+    DispatchOptionError,
     DispatchOptions,
+    MergePlan,
     SinglePrPlan,
     StepSpec,
+    is_merge_step,
+    is_mergeable_forge,
+    merge_step_for,
+    plan_merge,
+    refuse_unmergeable_forge,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
     reject_reserved_metadata,
     resolve_dispatch_options,
     resolve_input_layout,
     resolve_integrator_step,
+    resolve_merge_choice,
     validate_batch_size,
     validate_dag,
     validate_input_size,
@@ -391,30 +402,7 @@ class SubmissionService:
             reject_non_finite(spec.metadata, label="metadata")
             # Inside the try, because resolving each step's `input_layout`
             # (#75) can refuse, and a refusal is counted like every other.
-            step_specs = [
-                StepSpec(
-                    step_id=s.step_id,
-                    depends_on=tuple(s.depends_on),
-                    # The filenames too, not only the parent ids: validate_dag
-                    # refuses two parents staging one filename, and a filename
-                    # that is absolute or traverses, before anything is created
-                    # (#64) -- unless the step stages by parent (#75).
-                    input_from=dict(s.input_from),
-                    when_step=s.when.step if s.when else None,
-                    when_verdicts=tuple(s.when.verdict_in) if s.when else (),
-                    builds_on=s.builds_on,
-                    input_layout=resolve_input_layout(
-                        spec.metadata, s.metadata, step_id=s.step_id
-                    ),
-                    # By name only, to tell a worker action from an agent
-                    # step, and the step's declared part in a `single-pr`
-                    # chain (#295); `validate_step_routing` checks both.
-                    runner_profile=s.runner_profile,
-                    pr_role=s.pr_role,
-                    merges=dict(s.merges) if s.merges is not None else None,
-                )
-                for s in spec.steps
-            ]
+            step_specs = self._step_specs(spec)
             order = validate_dag(step_specs, max_steps=self._settings.core.max_workflow_steps)
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
@@ -435,6 +423,19 @@ class SubmissionService:
             )
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)
+            # The merge step (contract request 47): appended here, once the
+            # strategy is known and before anything is built or signed, then
+            # checked with the rest of the graph.
+            merged_spec = self._with_merge_step(
+                spec, step_specs, dispatch.strategy, repository_url,
+                continued_task=continuation.task_id if continuation else None,
+            )
+            if merged_spec is not spec:
+                spec = merged_spec
+                step_specs = self._step_specs(spec)
+                order = validate_dag(
+                    step_specs, max_steps=self._settings.core.max_workflow_steps
+                )
             if dispatch.strategy == "integrate":
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
@@ -454,6 +455,14 @@ class SubmissionService:
                 strategy=dispatch.strategy,
                 integrator_step_id=integrator_step_id,
             )
+            merge_plan = plan_merge(
+                step_specs, dispatch.strategy,
+                continuation.task_id if continuation else None,
+            )
+            if merge_plan is not None:
+                # At submission, never at merge time: a host no `ForgeMerger`
+                # serves is refused before any step runs.
+                refuse_unmergeable_forge(repository_url)
             # Every step's profile and input, before any task is built and
             # inside this try, so a refused step is counted like every other
             # refusal. The size first, as `_build_task` orders them, which
@@ -508,6 +517,7 @@ class SubmissionService:
                 step_task_id=step_task_id,
                 not_integrated=not_integrated,
                 single_pr=single_pr,
+                merge_plan=merge_plan,
             ).with_routing(
                 # Both name upstream steps, so topological order has
                 # already minted their task ids.
@@ -528,6 +538,12 @@ class SubmissionService:
                     priority=spec.priority,
                     metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
                     timeout_seconds=source.timeout_seconds,
+                    # A merge step waits for CI by failing its attempt while a
+                    # required check runs, so it gets more attempts than an
+                    # agent step (`MERGE_STEP_MAX_ATTEMPTS`, contract request 47).
+                    max_attempts=(
+                        MERGE_STEP_MAX_ATTEMPTS if is_merge_step(source.runner_profile) else None
+                    ),
                 ),
                 tenant=tenant,
                 ctx=ctx,
@@ -604,6 +620,103 @@ class SubmissionService:
         )
 
     @staticmethod
+    def _step_specs(spec: WorkflowCreate) -> list[StepSpec]:
+        """The DAG-relevant slice of every step, each `input_layout` resolved (#75)."""
+        return [
+            StepSpec(
+                step_id=s.step_id,
+                depends_on=tuple(s.depends_on),
+                # The filenames too, not only the parent ids: validate_dag
+                # refuses two parents staging one filename, and a filename
+                # that is absolute or traverses, before anything is created
+                # (#64) -- unless the step stages by parent (#75).
+                input_from=dict(s.input_from),
+                when_step=s.when.step if s.when else None,
+                when_verdicts=tuple(s.when.verdict_in) if s.when else (),
+                builds_on=s.builds_on,
+                input_layout=resolve_input_layout(
+                    spec.metadata, s.metadata, step_id=s.step_id
+                ),
+                # By name only, to tell a worker action from an agent
+                # step, and the step's declared part in a `single-pr`
+                # chain (#295); `validate_step_routing` checks both.
+                runner_profile=s.runner_profile,
+                pr_role=s.pr_role,
+                merges=dict(s.merges) if s.merges is not None else None,
+            )
+            for s in spec.steps
+        ]
+
+    def _with_merge_step(
+        self,
+        spec: WorkflowCreate,
+        step_specs: Sequence[StepSpec],
+        strategy: str,
+        repository_url: str | None,
+        *,
+        continued_task: str | None = None,
+    ) -> WorkflowCreate:
+        """`spec`, with a `merge` step appended when the merge choice says so.
+
+        Contract request 47, owner decisions 2026-10-04. The choice is the
+        workflow's `metadata.merge` ("on" | "off"), else the platform's
+        `merge_by_default` (`Store.get_platform_settings`, default off):
+
+          * a spec that states its own merge step keeps it -- unless
+            `metadata.merge` is "off", which contradicts it and is refused;
+          * otherwise, when the choice is on and the workflow opens ONE pull
+            request (`validation.merge_sources`), one merge step is appended,
+            depending on the step that opens it and on the review if there is
+            one, before anything is built or signed;
+          * "on" for a workflow that opens no single pull request is refused,
+            because the caller asked for a merge that would not happen; the
+            platform default simply does not apply to one;
+          * the platform default does not apply to a repository on a host no
+            `ForgeMerger` serves either: the worker harvests a patch there and
+            opens no pull request, so a tenant who never asked for a merge is
+            not refused for an admin's setting. An explicit "on", or a stated
+            merge step, on such a host is still refused at submission.
+
+        `single-pr` ends in its own merge step and is left as submitted.
+        """
+        if strategy == SINGLE_PR:
+            return spec
+        choice = resolve_merge_choice(spec.metadata)
+        stated = [s.step_id for s in spec.steps if is_merge_step(s.runner_profile)]
+        if stated:
+            if choice == "off":
+                raise DispatchOptionError(
+                    f"metadata.{MERGE_METADATA_KEY} is 'off', but step "
+                    f"{stated[0]!r} is a merge step. Remove one or the other.",
+                    detail={"merge_steps": stated, MERGE_METADATA_KEY: choice},
+                )
+            return spec
+        if choice == "off":
+            return spec
+        if choice is None and (
+            not is_mergeable_forge(repository_url)
+            or not self._store.get_platform_settings().get("merge_by_default")
+        ):
+            return spec
+        appended = merge_step_for(step_specs, strategy, continued_task)
+        if appended is None:
+            if choice == "on":
+                raise DispatchOptionError(
+                    f"metadata.{MERGE_METADATA_KEY} is 'on', but this workflow opens no "
+                    "single pull request to merge: "
+                    + ("under 'direct-pr' every agent step opens its own, so a merge "
+                       "needs exactly one agent step; use 'integrate'."
+                       if strategy == "direct-pr" else
+                       f"strategy {strategy!r} opens none.")
+                    + f" Set metadata.{MERGE_METADATA_KEY} to 'off', or change the strategy.",
+                    detail={"strategy": strategy, MERGE_METADATA_KEY: choice},
+                )
+            return spec
+        return spec.model_copy(
+            update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
+        )
+
+    @staticmethod
     def _step_dispatch(
         dispatch: DispatchOptions,
         *,
@@ -613,6 +726,7 @@ class SubmissionService:
         step_task_id: dict[str, str],
         not_integrated: frozenset[str] = frozenset(),
         single_pr: SinglePrPlan | None = None,
+        merge_plan: MergePlan | None = None,
     ) -> DispatchOptions:
         """The dispatch block for ONE step of a workflow.
 
@@ -651,6 +765,19 @@ class SubmissionService:
                     {key: step_task_id[sid] for key, sid in single_pr.merges_steps().items()}
                     if step_id == single_pr.merge else None
                 ),
+            )
+        if merge_plan is not None and step_id == merge_plan.merge_step:
+            # The merge step's target, by TASK id (contract request 47): every
+            # step it names is one it depends on, so topological order has
+            # minted each id already.
+            sources = merge_plan.sources
+            return dispatch.with_merge_target(
+                pull_request=(
+                    sources.pull_request if sources.continued
+                    else step_task_id[sources.pull_request]
+                ),
+                review=step_task_id[sources.review] if sources.review else None,
+                verdict_file=sources.verdict_file,
             )
         if integrator_step_id is None:
             return dispatch

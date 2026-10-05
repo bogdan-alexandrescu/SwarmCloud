@@ -95,20 +95,24 @@ locals {
       secret_env      = { ANTHROPIC_API_KEY = "anthropic" }
       timeout_seconds = 5400
     }
-    # --- #295, contract requests 33, 35 and 36 (accepted 2026-10-01) -------
+    # --- #295, contract requests 33, 35, 36 and 47 ---------------------------
     #
     # Mirrored so the catalogue comparison holds, and so their pools exist
-    # (evaluate_capacity reads a missing pool as unlimited). Each gets a Job
-    # only for a tenant that registers the provider its own account is keyed
-    # on, and that Job runs as that account, never the worker's: see
-    # `action_profiles` below. merge and post-verdict mount no secret -- the
-    # worker reads the App key at action time as the Job's own service
-    # account -- so their secret_env is empty.
+    # (evaluate_capacity reads a missing pool as unlimited). post-verdict and
+    # claude-code-review each get a Job only for a tenant that registers the
+    # provider its own account is keyed on, and that Job runs as that account,
+    # never the worker's: see `action_profiles` below. merge and post-verdict
+    # mount no secret -- the worker reads its credential at action time -- so
+    # their secret_env is empty.
+    #
+    # merge reads the tenant's `-git` token since contract request 47 (owner,
+    # 2026-10-04): its Job exists for a tenant that registers `git`, and runs
+    # as the tenant's worker account, the secret's ordinary reader.
     "merge" = {
       image           = "agent-runtime-base"
       resource_class  = "standard"
       backend         = "CLOUD_RUN_JOB"
-      provider        = "git-merge"
+      provider        = "git"
       secret_env      = {}
       timeout_seconds = 600
     }
@@ -149,18 +153,30 @@ locals {
   # enforced and the owner has created the review and merge Apps, so nothing
   # can be dispatched to these Jobs meanwhile; no tenant in any tfvars
   # registers git-merge or git-review, so none exists yet either.
-  action_profiles = module.tenancy.action_profiles
+  #
+  # EXCEPT merge (contract request 47, owner 2026-10-04): it reads the tenant's
+  # existing `-git` token, which the worker account already reads, so its Job
+  # runs as the worker account like an agent profile's. The owner accepted on
+  # #476 that an agent holding `-git` can therefore also merge. post-verdict
+  # and claude-code-review stay here. modules/service_account_ids still lists
+  # a merge account for a tenant registering the retired git-merge provider;
+  # this root no longer runs a Job as it.
+  action_profiles = {
+    for name, profile in module.tenancy.action_profiles : name => profile
+    if name != "merge"
+  }
 
-  # The forge record each worker-action Job reads instead of a task's
-  # repository_url (merge-step.md §2.1b, decided 2026-09-29): post-verdict
-  # needs the host, owner and repo, and the App id to check the key it read
-  # against; merge needs those and the review App's bot user id, the one
-  # reviewer whose verdict it accepts. On the Job, where only the platform
-  # writes, never in the dispatcher's per-execution overrides, which a task
-  # shapes. None of these is a credential.
+  # The forge record the post-verdict Job reads instead of a task's
+  # repository_url (merge-step.md §2.1b, decided 2026-09-29): the host, owner
+  # and repo, and the App id to check the key it read against. On the Job,
+  # where only the platform writes, never in the dispatcher's per-execution
+  # overrides, which a task shapes. None of these is a credential.
+  #
+  # merge has none since contract request 47 (owner, 2026-10-04): it acts on
+  # the workflow's own repository_url, which the signed spec covers, so it
+  # works in any repository a workflow runs on.
   forge_env_names = {
     "post-verdict" = ["FORGE_HOST", "FORGE_OWNER", "FORGE_REPO", "REVIEW_APP_ID"]
-    "merge"        = ["FORGE_HOST", "FORGE_OWNER", "FORGE_REPO", "REVIEW_APP_ID", "REVIEW_APP_BOT_ID"]
   }
 
   # --- the model each profile's agent CLI runs (#226) -----------------------

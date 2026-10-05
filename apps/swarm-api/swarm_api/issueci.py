@@ -3,6 +3,10 @@
     RUNNING   --workflow SUCCEEDED, integrator opened a PR-->   CHECKING
     RUNNING   --workflow SUCCEEDED, no PR------------------->   FAILED
     CHECKING  --every required check green at the head----->   DONE (green_sha)
+    CHECKING  --green, keyword written, `auto_merge`------->   CHECKING (one merge
+                                                               submitted; DONE once
+                                                               GitHub says merged,
+                                                               FAILED if it refused)
     CHECKING  --red, rounds left---------------------------->   FIXING (one continuation)
     CHECKING  --red, `fix_rounds` spent--------------------->   FAILED (failure_excerpt)
     CHECKING  --pending------------------------------------->   CHECKING
@@ -129,6 +133,7 @@ from .issueruns import (
 from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
 from .schemas import WorkflowCreate
+from .validation import MERGE_METADATA_KEY, MERGE_STEP_ID
 
 log = logging.getLogger(__name__)
 
@@ -468,6 +473,9 @@ def ci_fix_workflow(run: IssueRun, round_no: int, excerpt: str, head_sha: str) -
             "input": {"prompt": prompt, "issue": ref.number},
         }],
         "metadata": {
+            # Never a merge inside a round: it would merge with no CI read and
+            # before the keyword block is written back (`_merge` does it).
+            MERGE_METADATA_KEY: "off",
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,
@@ -572,6 +580,10 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
                     run.id, run.tenant_id,
                 )
                 return runs.patch(tenant_id, run.id, {"pull_request": record})
+            if run.auto_merge:
+                # Green AND the keyword block written: only now is the pull
+                # request in the shape a merge may land (contract request 47).
+                return _merge(ctx, tenant_id, run, record, head, owner_auth)
             return runs.transition(
                 tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
                 patch={"pull_request": record, "green_sha": head},
@@ -676,6 +688,189 @@ def _start_round(
     )
     return runs.patch(tenant_id, run.id, lambda current: {
         "ci_fix_workflows": list(current.ci_fix_workflows) + [workflow_id],
+    })
+
+
+# --------------------------------------------------------------------------
+# CHECKING, green, `auto_merge`: the merge (contract request 47)
+# --------------------------------------------------------------------------
+
+def merge_workflow(run: IssueRun, pushed_by: str, head_sha: str) -> WorkflowCreate:
+    """ONE `merge` step continuing the task that pushed the green head.
+
+    A merge-only continuation (`validation.merge_sources`): its signed
+    `merge_target` names that task, whose recorded pull request and pushed
+    head the worker pins and checks against GitHub, and the repository is
+    the run's own. Nothing GitHub said picks any of it (invariants 9, 10).
+    """
+    ref = run.issue
+    return WorkflowCreate.model_validate({
+        "strategy": "direct-pr",
+        "continues_task": pushed_by,
+        "repository_url": ref.repository_url,
+        "steps": [{"step_id": MERGE_STEP_ID, "runner_profile": MERGE_STEP_ID}],
+        "metadata": {
+            MERGE_METADATA_KEY: "on",
+            "issue_run": {"run_id": run.id, "issue": ref.short, "merge_head_sha": head_sha},
+        },
+    })
+
+
+def _pushed_head(task: Any) -> str | None:
+    summary = getattr(task, "result_summary", None)
+    git = summary.get("git") if isinstance(summary, Mapping) else None
+    value = git.get("pushed_head") if isinstance(git, Mapping) else None
+    return value if isinstance(value, str) and value else None
+
+
+def _pushing_task(ctx: Any, tenant_id: str, run: IssueRun, head: str) -> str | None:
+    """The run's own task that pushed `head`: the newest fix round's, else the integrator."""
+    candidates: list[str] = []
+    for workflow_id in reversed(run.ci_fix_workflows):
+        try:
+            workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        except NotFound:
+            continue
+        for step in getattr(workflow, "steps", None) or []:
+            if getattr(step, "step_id", None) == CI_FIX_STEP and getattr(step, "task_id", None):
+                candidates.append(step.task_id)
+    if run.pr_task_id:
+        candidates.append(run.pr_task_id)
+    for task_id in candidates:
+        try:
+            task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+        except NotFound:
+            continue
+        if _pushed_head(task) == head:
+            return task_id
+    return None
+
+
+def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
+    """`(verdict, why not)`: the review's `verdict`, read as `evaluate_requirements` reads it."""
+    import json
+
+    content, problem = _read_review_verdict(
+        ctx, tenant_id, _review_task_id(ctx, tenant_id, run, None)
+    )
+    if content is None:
+        return None, problem or f"the review's {VERDICT_FILE} could not be read"
+    try:
+        data = json.loads(content)
+    except ValueError:
+        return None, f"the review's {VERDICT_FILE} is not JSON"
+    verdict = data.get("verdict") if isinstance(data, Mapping) else None
+    if not isinstance(verdict, str):
+        return None, f"the review's {VERDICT_FILE} states no verdict"
+    return verdict, ""
+
+
+def _merge_refusal(ctx: Any, tenant_id: str, workflow: Any) -> str:
+    """The merge step's own refusal, as the worker recorded it, or ''."""
+    for step in getattr(workflow, "steps", None) or []:
+        task_id = getattr(step, "task_id", None)
+        if not task_id:
+            continue
+        try:
+            task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+        except NotFound:
+            continue
+        summary = getattr(task, "result_summary", None)
+        merge = summary.get("merge") if isinstance(summary, Mapping) else None
+        refusal = merge.get("refusal") if isinstance(merge, Mapping) else None
+        if isinstance(refusal, Mapping):
+            return f"{refusal.get('code')}: {refusal.get('message')}"
+    return ""
+
+
+def _merge(
+    ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str,
+    owner_auth: OwnerAuth,
+) -> IssueRun:
+    """CI is green at `head` and the keyword block is written: merge, once per head.
+
+    Stays CHECKING throughout, so a head that moves -- a person's push, red
+    CI -- goes through the ordinary loop above, and a pull request GitHub
+    reports merged is DONE by `from_checks`' own first test. Every outcome
+    that is not a merge is FAILED with its reason and the pull request left
+    open and green for a person: the review's verdict is not MERGE, the head
+    was not pushed by this run, or the merge step refused (its code and
+    message, from the worker). A merge is never resubmitted for the same head.
+    """
+    runs = _runs(ctx)
+    now = ctx.now()
+    number = record.get("number")
+    current = dict(run.merge or {})
+
+    def _fail(reason: str) -> IssueRun:
+        return runs.transition(
+            tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+            patch={"pull_request": record, "green_sha": head, "error": failure_text(
+                f"auto_merge did not merge pull request #{number}: {reason}. It is green at "
+                f"{head[:12]}; merge it yourself"
+            )},
+        )
+
+    if current.get("head_sha") == head:
+        workflow_id = current.get("workflow_id")
+        if not workflow_id:
+            claimed = _aware(current.get("claimed_at"))
+            if claimed is not None and now - claimed >= timedelta(seconds=LOST_ROUND_SECONDS):
+                return _fail("its merge was claimed but its workflow was never recorded")
+            return runs.patch(tenant_id, run.id, {"pull_request": record})
+        try:
+            workflow = ctx.store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+        except NotFound:
+            return _fail(f"its merge workflow {workflow_id} no longer exists")
+        results, _ = ctx.rollups.for_workflows(tenant_id, [workflow])
+        derived = str(results[0].to_api().get("state")) if results else ""
+        if derived not in _ENDED:
+            return runs.patch(tenant_id, run.id, {"pull_request": record})
+        refusal = _merge_refusal(ctx, tenant_id, workflow)
+        return _fail(
+            f"its merge workflow {workflow_id} ended {derived}"
+            + (f" ({refusal})" if refusal else "")
+        )
+
+    verdict, why = _review_verdict(ctx, tenant_id, run)
+    if verdict != "MERGE":
+        return _fail(f"the review's verdict is {verdict}, not MERGE" if verdict else why)
+    pushed_by = _pushing_task(ctx, tenant_id, run, head)
+    if pushed_by is None:
+        return _fail(f"its head {head[:12]} was not pushed by any of this run's tasks")
+    try:
+        owner = owner_auth(ctx, run)
+    except UpstreamUnavailable:
+        log.warning("issue run %s: merge waits: membership unresolved", run.id)
+        return runs.patch(tenant_id, run.id, {"pull_request": record})
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        return _fail(f"its merge was refused ({reason})")
+
+    def _claim(latest: IssueRun) -> dict[str, Any]:
+        if (latest.merge or {}).get("head_sha") == head:
+            raise Conflict(
+                f"run {run.id!r} claimed the merge of {head[:12]} while this read was deciding",
+                detail={"head_sha": head},
+            )
+        return {
+            "pull_request": record,
+            "merge": {"head_sha": head, "pushed_by": pushed_by, "claimed_at": now,
+                      "workflow_id": None},
+        }
+
+    runs.patch(tenant_id, run.id, _claim)
+    try:
+        submission = ctx.submissions.submit_workflow(owner, merge_workflow(run, pushed_by, head))
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        log.warning("issue run %s: merge refused at submission (%s)", run.id, reason)
+        return _fail(f"its merge was refused at submission ({reason})")
+    workflow_id = submission.workflow.workflow_id
+    log.info("issue run %s tenant=%s: merge of %s submitted as %s",
+             run.id, tenant_id, head[:12], workflow_id)
+    return runs.patch(tenant_id, run.id, lambda latest: {
+        "merge": {**(latest.merge or {}), "workflow_id": workflow_id},
     })
 
 

@@ -861,6 +861,114 @@ that would have put this write on the scheduler's own tick.
 A step stuck at `DEPENDENCY_INCOMPLETE` whose upstream shows `SUCCEEDED` means
 the sweep has not run yet — wake the scheduler, or wait for the 1-minute tick.
 
+## Ending in a merge: the `merge` step
+
+**Built 2026-10-04 (contract request 47, owner decisions recorded on #295).**
+A workflow that opens a pull request can end by merging it. The `merge`
+profile runs no agent: the worker squash-merges the pull request with the
+tenant's existing `-git` token, in the workflow's own repository, and then
+closes the issues the pull request closes. The design and every refusal are
+in [merge-step.md](merge-step.md) ("Revised 2026-10-04 (owner)").
+
+The review shape above, ending in a merge:
+
+```bash
+./scripts/api.sh POST /workflows '{
+  "strategy": "integrate",
+  "repository_url": "https://github.com/acme/widgets.git",
+  "steps": [
+    {"step_id": "implement", "runner_profile": "claude-code",
+     "input": {"prompt": "Implement the change described in the issue."}},
+
+    {"step_id": "review", "runner_profile": "claude-code",
+     "depends_on": ["implement"], "builds_on": "implement",
+     "input_from": {"implement": "swarm-work.patch"},
+     "input": {"prompt": "Review swarm-work.patch. Do not edit files. Write verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", \"findings\": [...]}."}},
+
+    {"step_id": "fix", "runner_profile": "claude-code",
+     "depends_on": ["review"], "builds_on": "implement",
+     "input_from": {"review": "verdict.json"},
+     "when": {"step": "review", "verdict_in": ["NOT_YET"]},
+     "input": {"prompt": "Fix every finding in verdict.json. Change nothing else."}},
+
+    {"step_id": "merge", "runner_profile": "merge",
+     "depends_on": ["fix", "review"],
+     "input_from": {"review": "verdict.json"}}
+  ]
+}'
+```
+
+You do not have to write the last step. **It is opt-in, and chosen in one of
+two places:**
+
+| `metadata.merge` on the workflow | the spec states a merge step | result |
+|---|---|---|
+| absent | no | appended when the platform's `merge_by_default` is on (default **off**) and the repository is on github.com |
+| absent | yes | the stated step is honoured |
+| `"on"` | no | appended; refused (422) if the workflow opens no single pull request |
+| `"on"` | yes | the stated step is honoured; nothing is doubled |
+| `"off"` | no | none |
+| `"off"` | yes | refused (422): the two disagree |
+
+`merge_by_default` is the platform setting an admin reads and sets with
+`GET`/`PUT /v1/admin/settings` (`{"merge_by_default": true}`), stored in
+Firestore at `control/settings`. It applies to workflows submitted after it
+changes; a workflow keeps the steps it was signed with. An issue run's
+`auto_merge` is the same choice: absent, it takes the default, and the run
+records what it resolved. The run does NOT merge inside its compiled
+workflow (which, like every CI fix round, says `metadata.merge: "off"`): it
+merges from its CI loop, with one merge-only continuation submitted once CI
+is green and its `Closes #N` block is written, and only when its review said
+`MERGE` ([merge-step.md](merge-step.md#revised-2026-10-04-owner)).
+
+**A merge-only continuation** is a `direct-pr` workflow whose
+`continues_task` names a task and whose only step runs the `merge` profile: it
+merges that task's pull request at the head that task pushed, with every
+check below except the verdict (it has no review). A tenant member's only.
+
+What swarm-api appends, before it signs anything:
+
+* **`depends_on` the step that opens the pull request and the review.**
+  Under `integrate` the pull request is the integrator's -- the agent steps'
+  one sink -- and the review is the step the integrator's `when` reads. Under
+  `direct-pr` there is ONE pull request only when there is one agent step, so
+  a merge is appended (or accepted) only then; several `direct-pr` steps
+  open several pull requests, and `"on"` there is refused rather than
+  merging one of them. `collect` opens none.
+* **`input_from` the review's verdict file**, the same file the gated step
+  stages, so the merge reads the verdict the gate read. The merge refuses
+  anything but `MERGE`.
+* **10 attempts** (`MERGE_STEP_MAX_ATTEMPTS`). A required check still running
+  fails the attempt retryably and the step waits READY for 5 minutes, holding
+  nothing (invariants 1 and 4), then reads every fact again.
+* **Its signed dispatch block names its target by task id**
+  (`merge_target: {pull_request, review, verdict_file}`), so the worker never
+  follows a pointer the signed spec does not name.
+
+What the merge step checks, in order, and refuses with a plain reason
+(`result_summary.merge.refusal`): the verdict is `MERGE`; the pull request is
+open, not a draft, on the opening step's own branch and from no fork; its
+head is exactly the head that step pushed (`head_moved` otherwise); every
+REQUIRED check of the base branch -- rulesets and classic protection -- is
+success or skipped at that head, or, on a branch that requires none, every
+reported check is green and at least one exists; GitHub says it merges
+cleanly; the token can write. Then it squash-merges with the pull request's
+title and `sha` pinned, comments `Merged by SwarmCloud task <id>` on the pull
+request, and closes every issue in GitHub's `closingIssuesReferences` that is
+still open, commenting `Closed by #<pr>, merged by SwarmCloud task <id>`. A
+`part of #N` pull request closes nothing. The merge call is never resent: a
+merge whose answer was lost ends `merge_unanswered`.
+
+**Refused at submission, never at merge time:** a repository on a host no
+merger serves. The merge acts on github.com only (`GitHubMerger`, the one
+`ForgeMerger`), the one host the tenant's token is ever sent to. A merge step
+the caller asked for -- stated, or `"on"` -- on another host is a 422 that
+says to set `metadata.merge` to `"off"`. The platform default is NOT applied
+there: a workflow on another host opens no pull request (the worker harvests
+a patch), so with `metadata.merge` absent it is accepted with no merge step
+appended, and an admin turning `merge_by_default` on breaks no tenant who
+never asked for a merge.
+
 ## When not to use a workflow
 
 If steps do not exchange artifacts and do not depend on each other, submit a
@@ -869,6 +977,12 @@ interleave across tenants under round-robin; a workflow adds dependency
 bookkeeping you are not using.
 
 ## PROPOSED: a chain that merges its own pull request
+
+**Superseded 2026-10-04 for the merge itself** by the `merge` step above
+(contract request 47): merging moved onto the tenant's `-git` token, at the
+end of any `integrate` or one-step `direct-pr` workflow. The `single-pr`
+chain below stays proposed and disabled, because its `post-verdict` and
+`claude-code-review` profiles do; what follows is its design as written.
 
 **Proposed on 2026-09-29 for #295 and not built. Revised four times,
 2026-09-29,** against a security review's two blockers and five majors, then

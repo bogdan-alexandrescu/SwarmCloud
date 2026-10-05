@@ -131,11 +131,15 @@ def test_single_pr_is_an_accepted_strategy():
     assert PR_ROLES == ("author", "reader", "amender", "none")
 
 
-def test_the_chain_is_refused_while_the_merge_profiles_are_disabled(client, db):
-    """The owner's decision (2026-10-01): disabled for every tenant until #342."""
-    assert not RUNNER_PROFILES["merge"].available
+def test_the_chain_is_refused_while_post_verdict_is_disabled(client, db):
+    """The owner's decision (2026-10-01) holds for post-verdict. `merge` was
+    enabled by contract request 47 (2026-10-04) on the tenant's `-git` token,
+    so the chain is now refused for its post-verdict step alone."""
+    assert RUNNER_PROFILES["merge"].available
+    assert not RUNNER_PROFILES["post-verdict"].available
     body = _assert_refused(client, db, _chain(), "validation_failed")
     assert body["detail"]["disabled"] is True
+    assert body["detail"]["runner_profile"] == "post-verdict"
 
 
 def test_single_pr_is_not_dispatchable_until_its_profiles_are(monkeypatch):
@@ -476,11 +480,16 @@ def test_pr_role_is_refused_outside_single_pr(client, db, strategy):
     assert body["detail"]["step_id"] == "a"
 
 
-@pytest.mark.parametrize("strategy", ["collect", "direct-pr", "integrate"])
-@pytest.mark.parametrize("profile", _CHAIN_PROFILES)
+@pytest.mark.parametrize(("strategy", "profile"), [
+    ("collect", "merge"),
+    ("collect", "post-verdict"), ("direct-pr", "post-verdict"), ("integrate", "post-verdict"),
+])
 def test_a_worker_action_profile_is_refused_outside_single_pr(
     client, db, chain_enabled, strategy, profile
 ):
+    """post-verdict runs only inside `single-pr`. `merge` also runs as the final
+    step of a `direct-pr` or `integrate` workflow since contract request 47
+    (test_merge_step_submission.py); a `collect` workflow opens nothing to merge."""
     spec = {
         "strategy": strategy, "repository_url": REPO,
         "steps": [

@@ -30,10 +30,28 @@ from .conftest import auth_header
 APP_PROVIDERS = ("git-merge", "git-review")
 
 
-def test_the_catalogue_names_both_app_providers():
+def test_the_catalogue_names_git_review_and_git_merge_is_retired_but_still_excluded():
     # The premise: without this the exclusion below would pass vacuously.
+    # Contract request 47 (2026-10-04) moved the merge onto the tenant's `-git`
+    # token, so the catalogue names `git-review` and no longer `git-merge`;
+    # a `-git-merge` secret that exists is still an App key, so it stays out.
+    from swarm_api.validation import APP_CREDENTIAL_PROVIDERS, RETIRED_APP_CREDENTIAL_PROVIDERS
+
     named = {p.provider for p in RUNNER_PROFILES.values()}
-    assert set(APP_PROVIDERS) <= named, named
+    assert "git-review" in named and "git-merge" not in named, named
+    assert RETIRED_APP_CREDENTIAL_PROVIDERS == {"git-merge"}
+    assert set(APP_PROVIDERS) <= APP_CREDENTIAL_PROVIDERS
+
+
+def test_the_forge_token_the_merge_reads_is_not_registrable_through_a_route():
+    """Contract request 47: `merge` names `git`, the tenant's forge token. It
+    is registered by register-tenant.sh and stored by create-secrets.sh
+    --stdin only (owner rule, 2026-09-25), and is not an App key either."""
+    from swarm_api.validation import APP_CREDENTIAL_PROVIDERS
+
+    assert RUNNER_PROFILES["merge"].provider == "git"
+    assert "git" not in known_providers()
+    assert "git" not in APP_CREDENTIAL_PROVIDERS, "register-tenant.sh would refuse the worker -git"
 
 
 @pytest.mark.parametrize("provider", APP_PROVIDERS)
@@ -43,7 +61,7 @@ def test_known_providers_leaves_out_the_app_providers(provider):
 
 def test_known_providers_still_offers_every_other_catalogue_provider():
     expected = sorted(
-        {p.provider for p in RUNNER_PROFILES.values() if p.provider} - set(APP_PROVIDERS)
+        {p.provider for p in RUNNER_PROFILES.values() if p.provider} - set(APP_PROVIDERS) - {"git"}
     )
     assert list(known_providers()) == expected
     assert "anthropic" in known_providers() and "openai" in known_providers()

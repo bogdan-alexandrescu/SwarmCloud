@@ -36,18 +36,18 @@ from swarm_common.states import EventType, TaskState
 from conftest import seed_attempt
 from fakes import ExplodingChildProcess
 
-MERGES = {"author": "task_a", "review": "task_r", "post-verdict": "task_pv", "proof": "task_p"}
-
-
 def _seed(db, profile: str) -> None:
     seed_attempt(db, runner_profile=profile, task_input={"prompt": "act"})
     doc = db.doc("tasks/task_1")
     doc["workflow_id"] = "wf_1"
-    block: dict[str, Any] = {"strategy": "single-pr", "carrier": "checkpoints", "pr_role": "none"}
     if profile == "merge":
-        block["merges"] = dict(MERGES)
+        # Contract request 47: the merge step of an `integrate` workflow,
+        # naming the integrator whose pull request it merges.
+        block: dict[str, Any] = {"strategy": "integrate", "carrier": "checkpoints",
+                                 "merge_target": {"pull_request": "task_int"}}
     else:
-        block["verdict_source"] = {"review": "task_r"}
+        block = {"strategy": "single-pr", "carrier": "checkpoints", "pr_role": "none",
+                 "verdict_source": {"review": "task_r"}}
     doc["metadata"] = {"dispatch": block}
 
 
@@ -97,7 +97,7 @@ def test_a_worker_action_starts_no_runner_and_succeeds_from_its_outcome(
     assert len(seen) == 1, "the action ran other than once"
     ctx = seen[0]
     assert ctx.workflow_id == "wf_1" and ctx.tenant_id == "eng"
-    assert ctx.dispatch.get("pr_role") == "none"
+    assert ctx.dispatch.get("merge_target" if profile == "merge" else "verdict_source")
     assert ctx.human_gate is False
     task = db.doc("tasks/task_1")
     assert task["state"] == TaskState.SUCCEEDED.value
@@ -169,15 +169,15 @@ def test_an_unregistered_app_parks_the_step_at_no_cost(db, worker_factory, monke
     assert db.doc("tasks/task_1")["state"] == TaskState.PARKED.value
 
 
-def test_the_action_reads_its_own_app_secret_and_nothing_else(
+def test_post_verdict_reads_its_own_app_secret_and_nothing_else(
     db, worker_factory, monkeypatch, no_runner
 ):
-    """`read_app_key` reads `swarm-tenant-<t>-git-merge` for the merge profile,
-    parks when the tenant has not registered it, and reads no runner key."""
+    """`read_app_key` reads `swarm-tenant-<t>-git-review` for post-verdict and
+    reads no runner key."""
     from fake_github import app_secret_payload
     from fakes import FakeSecretClient
 
-    _seed(db, "merge")
+    _seed(db, "post-verdict")
     keys: list[Any] = []
 
     def read(ctx):
@@ -188,10 +188,59 @@ def test_the_action_reads_its_own_app_secret_and_nothing_else(
         return _succeeded(ctx)
 
     _recorder(monkeypatch, read)
-    secrets = FakeSecretClient({"swarm-tenant-eng-git-merge": app_secret_payload(77)})
-    db.doc("tenants/eng")["credentials"] = ["git-merge"]
-    worker, _, _ = worker_factory(runner_profile="merge", secret_client=secrets)
-    db.doc("tenants/eng")["credentials"] = ["git-merge"]
+    secrets = FakeSecretClient({"swarm-tenant-eng-git-review": app_secret_payload(77)})
+    worker, _, _ = worker_factory(runner_profile="post-verdict", secret_client=secrets)
+    db.doc("tenants/eng")["credentials"] = ["git-review"]
     worker.run()
-    assert secrets.accessed == ["swarm-tenant-eng-git-merge"]
+    assert secrets.accessed == ["swarm-tenant-eng-git-review"]
     assert keys and getattr(keys[0], "app_id", None) == 77
+
+
+def test_the_merge_reads_the_tenants_git_token_and_no_app_key(
+    db, worker_factory, monkeypatch, no_runner
+):
+    """Contract request 47: `read_git_token` reads `swarm-tenant-<t>-git`, the
+    tenant's existing forge token, and the merge never asks for an App key."""
+    from fake_github import fresh_token
+    from fakes import FakeSecretClient
+
+    _seed(db, "merge")
+    value = fresh_token()
+    read: list[str] = []
+
+    def act(ctx):
+        read.append(ctx.read_git_token())
+        return _succeeded(ctx)
+
+    _recorder(monkeypatch, act)
+    secrets = FakeSecretClient({"swarm-tenant-eng-git": value})
+    worker, _, _ = worker_factory(runner_profile="merge", secret_client=secrets)
+    db.doc("tenants/eng")["credentials"] = ["git"]
+    assert worker.run() == ExitCode.OK
+    assert secrets.accessed == ["swarm-tenant-eng-git"]
+    assert read == [value]
+
+
+def test_a_merge_for_a_tenant_without_a_git_token_parks_at_no_cost(
+    db, worker_factory, monkeypatch, no_runner
+):
+    """`read_git_token` raises CredentialMissing for a tenant with no `git`
+    credential; the action's park outcome ends the step PARKED."""
+    _seed(db, "merge")
+    monkeypatch.setattr(merge_mod, "run_merge", _park_on_missing)
+    worker, _, _ = worker_factory(runner_profile="merge")
+    db.doc("tenants/eng")["credentials"] = []
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.PARKED.value
+    assert task["park_reason"] == "CREDENTIAL_MISSING"
+
+
+def _park_on_missing(ctx):
+    try:
+        ctx.read_git_token()
+    except CredentialMissing as exc:
+        return post_verdict_mod.ActionOutcome(
+            state=TaskState.PARKED, end_cause=None, exit_code=ExitCode.PARKED, summary={},
+            credential_missing=exc)
+    raise AssertionError("a tenant with no git credential had its token read")

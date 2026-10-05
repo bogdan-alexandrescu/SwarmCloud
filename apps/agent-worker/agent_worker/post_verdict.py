@@ -160,6 +160,14 @@ class ActionContext:
     #: Registers a minted token with the logger's redaction (never logged
     #: anyway: belt and braces for any message that might quote a header).
     register_secret: Callable[[str], None] = lambda _value: None
+    #: The merge's credential (contract request 47): reads the tenant's own
+    #: `-git` token at merge time, registered with the log redaction before it
+    #: is returned; raises `secrets.CredentialMissing` when the tenant has not
+    #: registered one. None for an action that holds no forge token.
+    read_git_token: Callable[[], str] | None = None
+    #: The task's own `repository_url`, from its VERIFIED spec: the repository
+    #: the merge acts on (owner and repo are parsed from it, never a pointer).
+    repository_url: str | None = None
 
 
 def _outcome(

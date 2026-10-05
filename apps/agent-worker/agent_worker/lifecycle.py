@@ -247,6 +247,7 @@ from .runners.cliagent import (
 from .runners.limits import GRACE_ENV, STDERR_ENV, STDOUT_ENV, TIMEOUT_ENV
 from .runners.streams import agent_stream_files, cli_agent_spec
 from .secrets import (
+    GIT_PROVIDER,
     CredentialMissing,
     SecretError,
     SecretManagerClient,
@@ -1078,6 +1079,15 @@ class Worker:
             forge_read_attempts=self.cfg.forge_read_attempts,
             remaining_seconds=self._remaining_seconds,
             register_secret=self.log.register_secret,
+            # The merge's credential since contract request 47: the tenant's
+            # own `-git` token, read only when `run_merge` asks, after the
+            # reap and every check that needs none (#219).
+            read_git_token=self._read_action_git_token,
+            # The VERIFIED spec's own repository: the one the merge acts on.
+            repository_url=(
+                task.get("repository_url")
+                if isinstance(task.get("repository_url"), str) else None
+            ),
         )
         self.phases.enter("worker_action")
         self.log.info("worker action: no runner is started", action=action.value)
@@ -1091,8 +1101,10 @@ class Worker:
     def _read_action_app_key(self) -> forge_mod.AppKey:
         """This action's App key, from `swarm-tenant-<tenant>-<provider>`.
 
-        `provider` is the profile's (`git-merge`, `git-review`), read by this
-        Job's own service account, the secret's sole accessor. Registered with
+        `provider` is the profile's (`git-review`, post-verdict's; the merge
+        reads the tenant's `-git` token instead since contract request 47,
+        `_read_action_git_token`), read by this Job's own service account, the
+        secret's sole accessor. Registered with
         the logger's redaction at once, as `resolve_git_token` does a token.
         A tenant that has not registered the provider raises
         `CredentialMissing`, which parks the task at no cost.
@@ -1108,6 +1120,25 @@ class Worker:
         del payload
         self.log.info("worker action credential read", secret=tenant.secret_name(provider))
         return key
+
+    def _read_action_git_token(self) -> str:
+        """The tenant's `-git` token, for the merge (contract request 47).
+
+        The secret `swarm-tenant-<tenant>-git`, read by the Job's account --
+        the tenant's worker account, the secret's ordinary reader -- through
+        `resolve_git_token`, which registers the value with the logger's
+        redaction before returning it and logs the secret's NAME only. Held in
+        this process's heap and nowhere else: never written to the workspace,
+        a file, an environment or an event. A tenant that has not registered
+        one raises `CredentialMissing`, which parks the step at no cost.
+        """
+        tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
+        if GIT_PROVIDER not in tenant.credentials or self.secret_client is None:
+            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
+        token = resolve_git_token(tenant=tenant, client=self.secret_client, logger=self.log)
+        if not token:
+            raise CredentialMissing(self.cfg.tenant_id, GIT_PROVIDER)
+        return token
 
     def _action_recheck(self) -> bool:
         """Fencing (raising `FencedError`), then whether a cancel was requested."""
