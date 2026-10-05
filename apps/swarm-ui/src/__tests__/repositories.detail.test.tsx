@@ -64,13 +64,6 @@ const INDEX = {
   unmapped: ['src/legacy/old.ts'],
 }
 
-const LANGUAGES = {
-  languages: [
-    { language: 'TypeScript', grammar: 'tree-sitter-typescript', server: 'tsserver', status: 'ok', files: 388, resolved: 0.84 },
-    { language: 'Shell', grammar: null, server: null, status: 'unsupported', fallback: 'file level only (naming, co-change)' },
-  ],
-}
-
 const RESOLVED = {
   order: 'R2',
   token: token({ token_id: 'tok_r', scope: 'repository', repo_ids: [ID], forge_login: 'example-web-bot', last4: '7f3a', provider_suffix: 'git-r-1111111111111111', secret_name: 'swarm-tenant-eng-git-r-1111111111111111', expires_at: new Date(Date.now() + 41 * DAY + HOUR).toISOString(), verified_at: ago(3 * HOUR) }),
@@ -86,22 +79,33 @@ const RESOLVED = {
   user_token: token({ token_id: 'tok_u', scope: 'user', forge_login: 'operator-gh', last4: '19c2' }),
 }
 
-type Routes = Partial<Record<'detail' | 'index' | 'languages' | 'token', { status: number; body: unknown }>>
+// The resolved-token row is derived from GET /v1/git-tokens (R2: the repository's
+// own token, else the tenant's): the API has no per-repository token route, and
+// no per-language route either, so neither is ever fetched.
+const TOKENS = {
+  resolution_order: 'R2',
+  git_tokens: [
+    {
+      ...RESOLVED.token,
+      probe: { repositories: [{ repo_id: ID, repository: 'example-org/example-web', capabilities: RESOLVED.capabilities }] },
+    },
+  ],
+}
+
+type Routes = Partial<Record<'detail' | 'index' | 'tokens', { status: number; body: unknown }>>
 
 function routes(over: Routes = {}) {
   const r: Required<Routes> = {
     detail: { status: 200, body: DETAIL },
     index: { status: 200, body: INDEX },
-    languages: { status: 200, body: LANGUAGES },
-    token: { status: 200, body: RESOLVED },
+    tokens: { status: 200, body: TOKENS },
     ...over,
   }
   return serve((m, url) => {
     if (m !== 'GET') return null
     if (url === `/v1/repositories/${ID}`) return r.detail
     if (url === `/v1/repositories/${ID}/index?format=json`) return r.index
-    if (url === `/v1/repositories/${ID}/languages`) return r.languages
-    if (url === `/v1/repositories/${ID}/token?user=me`) return r.token
+    if (url === '/v1/git-tokens') return r.tokens
     return null
   })
 }
@@ -285,20 +289,13 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(titles).toEqual(['Schedule and change trigger', 'Languages detected', 'Graph', 'Selection policy', 'Resolved token'])
   })
 
-  it('languages: grammar, server, status; a missing grammar or server is a dash with its reason', async () => {
-    routes()
+  it('languages: the API serves no per-language route, so the region says "not served yet" and nothing is fetched', async () => {
+    const calls = routes()
     await mount('settings')
     await loaded()
-    await waitFor(() => expect(document.querySelectorAll('.ur-lang')).toHaveLength(2), WAIT)
-    const [ts, sh] = Array.from(document.querySelectorAll('.ur-lang'))
-    expect(visible(ts!)).toContain('tree-sitter-typescript')
-    expect(visible(ts!)).toContain('388 files · 84% resolved')
-    expect(ts!.querySelector('[data-tone]')?.getAttribute('data-tone')).toBe('ok')
-    expect(Array.from(sh!.querySelectorAll('.c-dash')).map((d) => d.getAttribute('title'))).toEqual([
-      'No tree-sitter grammar is bundled for this language',
-      'No language server is supported for this language',
-    ])
-    expect(visible(sh!)).toContain('unsupported')
+    await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/repositories/{repo_id}/languages"]')).not.toBeNull(), WAIT)
+    expect(document.querySelectorAll('.ur-lang')).toHaveLength(0)
+    expect(calls.some((c) => c.url.includes('/languages'))).toBe(false)
   })
 
   it('the policy is P3 with X2, the graph depth 3 of 1-6; changing them is disabled with the reason', async () => {
@@ -330,7 +327,8 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(text).toContain('expires in 41 days')
     expect(text).toContain('last verified 3h ago')
     expect(text).toContain('order R2: repository token, then tenant token')
-    expect(text).toContain('your user token (operator-gh) is used only for attribution')
+    // The caller's own token is not derivable from the token list, so no attribution line is drawn.
+    expect(text).not.toContain('your user token')
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })
 
@@ -347,14 +345,15 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
   })
 
   it('a region whose route is not there yet names its route; the others still draw', async () => {
-    routes({ languages: { status: 404, body: { detail: 'Not Found' } }, token: { status: 501, body: {} } })
+    const calls = routes({ tokens: { status: 501, body: {} } })
     await mount('settings')
     await loaded()
     await waitFor(() => expect(document.querySelectorAll('[data-notserved]')).toHaveLength(2), WAIT)
     expect(Array.from(document.querySelectorAll('[data-notserved]')).map((e) => e.getAttribute('data-notserved'))).toEqual([
       'GET /v1/repositories/{repo_id}/languages',
-      'GET /v1/repositories/{repo_id}/token?user=me',
+      'GET /v1/git-tokens',
     ])
+    expect(calls.some((c) => c.url.includes('/languages') || c.url.includes('/token?'))).toBe(false)
     expect(document.querySelector('.ur-policy')).not.toBeNull()
   })
 })

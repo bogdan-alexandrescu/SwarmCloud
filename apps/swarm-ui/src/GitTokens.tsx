@@ -373,7 +373,7 @@ export function PermissionsPage({ go }: { go: (to: string) => void }) {
       )}
       <UrRegion
         state={perms.state}
-        route="GET /v1/git-tokens/permissions"
+        route="GET /v1/git-tokens"
         what="The permission matrix"
         onRetry={perms.reload}
         empty={

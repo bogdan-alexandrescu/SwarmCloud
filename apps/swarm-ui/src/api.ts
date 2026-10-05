@@ -11,7 +11,7 @@ import { TASK_PAGE_LIMIT } from './pageLimits'
 import type { Outcomes } from './outcomes'
 import { ledgerFixture } from './outcomes.fixture'
 import {
-  normIndexDoc, normLanguages, normPermissions, normReadable, normRepoDetail, normRepoList, normResolved, normTokens,
+  normIndexDoc, normPermissionsFromTokens, normReadable, normRepoDetail, normRepoList, normResolvedFromTokens, normTokens,
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
   type ResolvedToken, type TokenScope,
 } from './RepositoriesData'
@@ -5131,14 +5131,19 @@ export async function loadRepositoryIndex(repoId: string): Promise<Result<IndexD
   return readAs(route('/v1/repositories/{repo_id}/index', { repo_id: repoId }, new URLSearchParams({ format: 'json' })), normIndexDoc)
 }
 
-/** `GET /v1/repositories/{repo_id}/languages`: per language, grammar, server and status. */
-export async function loadRepositoryLanguages(repoId: string): Promise<Result<LanguageRow[]>> {
-  return readAs(route('/v1/repositories/{repo_id}/languages', { repo_id: repoId }), normLanguages, (d) => d.length === 0)
+/** Languages per repository (not served): per language, grammar, server and status. */
+export async function loadRepositoryLanguages(_repoId: string): Promise<Result<LanguageRow[]>> {
+  // NOT SERVED: the API has no per-language route, so nothing is fetched and
+  // the Languages region draws its "not served yet" state.
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The API serves no per-language route for a repository.' },
+  }
 }
 
-/** `GET /v1/repositories/{repo_id}/token?user=me`: the token that resolves here and its capability row. */
+/** The token that resolves here and its capability row, derived from `GET /v1/git-tokens` (R2); no per-repository token route exists. */
 export async function loadResolvedToken(repoId: string): Promise<Result<ResolvedToken>> {
-  return readAs(route('/v1/repositories/{repo_id}/token', { repo_id: repoId }, new URLSearchParams({ user: 'me' })), normResolved)
+  return readAs(route('/v1/git-tokens'), (raw) => normResolvedFromTokens(raw, repoId))
 }
 
 /** `GET /v1/repositories/readable`: what the tenant's git token can read, for Register C. */
@@ -5169,9 +5174,9 @@ export async function loadGitTokens(): Promise<Result<GitToken[]>> {
   return readAs(route('/v1/git-tokens'), normTokens, (d) => d.length === 0)
 }
 
-/** `GET /v1/git-tokens/permissions`: per token × repository, the eight capabilities. */
+/** Per token × repository, the eight capabilities, built from the probe summaries `GET /v1/git-tokens` carries. */
 export async function loadTokenPermissions(): Promise<Result<Permissions>> {
-  return readAs(route('/v1/git-tokens/permissions'), normPermissions, (d) => d.rows.length === 0)
+  return readAs(route('/v1/git-tokens'), normPermissionsFromTokens, (d) => d.rows.length === 0)
 }
 
 /** `POST /v1/git-tokens`: create a slot's RECORD. It takes no value; the value comes from create-secrets.sh. */
@@ -5179,7 +5184,7 @@ export async function registerTokenSlot(body: { scope: TokenScope; repo_id?: str
   return writeTo(route('/v1/git-tokens'), 'POST', body)
 }
 
-/** `POST /v1/git-tokens/{token_id}:verify`: re-probe now. */
+/** `POST /v1/git-tokens/{token_id}/verify`: re-probe now. */
 export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> {
-  return writeTo(route('/v1/git-tokens/{token_id}:verify', { token_id: tokenId }), 'POST')
+  return writeTo(route('/v1/git-tokens/{token_id}/verify', { token_id: tokenId }), 'POST')
 }

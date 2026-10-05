@@ -569,8 +569,9 @@ export function normToken(v: unknown): GitToken | null {
     expires_at: str(v.expires_at),
     verified_at: str(v.verified_at),
     state: str(v.state),
-    repositories: strs(v.repositories),
-    last_error: str(v.last_error),
+    // The API names the covered repositories as {repo_id: "owner/repo"}.
+    repositories: isRec(v.repositories) ? Object.values(v.repositories).filter((x): x is string => typeof x === 'string') : strs(v.repositories),
+    last_error: str(v.last_error) ?? str(v.probe_error),
   }
 }
 
@@ -666,6 +667,56 @@ export function normPermissions(v: unknown): Permissions {
   return { order: str(v.order), rows }
 }
 
+/** Revoked and expired records are passed over by resolution (git-tokens.md section 3.1). */
+function usable(t: GitToken): boolean {
+  return t.state !== 'revoked' && t.state !== 'expired'
+}
+
+/** R2 without a caller: the repository's own token, else the tenant's. A user token is the caller's and is not derivable here. */
+function resolver(tokens: GitToken[], repoId: string): GitToken | null {
+  return (
+    tokens.find((t) => t.scope === 'repository' && t.repo_ids.includes(repoId) && usable(t)) ??
+    tokens.find((t) => t.scope === 'tenant' && usable(t)) ??
+    null
+  )
+}
+
+/** The probe rows `GET /v1/git-tokens` carries for each token: `probe.repositories`. */
+function probeRows(raw: Rec): Rec[] {
+  return isRec(raw.probe) ? recs(raw.probe.repositories) : []
+}
+
+/**
+ * The permission matrix, built from the per-repository probe summaries each
+ * token record carries (git-tokens.md sections 5, 6). There is no separate
+ * matrix route. A token whose probe has not run has no rows, so no cells.
+ */
+export function normPermissionsFromTokens(v: unknown): Permissions {
+  if (!isRec(v)) return { order: null, rows: [] }
+  const raws = recs(v.git_tokens ?? v.tokens)
+  const tokens = raws.map(normToken).filter((t): t is GitToken => t !== null)
+  const rows: PermissionRow[] = []
+  for (const raw of raws) {
+    const token = normToken(raw)
+    if (token === null) continue
+    for (const r of probeRows(raw)) {
+      const repoId = str(r.repo_id)
+      if (repoId === null) continue
+      rows.push({
+        repo_id: repoId,
+        repository: str(r.repository),
+        token,
+        resolves: resolver(tokens, repoId)?.token_id === token.token_id,
+        capabilities: capRow(r.capabilities),
+        expires_at: str(r.expires_at) ?? token.expires_at,
+        verified_at: str(r.verified_at) ?? token.verified_at,
+        last_error: str(r.error) ?? token.last_error,
+      })
+    }
+  }
+  return { order: str(v.resolution_order), rows }
+}
+
 export interface ResolvedToken {
   order: string | null
   token: GitToken | null
@@ -722,4 +773,22 @@ export function expiryWords(iso: string, now: number): string | null {
   if (d < 0) return `expired ${-d} day${d === -1 ? '' : 's'} ago`
   if (d === 0) return 'today'
   return `in ${d} day${d === 1 ? '' : 's'}`
+}
+
+/**
+ * The token that resolves for one repository, derived from
+ * `GET /v1/git-tokens` and the repository id (R2: the repository's own token,
+ * else the tenant's). Metadata only; there is no per-repository token route.
+ */
+export function normResolvedFromTokens(v: unknown, repoId: string): ResolvedToken {
+  const order = isRec(v) ? str(v.resolution_order) : null
+  const raws = isRec(v) ? recs(v.git_tokens ?? v.tokens) : []
+  const tokens = raws.map(normToken).filter((t): t is GitToken => t !== null)
+  const token = resolver(tokens, repoId)
+  if (token === null) {
+    return { order, token: null, capabilities: null, reason: 'No repository or tenant token is registered for this repository', user_token: null }
+  }
+  const raw = raws.find((r) => r.token_id === token.token_id)
+  const row = raw === undefined ? undefined : probeRows(raw).find((r) => r.repo_id === repoId)
+  return { order, token, capabilities: row === undefined ? null : capRow(row.capabilities), reason: null, user_token: null }
 }

@@ -673,7 +673,7 @@ function SettingsTab({ r, go, busy, onFull }: { r: RepoRecord; go: (to: string) 
             <p className="ur-hint">{rulesetHint(pol.policy, r.default_branch)}</p>
           </Card>
           <Card title="Resolved token" className="ur-resolved" action={<UrNavButton to={GT_PAGE} go={go} size="sm">Git tokens</UrNavButton>}>
-            <UrRegion state={resolved.state} route="GET /v1/repositories/{repo_id}/token?user=me" what="The token that resolves here" onRetry={resolved.reload}>
+            <UrRegion state={resolved.state} route="GET /v1/git-tokens" what="The token that resolves here" onRetry={resolved.reload}>
               {(t) => <ResolvedRows t={t} />}
             </UrRegion>
           </Card>
@@ -741,7 +741,7 @@ function ResolvedRows({ t }: { t: ResolvedToken }) {
         )}
       </p>
       {t.capabilities === null ? (
-        <UrNotServed route="GET /v1/repositories/{repo_id}/token?user=me" what="The token's capability row" />
+        <UrNotServed route="GET /v1/git-tokens" what="The token's capability row" />
       ) : (
         <UrCapRow row={t.capabilities} />
       )}

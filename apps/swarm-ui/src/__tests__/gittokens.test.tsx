@@ -243,11 +243,25 @@ const PERMS = {
   ],
 }
 
+// The matrix is built from the probe summaries GET /v1/git-tokens carries: no
+// permissions route exists, so none is called.
+const PERMS_TOKENS = {
+  resolution_order: 'R2',
+  git_tokens: TOKENS.git_tokens.map((t) => ({
+    ...t,
+    probe: {
+      repositories: PERMS.rows
+        .filter((r) => r.token.token_id === t.token_id)
+        .map(({ repo_id, repository, capabilities }) => ({ repo_id, repository, capabilities })),
+    },
+  })),
+}
+
 const gridRows = () => Array.from(document.querySelectorAll<HTMLTableRowElement>('table.ur-mx tbody tr:not(.ur-grp)'))
 
 describe('the permission matrix is a grid of tokens × repositories (pick A)', () => {
   it('groups rows by repository, marks the resolving token, and heads the capability columns', async () => {
-    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens/permissions' ? { status: 200, body: PERMS } : null))
+    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: PERMS_TOKENS } : null))
     await mount('page=permissions')
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     expect(document.querySelector('h1')?.textContent).toBe('Permissions')
@@ -262,7 +276,7 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
   })
 
   it('each cell is ok, missing or unknown with its reason as its title; an unserved cell is unknown, never ok', async () => {
-    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens/permissions' ? { status: 200, body: PERMS } : null))
+    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: PERMS_TOKENS } : null))
     await mount('page=permissions')
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     const cell = (r: number, c: number) => gridRows()[r]!.cells[c]!.querySelector<HTMLElement>('.ur-cap')!
@@ -284,11 +298,11 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
   it('Verify all re-probes every token in the grid once, then re-reads', async () => {
     let reads = 0
     const calls = serve((m, url) => {
-      if (m === 'GET' && url === '/v1/git-tokens/permissions') {
+      if (m === 'GET' && url === '/v1/git-tokens') {
         reads += 1
-        return { status: 200, body: PERMS }
+        return { status: 200, body: PERMS_TOKENS }
       }
-      if (m === 'POST' && url.endsWith(':verify')) return { status: 202, body: {} }
+      if (m === 'POST' && url.endsWith('/verify')) return { status: 202, body: {} }
       return null
     })
     await mount('page=permissions')
@@ -296,27 +310,28 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     fireEvent.click(screen.getByRole('button', { name: 'Verify all' }))
     await waitFor(() => expect(reads).toBe(2), WAIT)
     expect(calls.filter((c) => c.method === 'POST').map((c) => c.url).sort()).toEqual([
-      '/v1/git-tokens/tok_0011223344556677:verify',
-      '/v1/git-tokens/tok_r:verify',
+      '/v1/git-tokens/tok_0011223344556677/verify',
+      '/v1/git-tokens/tok_r/verify',
     ])
   })
 
   it('"Resolving only" hides the rows that would never be used', async () => {
-    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens/permissions' ? { status: 200, body: PERMS } : null))
+    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: PERMS_TOKENS } : null))
     await mount('page=permissions')
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     fireEvent.click(screen.getByRole('radio', { name: 'Resolving only' }))
     expect(gridRows()).toHaveLength(2)
   })
 
-  it('the permissions route not being there yet is "not served yet", naming it', async () => {
-    serve(() => null)
+  it('the token route not being there yet is "not served yet", and no permissions route is ever fetched', async () => {
+    const calls = serve(() => null)
     await mount('page=permissions')
-    await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/git-tokens/permissions"]')).not.toBeNull(), WAIT)
+    await waitFor(() => expect(document.querySelector('[data-notserved="GET /v1/git-tokens"]')).not.toBeNull(), WAIT)
+    expect(calls.some((c) => c.url.includes('/permissions'))).toBe(false)
   })
 
   it('at 390 the grid gives way to per-repository cards', async () => {
-    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens/permissions' ? { status: 200, body: PERMS } : null))
+    serve((m, url) => (m === 'GET' && url === '/v1/git-tokens' ? { status: 200, body: PERMS_TOKENS } : null))
     await mount('page=permissions')
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     const sheets = ALL.map(([, t]) => t).join('\n')
