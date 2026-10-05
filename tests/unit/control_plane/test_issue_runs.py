@@ -22,6 +22,7 @@ No credentials, no network, no emulator.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 
@@ -1075,9 +1076,14 @@ LEGACY_PLAN = {
          "note": "Edits the list's styles. No action: different file."},
     ],
 }
-#: The canonical JSON bytes `plan_digest` hashes, pinned: an `action` default
-#: added to the model would put a key into these and change every old digest.
-LEGACY_DIGEST = plan_digest(json.loads(json.dumps(LEGACY_PLAN)))
+#: The digest the legacy plan was stored with, computed HERE from its
+#: canonical bytes (sorted keys, no spaces, UTF-8) rather than by calling
+#: `plan_digest`: a change to the canonicalisation, or an `action` default the
+#: model dumped into an old plan, would no longer match it.
+LEGACY_DIGEST = "sha256:" + hashlib.sha256(
+    json.dumps(LEGACY_PLAN, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    .encode("utf-8")
+).hexdigest()
 
 
 @pytest.mark.parametrize("missing", [{}, {"action": None}])
@@ -1116,7 +1122,9 @@ def test_an_overlap_action_round_trips_and_is_in_the_digest():
 def test_a_stored_legacy_plan_reads_unchanged_and_its_digest_still_matches():
     stored = issueruns.parse_plan(LEGACY_PLAN, stored=True)
     assert stored == LEGACY_PLAN
-    assert "action" not in json.dumps(stored)
+    # The key, not the word: the second note says "No action" in its prose.
+    assert all("action" not in overlap for overlap in stored["overlaps"])
+    assert '"action":' not in json.dumps(stored)
     assert plan_digest(stored) == plan_digest(LEGACY_PLAN) == LEGACY_DIGEST
     assert issueruns.plan_shape(LEGACY_PLAN) is not None
     spec = compile_plan(_stored_run(plan=LEGACY_PLAN, plan_digest=LEGACY_DIGEST,
@@ -1143,6 +1151,58 @@ def test_a_stored_legacy_plan_is_served_and_approves_against_its_stored_digest(
     assert approved.status_code == 200, approved.text
     assert approved.json()["run"]["state"] == "RUNNING"
     assert approved.json()["run"]["approved_digest"] == LEGACY_DIGEST
+
+
+def _legacy_planned(client, db, objects):
+    """A PLANNED run whose stored plan and digest predate `PlanOverlap.action`."""
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, FULL_PLAN)
+    assert _run(client, run["id"]).json()["run"]["state"] == "PLANNED"
+    stored = db.docs[f"{issueruns.RUNS_COLLECTION}/{run['id']}"]
+    stored["plan"] = json.loads(json.dumps(LEGACY_PLAN))
+    stored["plan_digest"] = LEGACY_DIGEST
+    return run
+
+
+def test_a_legacy_plan_edited_only_in_its_summary_is_accepted(client, db, objects):
+    # The console's editor sends the whole plan back, legacy overlaps included.
+    run = _legacy_planned(client, db, objects)
+    edited = {**json.loads(json.dumps(LEGACY_PLAN)), "summary": "Sort the widget list by name."}
+    response = _edit(client, run["id"], LEGACY_DIGEST, edited)
+    assert response.status_code == 200, response.text
+    read = response.json()["run"]
+    assert read["plan"] == edited
+    assert read["plan_digest"] == plan_digest(edited) != LEGACY_DIGEST
+
+
+@pytest.mark.parametrize("change", [
+    {"note": "A note the stored plan never had."},
+    {"ref": "saga-xyz/widgets#8"},
+    {"kind": "issue"},
+])
+def test_a_legacy_plan_edit_that_changes_an_overlap_must_give_it_an_action(
+    client, db, objects, change
+):
+    run = _legacy_planned(client, db, objects)
+    edited = json.loads(json.dumps(LEGACY_PLAN))
+    edited["overlaps"][0] = {**edited["overlaps"][0], **change}
+    response = _edit(client, run["id"], LEGACY_DIGEST, edited)
+    assert response.status_code == 422, response.text
+    assert "overlaps.0" in response.text and "action" in response.text
+    # With an action, the same change is accepted.
+    edited["overlaps"][0]["action"] = "required"
+    assert _edit(client, run["id"], LEGACY_DIGEST, edited).status_code == 200
+
+
+def test_an_edit_of_a_new_plan_may_not_drop_an_overlap_action(client, db, objects):
+    run = _create(client).json()["run"]
+    _finish_planner(db, objects, run, FULL_PLAN)
+    planned = _run(client, run["id"]).json()["run"]
+    edited = json.loads(json.dumps(FULL_PLAN))
+    del edited["overlaps"][0]["action"]
+    response = _edit(client, run["id"], planned["plan_digest"], edited)
+    assert response.status_code == 422, response.text
+    assert "saga-xyz/widgets#9" in response.text
 
 
 def test_the_planner_is_told_every_overlap_needs_an_action():

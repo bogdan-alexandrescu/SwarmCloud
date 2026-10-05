@@ -27,12 +27,16 @@ const REPO = 'bogdan-alexandrescu/SwarmCloud'
 const RUN_ID = 'run_7a37942a19aa4d2c80d1'
 
 /**
- * The five overlaps of run_7a37942a19aa4d2c80d1, as stored before #587: ref,
- * kind and note, no `action`. Each note says what overlaps first and puts its
- * "No action" sentence after it -- the shape the old opening-only reading
- * counted as five needing action.
+ * NOT run_7a37942a19aa4d2c80d1's notes. #587 asks for that run's five notes
+ * verbatim; they could not be read when this was written (swarm_run answered
+ * 401 from IAP and the lane had no GitHub access), so these five are a
+ * RECONSTRUCTION of their shape, not a copy: ref, kind and note as stored
+ * before #587, no `action`, each note saying what overlaps first and putting
+ * its "No action" sentence after it -- the shape the old opening-only reading
+ * counted as five needing action. The refs are illustrative. Replace them with
+ * the run's own notes once they can be read.
  */
-const RUN_7A37_OVERLAPS = [
+const RECONSTRUCTED_OVERLAPS = [
   { ref: `${REPO}#560`, kind: 'pull_request', note: 'PR #560 edits apps/swarm-ui/src/Runs.tsx in the CI card, far from the plan card this issue changes. No action: the hunks do not touch.' },
   { ref: `${REPO}#548`, kind: 'issue', note: 'Issue #548 asks for the run list to page; it reads the same /v1/runs route. No action: this plan adds no field to that route.' },
   { ref: `${REPO}#571`, kind: 'pull_request', note: 'PR #571 changes issuecomments.py, which renders the plan comment. This plan leaves the comment as it is. No action.' },
@@ -43,8 +47,8 @@ const RUN_7A37_OVERLAPS = [
 function run(overlaps: unknown[]) {
   return {
     id: RUN_ID, tenant_id: 'eng', state: 'PLANNED', terminal: false,
-    issue: { ref: `${REPO}#587`, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 587,
-      url: `https://github.com/${REPO}/issues/587`, repository_url: `https://github.com/${REPO}` },
+    issue: { ref: `${REPO}#454`, owner: 'bogdan-alexandrescu', repo: 'SwarmCloud', number: 454,
+      url: `https://github.com/${REPO}/issues/454`, repository_url: `https://github.com/${REPO}` },
     plan_approval: 'required', auto_merge: false, fix_rounds: 3, planner_task_id: 'task_7f3e2c9a1b8d4e6f0a5c',
     plan: {
       summary: 'Draw each overlap from its action.',
@@ -81,9 +85,9 @@ afterEach(() => {
   vi.unstubAllEnvs()
 })
 
-describe('#587: run_7a37942a19aa4d2c80d1 reads as nothing needing action', () => {
+describe('#587: five legacy notes shaped like run_7a37942a19aa4d2c80d1\'s read as nothing needing action', () => {
   it('draws its five legacy notes as 0 of 5 needing action, grey, each with its note', async () => {
-    const card = await mount(run(RUN_7A37_OVERLAPS))
+    const card = await mount(run(RECONSTRUCTED_OVERLAPS))
     expect(card.classList.contains('is-found')).toBe(false)
     expect(heading(card)).toContain('5 checked · none need action')
     const rows = card.querySelectorAll('details.rn-overlap')
@@ -93,12 +97,12 @@ describe('#587: run_7a37942a19aa4d2c80d1 reads as nothing needing action', () =>
       expect(visible(row.querySelector('.rn-overlap-v'))).toBe('Not in this run')
       // The planner's note sits under the label, whole: its "No action"
       // sentence came after what overlaps, so nothing is cut from its head.
-      expect(visible(row.querySelector('.rn-overlap-note'))).toBe(RUN_7A37_OVERLAPS[i]!.note)
+      expect(visible(row.querySelector('.rn-overlap-note'))).toBe(RECONSTRUCTED_OVERLAPS[i]!.note)
     })
   })
 
   it('counts each of the five notes as no action, one at a time', () => {
-    for (const o of RUN_7A37_OVERLAPS) expect(overlapVerdict(o).needs, o.note).toBe(false)
+    for (const o of RECONSTRUCTED_OVERLAPS) expect(overlapVerdict(o).needs, o.note).toBe(false)
   })
 })
 
