@@ -284,7 +284,9 @@ function GateRows({ ctx, plan }: { ctx: RunIndexRead; plan: ImpactPlan | null })
     <>
       <GateRow
         k="selected"
-        tone="ok"
+        // The ring, not the check: whether the selection passed is not served
+        // (PASSED_WHY), so a filled mark here would claim a result unseen.
+        tone="unknown"
         label="Selected tests"
         cnt={
           <>
@@ -297,7 +299,7 @@ function GateRows({ ctx, plan }: { ctx: RunIndexRead; plan: ImpactPlan | null })
       />
       <GateRow
         k="full"
-        tone="info"
+        tone="unknown"
         label="Full suite"
         cnt={full === null ? <Dash why="Whether the full suite is needed was not served" /> : full.words}
         small={plan.index_sha === null ? undefined : `chosen by the impact query at ${shortSha(plan.index_sha)}`}
